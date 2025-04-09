@@ -54,7 +54,6 @@ jobs:
     - name: Run schema validation
       run: |
         echo "Running schema validation:"
-        npm install --save-dev ajv-cli
         npx ajv-cli validate -s schema/ai-config.schema.json -d "templates/*/config.json" || echo "Schema validation failed with code $?"
     
     - name: Try running example
