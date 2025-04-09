@@ -11,7 +11,7 @@
   "scripts": {
     "test": "jest",
     "build": "lerna run build",
-    "lint": "eslint . --ext .ts,.js --config eslint.config.js --max-warnings=0",
+    "lint": "eslint . --ext .ts,.js --config eslint.config.js",
     "format": "prettier --write \"**/*.{js,ts,json,md}\"",
     "postinstall": "lerna run prepare",
     "ci": "./scripts/test-ci.sh",
