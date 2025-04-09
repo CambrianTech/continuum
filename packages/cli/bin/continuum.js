@@ -37,6 +37,7 @@ Example usage:
   ${chalk.cyan('$ continuum init --template tdd')}  Use the TDD template
   ${chalk.cyan('$ continuum validate')}           Validate configuration
   ${chalk.cyan('$ continuum adapt --assistant claude')}  Generate Claude config
+  ${chalk.cyan('$ continuum adapt --assistant claude --create-link')}  Generate config with symlink at CLAUDE.md
   `);
 
 // Helper function to create a basic config
@@ -177,6 +178,7 @@ program
   .requiredOption('-a, --assistant <assistant>', 'Target assistant (claude, gpt)')
   .option('-c, --config <path>', 'Path to configuration file', '.continuum/default/config.md')
   .option('-o, --output <path>', 'Output path for adapted configuration')
+  .option('-l, --create-link', 'Create a symlink in the root directory (CLAUDE.md or GPT.json)')
   .action((options) => {
     console.log(chalk.blue(`\nAdapting configuration for ${options.assistant}...`));
     
