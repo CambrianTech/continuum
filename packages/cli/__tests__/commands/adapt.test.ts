@@ -87,8 +87,8 @@ describe('adaptCommand', () => {
   it('should successfully adapt configuration for a supported assistant', async () => {
     await adaptCommand({
       assistant: 'claude',
-      config: 'continuum.md',
-      output: 'CLAUDE.md'
+      config: '.continuum/default/config.md',
+      output: '.continuum/claude/config.md'
     });
     
     // Verify file was checked
@@ -112,7 +112,7 @@ describe('adaptCommand', () => {
   it('should use default output name when no output is provided', async () => {
     await adaptCommand({
       assistant: 'claude',
-      config: 'continuum.md'
+      config: '.continuum/default/config.md'
     });
     
     // Verify default output was used
@@ -162,7 +162,7 @@ describe('adaptCommand', () => {
     // Expect exit with error
     await expect(adaptCommand({
       assistant: 'claude',
-      config: 'continuum.md'
+      config: '.continuum/default/config.md'
     })).rejects.toThrow('Process.exit(1)');
     
     // Verify error message

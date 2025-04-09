@@ -38,9 +38,9 @@ npx ajv-cli validate -s schema/continuum.schema.json -d "templates/*/config.json
 
 # Step 8: Run example
 echo "Running example..."
-if [ -f "examples/visualize-config.js" ] && [ -f "examples/continuum.md" ]; then
+if [ -f "examples/visualize-config.js" ] && [ -f "examples/.continuum/default/config.md" ]; then
   cd examples
-  node visualize-config.js continuum.md
+  node visualize-config.js .continuum/default/config.md
   cd ..
 fi
 
