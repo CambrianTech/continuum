@@ -1,7 +1,7 @@
 #!/bin/bash
 # Script to test CI workflow locally
 
-set -e
+set -e  # Exit on first error
 
 echo "===== Testing CI workflow locally ====="
 
@@ -11,33 +11,37 @@ command -v npm >/dev/null 2>&1 || { echo "npm is required but not installed. Abo
 
 # Step 2: Install dependencies
 echo "Installing dependencies..."
-npm ci
+npm ci || npm install
 
-# Step 3: Run linting
+# Step 3: Configure environment variables (same as CI)
+echo "Configuring environment variables..."
+export JEST_WORKER_ID=1
+export NODE_OPTIONS=--experimental-vm-modules
+
+# Step 4: Run linting
 echo "Running linting..."
 npm run lint
 
-# Step 4: Run build
+# Step 5: Run build
 echo "Building packages..."
 npm run build
 
-# Step 5: Run tests
+# Step 6: Run tests
 echo "Running tests..."
 npm test
 
-# Step 6: Validate schemas
+# Step 7: Validate schemas
 echo "Validating schema..."
-echo "Note: Need to install AJV CLI to run this step"
-echo "npm install -g ajv-cli"
-# Checking if ajv-cli is installed
-if command -v ajv-cli >/dev/null 2>&1; then
-  # Validate the templates against the schema
-  for template in templates/*/config.json; do
-    echo "Validating $template"
-    ajv-cli validate -s schema/ai-config.schema.json -d "$template" || echo "Warning: $template failed validation"
-  done
-else
-  echo "Warning: ajv-cli not installed, skipping schema validation"
+# Install ajv-cli locally if needed
+npm install --save-dev ajv-cli
+npx ajv-cli validate -s schema/ai-config.schema.json -d "templates/*/config.json"
+
+# Step 8: Run example
+echo "Running example..."
+if [ -f "examples/visualize-config.js" ] && [ -f "examples/AI_CONFIG.md" ]; then
+  cd examples
+  node visualize-config.js AI_CONFIG.md
+  cd ..
 fi
 
-echo "===== Local CI test completed ====="
+echo "✅ All CI checks passed locally!"

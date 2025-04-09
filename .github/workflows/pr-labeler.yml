@@ -7,6 +7,8 @@ on:
 jobs:
   label-pr:
     runs-on: ubuntu-latest
+    # Only run labeler on the main repository, not on forks
+    if: github.repository_owner == 'CambrianTech'
     permissions:
       contents: read
       pull-requests: write
@@ -22,6 +24,7 @@ jobs:
         repo-token: "${{ secrets.GITHUB_TOKEN }}"
         configuration-path: .github/labeler.yml
         sync-labels: true
+      continue-on-error: true  # Don't fail the workflow if labeling fails
 
     - name: Add size label
       uses: codelytv/pr-size-labeler@v1
@@ -37,3 +40,4 @@ jobs:
         l_max_size: 500
         xl_label: 'size: XL'
         fail_if_xl: false
+      continue-on-error: true  # Don't fail the workflow if labeling fails
