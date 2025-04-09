@@ -22,7 +22,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/inquirer": "^9.0.3",
-    "@types/node": "^18.15.11",
+    "@types/node": "^22.14.0",
     "typescript": "^5.0.4"
   },
   "dependencies": {
