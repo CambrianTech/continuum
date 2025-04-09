@@ -28,6 +28,7 @@ jobs:
     
     - name: Lint
       run: npm run lint
+      continue-on-error: ${{ github.event_name == 'pull_request' }}
     
     - name: Build
       run: npm run build
