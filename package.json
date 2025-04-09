@@ -33,7 +33,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/jest": "^29.5.0",
-    "@types/node": "^18.15.11",
+    "@types/node": "^22.14.0",
     "@typescript-eslint/eslint-plugin": "^5.57.1",
     "@typescript-eslint/parser": "^5.57.1",
     "ajv-cli": "^5.0.0",
