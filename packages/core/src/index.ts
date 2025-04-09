@@ -77,7 +77,7 @@ export function validateConfig(config: AIConfig): ValidationResult {
   try {
     // Initialize warnings array to collect all validation warnings
     const warnings: string[] = [];
-    const valid = true;
+    let valid = true;
     let errors: string[] | undefined;
     
     // Use schema directly if it's cached, otherwise use basic validation
