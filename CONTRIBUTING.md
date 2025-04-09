@@ -71,6 +71,16 @@ Releases are managed by maintainers using:
 2. Conventional commits for change logs
 3. Lerna for package versioning
 
+## Continuous Integration
+
+We use GitHub Actions to run our CI pipeline. The CI:
+
+1. Runs on every pull request and push to main
+2. Builds the project
+3. Runs unit tests
+4. Performs linting checks
+5. Checks TypeScript compilation
+
 ## Community Guidelines
 
 - Be respectful and inclusive

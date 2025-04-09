@@ -1,0 +1,33 @@
+name: Mark stale PRs and issues
+
+on:
+  schedule:
+    - cron: '30 1 * * *'  # Run at 1:30 UTC every day
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    # Only run on the main repository
+    if: github.repository_owner == 'CambrianTech'
+    permissions:
+      issues: write
+      pull-requests: write
+
+    steps:
+    - uses: actions/stale@v8
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        stale-pr-message: 'This PR is stale because it has been open for 30 days with no activity. Please comment or update this PR to keep it active.'
+        stale-issue-message: 'This issue is stale because it has been open for 60 days with no activity. Please comment or update this issue to keep it active.'
+        close-pr-message: 'This PR was closed because it has been inactive for 14 days since being marked as stale.'
+        close-issue-message: 'This issue was closed because it has been inactive for 30 days since being marked as stale.'
+        stale-pr-label: 'stale'
+        stale-issue-label: 'stale'
+        exempt-pr-labels: 'no-stale,dependencies,security'
+        exempt-issue-labels: 'no-stale,enhancement,bug,security'
+        days-before-pr-stale: 30
+        days-before-issue-stale: 60
+        days-before-pr-close: 14
+        days-before-issue-close: 30
+        operations-per-run: 100
+      continue-on-error: true  # Don't fail if labels can't be created

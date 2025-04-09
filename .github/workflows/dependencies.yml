@@ -1,0 +1,39 @@
+name: Dependency Check
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'packages/*/package.json'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'packages/*/package.json'
+  schedule:
+    - cron: '0 0 * * 0'  # Run weekly on Sunday at midnight
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Use Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18.x'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Audit dependencies
+      run: npm audit --production --audit-level=high
+    
+    - name: Check for outdated dependencies
+      run: npm outdated || true

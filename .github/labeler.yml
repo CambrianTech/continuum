@@ -1,0 +1,41 @@
+# PR Labeler Configuration
+
+# Add 'core' label to any change in the core package
+core:
+  - 'packages/core/**/*'
+
+# Add 'cli' label to any change in the cli package
+cli:
+  - 'packages/cli/**/*'
+
+# Add 'documentation' label to markdown or doc changes
+documentation:
+  - '**/*.md'
+  - 'docs/**/*'
+
+# Add 'tests' label to any test file changes
+tests:
+  - '**/__tests__/**/*'
+  - '**/*.test.ts'
+  - '**/*.spec.ts'
+
+# Add 'schema' label to schema changes
+schema:
+  - 'schema/**/*'
+
+# Add 'templates' label to template changes
+templates:
+  - 'templates/**/*'
+
+# Add 'examples' label to example changes
+examples:
+  - 'examples/**/*'
+
+# Add 'dependencies' label to changes in package files
+dependencies:
+  - '**/package.json'
+  - '**/package-lock.json'
+
+# Add 'workflow' label to any change to GitHub workflow files
+workflow:
+  - '.github/**/*'
