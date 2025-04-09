@@ -20,7 +20,7 @@ export async function findConfigFiles(startPath: string): Promise<string[]> {
     try {
       await fs.access(personalConfigPath);
       configFiles.push(personalConfigPath);
-    } catch (error) {
+    } catch (_) {
       // Personal config doesn't exist, that's okay
     }
   }
@@ -35,7 +35,7 @@ export async function findConfigFiles(startPath: string): Promise<string[]> {
     try {
       await fs.access(projectConfigPath);
       configFiles.push(projectConfigPath);
-    } catch (error) {
+    } catch (_) {
       // Project config doesn't exist at this level, that's okay
     }
     
@@ -44,7 +44,7 @@ export async function findConfigFiles(startPath: string): Promise<string[]> {
     try {
       await fs.access(orgConfigPath);
       configFiles.push(orgConfigPath);
-    } catch (error) {
+    } catch (_) {
       // Org config doesn't exist at this level, that's okay
     }
     

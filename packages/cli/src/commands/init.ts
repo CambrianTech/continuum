@@ -112,7 +112,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     let templateExtensions = {};
     
     if (options.template === 'tdd') {
-      // @ts-ignore - Type issues with inquirer version mismatches
+      // Handle inquirer typing
       const tddAnswers = await inquirer.prompt<{test_first: boolean; coverage_target: number}>([
         {
           type: 'confirm',
@@ -143,7 +143,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
         }
       };
     } else if (options.template === 'enterprise') {
-      // @ts-ignore - Type issues with inquirer version mismatches
+      // Handle inquirer typing
       const enterpriseAnswers = await inquirer.prompt<{compliance_standards: string[]; security_first: boolean}>([
         {
           type: 'checkbox',
