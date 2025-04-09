@@ -10,9 +10,12 @@
   "scripts": {
     "test": "jest",
     "build": "lerna run build",
-    "lint": "eslint .",
+    "lint": "eslint . --ext .ts,.js --max-warnings=0",
     "format": "prettier --write \"**/*.{js,ts,json,md}\"",
-    "postinstall": "lerna bootstrap"
+    "postinstall": "lerna bootstrap",
+    "ci": "./scripts/test-ci.sh",
+    "validate-schema": "npx ajv-cli validate -s schema/ai-config.schema.json -d \"templates/*/config.json\"",
+    "check-deps": "npm audit --production && npm outdated"
   },
   "keywords": [
     "ai",
@@ -33,6 +36,7 @@
     "@types/node": "^18.15.11",
     "@typescript-eslint/eslint-plugin": "^5.57.1",
     "@typescript-eslint/parser": "^5.57.1",
+    "ajv-cli": "^5.0.0",
     "eslint": "^8.38.0",
     "jest": "^29.5.0",
     "lerna": "^6.6.2",

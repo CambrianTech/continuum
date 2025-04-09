@@ -49,11 +49,13 @@ function extractConfigFromMarkdown(content: string): AIConfig {
 }
 
 // Schema is loaded once and cached
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let cachedSchema: any = null;
 
 /**
  * Load the JSON schema for validation
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function loadSchema(): Promise<any> {
   if (!cachedSchema) {
     try {
@@ -147,7 +149,7 @@ export function mergeConfigs(configs: AIConfig[]): AIConfig {
   }
   
   // Start with the most general config
-  let result = { ...configs[0] };
+  const result = { ...configs[0] };
   
   // Apply more specific configs in order
   for (let i = 1; i < configs.length; i++) {
@@ -226,6 +228,8 @@ export function mergeConfigs(configs: AIConfig[]): AIConfig {
         const existingRole = result.permissions?.roles?.[role];
         
         if (existingRole) {
+          // Use non-null assertion only when certain the properties exist
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
           result.permissions!.roles![role] = {
             can_modify_config: permissions.can_modify_config !== undefined 
               ? permissions.can_modify_config && existingRole.can_modify_config !== false
@@ -235,6 +239,7 @@ export function mergeConfigs(configs: AIConfig[]): AIConfig {
               : existingRole.can_instruct_restricted
           };
         } else {
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
           result.permissions!.roles![role] = permissions;
         }
       });
@@ -248,8 +253,12 @@ export function mergeConfigs(configs: AIConfig[]): AIConfig {
         const existingExt = result.extensions?.[ext];
         
         if (existingExt && typeof existingExt === 'object' && typeof value === 'object') {
+          // Safe to use non-null assertion here as we've already checked extensions exists
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
           result.extensions![ext] = { ...existingExt, ...value };
         } else {
+          // Safe to use non-null assertion here as we've already checked extensions exists
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
           result.extensions![ext] = value;
         }
       });

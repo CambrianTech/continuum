@@ -1,0 +1,17 @@
+# Dependency directories
+node_modules/
+dist/
+
+# Build outputs
+build/
+coverage/
+
+# Configuration files
+*.config.js
+jest.config.js
+
+# Examples
+examples/
+
+# Generated files
+*.d.ts
