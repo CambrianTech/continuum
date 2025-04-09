@@ -1,5 +1,5 @@
 /**
- * Adapters for specific AI assistants
+ * Adapters for different AI assistants
  */
 
 import { ConfigAdapter } from '@continuum/core';
@@ -13,8 +13,17 @@ const adapters: Record<string, ConfigAdapter> = {
 };
 
 /**
- * Get an adapter for a specific AI assistant
+ * Get adapter for a specific assistant
  */
-export function getAdapter(name: string): ConfigAdapter | undefined {
-  return adapters[name.toLowerCase()];
+export function getAdapter(assistant: string): ConfigAdapter | undefined {
+  return adapters[assistant.toLowerCase()];
 }
+
+/**
+ * List available adapters
+ */
+export function listAvailableAdapters(): string[] {
+  return Object.keys(adapters);
+}
+
+export { ClaudeAdapter, GPTAdapter };
