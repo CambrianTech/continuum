@@ -34,13 +34,13 @@ npm test
 echo "Validating schema..."
 # Install ajv-cli locally if needed
 npm install --save-dev ajv-cli
-npx ajv-cli validate -s schema/ai-config.schema.json -d "templates/*/config.json"
+npx ajv-cli validate -s schema/continuum.schema.json -d "templates/*/config.json"
 
 # Step 8: Run example
 echo "Running example..."
-if [ -f "examples/visualize-config.js" ] && [ -f "examples/AI_CONFIG.md" ]; then
+if [ -f "examples/visualize-config.js" ] && [ -f "examples/continuum.md" ]; then
   cd examples
-  node visualize-config.js AI_CONFIG.md
+  node visualize-config.js continuum.md
   cd ..
 fi
 

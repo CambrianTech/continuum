@@ -15,7 +15,7 @@
     "format": "prettier --write \"**/*.{js,ts,json,md}\"",
     "postinstall": "lerna run prepare",
     "ci": "./scripts/test-ci.sh",
-    "validate-schema": "npx ajv-cli validate -s schema/ai-config.schema.json -d \"templates/*/config.json\"",
+    "validate-schema": "npx ajv-cli validate -s schema/continuum.schema.json -d \"templates/*/config.json\"",
     "check-deps": "npm audit --production && npm outdated",
     "version:patch": "lerna version patch --no-push --no-git-tag-version --yes",
     "version:minor": "lerna version minor --no-push --no-git-tag-version --yes",
@@ -31,7 +31,6 @@
     "gpt",
     "standardization",
     "cognitive-systems",
-    "ai-config",
     "devops"
   ],
   "author": "Cambrian Technologies",

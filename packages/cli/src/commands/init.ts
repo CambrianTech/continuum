@@ -213,7 +213,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     
     // Use default output if not specified
     if (!options.output) {
-      options.output = 'AI_CONFIG.md';
+      options.output = 'continuum.md';
     }
     
     // Create the output file

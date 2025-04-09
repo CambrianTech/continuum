@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Simple utility to check if an AI_CONFIG.md file exists
+ * Simple utility to check if a continuum.md file exists
  * This is a simplified version that doesn't depend on the yaml module
  * Usage: node visualize-config-simple.js [path-to-config-file]
  */
@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Get the file path from command line arguments
-const configPath = process.argv[2] || 'AI_CONFIG.md';
+const configPath = process.argv[2] || 'continuum.md';
 
 console.log(`Checking file: ${configPath}`);
 

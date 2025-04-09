@@ -87,7 +87,7 @@ describe('adaptCommand', () => {
   it('should successfully adapt configuration for a supported assistant', async () => {
     await adaptCommand({
       assistant: 'claude',
-      config: 'AI_CONFIG.md',
+      config: 'continuum.md',
       output: 'CLAUDE.md'
     });
     
@@ -112,7 +112,7 @@ describe('adaptCommand', () => {
   it('should use default output name when no output is provided', async () => {
     await adaptCommand({
       assistant: 'claude',
-      config: 'AI_CONFIG.md'
+      config: 'continuum.md'
     });
     
     // Verify default output was used
@@ -162,7 +162,7 @@ describe('adaptCommand', () => {
     // Expect exit with error
     await expect(adaptCommand({
       assistant: 'claude',
-      config: 'AI_CONFIG.md'
+      config: 'continuum.md'
     })).rejects.toThrow('Process.exit(1)');
     
     // Verify error message

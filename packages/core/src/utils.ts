@@ -83,7 +83,7 @@ AI assistants should follow the configuration above when working with this proje
 }
 
 /**
- * Generate an AI_CONFIG.md file at the specified location
+ * Generate a continuum.md file at the specified location
  */
 export async function writeConfigFile(config: AIConfig, outputPath: string): Promise<void> {
   const content = generateMarkdown(config);
