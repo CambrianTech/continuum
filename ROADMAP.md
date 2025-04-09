@@ -2,6 +2,8 @@
 
 This document outlines the development path for Continuum, evolving from a configuration tool to a complete cognitive coordination layer for AI assistants.
 
+> **Note:** For detailed implementation specifications, see [Implementation Specs](docs/architecture/implementation-specs.md)
+
 ## Current: v0.1.0 - Context-Aware CLI (Completed)
 
 - ✅ **Single command paradigm** - `continuum` automatically determines what to do
