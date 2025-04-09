@@ -1,48 +1,65 @@
 #!/usr/bin/env node
 /**
- * Command Line Interface for Human-AI Configuration Protocol
+ * Command Line Interface for Continuum - AI Configuration Protocol
  */
 
 import { program } from 'commander';
-import inquirer from 'inquirer';
-import * as path from 'path';
-import * as fs from 'fs/promises';
-import { AIConfig, loadConfig, validateConfig, writeConfigFile } from '@continuum/core';
+import chalk from 'chalk';
 import { initCommand } from './commands/init';
 import { validateCommand } from './commands/validate';
 import { adaptCommand } from './commands/adapt';
+import packageJson from '../package.json';
 
-// Setup the program
-program
-  .name('ai-config')
-  .description('Human-AI Configuration Protocol CLI')
-  .version('0.1.0');
+/**
+ * Setup the program CLI
+ */
+function setupCLI() {
+  // Setup the program
+  program
+    .name('continuum')
+    .description('Continuum - DevOps for Cognitive Systems')
+    .version(packageJson.version || '0.1.0')
+    .addHelpText('after', `
+Example usage:
+  ${chalk.cyan('$ continuum init')}               Initialize with interactive prompts
+  ${chalk.cyan('$ continuum init --template tdd')}  Use the TDD template
+  ${chalk.cyan('$ continuum validate')}           Validate current configuration
+  ${chalk.cyan('$ continuum adapt --assistant claude')}  Generate Claude-specific config
+    `);
 
-// Init command
-program
-  .command('init')
-  .description('Initialize a new AI configuration')
-  .option('-t, --template <template>', 'Use a predefined template', 'standard')
-  .option('-o, --output <path>', 'Output path for configuration', 'AI_CONFIG.md')
-  .action(initCommand);
+  // Init command
+  program
+    .command('init')
+    .description('Initialize a new AI configuration')
+    .option('-t, --template <template>', 'Use a predefined template')
+    .option('-o, --output <path>', 'Output path for configuration', 'AI_CONFIG.md')
+    .action(initCommand);
 
-// Validate command
-program
-  .command('validate')
-  .description('Validate an existing configuration')
-  .option('-c, --config <path>', 'Path to configuration file', 'AI_CONFIG.md')
-  .action(validateCommand);
+  // Validate command
+  program
+    .command('validate')
+    .description('Validate an existing configuration')
+    .option('-c, --config <path>', 'Path to configuration file', 'AI_CONFIG.md')
+    .action(validateCommand);
 
-// Adapt command
-program
-  .command('adapt')
-  .description('Generate platform-specific configuration')
-  .requiredOption('--for <platform>', 'Target platform (claude, gpt)')
-  .option('-c, --config <path>', 'Path to configuration file', 'AI_CONFIG.md')
-  .option('-o, --output <path>', 'Output path for adapted configuration')
-  .action(adaptCommand);
+  // Adapt command
+  program
+    .command('adapt')
+    .description('Generate assistant-specific configuration')
+    .requiredOption('-a, --assistant <assistant>', 'Target assistant (claude, gpt)')
+    .option('-c, --config <path>', 'Path to configuration file', 'AI_CONFIG.md')
+    .option('-o, --output <path>', 'Output path for adapted configuration')
+    .action(adaptCommand);
 
-// Parse and execute
-program.parse(process.argv);
+  return program;
+}
 
-export { program };
+// Setup and run the CLI
+const cli = setupCLI();
+
+// Only parse arguments when this file is run directly (not when imported in tests)
+if (require.main === module) {
+  cli.parse(process.argv);
+}
+
+export { cli as program };
