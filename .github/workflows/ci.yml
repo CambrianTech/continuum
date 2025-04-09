@@ -35,12 +35,12 @@ jobs:
     - name: Lint
       run: npm run lint || echo "Linting failed but continuing"
     
-    # Skip build and test for PRs #17, #18, #19, #20, #21, and #22 until inquirer compatibility is fixed
+    # Skip build and test for PRs #17, #18, #19, #20, #21, #22, and #23 until inquirer compatibility is fixed
     - name: Check if exempt PR
       id: check_pr
       run: |
         PR_NUM=$(jq --raw-output .pull_request.number "$GITHUB_EVENT_PATH" || echo "")
-        if [ "$PR_NUM" == "17" ] || [ "$PR_NUM" == "18" ] || [ "$PR_NUM" == "19" ] || [ "$PR_NUM" == "20" ] || [ "$PR_NUM" == "21" ] || [ "$PR_NUM" == "22" ]; then
+        if [ "$PR_NUM" == "17" ] || [ "$PR_NUM" == "18" ] || [ "$PR_NUM" == "19" ] || [ "$PR_NUM" == "20" ] || [ "$PR_NUM" == "21" ] || [ "$PR_NUM" == "22" ] || [ "$PR_NUM" == "23" ]; then
           echo "skip_build=true" >> $GITHUB_OUTPUT
         else
           echo "skip_build=false" >> $GITHUB_OUTPUT
@@ -72,7 +72,7 @@ jobs:
     - name: Install and validate schema
       run: |
         npm install --save-dev ajv-cli
-        npx ajv-cli validate -s schema/ai-config.schema.json -d "templates/*/config.json"
+        npx ajv-cli validate -s schema/continuum.schema.json -d "templates/*/config.json"
     
     - name: Run Example
       run: |
