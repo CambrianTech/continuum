@@ -78,6 +78,6 @@ export interface TemplateOptions {
 
 export enum ConfigLocations {
   PERSONAL = '.continuum/default/config.md',
-  PROJECT = '.continuum/default/config.md',
+  PROJECT = '.continuum/project/config.md',
   ORGANIZATION = '.continuum/org/config.md'
 }

@@ -24,7 +24,7 @@ export async function adaptCommand(options: AdaptOptions): Promise<void> {
     
     try {
       await fs.access(configPath);
-    } catch (error) {
+    } catch (_) {
       console.error(chalk.red(`Configuration file not found: ${configPath}`));
       process.exit(1);
     }
