@@ -82,10 +82,10 @@ export async function adaptCommand(options: AdaptOptions): Promise<void> {
 function getDefaultOutputName(assistant: string): string {
   switch (assistant.toLowerCase()) {
     case 'claude':
-      return 'CLAUDE.md';
+      return path.join('..', 'claude', 'config.md');
     case 'gpt':
-      return 'GPT_SYSTEM_PROMPT.txt';
+      return path.join('..', 'gpt', 'config.json');
     default:
-      return `${assistant.toUpperCase()}_CONFIG.txt`;
+      return path.join('..', assistant.toLowerCase(), 'config.txt');
   }
 }
