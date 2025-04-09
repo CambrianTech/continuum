@@ -16,7 +16,7 @@ jest.mock('../../src/adapters', () => ({
 
 jest.mock('fs/promises', () => ({
   access: jest.fn(),
-  writeFile: jest.fn(),
+  writeFile: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('chalk', () => ({
@@ -104,8 +104,8 @@ describe('adaptCommand', () => {
     
     // Verify file was written
     expect(fs.writeFile).toHaveBeenCalled();
-    expect(fs.writeFile.mock.calls[0][0]).toContain('CLAUDE.md');
-    expect(fs.writeFile.mock.calls[0][1]).toContain('Claude System Prompt');
+    expect((fs.writeFile as unknown as jest.Mock).mock.calls[0][0]).toContain('CLAUDE.md');
+    expect((fs.writeFile as unknown as jest.Mock).mock.calls[0][1]).toContain('Claude System Prompt');
     
     // Verify success message
     expect(consoleLogMock).toHaveBeenCalledWith(expect.stringContaining('Adapted configuration for claude created at'));
@@ -118,7 +118,7 @@ describe('adaptCommand', () => {
     });
     
     // Verify default output was used
-    expect(fs.writeFile.mock.calls[0][0]).toContain('CLAUDE.md');
+    expect((fs.writeFile as unknown as jest.Mock).mock.calls[0][0]).toContain('CLAUDE.md');
   });
   
   it('should handle unsupported assistants', async () => {

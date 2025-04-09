@@ -132,11 +132,13 @@ export async function initCommand(options: InitOptions): Promise<void> {
         }
       ]);
       
+      const tddExtension = baseConfig.extensions?.tdd as Record<string, any> || {};
+      
       templateExtensions = {
         tdd: {
           test_first: tddAnswers.test_first,
           coverage_target: tddAnswers.coverage_target,
-          frameworks: (baseConfig.extensions?.tdd as any)?.frameworks || ['jest', 'mocha', 'pytest']
+          frameworks: tddExtension.frameworks || ['jest', 'mocha', 'pytest']
         }
       };
     } else if (options.template === 'enterprise') {
@@ -151,7 +153,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
             { name: 'HIPAA', value: 'HIPAA' },
             { name: 'PCI-DSS', value: 'PCI-DSS' }
           ],
-          default: (baseConfig.extensions?.compliance as any)?.standards || []
+          default: ((baseConfig.extensions?.compliance || {}) as Record<string, any>).standards || []
         },
         {
           type: 'confirm',
@@ -161,6 +163,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
         }
       ]);
       
+      const complianceExtension = baseConfig.extensions?.compliance as Record<string, any> || {};
+      const securityExtension = baseConfig.extensions?.security as Record<string, any> || {};
+      
       templateExtensions = {
         compliance: {
           standards: enterpriseAnswers.compliance_standards,
@@ -168,7 +173,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
         },
         security: {
           security_first: enterpriseAnswers.security_first,
-          prevent_vulnerabilities: (baseConfig.extensions?.security as any)?.prevent_vulnerabilities || [
+          prevent_vulnerabilities: securityExtension.prevent_vulnerabilities || [
             'sql_injection', 
             'xss', 
             'csrf'
