@@ -1,22 +1,17 @@
 # 🔄 Continuum
 
-**Designed by AI and humans for AI and humans** - A protocol for configuring AI assistants to work consistently with your team, codebase, and philosophy.
+**Designed by AI and humans for AI and humans** - A protocol and CLI tool that configures AI assistants across all your projects, repos, and teams.
 
 <p align="center">
   <img src="https://img.shields.io/badge/status-early_preview-orange" alt="Status: Early Preview">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
 </p>
 
-## What is Continuum?
+## 🧠 What is Continuum?
 
-Continuum is the missing layer between human cognition and AI capability. It provides:
+**Continuum** is a protocol and CLI tool that configures AI assistants across all your projects, repos, and teams — giving you **persistent, personalized, and policy-aware AI behavior**, no matter where or how you're working.
 
-- **Standardized team memory**: A shared schema for how AI should behave across orgs, repos, and contributors
-- **Embeddable intelligence**: AI configuration that lives in git, gets versioned, reviewed, and tested
-- **Dynamic behavior tuning**: Templates for different development approaches (TDD, open-source, etc.)
-- **Role-based permissions**: Security and permission controls for AI assistant actions
-
-> Continuum is to AI assistants what `.editorconfig` and `tsconfig.json` are to your development tools.
+It's like `.editorconfig` or `tsconfig.json` — but for **your AI collaborators**.
 
 ## 🚀 Quick Start
 
@@ -50,23 +45,38 @@ continuum init --template tdd
 continuum validate
 
 # Generate assistant-specific configurations
-continuum adapt --assistant claude  # Creates continuum.claude
-continuum adapt --assistant gpt     # Creates continuum.gpt
+continuum adapt --assistant claude
+continuum adapt --assistant gpt
+
+# Generate configs with symlinks for tool integration
+continuum adapt --assistant claude --create-link  # Creates CLAUDE.md symlink
+continuum adapt --assistant gpt --create-link     # Creates GPT.json symlink
 ```
 
 
 > Note: The CLI is currently in development mode with placeholder functionality.
 
-## 💡 Why Continuum Matters
+## 🚀 How Continuum Helps
 
-AI assistants are becoming core team members, but:
+### 🧍 For Individuals
+- Define your **personal coding style, tone, ethics, and preferences** for AI
+- Carry your behavior profile across **all repos and branches**
+- Instantly generate config for Claude, ChatGPT, GitHub Copilot, and more
+- Automate setup: no need to re-teach your assistant each time
 
-- Their behavior is inconsistent across different users
-- They lack knowledge of team conventions and workflows
-- Different assistants (Claude, ChatGPT) need different instructions
-- Teams want to control what the AI can and cannot do
+### 👥 For Teams & Orgs
+- Define **org-wide AI policies**: testing rules, tone, permissions, security constraints
+- Apply consistent assistant roles across projects (e.g., `Architect`, `Reviewer`, `SecurityBot`)
+- Enable **trustworthy collaboration** between devs and AIs with full transparency
+- Sync behavior with open-source tools, Claude Code, GPT APIs via symlinks
 
-Continuum solves these problems with a standardized configuration protocol.
+## ⚙️ What's Automated
+
+- ✅ **CLI wizard** (`continuum init`) generates `.continuum/config.yml` for your repo
+- ✅ **Symlinks** (e.g. `CLAUDE.md`, `GPT.json`) auto-created for integration with AI dev tools
+- ✅ **Validation** (`continuum validate`) checks for config conflicts, missing agents, and more
+- ✅ **Adapters** convert unified config into Claude, GPT, Aria-compatible prompts and JSON
+- ✅ **Merging logic** (coming soon): blends personal + org + project preferences with conflict resolution
 
 ## 🧩 Templates & Personas
 
@@ -79,7 +89,7 @@ Continuum ships with pre-configured templates for common development approaches:
 
 ## 📊 Configuration Schema
 
-AI configurations in Continuum follow a standardized schema stored in a `.continuum` file:
+AI configurations in Continuum follow a standardized schema stored in `.continuum/default/config.md`:
 
 ```yaml
 ai_protocol_version: "0.1"
@@ -96,17 +106,29 @@ capabilities:
   restricted: ["deployment", "database_management"]
 ```
 
-Continuum uses this configuration to generate assistant-specific files:
-- `continuum.claude` for Anthropic's Claude
-- `continuum.gpt` for OpenAI's GPT models
+Continuum uses this configuration to generate assistant-specific files in the `.continuum` directory:
+- `.continuum/claude/config.md` for Anthropic's Claude
+- `.continuum/gpt/config.json` for OpenAI's GPT models
 
 ## 🔌 Assistant Adapters
 
 Continuum translates your configuration to various AI assistants:
 
-- **Claude**: Generates `CLAUDE.md` with system instructions
-- **ChatGPT**: Creates prompt configurations compatible with OpenAI models
+- **Claude**: Generates config for Claude in `.continuum/claude/config.md` with optional `CLAUDE.md` symlink
+- **ChatGPT**: Creates prompt configurations compatible with OpenAI models in `.continuum/gpt/config.json`
 - *(and more coming soon)*
+
+### Claude Code Integration
+
+For Claude Code, you can add the following to your `.clauderc`:
+
+```json
+{
+  "systemPromptFile": "CLAUDE.md"
+}
+```
+
+When you run `continuum adapt --assistant claude --create-link`, the symlink will ensure Claude Code picks up your configuration.
 
 ## 🛠️ Use Cases
 
@@ -115,7 +137,14 @@ Continuum translates your configuration to various AI assistants:
 - **Enforce Security Policies**: Set guardrails on what AI can and cannot do
 - **Manage AI Autonomy**: Control how proactive AI assistants should be
 
-## 🧠 Philosophy
+## 🔮 The Vision
+
+Continuum isn't just config — it's the **interface between human intention and artificial cognition**.
+
+By standardizing how AI agents understand you, your team, and your project, we unlock:
+- Smarter AI collaboration
+- More secure and ethical workflows
+- A foundation for a **cooperative future between people and machines**
 
 Continuum is part of a broader vision for human-AI collaboration that values:
 
