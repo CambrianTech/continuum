@@ -29,6 +29,6 @@
     "@continuum/core": "^0.1.0",
     "chalk": "^4.1.2",
     "commander": "^10.0.1",
-    "inquirer": "^9.1.5"
+    "inquirer": "^12.5.2"
   }
 }
