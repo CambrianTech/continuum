@@ -48,29 +48,80 @@ function extractConfigFromMarkdown(content: string): AIConfig {
   }
 }
 
+// Schema is loaded once and cached
+let cachedSchema: any = null;
+
+/**
+ * Load the JSON schema for validation
+ */
+export async function loadSchema(): Promise<any> {
+  if (!cachedSchema) {
+    try {
+      const schemaPath = path.resolve(__dirname, '../../..', 'schema', 'ai-config.schema.json');
+      const schemaContent = await fs.readFile(schemaPath, 'utf-8');
+      cachedSchema = JSON.parse(schemaContent);
+    } catch (error) {
+      throw new Error(`Failed to load schema: ${error}`);
+    }
+  }
+  return cachedSchema;
+}
+
 /**
  * Validate an AI configuration against the schema
+ * Uses cached schema if available for performance
  */
-export async function validateConfig(config: AIConfig): Promise<ValidationResult> {
+export function validateConfig(config: AIConfig): ValidationResult {
   try {
-    // Load schema
-    const schemaPath = path.resolve(__dirname, '../../..', 'schema', 'ai-config.schema.json');
-    const schemaContent = await fs.readFile(schemaPath, 'utf-8');
-    const schema = JSON.parse(schemaContent);
-    
-    // Validate config
-    const ajv = new Ajv({ allErrors: true });
-    const validate = ajv.compile(schema);
-    const valid = validate(config);
-    
-    if (!valid) {
-      return {
-        valid: false,
-        errors: validate.errors?.map(err => `${err.instancePath} ${err.message}`) || []
-      };
+    // Use schema directly if it's cached, otherwise use basic validation
+    if (cachedSchema) {
+      // Validate with schema
+      const ajv = new Ajv({ allErrors: true });
+      const validate = ajv.compile(cachedSchema);
+      const valid = validate(config);
+      
+      if (!valid) {
+        return {
+          valid: false,
+          errors: validate.errors?.map(err => `${err.instancePath} ${err.message}`) || []
+        };
+      }
+    } else {
+      // Basic validation without schema
+      if (!config.ai_protocol_version) {
+        return {
+          valid: false,
+          errors: ['Missing required property: ai_protocol_version']
+        };
+      }
+      
+      // Add basic validation warnings
+      const warnings = [];
+      if (!config.identity?.role) {
+        warnings.push('Missing recommended field: identity.role');
+      }
     }
     
-    return { valid: true };
+    // Additional validation logic beyond schema
+    const warnings = [];
+    
+    // Check for capabilities conflicts
+    if (config.capabilities?.allowed && config.capabilities?.restricted) {
+      const conflictingCapabilities = config.capabilities.allowed.filter(
+        cap => config.capabilities?.restricted?.includes(cap)
+      );
+      
+      if (conflictingCapabilities.length) {
+        warnings.push(
+          `Capabilities appear in both allowed and restricted: ${conflictingCapabilities.join(', ')}`
+        );
+      }
+    }
+    
+    return { 
+      valid: true,
+      warnings: warnings.length ? warnings : undefined
+    };
   } catch (error) {
     return {
       valid: false,

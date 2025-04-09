@@ -3,34 +3,51 @@
  */
 
 import * as path from 'path';
+import * as fs from 'fs/promises';
 import chalk from 'chalk';
-import { loadConfig, validateConfig } from '@continuum/core';
+import { validateConfig, loadConfig } from '@continuum/core';
 
 interface ValidateOptions {
   config: string;
 }
 
 export async function validateCommand(options: ValidateOptions): Promise<void> {
-  console.log(chalk.blue(`Validating configuration at ${options.config}...`));
+  console.log(chalk.blue(`Validating configuration: ${options.config}`));
   
   try {
-    // Load the configuration
+    // Check if file exists
     const configPath = path.resolve(process.cwd(), options.config);
+    
+    try {
+      await fs.access(configPath);
+    } catch (error) {
+      console.error(chalk.red(`Configuration file not found: ${configPath}`));
+      process.exit(1);
+    }
+    
+    // Load the configuration
     const config = await loadConfig(configPath);
     
     // Validate the configuration
-    const result = await validateConfig(config);
+    const result = validateConfig(config);
     
     if (result.valid) {
-      console.log(chalk.green('\n✓ Configuration is valid'));
+      console.log(chalk.green('\n✓ Configuration is valid\n'));
       
-      // Print summary
-      console.log(chalk.yellow('\nConfiguration Summary:'));
-      console.log(`AI Protocol Version: ${config.ai_protocol_version}`);
+      // Display warnings if any
+      if (result.warnings?.length) {
+        console.log(chalk.yellow('Warnings:'));
+        result.warnings.forEach(warning => {
+          console.log(chalk.yellow(`  - ${warning}`));
+        });
+        console.log('');
+      }
+      
+      // Display a summary of the configuration
+      console.log(chalk.blue('Configuration Summary:'));
       console.log(`Assistant Name: ${config.identity?.name || 'Not specified'}`);
       console.log(`Role: ${config.identity?.role || 'Not specified'}`);
-      console.log(`Voice: ${config.behavior?.voice || 'Not specified'}`);
-      console.log(`Autonomy: ${config.behavior?.autonomy || 'Not specified'}`);
+      console.log(`Behavior: ${config.behavior?.voice || 'Not specified'} voice, ${config.behavior?.autonomy || 'Not specified'} autonomy`);
       
       if (config.capabilities?.allowed?.length) {
         console.log(`Allowed Capabilities: ${config.capabilities.allowed.join(', ')}`);
@@ -41,20 +58,15 @@ export async function validateCommand(options: ValidateOptions): Promise<void> {
       }
       
     } else {
-      console.log(chalk.red('\n✗ Configuration is invalid'));
+      console.error(chalk.red('\n✗ Configuration is invalid\n'));
       
+      // Display errors
       if (result.errors?.length) {
-        console.log(chalk.yellow('\nErrors:'));
+        console.error(chalk.red('Errors:'));
         result.errors.forEach(error => {
-          console.log(`- ${error}`);
+          console.error(chalk.red(`  - ${error}`));
         });
-      }
-      
-      if (result.warnings?.length) {
-        console.log(chalk.yellow('\nWarnings:'));
-        result.warnings.forEach(warning => {
-          console.log(`- ${warning}`);
-        });
+        console.log('');
       }
       
       process.exit(1);
