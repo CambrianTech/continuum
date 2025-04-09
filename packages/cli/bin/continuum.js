@@ -6,6 +6,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import fs from 'fs';
+import path from 'path';
 // No need for path and fileURLToPath in this simplified version
 
 // Check Node.js version
@@ -28,7 +29,7 @@ if (major < 18) {
 const program = new Command();
 program
   .name('continuum')
-  .description('Continuum - DevOps for Cognitive Systems')
+  .description('Continuum - Designed by AI and humans for AI and humans')
   .version('0.1.0')
   .addHelpText('after', `
 Example usage:
@@ -93,7 +94,7 @@ ${yamlStr}
 
 ## Additional Instructions
 
-This configuration was generated using Continuum - the Human-AI Configuration Protocol.
+This configuration was generated using Continuum - designed by AI and humans for AI and humans.
 
 ### Project Context
 
@@ -110,7 +111,7 @@ program
   .command('init')
   .description('Initialize a new AI configuration')
   .option('-t, --template <template>', 'Use a predefined template')
-  .option('-o, --output <path>', 'Output path for configuration', 'continuum.md')
+  .option('-o, --output <path>', 'Output path for configuration', '.continuum/default/config.md')
   .action((options) => {
     console.log(chalk.blue('\nInitializing new AI configuration...'));
     
@@ -127,6 +128,20 @@ program
     const content = generateMarkdown(config);
     
     try {
+      // Create directory if it doesn't exist
+      const outputDir = path.dirname(options.output);
+      if (outputDir !== '.') {
+        try {
+          fs.mkdirSync(outputDir, { recursive: true });
+          console.log(`Created directory: ${outputDir}`);
+        } catch (err) {
+          if (err.code !== 'EEXIST') {
+            console.error(chalk.red(`\nError creating directory: ${err.message}`));
+            return;
+          }
+        }
+      }
+      
       fs.writeFileSync(options.output, content);
       console.log(chalk.green(`\nConfiguration written to ${options.output}`));
     } catch (err) {
@@ -138,7 +153,7 @@ program
 program
   .command('validate')
   .description('Validate an existing configuration')
-  .option('-c, --config <path>', 'Path to configuration file', 'continuum.md')
+  .option('-c, --config <path>', 'Path to configuration file', '.continuum/default/config.md')
   .action((options) => {
     console.log(chalk.blue('\nValidating configuration...'));
     
@@ -160,7 +175,7 @@ program
   .command('adapt')
   .description('Generate assistant-specific configuration')
   .requiredOption('-a, --assistant <assistant>', 'Target assistant (claude, gpt)')
-  .option('-c, --config <path>', 'Path to configuration file', 'continuum.md')
+  .option('-c, --config <path>', 'Path to configuration file', '.continuum/default/config.md')
   .option('-o, --output <path>', 'Output path for adapted configuration')
   .action((options) => {
     console.log(chalk.blue(`\nAdapting configuration for ${options.assistant}...`));
@@ -174,13 +189,28 @@ program
       let outputPath = options.output;
       if (!outputPath) {
         // Default name based on assistant
-        const ext = options.assistant === 'claude' ? '.md' : '.txt';
-        outputPath = `continuum.${options.assistant}${ext}`;
+        const ext = options.assistant === 'claude' ? '.md' : '.json';
+        outputPath = `.continuum/${options.assistant}/config${ext}`;
       }
       
       // For now, just copy the file with a header since we don't have parsing logic
       const content = fs.readFileSync(options.config, 'utf-8');
       const adaptedContent = `# Adapted for ${options.assistant.toUpperCase()}\n\n${content}`;
+      
+      // Create directory if it doesn't exist
+      const outputDir = path.dirname(outputPath);
+      if (outputDir !== '.') {
+        try {
+          fs.mkdirSync(outputDir, { recursive: true });
+          console.log(`Created directory: ${outputDir}`);
+        } catch (err) {
+          if (err.code !== 'EEXIST') {
+            console.error(chalk.red(`\nError creating directory: ${err.message}`));
+            return;
+          }
+        }
+      }
+      
       fs.writeFileSync(outputPath, adaptedContent);
       
       console.log(chalk.green(`\nAdapted configuration written to ${outputPath}`));
