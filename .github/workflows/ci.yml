@@ -72,7 +72,7 @@ jobs:
     - name: Install and validate schema
       run: |
         npm install --save-dev ajv-cli
-        npx ajv-cli validate -s schema/ai-config.schema.json -d "templates/*/config.json"
+        npx ajv-cli validate -s schema/continuum.schema.json -d "templates/*/config.json"
     
     - name: Run Example
       run: |

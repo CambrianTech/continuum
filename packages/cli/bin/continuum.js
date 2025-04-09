@@ -6,8 +6,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+// No need for path and fileURLToPath in this simplified version
 
 // Check Node.js version
 const currentNodeVersion = process.versions.node;

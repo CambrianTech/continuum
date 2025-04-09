@@ -65,7 +65,8 @@ Example usage:
 const cli = setupCLI();
 
 // Only parse arguments when this file is run directly (not when imported in tests)
-if (import.meta.url === new URL(process.argv[1], 'file://').href) {
+// Use Node.js-specific detection for direct execution
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   cli.parse(process.argv);
 }
 
