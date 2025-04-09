@@ -30,11 +30,11 @@ echo "Validating schema..."
 echo "Note: Need to install AJV CLI to run this step"
 echo "npm install -g ajv-cli"
 # Checking if ajv-cli is installed
-if command -v ajv >/dev/null 2>&1; then
+if command -v ajv-cli >/dev/null 2>&1; then
   # Validate the templates against the schema
   for template in templates/*/config.json; do
     echo "Validating $template"
-    ajv validate -s schema/ai-config.schema.json -d "$template" || echo "Warning: $template failed validation"
+    ajv-cli validate -s schema/ai-config.schema.json -d "$template" || echo "Warning: $template failed validation"
   done
 else
   echo "Warning: ajv-cli not installed, skipping schema validation"
