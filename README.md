@@ -1,6 +1,6 @@
 # 🔄 Continuum
 
-**DevOps for Cognitive Systems** - A protocol for configuring AI assistants to work consistently with your team, codebase, and philosophy.
+**Designed by AI and humans for AI and humans** - A protocol for configuring AI assistants to work consistently with your team, codebase, and philosophy.
 
 <p align="center">
   <img src="https://img.shields.io/badge/status-early_preview-orange" alt="Status: Early Preview">
@@ -54,11 +54,6 @@ continuum adapt --assistant claude  # Creates continuum.claude
 continuum adapt --assistant gpt     # Creates continuum.gpt
 ```
 
-You can also use the legacy command name (though this is deprecated):
-
-```bash
-ai-config init
-```
 
 > Note: The CLI is currently in development mode with placeholder functionality.
 
@@ -155,5 +150,5 @@ MIT © Cambrian Technologies
 ---
 
 <p align="center">
-  <i>Continuum is a protocol for continuous, cooperative intelligence - building a bridge between human intention and AI capability.</i>
+  <i>Continuum is a protocol for continuous, cooperative intelligence - designed by AI and humans for AI and humans.</i>
 </p>

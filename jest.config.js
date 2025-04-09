@@ -1,9 +1,21 @@
 /** @type {import('ts-jest').JestConfigWithTsJest} */
-module.exports = {
-  preset: 'ts-jest',
+export default {
+  preset: 'ts-jest/presets/js-with-ts-esm',
   testEnvironment: 'node',
   collectCoverage: true,
   coverageDirectory: 'coverage',
+  extensionsToTreatAsEsm: ['.ts'],
+  moduleNameMapper: {
+    '^(\\.{1,2}/.*)\\.js$': '$1',
+  },
+  transform: {
+    '^.+\\.tsx?$': [
+      'ts-jest',
+      {
+        useESM: true,
+      },
+    ],
+  },
   collectCoverageFrom: [
     'packages/*/src/**/*.{ts,js}',
     '!**/node_modules/**',
@@ -21,6 +33,6 @@ module.exports = {
   ],
   transformIgnorePatterns: [
     // Allow transforming ESM modules in node_modules
-    "node_modules/(?!(chalk|inquirer|commander|other-esm-module)/)"
+    "node_modules/(?!(chalk|inquirer|commander)/)"
   ],
 };

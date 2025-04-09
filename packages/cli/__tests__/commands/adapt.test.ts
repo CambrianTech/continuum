@@ -87,8 +87,8 @@ describe('adaptCommand', () => {
   it('should successfully adapt configuration for a supported assistant', async () => {
     await adaptCommand({
       assistant: 'claude',
-      config: 'AI_CONFIG.md',
-      output: 'CLAUDE.md'
+      config: '.continuum/default/config.md',
+      output: '.continuum/claude/config.md'
     });
     
     // Verify file was checked
@@ -102,7 +102,7 @@ describe('adaptCommand', () => {
     
     // Verify file was written
     expect(fs.writeFile).toHaveBeenCalled();
-    expect((fs.writeFile as unknown as jest.Mock).mock.calls[0][0]).toContain('CLAUDE.md');
+    expect((fs.writeFile as unknown as jest.Mock).mock.calls[0][0]).toContain('.continuum/claude/config.md');
     expect((fs.writeFile as unknown as jest.Mock).mock.calls[0][1]).toContain('Claude System Prompt');
     
     // Verify success message
@@ -112,11 +112,11 @@ describe('adaptCommand', () => {
   it('should use default output name when no output is provided', async () => {
     await adaptCommand({
       assistant: 'claude',
-      config: 'AI_CONFIG.md'
+      config: '.continuum/default/config.md'
     });
     
     // Verify default output was used
-    expect((fs.writeFile as unknown as jest.Mock).mock.calls[0][0]).toContain('CLAUDE.md');
+    expect((fs.writeFile as unknown as jest.Mock).mock.calls[0][0]).toContain('.continuum/claude/config.md');
   });
   
   it('should handle unsupported assistants', async () => {
@@ -126,7 +126,7 @@ describe('adaptCommand', () => {
     // Expect exit with error
     await expect(adaptCommand({
       assistant: 'unsupported',
-      config: 'AI_CONFIG.md'
+      config: '.continuum/default/config.md'
     })).rejects.toThrow('Process.exit(1)');
     
     // Verify error message
@@ -140,7 +140,7 @@ describe('adaptCommand', () => {
     // Expect exit with error
     await expect(adaptCommand({
       assistant: 'claude',
-      config: 'missing.md'
+      config: '.continuum/missing/config.md'
     })).rejects.toThrow('Process.exit(1)');
     
     // Verify error message
@@ -162,7 +162,7 @@ describe('adaptCommand', () => {
     // Expect exit with error
     await expect(adaptCommand({
       assistant: 'claude',
-      config: 'AI_CONFIG.md'
+      config: '.continuum/default/config.md'
     })).rejects.toThrow('Process.exit(1)');
     
     // Verify error message

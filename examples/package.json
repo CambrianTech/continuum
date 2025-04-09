@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Examples for Continuum AI Configuration",
   "private": true,
+  "type": "module",
   "dependencies": {
     "yaml": "^2.2.1"
   }

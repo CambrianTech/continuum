@@ -20,7 +20,7 @@ export async function findConfigFiles(startPath: string): Promise<string[]> {
     try {
       await fs.access(personalConfigPath);
       configFiles.push(personalConfigPath);
-    } catch (error) {
+    } catch (_) {
       // Personal config doesn't exist, that's okay
     }
   }
@@ -35,7 +35,7 @@ export async function findConfigFiles(startPath: string): Promise<string[]> {
     try {
       await fs.access(projectConfigPath);
       configFiles.push(projectConfigPath);
-    } catch (error) {
+    } catch (_) {
       // Project config doesn't exist at this level, that's okay
     }
     
@@ -44,7 +44,7 @@ export async function findConfigFiles(startPath: string): Promise<string[]> {
     try {
       await fs.access(orgConfigPath);
       configFiles.push(orgConfigPath);
-    } catch (error) {
+    } catch (_) {
       // Org config doesn't exist at this level, that's okay
     }
     
@@ -70,7 +70,7 @@ ${yamlStr}
 
 ## Additional Instructions
 
-This configuration was generated using Continuum - the Human-AI Configuration Protocol.
+This configuration was generated using Continuum - designed by AI and humans for AI and humans.
 
 ### Project Context
 
@@ -83,7 +83,7 @@ AI assistants should follow the configuration above when working with this proje
 }
 
 /**
- * Generate an AI_CONFIG.md file at the specified location
+ * Generate a continuum.md file at the specified location
  */
 export async function writeConfigFile(config: AIConfig, outputPath: string): Promise<void> {
   const content = generateMarkdown(config);
