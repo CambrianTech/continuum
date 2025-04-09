@@ -9,9 +9,19 @@
 
 ## 🧠 What is Continuum?
 
-**Continuum** is a protocol and CLI tool that configures AI assistants across all your projects, repos, and teams — giving you **persistent, personalized, and policy-aware AI behavior**, no matter where or how you're working.
+**Continuum** is a context-aware protocol and CLI tool that configures AI assistants across all your projects, repos, and teams — giving you **persistent, personalized, and policy-aware AI behavior**, no matter where or how you're working.
 
 It's like `.editorconfig` or `tsconfig.json` — but for **your AI collaborators**.
+
+### 🌟 Context-Aware Intelligence
+
+Continuum's CLI is designed with a "zero-friction cognition" paradigm:
+
+- **Run `continuum` → and the AI figures out what to do** based on your environment
+- **Intelligent context detection** analyzes your repository state, configs, and integrations
+- **Automatic action determination** so you don't need to remember command verbs
+- **Personalized suggestions** based on your project's specific needs
+- **Seamless integration** with Claude, GPT, and other AI assistants
 
 ## 🚀 Quick Start
 
@@ -35,26 +45,30 @@ npm link
 ### Usage
 
 ```bash
+# Just run continuum - it will intelligently detect what to do
+continuum
+
 # Initialize a new .continuum configuration
-continuum init
-
-# Use a specific template
-continuum init --template tdd
-
-# Validate an existing .continuum file
-continuum validate
+continuum --template tdd
 
 # Generate assistant-specific configurations
-continuum adapt --assistant claude
-continuum adapt --assistant gpt
+continuum --assistant claude
+continuum --assistant gpt
 
-# Generate configs with symlinks for tool integration
-continuum adapt --assistant claude --create-link  # Creates CLAUDE.md symlink
-continuum adapt --assistant gpt --create-link     # Creates GPT.json symlink
+# Create symlinks for tool integration
+continuum --assistant claude --create-link  # Creates CLAUDE.md symlink
+continuum --assistant gpt --create-link     # Creates GPT.json symlink
+
+# Ask your configured AI assistant a question
+continuum --ask "How do I improve error handling in this codebase?"
+
+# Legacy command format (still supported)
+continuum init --template tdd
+continuum adapt --assistant claude
+continuum validate
 ```
 
-
-> Note: The CLI is currently in development mode with placeholder functionality.
+Continuum is context-aware and will automatically detect what to do based on your repository's state. Just run `continuum` and it will figure out the right action!
 
 ## 🚀 How Continuum Helps
 
@@ -72,10 +86,13 @@ continuum adapt --assistant gpt --create-link     # Creates GPT.json symlink
 
 ## ⚙️ What's Automated
 
-- ✅ **CLI wizard** (`continuum init`) generates `.continuum/config.yml` for your repo
+- ✅ **Context detection** analyzes your environment and automatically determines the right action
+- ✅ **CLI wizard** (`continuum` or `continuum init`) generates `.continuum/config.yml` for your repo
 - ✅ **Symlinks** (e.g. `CLAUDE.md`, `GPT.json`) auto-created for integration with AI dev tools
-- ✅ **Validation** (`continuum validate`) checks for config conflicts, missing agents, and more
-- ✅ **Adapters** convert unified config into Claude, GPT, Aria-compatible prompts and JSON
+- ✅ **Validation** automatically checks for config conflicts, missing agents, and suggests fixes
+- ✅ **Adapters** convert unified config into Claude, GPT, and other AI-compatible formats
+- ✅ **Assistant integration** with the `--ask` feature to interact with your configured assistants
+- ✅ **Environment awareness** includes repository, branch, and project-specific context
 - ✅ **Merging logic** (coming soon): blends personal + org + project preferences with conflict resolution
 
 ## 🧩 Templates & Personas
@@ -89,7 +106,7 @@ Continuum ships with pre-configured templates for common development approaches:
 
 ## 📊 Configuration Schema
 
-AI configurations in Continuum follow a standardized schema stored in `.continuum/default/config.md`:
+AI configurations in Continuum follow a standardized schema stored in `.continuum/default/config.md`. The system automatically detects and includes environment information:
 
 ```yaml
 ai_protocol_version: "0.1"
@@ -97,26 +114,44 @@ identity:
   name: "ProjectAssistant"
   role: "Development collaborator"
   purpose: "Help maintain code quality and guide development"
+environment:
+  type: "Node.js/JavaScript"
+  vcs: "git"
+  branch: "main"
 behavior:
   voice: "professional"
   autonomy: "suggest"
   verbosity: "concise"
+  risk_tolerance: "medium"
 capabilities:
-  allowed: ["code_review", "refactoring", "documentation"]
+  allowed: ["code_review", "refactoring", "documentation", "testing"]
   restricted: ["deployment", "database_management"]
 ```
 
-Continuum uses this configuration to generate assistant-specific files in the `.continuum` directory:
+Continuum automatically detects:
+- Your development environment (Node.js, Python, etc.)
+- Version control system and current branch
+- Existing configurations and integrations
+
+Continuum uses this information to generate context-aware assistant-specific files:
 - `.continuum/claude/config.md` for Anthropic's Claude
 - `.continuum/gpt/config.json` for OpenAI's GPT models
+- Additional configurations for other assistants as they're added
 
 ## 🔌 Assistant Adapters
 
 Continuum translates your configuration to various AI assistants:
 
-- **Claude**: Generates config for Claude in `.continuum/claude/config.md` with optional `CLAUDE.md` symlink
-- **ChatGPT**: Creates prompt configurations compatible with OpenAI models in `.continuum/gpt/config.json`
-- *(and more coming soon)*
+### AI Assistant Compatibility
+
+| Assistant | Status | Configuration | Integration | Notes |
+|-----------|--------|---------------|------------|-------|
+| **Claude** | ✅ Available | `.continuum/claude/config.md` | `CLAUDE.md` symlink | Fully supported with Claude Code integration |
+| **GPT** | ✅ Available | `.continuum/gpt/config.json` | `GPT.json` symlink | Full support for ChatGPT and OpenAI models |
+| **Gemini** | 🔜 Planned | `.continuum/gemini/config.json` | `GEMINI.json` symlink | Google Gemini support coming soon |
+| **Llama** | 🔜 Planned | `.continuum/llama/config.md` | `LLAMA.md` symlink | Meta Llama support in development |
+| **Mistral** | 🔜 Planned | `.continuum/mistral/config.json` | `MISTRAL.json` symlink | Mistral AI support planned |
+| **GitHub Copilot** | 🔄 Exploring | TBD | TBD | Investigating integration options |
 
 ### Claude Code Integration
 
@@ -129,6 +164,10 @@ For Claude Code, you can add the following to your `.clauderc`:
 ```
 
 When you run `continuum adapt --assistant claude --create-link`, the symlink will ensure Claude Code picks up your configuration.
+
+### GPT Integration
+
+For OpenAI's models, the generated configuration includes appropriate system prompts and parameters that can be used with the OpenAI API or CLI tools.
 
 ## 🛠️ Use Cases
 
