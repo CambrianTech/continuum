@@ -1,7 +1,7 @@
 {
   "name": "continuum",
   "version": "0.1.0",
-  "description": "DevOps for Cognitive Systems - A standard protocol for configuring AI assistants to work consistently with codebases",
+  "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "index.js",
   "private": true,
   "type": "module",
@@ -52,7 +52,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "inquirer": "^8.2.0",
+    "inquirer": "^12.5.2",
     "yaml": "^2.7.1"
   }
 }

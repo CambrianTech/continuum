@@ -70,7 +70,7 @@ ${yamlStr}
 
 ## Additional Instructions
 
-This configuration was generated using Continuum - the Human-AI Configuration Protocol.
+This configuration was generated using Continuum - designed by AI and humans for AI and humans.
 
 ### Project Context
 

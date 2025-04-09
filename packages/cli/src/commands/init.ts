@@ -112,6 +112,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     let templateExtensions = {};
     
     if (options.template === 'tdd') {
+      // @ts-ignore - Type issues with inquirer version mismatches
       const tddAnswers = await inquirer.prompt<{test_first: boolean; coverage_target: number}>([
         {
           type: 'confirm',
@@ -142,6 +143,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
         }
       };
     } else if (options.template === 'enterprise') {
+      // @ts-ignore - Type issues with inquirer version mismatches
       const enterpriseAnswers = await inquirer.prompt<{compliance_standards: string[]; security_first: boolean}>([
         {
           type: 'checkbox',
@@ -221,10 +223,14 @@ export async function initCommand(options: InitOptions): Promise<void> {
     if (outputDir !== '.') {
       try {
         // Create directory recursively if it doesn't exist
+        console.log(`Creating directory: ${outputDir}`);
+        // Using Node.js fs/promises
         await fs.mkdir(path.resolve(process.cwd(), outputDir), { recursive: true });
       } catch (error) {
         // Ignore if directory already exists
-        if (error.code !== 'EEXIST') {
+        const fsError = error as {code?: string};
+        if (fsError.code !== 'EEXIST') {
+          console.error(`Error creating directory: ${error}`);
           throw error;
         }
       }
