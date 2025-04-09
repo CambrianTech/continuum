@@ -8,6 +8,7 @@ jest.mock('chalk', () => ({
 
 // Mock the internal modules with their own imports
 jest.mock('../src/index', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { Command } = require('commander');
   const program = new Command();
   program.name('continuum')
@@ -18,19 +19,19 @@ jest.mock('../src/index', () => {
          .description('Initialize a new AI configuration')
          .option('-t, --template <name>', 'Template to use')
          .option('-o, --output <path>', 'Output file path', 'AI_CONFIG.md')
-         .action(() => {});
+         .action(() => { /* empty for testing */ });
   
   program.command('validate')
          .description('Validate an existing configuration')
          .option('-c, --config <path>', 'Config file path', 'AI_CONFIG.md')
-         .action(() => {});
+         .action(() => { /* empty for testing */ });
   
   program.command('adapt')
          .description('Generate assistant-specific configuration')
          .requiredOption('-a, --assistant <name>', 'Assistant to adapt for')
          .option('-c, --config <path>', 'Config file path', 'AI_CONFIG.md')
          .option('-o, --output <path>', 'Output file path')
-         .action(() => {});
+         .action(() => { /* empty for testing */ });
   
   return { program };
 });

@@ -7,11 +7,11 @@ import { AIConfig, ConfigAdapter } from '@continuum/core';
 export class GPTAdapter implements ConfigAdapter {
   name = 'gpt';
   
-  async loadConfig(path: string): Promise<AIConfig> {
+  async loadConfig(_path: string): Promise<AIConfig> {
     throw new Error('Method not implemented.');
   }
   
-  mergeConfigs(configs: AIConfig[]): AIConfig {
+  mergeConfigs(_configs: AIConfig[]): AIConfig {
     throw new Error('Method not implemented.');
   }
   
@@ -110,7 +110,8 @@ export class GPTAdapter implements ConfigAdapter {
       // Handle TDD extension
       if (config.extensions.tdd) {
         prompt += '\nTest-Driven Development guidelines:\n';
-        const tdd = config.extensions.tdd as any;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const tdd = config.extensions.tdd as Record<string, unknown>;
         
         if (tdd.test_first) {
           prompt += '- You should always suggest writing tests before implementation code\n';
@@ -128,7 +129,8 @@ export class GPTAdapter implements ConfigAdapter {
       // Handle compliance extension
       if (config.extensions.compliance) {
         prompt += '\nCompliance requirements:\n';
-        const compliance = config.extensions.compliance as any;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const compliance = config.extensions.compliance as Record<string, unknown>;
         
         if (compliance.standards?.length) {
           prompt += `- Compliance standards: ${compliance.standards.join(', ')}\n`;
