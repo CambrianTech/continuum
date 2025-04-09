@@ -54,11 +54,6 @@ continuum adapt --assistant claude  # Creates continuum.claude
 continuum adapt --assistant gpt     # Creates continuum.gpt
 ```
 
-You can also use the legacy command name (though this is deprecated):
-
-```bash
-ai-config init
-```
 
 > Note: The CLI is currently in development mode with placeholder functionality.
 
