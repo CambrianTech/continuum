@@ -62,7 +62,7 @@ export async function findConfigFiles(startPath: string): Promise<string[]> {
 export function generateMarkdown(config: AIConfig): string {
   const yamlStr = yaml.stringify(config);
   
-  return `# AI Assistant Configuration
+  return `# Continuum Configuration
 
 \`\`\`yaml
 ${yamlStr}
@@ -70,7 +70,7 @@ ${yamlStr}
 
 ## Additional Instructions
 
-This configuration was generated using the Human-AI Configuration Protocol.
+This configuration was generated using Continuum - the Human-AI Configuration Protocol.
 
 ### Project Context
 

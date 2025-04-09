@@ -3,8 +3,8 @@
  */
 
 import { ConfigAdapter } from '@continuum/core';
-import { ClaudeAdapter } from './claude';
-import { GPTAdapter } from './gpt';
+import { ClaudeAdapter } from './claude.js';
+import { GPTAdapter } from './gpt.js';
 
 // Registry of available adapters
 const adapters: Record<string, ConfigAdapter> = {

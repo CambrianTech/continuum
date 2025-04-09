@@ -1,23 +1,29 @@
 #!/usr/bin/env node
+// Simply redirect to the Continuum CLI
 
-// This is the entry point for the CLI
-// It imports the compiled JS code and runs it
+import { exec } from 'child_process';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
-// Ensures the script runs with the correct Node.js version
-const currentNodeVersion = process.versions.node;
-const semver = currentNodeVersion.split('.');
-const major = parseInt(semver[0], 10);
+// Display deprecation warning
+console.log("⚠️  'ai-config' is deprecated. Please use 'continuum' instead.");
+console.log("Learn more: https://github.com/your-org/continuum");
+console.log('');
 
-if (major < 18) {
-  console.error(
-    'You are running Node ' +
-      currentNodeVersion +
-      '.\n' +
-      'The Continuum CLI requires Node 18 or higher. \n' +
-      'Please update your version of Node.'
-  );
-  process.exit(1);
-}
+// Get the directory of this file
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
-// Import the compiled CLI code
-require('../dist/index');
+// Full path to continuum.js
+const continuumPath = join(__dirname, 'continuum.js');
+
+// Forward all arguments to continuum.js
+const args = process.argv.slice(2).join(' ');
+const command = `node "${continuumPath}" ${args}`;
+
+// Execute continuum.js
+exec(command, { stdio: 'inherit' }, (error, stdout, stderr) => {
+  if (stdout) process.stdout.write(stdout);
+  if (stderr) process.stderr.write(stderr);
+  if (error) process.exit(error.code || 1);
+});
