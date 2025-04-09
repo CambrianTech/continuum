@@ -4,13 +4,14 @@
   "description": "DevOps for Cognitive Systems - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "index.js",
   "private": true,
+  "type": "module",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
     "test": "jest",
     "build": "lerna run build",
-    "lint": "eslint . --ext .ts,.js --max-warnings=0",
+    "lint": "eslint . --ext .ts,.js --config eslint.config.js --max-warnings=0",
     "format": "prettier --write \"**/*.{js,ts,json,md}\"",
     "postinstall": "lerna run prepare",
     "ci": "./scripts/test-ci.sh",
