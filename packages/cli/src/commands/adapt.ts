@@ -70,8 +70,12 @@ export async function adaptCommand(options: AdaptOptions): Promise<void> {
         // Remove existing symlink if it exists
         try {
           await fs.unlink(linkPath);
-        } catch (e) {
-          // Ignore if file doesn't exist
+        } catch (e: any) {
+          // Only ignore ENOENT (file doesn't exist), rethrow other errors
+          if (e.code !== 'ENOENT') {
+            console.error(chalk.red(`Error removing existing symlink: ${e.message}`));
+            throw e;
+          }
         }
         
         // Create relative path for the symlink
