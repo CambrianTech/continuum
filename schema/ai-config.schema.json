@@ -1,0 +1,140 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Human-AI Configuration Protocol",
+  "description": "Schema for configuring AI assistant behavior across different environments",
+  "type": "object",
+  "required": ["ai_protocol_version"],
+  "properties": {
+    "ai_protocol_version": {
+      "type": "string",
+      "description": "Version of the Human-AI Configuration Protocol being used",
+      "pattern": "^\\d+\\.\\d+$"
+    },
+    "identity": {
+      "type": "object",
+      "description": "Identity information for the AI assistant",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name to refer to the AI assistant by"
+        },
+        "role": {
+          "type": "string",
+          "description": "Primary role of the AI assistant in this context"
+        },
+        "purpose": {
+          "type": "string",
+          "description": "Purpose statement for the AI assistant"
+        },
+        "limitations": {
+          "type": "array",
+          "description": "Explicit limitations of the assistant's capabilities",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["role"]
+    },
+    "behavior": {
+      "type": "object",
+      "description": "Configuration for the assistant's behavioral patterns",
+      "properties": {
+        "voice": {
+          "type": "string",
+          "description": "Communication style of the assistant",
+          "enum": ["professional", "friendly", "academic", "casual", "technical", "custom"]
+        },
+        "autonomy": {
+          "type": "string",
+          "description": "Degree of independent action allowed",
+          "enum": ["suggest", "execute_with_approval", "fully_autonomous", "restricted"]
+        },
+        "verbosity": {
+          "type": "string",
+          "description": "Level of detail in responses",
+          "enum": ["concise", "detailed", "comprehensive"]
+        },
+        "risk_tolerance": {
+          "type": "string",
+          "description": "Willingness to take actions with uncertain outcomes",
+          "enum": ["low", "medium", "high"]
+        }
+      }
+    },
+    "knowledge": {
+      "type": "object",
+      "description": "Knowledge sources for the assistant",
+      "properties": {
+        "codebase": {
+          "type": "object",
+          "description": "Information about the codebase",
+          "properties": {
+            "structure": {
+              "type": "string",
+              "description": "Path to documentation describing codebase structure"
+            },
+            "conventions": {
+              "type": "string",
+              "description": "Path to documentation describing coding conventions"
+            }
+          }
+        },
+        "context": {
+          "type": "object",
+          "description": "Contextual information for decisions",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "Capabilities configuration",
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "description": "Explicitly allowed capabilities",
+          "items": {
+            "type": "string"
+          }
+        },
+        "restricted": {
+          "type": "array",
+          "description": "Explicitly restricted capabilities",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "description": "Permission configuration for different roles",
+      "properties": {
+        "roles": {
+          "type": "object",
+          "description": "Role-based permissions",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "can_modify_config": {
+                "type": "boolean"
+              },
+              "can_instruct_restricted": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Custom extensions to the core protocol",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

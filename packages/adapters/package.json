@@ -1,0 +1,29 @@
+{
+  "name": "@continuum/adapters",
+  "version": "0.1.0",
+  "description": "AI-specific adapters for Human-AI Configuration Protocol",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "lint": "eslint src"
+  },
+  "keywords": [
+    "ai",
+    "configuration",
+    "protocol",
+    "adapters",
+    "claude",
+    "gpt"
+  ],
+  "author": "Cambrian Technologies",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^18.15.11",
+    "typescript": "^5.0.4"
+  },
+  "dependencies": {
+    "@continuum/core": "^0.1.0"
+  }
+}

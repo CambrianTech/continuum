@@ -1,0 +1,34 @@
+{
+  "name": "@continuum/cli",
+  "version": "0.1.0",
+  "description": "Command line interface for Human-AI Configuration Protocol",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "ai-config": "./bin/ai-config.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "lint": "eslint src"
+  },
+  "keywords": [
+    "ai",
+    "configuration",
+    "protocol",
+    "cli"
+  ],
+  "author": "Cambrian Technologies",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/inquirer": "^9.0.3",
+    "@types/node": "^18.15.11",
+    "typescript": "^5.0.4"
+  },
+  "dependencies": {
+    "@continuum/core": "^0.1.0",
+    "chalk": "^5.2.0",
+    "commander": "^10.0.1",
+    "inquirer": "^9.1.5"
+  }
+}
