@@ -109,6 +109,25 @@ Continuum is part of a broader vision for human-AI collaboration that values:
 - **Transparency**: AI behavior is defined in human-readable configs
 - **Evolution**: Templates and configs evolve with your team's needs
 
+## 🧪 Development
+
+### Versioning
+
+During pre-release development (0.x.x), we follow these versioning principles:
+
+- **Patch (0.0.x)**: Bug fixes and minor changes
+- **Minor (0.x.0)**: New features that don't break compatibility
+- **Major (x.0.0)**: Major changes, reserved for 1.0.0 release
+
+To increment version:
+```bash
+# Increment patch version (e.g., 0.1.0 -> 0.1.1)
+npm run version:patch
+
+# Increment minor version (e.g., 0.1.0 -> 0.2.0)
+npm run version:minor
+```
+
 ## 📜 License
 
 MIT © Cambrian Technologies
