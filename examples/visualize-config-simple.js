@@ -32,7 +32,7 @@ try {
   console.log(`File size: ${content.length} bytes`);
   
   // Extract YAML content
-  const yamlMatch = content.match(/```yaml\n([\s\S]*?)```/);
+  const yamlMatch = content.match(/```yaml\r?\n([\s\S]*?)```/);
   
   if (!yamlMatch) {
     console.error('No YAML configuration found in the file');
