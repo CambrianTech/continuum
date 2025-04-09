@@ -6,8 +6,8 @@
  * Usage: node visualize-config-simple.js [path-to-config-file]
  */
 
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
 
 // Get the file path from command line arguments
 const configPath = process.argv[2] || '.continuum/default/config.md';
