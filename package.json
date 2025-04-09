@@ -4,15 +4,16 @@
   "description": "DevOps for Cognitive Systems - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "index.js",
   "private": true,
+  "type": "module",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
     "test": "jest",
     "build": "lerna run build",
-    "lint": "eslint . --ext .ts,.js --max-warnings=0",
+    "lint": "eslint . --ext .ts,.js --config eslint.config.js",
     "format": "prettier --write \"**/*.{js,ts,json,md}\"",
-    "postinstall": "lerna bootstrap",
+    "postinstall": "lerna run prepare",
     "ci": "./scripts/test-ci.sh",
     "validate-schema": "npx ajv-cli validate -s schema/ai-config.schema.json -d \"templates/*/config.json\"",
     "check-deps": "npm audit --production && npm outdated"
@@ -39,12 +40,12 @@
     "ajv-cli": "^5.0.0",
     "eslint": "^9.24.0",
     "jest": "^29.5.0",
-    "lerna": "^6.6.2",
+    "lerna": "^8.2.1",
     "prettier": "^3.5.3",
     "ts-jest": "^29.1.0",
     "typescript": "^5.0.4"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=18.0.0"
   }
 }
