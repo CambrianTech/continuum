@@ -77,7 +77,7 @@ export interface TemplateOptions {
 }
 
 export enum ConfigLocations {
-  PERSONAL = '.ai_profile',
-  PROJECT = 'AI_CONFIG.md',
-  ORGANIZATION = 'ai_org_policy.yml'
+  PERSONAL = '.continuum',
+  PROJECT = 'continuum.md',
+  ORGANIZATION = 'continuum.org.yml'
 }

@@ -7,7 +7,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import chalk from 'chalk';
 import { loadConfig } from '@continuum/core';
-import { getAdapter } from '../adapters';
+import { getAdapter } from '../adapters/index.js';
 
 interface AdaptOptions {
   assistant: string;

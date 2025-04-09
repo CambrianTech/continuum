@@ -7,7 +7,7 @@ import * as path from 'path';
 // fs is imported through other modules
 import chalk from 'chalk';
 import { AIConfig, writeConfigFile } from '@continuum/core';
-import { getTemplate, listTemplates } from '../templates';
+import { getTemplate, listTemplates } from '../templates.js';
 
 interface InitOptions {
   template: string;
@@ -112,7 +112,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     let templateExtensions = {};
     
     if (options.template === 'tdd') {
-      const tddAnswers = await inquirer.prompt([
+      const tddAnswers = await inquirer.prompt<{test_first: boolean; coverage_target: number}>([
         {
           type: 'confirm',
           name: 'test_first',
@@ -124,11 +124,11 @@ export async function initCommand(options: InitOptions): Promise<void> {
           name: 'coverage_target',
           message: 'Target test coverage percentage:',
           default: 80,
-          validate: (input) => {
+          validate: (input: string) => {
             const num = parseInt(input);
             return (num > 0 && num <= 100) ? true : 'Please enter a number between 1 and 100';
           },
-          filter: (input) => parseInt(input)
+          filter: (input: string) => parseInt(input)
         }
       ]);
       
@@ -142,7 +142,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
         }
       };
     } else if (options.template === 'enterprise') {
-      const enterpriseAnswers = await inquirer.prompt([
+      const enterpriseAnswers = await inquirer.prompt<{compliance_standards: string[]; security_first: boolean}>([
         {
           type: 'checkbox',
           name: 'compliance_standards',
@@ -224,7 +224,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     console.log(chalk.yellow('\nNext steps:'));
     console.log(`- Review the configuration in ${options.output}`);
     console.log('- Add additional context in the markdown file');
-    console.log('- Run ai-config validate to ensure everything is correct');
+    console.log('- Run continuum validate to ensure everything is correct');
     
   } catch (error) {
     console.error(chalk.red(`Error initializing configuration: ${error}`));
