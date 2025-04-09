@@ -73,12 +73,17 @@ export async function loadSchema(): Promise<any> {
  */
 export function validateConfig(config: AIConfig): ValidationResult {
   try {
+    // Initialize warnings array to collect all validation warnings
+    const warnings: string[] = [];
+    let valid = true;
+    let errors: string[] | undefined;
+    
     // Use schema directly if it's cached, otherwise use basic validation
     if (cachedSchema) {
       // Validate with schema
       const ajv = new Ajv({ allErrors: true });
       const validate = ajv.compile(cachedSchema);
-      const valid = validate(config);
+      valid = validate(config);
       
       if (!valid) {
         return {
@@ -94,16 +99,14 @@ export function validateConfig(config: AIConfig): ValidationResult {
           errors: ['Missing required property: ai_protocol_version']
         };
       }
-      
-      // Add basic validation warnings
-      const warnings = [];
-      if (!config.identity?.role) {
-        warnings.push('Missing recommended field: identity.role');
-      }
+    }
+    
+    // Add basic validation warnings regardless of validation method
+    if (!config.identity?.role) {
+      warnings.push('Missing recommended field: identity.role');
     }
     
     // Additional validation logic beyond schema
-    const warnings = [];
     
     // Check for capabilities conflicts
     if (config.capabilities?.allowed && config.capabilities?.restricted) {
@@ -119,7 +122,8 @@ export function validateConfig(config: AIConfig): ValidationResult {
     }
     
     return { 
-      valid: true,
+      valid,
+      errors,
       warnings: warnings.length ? warnings : undefined
     };
   } catch (error) {
