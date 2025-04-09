@@ -1,11 +1,18 @@
-# 🔄 Continuum
+# 🔄 Continuum v0.1.0
 
 **Designed by AI and humans for AI and humans** - A protocol and CLI tool that configures AI assistants across all your projects, repos, and teams.
 
 <p align="center">
   <img src="https://img.shields.io/badge/status-early_preview-orange" alt="Status: Early Preview">
+  <img src="https://img.shields.io/badge/version-0.1.0-green" alt="Version: 0.1.0">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
 </p>
+
+<p align="center">
+  <img src="assets/under_construction.gif" alt="Under Construction">
+</p>
+
+> **⚠️ UNDER CONSTRUCTION:** Continuum is currently in early development (v0.1). We've implemented the context-aware CLI foundation, but many planned features are still in progress. See our [Roadmap](ROADMAP.md) for development plans.
 
 ## 🧠 What is Continuum?
 

@@ -2,6 +2,8 @@
 
 This document outlines the development path for Continuum, evolving from a configuration tool to a complete cognitive coordination layer for AI assistants.
 
+> **Note:** For detailed implementation specifications, see [Implementation Specs](docs/architecture/implementation-specs.md)
+
 ## Current: v0.1.0 - Context-Aware CLI (Completed)
 
 - ✅ **Single command paradigm** - `continuum` automatically determines what to do
@@ -16,6 +18,7 @@ This document outlines the development path for Continuum, evolving from a confi
 - 🔄 **Organization policies** - Team standards in `.continuum/org/config.yml`
 - 🔄 **Branch-specific settings** - Per-branch configs in `.continuum/branches/{branch}/config.yml`
 - 🔄 **Configuration merging** - Priority system with override rules
+- 🔄 **Human-in-the-loop conflict resolution** - Interactive prompts for resolving config conflicts ([design doc](docs/design/human-in-the-loop.md))
 - 🔄 **Enhanced schema** - Extended options for behavior and capabilities
 - 🔄 **Security policies** - Enforceable security rules defined by org
 
