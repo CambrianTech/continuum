@@ -7,6 +7,14 @@ dist/
 build/
 *.tsbuildinfo
 
+# Generated test files
+test-config.md
+tdd-config.md
+legacy-test.md
+continuum.claude.md
+continuum.gpt.md
+examples/CLAUDE.md
+
 # Logs
 logs
 *.log
@@ -46,3 +54,6 @@ coverage/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Debug files
+packages/cli/bin/debug-*.js

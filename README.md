@@ -27,7 +27,7 @@ Continuum is the missing layer between human cognition and AI capability. It pro
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/continuum.git
+git clone https://github.com/CambrianTech/continuum.git
 cd continuum
 
 # Install dependencies
