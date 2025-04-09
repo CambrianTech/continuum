@@ -28,16 +28,16 @@ Continuum is the missing layer between human cognition and AI capability. It pro
 npm install -g @continuum/cli
 
 # Initialize a new AI configuration
-ai-config init
+continuum init
 
 # Use a specific template
-ai-config init --template tdd
+continuum init --template tdd
 
 # Validate an existing configuration
-ai-config validate
+continuum validate
 
 # Generate assistant-specific configuration
-ai-config adapt --assistant claude
+continuum adapt --assistant claude
 ```
 
 You can also use npx without installing:
