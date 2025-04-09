@@ -37,7 +37,7 @@ export async function validateCommand(options: ValidateOptions): Promise<void> {
       // Display warnings if any
       if (result.warnings?.length) {
         console.log(chalk.yellow('Warnings:'));
-        result.warnings.forEach(warning => {
+        result.warnings.forEach((warning: string) => {
           console.log(chalk.yellow(`  - ${warning}`));
         });
         console.log('');
@@ -63,7 +63,7 @@ export async function validateCommand(options: ValidateOptions): Promise<void> {
       // Display errors
       if (result.errors?.length) {
         console.error(chalk.red('Errors:'));
-        result.errors.forEach(error => {
+        result.errors.forEach((error: string) => {
           console.error(chalk.red(`  - ${error}`));
         });
         console.log('');

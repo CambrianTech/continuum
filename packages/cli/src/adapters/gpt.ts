@@ -41,7 +41,7 @@ export class GPTAdapter implements ConfigAdapter {
     // Limitations
     if (config.identity?.limitations?.length) {
       prompt += '\nYou have the following limitations:\n';
-      config.identity.limitations.forEach(limitation => {
+      config.identity.limitations.forEach((limitation: string) => {
         prompt += `- ${limitation}\n`;
       });
     }
@@ -71,14 +71,14 @@ export class GPTAdapter implements ConfigAdapter {
     if (config.capabilities) {
       if (config.capabilities.allowed?.length) {
         prompt += '\nYou are allowed to:\n';
-        config.capabilities.allowed.forEach(capability => {
+        config.capabilities.allowed.forEach((capability: string) => {
           prompt += `- ${this.formatCapability(capability)}\n`;
         });
       }
       
       if (config.capabilities.restricted?.length) {
         prompt += '\nYou are NOT allowed to:\n';
-        config.capabilities.restricted.forEach(capability => {
+        config.capabilities.restricted.forEach((capability: string) => {
           prompt += `- ${this.formatCapability(capability)}\n`;
         });
       }
@@ -210,7 +210,7 @@ export class GPTAdapter implements ConfigAdapter {
     // Convert snake_case to readable format
     return capability
       .split('_')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
       .join(' ');
   }
 }
