@@ -52,9 +52,10 @@ Pre-configured templates for common development patterns:
 ### 3. Configuration File Generation
 
 Outputs standardized files that can be loaded by AI assistants:
-- CLAUDE.md - Claude-specific configuration
-- AI_CONFIG.md - Generic configuration for any AI
-- .github/AI_WORKFLOWS.md - GitHub specific integrations
+- .continuum/claude/config.md - Claude-specific configuration
+- .continuum/default/config.md - Generic configuration for any AI
+- .continuum/gpt/config.json - GPT-specific configuration
+- .github/workflows/continuum.yml - GitHub specific integrations
 
 ### 4. Role-Based Controls
 
@@ -91,16 +92,16 @@ Define different access levels:
 
 ```bash
 # Initialize AI assistant configuration
-npx init-ai-assistant
+npx continuum init
 
 # Generate with specific template
-npx init-ai-assistant --template tdd
+npx continuum init --template tdd
 
 # Update existing configuration
-npx update-ai-assistant
+npx continuum update
 
 # Validate configuration
-npx validate-ai-assistant
+npx continuum validate
 ```
 
 ## Benefits

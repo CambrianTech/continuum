@@ -18,18 +18,18 @@ jest.mock('../src/index', () => {
   program.command('init')
          .description('Initialize a new AI configuration')
          .option('-t, --template <name>', 'Template to use')
-         .option('-o, --output <path>', 'Output file path', 'AI_CONFIG.md')
+         .option('-o, --output <path>', 'Output file path', '.continuum/default/config.md')
          .action(() => { /* empty for testing */ });
   
   program.command('validate')
          .description('Validate an existing configuration')
-         .option('-c, --config <path>', 'Config file path', 'AI_CONFIG.md')
+         .option('-c, --config <path>', 'Config file path', '.continuum/default/config.md')
          .action(() => { /* empty for testing */ });
   
   program.command('adapt')
          .description('Generate assistant-specific configuration')
          .requiredOption('-a, --assistant <name>', 'Assistant to adapt for')
-         .option('-c, --config <path>', 'Config file path', 'AI_CONFIG.md')
+         .option('-c, --config <path>', 'Config file path', '.continuum/default/config.md')
          .option('-o, --output <path>', 'Output file path')
          .action(() => { /* empty for testing */ });
   
@@ -73,7 +73,7 @@ describe('CLI', () => {
     
     const outputOpt = initCmd?.options.find(opt => opt.long === '--output');
     expect(outputOpt).toBeDefined();
-    expect(outputOpt?.defaultValue).toBe('AI_CONFIG.md');
+    expect(outputOpt?.defaultValue).toBe('.continuum/default/config.md');
   });
 
   it('should have validate command', () => {
@@ -84,7 +84,7 @@ describe('CLI', () => {
     // Check options
     const configOpt = validateCmd?.options.find(opt => opt.long === '--config');
     expect(configOpt).toBeDefined();
-    expect(configOpt?.defaultValue).toBe('AI_CONFIG.md');
+    expect(configOpt?.defaultValue).toBe('.continuum/default/config.md');
   });
 
   it('should have adapt command', () => {
@@ -99,7 +99,7 @@ describe('CLI', () => {
     
     const configOpt = adaptCmd?.options.find(opt => opt.long === '--config');
     expect(configOpt).toBeDefined();
-    expect(configOpt?.defaultValue).toBe('AI_CONFIG.md');
+    expect(configOpt?.defaultValue).toBe('.continuum/default/config.md');
     
     const outputOpt = adaptCmd?.options.find(opt => opt.long === '--output');
     expect(outputOpt).toBeDefined();

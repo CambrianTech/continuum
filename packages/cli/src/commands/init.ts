@@ -4,7 +4,7 @@
 
 import inquirer from 'inquirer';
 import * as path from 'path';
-// fs is imported through other modules
+import * as fs from 'fs/promises';
 import chalk from 'chalk';
 import { AIConfig, writeConfigFile } from '@continuum/core';
 import { getTemplate, listTemplates } from '../templates.js';
@@ -112,6 +112,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     let templateExtensions = {};
     
     if (options.template === 'tdd') {
+      // Handle inquirer typing
       const tddAnswers = await inquirer.prompt<{test_first: boolean; coverage_target: number}>([
         {
           type: 'confirm',
@@ -142,6 +143,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
         }
       };
     } else if (options.template === 'enterprise') {
+      // Handle inquirer typing
       const enterpriseAnswers = await inquirer.prompt<{compliance_standards: string[]; security_first: boolean}>([
         {
           type: 'checkbox',
@@ -213,7 +215,25 @@ export async function initCommand(options: InitOptions): Promise<void> {
     
     // Use default output if not specified
     if (!options.output) {
-      options.output = 'AI_CONFIG.md';
+      options.output = '.continuum/default/config.md';
+    }
+    
+    // Ensure the directory exists
+    const outputDir = path.dirname(options.output);
+    if (outputDir !== '.') {
+      try {
+        // Create directory recursively if it doesn't exist
+        console.log(`Creating directory: ${outputDir}`);
+        // Using Node.js fs/promises
+        await fs.mkdir(path.resolve(process.cwd(), outputDir), { recursive: true });
+      } catch (error) {
+        // Ignore if directory already exists
+        const fsError = error as {code?: string};
+        if (fsError.code !== 'EEXIST') {
+          console.error(`Error creating directory: ${error}`);
+          throw error;
+        }
+      }
     }
     
     // Create the output file

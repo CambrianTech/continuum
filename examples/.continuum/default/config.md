@@ -1,4 +1,4 @@
-# AI Assistant Configuration
+# Continuum Configuration
 
 ```yaml
 ai_protocol_version: "0.1"
@@ -44,7 +44,7 @@ permissions:
 
 ## Additional Instructions
 
-This configuration was generated using the Human-AI Configuration Protocol.
+This configuration was generated using Continuum - the Human-AI Configuration Protocol.
 
 ### Project Context
 

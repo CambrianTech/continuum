@@ -1,13 +1,12 @@
 {
   "name": "@continuum/cli",
   "version": "0.1.0",
-  "description": "Command line interface for Human-AI Configuration Protocol",
+  "description": "Command line interface for Continuum - designed by AI and humans for AI and humans",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
   "bin": {
-    "continuum": "./bin/continuum.js",
-    "ai-config": "./bin/ai-config.js"
+    "continuum": "./bin/continuum.js"
   },
   "scripts": {
     "build": "tsc",
@@ -23,7 +22,7 @@
   "author": "Cambrian Technologies",
   "license": "MIT",
   "devDependencies": {
-    "@types/inquirer": "^9.0.3",
+    "@types/inquirer": "^8.2.0",
     "@types/node": "^22.14.0",
     "typescript": "^5.0.4"
   },

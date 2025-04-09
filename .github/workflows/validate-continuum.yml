@@ -23,19 +23,10 @@ jobs:
     - name: Install dependencies
       run: npm ci
     
-    - name: Install AJV CLI
-      run: npm install -g ajv-cli
-    
-    - name: Validate Continuum Schema
+    - name: Validate Schema
       run: |
-        # Validate the schema itself
-        npx ajv-cli compile -s schema/continuum.schema.json
-        
-        # Validate all template configs against the schema
-        for template in templates/*/config.json; do
-          echo "Validating $template"
-          npx ajv-cli validate -s schema/continuum.schema.json -d "$template"
-        done
+        # Use our custom validator that avoids the security vulnerability
+        node scripts/validate-schema.js
     
     - name: Validate Example Files
       run: |
@@ -53,7 +44,7 @@ jobs:
         node --version
 
         # First try with the simple script that doesn't depend on yaml
-        node visualize-config-simple.js AI_CONFIG.md
+        node visualize-config-simple.js .continuum/default/config.md
 
         # Then try with the full script if available
-        node visualize-config.js AI_CONFIG.md || echo "Full visualization failed, but simple validation passed"
+        node visualize-config.js .continuum/default/config.md
