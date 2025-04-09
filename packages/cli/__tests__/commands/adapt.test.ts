@@ -15,6 +15,8 @@ jest.mock('../../src/adapters', () => ({
 jest.mock('fs/promises', () => ({
   access: jest.fn(),
   writeFile: jest.fn().mockResolvedValue(undefined),
+  unlink: jest.fn().mockResolvedValue(undefined),
+  symlink: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('chalk', () => ({
@@ -117,6 +119,18 @@ describe('adaptCommand', () => {
     
     // Verify default output was used
     expect((fs.writeFile as unknown as jest.Mock).mock.calls[0][0]).toContain('.continuum/claude/config.md');
+  });
+  
+  it('should create symlink when createLink option is true', async () => {
+    await adaptCommand({
+      assistant: 'claude',
+      config: '.continuum/default/config.md',
+      createLink: true
+    });
+    
+    // Verify symlink was created
+    expect(fs.symlink).toHaveBeenCalled();
+    expect((fs.symlink as unknown as jest.Mock).mock.calls[0][1]).toContain('CLAUDE.md');
   });
   
   it('should handle unsupported assistants', async () => {
