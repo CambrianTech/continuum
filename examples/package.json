@@ -1,0 +1,9 @@
+{
+  "name": "@continuum/examples",
+  "version": "0.1.0",
+  "description": "Examples for Continuum AI Configuration",
+  "private": true,
+  "dependencies": {
+    "yaml": "^2.2.1"
+  }
+}
