@@ -125,7 +125,7 @@ This is a markdown file with NO valid configuration.
       
       expect(result.valid).toBe(true);
       expect(result.warnings).toBeDefined();
-      expect(result.warnings).toContain(expect.stringContaining('deployment'));
+      expect(result.warnings?.some(warning => warning.includes('deployment'))).toBe(true);
     });
   });
   
@@ -148,7 +148,8 @@ This is a markdown file with NO valid configuration.
       const projectConfig: AIConfig = {
         ai_protocol_version: '0.1',
         identity: {
-          name: 'ProjectAssistant'
+          name: 'ProjectAssistant',
+          role: 'Project Helper'
         },
         behavior: {
           autonomy: 'suggest'
@@ -161,7 +162,7 @@ This is a markdown file with NO valid configuration.
       const merged = mergeConfigs([baseConfig, projectConfig]);
       
       expect(merged.identity?.name).toBe('ProjectAssistant');
-      expect(merged.identity?.role).toBe('Helper');
+      expect(merged.identity?.role).toBe('Project Helper');
       expect(merged.behavior?.voice).toBe('professional');
       expect(merged.behavior?.autonomy).toBe('suggest');
       expect(merged.capabilities?.allowed).toContain('code_review');

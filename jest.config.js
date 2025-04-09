@@ -19,4 +19,8 @@ module.exports = {
     '<rootDir>/dist/',
     '<rootDir>/node_modules/',
   ],
+  transformIgnorePatterns: [
+    // Allow transforming ESM modules in node_modules
+    "node_modules/(?!(chalk|inquirer|commander|other-esm-module)/)"
+  ],
 };

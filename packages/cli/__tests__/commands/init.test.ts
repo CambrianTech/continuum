@@ -15,7 +15,9 @@ jest.mock('@continuum/core', () => ({
   writeConfigFile: jest.fn(),
 }));
 
-jest.mock('inquirer');
+jest.mock('inquirer', () => ({
+  prompt: jest.fn()
+}));
 jest.mock('chalk', () => ({
   blue: jest.fn((text) => text),
   green: jest.fn((text) => text),
@@ -66,7 +68,7 @@ describe('initCommand', () => {
     (writeConfigFile as jest.Mock).mockResolvedValue(undefined);
     
     // Mock inquirer responses
-    (inquirer.prompt as jest.Mock).mockImplementation((questions) => {
+    (inquirer.prompt as unknown as jest.Mock).mockImplementation((questions) => {
       // Default answers based on question types
       const answers: Record<string, any> = {};
       
@@ -116,7 +118,7 @@ describe('initCommand', () => {
     
     // Verify config was written
     expect(writeConfigFile).toHaveBeenCalled();
-    expect(writeConfigFile.mock.calls[0][1]).toContain('test-config.md');
+    expect((writeConfigFile as unknown as jest.Mock).mock.calls[0][1]).toContain('test-config.md');
     
     // Verify console output
     expect(consoleLogMock).toHaveBeenCalledWith(expect.stringContaining('Initializing new AI configuration'));
