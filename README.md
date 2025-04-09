@@ -27,17 +27,18 @@ Continuum is the missing layer between human cognition and AI capability. It pro
 # Install the CLI globally
 npm install -g @continuum/cli
 
-# Initialize a new AI configuration
+# Initialize a new .continuum configuration
 continuum init
 
 # Use a specific template
 continuum init --template tdd
 
-# Validate an existing configuration
+# Validate an existing .continuum file
 continuum validate
 
-# Generate assistant-specific configuration
-continuum adapt --assistant claude
+# Generate assistant-specific configurations
+continuum adapt --assistant claude  # Creates continuum.claude
+continuum adapt --assistant gpt     # Creates continuum.gpt
 ```
 
 You can also use npx without installing:
@@ -68,7 +69,7 @@ Continuum ships with pre-configured templates for common development approaches:
 
 ## 📊 Configuration Schema
 
-AI configurations in Continuum follow a standardized schema:
+AI configurations in Continuum follow a standardized schema stored in a `.continuum` file:
 
 ```yaml
 ai_protocol_version: "0.1"
@@ -84,6 +85,10 @@ capabilities:
   allowed: ["code_review", "refactoring", "documentation"]
   restricted: ["deployment", "database_management"]
 ```
+
+Continuum uses this configuration to generate assistant-specific files:
+- `continuum.claude` for Anthropic's Claude
+- `continuum.gpt` for OpenAI's GPT models
 
 ## 🔌 Assistant Adapters
 
