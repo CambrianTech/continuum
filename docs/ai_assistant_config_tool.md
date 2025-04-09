@@ -52,9 +52,10 @@ Pre-configured templates for common development patterns:
 ### 3. Configuration File Generation
 
 Outputs standardized files that can be loaded by AI assistants:
-- CLAUDE.md - Claude-specific configuration
-- continuum.md - Generic configuration for any AI
-- .github/AI_WORKFLOWS.md - GitHub specific integrations
+- .continuum/claude/config.md - Claude-specific configuration
+- .continuum/default/config.md - Generic configuration for any AI
+- .continuum/gpt/config.json - GPT-specific configuration
+- .github/workflows/continuum.yml - GitHub specific integrations
 
 ### 4. Role-Based Controls
 

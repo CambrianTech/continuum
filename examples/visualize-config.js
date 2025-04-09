@@ -10,7 +10,7 @@ const path = require('path');
 const yaml = require('yaml');
 
 // Get the file path from command line arguments
-const configPath = process.argv[2] || 'continuum.md';
+const configPath = process.argv[2] || '.continuum/default/config.md';
 
 // Read the file
 try {
