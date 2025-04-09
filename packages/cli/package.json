@@ -4,6 +4,7 @@
   "description": "Command line interface for Human-AI Configuration Protocol",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "type": "module",
   "bin": {
     "ai-config": "./bin/ai-config.js"
   },
@@ -27,7 +28,7 @@
   },
   "dependencies": {
     "@continuum/core": "^0.1.0",
-    "chalk": "^4.1.2",
+    "chalk": "^5.4.1",
     "commander": "^13.1.0",
     "inquirer": "^12.5.2"
   }
