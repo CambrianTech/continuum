@@ -12,7 +12,10 @@
     "build": "lerna run build",
     "lint": "eslint .",
     "format": "prettier --write \"**/*.{js,ts,json,md}\"",
-    "postinstall": "lerna bootstrap"
+    "postinstall": "lerna bootstrap",
+    "ci": "./scripts/test-ci.sh",
+    "validate-schema": "ajv validate -s schema/ai-config.schema.json -d \"templates/*/config.json\"",
+    "check-deps": "npm audit --production && npm outdated"
   },
   "keywords": [
     "ai",

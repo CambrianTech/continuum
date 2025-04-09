@@ -1,0 +1,33 @@
+version: 2
+updates:
+  # Enable version updates for npm
+  - package-ecosystem: "npm"
+    # Look for npm packages in the root directory
+    directory: "/"
+    # Check for updates once a week (on Monday)
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # Set reviewers for pull requests
+    reviewers:
+      - "joelteply"
+    # Limit the number of open pull requests for npm dependencies
+    open-pull-requests-limit: 10
+    # Allow up to 10 pull requests for security updates
+    ignore:
+      # Ignore updates to packages that start with 'aws'
+      # Use `*` as a wildcard (matches 0 or more characters)
+      - dependency-name: "aws*"
+      # Ignore some specific updates
+      - dependency-name: "express"
+        versions: ["4.x", "5.x"]
+    # Allow only security updates for dependencies
+    versioning-strategy: increase-if-necessary
+    
+  # Enable version updates for GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Allow up to 5 pull requests for GitHub Action updates
+    open-pull-requests-limit: 5
