@@ -20,18 +20,30 @@ Continuum is the missing layer between human cognition and AI capability. It pro
 
 ## 🚀 Quick Start
 
+### Requirements
+- Node.js 18.0.0 or higher
+
 ```bash
+# Install the CLI globally
+npm install -g @continuum/cli
+
 # Initialize a new AI configuration
-npx @continuum/cli init
+ai-config init
 
 # Use a specific template
-npx @continuum/cli init --template tdd
+ai-config init --template tdd
 
 # Validate an existing configuration
-npx @continuum/cli validate
+ai-config validate
 
 # Generate assistant-specific configuration
-npx @continuum/cli adapt --assistant claude
+ai-config adapt --assistant claude
+```
+
+You can also use npx without installing:
+
+```bash
+npx @continuum/cli init
 ```
 
 ## 💡 Why Continuum Matters
