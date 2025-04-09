@@ -1,4 +1,4 @@
-name: Validate AI Config
+name: Validate Continuum Config
 
 on:
   pull_request:
@@ -26,15 +26,15 @@ jobs:
     - name: Install AJV CLI
       run: npm install -g ajv-cli
     
-    - name: Validate AI Config Schema
+    - name: Validate Continuum Schema
       run: |
         # Validate the schema itself
-        npx ajv-cli compile -s schema/ai-config.schema.json
+        npx ajv-cli compile -s schema/continuum.schema.json
         
         # Validate all template configs against the schema
         for template in templates/*/config.json; do
           echo "Validating $template"
-          npx ajv-cli validate -s schema/ai-config.schema.json -d "$template"
+          npx ajv-cli validate -s schema/continuum.schema.json -d "$template"
         done
     
     - name: Validate Example Files

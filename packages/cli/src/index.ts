@@ -5,10 +5,17 @@
 
 import { program } from 'commander';
 import chalk from 'chalk';
-import { initCommand } from './commands/init';
-import { validateCommand } from './commands/validate';
-import { adaptCommand } from './commands/adapt';
-import packageJson from '../package.json';
+import { initCommand } from './commands/init.js';
+import { validateCommand } from './commands/validate.js';
+import { adaptCommand } from './commands/adapt.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const packageJsonPath = path.resolve(__dirname, '../package.json');
+const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
 /**
  * Setup the program CLI
@@ -58,7 +65,8 @@ Example usage:
 const cli = setupCLI();
 
 // Only parse arguments when this file is run directly (not when imported in tests)
-if (require.main === module) {
+// Use Node.js-specific detection for direct execution
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   cli.parse(process.argv);
 }
 

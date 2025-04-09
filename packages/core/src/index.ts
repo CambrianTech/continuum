@@ -59,7 +59,7 @@ let cachedSchema: any = null;
 export async function loadSchema(): Promise<any> {
   if (!cachedSchema) {
     try {
-      const schemaPath = path.resolve(__dirname, '../../..', 'schema', 'ai-config.schema.json');
+      const schemaPath = path.resolve(__dirname, '../../..', 'schema', 'continuum.schema.json');
       const schemaContent = await fs.readFile(schemaPath, 'utf-8');
       cachedSchema = JSON.parse(schemaContent);
     } catch (error) {
