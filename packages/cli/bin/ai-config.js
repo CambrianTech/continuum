@@ -7,7 +7,7 @@ import { dirname, join } from 'path';
 
 // Display deprecation warning
 console.log("⚠️  'ai-config' is deprecated. Please use 'continuum' instead.");
-console.log("Learn more: https://github.com/your-org/continuum");
+console.log("Learn more: https://github.com/CambrianTech/continuum");
 console.log('');
 
 // Get the directory of this file
