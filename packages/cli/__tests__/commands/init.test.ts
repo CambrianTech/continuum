@@ -2,8 +2,7 @@ import { initCommand } from '../../src/commands/init';
 import { getTemplate, listTemplates } from '../../src/templates';
 import { writeConfigFile } from '@continuum/core';
 import inquirer from 'inquirer';
-import chalk from 'chalk';
-import * as path from 'path';
+// Imports used for mock typing only
 
 // Mocks
 jest.mock('../../src/templates', () => ({
@@ -39,8 +38,10 @@ describe('initCommand', () => {
   
   beforeEach(() => {
     // Setup mocks
-    consoleLogMock = jest.spyOn(console, 'log').mockImplementation(() => {});
-    consoleErrorMock = jest.spyOn(console, 'error').mockImplementation(() => {});
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    consoleLogMock = jest.spyOn(console, 'log').mockImplementation(() => { /* empty for testing */ });
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    consoleErrorMock = jest.spyOn(console, 'error').mockImplementation(() => { /* empty for testing */ });
     
     // Reset all mock data
     jest.clearAllMocks();
@@ -67,10 +68,16 @@ describe('initCommand', () => {
     (listTemplates as jest.Mock).mockResolvedValue(['standard', 'tdd', 'enterprise']);
     (writeConfigFile as jest.Mock).mockResolvedValue(undefined);
     
+    // Provide empty function implementations for mock console functions
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    jest.spyOn(console, 'log').mockImplementation(() => { /* empty for testing */ });
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    jest.spyOn(console, 'error').mockImplementation(() => { /* empty for testing */ });
+    
     // Mock inquirer responses
     (inquirer.prompt as unknown as jest.Mock).mockImplementation((questions) => {
       // Default answers based on question types
-      const answers: Record<string, any> = {};
+      const answers: Record<string, unknown> = {};
       
       for (const question of questions) {
         if (question.name === 'template') {

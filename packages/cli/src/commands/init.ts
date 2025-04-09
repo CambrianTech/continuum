@@ -4,7 +4,7 @@
 
 import inquirer from 'inquirer';
 import * as path from 'path';
-import * as fs from 'fs/promises';
+// fs is imported through other modules
 import chalk from 'chalk';
 import { AIConfig, writeConfigFile } from '@continuum/core';
 import { getTemplate, listTemplates } from '../templates';
@@ -132,13 +132,13 @@ export async function initCommand(options: InitOptions): Promise<void> {
         }
       ]);
       
-      const tddExtension = baseConfig.extensions?.tdd as Record<string, any> || {};
+      const tddExtension = baseConfig.extensions?.tdd as Record<string, unknown> || {};
       
       templateExtensions = {
         tdd: {
           test_first: tddAnswers.test_first,
           coverage_target: tddAnswers.coverage_target,
-          frameworks: tddExtension.frameworks || ['jest', 'mocha', 'pytest']
+          frameworks: (tddExtension.frameworks as string[] | undefined) || ['jest', 'mocha', 'pytest']
         }
       };
     } else if (options.template === 'enterprise') {
@@ -153,7 +153,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
             { name: 'HIPAA', value: 'HIPAA' },
             { name: 'PCI-DSS', value: 'PCI-DSS' }
           ],
-          default: ((baseConfig.extensions?.compliance || {}) as Record<string, any>).standards || []
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          default: ((baseConfig.extensions?.compliance || {}) as Record<string, unknown>).standards || []
         },
         {
           type: 'confirm',
@@ -163,8 +164,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
         }
       ]);
       
-      const complianceExtension = baseConfig.extensions?.compliance as Record<string, any> || {};
-      const securityExtension = baseConfig.extensions?.security as Record<string, any> || {};
+      // This variable is currently unused but will be used in future extensions
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const complianceExtension = baseConfig.extensions?.compliance as Record<string, unknown> || {};
+      const securityExtension = baseConfig.extensions?.security as Record<string, unknown> || {};
       
       templateExtensions = {
         compliance: {

@@ -1,8 +1,7 @@
 import { validateCommand } from '../../src/commands/validate';
 import { validateConfig, loadConfig } from '@continuum/core';
-import chalk from 'chalk';
-import * as fs from 'fs/promises';
-import * as path from 'path';
+// Only need type imports for these
+import type * as fs from 'fs/promises';
 
 // Mocks
 jest.mock('@continuum/core', () => ({
@@ -37,14 +36,14 @@ describe('validateCommand', () => {
   
   beforeEach(() => {
     // Setup mocks
-    consoleLogMock = jest.spyOn(console, 'log').mockImplementation(() => {});
-    consoleErrorMock = jest.spyOn(console, 'error').mockImplementation(() => {});
+    consoleLogMock = jest.spyOn(console, 'log').mockImplementation(() => { /* empty for testing */ });
+    consoleErrorMock = jest.spyOn(console, 'error').mockImplementation(() => { /* empty for testing */ });
     
     // Reset all mock data
     jest.clearAllMocks();
     
     // Default mock responses
-    (fs.access as jest.Mock).mockResolvedValue(undefined);
+    (fs.access as unknown as jest.Mock).mockResolvedValue(undefined);
     
     // Default config
     const mockConfig = {

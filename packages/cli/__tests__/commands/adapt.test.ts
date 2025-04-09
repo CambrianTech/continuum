@@ -1,9 +1,8 @@
 import { adaptCommand } from '../../src/commands/adapt';
 import { loadConfig } from '@continuum/core';
 import { getAdapter } from '../../src/adapters';
-import chalk from 'chalk';
-import * as fs from 'fs/promises';
-import * as path from 'path';
+// Imports needed for types
+import type * as fs from 'fs/promises';
 
 // Mocks
 jest.mock('@continuum/core', () => ({
@@ -42,8 +41,8 @@ describe('adaptCommand', () => {
   
   beforeEach(() => {
     // Setup mocks
-    consoleLogMock = jest.spyOn(console, 'log').mockImplementation(() => {});
-    consoleErrorMock = jest.spyOn(console, 'error').mockImplementation(() => {});
+    consoleLogMock = jest.spyOn(console, 'log').mockImplementation(() => { /* empty for testing */ });
+    consoleErrorMock = jest.spyOn(console, 'error').mockImplementation(() => { /* empty for testing */ });
     
     // Reset all mock data
     jest.clearAllMocks();
