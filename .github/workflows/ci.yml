@@ -34,14 +34,12 @@ jobs:
     
     - name: Lint
       run: npm run lint
-      continue-on-error: ${{ github.event_name == 'pull_request' }}
     
     - name: Build
       run: npm run build
     
     - name: Test
       run: npm test
-      continue-on-error: true  # Make tests optional for now until we fix them in a separate PR
 
   validation:
     runs-on: ubuntu-latest
