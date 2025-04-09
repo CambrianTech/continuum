@@ -16,7 +16,11 @@
     "postinstall": "lerna run prepare",
     "ci": "./scripts/test-ci.sh",
     "validate-schema": "npx ajv-cli validate -s schema/ai-config.schema.json -d \"templates/*/config.json\"",
-    "check-deps": "npm audit --production && npm outdated"
+    "check-deps": "npm audit --production && npm outdated",
+    "version:patch": "lerna version patch --no-push --no-git-tag-version --yes",
+    "version:minor": "lerna version minor --no-push --no-git-tag-version --yes",
+    "version:major": "lerna version major --no-push --no-git-tag-version --yes",
+    "publish:dev": "lerna publish --dist-tag dev --no-push --no-git-tag-version"
   },
   "keywords": [
     "ai",
