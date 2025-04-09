@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/under-construction.gif" alt="Under Construction">
+  <img src="assets/under_construction.gif" alt="Under Construction">
 </p>
 
 > **⚠️ UNDER CONSTRUCTION:** Continuum is currently in early development (v0.1). We've implemented the context-aware CLI foundation, but many planned features are still in progress. See our [Roadmap](ROADMAP.md) for development plans.
