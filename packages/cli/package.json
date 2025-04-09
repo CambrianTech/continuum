@@ -28,7 +28,7 @@
   "dependencies": {
     "@continuum/core": "^0.1.0",
     "chalk": "^4.1.2",
-    "commander": "^10.0.1",
+    "commander": "^13.1.0",
     "inquirer": "^12.5.2"
   }
 }
