@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Simple utility to visualize an AI_CONFIG.md file
+ * Simple utility to visualize a continuum.md file
  * Usage: node visualize-config.js [path-to-config-file]
  */
 
@@ -10,7 +10,7 @@ const path = require('path');
 const yaml = require('yaml');
 
 // Get the file path from command line arguments
-const configPath = process.argv[2] || 'AI_CONFIG.md';
+const configPath = process.argv[2] || 'continuum.md';
 
 // Read the file
 try {

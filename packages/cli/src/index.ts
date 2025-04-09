@@ -39,14 +39,14 @@ Example usage:
     .command('init')
     .description('Initialize a new AI configuration')
     .option('-t, --template <template>', 'Use a predefined template')
-    .option('-o, --output <path>', 'Output path for configuration', 'AI_CONFIG.md')
+    .option('-o, --output <path>', 'Output path for configuration', 'continuum.md')
     .action(initCommand);
 
   // Validate command
   program
     .command('validate')
     .description('Validate an existing configuration')
-    .option('-c, --config <path>', 'Path to configuration file', 'AI_CONFIG.md')
+    .option('-c, --config <path>', 'Path to configuration file', 'continuum.md')
     .action(validateCommand);
 
   // Adapt command
@@ -54,7 +54,7 @@ Example usage:
     .command('adapt')
     .description('Generate assistant-specific configuration')
     .requiredOption('-a, --assistant <assistant>', 'Target assistant (claude, gpt)')
-    .option('-c, --config <path>', 'Path to configuration file', 'AI_CONFIG.md')
+    .option('-c, --config <path>', 'Path to configuration file', 'continuum.md')
     .option('-o, --output <path>', 'Output path for adapted configuration')
     .action(adaptCommand);
 

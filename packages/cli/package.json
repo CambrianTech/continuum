@@ -6,8 +6,7 @@
   "types": "dist/index.d.ts",
   "type": "module",
   "bin": {
-    "continuum": "./bin/continuum.js",
-    "ai-config": "./bin/ai-config.js"
+    "continuum": "./bin/continuum.js"
   },
   "scripts": {
     "build": "tsc",
