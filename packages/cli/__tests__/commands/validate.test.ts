@@ -1,7 +1,6 @@
 import { validateCommand } from '../../src/commands/validate';
 import { validateConfig, loadConfig } from '@continuum/core';
-// Only need type imports for these
-import type * as fs from 'fs/promises';
+import * as fs from 'fs/promises';
 
 // Mocks
 jest.mock('@continuum/core', () => ({

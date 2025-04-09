@@ -111,7 +111,7 @@ export class GPTAdapter implements ConfigAdapter {
       if (config.extensions.tdd) {
         prompt += '\nTest-Driven Development guidelines:\n';
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const tdd = config.extensions.tdd as Record<string, unknown>;
+        const tdd = config.extensions.tdd as { test_first?: boolean, coverage_target?: number, frameworks?: string[] };
         
         if (tdd.test_first) {
           prompt += '- You should always suggest writing tests before implementation code\n';
@@ -130,7 +130,7 @@ export class GPTAdapter implements ConfigAdapter {
       if (config.extensions.compliance) {
         prompt += '\nCompliance requirements:\n';
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const compliance = config.extensions.compliance as Record<string, unknown>;
+        const compliance = config.extensions.compliance as { standards?: string[], enforcement?: string };
         
         if (compliance.standards?.length) {
           prompt += `- Compliance standards: ${compliance.standards.join(', ')}\n`;

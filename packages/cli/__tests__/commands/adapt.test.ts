@@ -1,8 +1,7 @@
 import { adaptCommand } from '../../src/commands/adapt';
 import { loadConfig } from '@continuum/core';
 import { getAdapter } from '../../src/adapters';
-// Imports needed for types
-import type * as fs from 'fs/promises';
+import * as fs from 'fs/promises';
 
 // Mocks
 jest.mock('@continuum/core', () => ({
