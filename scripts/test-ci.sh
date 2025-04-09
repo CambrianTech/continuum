@@ -32,9 +32,8 @@ npm test
 
 # Step 7: Validate schemas
 echo "Validating schema..."
-# Install ajv-cli locally if needed
-npm install --save-dev ajv-cli
-npx ajv-cli validate -s schema/continuum.schema.json -d "templates/*/config.json"
+# Run our custom schema validator
+node scripts/validate-schema.js
 
 # Step 8: Run example
 echo "Running example..."
