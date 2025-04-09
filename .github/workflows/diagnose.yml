@@ -1,0 +1,67 @@
+name: Diagnose CI Issues
+
+on:
+  push:
+    branches: [ fix/resolve-lerna-conflicts, fix/lerna-update ]
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Use Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18.x'
+        cache: 'npm'
+    
+    - name: List files and directories
+      run: |
+        echo "Files in root directory:"
+        ls -la
+        echo "Files in .github/workflows:"
+        ls -la .github/workflows
+        echo "Files in examples directory:"
+        ls -la examples
+        echo "Files in templates directory:"
+        ls -la templates
+    
+    - name: Check package.json
+      run: |
+        echo "Contents of package.json:"
+        cat package.json
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Check installed packages
+      run: |
+        echo "Installed packages:"
+        npm list --depth=0
+    
+    - name: Run eslint
+      run: |
+        echo "Running ESLint:"
+        npm run lint || echo "ESLint failed with code $?"
+    
+    - name: Run tests
+      run: |
+        echo "Running tests:"
+        npm test || echo "Tests failed with code $?"
+    
+    - name: Run schema validation
+      run: |
+        echo "Running schema validation:"
+        npm install --save-dev ajv-cli
+        npx ajv-cli validate -s schema/ai-config.schema.json -d "templates/*/config.json" || echo "Schema validation failed with code $?"
+    
+    - name: Try running example
+      run: |
+        echo "Running example script:"
+        cd examples
+        which node
+        node --version
+        ls -la
+        node visualize-config.js AI_CONFIG.md || echo "Example failed with code $?"
