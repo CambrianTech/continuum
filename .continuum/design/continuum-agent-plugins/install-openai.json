@@ -1,0 +1,11 @@
+{
+  "task": "Help user connect to OpenAI GPT-4o",
+  "steps": [
+    "Explain GPT-4o's capabilities briefly.",
+    "Tell the user they'll need an OpenAI API key and where to get it.",
+    "Prompt: 'Paste your API key here (it stays local).' ",
+    "Store the key in `.env` as `OPENAI_API_KEY`.",
+    "Test the connection with a simple prompt.",
+    "Let user know it's ready: 'GPT-4o is now live in your agent stack!'"
+  ]
+}

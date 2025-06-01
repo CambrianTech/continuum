@@ -1,0 +1,14 @@
+
+Continuum Agent System - User Agreement
+
+By continuing, you agree to the following:
+
+1. Model downloads may include large files (1GB+) stored locally.
+2. API key links (OpenAI, Anthropic) are stored ONLY on your local machine.
+3. No personal data is collected or transmitted by Continuum itself.
+4. You may revoke permissions at any time by removing `.env` or clearing agents.
+5. By installing, you agree that any cloud API usage is your responsibility per provider terms.
+
+This software is provided "as-is" with no warranty or guarantee of fitness.
+
+Type 'yes' to continue.

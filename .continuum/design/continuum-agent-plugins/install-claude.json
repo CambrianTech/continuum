@@ -1,0 +1,11 @@
+{
+  "task": "Help user connect to Claude via Anthropic",
+  "steps": [
+    "Introduce Claude's strengths (reasoning, summarizing, planning).",
+    "Link user to Anthropic key generation page.",
+    "Prompt: 'Paste your Claude API key (safe to store locally)?'",
+    "Save to `.env` as `ANTHROPIC_API_KEY`.",
+    "Send a hello prompt to Claude to test it.",
+    "Confirm: 'Claude is now activated and ready to collaborate!'"
+  ]
+}

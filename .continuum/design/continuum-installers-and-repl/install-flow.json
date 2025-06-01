@@ -1,0 +1,12 @@
+{
+  "task": "Install and configure a model plugin",
+  "steps": [
+    "Show user agreement and get consent.",
+    "Ask if user prefers local (free) or cloud (paid) model.",
+    "Based on system specs and answers, suggest models.",
+    "Ask for permission to download or link API.",
+    "Run the installer (fetch model or store API key).",
+    "Run a test prompt and show result.",
+    "Confirm installation success and register the model."
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "models": [
+    {
+      "id": "llama-cpp",
+      "name": "LLaMA.cpp",
+      "provider": "local",
+      "description": "Efficient CPU-only LLaMA model",
+      "install": "npx continuum install llama",
+      "cost": "free",
+      "speed": "medium",
+      "capabilities": [
+        "summarize",
+        "chat",
+        "generate"
+      ],
+      "preferredHardware": "CPU >= 4 cores, 8GB+ RAM"
+    },
+    {
+      "id": "mistral-gpu",
+      "name": "Mistral 7B",
+      "provider": "local",
+      "description": "Fast open model optimized for GPU",
+      "install": "npx continuum install mistral",
+      "cost": "free",
+      "speed": "fast",
+      "capabilities": [
+        "code",
+        "chat",
+        "instruct"
+      ],
+      "preferredHardware": "GPU (CUDA/WebGPU) + 16GB RAM"
+    },
+    {
+      "id": "gpt4o",
+      "name": "GPT-4o",
+      "provider": "openai",
+      "description": "High-accuracy general agent",
+      "install": "npx continuum link openai",
+      "cost": "$$ (API key)",
+      "speed": "fast",
+      "capabilities": [
+        "reasoning",
+        "long context",
+        "math"
+      ]
+    },
+    {
+      "id": "claude-haiku",
+      "name": "Claude Haiku",
+      "provider": "anthropic",
+      "description": "High-speed Claude 3 model",
+      "install": "npx continuum link anthropic",
+      "cost": "$ (API key)",
+      "speed": "fast",
+      "capabilities": [
+        "writing",
+        "planning",
+        "comprehension"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "claude": {
+    "enabled": true,
+    "priority": 10,
+    "capabilities": ["deep_inference", "wakeup", "complex_code"],
+    "maxTokens": 8000,
+    "costPerToken": 0.00002,
+    "env": {
+      "API_KEY": "from .env or secure vault"
+    }
+  },
+  "llama-local": {
+    "enabled": true,
+    "priority": 1,
+    "capabilities": ["lookup", "file_search", "indexing"],
+    "maxTokens": 2048,
+    "costPerToken": 0,
+    "binPath": "./bin/llama-cli"
+  }
+}
