@@ -57,3 +57,4 @@ Thumbs.db
 
 # Debug files
 packages/cli/bin/debug-*.js
+.continuum/*
