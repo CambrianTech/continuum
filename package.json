@@ -12,7 +12,11 @@
   ],
   "scripts": {
     "test": "jest",
+    "test:ui": "jest --config jest.config.ui.js",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
     "build": "lerna run build",
+    "build:ui": "tsc --project tsconfig.ui.json",
     "lint": "eslint . --ext .ts,.js --config eslint.config.js",
     "format": "prettier --write \"**/*.{js,ts,json,md}\"",
     "postinstall": "lerna run prepare",
@@ -24,7 +28,7 @@
     "version:major": "lerna version major --no-push --no-git-tag-version --yes",
     "publish:dev": "lerna publish --dist-tag dev --no-push --no-git-tag-version",
     "build:packages": "npm run build --workspaces",
-    "test:packages": "npm run test --workspaces", 
+    "test:packages": "npm run test --workspaces",
     "lint:packages": "npm run lint --workspaces",
     "demo": "npx ts-node demo-complete-system.ts",
     "test-system": "npx jest tests/integration-full-system.test.ts"
@@ -59,6 +63,7 @@
     "@typescript-eslint/parser": "^8.29.1",
     "eslint": "^9.24.0",
     "jest": "^29.5.0",
+    "jest-environment-jsdom": "^29.7.0",
     "lerna": "^8.2.1",
     "prettier": "^3.5.3",
     "supertest": "^7.1.1",

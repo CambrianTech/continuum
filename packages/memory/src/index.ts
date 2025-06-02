@@ -118,7 +118,7 @@ export class ContinuumMemory {
       fs.writeFileSync(strategiesFile, JSON.stringify(strategies, null, 2));
     } catch (error) {
       // Handle persistence errors gracefully
-      console.warn('Failed to persist strategies:', error.message);
+      console.warn('Failed to persist strategies:', (error as Error).message);
     }
   }
   
