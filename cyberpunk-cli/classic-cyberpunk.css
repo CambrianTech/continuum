@@ -1,0 +1,85 @@
+
+/* Classic Cyberpunk Retro Aesthetic */
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+
+.cyberpunk-classic {
+  background: #000000;
+  color: #00ff00;
+  font-family: 'Share Tech Mono', 'Courier New', monospace;
+  min-height: 100vh;
+  position: relative;
+  overflow: hidden;
+}
+
+.cyberpunk-classic::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: 
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 255, 0, 0.03) 2px,
+      rgba(0, 255, 0, 0.03) 4px
+    );
+  pointer-events: none;
+  z-index: 1000;
+}
+
+.cyberpunk-terminal {
+  padding: 20px;
+  border: 2px solid #00ff00;
+  margin: 20px;
+  background: rgba(0, 0, 0, 0.8);
+  box-shadow: 
+    0 0 10px #00ff00,
+    inset 0 0 10px rgba(0, 255, 0, 0.1);
+  position: relative;
+}
+
+.cyberpunk-prompt {
+  color: #00ff00;
+  text-shadow: 0 0 5px #00ff00;
+}
+
+.cyberpunk-text {
+  color: #00cc00;
+  text-shadow: 0 0 3px #00cc00;
+}
+
+.cyberpunk-error {
+  color: #ff0040;
+  text-shadow: 0 0 5px #ff0040;
+}
+
+.cyberpunk-success {
+  color: #00ffff;
+  text-shadow: 0 0 5px #00ffff;
+}
+
+.typing-animation {
+  border-right: 2px solid #00ff00;
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0%, 50% { border-color: #00ff00; }
+  51%, 100% { border-color: transparent; }
+}
+
+.glitch {
+  animation: glitch 0.3s infinite;
+}
+
+@keyframes glitch {
+  0% { transform: translate(0); }
+  20% { transform: translate(-2px, 2px); }
+  40% { transform: translate(-2px, -2px); }
+  60% { transform: translate(2px, 2px); }
+  80% { transform: translate(2px, -2px); }
+  100% { transform: translate(0); }
+}
