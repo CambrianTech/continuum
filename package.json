@@ -20,7 +20,10 @@
     "version:patch": "lerna version patch --no-push --no-git-tag-version --yes",
     "version:minor": "lerna version minor --no-push --no-git-tag-version --yes",
     "version:major": "lerna version major --no-push --no-git-tag-version --yes",
-    "publish:dev": "lerna publish --dist-tag dev --no-push --no-git-tag-version"
+    "publish:dev": "lerna publish --dist-tag dev --no-push --no-git-tag-version",
+    "build:packages": "npm run build --workspaces",
+    "test:packages": "npm run test --workspaces",
+    "lint:packages": "npm run lint --workspaces"
   },
   "keywords": [
     "ai",
