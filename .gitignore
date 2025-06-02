@@ -57,3 +57,21 @@ Thumbs.db
 
 # Debug files
 packages/cli/bin/debug-*.js
+
+# AI system generated files and directories
+.continuum/
+.claude-pool/
+*ai*.cjs
+*ai-*.cjs
+SYSTEM_ARCHITECTURE.md
+test-continuum-web.cjs
+ai-venv/
+
+# Continuum persistent state
+.continuum/
+continuum.log
+continuum_restart.log
+
+# Generated documentation
+*-AI-*.md
+generated-*/

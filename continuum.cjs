@@ -36,6 +36,9 @@ class Continuum {
     this.costs = { total: 0, requests: 0 };
     this.port = 5555;
     this.repoContext = null;
+    this.conversationHistory = [];
+    this.continuumDir = path.join(process.cwd(), '.continuum');
+    this.historyFile = path.join(this.continuumDir, 'conversation-history.jsonl');
     
     console.log('🌌 CONTINUUM - Real Claude Pool');
     console.log('===============================');
@@ -44,8 +47,14 @@ class Continuum {
     console.log('✅ Event-driven coordination');
     console.log('');
     
-    this.loadRepoContext();
-    this.start();
+    this.ensureContinuumDir();
+    this.loadConversationHistory();
+    
+    // Auto-start only if not overridden
+    if (this.autoStart !== false) {
+      this.loadRepoContext();
+      this.start();
+    }
   }
 
   async loadRepoContext() {
@@ -226,7 +235,7 @@ class Continuum {
     return items;
   }
 
-  async callAI(role, prompt) {
+  async callAI(role, prompt, conversationHistory = []) {
     try {
       console.log(`🔄 ${role} processing: ${prompt.substring(0, 50)}...`);
       
@@ -401,9 +410,26 @@ USER TASK: ${prompt}`;
           `\n\nSPECIALIZED AI CONFIGURATION:\n${specialization.systemAdditions}\nExpertise: ${specialization.expertise}` : 
           '';
         
+        // Add conversation context to prevent memory issues
+        const recentHistory = conversationHistory.slice(-3).map(h => `${h.role}: ${h.message.substring(0, 100)}`).join('\n');
+        const contextInfo = recentHistory ? `\nRECENT CONVERSATION:\n${recentHistory}\n` : '';
+        
         const systemPrompt = `You are ${role}, an AI agent running in the Continuum multi-agent coordination system. You work alongside other AIs including CodeAI (Claude) and PlannerAI (OpenAI GPT-4).
 
 IMPORTANT: You are currently running inside the Continuum system at http://localhost:5555 - this is a real multi-agent AI coordination platform, not a simulation. The user is interacting with you through the Continuum web interface.
+
+YOUR AVAILABLE TOOLS (use these by including commands in your response):
+- WEBFETCH: https://example.com (fetch and analyze web content from any URL)
+- FILE_READ: /path/to/file (read files from the repository)  
+- GIT_STATUS: (check git repository status)
+- FILE_WRITE: /path/to/file [content] (write or modify files)
+
+TOOL USAGE: When you want to use a tool, include the exact command in your response. For example:
+- To check CNN: "WEBFETCH: https://www.cnn.com"
+- To read a file: "FILE_READ: package.json"
+- To check git: "GIT_STATUS"
+
+REMEMBER: You HAVE these tools and CAN use them! Don't claim you don't have access to external sources.${contextInfo}
 
 CONTINUUM REPOSITORY CONTEXT:
 ${repoInfo}
@@ -770,8 +796,17 @@ SUCCESSFUL PATTERNS:`;
     }
   }
 
-  async sendTask(role, task) {
+  async sendTask(role, task, ws = null) {
     console.log(`📤 SEND_TASK: Routing to ${role} - "${task.substring(0, 80)}..."`);
+    
+    // Send dynamic status to web interface
+    if (ws) {
+      const statusMessage = this.getAgentStatus(role, task);
+      ws.send(JSON.stringify({
+        type: 'working',
+        data: statusMessage
+      }));
+    }
     
     if (!this.sessions.has(role)) {
       console.log(`🆕 Creating new ${role} session...`);
@@ -780,7 +815,12 @@ SUCCESSFUL PATTERNS:`;
     
     const session = this.sessions.get(role);
     console.log(`🔄 Calling ${role} with task...`);
-    const response = await this.callAI(role, task);
+    
+    // Pass conversation history to AI
+    const response = await this.callAI(role, task, this.conversationHistory);
+    
+    // Add AI response to conversation history
+    this.addToHistory(role, response.result);
     
     session.requests++;
     session.cost += response.cost;
@@ -789,8 +829,117 @@ SUCCESSFUL PATTERNS:`;
     return response.result;
   }
 
+  ensureContinuumDir() {
+    try {
+      if (!fs.existsSync(this.continuumDir)) {
+        fs.mkdirSync(this.continuumDir, { recursive: true });
+        console.log(`📁 Created .continuum directory: ${this.continuumDir}`);
+      }
+    } catch (error) {
+      console.error(`❌ Failed to create .continuum directory: ${error.message}`);
+    }
+  }
+
+  loadConversationHistory() {
+    try {
+      if (fs.existsSync(this.historyFile)) {
+        const data = fs.readFileSync(this.historyFile, 'utf-8');
+        const lines = data.split('\n').filter(line => line.trim());
+        
+        this.conversationHistory = lines.map(line => {
+          try {
+            return JSON.parse(line);
+          } catch (e) {
+            return null;
+          }
+        }).filter(Boolean);
+        
+        // Keep only last 20 messages for context
+        this.conversationHistory = this.conversationHistory.slice(-20);
+        
+        console.log(`📚 Loaded ${this.conversationHistory.length} previous conversation messages`);
+      } else {
+        console.log('📝 Starting fresh conversation history');
+      }
+    } catch (error) {
+      console.error(`❌ Failed to load conversation history: ${error.message}`);
+      this.conversationHistory = [];
+    }
+  }
+
+  addToHistory(role, message) {
+    const entry = {
+      role: role,
+      message: message,
+      timestamp: new Date().toISOString()
+    };
+    
+    this.conversationHistory.push(entry);
+    
+    // Save to disk immediately
+    this.saveConversationHistory(entry);
+    
+    // Keep only last 20 messages in memory to prevent context overflow
+    if (this.conversationHistory.length > 20) {
+      this.conversationHistory = this.conversationHistory.slice(-20);
+    }
+  }
+
+  saveConversationHistory(entry) {
+    try {
+      // Append new entry to JSONL file
+      const line = JSON.stringify(entry) + '\n';
+      fs.appendFileSync(this.historyFile, line, 'utf-8');
+    } catch (error) {
+      console.error(`❌ Failed to save conversation history: ${error.message}`);
+    }
+  }
+
+  addUserMessageToHistory(message) {
+    this.addToHistory('User', message);
+  }
+
+  getAgentStatus(role, task) {
+    const taskLower = task.toLowerCase();
+    
+    if (role === 'PlannerAI') {
+      if (taskLower.includes('plan') || taskLower.includes('strategy')) {
+        return 'PlannerAI is creating a strategy...';
+      } else if (taskLower.includes('coordinate')) {
+        return 'PlannerAI is coordinating with other AIs...';
+      } else if (taskLower.includes('analyz')) {
+        return 'PlannerAI is analyzing the situation...';
+      } else {
+        return 'PlannerAI is thinking strategically...';
+      }
+    } else if (role === 'CodeAI') {
+      if (taskLower.includes('code') || taskLower.includes('implement')) {
+        return 'CodeAI is writing code...';
+      } else if (taskLower.includes('fix') || taskLower.includes('debug')) {
+        return 'CodeAI is debugging the issue...';
+      } else if (taskLower.includes('git') || taskLower.includes('commit')) {
+        return 'CodeAI is working with git...';
+      } else {
+        return 'CodeAI is implementing a solution...';
+      }
+    } else if (role === 'GeneralAI') {
+      if (taskLower.includes('explain')) {
+        return 'GeneralAI is preparing an explanation...';
+      } else if (taskLower.includes('help')) {
+        return 'GeneralAI is finding ways to help...';
+      } else {
+        return 'GeneralAI is processing your request...';
+      }
+    } else {
+      return `${role} is working on your request...`;
+    }
+  }
+
   async intelligentRoute(task) {
     console.log(`🧠 Enhanced intelligent routing: ${task.substring(0, 50)}...`);
+    
+    // Save user message to conversation history
+    this.addUserMessageToHistory(task);
     
     // Determine which AI(s) should handle this task
     const taskLower = task.toLowerCase();
@@ -851,27 +1000,19 @@ SUCCESSFUL PATTERNS:`;
         routing_reason: 'Strategic/planning task - handled by lead AI'
       };
       
-    } else if (taskLower.includes('who') || taskLower.includes('there') || taskLower.includes('exist') || 
-               taskLower.includes('continuum') || (taskLower.includes('make') && taskLower.includes('ai'))) {
-      // Self-awareness or AI creation questions - coordinate multiple AIs to explain/create
-      console.log('🤖 AI system query detected - all AIs responding...');
+    } else if (taskLower.includes('continuum') && (taskLower.includes('what') || taskLower.includes('explain') || taskLower.includes('how'))) {
+      // Only coordinate for complex Continuum explanation questions
+      console.log('🤖 Complex system explanation - coordinating AIs...');
       
-      // Start with PlannerAI leading the explanation
-      const planResponse = await this.sendTask('PlannerAI', `As the lead AI, explain the Continuum system and coordinate with other AIs: ${task}`);
-      responses.push({ role: 'PlannerAI', type: 'leadership', result: planResponse });
-      
-      const generalResponse = await this.sendTask('GeneralAI', `Support PlannerAI's explanation about the Continuum system: ${task}`);
-      responses.push({ role: 'GeneralAI', type: 'explanation', result: generalResponse });
-      
-      const codeResponse = await this.sendTask('CodeAI', `Explain your technical role and how you implement what PlannerAI designs: ${task}`);
-      responses.push({ role: 'CodeAI', type: 'technical', result: codeResponse });
+      const planResponse = await this.sendTask('PlannerAI', `Explain the Continuum system briefly and clearly: ${task}`);
+      responses.push({ role: 'PlannerAI', type: 'explanation', result: planResponse });
       
       return {
         coordination: true,
         task: task,
         responses: responses,
         costs: this.costs,
-        summary: `PlannerAI led multi-AI explanation of Continuum system capabilities`
+        summary: `System explanation provided`
       };
       
       
@@ -931,6 +1072,12 @@ SUCCESSFUL PATTERNS:`;
   }
 
   async start() {
+    // Skip starting HTTP server if port is null (CLI mode)
+    if (this.port === null) {
+      await this.loadRepoContext();
+      return;
+    }
+    
     const server = http.createServer(async (req, res) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -1112,7 +1259,13 @@ SUCCESSFUL PATTERNS:`;
             height: 400px; 
             overflow-y: auto; 
             margin: 20px 0; 
-            border-radius: 8px; 
+            border-radius: 8px;
+            overflow-x: hidden;
+        }
+        .chat::after {
+            content: "";
+            display: table;
+            clear: both;
         }
         .input-area { 
             display: flex; 
@@ -1151,18 +1304,54 @@ SUCCESSFUL PATTERNS:`;
         .message { 
             margin: 10px 0; 
             padding: 12px; 
-            border-radius: 6px; 
-            border-left: 4px solid #0088ff; 
-            background: #2a2a2a; 
+            border-radius: 18px; 
+            max-width: 70%;
+            word-wrap: break-word;
+        }
+        .user-message {
+            margin: 8px 0 8px auto;
+            padding: 8px 12px;
+            border-radius: 16px;
+            max-width: 60%;
+            background: #007AFF;
+            color: white;
+            margin-left: auto;
+            margin-right: 15px;
+            display: block;
+            clear: both;
+            float: right;
+        }
+        .ai-message {
+            margin: 8px 15px 8px 0;
+            padding: 8px 12px;
+            border-radius: 16px;
+            max-width: 60%;
+            background: #3a3a3a;
+            color: white;
+            margin-right: auto;
+            display: block;
+            clear: both;
+            float: left;
         }
         .status { 
-            border-left-color: #00ff88; 
+            border-left: 4px solid #00ff88;
+            background: #2a2a2a;
+            padding: 8px 12px;
+            font-size: 14px;
+            opacity: 0.8;
         }
         .working { 
-            border-left-color: #ffaa00; 
+            border-left: 4px solid #ffaa00;
+            background: #2a2a2a;
+            padding: 8px 12px;
+            font-size: 14px;
+            opacity: 0.8;
+            font-style: italic;
         }
         .error { 
-            border-left-color: #ff4444; 
+            border-left: 4px solid #ff4444;
+            background: #2a2a2a;
+            padding: 8px 12px;
         }
         .timestamp { 
             font-size: 12px; 
@@ -1232,8 +1421,7 @@ SUCCESSFUL PATTERNS:`;
             
             if (!task) return;
             
-            addMessage(\`👤 You: \${task}\`, 'message');
-            addMessage('🧠 AIs coordinating...', 'working');
+            addMessage(\`\${task}\`, 'user-message');
             
             const url = \`/ask?task=\${encodeURIComponent(task)}\`;
             
@@ -1243,15 +1431,13 @@ SUCCESSFUL PATTERNS:`;
                     if (data.error) {
                         addMessage(\`❌ Error: \${data.error}\`, 'error');
                     } else if (data.coordination) {
-                        // Multiple AIs coordinated
-                        addMessage(\`🎭 \${data.summary}\`, 'status');
-                        data.responses.forEach(resp => {
-                            addMessage(\`🤖 \${resp.role} (\${resp.type}): \${resp.result}\`, 'message');
-                        });
+                        // Multiple AIs coordinated - just show the main response
+                        const mainResponse = data.responses[0];
+                        addMessage(mainResponse.result, 'ai-message');
                         updateCosts(data.costs);
                     } else {
                         // Single AI response
-                        addMessage(\`🤖 \${data.role}: \${data.result}\`, 'message');
+                        addMessage(data.result, 'ai-message');
                         updateCosts(data.costs);
                     }
                 })
@@ -1288,7 +1474,167 @@ SUCCESSFUL PATTERNS:`;
 
 // CLI entry point
 if (require.main === module) {
-  new Continuum();
+  const args = process.argv.slice(2);
+  const command = args[0] || 'start';
+
+  switch (command) {
+    case 'start':
+    case 'web':
+      console.log('🚀 Starting Continuum web interface...');
+      new Continuum();
+      break;
+      
+    case 'chat':
+      console.log('💬 Starting Continuum in chat mode...');
+      startChatMode();
+      break;
+      
+    case 'ask':
+      if (args[1]) {
+        askQuestion(args.slice(1).join(' '));
+      } else {
+        console.log('Usage: continuum ask "your question"');
+        process.exit(1);
+      }
+      break;
+      
+    case 'version':
+    case '-v':
+    case '--version':
+      const pkg = require('./package.json');
+      console.log(`Continuum v${pkg.version}`);
+      break;
+      
+    case 'help':
+    case '-h':
+    case '--help':
+    default:
+      showHelp();
+      break;
+  }
+}
+
+function showHelp() {
+  console.log(`
+🌌 Continuum - Multi-Agent AI Coordination Platform
+
+Usage:
+  continuum                    Start web interface (default)
+  continuum start              Start web interface  
+  continuum web                Start web interface
+  continuum chat               Start interactive chat mode
+  continuum ask "question"     Ask a one-time question
+  continuum version            Show version
+  continuum help               Show this help
+
+Examples:
+  continuum                              # Start web UI at http://localhost:5555
+  continuum ask "analyze this codebase" # One-time question
+  continuum chat                         # Interactive terminal chat
+
+Web Interface:
+  The web interface allows you to chat with multiple AI agents
+  that can coordinate with each other and use tools like:
+  - WebFetch (browse websites)
+  - File operations (read/write files)  
+  - Git operations (status, commits)
+  - GitHub CI integration
+
+AI Agents:
+  - PlannerAI: Strategic planning and coordination (OpenAI GPT-4o)
+  - CodeAI: Code implementation and debugging (Claude)
+  - GeneralAI: General assistance and analysis (Claude)
+
+For more information, visit: https://github.com/anthropics/continuum
+`);
+}
+
+async function startChatMode() {
+  const readline = require('readline');
+  
+  console.log('💬 Continuum Chat Mode');
+  console.log('======================');
+  console.log('Type your questions and the AIs will respond.');
+  console.log('Type "exit" or "quit" to end the chat.\n');
+  
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  // Create Continuum instance but don't start web server
+  const continuum = new Continuum();
+  continuum.autoStart = false; // Prevent auto-start
+  continuum.port = null; // Disable web server
+  
+  // Manual initialization
+  await continuum.loadRepoContext();
+  console.log('✅ Continuum ready for chat\n');
+  promptUser();
+  
+  function promptUser() {
+    rl.question('You: ', async (input) => {
+      if (input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
+        console.log('👋 Goodbye!');
+        rl.close();
+        process.exit(0);
+      }
+      
+      try {
+        console.log('🤖 AI is thinking...');
+        const result = await continuum.intelligentRoute(input);
+        
+        if (result.coordination) {
+          console.log(`\n${result.summary}`);
+          result.responses.forEach(resp => {
+            console.log(`${resp.role}: ${resp.result}\n`);
+          });
+        } else {
+          console.log(`${result.role}: ${result.result}\n`);
+        }
+      } catch (error) {
+        console.log(`❌ Error: ${error.message}\n`);
+      }
+      
+      promptUser();
+    });
+  }
+}
+
+async function askQuestion(question) {
+  console.log(`❓ Question: ${question}`);
+  console.log('🤖 AI is thinking...\n');
+  
+  try {
+    // Create lightweight Continuum instance with manual initialization
+    const continuum = new Continuum();
+    continuum.autoStart = false; // Prevent auto-start
+    continuum.port = null; // Disable web server
+    
+    // Manual initialization for CLI mode
+    await continuum.loadRepoContext();
+    
+    // Wait a moment for initialization
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    const result = await continuum.intelligentRoute(question);
+    
+    if (result.coordination) {
+      console.log(`${result.summary}\n`);
+      result.responses.forEach(resp => {
+        console.log(`${resp.role}:`);
+        console.log(`${resp.result}\n`);
+      });
+    } else {
+      console.log(`${result.role}:`);
+      console.log(`${result.result}\n`);
+    }
+    
+    process.exit(0);
+  } catch (error) {
+    console.error(`❌ Error: ${error.message}`);
+    process.exit(1);
+  }
 }
 
 module.exports = Continuum;
