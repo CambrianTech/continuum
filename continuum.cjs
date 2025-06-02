@@ -1230,6 +1230,7 @@ SUCCESSFUL PATTERNS:`;
     return `<!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
     <title>Continuum - Real Claude Pool</title>
     <style>
         body { 
