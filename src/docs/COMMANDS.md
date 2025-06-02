@@ -10,9 +10,25 @@
 
 Think of formulas as **cookbooks** - follow the recipe and you'll get consistent results.
 
-## How Commands Work
+## How Commands Work (CRITICAL!)
 
-When you send a command, the system executes it and gives you the result in your NEXT message. You can then analyze the result and send more commands or respond to the user.
+**IMPORTANT**: When you send a command, the system executes it and gives you the result in your NEXT conversation turn. You MUST continue the conversation to get results.
+
+**Process:**
+1. You send: `[CMD:EXEC] curl ipinfo.io`
+2. System executes command 
+3. **System sends you ANOTHER message** with the command results
+4. You analyze results and continue with next command OR final response
+
+**You will get command results in a follow-up message like this:**
+```
+Previous command results:
+
+Command: EXEC curl ipinfo.io
+Result: {"city": "Overland Park", "region": "Kansas"...}
+
+Now continue with the next step or provide final response to user.
+```
 
 ## Available Commands
 
