@@ -587,25 +587,30 @@ USER TASK: ${prompt}`;
         if (toolResults.length > 0) {
           console.log(`🔧 Executed ${toolResults.length} tools, sending callback to ${role}...`);
           
-          // Send callback to AI with tool results
-          const toolSummary = toolResults.map(r => `${r.tool}: ${r.result}`).join('\n\n');
-          const callbackPrompt = `CALLBACK: Your tools have completed execution.
+          // Send callback to SAME AI with tool results
+          const toolSummary = toolResults.map(r => `Command: ${r.tool} ${r.command}\nResult: ${r.result}`).join('\n\n');
+          const callbackPrompt = `Previous command results:
 
-ORIGINAL REQUEST: "${prompt}"
-TOOL RESULTS:
 ${toolSummary}
 
-Provide a natural response to the user based on these results. Analyze and summarize what you found.`;
+Now continue with the next step or provide final response to user.`;
           
-          const callbackCompletion = await openai.chat.completions.create({
-            model: "gpt-4o",
-            messages: [{ role: "user", content: callbackPrompt }],
-            max_tokens: 1000,
-            temperature: 0.7,
-          });
-          
-          response = callbackCompletion.choices[0].message.content;
-          cost += (callbackCompletion.usage.prompt_tokens * 0.005 + callbackCompletion.usage.completion_tokens * 0.015) / 1000;
+          // Continue conversation with SAME AI instance
+          if (role === 'GeneralAI' || role === 'PlannerAI' || role === 'CodeAI') {
+            const callbackCompletion = await anthropic.messages.create({
+              model: 'claude-3-5-sonnet-20241022',
+              messages: [
+                { role: "user", content: prompt },
+                { role: "assistant", content: response },
+                { role: "user", content: callbackPrompt }
+              ],
+              max_tokens: 1000,
+              temperature: 0.7,
+            });
+            
+            response = callbackCompletion.content[0].text;
+            cost += (callbackCompletion.usage.input_tokens * 0.003 + callbackCompletion.usage.output_tokens * 0.015) / 1000;
+          }
           
         } else if (parsed.chatMessage) {
           // No tools executed, use the chat message from protocol
