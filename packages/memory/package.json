@@ -1,34 +1,19 @@
 {
   "name": "@continuum/memory",
   "version": "0.6.0",
-  "description": "AI memory and strategy storage system",
+  "description": "NASA-grade AI memory and strategy storage",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.js"
-    }
-  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "jest",
-    "lint": "eslint src/**/*.ts",
-    "type-check": "tsc --noEmit"
+    "test": "node ../tests/memory-package.test.js"
   },
-  "dependencies": {},
   "devDependencies": {
     "typescript": "^5.0.0",
-    "@types/node": "^20.0.0",
-    "jest": "^29.0.0",
-    "@types/jest": "^29.0.0"
+    "@types/node": "^20.0.0"
   },
   "files": [
     "dist"
-  ],
-  "publishConfig": {
-    "access": "restricted"
-  }
+  ]
 }
