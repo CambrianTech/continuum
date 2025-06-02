@@ -97,11 +97,11 @@ export class SelfImprovementCoordinator {
   }
 
   private async initializeSelfImprovement(): Promise<void> {
-    console.log('🚀 SELF-IMPROVEMENT COORDINATOR ACTIVATING');
+    console.log(' SELF-IMPROVEMENT COORDINATOR ACTIVATING');
     console.log('==========================================');
-    console.log('📈 Creating feedback loops for continuous improvement');
-    console.log('💰 Monitoring costs and resource usage');
-    console.log('🧠 Learning from successes and failures');
+    console.log(' Creating feedback loops for continuous improvement');
+    console.log(' Monitoring costs and resource usage');
+    console.log(' Learning from successes and failures');
     console.log('');
 
     // Load existing patterns and feedback
@@ -110,9 +110,9 @@ export class SelfImprovementCoordinator {
     // Start resource monitoring
     this.startResourceMonitoring();
     
-    console.log('✅ Self-improvement system ready');
-    console.log(`📊 Loaded ${this.strategyPatterns.size} strategy patterns`);
-    console.log(`🔄 ${this.feedbackLoops.length} feedback loops in history`);
+    console.log(' Self-improvement system ready');
+    console.log(` Loaded ${this.strategyPatterns.size} strategy patterns`);
+    console.log(` ${this.feedbackLoops.length} feedback loops in history`);
   }
 
   private async loadExistingPatterns(): Promise<void> {
@@ -130,7 +130,7 @@ export class SelfImprovementCoordinator {
         this.feedbackLoops = JSON.parse(fs.readFileSync(feedbackPath, 'utf-8'));
       }
     } catch (error) {
-      console.log('📝 Starting with fresh improvement tracking');
+      console.log(' Starting with fresh improvement tracking');
     }
   }
 
@@ -144,7 +144,7 @@ export class SelfImprovementCoordinator {
   }): Promise<string> {
     const operationId = `op_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
     
-    console.log(`📊 Recording operation: ${operation.name} [${operationId}]`);
+    console.log(` Recording operation: ${operation.name} [${operationId}]`);
     
     // Store operation start for tracking
     (this as any).activeOperations = (this as any).activeOperations || new Map();
@@ -164,7 +164,7 @@ export class SelfImprovementCoordinator {
     const operation = activeOps.get(operationId);
     
     if (!operation) {
-      console.log(`⚠️  Operation ${operationId} not found in tracking`);
+      console.log(`  Operation ${operationId} not found in tracking`);
       return;
     }
 
@@ -198,14 +198,14 @@ export class SelfImprovementCoordinator {
     // Save feedback
     await this.saveFeedbackData();
     
-    console.log(`✅ Operation completed: ${operation.name}`);
+    console.log(` Operation completed: ${operation.name}`);
     console.log(`   Success: ${result.success}`);
     console.log(`   Cost: $${result.cost.toFixed(4)}`);
     console.log(`   Time: ${feedback.timeMs}ms`);
     console.log(`   Memory: ${feedback.memoryUsageMB.toFixed(1)}MB`);
     
     if (feedback.learnings.length > 0) {
-      console.log(`   💡 Learnings: ${feedback.learnings.join(', ')}`);
+      console.log(`    Learnings: ${feedback.learnings.join(', ')}`);
     }
   }
 
@@ -285,7 +285,7 @@ export class SelfImprovementCoordinator {
     if (this.isMonitoring) return;
     
     this.isMonitoring = true;
-    console.log('📊 Starting resource monitoring...');
+    console.log(' Starting resource monitoring...');
     
     // Check resources every 30 seconds
     setInterval(async () => {
@@ -310,7 +310,7 @@ export class SelfImprovementCoordinator {
       }
       
     } catch (error) {
-      console.log(`⚠️  Resource monitoring error: ${error.message}`);
+      console.log(`  Resource monitoring error: ${error.message}`);
     }
   }
 
@@ -338,7 +338,7 @@ export class SelfImprovementCoordinator {
       }
       
     } catch (error) {
-      console.log(`⚠️  Error getting resource usage: ${error.message}`);
+      console.log(`  Error getting resource usage: ${error.message}`);
     }
     
     return current;
@@ -361,19 +361,19 @@ export class SelfImprovementCoordinator {
     }
     
     if (resources.warnings.length > 0) {
-      console.log('⚠️  RESOURCE WARNINGS:');
+      console.log('  RESOURCE WARNINGS:');
       resources.warnings.forEach(warning => console.log(`   - ${warning}`));
     }
   }
 
   private async performAutoCleanup(): Promise<void> {
-    console.log('🧹 Performing auto-cleanup to reduce resource usage...');
+    console.log(' Performing auto-cleanup to reduce resource usage...');
     
     try {
       // Clean old feedback loops (keep only last 1000)
       if (this.feedbackLoops.length > 1000) {
         this.feedbackLoops = this.feedbackLoops.slice(-1000);
-        console.log('   🗑️  Cleaned old feedback loops');
+        console.log('     Cleaned old feedback loops');
       }
       
       // Clean old strategy patterns (remove unused ones)
@@ -386,23 +386,23 @@ export class SelfImprovementCoordinator {
         }
       }
       if (cleaned > 0) {
-        console.log(`   🗑️  Cleaned ${cleaned} unreliable strategy patterns`);
+        console.log(`     Cleaned ${cleaned} unreliable strategy patterns`);
       }
       
       // Clean temporary files
       const tempDir = path.join(this.projectRoot, '.continuum', 'temp');
       if (fs.existsSync(tempDir)) {
         await execAsync(`rm -rf "${tempDir}"/*`);
-        console.log('   🗑️  Cleaned temporary files');
+        console.log('     Cleaned temporary files');
       }
       
       // Save cleaned data
       await this.saveFeedbackData();
       
-      console.log('✅ Auto-cleanup completed');
+      console.log(' Auto-cleanup completed');
       
     } catch (error) {
-      console.log(`❌ Auto-cleanup failed: ${error.message}`);
+      console.log(` Auto-cleanup failed: ${error.message}`);
     }
   }
 
@@ -413,7 +413,7 @@ export class SelfImprovementCoordinator {
     warnings: string[];
     costsEstimate: number;
   }> {
-    console.log(`🔍 Querying strategy for operation: ${operation}`);
+    console.log(` Querying strategy for operation: ${operation}`);
     
     // Find relevant patterns
     const relevantPatterns = Array.from(this.strategyPatterns.values())
@@ -452,7 +452,7 @@ export class SelfImprovementCoordinator {
     const costEstimate = recommended ? 
       recommended.totalCost / Math.max(recommended.successCount, 1) : 0.01;
     
-    console.log(`📊 Strategy query results:`);
+    console.log(` Strategy query results:`);
     console.log(`   Recommended: ${recommended?.pattern || 'None'}`);
     console.log(`   Reliability: ${recommended?.reliability ? (recommended.reliability * 100).toFixed(1) + '%' : 'N/A'}`);
     console.log(`   Cost estimate: $${costEstimate.toFixed(4)}`);
@@ -472,7 +472,7 @@ export class SelfImprovementCoordinator {
     cost: number;
     context: any;
   }): Promise<void> {
-    console.log(`🚨 Learning from failure: ${operation}`);
+    console.log(` Learning from failure: ${operation}`);
     
     // Record failure pattern
     const antiPattern = `${operation}_failure: ${failure.error}`;
@@ -521,7 +521,7 @@ export class SelfImprovementCoordinator {
       tags: ['failure', 'learning', operation]
     });
     
-    console.log(`💡 Failure pattern recorded: ${antiPattern}`);
+    console.log(` Failure pattern recorded: ${antiPattern}`);
     await this.saveFeedbackData();
   }
 
@@ -533,7 +533,7 @@ export class SelfImprovementCoordinator {
     resourceOptimizations: string[];
     costOptimizations: string[];
   }> {
-    console.log('🎯 Generating improvement recommendations...');
+    console.log(' Generating improvement recommendations...');
     
     const highPriority = [];
     const mediumPriority = [];
@@ -583,7 +583,7 @@ export class SelfImprovementCoordinator {
       lowPriority.push(`Promote reliable operation: ${op.pattern} (${(op.reliability * 100).toFixed(1)}% success, underused)`);
     });
     
-    console.log(`📊 Generated recommendations:`);
+    console.log(` Generated recommendations:`);
     console.log(`   High priority: ${highPriority.length}`);
     console.log(`   Medium priority: ${mediumPriority.length}`);
     console.log(`   Low priority: ${lowPriority.length}`);
@@ -622,7 +622,7 @@ export class SelfImprovementCoordinator {
       fs.writeFileSync(resourcePath, JSON.stringify(this.resourceMonitor, null, 2));
       
     } catch (error) {
-      console.log(`⚠️  Error saving feedback data: ${error.message}`);
+      console.log(`  Error saving feedback data: ${error.message}`);
     }
   }
 
