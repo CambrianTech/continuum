@@ -2,11 +2,10 @@
   "name": "continuum",
   "version": "0.1.0",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
-  "main": "index.js",
+  "main": "continuum.cjs",
   "bin": {
     "continuum": "./continuum.cjs"
   },
-  "private": true,
   "type": "module",
   "workspaces": [
     "packages/*"
