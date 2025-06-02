@@ -128,6 +128,7 @@ class Continuum {
     this.ensureContinuumDir();
     this.loadConversationHistory();
     this.setupGracefulShutdown();
+    this.availableModels = { anthropic: [], openai: [] };
     
     // Auto-start only if not overridden
     if (this.autoStart !== false) {
@@ -238,7 +239,7 @@ class Continuum {
     console.log('🔌 Loading commands from single source...');
     try {
       // Read from the COMMANDS.md file - single source of truth
-      this.availableCommands = fs.readFileSync('./COMMANDS.md', 'utf-8');
+      this.availableCommands = fs.readFileSync('./src/docs/COMMANDS.md', 'utf-8');
       console.log('✅ Commands loaded from COMMANDS.md');
     } catch (error) {
       console.error('❌ Failed to load COMMANDS.md:', error.message);
@@ -277,6 +278,70 @@ class Continuum {
         return `File written: ${filePath}`;
       default:
         throw new Error(`Unknown command: ${action}`);
+    }
+  }
+
+  async discoverAvailableModels() {
+    console.log('🔍 Discovering available AI models...');
+    
+    try {
+      // Query Anthropic models
+      if (process.env.ANTHROPIC_API_KEY) {
+        try {
+          const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+          // Note: Anthropic doesn't have a public models endpoint yet, so we'll use known models
+          this.availableModels.anthropic = [
+            'claude-3-5-sonnet-20241022',
+            'claude-3-5-haiku-20241022', 
+            'claude-3-opus-20240229',
+            'claude-3-sonnet-20240229',
+            'claude-3-haiku-20240307'
+          ];
+          console.log(`✅ Anthropic models: ${this.availableModels.anthropic.length} found`);
+        } catch (error) {
+          console.log(`⚠️ Anthropic model discovery failed: ${error.message}`);
+        }
+      }
+
+      // Query OpenAI models  
+      if (process.env.OPENAI_API_KEY) {
+        try {
+          const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+          const models = await openai.models.list();
+          this.availableModels.openai = models.data
+            .filter(model => model.id.includes('gpt'))
+            .map(model => model.id)
+            .sort();
+          console.log(`✅ OpenAI models: ${this.availableModels.openai.length} found`);
+        } catch (error) {
+          console.log(`⚠️ OpenAI model discovery failed: ${error.message}`);
+        }
+      }
+
+    } catch (error) {
+      console.error('❌ Model discovery failed:', error.message);
+    }
+  }
+
+  getBestAvailableModel(provider = 'anthropic') {
+    const models = this.availableModels[provider] || [];
+    if (models.length === 0) {
+      return provider === 'anthropic' ? 'claude-3-5-sonnet-20241022' : 'gpt-4';
+    }
+    
+    // Return the most capable model available
+    if (provider === 'anthropic') {
+      const preferred = ['claude-3-5-sonnet-20241022', 'claude-3-opus-20240229', 'claude-3-sonnet-20240229'];
+      for (const model of preferred) {
+        if (models.includes(model)) return model;
+      }
+      return models[0];
+    } else {
+      const preferred = ['gpt-4o', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo'];
+      for (const model of preferred) {
+        if (models.includes(model)) return model;
+      }
+      return models[0];
     }
   }
 
@@ -1580,8 +1645,9 @@ SUCCESSFUL PATTERNS:`;
   }
 
   async start() {
-    // Initialize commands first
+    // Initialize commands and discover models
     await this.initializeCommands();
+    await this.discoverAvailableModels();
     
     // Skip starting HTTP server if port is null (CLI mode)
     if (this.port === null) {
