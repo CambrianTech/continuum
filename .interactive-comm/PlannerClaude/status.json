@@ -1,0 +1,13 @@
+{
+  "name": "PlannerClaude",
+  "id": "claude_1748853628822_9zmcpdwca",
+  "status": "active",
+  "capabilities": [
+    "Create plans",
+    "Ask about priorities",
+    "Schedule confirmation",
+    "Resource planning"
+  ],
+  "lastActivity": "2025-06-02T08:40:28.822Z",
+  "waitingForResponse": false
+}

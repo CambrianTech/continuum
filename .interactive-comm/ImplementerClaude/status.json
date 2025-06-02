@@ -1,0 +1,13 @@
+{
+  "name": "ImplementerClaude",
+  "id": "claude_1748853628823_ysc4lcmg3",
+  "status": "active",
+  "capabilities": [
+    "Execute tasks",
+    "Ask for guidance",
+    "Report progress",
+    "Handle errors"
+  ],
+  "lastActivity": "2025-06-02T08:40:28.823Z",
+  "waitingForResponse": false
+}

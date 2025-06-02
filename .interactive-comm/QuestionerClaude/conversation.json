@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2025-06-02T08:50:32.304Z",
+    "type": "received",
+    "from": "user",
+    "content": "I want to integrate an AI API into my project"
+  },
+  {
+    "timestamp": "2025-06-02T08:50:49.368Z",
+    "type": "sent",
+    "to": "user",
+    "content": "I'll help you integrate Anthropic Claude. Let me ask DecisionClaude to help plan this."
+  }
+]
