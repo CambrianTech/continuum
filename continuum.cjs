@@ -247,21 +247,32 @@ class Continuum {
   }
 
   async executeBasicCommand(action, params) {
+    console.log(`🔧 EXECUTING COMMAND: ${action} with params: ${params.substring(0, 100)}...`);
+    
     switch (action.toUpperCase()) {
       case 'WEBFETCH':
-        return await this.webFetch(params);
+        console.log(`🌐 WebFetch URL: ${params}`);
+        const webResult = await this.webFetch(params);
+        console.log(`🌐 WebFetch Result: ${webResult.substring(0, 200)}...`);
+        return webResult;
       case 'EXEC':
+        console.log(`⚡ Exec Command: ${params}`);
         const { exec } = require('child_process');
         const { promisify } = require('util');
         const execAsync = promisify(exec);
         const { stdout } = await execAsync(params);
+        console.log(`⚡ Exec Result: ${stdout ? stdout.substring(0, 200) : 'No output'}...`);
         return stdout || 'Command completed';
       case 'FILE_READ':
-        return fs.readFileSync(params, 'utf-8').substring(0, 2000);
+        console.log(`📖 Reading file: ${params}`);
+        const fileContent = fs.readFileSync(params, 'utf-8').substring(0, 2000);
+        console.log(`📖 File content length: ${fileContent.length} chars`);
+        return fileContent;
       case 'FILE_WRITE':
         const parts = params.split('\n');
         const filePath = parts[0];
         const content = parts.slice(1).join('\n');
+        console.log(`📝 Writing file: ${filePath} (${content.length} chars)`);
         fs.writeFileSync(filePath, content, 'utf-8');
         return `File written: ${filePath}`;
       default:
@@ -830,6 +841,7 @@ SUCCESSFUL PATTERNS:`;
 
   parseAIProtocol(response) {
     console.log(`🔍 Parsing AI protocol response...`);
+    console.log(`📝 Full AI Response: ${response.substring(0, 300)}...`);
     
     const result = {
       chatMessage: '',
@@ -846,6 +858,7 @@ SUCCESSFUL PATTERNS:`;
 
     // Extract commands: [CMD:ACTION] params
     const cmdMatches = response.matchAll(/\[CMD:(\w+)\]\s*([^\[\n]+)/g);
+    let commandCount = 0;
     for (const match of cmdMatches) {
       const action = match[1].toUpperCase();
       const params = match[2].trim();
@@ -862,8 +875,11 @@ SUCCESSFUL PATTERNS:`;
       };
       
       result.commands.push(command);
-      console.log(`📤 Protocol Command: ${action} - ${params}`);
+      commandCount++;
+      console.log(`📤 Protocol Command ${commandCount}: ${action} - ${params}`);
     }
+    
+    console.log(`🎯 Total Commands Found: ${commandCount}`);
 
     // Extract chat message (remove protocol blocks)
     let chatMessage = response;
