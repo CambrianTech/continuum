@@ -150,6 +150,10 @@ export abstract class BaseAgent implements IAgent {
       : 0;
   }
 
+  protected addTool(name: string, tool: ITool): void {
+    this.tools.set(name, tool);
+  }
+
   public abstract initialize(): Promise<void>;
   public abstract getAIResponse(task: string): Promise<string>;
   public abstract execute(task: string): Promise<TaskExecutionResult>;

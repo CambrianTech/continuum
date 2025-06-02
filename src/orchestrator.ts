@@ -196,7 +196,7 @@ export class Orchestrator extends EventEmitter {
   } {
     const agentMetrics: Record<string, any> = {};
     
-    for (const [name, agent] of this.agents) {
+    for (const [name, agent] of Array.from(this.agents)) {
       agentMetrics[name] = agent.getMetrics();
     }
 
