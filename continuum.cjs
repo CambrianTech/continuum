@@ -9,18 +9,86 @@
  */
 
 const http = require('http');
+const net = require('net');
 const WebSocket = require('ws');
 const { Anthropic } = require('@anthropic-ai/sdk');
 const { OpenAI } = require('openai');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+
+// Setup user configuration directory
+const userContinuumDir = path.join(os.homedir(), '.continuum');
+const userConfigFile = path.join(userContinuumDir, 'config.env');
+
+function ensureUserConfig() {
+  // Create ~/.continuum directory if it doesn't exist
+  if (!fs.existsSync(userContinuumDir)) {
+    fs.mkdirSync(userContinuumDir, { recursive: true });
+    console.log('📁 Created user config directory:', userContinuumDir);
+  }
+
+  // Create config.env if it doesn't exist
+  if (!fs.existsSync(userConfigFile)) {
+    const configTemplate = `# Continuum User Configuration
+# Add your API keys below (remove the # to uncomment)
+
+# Required: Anthropic Claude API Key
+# Get from: https://console.anthropic.com/account/keys
+# ANTHROPIC_API_KEY=sk-ant-api03-your-key-here
+
+# Required: OpenAI API Key  
+# Get from: https://platform.openai.com/account/api-keys
+# OPENAI_API_KEY=sk-proj-your-key-here
+
+# Optional: Override default ports
+# CONTINUUM_PORT=5555
+# CONTINUUM_WS_PORT=5556
+
+# Optional: Override default AI models
+# ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
+# OPENAI_MODEL=gpt-4o
+
+# Optional: Enable debug logging
+# DEBUG=true
+`;
+    fs.writeFileSync(userConfigFile, configTemplate);
+    console.log('📄 Created config template:', userConfigFile);
+    console.log('');
+    console.log('🔧 SETUP REQUIRED:');
+    console.log('   Edit', userConfigFile);
+    console.log('   Add your API keys by uncommenting and filling in the lines');
+    console.log('   Then run continuum again');
+    console.log('');
+    process.exit(0);
+  }
+}
+
+// Initialize user configuration
+ensureUserConfig();
+
+// Load config from user directory first, then project directory
+require('dotenv').config({ path: userConfigFile });
 require('dotenv').config();
 
 // Initialize AI clients
 console.log('🔑 API Keys loaded:');
 console.log('- Anthropic:', process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.substring(0, 15) + '...' : 'NOT SET');
 console.log('- OpenAI:', process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.substring(0, 15) + '...' : 'NOT SET');
+
+// Check for required API keys
+if (!process.env.ANTHROPIC_API_KEY || !process.env.OPENAI_API_KEY) {
+  console.log('');
+  console.log('❌ Missing API keys!');
+  console.log('   Edit', userConfigFile);
+  console.log('   Uncomment and add your API keys');
+  console.log('');
+  console.log('   Get Anthropic key: https://console.anthropic.com/account/keys');
+  console.log('   Get OpenAI key: https://platform.openai.com/account/api-keys');
+  console.log('');
+  process.exit(1);
+}
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -31,14 +99,24 @@ const openai = new OpenAI({
 });
 
 class Continuum {
-  constructor() {
+  constructor(options = {}) {
     this.sessions = new Map();
     this.costs = { total: 0, requests: 0 };
-    this.port = 5555;
+    this.port = options.port || process.env.CONTINUUM_PORT || 5555;
+    this.stayAlive = options.stayAlive || false;
     this.repoContext = null;
+    this.conversationThreads = new Map(); // Each user gets their own thread
+    this.activeConnections = new Map(); // Track active WebSocket connections
     this.conversationHistory = [];
     this.continuumDir = path.join(process.cwd(), '.continuum');
     this.historyFile = path.join(this.continuumDir, 'conversation-history.jsonl');
+    this.pidFile = path.join(this.continuumDir, 'continuum.pid');
+    this.server = null;
+    this.isShuttingDown = false;
+    
+    // Command system
+    this.commandRegistry = null;
+    this.availableCommands = '';
     
     console.log('🌌 CONTINUUM - Real Claude Pool');
     console.log('===============================');
@@ -49,6 +127,7 @@ class Continuum {
     
     this.ensureContinuumDir();
     this.loadConversationHistory();
+    this.setupGracefulShutdown();
     
     // Auto-start only if not overridden
     if (this.autoStart !== false) {
@@ -152,6 +231,37 @@ class Continuum {
     } catch (error) {
       console.error('❌ Failed to load repo context:', error.message);
       this.repoContext = { error: error.message, timestamp: new Date().toISOString() };
+    }
+  }
+
+  async initializeCommands() {
+    console.log('🔌 Initializing TypeScript commands...');
+    try {
+      const { CommandRegistry } = await import('./src/commands/CommandRegistry.js');
+      this.commandRegistry = new CommandRegistry();
+      await this.commandRegistry.loadCommands();
+      this.availableCommands = this.commandRegistry.generateHelp();
+      console.log('✅ TypeScript commands loaded');
+    } catch (error) {
+      console.log('📦 Using basic command fallback');
+      this.availableCommands = `# Basic Commands: WEBFETCH, EXEC, FILE_READ`;
+    }
+  }
+
+  async executeBasicCommand(action, params) {
+    switch (action.toUpperCase()) {
+      case 'WEBFETCH':
+        return await this.webFetch(params);
+      case 'EXEC':
+        const { exec } = require('child_process');
+        const { promisify } = require('util');
+        const execAsync = promisify(exec);
+        const { stdout } = await execAsync(params);
+        return stdout || 'Command completed';
+      case 'FILE_READ':
+        return fs.readFileSync(params, 'utf-8').substring(0, 2000);
+      default:
+        throw new Error(`Unknown command: ${action}`);
     }
   }
 
@@ -349,14 +459,15 @@ ACTUAL TOOLS AVAILABLE TO YOU:
 - Real-time Communication: WebSocket and REST APIs
 - Code Execution: Run scripts and commands
 
-TOOL EXECUTION COMMANDS (use these exact formats in your responses):
-- WEBFETCH: https://example.com
-- FILE_READ: /path/to/file.js  
-- FILE_WRITE: /path/to/file.js [content]
-- GIT_STATUS: (no parameters)
-- GIT_COMMIT: "commit message"
+COMMUNICATION PROTOCOL:
+${this.availableCommands}
 
-IMPORTANT: When you want to use a tool, include the exact command in your response and I will execute it for you!
+CRITICAL RULES:
+- Use [STATUS] for progress updates
+- Use [CMD:COMMAND] for tool execution  
+- Use [CHAT] for user messages
+- NEVER mention commands in chat text
+- Commands execute via callbacks
 
 PROACTIVE BEHAVIORS YOU SHOULD EXHIBIT:
 - Always suggest follow-up actions or improvements
@@ -389,12 +500,36 @@ USER TASK: ${prompt}`;
         response = completion.choices[0].message.content;
         cost = (completion.usage.prompt_tokens * 0.005 + completion.usage.completion_tokens * 0.015) / 1000;
         
-        // Process tool commands from AI response
+        // Process AI protocol and execute commands
         const toolResults = await this.processToolCommands(response);
+        const parsed = this.parseAIProtocol(response);
+        
         if (toolResults.length > 0) {
-          console.log(`🔧 Executed ${toolResults.length} tools for ${role}`);
-          // Add tool results to response
-          response += '\n\n' + toolResults.map(r => `🔧 ${r.tool}: ${r.result.substring(0, 200)}...`).join('\n');
+          console.log(`🔧 Executed ${toolResults.length} tools, sending callback to ${role}...`);
+          
+          // Send callback to AI with tool results
+          const toolSummary = toolResults.map(r => `${r.tool}: ${r.result}`).join('\n\n');
+          const callbackPrompt = `CALLBACK: Your tools have completed execution.
+
+ORIGINAL REQUEST: "${prompt}"
+TOOL RESULTS:
+${toolSummary}
+
+Provide a natural response to the user based on these results. Analyze and summarize what you found.`;
+          
+          const callbackCompletion = await openai.chat.completions.create({
+            model: "gpt-4o",
+            messages: [{ role: "user", content: callbackPrompt }],
+            max_tokens: 1000,
+            temperature: 0.7,
+          });
+          
+          response = callbackCompletion.choices[0].message.content;
+          cost += (callbackCompletion.usage.prompt_tokens * 0.005 + callbackCompletion.usage.completion_tokens * 0.015) / 1000;
+          
+        } else if (parsed.chatMessage) {
+          // No tools executed, use the chat message from protocol
+          response = parsed.chatMessage;
         }
         
       } else {
@@ -689,11 +824,117 @@ SUCCESSFUL PATTERNS:`;
     }
   }
 
+  parseAIProtocol(response) {
+    console.log(`🔍 Parsing AI protocol response...`);
+    
+    const result = {
+      chatMessage: '',
+      commands: [],
+      status: null
+    };
+
+    // Extract status: [STATUS] message
+    const statusMatch = response.match(/\[STATUS\]\s*([^\[\n]+)/);
+    if (statusMatch) {
+      result.status = statusMatch[1].trim();
+      console.log(`📊 Protocol Status: ${result.status}`);
+    }
+
+    // Extract commands: [CMD:ACTION] params
+    const cmdMatches = response.matchAll(/\[CMD:(\w+)\]\s*([^\[\n]+)/g);
+    for (const match of cmdMatches) {
+      const action = match[1].toUpperCase();
+      const params = match[2].trim();
+      
+      // Create command object dynamically
+      const command = { 
+        action, 
+        params: params,
+        // Legacy compatibility for specific command parameter names
+        url: params,        // For WEBFETCH
+        path: params,       // For FILE_READ  
+        command: params,    // For EXEC
+        topic: params       // For MAN
+      };
+      
+      result.commands.push(command);
+      console.log(`📤 Protocol Command: ${action} - ${params}`);
+    }
+
+    // Extract chat message (remove protocol blocks)
+    let chatMessage = response;
+    chatMessage = chatMessage.replace(/\[STATUS\][^\[\n]+/g, '');
+    chatMessage = chatMessage.replace(/\[CMD:\w+\][^\[\n]+/g, '');
+    
+    // Extract explicit chat block if present
+    const chatMatch = response.match(/\[CHAT\]\s*([\s\S]*?)(?=\[|$)/);
+    if (chatMatch) {
+      chatMessage = chatMatch[1].trim();
+    } else {
+      chatMessage = chatMessage.trim();
+    }
+    
+    result.chatMessage = chatMessage;
+    
+    return result;
+  }
+
   async processToolCommands(response) {
-    console.log(`🔍 Scanning AI response for tool commands...`);
+    console.log(`🔍 Processing AI protocol...`);
     const toolResults = [];
     
-    // Extract tool commands from AI response
+    // Parse the protocol response first
+    const parsed = this.parseAIProtocol(response);
+    
+    // Send status to UI if present
+    if (parsed.status) {
+      // Status will be handled by the caller
+    }
+    
+    // Execute protocol commands using dynamic discovery
+    for (const command of parsed.commands) {
+      try {
+        console.log(`⚡ Executing dynamic command: ${command.action}`);
+        
+        // Try TypeScript commands first, fallback to basic
+        if (this.commandRegistry && this.commandRegistry.hasCommand(command.action.toLowerCase())) {
+          await this.commandRegistry.executeCommand(command.action.toLowerCase(), [command.params || '']);
+          toolResults.push({
+            tool: command.action,
+            command: command.params || '',
+            result: 'Command executed successfully'
+          });
+        } else {
+          const result = await this.executeBasicCommand(command.action, command.params || command);
+          toolResults.push({
+            tool: command.action,
+            command: command.params || '',
+            result: result
+          });
+        }
+      } catch (error) {
+        console.error(`❌ Command execution failed: ${error.message}`);
+        toolResults.push({
+          tool: command.action,
+          command: JSON.stringify(command),
+          result: `Error: ${error.message}`
+        });
+      }
+    }
+
+    // Fall back to legacy command detection if no protocol commands found
+    if (parsed.commands.length === 0) {
+      return this.processLegacyToolCommands(response);
+    }
+
+    return toolResults;
+  }
+
+  async processLegacyToolCommands(response) {
+    console.log(`🔍 Scanning AI response for legacy tool commands...`);
+    const toolResults = [];
+    
+    // Extract tool commands from AI response (legacy format)
     const webfetchMatches = response.match(/WEBFETCH:\s*(https?:\/\/[^\s\n]+)/gi);
     const fileReadMatches = response.match(/FILE_READ:\s*([^\s\n]+)/gi);
     const fileWriteMatches = response.match(/FILE_WRITE:\s*([^\s\n]+)\s+(.+)/gi);
@@ -804,7 +1045,7 @@ SUCCESSFUL PATTERNS:`;
       const statusMessage = this.getAgentStatus(role, task);
       ws.send(JSON.stringify({
         type: 'working',
-        data: statusMessage
+        data: `${role} ${statusMessage}`
       }));
     }
     
@@ -932,6 +1173,62 @@ SUCCESSFUL PATTERNS:`;
       }
     } else {
       return `${role} is working on your request...`;
+    }
+  }
+
+  async handleUserConnection(ws) {
+    // Process user connection event through AI system
+    try {
+      console.log('🔔 Processing user connection event...');
+      
+      // Send connection event as a task to the AI
+      const connectionEvent = 'A new user just connected. Give them a brief, friendly greeting and ask how you can help. Keep it conversational and short - no long explanations about the system.';
+      const greetingAgent = this.getInitialAgent('greeting user connection');
+      
+      setTimeout(async () => {
+        try {
+          const greeting = await this.sendTask(greetingAgent, connectionEvent);
+          
+          ws.send(JSON.stringify({
+            type: 'result',
+            data: {
+              role: greetingAgent,
+              task: 'user_connection_greeting',
+              result: greeting,
+              costs: this.costs
+            }
+          }));
+        } catch (error) {
+          console.error('AI greeting failed:', error);
+        }
+      }, 500); // Small delay to let UI initialize
+      
+    } catch (error) {
+      console.error('Connection event processing failed:', error);
+    }
+  }
+
+  getInitialAgent(task) {
+    const taskLower = task.toLowerCase();
+    
+    // CHECK FOR COORDINATION FIRST - highest priority
+    if ((taskLower.includes('coordinate') && taskLower.includes('codeai')) ||
+        taskLower.includes('ci') || taskLower.includes('github') || taskLower.includes('pr') || 
+        taskLower.includes('build fail') || (taskLower.includes('fix') && taskLower.includes('issue'))) {
+      return 'PlannerAI';
+    } else if (taskLower.includes('plan') || taskLower.includes('strategy') || taskLower.includes('architecture') || 
+        taskLower.includes('design') || taskLower.includes('how') || taskLower.includes('what') ||
+        taskLower.includes('analyze') || taskLower.includes('organize') ||
+        taskLower.includes('improve') || taskLower.includes('optimize') || taskLower.includes('create') ||
+        taskLower.includes('build') || taskLower.includes('develop') || taskLower.includes('solution') ||
+        task.split(' ').length > 5) {
+      return 'PlannerAI';
+    } else if (taskLower.includes('continuum') && (taskLower.includes('what') || taskLower.includes('explain') || taskLower.includes('how'))) {
+      return 'PlannerAI';
+    } else if (taskLower.includes('code') || taskLower.includes('implement') || taskLower.includes('bug')) {
+      return 'CodeAI';
+    } else {
+      return 'GeneralAI';
     }
   }
 
@@ -1071,14 +1368,211 @@ SUCCESSFUL PATTERNS:`;
     }
   }
 
+  setupGracefulShutdown() {
+    // Handle graceful shutdown signals
+    const shutdown = async (signal) => {
+      if (this.isShuttingDown) {
+        console.log('🔄 Shutdown already in progress...');
+        return;
+      }
+      
+      console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
+      this.isShuttingDown = true;
+      
+      try {
+        // Close all WebSocket connections
+        for (const [sessionId, ws] of this.activeConnections) {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'shutdown',
+              data: 'Server is shutting down gracefully'
+            }));
+            ws.close();
+          }
+        }
+        
+        // Close HTTP server
+        if (this.server) {
+          await new Promise((resolve) => {
+            this.server.close(resolve);
+          });
+        }
+        
+        // Clean up PID file
+        this.cleanupPidFile();
+        
+        console.log('✅ Graceful shutdown complete');
+        process.exit(0);
+      } catch (error) {
+        console.error('❌ Error during shutdown:', error.message);
+        process.exit(1);
+      }
+    };
+    
+    // Register signal handlers
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGHUP', () => shutdown('SIGHUP'));
+    
+    // Handle uncaught exceptions
+    process.on('uncaughtException', (error) => {
+      console.error('💥 Uncaught Exception:', error);
+      shutdown('UNCAUGHT_EXCEPTION');
+    });
+    
+    process.on('unhandledRejection', (reason, promise) => {
+      console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
+      shutdown('UNHANDLED_REJECTION');
+    });
+  }
+
+  async checkPortConflict() {
+    try {
+      // Check if another Continuum instance is running
+      const existingPid = this.getExistingPid();
+      if (existingPid) {
+        console.log(`🔍 Found existing Continuum instance (PID: ${existingPid})`);
+        
+        // Check if the process is actually running
+        if (this.isProcessRunning(existingPid)) {
+          if (this.stayAlive) {
+            console.log('⚡ Stay-alive mode enabled, keeping existing instance');
+            process.exit(0);
+          } else {
+            console.log('🛑 Sending graceful shutdown signal to existing instance...');
+            await this.shutdownExistingInstance(existingPid);
+          }
+        } else {
+          console.log('🧹 Cleaning up stale PID file');
+          this.cleanupPidFile();
+        }
+      }
+      
+      // Test if port is available
+      const isPortFree = await this.testPort(this.port);
+      if (!isPortFree) {
+        console.log(`⚠️  Port ${this.port} is in use, trying alternative ports...`);
+        this.port = await this.findFreePort(this.port);
+        console.log(`🔄 Using port ${this.port} instead`);
+      }
+      
+    } catch (error) {
+      console.error('❌ Port conflict check failed:', error.message);
+      throw error;
+    }
+  }
+
+  getExistingPid() {
+    try {
+      if (fs.existsSync(this.pidFile)) {
+        const pid = parseInt(fs.readFileSync(this.pidFile, 'utf8').trim());
+        return isNaN(pid) ? null : pid;
+      }
+    } catch (error) {
+      console.log('⚠️  Error reading PID file:', error.message);
+    }
+    return null;
+  }
+
+  isProcessRunning(pid) {
+    try {
+      // Send signal 0 to check if process exists
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async shutdownExistingInstance(pid) {
+    try {
+      console.log(`📤 Sending SIGTERM to process ${pid}...`);
+      process.kill(pid, 'SIGTERM');
+      
+      // Wait for graceful shutdown
+      for (let i = 0; i < 10; i++) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        if (!this.isProcessRunning(pid)) {
+          console.log('✅ Existing instance shut down gracefully');
+          return;
+        }
+      }
+      
+      // Force kill if still running
+      console.log('⚡ Forcing shutdown with SIGKILL...');
+      process.kill(pid, 'SIGKILL');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      if (this.isProcessRunning(pid)) {
+        throw new Error(`Failed to shutdown existing instance (PID: ${pid})`);
+      }
+      
+      console.log('✅ Existing instance forcefully terminated');
+    } catch (error) {
+      throw new Error(`Failed to shutdown existing instance: ${error.message}`);
+    }
+  }
+
+  async testPort(port) {
+    return new Promise((resolve) => {
+      const server = net.createServer();
+      
+      server.listen(port, () => {
+        server.close(() => resolve(true));
+      });
+      
+      server.on('error', () => resolve(false));
+    });
+  }
+
+  async findFreePort(startPort) {
+    let port = startPort;
+    const maxAttempts = 100;
+    
+    for (let i = 0; i < maxAttempts; i++) {
+      if (await this.testPort(port)) {
+        return port;
+      }
+      port++;
+    }
+    
+    throw new Error(`Could not find free port after ${maxAttempts} attempts`);
+  }
+
+  writePidFile() {
+    try {
+      fs.writeFileSync(this.pidFile, process.pid.toString());
+      console.log(`📝 PID file written: ${this.pidFile} (${process.pid})`);
+    } catch (error) {
+      console.error('❌ Failed to write PID file:', error.message);
+    }
+  }
+
+  cleanupPidFile() {
+    try {
+      if (fs.existsSync(this.pidFile)) {
+        fs.unlinkSync(this.pidFile);
+        console.log('🧹 PID file cleaned up');
+      }
+    } catch (error) {
+      console.error('⚠️  Failed to cleanup PID file:', error.message);
+    }
+  }
+
   async start() {
+    // Initialize commands first
+    await this.initializeCommands();
+    
     // Skip starting HTTP server if port is null (CLI mode)
     if (this.port === null) {
       await this.loadRepoContext();
       return;
     }
     
-    const server = http.createServer(async (req, res) => {
+    // Check for port conflicts and handle existing instances
+    await this.checkPortConflict();
+    
+    this.server = http.createServer(async (req, res) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -1102,8 +1596,30 @@ SUCCESSFUL PATTERNS:`;
         if (task) {
           try {
             console.log(`🔄 Processing task: ${task}`);
+            
+            // Get the initial agent that will handle this task
+            const initialAgent = this.getInitialAgent(task);
+            
             const result = await this.intelligentRoute(task);
             console.log(`✅ Task completed, sending response...`);
+            
+            // Add initial agent info and working status for better UI feedback
+            result.initialAgent = initialAgent;
+            
+            if (result.coordination) {
+              result.workingMessages = [
+                'Analyzing request and selecting best AI...',
+                'Multi-AI coordination required...',
+                'Coordinating between AIs...',
+                'Finalizing...'
+              ];
+            } else {
+              result.workingMessages = [
+                `${result.role} is thinking...`,
+                'Formulating response...'
+              ];
+            }
+            
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(result));
           } catch (error) {
@@ -1129,15 +1645,27 @@ SUCCESSFUL PATTERNS:`;
       }
     });
 
-    const wss = new WebSocket.Server({ server });
+    const wss = new WebSocket.Server({ server: this.server });
     
     wss.on('connection', (ws) => {
-      console.log('👤 User connected');
+      // Create unique session for this connection
+      const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      ws.sessionId = sessionId;
+      
+      // Initialize session data
+      this.activeConnections.set(sessionId, ws);
+      this.conversationThreads.set(sessionId, []);
+      
+      console.log(`👤 User connected (Session: ${sessionId})`);
+      
+      // Send connection event to AI system with session context
+      this.handleUserConnection(ws);
       
       ws.send(JSON.stringify({
         type: 'status',
         data: {
-          message: '🌌 Continuum ready - Real Claude instances',
+          message: 'Ready to help',
+          sessionId: sessionId,
           sessions: Array.from(this.sessions.entries()),
           costs: this.costs
         }
@@ -1211,10 +1739,17 @@ SUCCESSFUL PATTERNS:`;
       });
     });
 
-    server.listen(this.port, () => {
+    this.server.listen(this.port, () => {
+      // Write PID file after successful startup
+      this.writePidFile();
+      
       console.log(`🌐 Continuum ready: http://localhost:${this.port}`);
       console.log('💬 Talk to real Claude instances');
       console.log('📊 Track costs and sessions');
+      console.log(`📝 PID: ${process.pid} (saved to ${this.pidFile})`);
+      if (this.stayAlive) {
+        console.log('⚡ Stay-alive mode: this instance will persist');
+      }
       console.log('');
       
       // Auto-open browser
@@ -1245,6 +1780,73 @@ SUCCESSFUL PATTERNS:`;
             padding: 30px; 
             border-bottom: 2px solid #333; 
             margin-bottom: 30px; 
+        }
+        .status-indicator {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            padding: 8px 12px;
+            border-radius: 20px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            font-size: 14px;
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        .status-dot.red { background: #ff4444; }
+        .status-dot.green { background: #00ff88; }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        .action-status {
+            padding: 8px 12px;
+            font-style: italic;
+            background: #2a2a2a;
+            border-radius: 16px;
+            color: #ccc;
+            font-size: 14px;
+            opacity: 0.9;
+            margin: 8px 15px 8px 0;
+            max-width: 60%;
+            float: left;
+            clear: both;
+            border-left: 3px solid #0088ff;
+            min-height: 20px;
+            display: none; /* Hidden by default */
+        }
+        .action-status.show {
+            display: block;
+        }
+        .typing-dots {
+            display: inline-block;
+            position: relative;
+            margin-left: 5px;
+        }
+        .typing-dots span {
+            display: inline-block;
+            width: 4px;
+            height: 4px;
+            border-radius: 50%;
+            background: #ccc;
+            margin: 0 1px;
+            animation: typingDots 1.4s infinite ease-in-out;
+        }
+        .typing-dots span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dots span:nth-child(2) { animation-delay: -0.16s; }
+        .typing-dots span:nth-child(3) { animation-delay: 0s; }
+        @keyframes typingDots {
+            0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+            40% { opacity: 1; transform: scale(1); }
         }
         .header h1 { 
             margin: 0; 
@@ -1369,6 +1971,11 @@ SUCCESSFUL PATTERNS:`;
     </style>
 </head>
 <body>
+    <div class="status-indicator" id="statusIndicator">
+        <div class="status-dot red" id="statusDot"></div>
+        <span id="statusText">Connecting...</span>
+    </div>
+    
     <div class="header">
         <h1>🌌 Continuum</h1>
         <p>Real Claude Instance Pool</p>
@@ -1378,9 +1985,8 @@ SUCCESSFUL PATTERNS:`;
     </div>
     
     <div class="chat" id="chat">
-        <div class="message status">
-            <span class="timestamp">Starting...</span>
-            🌌 Connecting to Continuum...
+        <div class="action-status" id="actionStatus">
+            <em>Initializing...</em>
         </div>
     </div>
     
@@ -1392,26 +1998,32 @@ SUCCESSFUL PATTERNS:`;
     </div>
 
     <script>
-        const ws = new WebSocket('ws://localhost:5555');
+        const ws = new WebSocket('ws://localhost:' + window.location.port);
         let isConnected = false;
         
         ws.onopen = function() {
             isConnected = true;
-            addMessage('🟢 Connected to Continuum', 'status');
+            // Don't set agent name until we actually get a response
+            document.getElementById('statusDot').className = 'status-dot green';
+            document.getElementById('statusText').textContent = 'Connected';
+            updateActionStatus('');
         };
         
         ws.onmessage = function(event) {
             const data = JSON.parse(event.data);
             
             if (data.type === 'status') {
-                addMessage(data.data.message, 'status');
+                updateActionStatus(data.data.message);
                 updateCosts(data.data.costs);
             } else if (data.type === 'working') {
-                addMessage(data.data, 'working');
+                updateActionStatus(getActionFromWorking(data.data));
             } else if (data.type === 'result') {
-                addMessage(\`🤖 \${data.data.role}: \${data.data.result}\`, 'message');
+                updateStatus(data.data.role, 'green');
+                updateActionStatus('');
+                addMessage(data.data.result, 'ai-message');
                 updateCosts(data.data.costs);
             } else if (data.type === 'error') {
+                updateActionStatus('');
                 addMessage(\`❌ Error: \${data.data}\`, 'error');
             }
         };
@@ -1429,18 +2041,30 @@ SUCCESSFUL PATTERNS:`;
             fetch(url)
                 .then(response => response.json())
                 .then(data => {
-                    if (data.error) {
-                        addMessage(\`❌ Error: \${data.error}\`, 'error');
-                    } else if (data.coordination) {
-                        // Multiple AIs coordinated - just show the main response
-                        const mainResponse = data.responses[0];
-                        addMessage(mainResponse.result, 'ai-message');
-                        updateCosts(data.costs);
-                    } else {
-                        // Single AI response
-                        addMessage(data.result, 'ai-message');
-                        updateCosts(data.costs);
+                    // Immediately show which agent will handle this
+                    if (data.initialAgent) {
+                        updateStatus(data.initialAgent, 'green');
+                        updateActionStatus(\`\${data.initialAgent} is thinking...\`);
                     }
+                    
+                    // Small delay to show the thinking status, then show result
+                    setTimeout(() => {
+                        updateActionStatus('');  // Clear the action status
+                        
+                        if (data.error) {
+                            addMessage(\`❌ Error: \${data.error}\`, 'error');
+                        } else if (data.coordination) {
+                            // Multiple AIs coordinated - show final agent and response
+                            updateStatus(data.responses[0].role, 'green');
+                            addMessage(data.responses[0].result, 'ai-message');
+                            updateCosts(data.costs);
+                        } else {
+                            // Single AI response - show which agent responded
+                            updateStatus(data.role, 'green');
+                            addMessage(data.result, 'ai-message');
+                            updateCosts(data.costs);
+                        }
+                    }, 800);
                 })
                 .catch(error => {
                     addMessage(\`❌ Request failed: \${error.message}\`, 'error');
@@ -1467,6 +2091,78 @@ SUCCESSFUL PATTERNS:`;
                 📊 Requests: \${costs.requests} | 💰 Cost: $\${costs.total.toFixed(4)}
             \`;
         }
+        
+        function updateStatus(agentName, color) {
+            const statusDot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            
+            statusDot.className = 'status-dot ' + color;
+            statusText.textContent = \`You are now talking to \${agentName}\`;
+        }
+        
+        let statusTimeout = null;
+        const MIN_STATUS_TIME = 1500; // Minimum 1.5 seconds like iOS
+        
+        function updateActionStatus(action) {
+            const actionStatus = document.getElementById('actionStatus');
+            
+            if (action) {
+                // Clear any existing timeout
+                if (statusTimeout) {
+                    clearTimeout(statusTimeout);
+                }
+                
+                // Show status with iOS-style typing dots
+                const dots = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+                actionStatus.innerHTML = \`<em>\${action} \${dots}</em>\`;
+                actionStatus.className = 'action-status show';
+                
+                // Scroll to show the typing indicator
+                const chat = document.getElementById('chat');
+                chat.scrollTop = chat.scrollHeight;
+                
+            } else {
+                // Hide status after minimum time (like iOS)
+                statusTimeout = setTimeout(() => {
+                    actionStatus.className = 'action-status';
+                    actionStatus.innerHTML = '';
+                }, MIN_STATUS_TIME);
+            }
+        }
+        
+        function getActionFromWorking(message) {
+            // Extract agent name if present
+            let agentName = 'AI';
+            if (message.includes('PlannerAI')) agentName = 'PlannerAI';
+            else if (message.includes('CodeAI')) agentName = 'CodeAI'; 
+            else if (message.includes('GeneralAI')) agentName = 'GeneralAI';
+            
+            // Update status indicator with current agent
+            if (agentName !== 'AI') {
+                updateStatus(agentName, 'green');
+            }
+            
+            // Parse specific actions for detailed status
+            if (message.includes('Enhanced intelligent routing')) return 'Analyzing request and selecting best AI...';
+            if (message.includes('Strategic/complex task')) return 'Routing to strategic AI...';
+            if (message.includes('Creating new') && message.includes('session')) return 'Initializing AI agent...';
+            if (message.includes('Calling') && message.includes('with task')) return 'Processing with AI...';
+            if (message.includes('processing:')) return agentName + ' is thinking...';
+            if (message.includes('Scanning AI response for tool commands')) return 'Checking for tool usage...';
+            if (message.includes('Executing WebFetch')) return 'Searching the web...';
+            if (message.includes('Executing FILE_READ')) return 'Reading files...';
+            if (message.includes('Executing GIT_STATUS')) return 'Checking repository status...';
+            if (message.includes('Executed') && message.includes('tools')) return 'Completed tool execution...';
+            if (message.includes('responded:')) return 'Formulating response...';
+            if (message.includes('completed task')) return 'Finalizing...';
+            if (message.includes('COORDINATION DETECTED')) return 'Multi-AI coordination required...';
+            if (message.includes('Step 1:') || message.includes('Step 2:')) return 'Coordinating between AIs...';
+            if (message.includes('analyzing')) return agentName + ' is analyzing...';
+            if (message.includes('creating')) return agentName + ' is creating response...';
+            if (message.includes('coordinating')) return 'Coordinating with other AIs...';
+            
+            return agentName + ' is working...';
+        }
     </script>
 </body>
 </html>`;
@@ -1477,12 +2173,74 @@ SUCCESSFUL PATTERNS:`;
 if (require.main === module) {
   const args = process.argv.slice(2);
   const command = args[0] || 'start';
+  const commandArgs = args.slice(1);
 
+  // Use modular command system
+  initializeCommandSystem(command, commandArgs);
+}
+
+async function initializeCommandSystem(command, commandArgs) {
+  try {
+    // Dynamic import for ES modules
+    const { CommandRegistry } = await import('./dist/ui/commands/CommandRegistry.js');
+    const registry = new CommandRegistry();
+    
+    // Load all available commands
+    await registry.loadCommands();
+    
+    // Handle special cases for aliases and legacy support
+    const aliases = {
+      'web': 'start',
+      '-v': 'version',
+      '--version': 'version',
+      '-h': 'help',
+      '--help': 'help'
+    };
+    
+    const normalizedCommand = aliases[command] || command;
+    
+    // Try to execute the command
+    const executed = await registry.executeCommand(normalizedCommand, commandArgs);
+    
+    if (!executed) {
+      // Command not found, fall back to legacy system
+      console.log(`⚠️  Command '${normalizedCommand}' not found in modular system, falling back to legacy...`);
+      await handleLegacyCommand(normalizedCommand, commandArgs);
+    }
+    
+  } catch (error) {
+    console.error('❌ Failed to initialize command system:', error.message);
+    
+    // Fallback to legacy commands for critical operations
+    await handleLegacyCommand(command, commandArgs);
+  }
+}
+
+// Legacy fallback for critical commands
+async function handleLegacyCommand(command, commandArgs) {
   switch (command) {
     case 'start':
     case 'web':
       console.log('🚀 Starting Continuum web interface...');
-      new Continuum();
+      const options = {};
+      
+      // Parse command line options
+      if (commandArgs.includes('--stay-alive') || commandArgs.includes('--persist')) {
+        options.stayAlive = true;
+        console.log('⚡ Stay-alive mode enabled');
+      }
+      
+      // Parse custom port
+      const portIndex = commandArgs.findIndex(arg => arg === '--port' || arg === '-p');
+      if (portIndex !== -1 && commandArgs[portIndex + 1]) {
+        const customPort = parseInt(commandArgs[portIndex + 1]);
+        if (!isNaN(customPort)) {
+          options.port = customPort;
+          console.log(`🔌 Using custom port: ${customPort}`);
+        }
+      }
+      
+      new Continuum(options);
       break;
       
     case 'chat':
@@ -1491,27 +2249,295 @@ if (require.main === module) {
       break;
       
     case 'ask':
-      if (args[1]) {
-        askQuestion(args.slice(1).join(' '));
+      if (commandArgs[0]) {
+        askQuestion(commandArgs.join(' '));
       } else {
         console.log('Usage: continuum ask "your question"');
         process.exit(1);
       }
       break;
       
-    case 'version':
-    case '-v':
-    case '--version':
-      const pkg = require('./package.json');
-      console.log(`Continuum v${pkg.version}`);
+    case 'stop':
+    case 'shutdown':
+      shutdownExistingInstance();
       break;
       
-    case 'help':
-    case '-h':
-    case '--help':
+    case 'status':
+      checkInstanceStatus();
+      break;
+      
+    case 'restart':
+      console.log('🔄 Restarting Continuum...');
+      try {
+        await shutdownExistingInstance();
+        setTimeout(() => {
+          new Continuum();
+        }, 1000);
+      } catch (error) {
+        console.log('⚠️  No existing instance to shutdown, starting fresh...');
+        new Continuum();
+      }
+      break;
+      
     default:
       showHelp();
       break;
+  }
+}
+
+function setApiKey(provider, key) {
+  console.log(`🔧 Setting ${provider} API key...`);
+  
+  // Validate provider
+  if (!['openai', 'anthropic'].includes(provider.toLowerCase())) {
+    console.log('❌ Invalid provider. Use: openai or anthropic');
+    process.exit(1);
+  }
+  
+  // Validate key format
+  const normalizedProvider = provider.toLowerCase();
+  if (normalizedProvider === 'openai' && !key.startsWith('sk-proj-')) {
+    console.log('❌ Invalid OpenAI API key format. Should start with "sk-proj-"');
+    process.exit(1);
+  }
+  
+  if (normalizedProvider === 'anthropic' && !key.startsWith('sk-ant-')) {
+    console.log('❌ Invalid Anthropic API key format. Should start with "sk-ant-"');
+    process.exit(1);
+  }
+  
+  // Ensure user config directory exists
+  if (!fs.existsSync(userContinuumDir)) {
+    fs.mkdirSync(userContinuumDir, { recursive: true });
+    console.log('📁 Created user config directory:', userContinuumDir);
+  }
+  
+  // Read existing config or create new one
+  let configContent = '';
+  if (fs.existsSync(userConfigFile)) {
+    configContent = fs.readFileSync(userConfigFile, 'utf8');
+  } else {
+    configContent = `# Continuum User Configuration
+# Generated by continuum setup
+
+# Required: Anthropic Claude API Key
+# ANTHROPIC_API_KEY=
+
+# Required: OpenAI API Key  
+# OPENAI_API_KEY=
+
+# Optional: Override default ports
+# CONTINUUM_PORT=5555
+# CONTINUUM_WS_PORT=5556
+
+# Optional: Override default AI models
+# ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
+# OPENAI_MODEL=gpt-4o
+
+# Optional: Enable debug logging
+# DEBUG=true
+`;
+  }
+  
+  // Update the specific API key
+  const keyName = normalizedProvider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
+  const keyRegex = new RegExp(`^(#\\s*)?${keyName}=.*$`, 'm');
+  const newKeyLine = `${keyName}=${key}`;
+  
+  if (keyRegex.test(configContent)) {
+    // Replace existing key
+    configContent = configContent.replace(keyRegex, newKeyLine);
+  } else {
+    // Add new key at the end
+    configContent += `\n${newKeyLine}\n`;
+  }
+  
+  // Write updated config
+  fs.writeFileSync(userConfigFile, configContent);
+  
+  console.log(`✅ ${normalizedProvider === 'openai' ? 'OpenAI' : 'Anthropic'} API key saved to:`, userConfigFile);
+  console.log('🚀 You can now run continuum commands!');
+}
+
+async function setupApiKeys() {
+  const readline = require('readline');
+  
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  console.log('🔧 Continuum API Key Setup');
+  console.log('===========================');
+  console.log('');
+  
+  // Ensure user config directory exists
+  if (!fs.existsSync(userContinuumDir)) {
+    fs.mkdirSync(userContinuumDir, { recursive: true });
+  }
+  
+  // Read existing config if it exists
+  let existingConfig = '';
+  if (fs.existsSync(userConfigFile)) {
+    existingConfig = fs.readFileSync(userConfigFile, 'utf8');
+  }
+  
+  try {
+    console.log('Please enter your API keys:');
+    console.log('');
+    
+    // Get Anthropic API key
+    const anthropicKey = await new Promise((resolve) => {
+      rl.question('🧠 Anthropic Claude API Key (get from https://console.anthropic.com/account/keys): ', (answer) => {
+        resolve(answer.trim());
+      });
+    });
+    
+    // Get OpenAI API key
+    const openaiKey = await new Promise((resolve) => {
+      rl.question('🤖 OpenAI API Key (get from https://platform.openai.com/account/api-keys): ', (answer) => {
+        resolve(answer.trim());
+      });
+    });
+    
+    // Validate keys
+    if (!anthropicKey || !anthropicKey.startsWith('sk-ant-')) {
+      console.log('❌ Invalid Anthropic API key format. Should start with "sk-ant-"');
+      process.exit(1);
+    }
+    
+    if (!openaiKey || !openaiKey.startsWith('sk-proj-')) {
+      console.log('❌ Invalid OpenAI API key format. Should start with "sk-proj-"');
+      process.exit(1);
+    }
+    
+    // Create new config
+    const newConfig = `# Continuum User Configuration
+# Generated by continuum setup
+
+# Required: Anthropic Claude API Key
+ANTHROPIC_API_KEY=${anthropicKey}
+
+# Required: OpenAI API Key  
+OPENAI_API_KEY=${openaiKey}
+
+# Optional: Override default ports
+# CONTINUUM_PORT=5555
+# CONTINUUM_WS_PORT=5556
+
+# Optional: Override default AI models
+# ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
+# OPENAI_MODEL=gpt-4o
+
+# Optional: Enable debug logging
+# DEBUG=true
+`;
+    
+    // Write config file
+    fs.writeFileSync(userConfigFile, newConfig);
+    
+    console.log('');
+    console.log('✅ API keys saved to:', userConfigFile);
+    console.log('');
+    console.log('🚀 Setup complete! You can now run:');
+    console.log('   continuum                 # Start web interface');
+    console.log('   continuum chat            # Interactive chat');
+    console.log('   continuum ask "question"  # One-time question');
+    console.log('');
+    
+  } catch (error) {
+    console.log('❌ Setup failed:', error.message);
+    process.exit(1);
+  } finally {
+    rl.close();
+  }
+}
+
+async function shutdownExistingInstance() {
+  const continuumDir = path.join(process.cwd(), '.continuum');
+  const pidFile = path.join(continuumDir, 'continuum.pid');
+  
+  try {
+    if (!fs.existsSync(pidFile)) {
+      console.log('❌ No running Continuum instance found');
+      process.exit(1);
+    }
+    
+    const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
+    if (isNaN(pid)) {
+      console.log('❌ Invalid PID file');
+      process.exit(1);
+    }
+    
+    // Check if process exists
+    try {
+      process.kill(pid, 0); // Test signal
+    } catch (error) {
+      console.log('❌ Continuum instance not running (stale PID file)');
+      fs.unlinkSync(pidFile);
+      process.exit(1);
+    }
+    
+    console.log(`🛑 Shutting down Continuum instance (PID: ${pid})...`);
+    process.kill(pid, 'SIGTERM');
+    
+    // Wait for graceful shutdown
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      try {
+        process.kill(pid, 0);
+      } catch (error) {
+        console.log('✅ Continuum instance shut down successfully');
+        return;
+      }
+    }
+    
+    // Force kill if needed
+    console.log('⚡ Forcing shutdown...');
+    process.kill(pid, 'SIGKILL');
+    console.log('✅ Continuum instance terminated');
+    
+  } catch (error) {
+    console.error('❌ Failed to shutdown instance:', error.message);
+    process.exit(1);
+  }
+}
+
+function checkInstanceStatus() {
+  const continuumDir = path.join(process.cwd(), '.continuum');
+  const pidFile = path.join(continuumDir, 'continuum.pid');
+  
+  try {
+    if (!fs.existsSync(pidFile)) {
+      console.log('📊 Status: No Continuum instance running');
+      return;
+    }
+    
+    const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
+    if (isNaN(pid)) {
+      console.log('📊 Status: Invalid PID file (corrupted)');
+      return;
+    }
+    
+    // Check if process exists
+    try {
+      process.kill(pid, 0); // Test signal
+      
+      // Try to determine the port (basic check)
+      const defaultPort = process.env.CONTINUUM_PORT || 5555;
+      console.log('📊 Status: Continuum is running');
+      console.log(`   PID: ${pid}`);
+      console.log(`   Likely URL: http://localhost:${defaultPort}`);
+      console.log(`   PID file: ${pidFile}`);
+      
+    } catch (error) {
+      console.log('📊 Status: Continuum instance not running (stale PID file)');
+      console.log('🧹 Cleaning up stale PID file...');
+      fs.unlinkSync(pidFile);
+    }
+    
+  } catch (error) {
+    console.error('❌ Failed to check status:', error.message);
   }
 }
 
@@ -1522,16 +2548,33 @@ function showHelp() {
 Usage:
   continuum                    Start web interface (default)
   continuum start              Start web interface  
+  continuum start --stay-alive Start in stay-alive mode (won't replace existing)
+  continuum start --port 8080  Start on custom port
   continuum web                Start web interface
   continuum chat               Start interactive chat mode
   continuum ask "question"     Ask a one-time question
+  continuum stop               Shutdown running instance
+  continuum status             Check if instance is running
+  continuum restart            Restart the instance
+  continuum setup              Configure API keys
   continuum version            Show version
   continuum help               Show this help
 
 Examples:
   continuum                              # Start web UI at http://localhost:5555
-  continuum ask "analyze this codebase" # One-time question
+  continuum start --stay-alive           # Start but keep existing instance if running
+  continuum start --port 8080            # Start on port 8080
+  continuum setup                        # Configure your API keys
+  continuum ask "analyze this codebase"  # One-time question
   continuum chat                         # Interactive terminal chat
+  continuum stop                         # Shutdown running instance
+  continuum status                       # Check running status
+
+Instance Management:
+  - Continuum automatically handles port conflicts by finding free ports
+  - Use --stay-alive to prevent shutting down existing instances
+  - Use 'continuum stop' to gracefully shutdown running instances
+  - Use 'continuum status' to check if an instance is running
 
 Web Interface:
   The web interface allows you to chat with multiple AI agents
