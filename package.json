@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "index.js",
+  "bin": {
+    "continuum": "./continuum.cjs"
+  },
   "private": true,
   "type": "module",
   "workspaces": [
@@ -22,8 +25,10 @@
     "version:major": "lerna version major --no-push --no-git-tag-version --yes",
     "publish:dev": "lerna publish --dist-tag dev --no-push --no-git-tag-version",
     "build:packages": "npm run build --workspaces",
-    "test:packages": "npm run test --workspaces",
-    "lint:packages": "npm run lint --workspaces"
+    "test:packages": "npm run test --workspaces", 
+    "lint:packages": "npm run lint --workspaces",
+    "demo": "npx ts-node demo-complete-system.ts",
+    "test-system": "npx jest tests/integration-full-system.test.ts"
   },
   "keywords": [
     "ai",
@@ -49,24 +54,29 @@
   "author": "Cambrian Technologies",
   "license": "MIT",
   "devDependencies": {
-    "@types/jest": "^29.5.0",
-    "@types/node": "^22.14.0",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.15.29",
     "@typescript-eslint/eslint-plugin": "^8.29.1",
     "@typescript-eslint/parser": "^8.29.1",
     "eslint": "^9.24.0",
     "jest": "^29.5.0",
     "lerna": "^8.2.1",
     "prettier": "^3.5.3",
-    "ts-jest": "^29.1.0",
-    "typescript": "^5.0.4"
+    "supertest": "^7.1.1",
+    "ts-jest": "^29.3.4",
+    "typescript": "^5.8.3"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
     "ajv": "^8.17.1",
+    "dotenv": "^16.5.0",
     "glob": "^11.0.1",
     "inquirer": "^12.5.2",
+    "node-fetch": "^3.3.2",
+    "openai": "^5.0.1",
     "punycode": "^2.3.1",
     "ws": "^8.18.2",
     "yaml": "^2.7.1"
