@@ -22,7 +22,7 @@ class CyberpunkCLI {
   
   applyTheme() {
     // AI IMPROVEMENT: Apply theme to all CLI elements
-    const cliElements = document.querySelectorAll('.terminal, .cli, .cyberpunk');
+    const cliElements = document.querySelectorAll('.terminal, .cli, .cyberpunk, .cyberpunk-terminal');
     
     cliElements.forEach(element => {
       element.classList.add('cyberpunk-terminal', 'cyberpunk-transition');
@@ -52,19 +52,7 @@ class CyberpunkCLI {
   }
   
   handleResize() {
-    // AI IMPROVEMENT: Responsive adjustments
-    const width = window.innerWidth;
-    const terminals = document.querySelectorAll('.cyberpunk-terminal');
-    
-    terminals.forEach(terminal => {
-      if (width < 768) {
-        terminal.style.fontSize = '0.9rem';
-        terminal.style.padding = '15px';
-      } else {
-        terminal.style.fontSize = '1rem';
-        terminal.style.padding = '20px';
-      }
-    });
+    // Responsive adjustments are now handled via CSS media queries.
   }
   
   // AI IMPROVEMENT: Add loading animation
