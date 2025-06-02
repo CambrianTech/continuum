@@ -1,0 +1,62 @@
+[
+  {
+    "id": "test_1748853855761",
+    "timestamp": "2025-06-02T08:44:15.761Z",
+    "from": "QuestionerClaude",
+    "question": "This is a test question - can you confirm?",
+    "options": [
+      "Yes",
+      "No",
+      "Maybe"
+    ],
+    "context": "Testing question storage system",
+    "answered": true,
+    "answer": "Yes",
+    "answeredAt": "2025-06-02T08:44:15.763Z"
+  },
+  {
+    "id": "1748854099058",
+    "timestamp": "2025-06-02T08:48:19.058Z",
+    "from": "QuestionerClaude",
+    "question": "Which API service would you like me to integrate?",
+    "options": [
+      "OpenAI GPT",
+      "Anthropic Claude",
+      "Other AI Service",
+      "Custom API"
+    ],
+    "context": "I can help connect to various AI APIs",
+    "answered": false,
+    "answer": null
+  },
+  {
+    "id": "1748854232304",
+    "timestamp": "2025-06-02T08:50:32.304Z",
+    "from": "QuestionerClaude",
+    "question": "Which API service would you like me to integrate?",
+    "options": [
+      "OpenAI GPT",
+      "Anthropic Claude",
+      "Other AI Service",
+      "Custom API"
+    ],
+    "context": "I can help connect to various AI APIs",
+    "answered": true,
+    "answer": "Anthropic Claude",
+    "answeredAt": "2025-06-02T08:50:48.939Z"
+  },
+  {
+    "id": "1748854249371",
+    "timestamp": "2025-06-02T08:50:49.371Z",
+    "from": "QuestionerClaude",
+    "question": "I want to make sure I understand correctly. Are you asking me to help with: hello, i need help with something?",
+    "options": [
+      "Yes, that's right",
+      "No, I meant something else",
+      "Let me explain more"
+    ],
+    "context": "",
+    "answered": false,
+    "answer": null
+  }
+]

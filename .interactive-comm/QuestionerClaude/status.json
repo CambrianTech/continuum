@@ -1,0 +1,14 @@
+{
+  "name": "QuestionerClaude",
+  "id": "claude_1748853628822_sw24n9j52",
+  "status": "active",
+  "capabilities": [
+    "Ask clarifying questions",
+    "Gather requirements",
+    "Understand user needs",
+    "Context building"
+  ],
+  "lastActivity": "2025-06-02T08:40:28.822Z",
+  "waitingForResponse": true,
+  "currentQuestion": "1748854249371"
+}

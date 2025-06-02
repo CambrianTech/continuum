@@ -1,0 +1,12 @@
+{
+  "name": "SystemClaude",
+  "id": "claude_1748852939502_hu5rhim4u",
+  "status": "active",
+  "capabilities": [
+    "File operations",
+    "System commands",
+    "Browser control",
+    "Process management"
+  ],
+  "lastActivity": "2025-06-02T08:39:59.524Z"
+}

@@ -34,7 +34,7 @@ class ContinuumSpawn {
     
     this.isRunning = true;
     console.log('🎉 Continuum Pool launched with Claude instances!');
-    console.log('🌐 Access at http://localhost:5555');
+    console.log('🌐 Access at http://localhost:5556');  // Different port to avoid conflicts
   }
 
   async spawnClaudeViaContinuum(instanceName, role) {
