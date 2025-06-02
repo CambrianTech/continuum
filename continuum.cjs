@@ -258,6 +258,12 @@ class Continuum {
         return stdout || 'Command completed';
       case 'FILE_READ':
         return fs.readFileSync(params, 'utf-8').substring(0, 2000);
+      case 'FILE_WRITE':
+        const parts = params.split('\n');
+        const filePath = parts[0];
+        const content = parts.slice(1).join('\n');
+        fs.writeFileSync(filePath, content, 'utf-8');
+        return `File written: ${filePath}`;
       default:
         throw new Error(`Unknown command: ${action}`);
     }
