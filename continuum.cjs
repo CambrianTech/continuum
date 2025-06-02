@@ -235,16 +235,14 @@ class Continuum {
   }
 
   async initializeCommands() {
-    console.log('🔌 Initializing TypeScript commands...');
+    console.log('🔌 Loading commands from single source...');
     try {
-      const { CommandRegistry } = await import('./src/commands/CommandRegistry.js');
-      this.commandRegistry = new CommandRegistry();
-      await this.commandRegistry.loadCommands();
-      this.availableCommands = this.commandRegistry.generateHelp();
-      console.log('✅ TypeScript commands loaded');
+      // Read from the COMMANDS.md file - single source of truth
+      this.availableCommands = fs.readFileSync('./COMMANDS.md', 'utf-8');
+      console.log('✅ Commands loaded from COMMANDS.md');
     } catch (error) {
-      console.log('📦 Using basic command fallback');
-      this.availableCommands = `# Basic Commands: WEBFETCH, EXEC, FILE_READ`;
+      console.error('❌ Failed to load COMMANDS.md:', error.message);
+      this.availableCommands = '# No commands available';
     }
   }
 
