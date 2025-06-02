@@ -118,8 +118,12 @@ class Continuum {
     this.commandRegistry = null;
     this.availableCommands = '';
     
+    const packageInfo = require('../../package.json');
     console.log('🌌 CONTINUUM - Real Claude Pool');
     console.log('===============================');
+    console.log(`📦 Version: ${packageInfo.version}`);
+    console.log(`📁 Working Directory: ${process.cwd()}`);
+    console.log(`🔧 Node: ${process.version}`);
     console.log('✅ Real Claude CLI instances');
     console.log('✅ Direct web interface');
     console.log('✅ Event-driven coordination');
@@ -1525,11 +1529,23 @@ SUCCESSFUL PATTERNS:`;
         
         // Check if the process is actually running
         if (this.isProcessRunning(existingPid)) {
-          if (this.stayAlive) {
-            console.log('⚡ Stay-alive mode enabled, keeping existing instance');
-            process.exit(0);
-          } else {
-            console.log('🛑 Sending graceful shutdown signal to existing instance...');
+          try {
+            // Get info about existing instance
+            const existingInfo = this.getExistingInstanceInfo(existingPid);
+            console.log(`📁 Existing instance working directory: ${existingInfo.cwd || 'unknown'}`);
+            console.log(`📊 Current directory: ${process.cwd()}`);
+            
+            if (this.stayAlive) {
+              console.log('⚡ Stay-alive mode enabled, keeping existing instance');
+              console.log(`🌐 Connect at: http://localhost:${this.port}`);
+              process.exit(0);
+            } else {
+              console.log('🛑 Sending graceful shutdown signal to existing instance...');
+              await this.shutdownExistingInstance(existingPid);
+            }
+          } catch (error) {
+            console.log(`⚠️  Could not get existing instance info: ${error.message}`);
+            console.log('🛑 Proceeding with shutdown...');
             await this.shutdownExistingInstance(existingPid);
           }
         } else {
@@ -1562,6 +1578,22 @@ SUCCESSFUL PATTERNS:`;
       console.log('⚠️  Error reading PID file:', error.message);
     }
     return null;
+  }
+
+  getExistingInstanceInfo(pid) {
+    try {
+      // Try to get process info on Unix-like systems
+      if (process.platform !== 'win32') {
+        const { execSync } = require('child_process');
+        const cwdCommand = `lsof -p ${pid} | grep cwd | awk '{print $NF}'`;
+        const cwd = execSync(cwdCommand, { encoding: 'utf8' }).trim();
+        return { cwd };
+      }
+    } catch (error) {
+      // Fallback - just return what we can
+      return { cwd: null };
+    }
+    return { cwd: null };
   }
 
   isProcessRunning(pid) {
@@ -1752,11 +1784,17 @@ SUCCESSFUL PATTERNS:`;
       // Send connection event to AI system with session context
       this.handleUserConnection(ws);
       
+      const packageInfo = require('../../package.json');
       ws.send(JSON.stringify({
         type: 'status',
         data: {
           message: 'Ready to help',
           sessionId: sessionId,
+          version: packageInfo.version,
+          workingDir: process.cwd(),
+          nodeVersion: process.version,
+          pid: process.pid,
+          uptime: process.uptime(),
           sessions: Array.from(this.sessions.entries()),
           costs: this.costs
         }
@@ -1778,14 +1816,15 @@ SUCCESSFUL PATTERNS:`;
             }));
             
             try {
-              const result = await this.sendTask(role, task);
+              // Use intelligentRoute for proper AI coordination and response processing
+              const result = await this.intelligentRoute(task);
               
               ws.send(JSON.stringify({
                 type: 'result',
                 data: {
-                  role: role,
+                  role: result.role || role,
                   task: task,
-                  result: result,
+                  result: result.result || result,
                   costs: this.costs
                 }
               }));
@@ -2073,6 +2112,9 @@ SUCCESSFUL PATTERNS:`;
         <div class="costs" id="costs">
             Loading costs...
         </div>
+        <div class="instance-info" id="instanceInfo" style="font-size: 0.8em; color: #666; margin-top: 5px;">
+            Loading instance info...
+        </div>
     </div>
     
     <div class="chat" id="chat">
@@ -2106,6 +2148,7 @@ SUCCESSFUL PATTERNS:`;
             if (data.type === 'status') {
                 updateActionStatus(data.data.message);
                 updateCosts(data.data.costs);
+                updateInstanceInfo(data.data);
             } else if (data.type === 'working') {
                 updateActionStatus(getActionFromWorking(data.data));
             } else if (data.type === 'result') {
@@ -2181,6 +2224,20 @@ SUCCESSFUL PATTERNS:`;
             costsDiv.innerHTML = \`
                 📊 Requests: \${costs.requests} | 💰 Cost: $\${costs.total.toFixed(4)}
             \`;
+        }
+        
+        function updateInstanceInfo(statusData) {
+            const instanceDiv = document.getElementById('instanceInfo');
+            if (instanceDiv) {
+                const uptimeMinutes = Math.floor(statusData.uptime / 60);
+                const uptimeSeconds = Math.floor(statusData.uptime % 60);
+                instanceDiv.innerHTML = \`
+                    📦 v\${statusData.version} | 
+                    🔧 PID: \${statusData.pid} | 
+                    ⏱️ \${uptimeMinutes}m \${uptimeSeconds}s | 
+                    📁 \${statusData.workingDir?.split('/').pop() || 'unknown'}
+                \`;
+            }
         }
         
         function updateStatus(agentName, color) {

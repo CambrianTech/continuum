@@ -33,13 +33,20 @@ Now continue with the next step or provide final response to user.
 ## Available Commands
 
 ### WEBFETCH
-Fetch content from any website
+**YOU CAN ACCESS THE INTERNET** - Fetch content from any website
 
 **Usage:** `[CMD:WEBFETCH] url`
 **Returns:** HTML content converted to text (up to 2000 chars)
+**What you can do:**
+- Get weather data from wttr.in
+- Read news from any news site
+- Fetch information from any public website
+- Access real-time data
+
 **Examples:**
-- `[CMD:WEBFETCH] https://wttr.in/london` → Returns weather text
-- `[CMD:WEBFETCH] https://cnn.com` → Returns news text
+- `[CMD:WEBFETCH] https://wttr.in/london` → Returns current weather and forecast
+- `[CMD:WEBFETCH] https://cnn.com` → Returns latest news
+- `[CMD:WEBFETCH] https://api.github.com/users/octocat` → Returns API data
 
 ### EXEC  
 Execute shell commands
