@@ -15,6 +15,7 @@ export default {
         useESM: true,
       },
     ],
+    '^.+\\.jsx?$': 'babel-jest',
   },
   collectCoverageFrom: [
     'packages/*/src/**/*.{ts,js}',
@@ -24,8 +25,8 @@ export default {
     '!**/jest.config.js',
   ],
   testMatch: [
-    '**/__tests__/**/*.test.ts',
-    '**/?(*.)+(spec|test).ts'
+    '**/__tests__/**/*.test.{ts,js}',
+    '**/?(*.)+(spec|test).{ts,js}'
   ],
   modulePathIgnorePatterns: [
     '<rootDir>/dist/',

@@ -3,14 +3,21 @@
  * GAN-style approach: Testing Droid tries to break Protocol Sheriff
  */
 
+require('dotenv').config();
 const assert = require('assert');
 const ProtocolSheriff = require('../src/core/ProtocolSheriff.cjs');
 const TestingDroid = require('../src/core/TestingDroid.cjs');
+const ModelCaliber = require('../src/core/ModelCaliber.cjs');
+const { ModelRegistry } = require('../src/core/AIModel.cjs');
 
 console.log('🔥 Running Adversarial Protocol Tests...\\n');
 
 async function runAdversarialSuite() {
-  const sheriff = new ProtocolSheriff();
+  // Set up the model system for fast AI validation
+  const modelRegistry = new ModelRegistry();
+  const modelCaliber = new ModelCaliber();
+  
+  const sheriff = new ProtocolSheriff(modelRegistry, modelCaliber);
   const testingDroid = new TestingDroid();
 
   // Test 1: Command Leakage Detection

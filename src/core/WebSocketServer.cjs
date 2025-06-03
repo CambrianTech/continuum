@@ -74,6 +74,178 @@ class WebSocketServer {
         
         // Queue the task result
         this.messageQueue.queueTaskResult(ws, task, role, this.continuum);
+        
+      } else if (data.type === 'message') {
+        // Handle general chat messages with auto-routing and Sheriff validation
+        const { content, room = 'general' } = data;
+        
+        console.log(`💬 ${room} message (auto-route): ${content}`);
+        
+        try {
+          const result = await this.continuum.intelligentRoute(content);
+          
+          // Always run through Protocol Sheriff for validation
+          const validation = await this.continuum.protocolSheriff.validateResponse(
+            result.result, 
+            content, 
+            result.role
+          );
+          
+          let finalResponse = result.result;
+          if (!validation.isValid && validation.correctedResponse) {
+            console.log(`🚨 Protocol Sheriff: Using corrected response`);
+            finalResponse = validation.correctedResponse;
+          }
+          
+          ws.send(JSON.stringify({
+            type: 'response',
+            message: finalResponse,
+            agent: result.role,
+            room: room,
+            sheriff_status: validation.isValid ? 'VALID' : 'CORRECTED'
+          }));
+        } catch (error) {
+          ws.send(JSON.stringify({
+            type: 'response',
+            message: 'Sorry, I encountered an error processing your message.',
+            agent: 'System',
+            room: room
+          }));
+        }
+        
+      } else if (data.type === 'direct_message') {
+        // Handle direct messages to specific agents
+        const { content, agent, room = 'general' } = data;
+        
+        console.log(`📋 Direct message to ${agent}: ${content}`);
+        
+        try {
+          const result = await this.continuum.sendTask(agent, content);
+          
+          // Always run through Protocol Sheriff for validation
+          const validation = await this.continuum.protocolSheriff.validateResponse(
+            result, 
+            content, 
+            agent
+          );
+          
+          let finalResponse = result;
+          if (!validation.isValid && validation.correctedResponse) {
+            console.log(`🚨 Protocol Sheriff: Using corrected response`);
+            finalResponse = validation.correctedResponse;
+          }
+          
+          ws.send(JSON.stringify({
+            type: 'response',
+            message: finalResponse,
+            agent: agent,
+            room: room,
+            sheriff_status: validation.isValid ? 'VALID' : 'CORRECTED'
+          }));
+        } catch (error) {
+          ws.send(JSON.stringify({
+            type: 'response',
+            message: `Sorry, ${agent} encountered an error: ${error.message}`,
+            agent: 'System',
+            room: room
+          }));
+        }
+        
+      } else if (data.type === 'group_message') {
+        // Handle group chat messages to multiple agents
+        const { content, agents, room = 'general' } = data;
+        
+        console.log(`👥 Group message to [${agents.join(', ')}]: ${content}`);
+        
+        // Send to each agent and collect responses
+        const responses = [];
+        for (const agent of agents) {
+          try {
+            const result = await this.continuum.sendTask(agent, 
+              `${content}\n\n[GROUP CHAT CONTEXT: You are in a group chat with ${agents.filter(a => a !== agent).join(', ')}. Keep your response concise and collaborative.]`
+            );
+            
+            // Always run through Protocol Sheriff for validation
+            const validation = await this.continuum.protocolSheriff.validateResponse(
+              result, 
+              content, 
+              agent
+            );
+            
+            let finalResponse = result;
+            if (!validation.isValid && validation.correctedResponse) {
+              console.log(`🚨 Protocol Sheriff: Using corrected response for ${agent}`);
+              finalResponse = validation.correctedResponse;
+            }
+            
+            responses.push({
+              agent: agent,
+              message: finalResponse,
+              sheriff_status: validation.isValid ? 'VALID' : 'CORRECTED'
+            });
+          } catch (error) {
+            responses.push({
+              agent: agent,
+              message: `Error: ${error.message}`,
+              sheriff_status: 'ERROR'
+            });
+          }
+        }
+        
+        // Send all responses
+        for (const response of responses) {
+          ws.send(JSON.stringify({
+            type: 'response',
+            message: response.message,
+            agent: response.agent,
+            room: room,
+            sheriff_status: response.sheriff_status,
+            group_chat: true
+          }));
+        }
+        
+      } else if (data.type === 'academy_message') {
+        // Handle Academy chat messages
+        const { content } = data;
+        
+        console.log(`🎓 Academy message: ${content}`);
+        
+        ws.send(JSON.stringify({
+          type: 'response',
+          message: 'Academy training system is ready. Use the buttons to start training agents.',
+          agent: 'Academy System',
+          room: 'academy'
+        }));
+        
+      } else if (data.type === 'start_academy_training') {
+        // Handle Academy training requests
+        const { personaName, specialization, rounds } = data;
+        
+        if (this.continuum.uiGenerator && this.continuum.uiGenerator.academyInterface) {
+          const session = await this.continuum.uiGenerator.academyInterface.startAcademyTraining(
+            personaName, 
+            specialization, 
+            { rounds }
+          );
+          
+          ws.send(JSON.stringify({
+            type: 'response',
+            message: `🎓 ${personaName} has been enrolled in Academy training for ${specialization}!`,
+            agent: 'Academy System',
+            room: 'academy'
+          }));
+        }
+        
+      } else if (data.type === 'get_academy_status') {
+        // Handle Academy status requests
+        if (this.continuum.uiGenerator && this.continuum.uiGenerator.academyInterface) {
+          const status = this.continuum.uiGenerator.academyInterface.getAcademyStatus();
+          
+          ws.send(JSON.stringify({
+            type: 'academy_status',
+            status: status
+          }));
+        }
       }
     } catch (error) {
       console.error('Message error:', error);

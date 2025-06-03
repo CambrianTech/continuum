@@ -6,6 +6,9 @@
 class UIGenerator {
   constructor(continuum) {
     this.continuum = continuum;
+    // Initialize Academy interface
+    const AcademyWebInterface = require('./AcademyWebInterface.cjs');
+    this.academyInterface = new AcademyWebInterface(continuum);
   }
 
   generateHTML() {
@@ -16,308 +19,1121 @@ class UIGenerator {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Continuum - Real Claude Instances</title>
+    <title>Continuum Academy - AI Workforce Construction</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎓</text></svg>">
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
         body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: #1a1a1a; 
-            color: #e0e0e0; 
-            margin: 0; 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
+            color: #e0e6ed;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        .app-container {
+            display: flex;
+            height: 100vh;
+        }
+        
+        /* Sidebar */
+        .sidebar {
+            width: 300px;
+            background: rgba(20, 25, 35, 0.95);
+            backdrop-filter: blur(10px);
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+        }
+        
+        /* Room Selection */
+        .room-tabs {
+            display: flex;
+            margin: 20px;
+            margin-bottom: 0;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 4px;
+        }
+        
+        .room-tab {
+            flex: 1;
+            padding: 10px 12px;
+            text-align: center;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 14px;
+            font-weight: 500;
+            color: #8a92a5;
+        }
+        
+        .room-tab.active {
+            background: linear-gradient(135deg, #4FC3F7, #29B6F6);
+            color: white;
+            box-shadow: 0 2px 8px rgba(79, 195, 247, 0.3);
+        }
+        
+        .room-tab:hover:not(.active) {
+            background: rgba(255, 255, 255, 0.1);
+            color: #e0e6ed;
+        }
+        
+        .sidebar-header {
             padding: 20px;
-            line-height: 1.6;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
         }
-        .container { 
-            max-width: 800px; 
-            margin: 0 auto; 
-        }
-        .header { 
-            text-align: center; 
-            margin-bottom: 30px; 
-            border-bottom: 1px solid #333; 
-            padding-bottom: 20px; 
-        }
-        .header h1 { 
-            color: #4CAF50; 
-            margin: 0; 
-            font-size: 2.5em; 
-        }
-        .header p { 
-            color: #888; 
-            margin: 10px 0; 
-        }
-        .status-indicator {
-            position: fixed;
-            top: 20px;
-            right: 20px;
+        
+        .logo {
             display: flex;
             align-items: center;
-            background: #2a2a2a;
-            padding: 10px 15px;
-            border-radius: 20px;
-            font-size: 0.9em;
-            z-index: 1000;
+            margin-bottom: 10px;
         }
+        
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, #4FC3F7, #29B6F6);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 12px;
+            font-size: 18px;
+        }
+        
+        .logo-text {
+            font-size: 24px;
+            font-weight: 700;
+            color: #4FC3F7;
+        }
+        
+        .subtitle {
+            font-size: 14px;
+            color: #8a92a5;
+            margin-bottom: 15px;
+        }
+        
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 12px;
+            background: rgba(76, 175, 80, 0.1);
+            border: 1px solid rgba(76, 175, 80, 0.3);
+            border-radius: 20px;
+            font-size: 12px;
+            color: #4CAF50;
+        }
+        
         .status-dot {
-            width: 8px;
-            height: 8px;
+            width: 6px;
+            height: 6px;
+            background: #4CAF50;
             border-radius: 50%;
             margin-right: 8px;
+            animation: pulse 2s infinite;
         }
-        .status-dot.green { background: #4CAF50; }
-        .status-dot.yellow { background: #FF9800; }
-        .status-dot.red { background: #f44336; }
-        .chat-container { 
-            background: #2a2a2a; 
-            border-radius: 10px; 
-            height: 400px; 
-            overflow-y: auto; 
-            padding: 20px; 
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Main Chat Area */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: rgba(15, 20, 25, 0.5);
+        }
+        
+        .chat-header {
+            padding: 20px 30px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(20, 25, 35, 0.8);
+            backdrop-filter: blur(10px);
+        }
+        
+        .chat-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #e0e6ed;
+            margin-bottom: 5px;
+        }
+        
+        .chat-subtitle {
+            font-size: 14px;
+            color: #8a92a5;
+        }
+        
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 30px;
+            scroll-behavior: smooth;
+        }
+        
+        .chat-container::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .chat-container::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        
+        .chat-container::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 3px;
+        }
+        
+        /* Message Bubbles */
+        .message {
             margin-bottom: 20px;
-            border: 1px solid #444;
-        }
-        .message { 
-            margin-bottom: 15px; 
-            padding: 12px 16px; 
-            border-radius: 18px; 
+            display: flex;
+            flex-direction: column;
             max-width: 70%;
+            animation: messageSlideIn 0.3s ease-out;
+        }
+        
+        @keyframes messageSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .message.user {
+            align-self: flex-end;
+            align-items: flex-end;
+        }
+        
+        .message.ai {
+            align-self: flex-start;
+            align-items: flex-start;
+        }
+        
+        .message-sender {
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: #8a92a5;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .message.user .message-sender {
+            color: #4FC3F7;
+        }
+        
+        .message.ai .message-sender {
+            color: #FFB74D;
+        }
+        
+        .message-bubble {
+            padding: 16px 20px;
+            border-radius: 20px;
+            position: relative;
+            word-wrap: break-word;
+            line-height: 1.5;
+        }
+        
+        .message.user .message-bubble {
+            background: linear-gradient(135deg, #1976D2, #1565C0);
+            color: white;
+            border-bottom-right-radius: 8px;
+        }
+        
+        .message.ai .message-bubble {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #e0e6ed;
+            border-bottom-left-radius: 8px;
+        }
+        
+        .message-time {
+            font-size: 11px;
+            color: #666;
+            margin-top: 6px;
+        }
+        
+        /* Academy Training Status */
+        .academy-training {
+            background: linear-gradient(135deg, rgba(255, 183, 77, 0.1), rgba(255, 152, 0, 0.1));
+            border: 1px solid rgba(255, 183, 77, 0.3);
+            border-radius: 12px;
+            padding: 16px;
+            margin: 20px 0;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .academy-training:hover {
+            background: linear-gradient(135deg, rgba(255, 183, 77, 0.15), rgba(255, 152, 0, 0.15));
+            border-color: rgba(255, 183, 77, 0.5);
+            transform: translateY(-2px);
+        }
+        
+        .academy-training .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        
+        .academy-training .agent-name {
+            font-weight: 600;
+            color: #FFB74D;
+            text-decoration: underline;
+            font-size: 16px;
+        }
+        
+        .academy-training .status {
+            font-size: 12px;
+            color: #8a92a5;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #FFB74D, #FF9800);
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+        
+        .progress-text {
+            font-size: 12px;
+            color: #8a92a5;
+        }
+        
+        /* Input Area */
+        .input-area {
+            padding: 20px 30px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(20, 25, 35, 0.9);
+            backdrop-filter: blur(10px);
+        }
+        
+        .input-container {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+        
+        .input-field {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 24px;
+            padding: 14px 20px;
+            color: #e0e6ed;
+            font-size: 16px;
+            resize: none;
+            outline: none;
+            transition: all 0.3s ease;
+            min-height: 48px;
+            max-height: 120px;
+        }
+        
+        .input-field:focus {
+            border-color: #4FC3F7;
+            background: rgba(255, 255, 255, 0.12);
+        }
+        
+        .input-field::placeholder {
+            color: #8a92a5;
+        }
+        
+        .send-button {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #4FC3F7, #29B6F6);
+            border: none;
+            border-radius: 50%;
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            font-size: 18px;
+        }
+        
+        .send-button:hover {
+            transform: scale(1.05);
+            background: linear-gradient(135deg, #29B6F6, #1976D2);
+        }
+        
+        .send-button:disabled {
+            background: rgba(255, 255, 255, 0.1);
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        /* Agent Selector */
+        .agent-selector {
+            margin: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 15px;
+        }
+        
+        .agent-selector h3 {
+            font-size: 14px;
+            color: #8a92a5;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .agent-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .agent-item {
+            display: flex;
+            align-items: center;
+            padding: 10px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 1px solid transparent;
+        }
+        
+        .agent-item:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        .agent-item.selected {
+            background: linear-gradient(135deg, rgba(79, 195, 247, 0.2), rgba(41, 182, 246, 0.2));
+            border-color: rgba(79, 195, 247, 0.5);
+        }
+        
+        .agent-item.active {
+            background: linear-gradient(135deg, rgba(76, 175, 80, 0.2), rgba(139, 195, 74, 0.2));
+            border-color: rgba(76, 175, 80, 0.5);
+        }
+        
+        .agent-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #4FC3F7, #29B6F6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 12px;
+            font-size: 16px;
             position: relative;
         }
-        .message.user { 
-            background: #007AFF; 
-            color: white; 
-            margin-left: auto; 
-            text-align: right;
+        
+        .agent-status {
+            position: absolute;
+            bottom: -2px;
+            right: -2px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 2px solid rgba(20, 25, 35, 0.95);
         }
-        .message.ai { 
-            background: #3a3a3a; 
-            margin-right: auto; 
+        
+        .agent-status.online { background: #4CAF50; }
+        .agent-status.busy { background: #FF9800; }
+        .agent-status.training { background: #9C27B0; }
+        
+        .agent-info {
+            flex: 1;
         }
-        .message-header {
-            font-size: 0.75em;
-            color: #999;
-            margin-bottom: 4px;
-            font-weight: 500;
+        
+        .agent-name {
+            font-weight: 600;
+            color: #e0e6ed;
+            font-size: 14px;
         }
-        .message.user .message-header {
-            text-align: right;
-            color: rgba(255,255,255,0.7);
+        
+        .agent-role {
+            font-size: 11px;
+            color: #8a92a5;
+            margin-top: 2px;
         }
-        .message.ai .message-header {
-            text-align: left;
-            color: #999;
+        
+        .multi-select {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
         }
-        .input-container { 
-            display: flex; 
-            gap: 10px; 
-            margin-bottom: 20px; 
+        
+        .group-chat-btn {
+            width: 100%;
+            padding: 8px 12px;
+            background: rgba(156, 39, 176, 0.1);
+            border: 1px solid rgba(156, 39, 176, 0.3);
+            border-radius: 8px;
+            color: #BA68C8;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
         }
-        input[type="text"] { 
-            flex: 1; 
-            padding: 12px 16px; 
-            border: 1px solid #444; 
-            border-radius: 20px; 
-            background: #2a2a2a; 
-            color: #e0e0e0; 
-            font-size: 16px;
+        
+        .group-chat-btn:hover {
+            background: rgba(156, 39, 176, 0.2);
+            border-color: rgba(156, 39, 176, 0.5);
         }
-        input[type="text"]:focus { 
-            outline: none; 
-            border-color: #007AFF; 
+        
+        /* Academy Actions */
+        .academy-actions {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
         }
-        button { 
-            padding: 12px 24px; 
-            background: #007AFF; 
-            color: white; 
-            border: none; 
-            border-radius: 20px; 
-            cursor: pointer; 
-            font-size: 16px;
-            font-weight: 500;
+        
+        .academy-button {
+            padding: 8px 16px;
+            background: rgba(76, 175, 80, 0.1);
+            border: 1px solid rgba(76, 175, 80, 0.3);
+            border-radius: 20px;
+            color: #4CAF50;
+            text-decoration: none;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
         }
-        button:hover { 
-            background: #0056b3; 
+        
+        .academy-button:hover {
+            background: rgba(76, 175, 80, 0.2);
+            border-color: rgba(76, 175, 80, 0.5);
+            transform: translateY(-1px);
         }
-        button:disabled { 
-            background: #555; 
-            cursor: not-allowed; 
+        
+        /* Cost Tracker */
+        .cost-display {
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            margin-bottom: 20px;
         }
-        .working { 
-            font-style: italic; 
-            opacity: 0.7; 
-            margin-right: 8px; 
+        
+        .cost-display h3 {
+            font-size: 14px;
+            color: #8a92a5;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
-        .costs { 
-            text-align: center; 
-            padding: 15px; 
-            background: #2a2a2a; 
-            border-radius: 6px; 
-            margin: 20px 0; 
-            font-size: 0.9em;
-            color: #ccc;
+        
+        .cost-stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
         }
-        .instance-info {
+        
+        .cost-item {
             text-align: center;
-            font-size: 0.8em;
-            color: #666;
-            margin-top: 5px;
+        }
+        
+        .cost-value {
+            font-size: 18px;
+            font-weight: 600;
+            color: #4FC3F7;
+        }
+        
+        .cost-label {
+            color: #8a92a5;
+            margin-top: 4px;
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            .app-container {
+                flex-direction: column;
+            }
+            
+            .sidebar {
+                width: 100%;
+                height: auto;
+                order: 2;
+            }
+            
+            .main-content {
+                order: 1;
+                height: 70vh;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="status-indicator" id="statusIndicator">
-            <div class="status-dot red" id="statusDot"></div>
-            <span id="statusText">Connecting...</span>
-        </div>
-        
-        <div class="header">
-            <h1>🌌 Continuum</h1>
-            <p>Real Claude Instance Pool</p>
-            <div class="costs" id="costs">
-                Loading costs...
+    <div class="app-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <div class="logo-icon">🧠</div>
+                    <div class="logo-text">Continuum</div>
+                </div>
+                <div class="subtitle">AI Workforce Construction</div>
+                <div class="status-pill">
+                    <div class="status-dot"></div>
+                    Academy Ready
+                </div>
             </div>
-            <div class="instance-info" id="instanceInfo">
-                Loading instance info...
+            
+            <!-- Room Tabs -->
+            <div class="room-tabs">
+                <div class="room-tab active" onclick="switchRoom('general')" id="tab-general">
+                    💬 General
+                </div>
+                <div class="room-tab" onclick="switchRoom('academy')" id="tab-academy">
+                    🎓 Academy
+                </div>
+            </div>
+            
+            <!-- Cost Tracker -->
+            <div class="cost-display">
+                <h3>Session Costs</h3>
+                <div class="cost-stats">
+                    <div class="cost-item">
+                        <div class="cost-value" id="cost-requests">${this.continuum.costTracker ? this.continuum.costTracker.getRequests() : 0}</div>
+                        <div class="cost-label">Requests</div>
+                    </div>
+                    <div class="cost-item">
+                        <div class="cost-value" id="cost-total">$${this.continuum.costTracker ? this.continuum.costTracker.getTotal().toFixed(4) : '0.0000'}</div>
+                        <div class="cost-label">Cost</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Room-specific Content -->
+            <div id="room-content">
+                <!-- General Room Content -->
+                <div id="general-room" class="room-content">
+                    <!-- Agent Selector -->
+                    <div class="agent-selector">
+                        <h3>Available Agents</h3>
+                        <div class="agent-list">
+                            <div class="agent-item selected" onclick="selectAgent('auto')" id="agent-auto">
+                                <div class="agent-avatar" style="background: linear-gradient(135deg, #4FC3F7, #29B6F6);">
+                                    🧠
+                                    <div class="agent-status online"></div>
+                                </div>
+                                <div class="agent-info">
+                                    <div class="agent-name">Auto Route</div>
+                                    <div class="agent-role">Smart agent selection</div>
+                                </div>
+                            </div>
+                            
+                            <div class="agent-item" onclick="selectAgent('PlannerAI')" id="agent-PlannerAI">
+                                <div class="agent-avatar" style="background: linear-gradient(135deg, #9C27B0, #673AB7);">
+                                    📋
+                                    <div class="agent-status online"></div>
+                                </div>
+                                <div class="agent-info">
+                                    <div class="agent-name">PlannerAI</div>
+                                    <div class="agent-role">Strategy & web commands</div>
+                                </div>
+                            </div>
+                            
+                            <div class="agent-item" onclick="selectAgent('CodeAI')" id="agent-CodeAI">
+                                <div class="agent-avatar" style="background: linear-gradient(135deg, #FF5722, #F44336);">
+                                    💻
+                                    <div class="agent-status online"></div>
+                                </div>
+                                <div class="agent-info">
+                                    <div class="agent-name">CodeAI</div>
+                                    <div class="agent-role">Code analysis & debugging</div>
+                                </div>
+                            </div>
+                            
+                            <div class="agent-item" onclick="selectAgent('GeneralAI')" id="agent-GeneralAI">
+                                <div class="agent-avatar" style="background: linear-gradient(135deg, #4CAF50, #8BC34A);">
+                                    💬
+                                    <div class="agent-status online"></div>
+                                </div>
+                                <div class="agent-info">
+                                    <div class="agent-name">GeneralAI</div>
+                                    <div class="agent-role">General assistance</div>
+                                </div>
+                            </div>
+                            
+                            <div class="agent-item" onclick="selectAgent('ProtocolSheriff')" id="agent-ProtocolSheriff">
+                                <div class="agent-avatar" style="background: linear-gradient(135deg, #FF9800, #FFC107);">
+                                    🛡️
+                                    <div class="agent-status online"></div>
+                                </div>
+                                <div class="agent-info">
+                                    <div class="agent-name">Protocol Sheriff</div>
+                                    <div class="agent-role">Response validation</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="multi-select">
+                            <button class="group-chat-btn" onclick="startGroupChat()">
+                                👥 Start Group Chat
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Academy Room Content -->
+                <div id="academy-room" class="room-content" style="display: none;">
+                    <div id="academy-section">
+                        ${this.academyInterface.generateAcademyHTML()}
+                    </div>
+                    
+                    <div class="academy-actions">
+                        <button class="academy-button" onclick="sendSheriffToAcademy()">
+                            🛡️ Send Sheriff to Academy
+                        </button>
+                        <button class="academy-button" onclick="trainCustomPersona()">
+                            🎓 Train Custom Persona
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
         
-        <div class="chat-container" id="chat">
-            <!-- Messages will appear here -->
-        </div>
-        
-        <div class="input-container">
-            <input type="text" id="messageInput" placeholder="Ask Claude anything..." autofocus>
-            <button id="sendButton">Send</button>
+        <!-- Main Chat -->
+        <div class="main-content">
+            <div class="chat-header">
+                <div class="chat-title" id="chat-title">General Chat</div>
+                <div class="chat-subtitle" id="chat-subtitle">Talk to specialized AI agents</div>
+            </div>
+            
+            <div class="chat-container" id="chat"></div>
+            
+            <div class="input-area">
+                <div class="input-container">
+                    <textarea 
+                        id="messageInput" 
+                        class="input-field" 
+                        placeholder="Ask anything - the AI will coordinate automatically..."
+                        rows="1"
+                        onkeydown="handleKeyDown(event)"
+                    ></textarea>
+                    <button class="send-button" id="sendButton" onclick="sendMessage()">
+                        ➤
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
-        const ws = new WebSocket('ws://localhost:${this.continuum.port}');
-        const chat = document.getElementById('chat');
-        const messageInput = document.getElementById('messageInput');
-        const sendButton = document.getElementById('sendButton');
-        const statusDot = document.getElementById('statusDot');
-        const statusText = document.getElementById('statusText');
-        let isWorking = false;
-
-        ws.onopen = function() {
-            statusDot.className = 'status-dot green';
-            statusText.textContent = 'Connected';
+        let ws;
+        let messageHistory = [];
+        let currentRoom = 'general';
+        let roomMessages = {
+            general: [],
+            academy: []
         };
-
-        ws.onclose = function() {
-            statusDot.className = 'status-dot red';
-            statusText.textContent = 'Disconnected';
-        };
-
-        ws.onerror = function() {
-            statusDot.className = 'status-dot red';
-            statusText.textContent = 'Error';
-        };
-
-        ws.onmessage = function(event) {
-            const data = JSON.parse(event.data);
+        let selectedAgent = 'auto';
+        let selectedAgents = new Set();
+        let isGroupChat = false;
+        
+        // Initialize WebSocket connection
+        function initWebSocket() {
+            ws = new WebSocket('ws://localhost:${this.continuum.port}');
             
-            if (data.type === 'status') {
-                updateStatus(data);
-                updateCosts(data.data.costs);
-                updateInstanceInfo(data.data);
-            } else if (data.type === 'working') {
-                statusDot.className = 'status-dot yellow';
-                statusText.textContent = 'Working...';
-                isWorking = true;
-                sendButton.disabled = true;
-                sendButton.textContent = 'Working...';
-            } else if (data.type === 'result') {
-                statusDot.className = 'status-dot green';
-                statusText.textContent = 'Connected';
-                isWorking = false;
-                sendButton.disabled = false;
-                sendButton.textContent = 'Send';
-                
-                addMessage('ai', data.data.result, data.data.role);
-                updateCosts(data.data.costs);
-            } else if (data.type === 'error') {
-                statusDot.className = 'status-dot red';
-                statusText.textContent = 'Error';
-                isWorking = false;
-                sendButton.disabled = false;
-                sendButton.textContent = 'Send';
-                
-                addMessage('ai', 'Error: ' + data.data, 'System');
+            ws.onopen = function() {
+                console.log('Connected to Continuum');
+                addSystemMessage('🟢 Connected to Academy-trained Claude instances');
+            };
+            
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                handleWebSocketMessage(data);
+            };
+            
+            ws.onclose = function() {
+                console.log('Disconnected from Continuum');
+                addSystemMessage('🔴 Disconnected from Academy');
+                setTimeout(initWebSocket, 3000); // Reconnect
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                addSystemMessage('⚠️ Connection error');
+            };
+        }
+        
+        function handleWebSocketMessage(data) {
+            if (data.type === 'response') {
+                addMessage(data.agent || 'AI Agent', data.message, 'ai');
+                updateCosts(data.cost, data.requests);
+            } else if (data.type === 'academy_update') {
+                handleAcademyUpdate(data);
+            } else if (data.type === 'academy_status') {
+                updateAcademySection(data);
             }
-        };
-
-        function addMessage(sender, message, agentRole = null) {
+        }
+        
+        function handleAcademyUpdate(data) {
+            const { personaName, session } = data;
+            
+            // Show academy training status in Academy room
+            if (session.status === 'enrolling') {
+                addMessage('Academy System', \`🎓 \${personaName} is now training in the Academy\`, 'ai', true);
+            } else if (session.status === 'graduated') {
+                addMessage('Academy System', \`🎉 \${personaName} graduated from Academy! Ready for deployment.\`, 'ai', true);
+            } else if (session.status === 'failed') {
+                addMessage('Academy System', \`❌ \${personaName} failed Academy training. Can be re-enrolled.\`, 'ai', true);
+            }
+            
+            // Update academy section
+            updateAcademyDisplay();
+        }
+        
+        // Room switching functionality
+        function switchRoom(room) {
+            currentRoom = room;
+            
+            // Update tab appearance
+            document.querySelectorAll('.room-tab').forEach(tab => tab.classList.remove('active'));
+            document.getElementById(\`tab-\${room}\`).classList.add('active');
+            
+            // Update sidebar content
+            document.querySelectorAll('.room-content').forEach(content => content.style.display = 'none');
+            document.getElementById(\`\${room}-room\`).style.display = 'block';
+            
+            // Update chat header
+            if (room === 'general') {
+                document.getElementById('chat-title').textContent = 'General Chat';
+                document.getElementById('chat-subtitle').textContent = 'Talk to specialized AI agents';
+            } else if (room === 'academy') {
+                document.getElementById('chat-title').textContent = 'Academy Training Room';
+                document.getElementById('chat-subtitle').textContent = 'Watch AI agents train and improve their skills';
+            }
+            
+            // Clear and reload room messages
+            const chat = document.getElementById('chat');
+            chat.innerHTML = '';
+            
+            if (roomMessages[room]) {
+                roomMessages[room].forEach(msg => {
+                    addMessageToChat(msg.sender, msg.content, msg.type, msg.isAcademy);
+                });
+            }
+            
+            // Add welcome message for new rooms
+            if (roomMessages[room].length === 0) {
+                if (room === 'general') {
+                    addMessage('System', '💬 Welcome to General Chat! Ask me anything and I\\'ll route it to the best AI agent.', 'ai');
+                } else if (room === 'academy') {
+                    addMessage('System', '🎓 Welcome to the Academy! Here you can watch AI agents train and see their progress in real-time.', 'ai');
+                    updateAcademyDisplay();
+                }
+            }
+        }
+        
+        function addMessage(sender, content, type = 'ai', isAcademy = false) {
+            const messageObj = { sender, content, type, time: new Date(), isAcademy };
+            
+            // Add to appropriate room
+            const targetRoom = isAcademy ? 'academy' : currentRoom;
+            if (!roomMessages[targetRoom]) roomMessages[targetRoom] = [];
+            roomMessages[targetRoom].push(messageObj);
+            
+            // Only show if we're in the target room
+            if (currentRoom === targetRoom) {
+                addMessageToChat(sender, content, type, isAcademy);
+            }
+            
+            // Update message history for API
+            messageHistory.push(messageObj);
+        }
+        
+        function addMessageToChat(sender, content, type, isAcademy = false) {
+            const chat = document.getElementById('chat');
             const messageDiv = document.createElement('div');
-            messageDiv.className = \`message \${sender}\`;
+            messageDiv.className = \`message \${type}\`;
             
-            const headerDiv = document.createElement('div');
-            headerDiv.className = 'message-header';
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             
-            if (sender === 'user') {
-                headerDiv.textContent = 'You';
-            } else {
-                headerDiv.textContent = agentRole || 'AI';
-            }
+            messageDiv.innerHTML = \`
+                <div class="message-sender">\${sender}</div>
+                <div class="message-bubble">\${content}</div>
+                <div class="message-time">\${timeStr}</div>
+            \`;
             
-            const contentDiv = document.createElement('div');
-            contentDiv.textContent = message;
-            
-            messageDiv.appendChild(headerDiv);
-            messageDiv.appendChild(contentDiv);
             chat.appendChild(messageDiv);
             chat.scrollTop = chat.scrollHeight;
         }
-
-        function updateCosts(costs) {
-            const costsDiv = document.getElementById('costs');
-            if (costs && costs.total !== undefined) {
-                costsDiv.innerHTML = \`📊 \${costs.requests} requests | 💰 $\${costs.total.toFixed(6)} | ⚡ $\${(costs.total/Math.max(costs.requests,1)).toFixed(6)}/req\`;
+        
+        function addAcademyMessage(content, session) {
+            const chat = document.getElementById('chat');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'academy-training';
+            messageDiv.onclick = () => toggleAcademyDetails(session.personaName);
+            
+            messageDiv.innerHTML = \`
+                <div class="header">
+                    <div class="agent-name">\${session.personaName}</div>
+                    <div class="status">\${session.status.replace(/_/g, ' ')}</div>
+                </div>
+                <div>\${content}</div>
+                \${session.progress !== undefined ? \`
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: \${session.progress}%"></div>
+                    </div>
+                    <div class="progress-text">Progress: \${session.progress}% • Round \${session.currentRound}/\${session.totalRounds}</div>
+                \` : ''}
+            \`;
+            
+            chat.appendChild(messageDiv);
+            chat.scrollTop = chat.scrollHeight;
+        }
+        
+        function addSystemMessage(content) {
+            addMessage('System', content, 'ai');
+        }
+        
+        // Agent selection functions
+        function selectAgent(agentId) {
+            if (isGroupChat) {
+                // Multi-select mode for group chat
+                if (selectedAgents.has(agentId)) {
+                    selectedAgents.delete(agentId);
+                    document.getElementById(\`agent-\${agentId}\`).classList.remove('selected');
+                } else {
+                    selectedAgents.add(agentId);
+                    document.getElementById(\`agent-\${agentId}\`).classList.add('selected');
+                }
+                updateGroupChatStatus();
+            } else {
+                // Single select mode
+                selectedAgent = agentId;
+                document.querySelectorAll('.agent-item').forEach(item => item.classList.remove('selected'));
+                document.getElementById(\`agent-\${agentId}\`).classList.add('selected');
+                updateChatHeader();
             }
         }
         
-        function updateInstanceInfo(statusData) {
-            const instanceDiv = document.getElementById('instanceInfo');
-            if (statusData) {
-                instanceDiv.innerHTML = \`
-                    📦 v\${statusData.version} | 🔧 \${statusData.nodeVersion} | 
-                    🆔 PID \${statusData.pid} | ⏱️ \${Math.floor(statusData.uptime)}s uptime
-                \`;
+        function startGroupChat() {
+            isGroupChat = !isGroupChat;
+            const button = document.querySelector('.group-chat-btn');
+            
+            if (isGroupChat) {
+                button.textContent = '👤 Switch to Single Chat';
+                button.style.background = 'rgba(255, 152, 0, 0.1)';
+                button.style.borderColor = 'rgba(255, 152, 0, 0.3)';
+                button.style.color = '#FFB74D';
+                
+                // Clear single selection and allow multi-select
+                document.querySelectorAll('.agent-item').forEach(item => item.classList.remove('selected'));
+                selectedAgents.clear();
+                addMessage('System', '👥 Group chat mode enabled. Click multiple agents to include them in the conversation.', 'ai');
+            } else {
+                button.textContent = '👥 Start Group Chat';
+                button.style.background = 'rgba(156, 39, 176, 0.1)';
+                button.style.borderColor = 'rgba(156, 39, 176, 0.3)';
+                button.style.color = '#BA68C8';
+                
+                // Return to single agent mode
+                selectedAgents.clear();
+                selectedAgent = 'auto';
+                selectAgent('auto');
+                addMessage('System', '👤 Single chat mode enabled. Select one agent to talk to.', 'ai');
+            }
+            
+            updateChatHeader();
+        }
+        
+        function updateChatHeader() {
+            const title = document.getElementById('chat-title');
+            const subtitle = document.getElementById('chat-subtitle');
+            
+            if (currentRoom === 'general') {
+                if (isGroupChat && selectedAgents.size > 0) {
+                    title.textContent = \`Group Chat (\${selectedAgents.size} agents)\`;
+                    subtitle.textContent = \`Talking to: \${Array.from(selectedAgents).join(', ')}\`;
+                } else if (selectedAgent !== 'auto') {
+                    title.textContent = \`Chat with \${selectedAgent}\`;
+                    subtitle.textContent = \`Direct conversation with \${selectedAgent}\`;
+                } else {
+                    title.textContent = 'General Chat';
+                    subtitle.textContent = 'Smart agent routing with Protocol Sheriff validation';
+                }
             }
         }
-
-        function updateStatus(statusData) {
-            // Status updates handled in onmessage
+        
+        function updateGroupChatStatus() {
+            const button = document.querySelector('.group-chat-btn');
+            if (isGroupChat) {
+                button.textContent = \`👥 Group Chat (\${selectedAgents.size} selected)\`;
+            }
         }
-
+        
         function sendMessage() {
-            const message = messageInput.value.trim();
-            if (message && !isWorking) {
-                addMessage('user', message);
-                
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message || !ws || ws.readyState !== WebSocket.OPEN) return;
+            
+            // Add message to current room
+            addMessage('You', message, 'user');
+            
+            // Send to appropriate endpoint based on room and agent selection
+            if (currentRoom === 'academy') {
+                // Academy messages go to Academy system
                 ws.send(JSON.stringify({
-                    type: 'task',
-                    role: 'PlannerAI',
-                    task: message
+                    type: 'academy_message',
+                    content: message,
+                    room: 'academy'
                 }));
-                
-                messageInput.value = '';
+            } else {
+                // General messages - handle agent selection
+                if (isGroupChat && selectedAgents.size > 0) {
+                    // Group chat: send to multiple agents
+                    ws.send(JSON.stringify({
+                        type: 'group_message',
+                        content: message,
+                        agents: Array.from(selectedAgents),
+                        room: 'general',
+                        history: messageHistory.slice(-5)
+                    }));
+                } else if (selectedAgent !== 'auto') {
+                    // Direct to specific agent (with Sheriff validation)
+                    ws.send(JSON.stringify({
+                        type: 'direct_message',
+                        content: message,
+                        agent: selectedAgent,
+                        room: 'general',
+                        history: messageHistory.slice(-5)
+                    }));
+                } else {
+                    // Auto routing (with Sheriff validation)
+                    ws.send(JSON.stringify({
+                        type: 'message',
+                        content: message,
+                        room: 'general',
+                        history: messageHistory.slice(-5)
+                    }));
+                }
             }
+            
+            input.value = '';
+            autoResize(input);
         }
-
-        sendButton.addEventListener('click', sendMessage);
-        messageInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
+        
+        function handleKeyDown(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
                 sendMessage();
             }
+        }
+        
+        function autoResize(textarea) {
+            textarea.style.height = 'auto';
+            textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+        }
+        
+        function updateCosts(cost, requests) {
+            document.getElementById('cost-requests').textContent = requests || 0;
+            document.getElementById('cost-total').textContent = '$' + (cost || 0).toFixed(4);
+        }
+        
+        // Academy functions
+        function sendSheriffToAcademy() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'start_academy_training',
+                    personaName: 'Sheriff-' + Date.now(),
+                    specialization: 'protocol_enforcement',
+                    rounds: 10
+                }));
+                addSystemMessage('🛡️ Sheriff sent to Academy for training...');
+            }
+        }
+        
+        function trainCustomPersona() {
+            const personaName = prompt('Enter persona name:');
+            const specialization = prompt('Enter specialization:') || 'protocol_enforcement';
+            
+            if (personaName && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'start_academy_training',
+                    personaName: personaName,
+                    specialization: specialization,
+                    rounds: 10
+                }));
+                addSystemMessage(\`🎓 \${personaName} sent to Academy for \${specialization} training...\`);
+            }
+        }
+        
+        function updateAcademyDisplay() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'get_academy_status' }));
+            }
+        }
+        
+        function toggleAcademyDetails(personaName) {
+            console.log('Toggle details for:', personaName);
+        }
+        
+        // Auto-resize textarea
+        document.getElementById('messageInput').addEventListener('input', function() {
+            autoResize(this);
         });
         
-        // Focus input on load
-        messageInput.focus();
+        // Initialize
+        initWebSocket();
+        
+        // Initialize default room
+        document.addEventListener('DOMContentLoaded', function() {
+            switchRoom('general');
+        });
+        
+        // If page is already loaded
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                switchRoom('general');
+                updateChatHeader();
+            });
+        } else {
+            switchRoom('general');
+            updateChatHeader();
+        }
+        
+        // Load conversation history
+        ${this.generateConversationHistory()}
+        
+        // Academy JavaScript
+        ${this.academyInterface.generateAcademyJS()}
     </script>
 </body>
 </html>`;
+  }
+
+  generateConversationHistory() {
+    return `
+        // Load any existing conversation history here
+        // This could come from a database or session storage
+    `;
   }
 }
 
