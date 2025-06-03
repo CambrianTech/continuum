@@ -8,8 +8,8 @@
  * Launches web interface with real Claude pool
  */
 
-// Forward to the actual core implementation
-const Continuum = require('./src/core/continuum.cjs');
+// Forward to the new modular core implementation
+const Continuum = require('./src/core/continuum-core.cjs');
 
 // Create and start continuum instance
 if (require.main === module) {
