@@ -319,7 +319,7 @@ export class SelfImprovementCoordinator {
     
     try {
       // Check disk usage of .continuum directory
-      const continuum Dir = path.join(this.projectRoot, '.continuum');
+      const continuumDir = path.join(this.projectRoot, '.continuum');
       if (fs.existsSync(continuumDir)) {
         const { stdout } = await execAsync(`du -sm "${continuumDir}"`);
         current.diskUsageMB = parseInt(stdout.split('\t')[0]) || 0;
