@@ -57,12 +57,23 @@ class MessageQueue {
       try {
         // Force greeting to use GeneralAI to avoid identity confusion
         const greeting = await continuum.sendTask('GeneralAI', connectionEvent);
+        
+        // 🤖 Protocol Sheriff: Validate greeting
+        const validation = await continuum.protocolSheriff.validateResponse(
+          greeting, 
+          'user connection', 
+          'GeneralAI'
+        );
+        
+        const finalGreeting = (!validation.isValid && validation.correctedResponse) 
+          ? validation.correctedResponse 
+          : greeting;
         return {
           type: 'result',
           data: {
             role: 'GeneralAI',
             task: 'user_connection_greeting',
-            result: greeting,
+            result: finalGreeting,
             costs: continuum.costs
           }
         };
@@ -81,12 +92,23 @@ class MessageQueue {
       try {
         const result = await continuum.intelligentRoute(task);
         
+        // 🤖 Protocol Sheriff: Validate response before sending via WebSocket
+        const validation = await continuum.protocolSheriff.validateResponse(
+          result.result, 
+          task, 
+          result.role
+        );
+        
+        const finalResult = (!validation.isValid && validation.correctedResponse) 
+          ? validation.correctedResponse 
+          : result.result;
+        
         return {
           type: 'result',
           data: {
             role: result.role || role,
             task: task,
-            result: result.result || result,
+            result: finalResult,
             costs: continuum.costs
           }
         };
