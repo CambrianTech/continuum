@@ -454,7 +454,7 @@ export class ${spec.name.replace(/\s+/g, '')}Agent {
     return {
       type: '${s}',
       status: 'completed',
-      details: \`${spec.name} processed ${s} task`,
+      details: \`${spec.name} processed ${s} task\`,
       timestamp: Date.now()
     };
   }`).join('')}
