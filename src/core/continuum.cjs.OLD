@@ -1053,7 +1053,7 @@ SUCCESSFUL PATTERNS:`;
     const webfetchMatches = response.match(/WEBFETCH:\s*(https?:\/\/[^\s\n]+)/gi);
     const fileReadMatches = response.match(/FILE_READ:\s*([^\s\n]+)/gi);
     const fileWriteMatches = response.match(/FILE_WRITE:\s*([^\s\n]+)\s+(.+)/gi);
-    const gitStatusMatches = response.match(/GIT_STATUS/gi);
+    const gitStatusMatches = response.match(/^GIT_STATUS\s*$/gim);
     const gitCommitMatches = response.match(/GIT_COMMIT:\s*"([^"]+)"/gi);
     
     // Execute WebFetch commands

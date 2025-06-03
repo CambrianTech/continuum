@@ -236,7 +236,7 @@ class ContinuumCore {
     
     // Write intelligently merged files to home .continuum directory
     mergedFiles.forEach((content, filename) => {
-      const outputPath = path.join(this.continuumDir, filename);
+      const outputPath = path.join(this.userDataDir, filename);
       
       try {
         if (filename.endsWith('.jsonl') && content instanceof Set) {
@@ -351,10 +351,10 @@ class ContinuumCore {
     console.log('🌐 Continuum ready: http://localhost:' + this.port);
     console.log('💬 Talk to real Claude instances');
     console.log('📊 Track costs and sessions');
-    console.log(`📝 PID: ${process.pid} (saved to ${path.join(this.continuumDir, 'continuum.pid')})`);
+    console.log(`📝 PID: ${process.pid} (saved to ${path.join(this.localContinuumDir, 'continuum.pid')})`);
     
     // Save PID for process management
-    fs.writeFileSync(path.join(this.continuumDir, 'continuum.pid'), process.pid.toString());
+    fs.writeFileSync(path.join(this.localContinuumDir, 'continuum.pid'), process.pid.toString());
 
     const httpServer = new HttpServer(this);
     this.server = httpServer.createServer();
