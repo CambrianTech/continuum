@@ -5,7 +5,8 @@
 const assert = require('assert');
 const ProtocolSheriff = require('../src/core/ProtocolSheriff.cjs');
 
-console.log('🤖 Testing Protocol Sheriff...\\n');
+(async () => {
+console.log('🤖 Testing Protocol Sheriff...\n');
 
 // Test 1: Validation without API (fail-safe mode)
 console.log('1️⃣  Testing fail-safe mode (no API)...');
@@ -35,7 +36,7 @@ try {
 }
 
 // Test 2: User query validation
-console.log('\\n2️⃣  Testing user query validation...');
+console.log('\n2️⃣  Testing user query validation...');
 try {
   const sheriff = new ProtocolSheriff();
   
@@ -62,7 +63,7 @@ try {
 }
 
 // Test 3: Tool result validation
-console.log('\\n3️⃣  Testing tool result validation...');
+console.log('\n3️⃣  Testing tool result validation...');
 try {
   const sheriff = new ProtocolSheriff();
   
@@ -98,7 +99,7 @@ try {
 }
 
 // Test 4: Cache functionality
-console.log('\\n4️⃣  Testing validation cache...');
+console.log('\n4️⃣  Testing validation cache...');
 try {
   const sheriff = new ProtocolSheriff();
   
@@ -124,7 +125,7 @@ try {
 }
 
 // Test 5: Validation prompt construction
-console.log('\\n5️⃣  Testing validation prompt construction...');
+console.log('\n5️⃣  Testing validation prompt construction...');
 try {
   const sheriff = new ProtocolSheriff();
   
@@ -146,7 +147,7 @@ try {
   process.exit(1);
 }
 
-console.log('\\n🎉 All Protocol Sheriff tests passed!');
+console.log('\n🎉 All Protocol Sheriff tests passed!');
 console.log('📊 Summary:');
 console.log('  - Fail-safe mode: ✅ Works without API');
 console.log('  - User query validation: ✅ Detects injection attempts');
@@ -155,3 +156,4 @@ console.log('  - Cache functionality: ✅ Optimizes validation calls');
 console.log('  - Prompt construction: ✅ Builds proper validation prompts');
 console.log('');
 console.log('🛡️  Protocol Sheriff is ready to guard your LLM boundaries!');
+})();

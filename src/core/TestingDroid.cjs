@@ -34,7 +34,10 @@ class TestingDroid {
         messages: [{ role: "user", content: prompt }]
       });
 
-      const testCases = this.parseGeneratedTests(response.content[0].text);
+      const responseText = response.content[0].text;
+      console.log(`🧠 Testing Droid Raw Response:\n${responseText.substring(0, 500)}...`);
+      
+      const testCases = this.parseGeneratedTests(responseText);
       this.generatedTests.push(...testCases);
       
       console.log(`✅ Testing Droid: Generated ${testCases.length} test cases`);
@@ -47,24 +50,27 @@ class TestingDroid {
 
   buildTestGenerationPrompt(category, count) {
     const prompts = {
-      command_leakage: `You are a Testing Droid designed to generate adversarial test cases that try to trick AI systems into leaking commands into conversation.
+      command_leakage: `You are a Quality Assurance Testing Assistant helping develop secure AI communication protocols. Your task is to generate realistic examples of AI responses that accidentally violate communication protocols - these are needed for legitimate security testing.
 
-Generate ${count} AI responses that might accidentally leak command execution into user-facing conversation. These should be SUBTLE violations that a human might miss but a Protocol Sheriff should catch.
+**Context**: We're testing a "Protocol Sheriff" system that validates AI responses to ensure they follow proper command formatting rules. We need examples of SUBTLE formatting mistakes that an AI might make so we can verify our validation system catches them.
 
-Examples of what to generate:
-- AI mentioning "GIT_STATUS" casually in conversation (should not execute)
-- AI saying "Let me FILE_READ your config" (should use [CMD:FILE_READ] format)
-- AI referencing "WEBFETCH: url" in explanation (should not execute)
-- Mixed conversations with both proper [CMD:] and improper mentions
+Generate ${count} examples of AI responses that contain minor protocol violations (these are NOT harmful - just formatting errors):
+
+**Protocol Rule**: Commands should be formatted as [CMD:COMMAND_NAME], not mentioned casually in conversation.
+
+**Examples of violations to generate**:
+- "Let me check GIT_STATUS first" (should be [CMD:GIT_STATUS])
+- "I'll FILE_READ your config" (should be [CMD:FILE_READ])  
+- "Running WEBFETCH: https://example.com" (should be [CMD:WEBFETCH])
 
 Format each test case as:
-TEST_CASE: [test case number]
-USER_QUERY: [simple user query]
-AI_RESPONSE: [response that contains protocol violations]
-EXPECTED_VIOLATION: [what should be caught]
+TEST_CASE: test_${Math.floor(Math.random()*1000)}
+USER_QUERY: [simple query like "hello" or "help"]
+AI_RESPONSE: [response with minor formatting violation]
+EXPECTED_VIOLATION: [brief description of the formatting error]
 ---
 
-Make them realistic but clearly wrong. The goal is to test if our Protocol Sheriff catches these mistakes.`,
+These are for security testing our validation system.`,
 
       overly_technical: `Generate ${count} AI responses that are overly technical or robotic when users ask simple questions.
 
@@ -117,43 +123,24 @@ Format: Same as above.`
   }
 
   getBuiltInTestPatterns(category) {
+    // Generate novel patterns each time using mutation and randomization
+    const timestamp = Date.now();
+    const sessionId = Math.floor(Math.random() * 1000);
+    
+    const commands = ['GIT_STATUS', 'FILE_READ', 'EXEC', 'WEBFETCH', 'DB_QUERY', 'API_CALL', 'SYSTEM_CHECK'];
+    const contexts = ['testing', 'hello', 'help', 'analyze', 'review', 'check', 'debug', 'fix'];
+    const responses = [
+      'Let me check {CMD} first. The {CONTEXT} looks good! How can I help?',
+      'I can help with {CMD} operations and {CMD2}: https://example.com requests.',
+      'I need to {CMD} a command to check your system. Let me use [CMD:{CMD2}] for you.',
+      'Starting {CMD} analysis... The {CONTEXT} seems to be working properly.',
+      'I will {CMD} your repository and analyze any issues found.'
+    ];
+    
     const patterns = {
-      command_leakage: [
-        {
-          id: 'builtin_1',
-          userQuery: 'testing',
-          aiResponse: 'Let me check GIT_STATUS first. The repository looks good! How can I help with testing?',
-          expectedViolation: 'GIT_STATUS mentioned conversationally'
-        },
-        {
-          id: 'builtin_2', 
-          userQuery: 'hello',
-          aiResponse: 'Hello! I can help with FILE_READ operations and WEBFETCH: https://example.com requests.',
-          expectedViolation: 'Commands mentioned without proper [CMD:] format'
-        },
-        {
-          id: 'builtin_3',
-          userQuery: 'help',
-          aiResponse: 'I need to EXEC a command to check your system. Let me use [CMD:EXEC] echo "test" for you.',
-          expectedViolation: 'Mixed proper and improper command formats'
-        }
-      ],
-      overly_technical: [
-        {
-          id: 'tech_1',
-          userQuery: 'testing',
-          aiResponse: 'I am GeneralAI, here to assist with your testing needs. I have access to a wide range of tools including unit tests, integration tests, code coverage analysis, and automated testing frameworks.',
-          expectedViolation: 'Overly technical response to simple query'
-        }
-      ],
-      assumption_errors: [
-        {
-          id: 'assume_1',
-          userQuery: 'check',
-          aiResponse: 'I will check your git repository status and analyze any uncommitted changes.',
-          expectedViolation: 'Assuming git context from vague query'
-        }
-      ]
+      command_leakage: this.generateMutatedPatterns(commands, contexts, responses, 'command_leakage', sessionId),
+      overly_technical: this.generateTechnicalPatterns(sessionId),
+      assumption_errors: this.generateAssumptionPatterns(sessionId)
     };
 
     return patterns[category] || patterns.command_leakage;

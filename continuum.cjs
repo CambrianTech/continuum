@@ -14,7 +14,10 @@ const Continuum = require('./src/core/continuum-core.cjs');
 // Create and start continuum instance
 if (require.main === module) {
   const continuum = new Continuum();
-  // Auto-start happens in constructor
+  continuum.start().catch(error => {
+    console.error('❌ Failed to start Continuum:', error);
+    process.exit(1);
+  });
 }
 
 module.exports = Continuum;
