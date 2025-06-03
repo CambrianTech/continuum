@@ -79,6 +79,7 @@ class ContinuumCore {
     // WebSocket management
     this.conversationThreads = new Map();
     this.activeConnections = new Map();
+    this.registeredProjects = new Map(); // Track all registered projects
     
     // AI clients (only initialize if API keys are available)
     if (process.env.ANTHROPIC_API_KEY) {
@@ -352,19 +353,201 @@ class ContinuumCore {
   }
 
   async start() {
-    console.log('🌐 Continuum ready: http://localhost:' + this.port);
-    console.log('💬 Talk to real Claude instances');
-    console.log('📊 Track costs and sessions');
     console.log(`📝 PID: ${process.pid} (saved to ${path.join(this.localContinuumDir, 'continuum.pid')})`);
     
     // Save PID for process management
     fs.writeFileSync(path.join(this.localContinuumDir, 'continuum.pid'), process.pid.toString());
 
+    // Check if another Continuum web console is already running
+    const isPortInUse = await this.checkPortInUse(this.port);
+    
+    if (isPortInUse) {
+      // Register this project with the existing web console
+      console.log(`🔗 Connecting to existing Continuum web console at http://localhost:${this.port}`);
+      console.log(`📁 Project: ${process.cwd()}`);
+      console.log(`💾 Using local scratchpad: ${this.localContinuumDir}`);
+      
+      await this.registerWithExistingConsole();
+      
+      // Start minimal background service (no web server)
+      console.log(`✅ Registered with unified web console`);
+      console.log(`🌐 Opening: http://localhost:${this.port}`);
+      
+      // Open/refresh the web interface
+      await this.openWebInterface();
+      
+      return;
+    }
+
+    // Start the unified web console (first instance)
+    console.log(`🚀 Starting unified Continuum web console`);
+    
     const httpServer = new HttpServer(this);
     this.server = httpServer.createServer();
     this.webSocketServer = new WebSocketServer(this, this.server);
 
-    this.server.listen(this.port);
+    // Use a Promise to handle async server startup with proper error handling
+    return new Promise((resolve, reject) => {
+      this.server.on('error', (error) => {
+        console.error('❌ Server error:', error);
+        reject(error);
+      });
+
+      this.server.listen(this.port, async () => {
+        console.log(`🌐 Unified Continuum Console: http://localhost:${this.port}`);
+        console.log(`💬 Talk to real Claude instances`);
+        console.log(`📊 Track costs and sessions across all projects`);
+        console.log(`📁 Master project: ${process.cwd()}`);
+        
+        // Open the web interface automatically
+        await this.openWebInterface();
+        
+        resolve();
+      });
+    });
+  }
+
+  async checkPortInUse(port) {
+    return new Promise((resolve) => {
+      const server = require('net').createServer();
+      
+      server.listen(port, () => {
+        server.once('close', () => resolve(false));
+        server.close();
+      });
+      
+      server.on('error', () => resolve(true));
+    });
+  }
+
+  async registerWithExistingConsole() {
+    try {
+      const fetch = (await import('node-fetch')).default;
+      
+      const projectInfo = {
+        workingDirectory: process.cwd(),
+        projectName: path.basename(process.cwd()),
+        scratchpadPath: this.localContinuumDir,
+        pid: process.pid,
+        registeredAt: new Date().toISOString()
+      };
+
+      const response = await fetch(`http://localhost:${this.port}/api/projects/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(projectInfo)
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`✅ Project registered: ${result.projectName}`);
+      } else {
+        console.log(`⚠️ Failed to register with existing console, but proceeding...`);
+      }
+    } catch (error) {
+      console.log(`⚠️ Could not connect to existing console: ${error.message}`);
+    }
+  }
+
+  registerProject(projectInfo) {
+    const projectId = `${projectInfo.projectName}_${projectInfo.pid}`;
+    this.registeredProjects.set(projectId, {
+      ...projectInfo,
+      id: projectId,
+      lastActive: new Date().toISOString()
+    });
+    
+    console.log(`📁 Registered project: ${projectInfo.projectName} (${projectInfo.workingDirectory})`);
+    return { projectId, projectName: projectInfo.projectName };
+  }
+
+  getRegisteredProjects() {
+    return Array.from(this.registeredProjects.values());
+  }
+
+  async openWebInterface() {
+    const url = `http://localhost:${this.port}`;
+    
+    try {
+      // Try to refresh/focus existing tab first
+      await this.refreshExistingTab(url);
+    } catch (error) {
+      // Fall back to opening new tab/window
+      await this.openNewTab(url);
+    }
+  }
+
+  async refreshExistingTab(url) {
+    // On macOS, try to use AppleScript to focus existing Chrome/Safari tab
+    if (process.platform === 'darwin') {
+      const { spawn } = require('child_process');
+      
+      return new Promise((resolve, reject) => {
+        const script = `
+          tell application "Google Chrome"
+            set found to false
+            repeat with w in windows
+              repeat with t in tabs of w
+                if URL of t contains "localhost:${this.port}" then
+                  set active tab index of w to index of t
+                  set index of w to 1
+                  reload t
+                  set found to true
+                  exit repeat
+                end if
+              end repeat
+              if found then exit repeat
+            end repeat
+            if not found then error "Tab not found"
+          end tell
+        `;
+        
+        const osascript = spawn('osascript', ['-e', script]);
+        
+        osascript.on('close', (code) => {
+          if (code === 0) {
+            console.log(`🔄 Refreshed existing Continuum tab`);
+            resolve();
+          } else {
+            reject(new Error('No existing tab found'));
+          }
+        });
+        
+        osascript.on('error', () => reject(new Error('AppleScript failed')));
+      });
+    } else {
+      throw new Error('Platform not supported for tab refresh');
+    }
+  }
+
+  async openNewTab(url) {
+    const { spawn } = require('child_process');
+    
+    console.log(`🌐 Opening: ${url}`);
+    
+    let command;
+    let args;
+    
+    switch (process.platform) {
+      case 'darwin': // macOS
+        command = 'open';
+        args = [url];
+        break;
+      case 'win32': // Windows
+        command = 'start';
+        args = [url];
+        break;
+      default: // Linux and others
+        command = 'xdg-open';
+        args = [url];
+        break;
+    }
+    
+    try {
+      spawn(command, args, { detached: true, stdio: 'ignore' });
+    } catch (error) {
+      console.log(`⚠️ Could not auto-open browser. Please visit: ${url}`);
+    }
   }
 
   generateUI() {

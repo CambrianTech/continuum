@@ -566,6 +566,228 @@ class UIGenerator {
             margin-top: 4px;
         }
         
+        /* Project Management */
+        .project-manager {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .project-manager h3 {
+            margin: 0 0 15px 0;
+            color: #E0E0E0;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .project-list {
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        
+        .project-card {
+            background: rgba(255,255,255,0.08);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 6px;
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+        
+        .project-card:hover {
+            background: rgba(255,255,255,0.12);
+            transform: translateY(-1px);
+        }
+        
+        .project-card.active {
+            border-color: #4FC3F7;
+            background: rgba(79, 195, 247, 0.2);
+        }
+        
+        .project-name {
+            font-weight: bold;
+            color: #4FC3F7;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+        
+        .project-path {
+            font-size: 10px;
+            color: #8a92a5;
+            margin-bottom: 4px;
+            opacity: 0.8;
+        }
+        
+        .project-info {
+            font-size: 9px;
+            color: #8a92a5;
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        /* Persona Management */
+        .persona-manager {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .persona-manager h3 {
+            margin: 0 0 15px 0;
+            color: #E0E0E0;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .persona-list {
+            max-height: 250px;
+            overflow-y: auto;
+            margin-bottom: 15px;
+        }
+        
+        .persona-card {
+            background: rgba(255,255,255,0.08);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 8px;
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: all 0.2s ease;
+        }
+        
+        .persona-card:hover {
+            background: rgba(255,255,255,0.12);
+            transform: translateY(-1px);
+        }
+        
+        .persona-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .persona-name {
+            font-weight: bold;
+            color: #FFB74D;
+            font-size: 13px;
+        }
+        
+        .persona-scope {
+            font-size: 9px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            text-transform: uppercase;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+        }
+        
+        .persona-scope.project {
+            background: rgba(76, 175, 80, 0.3);
+            color: #4CAF50;
+        }
+        
+        .persona-scope.user {
+            background: rgba(33, 150, 243, 0.3);
+            color: #2196F3;
+        }
+        
+        .persona-scope.organization {
+            background: rgba(156, 39, 176, 0.3);
+            color: #9C27B0;
+        }
+        
+        .persona-info {
+            font-size: 11px;
+            color: #8a92a5;
+            margin-bottom: 8px;
+        }
+        
+        .persona-specialization {
+            color: #4FC3F7;
+            font-weight: 500;
+        }
+        
+        .persona-actions {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
+        }
+        
+        .persona-action-btn {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #E0E0E0;
+            padding: 3px 6px;
+            border-radius: 4px;
+            font-size: 9px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-transform: uppercase;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+        }
+        
+        .persona-action-btn:hover {
+            background: rgba(255,255,255,0.2);
+            transform: translateY(-1px);
+        }
+        
+        .persona-action-btn.deploy {
+            background: rgba(76, 175, 80, 0.3);
+            color: #4CAF50;
+            border-color: #4CAF50;
+        }
+        
+        .persona-action-btn.share {
+            background: rgba(255, 193, 7, 0.3);
+            color: #FFC107;
+            border-color: #FFC107;
+        }
+        
+        .persona-action-btn.delete {
+            background: rgba(244, 67, 54, 0.3);
+            color: #F44336;
+            border-color: #F44336;
+        }
+        
+        .persona-lora-info {
+            font-size: 9px;
+            color: #4FC3F7;
+            margin-top: 4px;
+            display: flex;
+            gap: 8px;
+        }
+        
+        .refresh-personas-btn {
+            background: rgba(79, 195, 247, 0.2);
+            border: 1px solid #4FC3F7;
+            color: #4FC3F7;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            width: 100%;
+        }
+        
+        .refresh-personas-btn:hover {
+            background: rgba(79, 195, 247, 0.3);
+        }
+        
+        .loading {
+            text-align: center;
+            color: #8a92a5;
+            font-size: 11px;
+            padding: 20px;
+        }
+        
         /* Responsive */
         @media (max-width: 768px) {
             .app-container {
@@ -624,6 +846,25 @@ class UIGenerator {
                         <div class="cost-label">Cost</div>
                     </div>
                 </div>
+            </div>
+            
+            <!-- Project Management -->
+            <div class="project-manager">
+                <h3>Active Projects</h3>
+                <div class="project-list" id="project-list">
+                    <div class="loading">Loading projects...</div>
+                </div>
+            </div>
+            
+            <!-- Persona Management -->
+            <div class="persona-manager">
+                <h3>Saved Personas</h3>
+                <div class="persona-list" id="persona-list">
+                    <div class="loading">Loading personas...</div>
+                </div>
+                <button class="refresh-personas-btn" onclick="refreshPersonas()">
+                    🔄 Refresh
+                </button>
             </div>
             
             <!-- Room-specific Content -->
@@ -1057,6 +1298,218 @@ class UIGenerator {
             document.getElementById('cost-total').textContent = '$' + (cost || 0).toFixed(4);
         }
         
+        // Persona Management Functions
+        async function refreshPersonas() {
+            const personaList = document.getElementById('persona-list');
+            personaList.innerHTML = '<div class="loading">Loading personas...</div>';
+            
+            try {
+                const response = await fetch('/api/personas');
+                const personas = await response.json();
+                
+                if (personas.length === 0) {
+                    personaList.innerHTML = '<div class="loading">No personas found</div>';
+                    return;
+                }
+                
+                personaList.innerHTML = '';
+                personas.forEach(persona => {
+                    const personaCard = createPersonaCard(persona);
+                    personaList.appendChild(personaCard);
+                });
+                
+            } catch (error) {
+                console.error('Failed to load personas:', error);
+                personaList.innerHTML = '<div class="loading" style="color: #F44336;">Failed to load personas</div>';
+            }
+        }
+        
+        function createPersonaCard(persona) {
+            const card = document.createElement('div');
+            card.className = 'persona-card';
+            
+            const scope = persona.scope || 'unknown';
+            const hasAdapter = persona.hasLoRAAdapter;
+            
+            card.innerHTML = \`
+                <div class="persona-header">
+                    <div class="persona-name">\${persona.name}</div>
+                    <div class="persona-scope \${scope}">\${scope}</div>
+                </div>
+                <div class="persona-info">
+                    <div class="persona-specialization">\${persona.specialization}</div>
+                    <div>Status: \${persona.status} | Score: \${persona.graduationScore}%</div>
+                    \${hasAdapter ? \`<div class="persona-lora-info">
+                        <span>📦 \${persona.adapterSize}</span>
+                        <span>📊 \${persona.reductionFactor}</span>
+                    </div>\` : ''}
+                </div>
+                <div class="persona-actions">
+                    <button class="persona-action-btn deploy" onclick="deployPersona('\${persona.id}')">
+                        🚀 Deploy
+                    </button>
+                    \${scope !== 'organization' ? \`
+                        <button class="persona-action-btn share" onclick="sharePersona('\${persona.id}', 'organization')">
+                            🤝 Share Org
+                        </button>
+                    \` : ''}
+                    \${scope === 'user' ? \`
+                        <button class="persona-action-btn share" onclick="sharePersona('\${persona.id}', 'project')">
+                            🏢 Share Project
+                        </button>
+                    \` : ''}
+                    <button class="persona-action-btn delete" onclick="deletePersona('\${persona.id}')">
+                        🗑️ Delete
+                    </button>
+                </div>
+            \`;
+            
+            return card;
+        }
+        
+        async function sharePersona(personaId, toScope) {
+            try {
+                const response = await fetch(\`/api/personas/\${personaId}/share\`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ toScope })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    addSystemMessage(\`🤝 Persona shared to \${toScope}: \${result.personaName}\`);
+                    await refreshPersonas(); // Refresh the list
+                } else {
+                    addSystemMessage(\`❌ Failed to share persona: \${result.error}\`);
+                }
+                
+            } catch (error) {
+                console.error('Share persona error:', error);
+                addSystemMessage(\`❌ Failed to share persona: \${error.message}\`);
+            }
+        }
+        
+        async function deployPersona(personaId) {
+            try {
+                const response = await fetch(\`/api/personas/\${personaId}/deploy\`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ task: 'Interactive session' })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    const deployment = result.deployment;
+                    const adapterInfo = deployment.deployment.adapterType === 'lora' ? 
+                        \` with \${deployment.deployment.appliedAdapters?.length || 0} LoRA layers\` : '';
+                    
+                    addSystemMessage(\`🚀 Deployed: \${deployment.persona.name}\${adapterInfo}\`);
+                    
+                    // Switch to the deployed persona context
+                    window.currentPersona = deployment.persona;
+                    
+                } else {
+                    addSystemMessage(\`❌ Failed to deploy persona: \${result.error}\`);
+                }
+                
+            } catch (error) {
+                console.error('Deploy persona error:', error);
+                addSystemMessage(\`❌ Failed to deploy persona: \${error.message}\`);
+            }
+        }
+        
+        async function deletePersona(personaId) {
+            if (!confirm('Are you sure you want to delete this persona? This action cannot be undone.')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(\`/api/personas/\${personaId}\`, {
+                    method: 'DELETE'
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    addSystemMessage(\`🗑️ Persona deleted: \${result.personaName}\`);
+                    await refreshPersonas(); // Refresh the list
+                } else {
+                    addSystemMessage(\`❌ Failed to delete persona: \${result.error}\`);
+                }
+                
+            } catch (error) {
+                console.error('Delete persona error:', error);
+                addSystemMessage(\`❌ Failed to delete persona: \${error.message}\`);
+            }
+        }
+        
+        // Project Management Functions
+        async function refreshProjects() {
+            const projectList = document.getElementById('project-list');
+            projectList.innerHTML = '<div class="loading">Loading projects...</div>';
+            
+            try {
+                const response = await fetch('/api/projects');
+                const projects = await response.json();
+                
+                if (projects.length === 0) {
+                    projectList.innerHTML = '<div class="loading">No projects registered</div>';
+                    return;
+                }
+                
+                projectList.innerHTML = '';
+                projects.forEach(project => {
+                    const projectCard = createProjectCard(project);
+                    projectList.appendChild(projectCard);
+                });
+                
+            } catch (error) {
+                console.error('Failed to load projects:', error);
+                projectList.innerHTML = '<div class="loading" style="color: #F44336;">Failed to load projects</div>';
+            }
+        }
+        
+        function createProjectCard(project) {
+            const card = document.createElement('div');
+            card.className = 'project-card';
+            
+            // Determine if this is the current project
+            const isCurrentProject = window.location.pathname === '/' && 
+                project.workingDirectory === '${process.cwd()}';
+            
+            if (isCurrentProject) {
+                card.classList.add('active');
+            }
+            
+            card.innerHTML = \`
+                <div class="project-name">\${project.projectName}</div>
+                <div class="project-path">\${project.workingDirectory}</div>
+                <div class="project-info">
+                    <span>PID: \${project.pid}</span>
+                    <span>\${new Date(project.registeredAt).toLocaleTimeString()}</span>
+                </div>
+            \`;
+            
+            card.onclick = () => switchToProject(project);
+            
+            return card;
+        }
+        
+        function switchToProject(project) {
+            // Update the active project indicator
+            document.querySelectorAll('.project-card').forEach(card => {
+                card.classList.remove('active');
+            });
+            event.target.closest('.project-card').classList.add('active');
+            
+            // Update the AI context to use this project's scratchpad
+            window.currentProject = project;
+            addSystemMessage(\`📁 Switched to project: \${project.projectName}\`);
+            addSystemMessage(\`💾 Using scratchpad: \${project.scratchpadPath}\`);
+        }
+        
         // Academy functions
         function sendSheriffToAcademy() {
             if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1106,6 +1559,8 @@ class UIGenerator {
         // Initialize default room
         document.addEventListener('DOMContentLoaded', function() {
             switchRoom('general');
+            refreshProjects(); // Load active projects
+            refreshPersonas(); // Load personas on startup
         });
         
         // If page is already loaded
@@ -1113,10 +1568,14 @@ class UIGenerator {
             document.addEventListener('DOMContentLoaded', function() {
                 switchRoom('general');
                 updateChatHeader();
+                refreshProjects(); // Load active projects
+                refreshPersonas(); // Load personas on startup
             });
         } else {
             switchRoom('general');
             updateChatHeader();
+            refreshProjects(); // Load active projects
+            refreshPersonas(); // Load personas on startup
         }
         
         // Load conversation history

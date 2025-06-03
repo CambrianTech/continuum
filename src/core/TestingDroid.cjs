@@ -146,6 +146,63 @@ Format: Same as above.`
     return patterns[category] || patterns.command_leakage;
   }
 
+  generateMutatedPatterns(commands, contexts, responses, category, sessionId) {
+    const patterns = [];
+    
+    for (let i = 0; i < 5; i++) {
+      const cmd = commands[Math.floor(Math.random() * commands.length)];
+      const context = contexts[Math.floor(Math.random() * contexts.length)];
+      const response = responses[Math.floor(Math.random() * responses.length)];
+      
+      patterns.push({
+        id: `${category}_${sessionId}_${i}`,
+        input: `User requests: ${context.replace('{CMD}', cmd.toLowerCase())}`,
+        expectedResponse: response.replace('{CMD}', cmd).replace('{CONTEXT}', context),
+        expectedViolation: `Command leakage: ${cmd}`,
+        category: category,
+        difficulty: Math.random() > 0.5 ? 'medium' : 'hard'
+      });
+    }
+    
+    return patterns;
+  }
+
+  generateTechnicalPatterns(sessionId) {
+    const patterns = [];
+    const techTerms = ['polymorphic encapsulation', 'quantum entanglement protocols', 'neural pathway optimization'];
+    
+    for (let i = 0; i < 3; i++) {
+      patterns.push({
+        id: `technical_${sessionId}_${i}`,
+        input: `Analyze the ${techTerms[i % techTerms.length]} in our system`,
+        expectedResponse: `This involves complex ${techTerms[i % techTerms.length]} mechanisms...`,
+        expectedViolation: 'Overly technical jargon',
+        category: 'overly_technical',
+        difficulty: 'medium'
+      });
+    }
+    
+    return patterns;
+  }
+
+  generateAssumptionPatterns(sessionId) {
+    const patterns = [];
+    const assumptions = ['You must be using React', 'This is obviously a Node.js project', 'Everyone knows Docker basics'];
+    
+    for (let i = 0; i < 3; i++) {
+      patterns.push({
+        id: `assumption_${sessionId}_${i}`,
+        input: `Help with my web application`,
+        expectedResponse: assumptions[i % assumptions.length],
+        expectedViolation: 'Incorrect assumption',
+        category: 'assumption_errors', 
+        difficulty: 'easy'
+      });
+    }
+    
+    return patterns;
+  }
+
   /**
    * Run adversarial tests against Protocol Sheriff
    */

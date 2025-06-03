@@ -5,6 +5,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const LoRAAdapter = require('./LoRAAdapter.cjs');
+const PersonaRegistry = require('./PersonaRegistry.cjs');
 
 class Persona {
   constructor(config = {}) {
@@ -23,6 +25,7 @@ class Persona {
     this.createdAt = config.createdAt || new Date().toISOString();
     this.graduatedAt = config.graduatedAt || null;
     this.failedAt = config.failedAt || null;
+    this.loraAdapter = config.loraAdapter || null; // Store actual LoRA weights
   }
 
   /**
@@ -53,20 +56,37 @@ class Persona {
     const checkpointPath = path.join(personaDir, 'checkpoint.json');
     fs.writeFileSync(checkpointPath, JSON.stringify(checkpoint, null, 2));
 
+    // Save actual LoRA adapter weights
+    let adapterInfo = null;
+    if (this.loraAdapter) {
+      const adapterResult = await this.loraAdapter.saveAdapters(personaDir, {
+        personaId: this.id,
+        personaName: this.name,
+        specialization: this.specialization,
+        graduationScore: this.graduationScore
+      });
+      adapterInfo = adapterResult;
+      console.log(`🔬 LoRA adapter weights saved: ${adapterResult.sizeKB}KB`);
+      console.log(`📊 Storage reduction: ${Math.round(adapterResult.reductionFactor).toLocaleString()}x vs full model`);
+    }
+
     console.log(`💾 Persona saved: ${this.name}`);
     console.log(`📁 Location: ${personaDir}`);
 
     return {
       configPath,
       checkpointPath,
-      trainingPath: this.trainingData.length > 0 ? path.join(personaDir, 'training.jsonl') : null
+      trainingPath: this.trainingData.length > 0 ? path.join(personaDir, 'training.jsonl') : null,
+      adapterPath: adapterInfo?.adapterPath || null,
+      adapterSizeKB: adapterInfo?.sizeKB || 0,
+      storageReduction: adapterInfo?.reductionFactor || 1
     };
   }
 
   /**
    * Load persona from checkpoint
    */
-  static load(personaId) {
+  static async load(personaId) {
     const personaDir = path.join('.continuum', 'personas', personaId);
     const configPath = path.join(personaDir, 'config.json');
 
@@ -82,6 +102,17 @@ class Persona {
     if (fs.existsSync(checkpointPath)) {
       const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
       persona.loadCheckpoint(checkpoint);
+    }
+
+    // Load actual LoRA adapter weights
+    const adapterPath = path.join(personaDir, 'lora_adapters.json');
+    if (fs.existsSync(adapterPath)) {
+      try {
+        persona.loraAdapter = await LoRAAdapter.loadAdapters(adapterPath);
+        console.log(`🔬 LoRA adapter weights loaded: ${Math.round(persona.loraAdapter.estimateStorageSize() / 1024)}KB`);
+      } catch (error) {
+        console.warn(`⚠️ Failed to load LoRA adapter: ${error.message}`);
+      }
     }
 
     console.log(`👤 Loaded persona: ${persona.name}`);
@@ -107,7 +138,8 @@ class Persona {
       bootCampClass: config.bootCamp?.class,
       createdAt: config.metadata.createdAt,
       graduatedAt: config.metadata.graduatedAt,
-      failedAt: config.metadata.failedAt
+      failedAt: config.metadata.failedAt,
+      loraAdapter: null // Will be loaded separately
     });
   }
 
@@ -132,7 +164,9 @@ class Persona {
         baseModel: this.baseModel,
         fineTuneId: this.fineTuneId,
         checkpointPath: `.continuum/personas/${this.id}/checkpoint.json`,
-        trainingDataPath: `.continuum/personas/${this.id}/training.jsonl`
+        trainingDataPath: `.continuum/personas/${this.id}/training.jsonl`,
+        adapterPath: this.loraAdapter ? `.continuum/personas/${this.id}/lora_adapters.json` : null,
+        adapterType: this.loraAdapter ? 'lora' : 'fine_tuned'
       },
       performance: {
         academyScore: this.graduationScore,
@@ -154,6 +188,9 @@ class Persona {
    * Create checkpoint with model weights
    */
   createCheckpoint() {
+    const hasAdapter = this.loraAdapter !== null;
+    const adapterInfo = hasAdapter ? this.loraAdapter.getAdapterCheckpoint() : null;
+    
     return {
       modelId: this.id,
       baseModel: this.baseModel,
@@ -163,24 +200,34 @@ class Persona {
         trainingRounds: this.trainingData.length,
         totalTrainingExamples: this.convertTrainingData().length
       },
-      modelWeights: {
-        format: 'safetensors',
-        size: `${Math.round(Math.random() * 500 + 100)}MB`,
-        layers: this.trainingData.length * 12,
-        parameters: `${Math.round(Math.random() * 7 + 1)}B`
+      modelWeights: hasAdapter ? {
+        format: 'lora_adapter',
+        type: 'Low-Rank Adaptation',
+        size: `${Math.round(adapterInfo.storageSize / 1024)}KB`,
+        parameters: `${adapterInfo.parameterCount.toLocaleString()}`,
+        reductionFactor: `${Math.round(adapterInfo.reductionFactor).toLocaleString()}x`,
+        rank: adapterInfo.rank,
+        alpha: adapterInfo.alpha,
+        targetLayers: adapterInfo.targetLayers,
+        adapterPath: 'lora_adapters.json'
+      } : {
+        format: 'fine_tuned_model', 
+        size: 'Variable (provider-dependent)',
+        fineTuneId: this.fineTuneId
       },
       performance: {
         benchmarks: {
           academyScore: this.graduationScore,
           latency: Math.round(Math.random() * 2000 + 500),
           throughput: Math.round(Math.random() * 100 + 50),
-          memoryUsage: `${Math.round(Math.random() * 4 + 2)}GB`
+          memoryUsage: hasAdapter ? `${Math.round(adapterInfo.storageSize / (1024 * 1024))}MB` : `${Math.round(Math.random() * 4 + 2)}GB`
         }
       },
       deployment: {
-        compatible_frameworks: ['transformers', 'pytorch', 'tensorflow'],
+        compatible_frameworks: hasAdapter ? ['pytorch', 'transformers', 'peft'] : ['transformers', 'pytorch', 'tensorflow'],
         api_endpoints: [`/api/persona/${this.id}`],
-        deployment_ready: this.status === 'graduated'
+        deployment_ready: this.status === 'graduated',
+        weights_included: hasAdapter
       },
       created: new Date().toISOString(),
       version: '1.0.0'
@@ -195,6 +242,7 @@ class Persona {
     if (checkpoint.performance?.benchmarks) {
       this.performance = { ...this.performance, ...checkpoint.performance.benchmarks };
     }
+    // Note: LoRA adapter weights are loaded separately in the load() method
   }
 
   /**
@@ -238,15 +286,28 @@ class Persona {
       console.warn(`⚠️ Deploying non-graduated persona: ${this.name}`);
     }
 
-    return {
+    const deployment = {
       persona: this,
       deployment: {
         deployedAt: new Date().toISOString(),
         task: taskContext.task,
         sessionId: `session_${Date.now()}`,
-        modelId: this.fineTuneId || this.baseModel
+        modelId: this.fineTuneId || this.baseModel,
+        baseModel: this.baseModel,
+        adapterType: this.loraAdapter ? 'lora' : 'fine_tuned'
       }
     };
+
+    // Apply LoRA adapters if available
+    if (this.loraAdapter) {
+      console.log(`🔧 Deploying with LoRA adapters...`);
+      const appliedLayers = this.loraAdapter.applyToModel({});
+      deployment.deployment.appliedAdapters = appliedLayers;
+      deployment.deployment.adapterInfo = this.loraAdapter.getAdapterCheckpoint();
+      console.log(`✅ ${appliedLayers.length} LoRA layers applied to ${this.baseModel}`);
+    }
+
+    return deployment;
   }
 
   /**
@@ -267,7 +328,7 @@ class Persona {
   /**
    * List all saved personas
    */
-  static listAll() {
+  static async listAll() {
     const personasDir = path.join('.continuum', 'personas');
     
     if (!fs.existsSync(personasDir)) {
@@ -279,14 +340,52 @@ class Persona {
     
     for (const entry of entries) {
       try {
-        const persona = Persona.load(entry);
-        personas.push(persona.getInfo());
+        const persona = await Persona.load(entry);
+        const info = persona.getInfo();
+        info.hasLoRAAdapter = persona.loraAdapter !== null;
+        if (persona.loraAdapter) {
+          info.adapterSize = `${Math.round(persona.loraAdapter.estimateStorageSize() / 1024)}KB`;
+          info.reductionFactor = `${Math.round(persona.loraAdapter.calculateReductionFactor()).toLocaleString()}x`;
+        }
+        personas.push(info);
       } catch (error) {
         console.warn(`⚠️ Failed to load persona: ${entry}`);
       }
     }
 
     return personas;
+  }
+  
+  /**
+   * Share persona to different scope
+   */
+  async share(toScope = 'organization') {
+    const registry = new PersonaRegistry();
+    
+    // First find where this persona currently exists
+    const findResult = registry.findPersona(this.id);
+    if (!findResult.found) {
+      throw new Error(`Cannot share persona that hasn't been saved: ${this.id}`);
+    }
+    
+    const fromScope = findResult.location.type;
+    return await registry.sharePersona(this.id, fromScope, toScope);
+  }
+  
+  /**
+   * Get registry configuration
+   */
+  static getRegistryConfig() {
+    const registry = new PersonaRegistry();
+    return registry.getConfig();
+  }
+  
+  /**
+   * Get storage statistics
+   */
+  static getStorageStats() {
+    const registry = new PersonaRegistry();
+    return registry.getStorageStats();
   }
 }
 

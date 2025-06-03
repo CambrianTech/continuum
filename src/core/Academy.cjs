@@ -7,11 +7,13 @@ const fs = require('fs');
 const path = require('path');
 const TestingDroid = require('./TestingDroid.cjs');
 const ProtocolSheriff = require('./ProtocolSheriff.cjs');
+const CommandTeacher = require('./CommandTeacher.cjs');
 
 class Academy {
-  constructor(modelRegistry, modelCaliber) {
+  constructor(modelRegistry, modelCaliber, commandProcessor = null) {
     this.modelRegistry = modelRegistry;
     this.modelCaliber = modelCaliber;
+    this.commandProcessor = commandProcessor;
     this.trainingLog = [];
     this.graduatedPersonas = new Map();
     this.bootCampStats = {
@@ -55,6 +57,8 @@ class Academy {
 
     const sheriff = new ProtocolSheriff(this.modelRegistry, this.modelCaliber);
     const testingDroid = new TestingDroid();
+    const commandTeacher = this.commandProcessor ? 
+      new CommandTeacher(this.commandProcessor) : null;
     
     let totalCorrect = 0;
     let totalTests = 0;
@@ -73,6 +77,20 @@ class Academy {
       // Run tests against current sheriff
       const results = await testingDroid.runAdversarialTests(sheriff, adversarialTests);
       
+      // Additional command usage evaluation with CommandTeacher
+      let commandEvaluations = [];
+      if (commandTeacher) {
+        console.log(`🎓 CommandTeacher: Evaluating command usage confidence...`);
+        for (const test of adversarialTests) {
+          const evaluation = commandTeacher.evaluateCommandUsage(test.input, test.expectedResponse || '');
+          commandEvaluations.push(evaluation);
+          
+          if (evaluation.score < 85) {
+            console.log(`⚠️ Command confidence issue: ${evaluation.feedback}`);
+          }
+        }
+      }
+      
       // Log training data
       const roundData = {
         round,
@@ -80,8 +98,11 @@ class Academy {
         correctDetections: results.passed,
         totalTests: results.total,
         accuracy: results.total > 0 ? results.passed / results.total : 0,
+        commandAccuracy: commandEvaluations.length > 0 ? 
+          commandEvaluations.reduce((sum, evaluation) => sum + evaluation.score, 0) / commandEvaluations.length / 100 : 1,
         timestamp: new Date().toISOString(),
-        failedCases: results.failed || []
+        failedCases: results.failed || [],
+        commandViolations: commandEvaluations.filter(evaluation => evaluation.violations.length > 0)
       };
 
       recruit.trainingData.push(roundData);
