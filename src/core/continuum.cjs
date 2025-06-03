@@ -8,9 +8,9 @@
  * Launches web interface with real Claude pool
  */
 
-const http = require('http');
 const net = require('net');
-const WebSocket = require('ws');
+const HttpServer = require('./HttpServer.cjs');
+const WebSocketServer = require('./WebSocketServer.cjs');
 const { Anthropic } = require('@anthropic-ai/sdk');
 const { OpenAI } = require('openai');
 const fs = require('fs');
@@ -101,7 +101,7 @@ const openai = new OpenAI({
 class Continuum {
   constructor(options = {}) {
     this.sessions = new Map();
-    this.costs = { total: 0, requests: 0 };
+    this.costs = this.loadCostData();
     this.port = options.port || process.env.CONTINUUM_PORT || 5555;
     this.stayAlive = options.stayAlive || false;
     this.repoContext = null;
@@ -111,6 +111,7 @@ class Continuum {
     this.continuumDir = path.join(process.cwd(), '.continuum');
     this.historyFile = path.join(this.continuumDir, 'conversation-history.jsonl');
     this.pidFile = path.join(this.continuumDir, 'continuum.pid');
+    this.costDataFile = path.join(this.continuumDir, 'costs.json');
     this.server = null;
     this.isShuttingDown = false;
     
@@ -138,6 +139,26 @@ class Continuum {
     if (this.autoStart !== false) {
       this.loadRepoContext();
       this.start();
+    }
+  }
+
+  loadCostData() {
+    try {
+      if (fs.existsSync(this.costDataFile)) {
+        const data = JSON.parse(fs.readFileSync(this.costDataFile, 'utf-8'));
+        return { total: data.total || 0, requests: data.requests || 0 };
+      }
+    } catch (error) {
+      console.log('⚠️  Could not load cost data, starting fresh');
+    }
+    return { total: 0, requests: 0 };
+  }
+
+  saveCostData() {
+    try {
+      fs.writeFileSync(this.costDataFile, JSON.stringify(this.costs, null, 2));
+    } catch (error) {
+      console.error('❌ Failed to save cost data:', error.message);
     }
   }
 
@@ -1596,6 +1617,7 @@ SUCCESSFUL PATTERNS:`;
     return { cwd: null };
   }
 
+
   isProcessRunning(pid) {
     try {
       // Send signal 0 to check if process exists
@@ -1695,179 +1717,12 @@ SUCCESSFUL PATTERNS:`;
     // Check for port conflicts and handle existing instances
     await this.checkPortConflict();
     
-    this.server = http.createServer(async (req, res) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-      
-      if (req.method === 'OPTIONS') {
-        res.writeHead(200);
-        res.end();
-        return;
-      }
-
-      const url = new URL(req.url, `http://localhost:${this.port}`);
-      
-      if (req.method === 'GET' && url.pathname === '/') {
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(this.generateUI());
-      } else if (req.method === 'GET' && url.pathname === '/ask') {
-        const task = url.searchParams.get('task');
-        
-        console.log(`📨 Web request received: ${task}`);
-        
-        if (task) {
-          try {
-            console.log(`🔄 Processing task: ${task}`);
-            
-            // Get the initial agent that will handle this task
-            const initialAgent = this.getInitialAgent(task);
-            
-            const result = await this.intelligentRoute(task);
-            console.log(`✅ Task completed, sending response...`);
-            
-            // Add initial agent info and working status for better UI feedback
-            result.initialAgent = initialAgent;
-            
-            if (result.coordination) {
-              result.workingMessages = [
-                'Analyzing request and selecting best AI...',
-                'Multi-AI coordination required...',
-                'Coordinating between AIs...',
-                'Finalizing...'
-              ];
-            } else {
-              result.workingMessages = [
-                `${result.role} is thinking...`,
-                'Formulating response...'
-              ];
-            }
-            
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(result));
-          } catch (error) {
-            console.error(`❌ Task failed: ${error.message}`);
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: error.message, stack: error.stack }));
-          }
-        } else {
-          console.log(`⚠️  No task provided in request`);
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'No task provided' }));
-        }
-      } else if (req.method === 'GET' && url.pathname === '/status') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          sessions: Array.from(this.sessions.entries()),
-          costs: this.costs,
-          uptime: process.uptime()
-        }));
-      } else {
-        res.writeHead(404);
-        res.end('Not found');
-      }
-    });
-
-    const wss = new WebSocket.Server({ server: this.server });
+    // Create modular HTTP server
+    const httpServer = new HttpServer(this);
+    this.server = httpServer.createServer();
     
-    wss.on('connection', (ws) => {
-      // Create unique session for this connection
-      const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      ws.sessionId = sessionId;
-      
-      // Initialize session data
-      this.activeConnections.set(sessionId, ws);
-      this.conversationThreads.set(sessionId, []);
-      
-      console.log(`👤 User connected (Session: ${sessionId})`);
-      
-      // Send connection event to AI system with session context
-      this.handleUserConnection(ws);
-      
-      const packageInfo = require('../../package.json');
-      ws.send(JSON.stringify({
-        type: 'status',
-        data: {
-          message: 'Ready to help',
-          sessionId: sessionId,
-          version: packageInfo.version,
-          workingDir: process.cwd(),
-          nodeVersion: process.version,
-          pid: process.pid,
-          uptime: process.uptime(),
-          sessions: Array.from(this.sessions.entries()),
-          costs: this.costs
-        }
-      }));
-      
-      ws.on('message', async (message) => {
-        try {
-          console.log('📨 Received message:', message.toString());
-          const data = JSON.parse(message);
-          
-          if (data.type === 'task') {
-            const { role, task } = data;
-            
-            console.log(`🎯 Task: ${role} -> ${task}`);
-            
-            ws.send(JSON.stringify({
-              type: 'working',
-              data: `🤖 ${role} processing: ${task.substring(0, 50)}...`
-            }));
-            
-            try {
-              // Use intelligentRoute for proper AI coordination and response processing
-              const result = await this.intelligentRoute(task);
-              
-              ws.send(JSON.stringify({
-                type: 'result',
-                data: {
-                  role: result.role || role,
-                  task: task,
-                  result: result.result || result,
-                  costs: this.costs
-                }
-              }));
-              
-              // Also coordinate with other AIs if needed
-              if (task.toLowerCase().includes('coordinate') || task.toLowerCase().includes('discuss')) {
-                setTimeout(async () => {
-                  try {
-                    const otherRole = role === 'CodeAI' ? 'PlannerAI' : 'CodeAI';
-                    const coordinationTask = `${role} just said: "${result}". Please respond or coordinate.`;
-                    const coordination = await this.sendTask(otherRole, coordinationTask);
-                    
-                    ws.send(JSON.stringify({
-                      type: 'result',
-                      data: {
-                        role: otherRole,
-                        task: coordinationTask,
-                        result: coordination,
-                        costs: this.costs
-                      }
-                    }));
-                  } catch (e) {
-                    console.error('Coordination error:', e);
-                  }
-                }, 2000);
-              }
-            } catch (taskError) {
-              console.error('Task error:', taskError);
-              ws.send(JSON.stringify({
-                type: 'error',
-                data: `Task failed: ${taskError.message}`
-              }));
-            }
-          }
-        } catch (error) {
-          console.error('Message error:', error);
-          ws.send(JSON.stringify({
-            type: 'error',
-            data: `Message error: ${error.message}`
-          }));
-        }
-      });
-    });
+    // Create modular WebSocket server
+    this.webSocketServer = new WebSocketServer(this, this.server);
 
     this.server.listen(this.port, () => {
       // Write PID file after successful startup

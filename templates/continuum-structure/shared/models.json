@@ -1,0 +1,16 @@
+{
+  "approved_models": [
+    "claude-3-5-sonnet-20241022",
+    "claude-3-haiku-20240307",
+    "gpt-4-turbo-preview"
+  ],
+  "cost_limits": {
+    "daily_max": 10.0,
+    "per_request_max": 1.0
+  },
+  "team_preferences": {
+    "default_model": "claude-3-5-sonnet-20241022",
+    "code_model": "claude-3-haiku-20240307",
+    "planning_model": "gpt-4-turbo-preview"
+  }
+}
