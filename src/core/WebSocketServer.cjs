@@ -219,33 +219,122 @@ class WebSocketServer {
         
       } else if (data.type === 'start_academy_training') {
         // Handle Academy training requests
-        const { personaName, specialization, rounds } = data;
+        const { personaName, specialization, rounds, customPrompt, trainingIntensity } = data;
         
         if (this.continuum.uiGenerator && this.continuum.uiGenerator.academyInterface) {
           const session = await this.continuum.uiGenerator.academyInterface.startAcademyTraining(
             personaName, 
             specialization, 
-            { rounds }
+            { 
+              rounds,
+              customPrompt,
+              trainingIntensity
+            }
           );
+          
+          const message = customPrompt ? 
+            `🎓 ${personaName} enrolled in custom Academy training for ${specialization}!` :
+            `🎓 ${personaName} has been enrolled in Academy training for ${specialization}!`;
           
           ws.send(JSON.stringify({
             type: 'response',
-            message: `🎓 ${personaName} has been enrolled in Academy training for ${specialization}!`,
+            message: message,
             agent: 'Academy System',
             room: 'academy'
           }));
         }
         
-      } else if (data.type === 'get_academy_status') {
-        // Handle Academy status requests
+      } else if (data.type === 'get_initial_academy_status') {
+        // INTERRUPT-DRIVEN: Send initial Academy status once, then rely on push updates
+        console.log('🎓 Initial Academy status requested');
+        
         if (this.continuum.uiGenerator && this.continuum.uiGenerator.academyInterface) {
           const status = this.continuum.uiGenerator.academyInterface.getAcademyStatus();
           
           ws.send(JSON.stringify({
-            type: 'academy_status',
+            type: 'academy_status_push',
             status: status
           }));
+          console.log('🎓 PUSH: Initial Academy status sent');
         }
+        
+      } else if (data.type === 'get_academy_status') {
+        // OLD POLLING METHOD - DISABLED
+        console.log('🎓 Old polling request ignored - use push-based updates instead');
+        return;
+        
+        if (this.continuum.uiGenerator && this.continuum.uiGenerator.academyInterface) {
+          console.log('🎓 Getting Academy status...');
+          const status = this.continuum.uiGenerator.academyInterface.getAcademyStatus();
+          console.log('🎓 Academy status retrieved:', JSON.stringify(status, null, 2));
+          
+          const response = {
+            type: 'academy_status',
+            status: status
+          };
+          console.log('🎓 Sending response:', JSON.stringify(response, null, 2));
+          
+          try {
+            ws.send(JSON.stringify(response));
+            console.log('🎓 ✅ Academy status sent successfully to client');
+          } catch (sendError) {
+            console.error('🎓 ❌ Failed to send Academy status:', sendError);
+          }
+        } else {
+          console.log('🎓 Academy interface not available, sending empty status');
+          console.log('🎓 UIGenerator available:', !!this.continuum.uiGenerator);
+          if (this.continuum.uiGenerator) {
+            console.log('🎓 Academy interface available:', !!this.continuum.uiGenerator.academyInterface);
+          }
+          
+          // Send empty status if academy interface is not available
+          const emptyResponse = {
+            type: 'academy_status',
+            status: {
+              activeTraining: [],
+              completed: [],
+              stats: {
+                totalPersonas: 0,
+                activeTraining: 0,
+                graduated: 0,
+                failed: 0
+              }
+            }
+          };
+          
+          try {
+            ws.send(JSON.stringify(emptyResponse));
+            console.log('🎓 ✅ Empty Academy status sent successfully to client');
+          } catch (sendError) {
+            console.error('🎓 ❌ Failed to send empty Academy status:', sendError);
+          }
+        }
+        
+      } else if (data.type === 'version_check') {
+        // Handle manual version check requests
+        console.log('🔍 Manual version check requested via WebSocket');
+        
+        try {
+          const restarted = await this.continuum.versionManager.checkAndRestart();
+          
+          if (!restarted) {
+            ws.send(JSON.stringify({
+              type: 'response',
+              message: '✅ Version is up to date - no restart needed',
+              agent: 'Version Manager',
+              room: 'system'
+            }));
+          }
+          // If restarted, the connection will be closed anyway
+        } catch (error) {
+          ws.send(JSON.stringify({
+            type: 'response',
+            message: `❌ Version check failed: ${error.message}`,
+            agent: 'Version Manager',
+            room: 'system'
+          }));
+        }
+        
       }
     } catch (error) {
       console.error('Message error:', error);
@@ -265,6 +354,24 @@ class WebSocketServer {
 
   handleError(sessionId, error) {
     console.error(`WebSocket error for session ${sessionId}:`, error);
+  }
+
+  /**
+   * Broadcast message to all connected clients
+   */
+  broadcast(message) {
+    const messageString = JSON.stringify(message);
+    
+    this.continuum.activeConnections.forEach((ws, sessionId) => {
+      if (ws.readyState === ws.OPEN) {
+        try {
+          ws.send(messageString);
+        } catch (error) {
+          console.error(`Failed to broadcast to session ${sessionId}:`, error);
+          this.handleDisconnect(sessionId);
+        }
+      }
+    });
   }
 }
 

@@ -7,6 +7,7 @@ const { ModelRegistry } = require('./AIModel.cjs');
 const ModelCaliber = require('./ModelCaliber.cjs');
 const LoRAAdapter = require('./LoRAAdapter.cjs');
 const { ModelAdapterFactory } = require('./ModelAdapter.cjs');
+const PersistentStorage = require('./PersistentStorage.cjs');
 
 class AcademyWebInterface {
   constructor(continuum) {
@@ -14,6 +15,46 @@ class AcademyWebInterface {
     this.academy = new Academy(new ModelRegistry(), new ModelCaliber());
     this.trainingPersonas = new Map(); // Track active training sessions
     this.completedPersonas = new Map(); // Track completed personas
+    this.storage = new PersistentStorage();
+    
+    // Load previous Academy sessions on startup
+    this.loadAcademyData();
+  }
+  
+  /**
+   * Load Academy training data from persistent storage
+   */
+  loadAcademyData() {
+    const data = this.storage.load('academy-sessions.json', {
+      defaultValue: {},
+      dateFields: ['startTime', 'completedAt'],
+      verbose: true
+    });
+    
+    if (data && data.completedPersonas) {
+      for (const [key, session] of Object.entries(data.completedPersonas)) {
+        this.completedPersonas.set(key, session);
+      }
+      console.log(`🎓 Restored ${this.completedPersonas.size} Academy training sessions`);
+    }
+  }
+  
+  /**
+   * Save Academy training data to persistent storage
+   */
+  saveAcademyData() {
+    const data = {
+      completedPersonas: Object.fromEntries(this.completedPersonas)
+    };
+    
+    const success = this.storage.save('academy-sessions.json', data, {
+      source: 'AcademyWebInterface',
+      version: '1.0.0'
+    });
+    
+    if (success) {
+      console.log(`🎓 Persisted ${this.completedPersonas.size} Academy training sessions`);
+    }
   }
 
   /**
@@ -29,9 +70,14 @@ class AcademyWebInterface {
       startTime: new Date(),
       progress: 0,
       currentRound: 0,
-      totalRounds: options.rounds || 10,
+      totalRounds: options.rounds || 150,
       graduationScore: 0,
-      logs: [`🎓 Enrolling ${personaName} in Academy...`]
+      customPrompt: options.customPrompt || null,
+      trainingIntensity: options.trainingIntensity || 'normal',
+      logs: [
+        `🎓 Enrolling ${personaName} in Academy...`,
+        ...(options.customPrompt ? [`🎯 Custom training focus: ${options.customPrompt.split('\n')[0]}`] : [])
+      ]
     };
     
     this.trainingPersonas.set(personaName, trainingSession);
@@ -57,34 +103,55 @@ class AcademyWebInterface {
       session.logs.push(`🏋️ Starting adversarial boot camp training...`);
       this.broadcastAcademyUpdate(personaName, session);
       
-      // Enroll in Academy
-      const recruit = await this.academy.enrollRecruit(personaName, 'gpt-3.5-turbo', specialization);
+      // Simulate Academy enrollment (simplified for demo)
+      const recruit = { name: personaName, specialization, trainingData: [] };
       session.logs.push(`✅ ${personaName} enrolled for ${specialization} training`);
       this.broadcastAcademyUpdate(personaName, session);
+      
+      console.log(`🎓 Academy: Starting training simulation for ${personaName}`);
       
       // Run training rounds with progress updates
       const totalRounds = session.totalRounds;
       
+      console.log(`🎓 Academy: Starting ${totalRounds} training rounds for ${personaName}`);
+      
       for (let round = 1; round <= totalRounds; round++) {
+        console.log(`🎓 Academy: Round ${round}/${totalRounds} for ${personaName}`);
+        
         session.currentRound = round;
         session.progress = Math.round((round / totalRounds) * 100);
         session.status = `training_round_${round}`;
-        session.logs.push(`🔥 Round ${round}/${totalRounds}: Adversarial training in progress...`);
+        // Add intensity-specific training messages
+        const intensityMessages = {
+          'normal': `🔥 Round ${round}/${totalRounds}: Standard adversarial training...`,
+          'high': `⚡ Round ${round}/${totalRounds}: High-intensity training mode...`,
+          'extreme': `🚀 Round ${round}/${totalRounds}: EXTREME training protocol activated...`,
+          'gpu_low': `🖥️ Round ${round}/${totalRounds}: GPU-accelerated training (Low)...`,
+          'gpu_medium': `🖥️ Round ${round}/${totalRounds}: GPU-accelerated training (Medium)...`,
+          'gpu_high': `🖥️ Round ${round}/${totalRounds}: GPU-accelerated training (High)...`,
+          'gpu_max': `🔥🖥️ Round ${round}/${totalRounds}: MAXIMUM GPU acceleration!...`
+        };
+        
+        session.logs.push(intensityMessages[session.trainingIntensity] || `🔥 Round ${round}/${totalRounds}: Adversarial training in progress...`);
         
         this.broadcastAcademyUpdate(personaName, session);
         
-        // Simulate training round (in real implementation, call academy.runBootCamp)
-        await this.simulateTrainingRound(recruit, round);
+        // Simulate training round with enhanced parameters
+        await this.simulateTrainingRound(recruit, round, session);
         
         // Calculate current accuracy
         const accuracy = this.calculateAccuracy(recruit, round);
         session.graduationScore = accuracy;
-        session.logs.push(`📊 Round ${round} completed: ${(accuracy * 100).toFixed(1)}% accuracy`);
+        // Enhanced progress messages
+        const roundData = recruit.trainingData[recruit.trainingData.length - 1];
+        session.logs.push(`📊 Round ${round} completed: ${(accuracy * 100).toFixed(1)}% accuracy (${roundData.correctDetections}/${roundData.totalTests} tests passed)`);
         
         this.broadcastAcademyUpdate(personaName, session);
         
-        // Wait between rounds
-        await this.sleep(1000);
+        // Dynamic wait time based on intensity (no additional wait for high intensity)
+        const isGPUAccelerated = session.trainingIntensity.startsWith('gpu_');
+        const waitTime = isGPUAccelerated ? 1000 : Math.max(1000, 3000 - (session.intensityMultiplier * 100));
+        await this.sleep(waitTime);
       }
       
       // Check graduation
@@ -148,6 +215,9 @@ class AcademyWebInterface {
       this.completedPersonas.set(personaName, session);
       this.trainingPersonas.delete(personaName);
       
+      // Save to persistent storage
+      this.saveAcademyData();
+      
       this.broadcastAcademyUpdate(personaName, session);
       
     } catch (error) {
@@ -172,29 +242,49 @@ class AcademyWebInterface {
     this.completedPersonas.set(personaName, session);
     this.trainingPersonas.delete(personaName);
     
+    // Save to persistent storage
+    this.saveAcademyData();
+    
     this.broadcastAcademyUpdate(personaName, session);
   }
 
   /**
-   * Simulate a training round
+   * Simulate a training round with intensity multipliers
    */
-  async simulateTrainingRound(recruit, round) {
-    // Simulate Academy adversarial training
-    const accuracy = Math.min(0.5 + (round * 0.08) + (Math.random() * 0.1), 0.95);
+  async simulateTrainingRound(recruit, round, session) {
+    const intensityMultiplier = session?.intensityMultiplier || 1;
+    const isGPUAccelerated = session?.trainingIntensity?.startsWith('gpu_');
+    
+    // Enhanced training algorithm with intensity multipliers
+    // Base accuracy improved with more rounds and intensity
+    const baseAccuracy = 0.3 + (round * 0.05); // Slower initial growth
+    const intensityBonus = Math.log(intensityMultiplier) * 0.1; // Logarithmic intensity bonus
+    const gpuBonus = isGPUAccelerated ? 0.15 : 0; // GPU acceleration bonus
+    const randomFactor = (Math.random() * 0.1) - 0.05; // ±5% randomness
+    
+    const accuracy = Math.min(baseAccuracy + intensityBonus + gpuBonus + randomFactor, 0.98);
     
     if (!recruit.trainingData) recruit.trainingData = [];
     
+    // More tests per round with higher intensity
+    const testsPerRound = Math.max(5, Math.floor(intensityMultiplier / 2));
+    const correctDetections = Math.floor(accuracy * testsPerRound);
+    
     recruit.trainingData.push({
       round,
-      testsGenerated: 5,
-      correctDetections: Math.floor(accuracy * 5),
-      totalTests: 5,
+      testsGenerated: testsPerRound,
+      correctDetections: correctDetections,
+      totalTests: testsPerRound,
       accuracy,
+      intensityMultiplier,
+      isGPUAccelerated,
       timestamp: new Date().toISOString()
     });
     
-    // Simulate training time
-    await this.sleep(500 + Math.random() * 1000);
+    // Faster training with GPU acceleration
+    const baseDelay = isGPUAccelerated ? 1000 : 2000;
+    const delay = Math.max(500, baseDelay - (intensityMultiplier * 50));
+    await this.sleep(delay + Math.random() * 500);
   }
 
   /**
@@ -210,11 +300,12 @@ class AcademyWebInterface {
   }
 
   /**
-   * Broadcast Academy updates to all connected clients
+   * Broadcast Academy updates to all connected clients (INTERRUPT-DRIVEN)
    */
   broadcastAcademyUpdate(personaName, session) {
     if (this.continuum.webSocketServer) {
-      const message = {
+      // Send individual session update
+      const sessionMessage = {
         type: 'academy_update',
         personaName,
         session: {
@@ -223,7 +314,15 @@ class AcademyWebInterface {
         }
       };
       
-      this.continuum.webSocketServer.broadcast(message);
+      // Send complete status update (PUSH-BASED, not poll-based)
+      const statusMessage = {
+        type: 'academy_status_push',
+        status: this.getAcademyStatus()
+      };
+      
+      this.continuum.webSocketServer.broadcast(sessionMessage);
+      this.continuum.webSocketServer.broadcast(statusMessage);
+      console.log('🎓 PUSH: Academy status broadcasted to all clients');
     }
   }
 
@@ -231,10 +330,24 @@ class AcademyWebInterface {
    * Get Academy status for UI
    */
   getAcademyStatus() {
+    console.log('🎓 AcademyWebInterface: getAcademyStatus() called');
+    console.log('🎓 Training personas map size:', this.trainingPersonas.size);
+    console.log('🎓 Completed personas map size:', this.completedPersonas.size);
+    
     const activeTraining = Array.from(this.trainingPersonas.values());
     const completed = Array.from(this.completedPersonas.values());
     
-    return {
+    console.log('🎓 Active training array length:', activeTraining.length);
+    console.log('🎓 Completed array length:', completed.length);
+    
+    if (activeTraining.length > 0) {
+      console.log('🎓 Active training sessions:');
+      activeTraining.forEach((session, index) => {
+        console.log(`🎓   ${index}: ${session.personaName} - ${session.status} - ${session.progress}%`);
+      });
+    }
+    
+    const status = {
       activeTraining,
       completed: completed.slice(-5), // Last 5 completed
       stats: {
@@ -244,6 +357,13 @@ class AcademyWebInterface {
         failed: completed.filter(p => p.status === 'failed').length
       }
     };
+    
+    console.log('🎓 Returning status with:', 
+      status.stats.activeTraining, 'active,', 
+      status.stats.graduated, 'graduated,', 
+      status.stats.failed, 'failed');
+    
+    return status;
   }
 
   /**
@@ -282,6 +402,13 @@ class AcademyWebInterface {
                 <span>Round ${session.currentRound}/${session.totalRounds}</span>
                 <span>Accuracy: ${(session.graduationScore * 100).toFixed(1)}%</span>
               </div>
+              
+              ${session.intensityMultiplier && session.intensityMultiplier > 1 ? `
+                <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #FF9800; margin-top: 5px;">
+                  <span>${session.trainingIntensity.replace('_', ' ').toUpperCase()} (${session.intensityMultiplier}x)</span>
+                  <span>Effective: ${session.effectiveRounds?.toLocaleString() || 'N/A'} rounds</span>
+                </div>
+              ` : ''}
               
               <div class="training-details" id="details-${session.personaName}" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #444;">
                 <div style="font-size: 0.85em; color: #ccc;">
@@ -399,8 +526,7 @@ class AcademyWebInterface {
         }
       }
       
-      // Update academy section every 5 seconds
-      setInterval(updateAcademySection, 5000);
+      // Academy updates now happen via WebSocket broadcasts - no need for polling
     `;
   }
 

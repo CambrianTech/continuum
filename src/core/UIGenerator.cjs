@@ -751,6 +751,79 @@ class UIGenerator {
             border-color: #FFC107;
         }
         
+        .persona-action-btn.retrain {
+            background: rgba(255, 152, 0, 0.3);
+            color: #FF9800;
+            border-color: #FF9800;
+        }
+        
+        .agent-dropdown-btn {
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 10px;
+            cursor: pointer;
+            padding: 2px 4px;
+            margin-left: 5px;
+            border-radius: 3px;
+            transition: all 0.2s ease;
+        }
+        
+        .agent-dropdown-btn:hover {
+            background: rgba(0, 212, 255, 0.2);
+            color: #00d4ff;
+        }
+        
+        .agent-info-dropdown {
+            margin-top: 10px;
+            padding: 12px;
+            background: linear-gradient(135deg, #1a1a2e 0%, #2a2a3e 100%);
+            border: 1px solid #333;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+            animation: slideDown 0.3s ease;
+        }
+        
+        .agent-stats div {
+            margin: 6px 0;
+            font-size: 11px;
+            color: #ccc;
+            line-height: 1.4;
+        }
+        
+        .agent-action-btn {
+            background: rgba(255, 152, 0, 0.3);
+            color: #FF9800;
+            border: 1px solid #FF9800;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 10px;
+            transition: all 0.2s ease;
+            margin-top: 5px;
+        }
+        
+        .agent-action-btn:hover {
+            background: rgba(255, 152, 0, 0.5);
+            transform: translateY(-1px);
+        }
+        
+        .agent-actions {
+            margin-top: 8px;
+            text-align: right;
+        }
+        
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
         .persona-action-btn.delete {
             background: rgba(244, 67, 54, 0.3);
             color: #F44336;
@@ -788,6 +861,148 @@ class UIGenerator {
             padding: 20px;
         }
         
+        /* Academy Sidebar Styles */
+        .academy-selector {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 15px;
+            margin: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .academy-selector h3 {
+            margin: 0 0 15px 0;
+            color: #E0E0E0;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .academy-training-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .academy-training-item {
+            background: linear-gradient(135deg, #1a1a2e 0%, #2a2a3e 100%);
+            border: 1px solid #7c4dff;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 8px;
+            box-shadow: 0 2px 10px rgba(124, 77, 255, 0.15);
+            transition: all 0.3s ease;
+        }
+        
+        .academy-training-item:hover {
+            border-color: #00d4ff;
+            box-shadow: 0 4px 15px rgba(0, 212, 255, 0.25);
+        }
+        
+        .academy-training-item .training-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .academy-training-item .training-name {
+            color: #ffffff;
+            font-weight: bold;
+            font-size: 13px;
+        }
+        
+        .academy-training-item .training-status {
+            color: #FF9800;
+            font-size: 10px;
+            background: rgba(255, 152, 0, 0.15);
+            padding: 2px 6px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 152, 0, 0.3);
+        }
+        
+        .academy-training-item .training-progress {
+            font-size: 11px;
+            color: #ccc;
+            margin-bottom: 6px;
+        }
+        
+        .academy-training-item .training-bar {
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        
+        .academy-training-item .training-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #FF9800, #FF5722);
+            border-radius: 2px;
+            transition: width 0.5s ease;
+        }
+        
+        .academy-stats-display {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 15px;
+            margin: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .academy-stats-display h3 {
+            margin: 0 0 15px 0;
+            color: #E0E0E0;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .academy-graduates {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 15px;
+            margin: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .academy-graduates h3 {
+            margin: 0 0 15px 0;
+            color: #E0E0E0;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .academy-graduates-list {
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        
+        .academy-graduate-item {
+            background: rgba(255,255,255,0.08);
+            border-radius: 6px;
+            padding: 8px;
+            margin-bottom: 6px;
+            border-left: 3px solid #4CAF50;
+            transition: all 0.2s ease;
+        }
+        
+        .academy-graduate-item:hover {
+            background: rgba(255,255,255,0.12);
+        }
+        
+        .academy-graduate-item .graduate-name {
+            color: #4CAF50;
+            font-weight: bold;
+            font-size: 12px;
+        }
+        
+        .academy-graduate-item .graduate-info {
+            color: #888;
+            font-size: 10px;
+            margin-top: 3px;
+        }
+        
         /* Responsive */
         @media (max-width: 768px) {
             .app-container {
@@ -813,8 +1028,16 @@ class UIGenerator {
         <div class="sidebar">
             <div class="sidebar-header">
                 <div class="logo">
-                    <div class="logo-icon">🧠</div>
-                    <div class="logo-text">Continuum</div>
+                    <div style="
+                        width: 24px; 
+                        height: 24px; 
+                        border: 2px solid #00d4ff; 
+                        border-radius: 50%; 
+                        background: transparent;
+                        box-shadow: 0 0 10px rgba(0, 212, 255, 0.3);
+                        margin-right: 10px;
+                    "></div>
+                    <div class="logo-text" style="color: #00d4ff; text-shadow: 0 0 8px rgba(0, 212, 255, 0.4);">continuum</div>
                 </div>
                 <div class="subtitle">AI Workforce Construction</div>
                 <div class="status-pill">
@@ -826,7 +1049,7 @@ class UIGenerator {
             <!-- Room Tabs -->
             <div class="room-tabs">
                 <div class="room-tab active" onclick="switchRoom('general')" id="tab-general">
-                    💬 General
+                    💬 Active
                 </div>
                 <div class="room-tab" onclick="switchRoom('academy')" id="tab-academy">
                     🎓 Academy
@@ -846,24 +1069,20 @@ class UIGenerator {
                         <div class="cost-label">Cost</div>
                     </div>
                 </div>
-            </div>
-            
-            <!-- Project Management -->
-            <div class="project-manager">
-                <h3>Active Projects</h3>
-                <div class="project-list" id="project-list">
-                    <div class="loading">Loading projects...</div>
-                </div>
-            </div>
-            
-            <!-- Persona Management -->
-            <div class="persona-manager">
-                <h3>Saved Personas</h3>
-                <div class="persona-list" id="persona-list">
-                    <div class="loading">Loading personas...</div>
-                </div>
-                <button class="refresh-personas-btn" onclick="refreshPersonas()">
-                    🔄 Refresh
+                <button onclick="clearChatHistory()" style="
+                    width: 100%;
+                    margin-top: 10px;
+                    padding: 6px 10px;
+                    background: rgba(244, 67, 54, 0.2);
+                    border: 1px solid #F44336;
+                    color: #F44336;
+                    border-radius: 6px;
+                    font-size: 10px;
+                    cursor: pointer;
+                    transition: all 0.2s ease;
+                " onmouseover="this.style.background='rgba(244, 67, 54, 0.3)'" 
+                   onmouseout="this.style.background='rgba(244, 67, 54, 0.2)'">
+                    🗑️ Clear History
                 </button>
             </div>
             
@@ -871,6 +1090,24 @@ class UIGenerator {
             <div id="room-content">
                 <!-- General Room Content -->
                 <div id="general-room" class="room-content">
+                    <!-- Project Management -->
+                    <div class="project-manager">
+                        <h3>Active Projects</h3>
+                        <div class="project-list" id="project-list">
+                            <div class="loading">Loading projects...</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Persona Management -->
+                    <div class="persona-manager">
+                        <h3>Saved Personas</h3>
+                        <div class="persona-list" id="persona-list">
+                            <div class="loading">Loading personas...</div>
+                        </div>
+                        <button class="refresh-personas-btn" onclick="refreshPersonas()">
+                            🔄 Refresh
+                        </button>
+                    </div>
                     <!-- Agent Selector -->
                     <div class="agent-selector">
                         <h3>Available Agents</h3>
@@ -886,47 +1123,126 @@ class UIGenerator {
                                 </div>
                             </div>
                             
-                            <div class="agent-item" onclick="selectAgent('PlannerAI')" id="agent-PlannerAI">
-                                <div class="agent-avatar" style="background: linear-gradient(135deg, #9C27B0, #673AB7);">
+                            <div class="agent-item" id="agent-PlannerAI">
+                                <div class="agent-avatar" style="background: linear-gradient(135deg, #9C27B0, #673AB7);" onclick="selectAgent('PlannerAI')">
                                     📋
                                     <div class="agent-status online"></div>
                                 </div>
-                                <div class="agent-info">
-                                    <div class="agent-name">PlannerAI</div>
+                                <div class="agent-info" onclick="selectAgent('PlannerAI')">
+                                    <div class="agent-name">
+                                        PlannerAI
+                                        <button class="agent-dropdown-btn" onclick="event.stopPropagation(); toggleAgentInfo('PlannerAI')" title="View agent info">
+                                            ▼
+                                        </button>
+                                    </div>
                                     <div class="agent-role">Strategy & web commands</div>
+                                    <div class="agent-info-dropdown" id="info-PlannerAI" style="display: none;">
+                                        <div class="agent-stats">
+                                            <div>🎯 <strong>Specialization:</strong> Strategic planning & task orchestration</div>
+                                            <div>📊 <strong>Accuracy:</strong> 91.8%</div>
+                                            <div>⚡ <strong>Response Time:</strong> 320ms avg</div>
+                                            <div>🌐 <strong>Tools:</strong> Web commands, file operations, analysis</div>
+                                            <div>🎓 <strong>Last Training:</strong> 1 day ago</div>
+                                            <div>💡 <strong>Strength:</strong> Complex multi-step planning</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="agent-actions">
+                                    <button class="agent-action-btn retrain" onclick="event.stopPropagation(); retrainAgent('PlannerAI')" title="Retrain PlannerAI">
+                                        🎓
+                                    </button>
                                 </div>
                             </div>
                             
-                            <div class="agent-item" onclick="selectAgent('CodeAI')" id="agent-CodeAI">
-                                <div class="agent-avatar" style="background: linear-gradient(135deg, #FF5722, #F44336);">
+                            <div class="agent-item" id="agent-CodeAI">
+                                <div class="agent-avatar" style="background: linear-gradient(135deg, #FF5722, #F44336);" onclick="selectAgent('CodeAI')">
                                     💻
                                     <div class="agent-status online"></div>
                                 </div>
-                                <div class="agent-info">
-                                    <div class="agent-name">CodeAI</div>
+                                <div class="agent-info" onclick="selectAgent('CodeAI')">
+                                    <div class="agent-name">
+                                        CodeAI
+                                        <button class="agent-dropdown-btn" onclick="event.stopPropagation(); toggleAgentInfo('CodeAI')" title="View agent info">
+                                            ▼
+                                        </button>
+                                    </div>
                                     <div class="agent-role">Code analysis & debugging</div>
+                                    <div class="agent-info-dropdown" id="info-CodeAI" style="display: none;">
+                                        <div class="agent-stats">
+                                            <div>🎯 <strong>Specialization:</strong> Code analysis, debugging & optimization</div>
+                                            <div>📊 <strong>Accuracy:</strong> 96.5%</div>
+                                            <div>⚡ <strong>Response Time:</strong> 240ms avg</div>
+                                            <div>💻 <strong>Languages:</strong> JavaScript, Python, TypeScript, Rust</div>
+                                            <div>🎓 <strong>Last Training:</strong> 3 days ago</div>
+                                            <div>💡 <strong>Strength:</strong> Complex code pattern recognition</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="agent-actions">
+                                    <button class="agent-action-btn retrain" onclick="event.stopPropagation(); retrainAgent('CodeAI')" title="Retrain CodeAI">
+                                        🎓
+                                    </button>
                                 </div>
                             </div>
                             
-                            <div class="agent-item" onclick="selectAgent('GeneralAI')" id="agent-GeneralAI">
-                                <div class="agent-avatar" style="background: linear-gradient(135deg, #4CAF50, #8BC34A);">
+                            <div class="agent-item" id="agent-GeneralAI">
+                                <div class="agent-avatar" style="background: linear-gradient(135deg, #4CAF50, #8BC34A);" onclick="selectAgent('GeneralAI')">
                                     💬
                                     <div class="agent-status online"></div>
                                 </div>
-                                <div class="agent-info">
-                                    <div class="agent-name">GeneralAI</div>
+                                <div class="agent-info" onclick="selectAgent('GeneralAI')">
+                                    <div class="agent-name">
+                                        GeneralAI
+                                        <button class="agent-dropdown-btn" onclick="event.stopPropagation(); toggleAgentInfo('GeneralAI')" title="View agent info">
+                                            ▼
+                                        </button>
+                                    </div>
                                     <div class="agent-role">General assistance</div>
+                                    <div class="agent-info-dropdown" id="info-GeneralAI" style="display: none;">
+                                        <div class="agent-stats">
+                                            <div>🎯 <strong>Specialization:</strong> General purpose assistance & routing</div>
+                                            <div>📊 <strong>Accuracy:</strong> 89.3%</div>
+                                            <div>⚡ <strong>Response Time:</strong> 200ms avg</div>
+                                            <div>🧠 <strong>Skills:</strong> Conversation, analysis, problem-solving</div>
+                                            <div>🎓 <strong>Last Training:</strong> 5 days ago</div>
+                                            <div>💡 <strong>Strength:</strong> Versatile task handling</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="agent-actions">
+                                    <button class="agent-action-btn retrain" onclick="event.stopPropagation(); retrainAgent('GeneralAI')" title="Retrain GeneralAI">
+                                        🎓
+                                    </button>
                                 </div>
                             </div>
                             
-                            <div class="agent-item" onclick="selectAgent('ProtocolSheriff')" id="agent-ProtocolSheriff">
-                                <div class="agent-avatar" style="background: linear-gradient(135deg, #FF9800, #FFC107);">
+                            <div class="agent-item" id="agent-ProtocolSheriff">
+                                <div class="agent-avatar" style="background: linear-gradient(135deg, #FF9800, #FFC107);" onclick="selectAgent('ProtocolSheriff')">
                                     🛡️
                                     <div class="agent-status online"></div>
                                 </div>
-                                <div class="agent-info">
-                                    <div class="agent-name">Protocol Sheriff</div>
+                                <div class="agent-info" onclick="selectAgent('ProtocolSheriff')">
+                                    <div class="agent-name">
+                                        Protocol Sheriff
+                                        <button class="agent-dropdown-btn" onclick="event.stopPropagation(); toggleAgentInfo('ProtocolSheriff')" title="View agent info">
+                                            ▼
+                                        </button>
+                                    </div>
                                     <div class="agent-role">Response validation</div>
+                                    <div class="agent-info-dropdown" id="info-ProtocolSheriff" style="display: none;">
+                                        <div class="agent-stats">
+                                            <div>🎯 <strong>Specialization:</strong> Response validation & safety</div>
+                                            <div>📊 <strong>Accuracy:</strong> 94.2%</div>
+                                            <div>⚡ <strong>Response Time:</strong> 180ms avg</div>
+                                            <div>🛡️ <strong>Protocols:</strong> Safety, Quality, Ethics</div>
+                                            <div>🎓 <strong>Last Training:</strong> 2 days ago</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="agent-actions">
+                                    <button class="agent-action-btn retrain" onclick="event.stopPropagation(); retrainAgent('ProtocolSheriff')" title="Retrain ProtocolSheriff">
+                                        🎓
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -941,17 +1257,48 @@ class UIGenerator {
                 
                 <!-- Academy Room Content -->
                 <div id="academy-room" class="room-content" style="display: none;">
-                    <div id="academy-section">
-                        ${this.academyInterface.generateAcademyHTML()}
+                    <!-- Academy Training Status -->
+                    <div class="academy-selector">
+                        <h3>Training Status</h3>
+                        <div id="academy-training-list" class="academy-training-list">
+                            <div class="loading">Loading training sessions...</div>
+                        </div>
                     </div>
                     
-                    <div class="academy-actions">
+                    <!-- Academy Actions -->
+                    <div class="academy-actions" style="margin-top: 20px;">
                         <button class="academy-button" onclick="sendSheriffToAcademy()">
-                            🛡️ Send Sheriff to Academy
+                            🛡️ Deploy Sheriff
                         </button>
                         <button class="academy-button" onclick="trainCustomPersona()">
-                            🎓 Train Custom Persona
+                            🎓 Custom Training
                         </button>
+                        <button class="academy-button" onclick="startPendingTraining()" id="pending-training-btn" style="display: none;">
+                            🚀 Start Pending Training
+                        </button>
+                    </div>
+                    
+                    <!-- Academy Stats -->
+                    <div class="academy-stats-display" style="margin-top: 20px;">
+                        <h3>Academy Statistics</h3>
+                        <div id="academy-stats" class="cost-stats">
+                            <div class="cost-item">
+                                <div class="cost-value" id="academy-active-count">0</div>
+                                <div class="cost-label">Training</div>
+                            </div>
+                            <div class="cost-item">
+                                <div class="cost-value" id="academy-graduated-count">0</div>
+                                <div class="cost-label">Graduated</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Recent Graduates -->
+                    <div class="academy-graduates" style="margin-top: 20px;">
+                        <h3>Recent Graduates</h3>
+                        <div id="academy-graduates-list" class="academy-graduates-list">
+                            <div class="loading">No recent graduates</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -960,8 +1307,22 @@ class UIGenerator {
         <!-- Main Chat -->
         <div class="main-content">
             <div class="chat-header">
-                <div class="chat-title" id="chat-title">General Chat</div>
+                <div class="chat-title" id="chat-title">Active Chat</div>
                 <div class="chat-subtitle" id="chat-subtitle">Talk to specialized AI agents</div>
+                <div class="version-badge" style="
+                    position: absolute;
+                    top: 15px;
+                    right: 20px;
+                    background: rgba(0, 212, 255, 0.1);
+                    border: 1px solid #00d4ff;
+                    color: #00d4ff;
+                    padding: 4px 8px;
+                    border-radius: 12px;
+                    font-size: 11px;
+                    font-weight: bold;
+                ">
+                    v${require('../../package.json').version || '1.0.0'}
+                </div>
             </div>
             
             <div class="chat-container" id="chat"></div>
@@ -995,23 +1356,105 @@ class UIGenerator {
         let selectedAgents = new Set();
         let isGroupChat = false;
         
+        // Chat history persistence
+        const STORAGE_KEY = 'continuum_chat_history';
+        const MAX_STORED_MESSAGES = 100;
+        
+        function saveChatHistory() {
+            try {
+                const historyData = {
+                    roomMessages,
+                    messageHistory: messageHistory.slice(-MAX_STORED_MESSAGES),
+                    timestamp: Date.now(),
+                    currentRoom,
+                    selectedAgent,
+                    pendingRetrain: window.pendingRetrain || null
+                };
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(historyData));
+            } catch (error) {
+                console.error('Failed to save chat history:', error);
+            }
+        }
+        
+        function loadChatHistory() {
+            try {
+                const stored = localStorage.getItem(STORAGE_KEY);
+                if (!stored) return false;
+                
+                const historyData = JSON.parse(stored);
+                
+                // Don't load history older than 24 hours
+                if (Date.now() - historyData.timestamp > 24 * 60 * 60 * 1000) {
+                    localStorage.removeItem(STORAGE_KEY);
+                    return false;
+                }
+                
+                // Restore chat data
+                if (historyData.roomMessages) {
+                    roomMessages = historyData.roomMessages;
+                }
+                if (historyData.messageHistory) {
+                    messageHistory = historyData.messageHistory;
+                }
+                if (historyData.currentRoom) {
+                    currentRoom = historyData.currentRoom;
+                }
+                if (historyData.selectedAgent) {
+                    selectedAgent = historyData.selectedAgent;
+                }
+                if (historyData.pendingRetrain) {
+                    window.pendingRetrain = historyData.pendingRetrain;
+                    showPendingTrainingButton();
+                }
+                
+                console.log(\`📚 Restored \${Object.values(roomMessages).flat().length} messages from local storage\`);
+                return true;
+            } catch (error) {
+                console.error('Failed to load chat history:', error);
+                localStorage.removeItem(STORAGE_KEY);
+                return false;
+            }
+        }
+        
+        function clearChatHistory() {
+            localStorage.removeItem(STORAGE_KEY);
+            roomMessages = { general: [], academy: [] };
+            messageHistory = [];
+            window.pendingRetrain = null;
+            hidePendingTrainingButton();
+            
+            // Clear current chat display
+            const chat = document.getElementById('chat');
+            if (chat) chat.innerHTML = '';
+            
+            addMessage('System', '🗑️ Chat history cleared', 'ai', false, true);
+        }
+        
         // Initialize WebSocket connection
         function initWebSocket() {
             ws = new WebSocket('ws://localhost:${this.continuum.port}');
             
             ws.onopen = function() {
                 console.log('Connected to Continuum');
-                addSystemMessage('🟢 Connected to Academy-trained Claude instances');
+                // Don't flood chat with connection messages
             };
             
             ws.onmessage = function(event) {
                 const data = JSON.parse(event.data);
+                
+                // Debug academy_status messages specifically
+                if (data.type === 'academy_status') {
+                    console.log('🎓 RAW WebSocket message received:', event.data);
+                    console.log('🎓 PARSED data:', data);
+                    console.log('🎓 Active training in parsed data:', data.status?.activeTraining?.length || 0);
+                }
+                
                 handleWebSocketMessage(data);
             };
             
             ws.onclose = function() {
                 console.log('Disconnected from Continuum');
-                addSystemMessage('🔴 Disconnected from Academy');
+                // Don't flood chat with disconnection messages
                 setTimeout(initWebSocket, 3000); // Reconnect
             };
             
@@ -1025,11 +1468,133 @@ class UIGenerator {
             if (data.type === 'response') {
                 addMessage(data.agent || 'AI Agent', data.message, 'ai');
                 updateCosts(data.cost, data.requests);
+                
+                // Check if this is a response to a retrain consultation
+                if (window.pendingRetrain && (
+                    data.message.includes('specialization') || 
+                    data.message.includes('training') || 
+                    data.message.includes('approach') ||
+                    data.message.includes('Enhancement') ||
+                    data.message.includes('EnhancedSystemAI') ||
+                    (Date.now() - window.pendingRetrain.timestamp) < 60000 // Within 1 minute
+                )) {
+                    showRetrainConfirmation(data.message);
+                }
             } else if (data.type === 'academy_update') {
                 handleAcademyUpdate(data);
+            } else if (data.type === 'academy_status_push') {
+                // INTERRUPT-DRIVEN: Backend pushes status when it changes
+                console.log('🎓 Frontend: PUSH received - Active:', data.status?.activeTraining?.length || 0, 'Completed:', data.status?.completed?.length || 0);
+                
+                // 1. Update stats numbers immediately (fast)
+                updateAcademyStatsOnly(data.status);
+                
+                // 2. Update all Academy widgets dynamically (full experience)
+                updateAcademyWidgets(data.status);
             } else if (data.type === 'academy_status') {
-                updateAcademySection(data);
+                // OLD POLLING METHOD - ignore these
+                console.log('🎓 Frontend: Ignoring old polling response');
             }
+        }
+        
+        function showRetrainConfirmation(aiResponse) {
+            if (!window.pendingRetrain) return;
+            
+            const { personaName, improvements } = window.pendingRetrain;
+            
+            // Create a floating confirmation dialog
+            const confirmDialog = document.createElement('div');
+            confirmDialog.style.cssText = \`
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: linear-gradient(135deg, #1a1a2e 0%, #2a2a3e 100%);
+                border: 2px solid #00d4ff;
+                border-radius: 12px;
+                padding: 20px;
+                max-width: 500px;
+                z-index: 1000;
+                box-shadow: 0 0 30px rgba(0, 212, 255, 0.4);
+            \`;
+            
+            confirmDialog.innerHTML = \`
+                <div style="color: #00d4ff; font-size: 16px; font-weight: bold; margin-bottom: 12px;">
+                    🎓 Academy Training Recommendation for \${personaName}
+                </div>
+                <div style="color: #ccc; font-size: 13px; margin-bottom: 15px; line-height: 1.4;">
+                    <strong>Your Request:</strong> \${improvements}
+                </div>
+                <div style="color: #aaa; font-size: 12px; margin-bottom: 20px; line-height: 1.4; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 6px;">
+                    <strong>AI Recommendation:</strong><br>\${aiResponse}
+                </div>
+                <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                    <button onclick="cancelRetrain()" style="
+                        background: rgba(244, 67, 54, 0.3);
+                        color: #F44336;
+                        border: 1px solid #F44336;
+                        padding: 8px 16px;
+                        border-radius: 6px;
+                        cursor: pointer;
+                        font-size: 12px;
+                    ">Cancel</button>
+                    <button onclick="confirmRetrain()" style="
+                        background: linear-gradient(135deg, #FF9800 0%, #F57C00 100%);
+                        color: white;
+                        border: 1px solid #FF9800;
+                        padding: 8px 16px;
+                        border-radius: 6px;
+                        cursor: pointer;
+                        font-size: 12px;
+                        font-weight: bold;
+                    ">🎓 Start Training</button>
+                </div>
+            \`;
+            
+            document.body.appendChild(confirmDialog);
+            window.activeDialog = confirmDialog;
+        }
+        
+        function confirmRetrain() {
+            if (window.activeDialog) {
+                document.body.removeChild(window.activeDialog);
+                window.activeDialog = null;
+            }
+            
+            // Extract specialization from AI response (simple heuristic)
+            const specialization = 'ai_recommended_enhancement';
+            const description = 'Custom training based on AI analysis and user requirements';
+            
+            startCustomTraining(specialization, description);
+        }
+        
+        function cancelRetrain() {
+            if (window.activeDialog) {
+                document.body.removeChild(window.activeDialog);
+                window.activeDialog = null;
+            }
+            window.pendingRetrain = null;
+            addSystemMessage('🚫 Retrain cancelled');
+        }
+        
+        function toggleAgentInfo(agentName) {
+            const dropdown = document.getElementById(\`info-\${agentName}\`);
+            const btn = dropdown?.previousElementSibling?.querySelector('.agent-dropdown-btn');
+            
+            if (dropdown) {
+                if (dropdown.style.display === 'none') {
+                    dropdown.style.display = 'block';
+                    if (btn) btn.textContent = '▲';
+                } else {
+                    dropdown.style.display = 'none';
+                    if (btn) btn.textContent = '▼';
+                }
+            }
+        }
+        
+        function retrainAgent(agentName) {
+            // Use the same retrain flow as personas
+            retrainPersona(agentName, agentName);
         }
         
         function handleAcademyUpdate(data) {
@@ -1044,13 +1609,375 @@ class UIGenerator {
                 addMessage('Academy System', \`❌ \${personaName} failed Academy training. Can be re-enrolled.\`, 'ai', true);
             }
             
-            // Update academy section
-            updateAcademyDisplay();
+            // Update academy section with real-time data
+            updateAcademySection({ activeTraining: [session], completed: [] });
+        }
+        
+        let lastAcademyUpdate = 0;
+        function updateAcademySection(data) {
+            // Light throttling for push updates (once per 500ms)
+            const now = Date.now();
+            if (now - lastAcademyUpdate < 500) {
+                console.log('🎓 Frontend: Academy update throttled (500ms)');
+                return;
+            }
+            lastAcademyUpdate = now;
+            
+            console.log('🎓 Frontend: updateAcademySection called');
+            // Handle nested status object
+            const status = data.status || data;
+            const { activeTraining = [], completed = [] } = status;
+            console.log('🎓 Frontend: Active training:', activeTraining.length, 'Completed:', completed.length);
+            
+            // Update Academy sidebar training list
+            updateAcademySidebar(activeTraining, completed);
+            
+            // Update the main academy content area with cyberpunk interface
+            const academyContent = document.getElementById('academy-content');
+            if (!academyContent) return;
+            
+            let academyHTML = \`
+                <div class="academy-cyber-training" style="padding: 0; max-height: calc(100vh - 140px); overflow-y: auto;">
+                    <!-- Cyberpunk Academy Header -->
+                    <div style="
+                        background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%); 
+                        border: 1px solid #00d4ff; 
+                        border-radius: 10px; 
+                        padding: 15px 18px; 
+                        margin-bottom: 18px; 
+                        box-shadow: 0 0 15px rgba(0, 212, 255, 0.2);
+                        position: relative;
+                        overflow: hidden;
+                    ">
+                        <div style="position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, #00d4ff, transparent); opacity: 0.7;"></div>
+                        <div style="color: #00d4ff; font-size: 15px; font-weight: bold; margin-bottom: 4px; text-shadow: 0 0 8px rgba(0, 212, 255, 0.4);">
+                            🎓 Academy Training Command
+                        </div>
+                        <div style="color: #888; font-size: 12px;">
+                            \${activeTraining.length} training • \${completed.filter(c => c.status === 'graduated').length} graduated • \${completed.filter(c => c.status === 'failed').length} failed
+                        </div>
+                    </div>
+
+                    <!-- Active Training Sessions -->
+                    \${activeTraining.length > 0 ? activeTraining.map(session => \`
+                        <div class="cyber-training-card" style="
+                            background: linear-gradient(135deg, #1a1a1a 0%, #2a2a3e 100%); 
+                            border: 1px solid #7c4dff; 
+                            border-radius: 10px; 
+                            padding: 16px; 
+                            margin-bottom: 14px; 
+                            box-shadow: 0 4px 20px rgba(124, 77, 255, 0.15);
+                            position: relative;
+                            transition: all 0.3s ease;
+                        " onmouseover="this.style.borderColor='#00d4ff'; this.style.boxShadow='0 6px 25px rgba(0, 212, 255, 0.25)'" 
+                           onmouseout="this.style.borderColor='#7c4dff'; this.style.boxShadow='0 4px 20px rgba(124, 77, 255, 0.15)'">
+                            
+                            <!-- Glowing top border -->
+                            <div style="position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, #FF9800, transparent); opacity: 0.8;"></div>
+                            
+                            <!-- Agent Header -->
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                <h3 style="
+                                    color: #ffffff; 
+                                    margin: 0; 
+                                    font-size: 16px; 
+                                    font-weight: bold;
+                                    text-decoration: underline; 
+                                    cursor: pointer;
+                                    text-shadow: 0 0 5px rgba(255, 255, 255, 0.3);
+                                " onclick="toggleAcademyDetails('\${session.personaName}')">
+                                    \${session.personaName}
+                                </h3>
+                                <span style="
+                                    color: #FF9800; 
+                                    font-size: 11px; 
+                                    background: rgba(255, 152, 0, 0.15);
+                                    padding: 4px 10px;
+                                    border-radius: 15px;
+                                    border: 1px solid rgba(255, 152, 0, 0.4);
+                                    text-transform: uppercase;
+                                    letter-spacing: 0.5px;
+                                    font-weight: bold;
+                                ">
+                                    \${session.status.replace(/_/g, ' ')}
+                                </span>
+                            </div>
+                            
+                            <!-- Stats Row with Cyber Styling -->
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 15px;">
+                                <div style="
+                                    background: rgba(0, 212, 255, 0.1); 
+                                    border: 1px solid rgba(0, 212, 255, 0.3); 
+                                    border-radius: 8px; 
+                                    padding: 8px 12px; 
+                                    text-align: center;
+                                    flex: 1;
+                                    margin-right: 8px;
+                                ">
+                                    <div style="color: #00d4ff; font-size: 14px; font-weight: bold;">
+                                        \${session.currentRound || 0}/\${session.totalRounds || 10}
+                                    </div>
+                                    <div style="color: #888; font-size: 10px; text-transform: uppercase;">Rounds</div>
+                                </div>
+                                <div style="
+                                    background: rgba(76, 175, 80, 0.1); 
+                                    border: 1px solid rgba(76, 175, 80, 0.3); 
+                                    border-radius: 8px; 
+                                    padding: 8px 12px; 
+                                    text-align: center;
+                                    flex: 1;
+                                    margin-left: 8px;
+                                ">
+                                    <div style="color: #4caf50; font-size: 14px; font-weight: bold;">
+                                        \${((session.graduationScore || 0) * 100).toFixed(1)}%
+                                    </div>
+                                    <div style="color: #888; font-size: 10px; text-transform: uppercase;">Accuracy</div>
+                                </div>
+                            </div>
+                            
+                            <!-- Specialization & Time -->
+                            <div style="
+                                background: rgba(0, 0, 0, 0.3); 
+                                border-radius: 6px; 
+                                padding: 10px; 
+                                margin-bottom: 12px;
+                                border: 1px solid #333;
+                            ">
+                                <div style="font-size: 12px; color: #ccc; margin-bottom: 4px;">
+                                    <span style="color: #7c4dff; font-weight: bold;">Specialization:</span> \${session.specialization.replace(/_/g, ' ')}
+                                </div>
+                                <div style="font-size: 11px; color: #888;">
+                                    <span style="color: #7c4dff;">Started:</span> \${session.startTime ? new Date(session.startTime).toLocaleTimeString() : 'Unknown'}
+                                </div>
+                            </div>
+                            
+                            <!-- Recent Activity Terminal -->
+                            \${session.logs && session.logs.length > 0 ? \`
+                                <div style="
+                                    background: rgba(0, 0, 0, 0.7); 
+                                    border: 1px solid #00d4ff; 
+                                    border-radius: 6px; 
+                                    padding: 10px; 
+                                    max-height: 70px; 
+                                    overflow-y: auto;
+                                    font-family: 'Courier New', monospace;
+                                ">
+                                    <div style="color: #00d4ff; font-size: 9px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px;">
+                                        > Recent Activity
+                                    </div>
+                                    \${session.logs.slice(-2).map(log => \`
+                                        <div style="color: #aaa; font-size: 10px; margin: 2px 0; line-height: 1.3;">
+                                            <span style="color: #00d4ff;">></span> \${log}
+                                        </div>
+                                    \`).join('')}
+                                </div>
+                            \` : ''}
+                        </div>
+                    \`).join('') : \`
+                        <div style="
+                            background: linear-gradient(135deg, #0f0f0f 0%, #1a1a2e 100%);
+                            border: 1px dashed #555;
+                            border-radius: 10px;
+                            padding: 30px 20px;
+                            text-align: center;
+                            margin-bottom: 18px;
+                        ">
+                            <div style="color: #7c4dff; font-size: 36px; margin-bottom: 12px;">🎓</div>
+                            <div style="color: #888; font-size: 14px; font-weight: bold;">No Active Training Sessions</div>
+                            <div style="color: #666; font-size: 11px; margin-top: 6px;">
+                                Deploy agents to the Academy for specialized training
+                            </div>
+                        </div>
+                    \`}
+
+                    <!-- Recently Completed -->
+                    \${completed.length > 0 ? \`
+                        <div style="margin-top: 18px;">
+                            <h3 style="color: #7c4dff; font-size: 13px; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px;">Recent Graduates</h3>
+                            \${completed.slice(0, 3).map(session => \`
+                                <div style="
+                                    background: linear-gradient(135deg, #1a1a1a 0%, #2a2a3e 100%); 
+                                    border: 1px solid \${session.status === 'graduated' ? '#4CAF50' : '#f44336'}; 
+                                    border-radius: 8px; 
+                                    padding: 12px; 
+                                    margin-bottom: 8px; 
+                                    box-shadow: 0 2px 10px rgba(\${session.status === 'graduated' ? '76, 175, 80' : '244, 67, 54'}, 0.1);
+                                ">
+                                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                                        <span style="color: #e0e0e0; font-weight: bold; font-size: 13px;">\${session.personaName}</span>
+                                        <span style="
+                                            color: \${session.status === 'graduated' ? '#4CAF50' : '#f44336'}; 
+                                            font-size: 10px;
+                                            background: rgba(\${session.status === 'graduated' ? '76, 175, 80' : '244, 67, 54'}, 0.15);
+                                            padding: 3px 8px;
+                                            border-radius: 12px;
+                                            border: 1px solid rgba(\${session.status === 'graduated' ? '76, 175, 80' : '244, 67, 54'}, 0.3);
+                                            text-transform: uppercase;
+                                            font-weight: bold;
+                                        ">
+                                            \${session.status === 'graduated' ? '🎓 Graduated' : '❌ Failed'}
+                                        </span>
+                                    </div>
+                                    <div style="font-size: 10px; color: #888; margin-top: 4px;">
+                                        \${session.specialization.replace(/_/g, ' ')} • \${((session.graduationScore || 0) * 100).toFixed(1)}% accuracy
+                                        \${session.fineTuneId ? ' • LoRA: ' + session.fineTuneId.substring(0, 18) + '...' : ''}
+                                    </div>
+                                </div>
+                            \`).join('')}
+                        </div>
+                    \` : ''}
+
+                    <!-- Cyberpunk Action Buttons -->
+                    <div style="margin-top: 25px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <button onclick="sendSheriffToAcademy()" style="
+                            background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%); 
+                            border: 1px solid #4caf50;
+                            color: white; 
+                            padding: 14px 16px; 
+                            border-radius: 8px; 
+                            cursor: pointer; 
+                            font-size: 12px; 
+                            font-weight: bold;
+                            text-transform: uppercase;
+                            letter-spacing: 0.5px;
+                            transition: all 0.3s ease;
+                            box-shadow: 0 4px 15px rgba(76, 175, 80, 0.2);
+                        " onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 6px 20px rgba(76, 175, 80, 0.35)'" 
+                           onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(76, 175, 80, 0.2)'">
+                            🛡️ Deploy Sheriff
+                        </button>
+                        <button onclick="trainCustomPersona()" style="
+                            background: linear-gradient(135deg, #2196f3 0%, #1565c0 100%); 
+                            border: 1px solid #2196f3;
+                            color: white; 
+                            padding: 14px 16px; 
+                            border-radius: 8px; 
+                            cursor: pointer; 
+                            font-size: 12px; 
+                            font-weight: bold;
+                            text-transform: uppercase;
+                            letter-spacing: 0.5px;
+                            transition: all 0.3s ease;
+                            box-shadow: 0 4px 15px rgba(33, 150, 243, 0.2);
+                        " onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 6px 20px rgba(33, 150, 243, 0.35)'" 
+                           onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(33, 150, 243, 0.2)'">
+                            🎓 Custom Training
+                        </button>
+                    </div>
+                </div>
+
+                <style>
+                    .academy-cyber-training::-webkit-scrollbar {
+                        width: 6px;
+                    }
+                    .academy-cyber-training::-webkit-scrollbar-track {
+                        background: rgba(0, 0, 0, 0.3);
+                        border-radius: 3px;
+                    }
+                    .academy-cyber-training::-webkit-scrollbar-thumb {
+                        background: linear-gradient(135deg, #7c4dff, #00d4ff);
+                        border-radius: 3px;
+                    }
+                </style>
+            \`;
+            
+            academyContent.innerHTML = academyHTML;
+        }
+        
+        function updateAcademySidebar(activeTraining, completed) {
+            console.log('🎓 Frontend: updateAcademySidebar called with:', activeTraining.length, 'active,', completed.length, 'completed');
+            // Update Academy training list in sidebar
+            const trainingList = document.getElementById('academy-training-list');
+            if (trainingList) {
+                if (activeTraining.length === 0) {
+                    trainingList.innerHTML = '<div class="loading">No active training sessions</div>';
+                } else {
+                    trainingList.innerHTML = activeTraining.map(session => \`
+                        <div class="academy-training-item" onclick="focusTrainingSession('\${session.personaName}')">
+                            <div class="training-header">
+                                <div class="training-name">\${session.personaName}</div>
+                                <div class="training-status">\${session.status.replace(/_/g, ' ')}</div>
+                            </div>
+                            <div class="training-progress">
+                                Round \${session.currentRound || 0}/\${session.totalRounds || 10} • \${((session.graduationScore || 0) * 100).toFixed(1)}% accuracy
+                            </div>
+                            <div class="training-bar">
+                                <div class="training-fill" style="width: \${session.progress || 0}%"></div>
+                            </div>
+                        </div>
+                    \`).join('');
+                }
+            }
+            
+            // Update Academy statistics
+            const activeCount = document.getElementById('academy-active-count');
+            const graduatedCount = document.getElementById('academy-graduated-count');
+            
+            console.log('🎓 Frontend: Updating stats - activeCount element:', !!activeCount, 'graduatedCount element:', !!graduatedCount);
+            console.log('🎓 Frontend: Document title:', document.title);
+            console.log('🎓 Frontend: Current room elements in DOM:', document.querySelectorAll('[id*="academy"]').length);
+            
+            if (activeCount) {
+                const newValue = activeTraining.length;
+                console.log('🎓 Frontend: BEFORE update - activeCount.textContent:', activeCount.textContent);
+                activeCount.textContent = newValue;
+                console.log('🎓 Frontend: AFTER update - activeCount.textContent:', activeCount.textContent);
+                console.log('🎓 Frontend: Set active count to:', newValue);
+                
+                // Force a visual update
+                activeCount.style.color = 'red';
+                setTimeout(() => activeCount.style.color = '', 100);
+            } else {
+                console.log('🎓 Frontend: ❌ activeCount element is NULL - element does not exist in DOM');
+                console.log('🎓 Frontend: All elements with academy in ID:', Array.from(document.querySelectorAll('[id*="academy"]')).map(el => el.id));
+            }
+            
+            if (graduatedCount) {
+                const newValue = completed.filter(c => c.status === 'graduated').length;
+                console.log('🎓 Frontend: BEFORE update - graduatedCount.textContent:', graduatedCount.textContent);
+                graduatedCount.textContent = newValue;
+                console.log('🎓 Frontend: AFTER update - graduatedCount.textContent:', graduatedCount.textContent);
+                console.log('🎓 Frontend: Set graduated count to:', newValue);
+                
+                // Force a visual update
+                graduatedCount.style.color = 'red';
+                setTimeout(() => graduatedCount.style.color = '', 100);
+            } else {
+                console.log('🎓 Frontend: ❌ graduatedCount element is NULL - element does not exist in DOM');
+            }
+            
+            // Update recent graduates list
+            const graduatesList = document.getElementById('academy-graduates-list');
+            if (graduatesList) {
+                const recentGraduates = completed.filter(c => c.status === 'graduated').slice(-3);
+                
+                if (recentGraduates.length === 0) {
+                    graduatesList.innerHTML = '<div class="loading">No recent graduates</div>';
+                } else {
+                    graduatesList.innerHTML = recentGraduates.map(session => \`
+                        <div class="academy-graduate-item">
+                            <div class="graduate-name">\${session.personaName}</div>
+                            <div class="graduate-info">
+                                \${session.specialization.replace(/_/g, ' ')} • \${((session.graduationScore || 0) * 100).toFixed(1)}% accuracy
+                                \${session.fineTuneId ? ' • LoRA: ' + session.fineTuneId.substring(0, 12) + '...' : ''}
+                            </div>
+                        </div>
+                    \`).join('');
+                }
+            }
+        }
+        
+        function focusTrainingSession(personaName) {
+            // When clicking a training session in sidebar, focus it in the main chat
+            addMessage('Academy System', \`🎯 Focusing on \${personaName} training session...\`, 'ai', true);
         }
         
         // Room switching functionality
         function switchRoom(room) {
             currentRoom = room;
+            
+            // Save state when switching rooms
+            saveChatHistory();
             
             // Update tab appearance
             document.querySelectorAll('.room-tab').forEach(tab => tab.classList.remove('active'));
@@ -1062,11 +1989,16 @@ class UIGenerator {
             
             // Update chat header
             if (room === 'general') {
-                document.getElementById('chat-title').textContent = 'General Chat';
+                document.getElementById('chat-title').textContent = 'Active Chat';
                 document.getElementById('chat-subtitle').textContent = 'Talk to specialized AI agents';
             } else if (room === 'academy') {
                 document.getElementById('chat-title').textContent = 'Academy Training Room';
                 document.getElementById('chat-subtitle').textContent = 'Watch AI agents train and improve their skills';
+                
+                // INTERRUPT-DRIVEN: Request initial Academy status only once
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'get_initial_academy_status' }));
+                }
             }
             
             // Clear and reload room messages
@@ -1082,29 +2014,35 @@ class UIGenerator {
             // Add welcome message for new rooms
             if (roomMessages[room].length === 0) {
                 if (room === 'general') {
-                    addMessage('System', '💬 Welcome to General Chat! Ask me anything and I\\'ll route it to the best AI agent.', 'ai');
+                    addMessage('System', '💬 Welcome to Active Chat! Ask me anything and I\\'ll route it to the best AI agent.', 'ai');
                 } else if (room === 'academy') {
-                    addMessage('System', '🎓 Welcome to the Academy! Here you can watch AI agents train and see their progress in real-time.', 'ai');
-                    updateAcademyDisplay();
+                    addMessage('System', '🎓 Welcome to the Academy! Here you can watch AI agents train and see their progress in real-time.', 'ai', true);
                 }
             }
         }
         
-        function addMessage(sender, content, type = 'ai', isAcademy = false) {
+        function addMessage(sender, content, type = 'ai', isAcademy = false, skipSave = false) {
             const messageObj = { sender, content, type, time: new Date(), isAcademy };
             
-            // Add to appropriate room
-            const targetRoom = isAcademy ? 'academy' : currentRoom;
-            if (!roomMessages[targetRoom]) roomMessages[targetRoom] = [];
-            roomMessages[targetRoom].push(messageObj);
+            // Add to appropriate room (unless it's a temporary message)
+            if (!skipSave) {
+                const targetRoom = isAcademy ? 'academy' : currentRoom;
+                if (!roomMessages[targetRoom]) roomMessages[targetRoom] = [];
+                roomMessages[targetRoom].push(messageObj);
+                
+                // Update message history for API
+                messageHistory.push(messageObj);
+            }
             
-            // Only show if we're in the target room
-            if (currentRoom === targetRoom) {
+            // Always show if we're in the target room
+            if (currentRoom === (isAcademy ? 'academy' : currentRoom)) {
                 addMessageToChat(sender, content, type, isAcademy);
             }
             
-            // Update message history for API
-            messageHistory.push(messageObj);
+            // Save to localStorage (unless it's a temporary message)
+            if (!skipSave) {
+                saveChatHistory();
+            }
         }
         
         function addMessageToChat(sender, content, type, isAcademy = false) {
@@ -1348,6 +2286,9 @@ class UIGenerator {
                     <button class="persona-action-btn deploy" onclick="deployPersona('\${persona.id}')">
                         🚀 Deploy
                     </button>
+                    <button class="persona-action-btn retrain" onclick="retrainPersona('\${persona.id}', '\${persona.name}')">
+                        🎓 Retrain
+                    </button>
                     \${scope !== 'organization' ? \`
                         <button class="persona-action-btn share" onclick="sharePersona('\${persona.id}', 'organization')">
                             🤝 Share Org
@@ -1445,6 +2386,75 @@ class UIGenerator {
             }
         }
         
+        async function retrainPersona(personaId, personaName) {
+            try {
+                // First, get user input about desired improvements
+                const improvements = prompt(\`What improvements would you like for \${personaName}?\\n\\nExamples:\\n- Better code generation\\n- More detailed explanations\\n- Faster responses\\n- Better error handling\\n- More creative solutions\`);
+                
+                if (!improvements) {
+                    return; // User cancelled
+                }
+                
+                // Ask our AI to help design the training based on the improvements
+                addSystemMessage(\`🤖 Analyzing improvement request for \${personaName}...\`);
+                
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    // Send message to AI to get training recommendations
+                    ws.send(JSON.stringify({
+                        type: 'message',
+                        content: \`I want to retrain the AI persona "\${personaName}" with these improvements: "\${improvements}". Please suggest a specific specialization name and training approach for Academy training that would address these improvements. Keep your response concise - just the specialization name and brief description.\`,
+                        room: 'general'
+                    }));
+                    
+                    // Store the pending retrain request
+                    window.pendingRetrain = {
+                        personaId,
+                        personaName,
+                        improvements,
+                        timestamp: Date.now()
+                    };
+                    
+                    // Show the pending training button in Academy
+                    showPendingTrainingButton();
+                    
+                    addSystemMessage(\`🎓 Getting AI recommendations for \${personaName} improvements...\\nOnce ready, we'll start Academy training with a custom specialization.\`);
+                    
+                    // Also show a message in Academy room
+                    addMessage('Academy System', \`🤖 \${personaName} retrain analysis in progress... Will start Academy training once AI provides recommendations.\`, 'ai', true);
+                }
+                
+            } catch (error) {
+                console.error('Retrain persona error:', error);
+                addSystemMessage(\`❌ Failed to initiate retrain: \${error.message}\`);
+            }
+        }
+        
+        // Function to actually start the training after AI consultation
+        function startCustomTraining(specialization, description) {
+            if (!window.pendingRetrain) return;
+            
+            const { personaName, improvements } = window.pendingRetrain;
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'start_academy_training',
+                    personaName: personaName + '-enhanced-' + Date.now(),
+                    specialization: specialization || 'custom_enhancement',
+                    rounds: 15,
+                    customPrompt: \`Training Focus: \${improvements}\\n\\nSpecialization: \${specialization}\\n\\nDescription: \${description}\`,
+                    trainingIntensity: 'high'
+                }));
+                
+                addSystemMessage(\`🎓 \${personaName} sent to Academy for specialized training: \${specialization}\`);
+                
+                // Switch to Academy room to watch the training
+                switchRoom('academy');
+                
+                // Clear pending retrain
+                window.pendingRetrain = null;
+            }
+        }
+        
         // Project Management Functions
         async function refreshProjects() {
             const projectList = document.getElementById('project-list');
@@ -1512,40 +2522,840 @@ class UIGenerator {
         
         // Academy functions
         function sendSheriffToAcademy() {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                    type: 'start_academy_training',
-                    personaName: 'Sheriff-' + Date.now(),
-                    specialization: 'protocol_enforcement',
-                    rounds: 10
-                }));
-                addSystemMessage('🛡️ Sheriff sent to Academy for training...');
-            }
+            // Show advanced training dialog for Sheriff training
+            showAdvancedTrainingDialog('Sheriff-' + Date.now(), 'protocol_enforcement');
         }
         
         function trainCustomPersona() {
             const personaName = prompt('Enter persona name:');
             const specialization = prompt('Enter specialization:') || 'protocol_enforcement';
             
-            if (personaName && ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                    type: 'start_academy_training',
-                    personaName: personaName,
-                    specialization: specialization,
-                    rounds: 10
-                }));
-                addSystemMessage(\`🎓 \${personaName} sent to Academy for \${specialization} training...\`);
+            if (personaName) {
+                // Show advanced training dialog for custom persona
+                showAdvancedTrainingDialog(personaName, specialization);
             }
         }
         
+        // DIRECT Academy stats update function (called by push events)
+        function updateAcademyStatsOnly(status) {
+            const { activeTraining = [], completed = [] } = status;
+            
+            console.log('🎓 Frontend: updateAcademyStatsOnly - updating numbers only');
+            
+            // Update Academy statistics numbers immediately
+            const activeCount = document.getElementById('academy-active-count');
+            const graduatedCount = document.getElementById('academy-graduated-count');
+            
+            if (activeCount) {
+                activeCount.textContent = activeTraining.length;
+                activeCount.style.color = '#00d4ff';
+                setTimeout(() => activeCount.style.color = '', 200);
+                console.log('🎓 Stats: Active count updated to:', activeTraining.length);
+            }
+            
+            if (graduatedCount) {
+                const graduatedNum = completed.filter(c => c.status === 'graduated').length;
+                graduatedCount.textContent = graduatedNum;
+                graduatedCount.style.color = '#4CAF50';
+                setTimeout(() => graduatedCount.style.color = '', 200);
+                console.log('🎓 Stats: Graduated count updated to:', graduatedNum);
+            }
+        }
+        
+        // DYNAMIC Academy widgets update (handles training cards, progress bars, moving between sections)
+        function updateAcademyWidgets(status) {
+            const { activeTraining = [], completed = [] } = status;
+            
+            console.log('🎓 Frontend: updateAcademyWidgets - updating all dynamic content');
+            
+            // Update Training Status section in sidebar
+            updateTrainingStatusWidget(activeTraining);
+            
+            // Update Recent Graduates section
+            updateRecentGraduatesWidget(completed);
+            
+            // Update main Academy content area (if visible)
+            updateAcademyMainContent(activeTraining, completed);
+        }
+        
+        function updateTrainingStatusWidget(activeTraining) {
+            const trainingStatus = document.querySelector('#academy-training-list');
+            if (!trainingStatus) return;
+            
+            console.log('🎓 Updating Training Status widget');
+            
+            if (activeTraining.length === 0) {
+                trainingStatus.innerHTML = \`
+                    <div class="loading">No active training sessions</div>
+                \`;
+            } else {
+                trainingStatus.innerHTML = \`
+                    \${activeTraining.map((session, index) => \`
+                        <div class="training-card" style="
+                            background: linear-gradient(135deg, #1a1a1a 0%, #2a2a3e 100%); 
+                            border: 1px solid #00d4ff; 
+                            border-radius: 8px; 
+                            padding: 12px; 
+                            margin-bottom: 10px; 
+                            box-shadow: 0 0 15px rgba(0, 212, 255, 0.2);
+                            animation: fadeIn 0.3s ease-in;
+                            cursor: pointer;
+                        " onclick="toggleTrainingDetails('train-\${index}')">
+                            <div style="color: #00d4ff; font-weight: bold; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+                                <span>\${session.personaName}</span>
+                                <span style="font-size: 10px; color: #888;">\${session.status.replace(/_/g, ' ')}</span>
+                            </div>
+                            <div style="color: #888; font-size: 11px; margin-bottom: 8px;">
+                                \${session.specialization.replace(/_/g, ' ')} • Round \${session.currentRound || 0}/\${session.totalRounds || 15}
+                            </div>
+                            <div class="progress-container" style="
+                                background: #0a0a0a; 
+                                border-radius: 6px; 
+                                height: 6px; 
+                                margin-bottom: 6px;
+                                overflow: hidden;
+                            ">
+                                <div class="progress-bar" style="
+                                    background: linear-gradient(90deg, #00d4ff, #0099cc); 
+                                    height: 100%; 
+                                    width: \${session.progress || 0}%; 
+                                    transition: width 0.5s ease;
+                                    box-shadow: 0 0 8px rgba(0, 212, 255, 0.5);
+                                "></div>
+                            </div>
+                            <div style="color: #aaa; font-size: 10px; display: flex; justify-content: space-between;">
+                                <span>\${session.progress || 0}% Complete</span>
+                                <span>\${((session.graduationScore || 0) * 100).toFixed(1)}% Accuracy</span>
+                            </div>
+                            
+                            <!-- Expandable Details -->
+                            <div id="train-\${index}" class="training-details" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid #333;">
+                                <div style="color: #aaa; font-size: 10px; margin-bottom: 6px;">📊 Live Statistics:</div>
+                                <div style="color: #888; font-size: 10px; line-height: 1.4;">
+                                    • Started: \${new Date(session.startTime).toLocaleTimeString()}<br>
+                                    • Elapsed: \${Math.round((Date.now() - new Date(session.startTime)) / 1000)}s<br>
+                                    • Training Type: \${session.customPrompt ? 'Custom' : 'Standard'}<br>
+                                    • Intensity: \${session.trainingIntensity || 'Normal'}<br>
+                                    • Current Accuracy: \${((session.graduationScore || 0) * 100).toFixed(1)}%<br>
+                                    • Target: 85% (Gap: \${Math.max(0, 85 - (session.graduationScore || 0) * 100).toFixed(1)}%)
+                                </div>
+                                \${session.logs && session.logs.length > 0 ? \`
+                                    <div style="color: #aaa; font-size: 10px; margin-top: 6px; margin-bottom: 4px;">📋 Live Activity Feed:</div>
+                                    <div style="max-height: 80px; overflow-y: auto; font-size: 9px; color: #666; background: #0a0a0a; padding: 4px; border-radius: 4px;">
+                                        \${session.logs.slice(-5).map(log => \`<div style="margin: 1px 0;">• \${log}</div>\`).join('')}
+                                    </div>
+                                \` : ''}
+                                \${session.customPrompt ? \`
+                                    <div style="color: #aaa; font-size: 10px; margin-top: 6px; margin-bottom: 4px;">🎯 Training Focus:</div>
+                                    <div style="font-size: 9px; color: #666; background: #0a0a0a; padding: 4px; border-radius: 4px; max-height: 40px; overflow-y: auto;">
+                                        \${session.customPrompt.split('\\n')[0].substring(0, 120)}...
+                                    </div>
+                                \` : ''}
+                            </div>
+                        </div>
+                    \`).join('')}
+                \`;
+            }
+        }
+        
+        function updateRecentGraduatesWidget(completed) {
+            const graduatesList = document.getElementById('academy-graduates-list');
+            if (!graduatesList) return;
+            
+            console.log('🎓 Updating Recent Graduates widget');
+            
+            const recentGraduates = completed.filter(c => c.status === 'graduated').slice(-3);
+            const recentFailed = completed.filter(c => c.status === 'failed').slice(-2);
+            
+            if (recentGraduates.length === 0 && recentFailed.length === 0) {
+                graduatesList.innerHTML = '<div class="loading">No recent graduates</div>';
+            } else {
+                graduatesList.innerHTML = \`
+                    \${recentGraduates.map((session, index) => \`
+                        <div class="academy-graduate-item" style="
+                            background: linear-gradient(135deg, #1a2a1a 0%, #2a3e2a 100%);
+                            border: 1px solid #4CAF50;
+                            border-radius: 6px;
+                            padding: 10px;
+                            margin-bottom: 8px;
+                            animation: slideIn 0.4s ease-out;
+                            cursor: pointer;
+                        " onclick="toggleGraduateDetails('grad-\${index}')">
+                            <div class="graduate-name" style="color: #4CAF50; font-weight: bold;">
+                                🎓 \${session.personaName}
+                            </div>
+                            <div class="graduate-info" style="color: #888; font-size: 11px; margin-top: 4px;">
+                                \${session.specialization.replace(/_/g, ' ')} • \${((session.graduationScore || 0) * 100).toFixed(1)}% accuracy
+                                \${session.fineTuneId ? ' • LoRA: ' + session.fineTuneId.substring(0, 12) + '...' : ''}
+                            </div>
+                            <div id="grad-\${index}" class="graduate-details" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #333;">
+                                <div style="color: #aaa; font-size: 10px; margin-bottom: 4px;">📊 Training Statistics:</div>
+                                <div style="color: #888; font-size: 10px;">
+                                    • Duration: \${session.completedAt ? Math.round((new Date(session.completedAt) - new Date(session.startTime)) / 1000) + 's' : 'N/A'}<br>
+                                    • Rounds: \${session.totalRounds || 'N/A'}<br>
+                                    • Final Accuracy: \${((session.graduationScore || 0) * 100).toFixed(1)}%<br>
+                                    • Storage Reduction: \${session.storageReduction ? Math.round(session.storageReduction).toLocaleString() + 'x' : 'N/A'}<br>
+                                    \${session.customPrompt ? '• Custom Training: Yes' : '• Standard Training'}
+                                </div>
+                                \${session.logs && session.logs.length > 0 ? \`
+                                    <div style="color: #aaa; font-size: 10px; margin-top: 4px; margin-bottom: 2px;">📋 Recent Logs:</div>
+                                    <div style="max-height: 60px; overflow-y: auto; font-size: 9px; color: #666;">
+                                        \${session.logs.slice(-3).map(log => \`<div>• \${log}</div>\`).join('')}
+                                    </div>
+                                \` : ''}
+                            </div>
+                        </div>
+                    \`).join('')}
+                    \${recentFailed.map((session, index) => \`
+                        <div class="academy-graduate-item" style="
+                            background: linear-gradient(135deg, #2a1a1a 0%, #3e2a2a 100%);
+                            border: 1px solid #f44336;
+                            border-radius: 6px;
+                            padding: 10px;
+                            margin-bottom: 8px;
+                            animation: slideIn 0.4s ease-out;
+                            cursor: pointer;
+                        " onclick="toggleGraduateDetails('fail-\${index}')">
+                            <div class="graduate-name" style="color: #f44336; font-weight: bold;">
+                                ❌ \${session.personaName}
+                            </div>
+                            <div class="graduate-info" style="color: #888; font-size: 11px; margin-top: 4px;">
+                                Failed: \${((session.graduationScore || 0) * 100).toFixed(1)}% accuracy (needed 85%)
+                            </div>
+                            <div id="fail-\${index}" class="graduate-details" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #333;">
+                                <div style="color: #aaa; font-size: 10px; margin-bottom: 4px;">📊 Failure Analysis:</div>
+                                <div style="color: #888; font-size: 10px;">
+                                    • Duration: \${session.completedAt ? Math.round((new Date(session.completedAt) - new Date(session.startTime)) / 1000) + 's' : 'N/A'}<br>
+                                    • Rounds Completed: \${session.currentRound || 0}/\${session.totalRounds || 'N/A'}<br>
+                                    • Peak Accuracy: \${((session.graduationScore || 0) * 100).toFixed(1)}%<br>
+                                    • Gap to Pass: \${(85 - (session.graduationScore || 0) * 100).toFixed(1)}% points<br>
+                                    \${session.customPrompt ? '• Custom Training: Yes' : '• Standard Training'}
+                                </div>
+                                \${session.logs && session.logs.length > 0 ? \`
+                                    <div style="color: #aaa; font-size: 10px; margin-top: 4px; margin-bottom: 2px;">📋 Training Logs:</div>
+                                    <div style="max-height: 60px; overflow-y: auto; font-size: 9px; color: #666;">
+                                        \${session.logs.slice(-3).map(log => \`<div>• \${log}</div>\`).join('')}
+                                    </div>
+                                \` : ''}
+                                <div style="margin-top: 6px;">
+                                    <button onclick="event.stopPropagation(); retryTraining('\${session.personaName}')" style="
+                                        background: #f44336; 
+                                        color: white; 
+                                        border: none; 
+                                        padding: 4px 8px; 
+                                        border-radius: 4px; 
+                                        font-size: 9px; 
+                                        cursor: pointer;
+                                    ">🔄 Retry Training</button>
+                                </div>
+                            </div>
+                        </div>
+                    \`).join('')}
+                \`;
+            }
+        }
+        
+        function updateAcademyMainContent(activeTraining, completed) {
+            // Only update if we're currently viewing Academy
+            if (currentRoom !== 'academy') return;
+            
+            const academyContent = document.getElementById('academy-content');
+            if (!academyContent) return;
+            
+            console.log('🎓 Updating Academy main content area');
+            
+            // Update the main Academy interface with real-time training data
+            // This will show the full cyberpunk training interface
+            academyContent.innerHTML = \`
+                <div class="academy-cyber-training" style="padding: 0; max-height: calc(100vh - 140px); overflow-y: auto;">
+                    <!-- Real-time Active Training -->
+                    \${activeTraining.length > 0 ? \`
+                        <div style="margin-bottom: 20px;">
+                            <h3 style="color: #00d4ff; margin-bottom: 15px;">🎯 Active Training Sessions</h3>
+                            \${activeTraining.map(session => \`
+                                <div class="cyber-training-card" style="
+                                    background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%); 
+                                    border: 1px solid #00d4ff; 
+                                    border-radius: 10px; 
+                                    padding: 18px; 
+                                    margin-bottom: 15px; 
+                                    box-shadow: 0 0 20px rgba(0, 212, 255, 0.3);
+                                    animation: pulseGlow 2s infinite alternate;
+                                ">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                        <div style="color: #00d4ff; font-size: 16px; font-weight: bold;">
+                                            \${session.personaName}
+                                        </div>
+                                        <div style="color: #888; font-size: 12px;">
+                                            \${session.status.replace(/_/g, ' ')}
+                                        </div>
+                                    </div>
+                                    
+                                    <div style="margin-bottom: 12px;">
+                                        <div style="color: #aaa; font-size: 12px; margin-bottom: 6px;">
+                                            Round \${session.currentRound || 0}/\${session.totalRounds || 15} • \${session.specialization.replace(/_/g, ' ')}
+                                        </div>
+                                        <div class="progress-container" style="
+                                            background: #0a0a0a; 
+                                            border-radius: 8px; 
+                                            height: 12px; 
+                                            overflow: hidden;
+                                            border: 1px solid #333;
+                                        ">
+                                            <div class="progress-bar" style="
+                                                background: linear-gradient(90deg, #00d4ff, #0099cc, #00d4ff); 
+                                                height: 100%; 
+                                                width: \${session.progress || 0}%; 
+                                                transition: width 0.8s ease;
+                                                box-shadow: 0 0 12px rgba(0, 212, 255, 0.6);
+                                                animation: shimmer 1.5s infinite;
+                                            "></div>
+                                        </div>
+                                        <div style="display: flex; justify-content: space-between; color: #888; font-size: 11px; margin-top: 6px;">
+                                            <span>\${session.progress || 0}% Complete</span>
+                                            <span>\${((session.graduationScore || 0) * 100).toFixed(1)}% Accuracy</span>
+                                        </div>
+                                    </div>
+                                    
+                                    \${session.logs && session.logs.length > 0 ? \`
+                                        <div style="border-top: 1px solid #333; padding-top: 10px;">
+                                            <div style="color: #666; font-size: 10px; margin-bottom: 4px;">Latest Activity:</div>
+                                            <div style="color: #aaa; font-size: 11px;">
+                                                \${session.logs.slice(-1)[0]}
+                                            </div>
+                                        </div>
+                                    \` : ''}
+                                </div>
+                            \`).join('')}
+                        </div>
+                    \` : ''}
+                    
+                    <!-- Recently Completed -->
+                    \${completed.length > 0 ? \`
+                        <div style="margin-top: 20px;">
+                            <h3 style="color: #7c4dff; margin-bottom: 15px;">📋 Recent Completions</h3>
+                            \${completed.slice(-3).map(session => \`
+                                <div style="
+                                    background: linear-gradient(135deg, #1a1a1a 0%, #2a2a3e 100%); 
+                                    border: 1px solid \${session.status === 'graduated' ? '#4CAF50' : '#f44336'}; 
+                                    border-radius: 8px; 
+                                    padding: 12px; 
+                                    margin-bottom: 8px; 
+                                    animation: slideInLeft 0.5s ease-out;
+                                ">
+                                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                                        <div style="color: #e0e0e0; font-weight: bold;">
+                                            \${session.status === 'graduated' ? '🎓' : '❌'} \${session.personaName}
+                                        </div>
+                                        <div style="color: \${session.status === 'graduated' ? '#4CAF50' : '#f44336'}; font-size: 12px;">
+                                            \${session.status === 'graduated' ? 'Graduated' : 'Failed'}
+                                        </div>
+                                    </div>
+                                    <div style="color: #888; font-size: 11px; margin-top: 4px;">
+                                        \${session.specialization.replace(/_/g, ' ')} • \${((session.graduationScore || 0) * 100).toFixed(1)}% accuracy
+                                        \${session.fineTuneId ? ' • LoRA: ' + session.fineTuneId.substring(0, 15) + '...' : ''}
+                                    </div>
+                                </div>
+                            \`).join('')}
+                        </div>
+                    \` : ''}
+                </div>
+                
+                <style>
+                @keyframes fadeIn {
+                    from { opacity: 0; transform: translateY(10px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+                @keyframes slideIn {
+                    from { opacity: 0; transform: translateX(-20px); }
+                    to { opacity: 1; transform: translateX(0); }
+                }
+                @keyframes slideInLeft {
+                    from { opacity: 0; transform: translateX(20px); }
+                    to { opacity: 1; transform: translateX(0); }
+                }
+                @keyframes pulseGlow {
+                    from { box-shadow: 0 0 20px rgba(0, 212, 255, 0.3); }
+                    to { box-shadow: 0 0 30px rgba(0, 212, 255, 0.5); }
+                }
+                @keyframes shimmer {
+                    0% { background-position: -100% 0; }
+                    100% { background-position: 100% 0; }
+                }
+                </style>
+            \`;
+        }
+        
+        // OLD POLLING FUNCTION REMOVED - Now using interrupt-driven push updates
         function updateAcademyDisplay() {
+            console.log('🎓 Frontend: updateAcademyDisplay() called but DISABLED - using push updates instead');
+        }
+        
+        // Expandable details functions for rich Academy widgets
+        function toggleTrainingDetails(detailId) {
+            const details = document.getElementById(detailId);
+            if (details) {
+                const isVisible = details.style.display !== 'none';
+                details.style.display = isVisible ? 'none' : 'block';
+                if (!isVisible) {
+                    details.style.animation = 'fadeIn 0.2s ease-in';
+                }
+            }
+        }
+        
+        function toggleGraduateDetails(detailId) {
+            const details = document.getElementById(detailId);
+            if (details) {
+                const isVisible = details.style.display !== 'none';
+                details.style.display = isVisible ? 'none' : 'block';
+                if (!isVisible) {
+                    details.style.animation = 'fadeIn 0.2s ease-in';
+                }
+            }
+        }
+        
+        function retryTraining(personaName) {
+            console.log('🔄 Retrying training for:', personaName);
+            showAdvancedTrainingDialog(personaName);
+        }
+        
+        function showAdvancedTrainingDialog(basePersonaName, specialization = 'ai_recommended_enhancement') {
+            const dialog = document.createElement('div');
+            dialog.style.cssText = \`
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: linear-gradient(135deg, #0a0a1a 0%, #1a1a2e 30%, #2a2a3e 100%);
+                border: 2px solid #00d4ff;
+                border-radius: 16px;
+                padding: 0;
+                z-index: 10000;
+                box-shadow: 0 0 40px rgba(0, 212, 255, 0.6), inset 0 0 20px rgba(0, 212, 255, 0.1);
+                min-width: 500px;
+                max-width: 600px;
+                color: white;
+                backdrop-filter: blur(10px);
+                animation: slideIn 0.3s ease-out;
+            \`;
+            
+            const baseName = basePersonaName.split('-')[0];
+            
+            dialog.innerHTML = \`
+                <style>
+                @keyframes slideIn {
+                    from { opacity: 0; transform: translate(-50%, -60%) scale(0.9); }
+                    to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+                }
+                
+                .custom-slider {
+                    -webkit-appearance: none;
+                    width: 100%;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: linear-gradient(to right, #333 0%, #666 50%, #00d4ff 100%);
+                    outline: none;
+                    margin: 8px 0;
+                }
+                
+                .custom-slider::-webkit-slider-thumb {
+                    -webkit-appearance: none;
+                    appearance: none;
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 50%;
+                    background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%);
+                    cursor: pointer;
+                    box-shadow: 0 0 10px rgba(0, 212, 255, 0.8);
+                    transition: all 0.2s ease;
+                }
+                
+                .custom-slider::-webkit-slider-thumb:hover {
+                    transform: scale(1.2);
+                    box-shadow: 0 0 15px rgba(0, 212, 255, 1);
+                }
+                
+                .parameter-group {
+                    background: rgba(0, 212, 255, 0.05);
+                    border: 1px solid rgba(0, 212, 255, 0.2);
+                    border-radius: 8px;
+                    padding: 15px;
+                    margin-bottom: 15px;
+                }
+                
+                .slider-container {
+                    position: relative;
+                    margin: 10px 0;
+                }
+                
+                .slider-value {
+                    position: absolute;
+                    right: 0;
+                    top: -25px;
+                    background: #00d4ff;
+                    color: #000;
+                    padding: 2px 8px;
+                    border-radius: 12px;
+                    font-size: 10px;
+                    font-weight: bold;
+                    animation: pulse 2s infinite;
+                }
+                
+                @keyframes pulse {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0.7; }
+                }
+                
+                .preset-chip {
+                    display: inline-block;
+                    background: rgba(0, 212, 255, 0.2);
+                    border: 1px solid #00d4ff;
+                    color: #00d4ff;
+                    padding: 5px 12px;
+                    margin: 3px;
+                    border-radius: 15px;
+                    font-size: 10px;
+                    cursor: pointer;
+                    transition: all 0.2s ease;
+                }
+                
+                .preset-chip:hover {
+                    background: #00d4ff;
+                    color: #000;
+                    transform: scale(1.05);
+                }
+                
+                .enhanced-textarea {
+                    width: 100%;
+                    min-height: 120px;
+                    padding: 12px;
+                    background: rgba(0, 0, 0, 0.4);
+                    color: white;
+                    border: 2px solid rgba(0, 212, 255, 0.3);
+                    border-radius: 8px;
+                    resize: vertical;
+                    font-size: 12px;
+                    line-height: 1.4;
+                    font-family: 'Courier New', monospace;
+                    transition: border-color 0.3s ease;
+                }
+                
+                .enhanced-textarea:focus {
+                    border-color: #00d4ff;
+                    box-shadow: 0 0 10px rgba(0, 212, 255, 0.3);
+                    outline: none;
+                }
+                </style>
+                
+                <!-- Header -->
+                <div style="background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%); padding: 20px; border-radius: 16px 16px 0 0; text-align: center;">
+                    <h3 style="color: #000; margin: 0 0 5px 0; font-size: 18px; font-weight: bold;">⚡ ADVANCED TRAINING PROTOCOL</h3>
+                    <div style="color: rgba(0, 0, 0, 0.7); font-size: 12px;">Enhanced Academy training for \${baseName}</div>
+                </div>
+                
+                <!-- Content -->
+                <div style="padding: 25px;">
+                    <!-- Training Rounds Slider -->
+                    <div class="parameter-group">
+                        <label style="color: #00d4ff; font-size: 13px; font-weight: bold; display: block; margin-bottom: 8px;">🎯 Training Rounds</label>
+                        <div class="slider-container">
+                            <div class="slider-value" id="rounds-value">150</div>
+                            <input type="range" id="training-rounds" min="50" max="2000" value="150" class="custom-slider">
+                        </div>
+                        <div style="display: flex; justify-content: space-between; color: #888; font-size: 10px; margin-top: 5px;">
+                            <span>50 (Quick Test)</span>
+                            <span>500 (Standard)</span>
+                            <span>1000 (Intensive)</span>
+                            <span>2000 (Maximum)</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Learning Rate Slider -->
+                    <div class="parameter-group">
+                        <label style="color: #00d4ff; font-size: 13px; font-weight: bold; display: block; margin-bottom: 8px;">📈 Learning Rate</label>
+                        <div class="slider-container">
+                            <div class="slider-value" id="learning-rate-value">0.001</div>
+                            <input type="range" id="learning-rate" min="0.0001" max="0.01" step="0.0001" value="0.001" class="custom-slider">
+                        </div>
+                        <div style="display: flex; justify-content: space-between; color: #888; font-size: 10px; margin-top: 5px;">
+                            <span>0.0001 (Conservative)</span>
+                            <span>0.001 (Balanced)</span>
+                            <span>0.01 (Aggressive)</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Training Intensity -->
+                    <div class="parameter-group">
+                        <label style="color: #00d4ff; font-size: 13px; font-weight: bold; display: block; margin-bottom: 8px;">⚡ Training Intensity</label>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                            <select id="training-intensity" style="
+                                padding: 10px; 
+                                background: rgba(0, 0, 0, 0.6); 
+                                color: white; 
+                                border: 2px solid rgba(0, 212, 255, 0.3); 
+                                border-radius: 6px;
+                                font-size: 12px;
+                            ">
+                                <option value="normal">🔥 Normal (1x)</option>
+                                <option value="high">⚡ High (5x)</option>
+                                <option value="extreme" selected>🚀 Extreme (10x)</option>
+                                <option value="gpu_low">🖥️ GPU Low (5x)</option>
+                                <option value="gpu_medium">🖥️ GPU Med (10x)</option>
+                                <option value="gpu_high">🖥️ GPU High (15x)</option>
+                                <option value="gpu_max">🔥🖥️ GPU MAX (20x)</option>
+                            </select>
+                            
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="enable-dropout" checked style="accent-color: #00d4ff;">
+                                <label for="enable-dropout" style="color: #aaa; font-size: 11px;">Enable Dropout</label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Quick Presets -->
+                    <div class="parameter-group">
+                        <label style="color: #00d4ff; font-size: 13px; font-weight: bold; display: block; margin-bottom: 8px;">🎛️ Quick Presets</label>
+                        <div>
+                            <span class="preset-chip" onclick="applyPreset('quick')">⚡ Quick (100 rounds)</span>
+                            <span class="preset-chip" onclick="applyPreset('balanced')">⚖️ Balanced (500 rounds)</span>
+                            <span class="preset-chip" onclick="applyPreset('intensive')">🔥 Intensive (1000 rounds)</span>
+                            <span class="preset-chip" onclick="applyPreset('maximum')">🚀 Maximum (2000 rounds)</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Custom Training Focus -->
+                    <div class="parameter-group">
+                        <label style="color: #00d4ff; font-size: 13px; font-weight: bold; display: block; margin-bottom: 8px;">📝 Training Objectives</label>
+                        <div style="display: flex; gap: 5px; margin-bottom: 8px; flex-wrap: wrap;">
+                            <span class="preset-chip" onclick="addPromptText('Improve accuracy')">🎯 Accuracy</span>
+                            <span class="preset-chip" onclick="addPromptText('Enhanced protocol compliance')">🛡️ Protocol</span>
+                            <span class="preset-chip" onclick="addPromptText('Leadership coordination')">👥 Leadership</span>
+                            <span class="preset-chip" onclick="addPromptText('Error reduction')">🔧 Error Fix</span>
+                        </div>
+                        <textarea id="custom-prompt" class="enhanced-textarea" placeholder="Enter detailed training objectives...
+
+Example:
+• Focus on accuracy improvements above 90%
+• Enhance decision-making under pressure
+• Improve multi-agent coordination
+• Strengthen protocol compliance">\${basePersonaName.includes('PlannerAI') ? 'Enhanced leadership training for AI coordination and command execution.\\n\\nObjectives:\\n• Improve accuracy above 90%\\n• Enhanced protocol compliance\\n• Multi-agent orchestration capabilities\\n• Robust error handling and recovery' : 'Advanced Academy training with enhanced performance targets.\\n\\nObjectives:\\n• Achieve 85%+ accuracy consistently\\n• Improve response time and efficiency\\n• Enhanced decision-making capabilities\\n• Robust performance under stress'}</textarea>
+                    </div>
+                    
+                    <!-- Training Estimate -->
+                    <div style="
+                        background: linear-gradient(135deg, rgba(0, 212, 255, 0.1) 0%, rgba(0, 153, 204, 0.1) 100%); 
+                        border: 1px solid rgba(0, 212, 255, 0.3); 
+                        border-radius: 10px; 
+                        padding: 15px; 
+                        margin-bottom: 20px;
+                    ">
+                        <div style="color: #00d4ff; font-size: 13px; font-weight: bold; margin-bottom: 8px;">📊 Training Forecast</div>
+                        <div id="training-estimate" style="color: #ccc; font-size: 12px; line-height: 1.4;">
+                            • Duration: ~5 minutes<br>
+                            • Effective Rounds: 1,500<br>
+                            • Accuracy Target: 85%+<br>
+                            • Enhanced Algorithm: Active
+                        </div>
+                    </div>
+                    
+                    <!-- Action Buttons -->
+                    <div style="display: flex; gap: 12px; justify-content: center;">
+                        <button onclick="startAdvancedTraining()" style="
+                            background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%); 
+                            color: white; 
+                            border: none; 
+                            padding: 12px 25px; 
+                            border-radius: 8px; 
+                            cursor: pointer;
+                            font-weight: bold;
+                            font-size: 13px;
+                            box-shadow: 0 0 15px rgba(76, 175, 80, 0.4);
+                            transition: all 0.2s ease;
+                        " onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+                            🚀 Launch Advanced Training
+                        </button>
+                        <button onclick="closeAdvancedDialog()" style="
+                            background: linear-gradient(135deg, #666 0%, #555 100%); 
+                            color: white; 
+                            border: none; 
+                            padding: 12px 25px; 
+                            border-radius: 8px; 
+                            cursor: pointer;
+                            font-size: 13px;
+                            transition: all 0.2s ease;
+                        " onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            \`;
+            
+            document.body.appendChild(dialog);
+            window.currentTrainingDialog = dialog;
+            window.currentBasePersonaName = baseName;
+            window.currentSpecialization = specialization;
+            
+            // Get all control elements
+            const roundsSlider = dialog.querySelector('#training-rounds');
+            const learningRateSlider = dialog.querySelector('#learning-rate');
+            const intensitySelect = dialog.querySelector('#training-intensity');
+            const estimateDiv = dialog.querySelector('#training-estimate');
+            const roundsValue = dialog.querySelector('#rounds-value');
+            const learningRateValue = dialog.querySelector('#learning-rate-value');
+            
+            // Global functions for preset actions
+            window.applyPreset = function(preset) {
+                const presets = {
+                    quick: { rounds: 100, intensity: 'high', learningRate: 0.005 },
+                    balanced: { rounds: 500, intensity: 'extreme', learningRate: 0.001 },
+                    intensive: { rounds: 1000, intensity: 'gpu_medium', learningRate: 0.0005 },
+                    maximum: { rounds: 2000, intensity: 'gpu_max', learningRate: 0.0003 }
+                };
+                
+                const config = presets[preset];
+                if (config) {
+                    roundsSlider.value = config.rounds;
+                    intensitySelect.value = config.intensity;
+                    learningRateSlider.value = config.learningRate;
+                    updateEstimate();
+                }
+            };
+            
+            window.addPromptText = function(text) {
+                const textarea = dialog.querySelector('#custom-prompt');
+                if (textarea.value.trim()) {
+                    textarea.value += '\\n• ' + text;
+                } else {
+                    textarea.value = '• ' + text;
+                }
+                textarea.focus();
+            };
+            
+            function updateEstimate() {
+                const rounds = parseInt(roundsSlider.value);
+                const learningRate = parseFloat(learningRateSlider.value);
+                const intensity = intensitySelect.value;
+                
+                // Update display values
+                roundsValue.textContent = rounds;
+                learningRateValue.textContent = learningRate.toFixed(4);
+                
+                const multipliers = {
+                    normal: 1, high: 5, extreme: 10, 
+                    gpu_low: 5, gpu_medium: 10, gpu_high: 15, gpu_max: 20
+                };
+                const mult = multipliers[intensity] || 1;
+                const effectiveRounds = rounds * mult;
+                const estimatedMinutes = Math.round(effectiveRounds / 100);
+                const accuracyTarget = Math.min(98, 75 + (effectiveRounds / 200));
+                
+                estimateDiv.innerHTML = \`
+                    • Duration: ~\${estimatedMinutes} minutes<br>
+                    • Effective Rounds: \${effectiveRounds.toLocaleString()}<br>
+                    • Learning Rate: \${learningRate.toFixed(4)}<br>
+                    • Accuracy Target: \${accuracyTarget.toFixed(1)}%+<br>
+                    • Enhanced Algorithm: Active
+                \`;
+            }
+            
+            // Event listeners for all controls
+            roundsSlider.addEventListener('input', updateEstimate);
+            learningRateSlider.addEventListener('input', updateEstimate);
+            intensitySelect.addEventListener('change', updateEstimate);
+            updateEstimate();
+        }
+        
+        function startAdvancedTraining() {
+            const dialog = window.currentTrainingDialog;
+            const rounds = parseInt(dialog.querySelector('#training-rounds').value);
+            const learningRate = parseFloat(dialog.querySelector('#learning-rate').value);
+            const intensity = dialog.querySelector('#training-intensity').value;
+            const customPrompt = dialog.querySelector('#custom-prompt').value;
+            const enableDropout = dialog.querySelector('#enable-dropout').checked;
+            const baseName = window.currentBasePersonaName;
+            const specialization = window.currentSpecialization || 'enhanced_training';
+            
+            const newPersonaName = baseName + '-enhanced-' + Date.now();
+            
+            console.log('🚀 Starting advanced training with parameters:', {
+                rounds, learningRate, intensity, enableDropout
+            });
+            
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'get_academy_status' }));
+                ws.send(JSON.stringify({
+                    type: 'start_academy_training',
+                    personaName: newPersonaName,
+                    specialization: specialization,
+                    rounds: rounds,
+                    learningRate: learningRate,
+                    enableDropout: enableDropout,
+                    customPrompt: customPrompt,
+                    trainingIntensity: intensity
+                }));
+                addSystemMessage(\`🚀 \${newPersonaName} starting enhanced training: \${rounds} rounds at \${intensity} intensity...\`);
+            }
+            
+            closeAdvancedDialog();
+        }
+        
+        function closeAdvancedDialog() {
+            if (window.currentTrainingDialog) {
+                document.body.removeChild(window.currentTrainingDialog);
+                window.currentTrainingDialog = null;
+                window.currentBasePersonaName = null;
+                window.currentSpecialization = null;
             }
         }
         
         function toggleAcademyDetails(personaName) {
             console.log('Toggle details for:', personaName);
+        }
+        
+        function showPendingTrainingButton() {
+            const button = document.getElementById('pending-training-btn');
+            if (button && window.pendingRetrain) {
+                button.style.display = 'inline-flex';
+                button.textContent = \`🚀 Start \${window.pendingRetrain.personaName} Training\`;
+            }
+        }
+        
+        function hidePendingTrainingButton() {
+            const button = document.getElementById('pending-training-btn');
+            if (button) {
+                button.style.display = 'none';
+            }
+        }
+        
+        function startPendingTraining() {
+            if (!window.pendingRetrain) {
+                addSystemMessage('❌ No pending training found');
+                return;
+            }
+            
+            const { personaName, improvements } = window.pendingRetrain;
+            
+            // Start training immediately with the pending data
+            const specialization = 'enhanced_capabilities';
+            const description = \`Custom enhancement training: \${improvements}\`;
+            
+            addSystemMessage(\`🎓 Starting Academy training for \${personaName} with custom enhancements...\`);
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'start_academy_training',
+                    personaName: personaName + '-enhanced-' + Date.now(),
+                    specialization: specialization,
+                    rounds: 15,
+                    customPrompt: \`Training Focus: \${improvements}\\n\\nSpecialization: enhanced_capabilities\\n\\nDescription: \${description}\`,
+                    trainingIntensity: 'high'
+                }));
+                
+                // Clear pending training
+                window.pendingRetrain = null;
+                hidePendingTrainingButton();
+                
+                addMessage('Academy System', \`🎓 \${personaName} sent to Academy for enhanced capabilities training!\`, 'ai', true);
+            }
         }
         
         // Auto-resize textarea
@@ -1558,9 +3368,28 @@ class UIGenerator {
         
         // Initialize default room
         document.addEventListener('DOMContentLoaded', function() {
-            switchRoom('general');
+            // Load chat history before initializing
+            const historyLoaded = loadChatHistory();
+            
+            // Initialize with current room (from history or default)
+            switchRoom(currentRoom);
+            
+            // Select the correct agent from history
+            if (selectedAgent !== 'auto') {
+                selectAgent(selectedAgent);
+            }
+            
             refreshProjects(); // Load active projects
             refreshPersonas(); // Load personas on startup
+            
+            if (historyLoaded && Object.values(roomMessages).flat().length > 0) {
+                // Only show restore message if there was actual content restored
+                const totalMessages = Object.values(roomMessages).flat().length;
+                if (totalMessages > 0) {
+                    // Use skipSave=true so this message doesn't get saved to localStorage
+                    addMessage('System', \`📚 Restored \${totalMessages} messages from previous session\`, 'ai', false, true);
+                }
+            }
         });
         
         // If page is already loaded
