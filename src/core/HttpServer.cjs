@@ -63,6 +63,18 @@ class HttpServer {
         const result = await this.continuum.intelligentRoute(task);
         console.log(`✅ Task completed, sending response...`);
         
+        // 🤖 Protocol Sheriff: Validate response before sending to user
+        const validation = await this.continuum.protocolSheriff.validateResponse(
+          result.result, 
+          task, 
+          result.role
+        );
+        
+        if (!validation.isValid && validation.correctedResponse) {
+          console.log(`🚨 Protocol Sheriff: Using corrected response`);
+          result.result = validation.correctedResponse;
+        }
+        
         // Add initial agent info and working status for better UI feedback
         result.initialAgent = initialAgent;
         

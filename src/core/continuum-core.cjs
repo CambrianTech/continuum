@@ -10,6 +10,8 @@ const CostTracker = require('./CostTracker.cjs');
 const { ModelRegistry } = require('./AIModel.cjs');
 const CommandProcessor = require('./CommandProcessor.cjs');
 const UIGenerator = require('./UIGenerator.cjs');
+const ProtocolSheriff = require('./ProtocolSheriff.cjs');
+const ModelCaliber = require('./ModelCaliber.cjs');
 const { Anthropic } = require('@anthropic-ai/sdk');
 const { OpenAI } = require('openai');
 const fs = require('fs');
@@ -69,8 +71,10 @@ class ContinuumCore {
     
     this.costTracker = new CostTracker(path.join(this.userDataDir, 'costs.json'));
     this.modelRegistry = new ModelRegistry();
+    this.modelCaliber = new ModelCaliber();
     this.commandProcessor = new CommandProcessor();
     this.uiGenerator = new UIGenerator(this);
+    this.protocolSheriff = new ProtocolSheriff(this.modelRegistry, this.modelCaliber);
     
     // WebSocket management
     this.conversationThreads = new Map();
