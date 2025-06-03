@@ -12,6 +12,7 @@ const CommandProcessor = require('./CommandProcessor.cjs');
 const UIGenerator = require('./UIGenerator.cjs');
 const ProtocolSheriff = require('./ProtocolSheriff.cjs');
 const ModelCaliber = require('./ModelCaliber.cjs');
+const VersionManager = require('./VersionManager.cjs');
 const { Anthropic } = require('@anthropic-ai/sdk');
 const { OpenAI } = require('openai');
 const fs = require('fs');
@@ -75,6 +76,7 @@ class ContinuumCore {
     this.commandProcessor = new CommandProcessor();
     this.uiGenerator = new UIGenerator(this);
     this.protocolSheriff = new ProtocolSheriff(this.modelRegistry, this.modelCaliber);
+    this.versionManager = new VersionManager(this);
     
     // WebSocket management
     this.conversationThreads = new Map();
@@ -398,6 +400,9 @@ class ContinuumCore {
         console.log(`💬 Talk to real Claude instances`);
         console.log(`📊 Track costs and sessions across all projects`);
         console.log(`📁 Master project: ${process.cwd()}`);
+        
+        // Start version monitoring
+        this.versionManager.startVersionChecking();
         
         // Open the web interface automatically
         await this.openWebInterface();

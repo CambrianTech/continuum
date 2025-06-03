@@ -40,7 +40,7 @@ class HttpServer {
       res.end(this.continuum.generateUI());
     } else if (req.method === 'GET' && url.pathname === '/ask') {
       await this.handleAskRequest(url, res);
-    } else if (req.method === 'GET' && url.pathname === '/status') {
+    } else if (req.method === 'GET' && (url.pathname === '/status' || url.pathname === '/api/status')) {
       await this.handleStatusRequest(res);
     } else if (url.pathname.startsWith('/api/personas')) {
       await this.handlePersonaRequest(req, res, url, body);
@@ -113,13 +113,18 @@ class HttpServer {
   }
 
   async handleStatusRequest(res) {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    const statusData = {
       sessions: Array.from(this.continuum.sessions.entries()),
       costs: this.continuum.costs,
       costDetails: this.continuum.costTracker.getDetailedReport(),
       uptime: process.uptime()
-    }));
+    };
+    
+    // Add version information via version manager
+    const statusWithVersion = this.continuum.versionManager.addVersionToStatus(statusData);
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(statusWithVersion));
   }
 
   async handlePersonaRequest(req, res, url, body) {
