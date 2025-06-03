@@ -1,10 +1,10 @@
 {
   "name": "continuum",
-  "version": "0.1.0",
+  "version": "0.2.1851",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
-    "continuum": "./src/core/continuum-core.cjs"
+    "continuum": "./continuum.cjs"
   },
   "type": "module",
   "workspaces": [
@@ -19,7 +19,7 @@
     "test:ui": "jest --config jest.config.ui.js",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "build": "lerna run build",
+    "build": "npm run version:bump && npm run lint && npm run test",
     "build:ui": "tsc --project tsconfig.ui.json",
     "lint": "eslint . --ext .ts,.js --config eslint.config.js",
     "format": "prettier --write \"**/*.{js,ts,json,md}\"",
@@ -35,7 +35,8 @@
     "test:packages": "npm run test --workspaces",
     "lint:packages": "npm run lint --workspaces",
     "demo": "npx ts-node demo-complete-system.ts",
-    "test-system": "npx jest tests/integration-full-system.test.ts"
+    "test-system": "npx jest tests/integration-full-system.test.ts",
+    "version:bump": "node scripts/bump-version.cjs"
   },
   "keywords": [
     "ai",
