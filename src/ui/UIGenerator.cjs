@@ -593,6 +593,10 @@ class UIGenerator {
             background: rgba(255, 255, 255, 0.05);
             border-radius: 12px;
             padding: 15px;
+            max-height: 400px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
         }
         
         .agent-selector h3 {
@@ -601,22 +605,45 @@ class UIGenerator {
             margin-bottom: 12px;
             text-transform: uppercase;
             letter-spacing: 0.5px;
+            flex-shrink: 0;
         }
         
         .agent-list {
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 6px;
+            flex: 1;
+            overflow-y: auto;
+            padding-right: 5px;
+        }
+        
+        .agent-list::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .agent-list::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 3px;
+        }
+        
+        .agent-list::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 3px;
+        }
+        
+        .agent-list::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.3);
         }
         
         .agent-item {
             display: flex;
             align-items: center;
-            padding: 10px 12px;
+            padding: 8px 10px;
             border-radius: 8px;
             cursor: pointer;
             transition: all 0.3s ease;
             border: 1px solid transparent;
+            flex-shrink: 0;
         }
         
         .agent-item:hover {
@@ -634,24 +661,25 @@ class UIGenerator {
         }
         
         .agent-avatar {
-            width: 32px;
-            height: 32px;
+            width: 30px;
+            height: 30px;
             border-radius: 50%;
             background: linear-gradient(135deg, #4FC3F7, #29B6F6);
             display: flex;
             align-items: center;
             justify-content: center;
-            margin-right: 12px;
-            font-size: 16px;
+            margin-right: 10px;
+            font-size: 14px;
             position: relative;
+            flex-shrink: 0;
         }
         
         .agent-status {
             position: absolute;
-            bottom: -2px;
-            right: -2px;
-            width: 12px;
-            height: 12px;
+            bottom: -1px;
+            right: -1px;
+            width: 10px;
+            height: 10px;
             border-radius: 50%;
             border: 2px solid rgba(20, 25, 35, 0.95);
         }
@@ -957,20 +985,67 @@ class UIGenerator {
         }
         
         .agent-dropdown-btn {
-            background: none;
+            background: transparent;
             border: none;
-            color: #888;
-            font-size: 10px;
+            color: rgba(0, 212, 255, 0.4);
+            font-size: 8px;
             cursor: pointer;
-            padding: 2px 4px;
-            margin-left: 5px;
-            border-radius: 3px;
-            transition: all 0.2s ease;
+            padding: 0;
+            margin-left: 6px;
+            width: 12px;
+            height: 12px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            transition: all 0.3s ease;
+            clip-path: polygon(30% 0%, 70% 0%, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0% 70%, 0% 30%);
         }
         
-        .agent-dropdown-btn:hover {
-            background: rgba(0, 212, 255, 0.2);
-            color: #00d4ff;
+        .agent-dropdown-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(45deg, transparent, rgba(0, 212, 255, 0.1), transparent);
+            clip-path: inherit;
+            transition: all 0.3s ease;
+            opacity: 0;
+        }
+        
+        .agent-dropdown-btn::after {
+            content: '⬢';
+            font-size: 10px;
+            color: rgba(0, 212, 255, 0.3);
+            transition: all 0.3s ease;
+        }
+        
+        .agent-dropdown-btn:hover::before {
+            opacity: 1;
+            background: linear-gradient(45deg, transparent, rgba(0, 212, 255, 0.3), transparent);
+        }
+        
+        .agent-dropdown-btn:hover::after {
+            color: rgba(0, 212, 255, 0.8);
+            text-shadow: 0 0 8px rgba(0, 212, 255, 0.6);
+        }
+        
+        .agent-dropdown-btn.active::before {
+            opacity: 1;
+            background: linear-gradient(45deg, rgba(0, 212, 255, 0.2), rgba(0, 212, 255, 0.4), rgba(0, 212, 255, 0.2));
+            animation: pulse-hex 2s infinite ease-in-out;
+        }
+        
+        .agent-dropdown-btn.active::after {
+            color: rgba(0, 212, 255, 1);
+            text-shadow: 0 0 12px rgba(0, 212, 255, 0.8);
+        }
+        
+        @keyframes pulse-hex {
+            0%, 100% { opacity: 0.8; }
+            50% { opacity: 1; }
         }
         
         .agent-info-dropdown {
@@ -1010,6 +1085,188 @@ class UIGenerator {
         .agent-actions {
             margin-top: 8px;
             text-align: right;
+        }
+        
+        /* Cyberpunk Glass Details Panel */
+        .agent-details-panel {
+            position: fixed;
+            bottom: 0;
+            left: -350px;
+            width: 300px;
+            height: calc(100vh - 200px);
+            max-height: calc(100vh - 200px);
+            background: 
+                linear-gradient(145deg, 
+                    rgba(0, 212, 255, 0.03), 
+                    rgba(20, 25, 35, 0.95),
+                    rgba(0, 150, 255, 0.03)
+                ),
+                radial-gradient(circle at 20% 80%, rgba(0, 212, 255, 0.05) 0%, transparent 50%),
+                linear-gradient(45deg, transparent 48%, rgba(0, 212, 255, 0.08) 49%, rgba(0, 212, 255, 0.08) 51%, transparent 52%);
+            background-size: 100% 100%, 100% 100%, 30px 30px;
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            clip-path: polygon(0 0, 80% 0, 90% 10%, 100% 20%, 100% 80%, 90% 90%, 80% 100%, 0 100%);
+            border: 1px solid rgba(0, 212, 255, 0.25);
+            border-left: 2px solid rgba(0, 212, 255, 0.4);
+            box-shadow: 
+                0 0 40px rgba(0, 0, 0, 0.8),
+                inset 0 0 40px rgba(0, 212, 255, 0.05),
+                inset 1px 0 1px rgba(0, 212, 255, 0.2);
+            z-index: 150;
+            transition: left 0.5s cubic-bezier(0.23, 1, 0.32, 1);
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .agent-details-panel::before {
+            content: '';
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 40px;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(0, 212, 255, 0.6), transparent);
+            opacity: 0.7;
+        }
+        
+        .agent-details-panel::after {
+            content: '';
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            width: 60px;
+            height: 1px;
+            background: linear-gradient(90deg, rgba(0, 212, 255, 0.6), transparent);
+            opacity: 0.7;
+        }
+        
+        .agent-details-panel.open {
+            left: 300px;
+        }
+        
+        .agent-details-panel.fast-close {
+            transition: left 0.12s ease-in;
+        }
+        
+        .agent-details-header {
+            padding: 12px 18px;
+            border-bottom: 1px solid rgba(0, 212, 255, 0.15);
+            background: 
+                linear-gradient(135deg, 
+                    rgba(0, 212, 255, 0.08), 
+                    rgba(20, 25, 35, 0.9)
+                ),
+                linear-gradient(90deg, transparent 0%, rgba(0, 212, 255, 0.05) 50%, transparent 100%);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+            position: relative;
+        }
+        
+        .agent-details-header::before {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(0, 212, 255, 0.4), transparent);
+        }
+        
+        .agent-details-title {
+            color: #00d4ff;
+            font-size: 14px;
+            font-weight: 500;
+            text-shadow: 0 0 8px rgba(0, 212, 255, 0.3);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+        
+        .agent-details-close {
+            background: transparent;
+            border: 1px solid rgba(0, 212, 255, 0.3);
+            color: rgba(0, 212, 255, 0.6);
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            transition: all 0.3s ease;
+            clip-path: polygon(20% 0%, 80% 0%, 100% 20%, 100% 80%, 80% 100%, 20% 100%, 0% 80%, 0% 20%);
+        }
+        
+        .agent-details-close:hover {
+            background: rgba(0, 212, 255, 0.1);
+            border-color: rgba(0, 212, 255, 0.8);
+            color: #00d4ff;
+            box-shadow: inset 0 0 8px rgba(0, 212, 255, 0.2);
+        }
+        
+        .agent-details-content {
+            padding: 15px 20px;
+            flex: 1;
+            color: #e0e6ed;
+            font-size: 12px;
+        }
+        
+        .agent-stat-section {
+            margin-bottom: 15px;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            border: 1px solid rgba(0, 212, 255, 0.1);
+        }
+        
+        .agent-stat-title {
+            color: #00d4ff;
+            font-size: 11px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .agent-stat-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        
+        .agent-stat-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 8px;
+            background: rgba(0, 212, 255, 0.05);
+            border-radius: 4px;
+            border: 1px solid rgba(0, 212, 255, 0.1);
+        }
+        
+        .agent-stat-icon {
+            font-size: 12px;
+            width: 16px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        
+        .agent-stat-text {
+            font-size: 10px;
+            line-height: 1.3;
+            flex: 1;
+        }
+        
+        .agent-stat-text strong {
+            color: #00d4ff;
+            display: block;
+            margin-bottom: 1px;
         }
         
         @keyframes slideDown {
@@ -1350,21 +1607,9 @@ class UIGenerator {
                                 <div class="agent-info" onclick="selectAgent('PlannerAI')">
                                     <div class="agent-name">
                                         PlannerAI
-                                        <button class="agent-dropdown-btn" onclick="event.stopPropagation(); toggleAgentInfo('PlannerAI')" title="View agent info">
-                                            ▼
-                                        </button>
+                                        <button class="agent-dropdown-btn" onclick="event.stopPropagation(); toggleAgentInfo('PlannerAI')" title="Agent details"></button>
                                     </div>
                                     <div class="agent-role">Strategy & web commands</div>
-                                    <div class="agent-info-dropdown" id="info-PlannerAI" style="display: none;">
-                                        <div class="agent-stats">
-                                            <div>🎯 <strong>Specialization:</strong> Strategic planning & task orchestration</div>
-                                            <div>📊 <strong>Accuracy:</strong> 91.8%</div>
-                                            <div>⚡ <strong>Response Time:</strong> 320ms avg</div>
-                                            <div>🌐 <strong>Tools:</strong> Web commands, file operations, analysis</div>
-                                            <div>🎓 <strong>Last Training:</strong> 1 day ago</div>
-                                            <div>💡 <strong>Strength:</strong> Complex multi-step planning</div>
-                                        </div>
-                                    </div>
                                 </div>
                                 <div class="agent-actions">
                                     <button class="agent-action-btn retrain" onclick="event.stopPropagation(); retrainAgent('PlannerAI')" title="Retrain PlannerAI">
@@ -1381,21 +1626,9 @@ class UIGenerator {
                                 <div class="agent-info" onclick="selectAgent('CodeAI')">
                                     <div class="agent-name">
                                         CodeAI
-                                        <button class="agent-dropdown-btn" onclick="event.stopPropagation(); toggleAgentInfo('CodeAI')" title="View agent info">
-                                            ▼
-                                        </button>
+                                        <button class="agent-dropdown-btn" onclick="event.stopPropagation(); toggleAgentInfo('CodeAI')" title="Agent details"></button>
                                     </div>
                                     <div class="agent-role">Code analysis & debugging</div>
-                                    <div class="agent-info-dropdown" id="info-CodeAI" style="display: none;">
-                                        <div class="agent-stats">
-                                            <div>🎯 <strong>Specialization:</strong> Code analysis, debugging & optimization</div>
-                                            <div>📊 <strong>Accuracy:</strong> 96.5%</div>
-                                            <div>⚡ <strong>Response Time:</strong> 240ms avg</div>
-                                            <div>💻 <strong>Languages:</strong> JavaScript, Python, TypeScript, Rust</div>
-                                            <div>🎓 <strong>Last Training:</strong> 3 days ago</div>
-                                            <div>💡 <strong>Strength:</strong> Complex code pattern recognition</div>
-                                        </div>
-                                    </div>
                                 </div>
                                 <div class="agent-actions">
                                     <button class="agent-action-btn retrain" onclick="event.stopPropagation(); retrainAgent('CodeAI')" title="Retrain CodeAI">
@@ -1412,21 +1645,9 @@ class UIGenerator {
                                 <div class="agent-info" onclick="selectAgent('GeneralAI')">
                                     <div class="agent-name">
                                         GeneralAI
-                                        <button class="agent-dropdown-btn" onclick="event.stopPropagation(); toggleAgentInfo('GeneralAI')" title="View agent info">
-                                            ▼
-                                        </button>
+                                        <button class="agent-dropdown-btn" onclick="event.stopPropagation(); toggleAgentInfo('GeneralAI')" title="Agent details"></button>
                                     </div>
                                     <div class="agent-role">General assistance</div>
-                                    <div class="agent-info-dropdown" id="info-GeneralAI" style="display: none;">
-                                        <div class="agent-stats">
-                                            <div>🎯 <strong>Specialization:</strong> General purpose assistance & routing</div>
-                                            <div>📊 <strong>Accuracy:</strong> 89.3%</div>
-                                            <div>⚡ <strong>Response Time:</strong> 200ms avg</div>
-                                            <div>🧠 <strong>Skills:</strong> Conversation, analysis, problem-solving</div>
-                                            <div>🎓 <strong>Last Training:</strong> 5 days ago</div>
-                                            <div>💡 <strong>Strength:</strong> Versatile task handling</div>
-                                        </div>
-                                    </div>
                                 </div>
                                 <div class="agent-actions">
                                     <button class="agent-action-btn retrain" onclick="event.stopPropagation(); retrainAgent('GeneralAI')" title="Retrain GeneralAI">
@@ -1443,20 +1664,9 @@ class UIGenerator {
                                 <div class="agent-info" onclick="selectAgent('ProtocolSheriff')">
                                     <div class="agent-name">
                                         Protocol Sheriff
-                                        <button class="agent-dropdown-btn" onclick="event.stopPropagation(); toggleAgentInfo('ProtocolSheriff')" title="View agent info">
-                                            ▼
-                                        </button>
+                                        <button class="agent-dropdown-btn" onclick="event.stopPropagation(); toggleAgentInfo('ProtocolSheriff')" title="Agent details"></button>
                                     </div>
                                     <div class="agent-role">Response validation</div>
-                                    <div class="agent-info-dropdown" id="info-ProtocolSheriff" style="display: none;">
-                                        <div class="agent-stats">
-                                            <div>🎯 <strong>Specialization:</strong> Response validation & safety</div>
-                                            <div>📊 <strong>Accuracy:</strong> 94.2%</div>
-                                            <div>⚡ <strong>Response Time:</strong> 180ms avg</div>
-                                            <div>🛡️ <strong>Protocols:</strong> Safety, Quality, Ethics</div>
-                                            <div>🎓 <strong>Last Training:</strong> 2 days ago</div>
-                                        </div>
-                                    </div>
                                 </div>
                                 <div class="agent-actions">
                                     <button class="agent-action-btn retrain" onclick="event.stopPropagation(); retrainAgent('ProtocolSheriff')" title="Retrain ProtocolSheriff">
@@ -1645,6 +1855,84 @@ class UIGenerator {
                     <button class="send-button" id="sendButton" onclick="sendMessage()">
                         ➤
                     </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cyberpunk Agent Details Glass Panel -->
+    <div id="agent-details-panel" class="agent-details-panel">
+        <div class="agent-details-header">
+            <div class="agent-details-title">
+                <span id="agent-details-avatar">🤖</span>
+                <span id="agent-details-name">Agent Details</span>
+            </div>
+            <button class="agent-details-close" onclick="closeAgentDetails()">×</button>
+        </div>
+        <div class="agent-details-content">
+            <div class="agent-stat-section">
+                <div class="agent-stat-title">Performance Metrics</div>
+                <div class="agent-stat-grid">
+                    <div class="agent-stat-item">
+                        <div class="agent-stat-icon">🎯</div>
+                        <div class="agent-stat-text"><strong>Specialization:</strong> <span id="detail-specialization">Loading...</span></div>
+                    </div>
+                    <div class="agent-stat-item">
+                        <div class="agent-stat-icon">📊</div>
+                        <div class="agent-stat-text"><strong>Accuracy:</strong> <span id="detail-accuracy">Loading...</span></div>
+                    </div>
+                    <div class="agent-stat-item">
+                        <div class="agent-stat-icon">⚡</div>
+                        <div class="agent-stat-text"><strong>Response Time:</strong> <span id="detail-response-time">Loading...</span></div>
+                    </div>
+                    <div class="agent-stat-item">
+                        <div class="agent-stat-icon">🛠️</div>
+                        <div class="agent-stat-text"><strong>Tools:</strong> <span id="detail-tools">Loading...</span></div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="agent-stat-section">
+                <div class="agent-stat-title">Training Status</div>
+                <div class="agent-stat-grid">
+                    <div class="agent-stat-item">
+                        <div class="agent-stat-icon">🎓</div>
+                        <div class="agent-stat-text"><strong>Last Training:</strong> <span id="detail-last-training">Loading...</span></div>
+                    </div>
+                    <div class="agent-stat-item">
+                        <div class="agent-stat-icon">💡</div>
+                        <div class="agent-stat-text"><strong>Strength:</strong> <span id="detail-strength">Loading...</span></div>
+                    </div>
+                    <div class="agent-stat-item">
+                        <div class="agent-stat-icon">🧠</div>
+                        <div class="agent-stat-text"><strong>Model:</strong> <span id="detail-model">Loading...</span></div>
+                    </div>
+                    <div class="agent-stat-item">
+                        <div class="agent-stat-icon">🔄</div>
+                        <div class="agent-stat-text"><strong>Status:</strong> <span id="detail-status">Loading...</span></div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="agent-stat-section">
+                <div class="agent-stat-title">Capabilities</div>
+                <div class="agent-stat-grid">
+                    <div class="agent-stat-item">
+                        <div class="agent-stat-icon">💻</div>
+                        <div class="agent-stat-text"><strong>Languages:</strong> <span id="detail-languages">Loading...</span></div>
+                    </div>
+                    <div class="agent-stat-item">
+                        <div class="agent-stat-icon">🌐</div>
+                        <div class="agent-stat-text"><strong>Web Access:</strong> <span id="detail-web-access">Loading...</span></div>
+                    </div>
+                    <div class="agent-stat-item">
+                        <div class="agent-stat-icon">📁</div>
+                        <div class="agent-stat-text"><strong>File Operations:</strong> <span id="detail-file-ops">Loading...</span></div>
+                    </div>
+                    <div class="agent-stat-item">
+                        <div class="agent-stat-icon">🔧</div>
+                        <div class="agent-stat-text"><strong>Advanced Features:</strong> <span id="detail-advanced">Loading...</span></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2439,20 +2727,158 @@ class UIGenerator {
             addSystemMessage('🚫 Retrain cancelled');
         }
         
+        let currentOpenAgent = null;
+        
         function toggleAgentInfo(agentName) {
-            const dropdown = document.getElementById(\`info-\${agentName}\`);
-            const btn = dropdown?.previousElementSibling?.querySelector('.agent-dropdown-btn');
+            const panel = document.getElementById('agent-details-panel');
             
-            if (dropdown) {
-                if (dropdown.style.display === 'none') {
-                    dropdown.style.display = 'block';
-                    if (btn) btn.textContent = '▲';
-                } else {
-                    dropdown.style.display = 'none';
-                    if (btn) btn.textContent = '▼';
-                }
+            // If clicking the same agent that's open, close it
+            if (currentOpenAgent === agentName && panel.classList.contains('open')) {
+                closeAgentDetails();
+                return;
             }
+            
+            // If another agent is open, close it fast first
+            if (currentOpenAgent && currentOpenAgent !== agentName && panel.classList.contains('open')) {
+                panel.classList.add('fast-close');
+                panel.classList.remove('open');
+                
+                // Wait for fast close, then open new one
+                setTimeout(() => {
+                    panel.classList.remove('fast-close');
+                    openAgentDetails(agentName);
+                }, 150);
+                return;
+            }
+            
+            // Normal open
+            openAgentDetails(agentName);
         }
+        
+        function openAgentDetails(agentName) {
+            const panel = document.getElementById('agent-details-panel');
+            
+            // Update button states
+            document.querySelectorAll('.agent-dropdown-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            const activeBtn = document.querySelector('#agent-' + agentName + ' .agent-dropdown-btn');
+            if (activeBtn) {
+                activeBtn.classList.add('active');
+            }
+            
+            currentOpenAgent = agentName;
+            
+            // Agent data
+            const agentData = {
+                'PlannerAI': {
+                    avatar: '📋',
+                    specialization: 'Strategic planning & task orchestration',
+                    accuracy: '91.8%',
+                    responseTime: '320ms avg',
+                    tools: 'Web commands, file operations, analysis',
+                    lastTraining: '1 day ago',
+                    strength: 'Complex multi-step task planning',
+                    model: 'Claude-3 Haiku',
+                    status: 'Online',
+                    languages: 'Natural language processing',
+                    webAccess: 'Full web browsing & fetching',
+                    fileOps: 'Read, write, analyze files',
+                    advanced: 'Multi-agent coordination'
+                },
+                'CodeAI': {
+                    avatar: '💻',
+                    specialization: 'Code analysis, debugging & optimization',
+                    accuracy: '96.5%',
+                    responseTime: '240ms avg',
+                    tools: 'JavaScript, Python, TypeScript, Rust',
+                    lastTraining: '3 days ago',
+                    strength: 'Complex code pattern recognition',
+                    model: 'Claude-3 Sonnet',
+                    status: 'Online',
+                    languages: 'JavaScript, Python, TypeScript, Rust, Go',
+                    webAccess: 'Documentation & Stack Overflow',
+                    fileOps: 'Code analysis & refactoring',
+                    advanced: 'Performance optimization'
+                },
+                'GeneralAI': {
+                    avatar: '💬',
+                    specialization: 'General assistance & conversation',
+                    accuracy: '88.3%',
+                    responseTime: '180ms avg',
+                    tools: 'General knowledge, basic analysis',
+                    lastTraining: '2 days ago',
+                    strength: 'Natural conversation & explanations',
+                    model: 'Claude-3 Haiku',
+                    status: 'Online',
+                    languages: 'Multilingual support',
+                    webAccess: 'Basic web information',
+                    fileOps: 'Basic file reading',
+                    advanced: 'Context awareness'
+                },
+                'ProtocolSheriff': {
+                    avatar: '⚠️',
+                    specialization: 'Response validation & quality control',
+                    accuracy: '99.1%',
+                    responseTime: '150ms avg',
+                    tools: 'Response validation, garbage detection',
+                    lastTraining: '6 hours ago',
+                    strength: 'Quality assurance & validation',
+                    model: 'Claude-3 Haiku',
+                    status: 'Online',
+                    languages: 'Natural language validation',
+                    webAccess: 'None (security focused)',
+                    fileOps: 'Log analysis only',
+                    advanced: 'Real-time quality monitoring'
+                }
+            };
+            
+            const data = agentData[agentName];
+            if (!data) return;
+            
+            // Update panel content
+            document.getElementById('agent-details-avatar').textContent = data.avatar;
+            document.getElementById('agent-details-name').textContent = agentName;
+            document.getElementById('detail-specialization').textContent = data.specialization;
+            document.getElementById('detail-accuracy').textContent = data.accuracy;
+            document.getElementById('detail-response-time').textContent = data.responseTime;
+            document.getElementById('detail-tools').textContent = data.tools;
+            document.getElementById('detail-last-training').textContent = data.lastTraining;
+            document.getElementById('detail-strength').textContent = data.strength;
+            document.getElementById('detail-model').textContent = data.model;
+            document.getElementById('detail-status').textContent = data.status;
+            document.getElementById('detail-languages').textContent = data.languages;
+            document.getElementById('detail-web-access').textContent = data.webAccess;
+            document.getElementById('detail-file-ops').textContent = data.fileOps;
+            document.getElementById('detail-advanced').textContent = data.advanced;
+            
+            // Open the panel
+            panel.classList.add('open');
+        }
+        
+        function closeAgentDetails() {
+            const panel = document.getElementById('agent-details-panel');
+            panel.classList.remove('open');
+            
+            // Clear button states
+            document.querySelectorAll('.agent-dropdown-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            currentOpenAgent = null;
+        }
+        
+        // Close panel when clicking outside
+        document.addEventListener('click', function(event) {
+            const panel = document.getElementById('agent-details-panel');
+            const isClickInsidePanel = panel?.contains(event.target);
+            const isDropdownButton = event.target?.classList?.contains('agent-dropdown-btn');
+            
+            if (panel?.classList.contains('open') && !isClickInsidePanel && !isDropdownButton) {
+                closeAgentDetails();
+            }
+        });
         
         function retrainAgent(agentName) {
             // Use the same retrain flow as personas
