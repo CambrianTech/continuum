@@ -25,8 +25,8 @@ export default {
     '!**/jest.config.js',
   ],
   testMatch: [
-    '**/__tests__/**/*.test.{ts,js}',
-    '**/?(*.)+(spec|test).{ts,js}'
+    '**/__tests__/**/*.test.{ts,js,cjs}',
+    '**/?(*.)+(spec|test).{ts,js,cjs}'
   ],
   modulePathIgnorePatterns: [
     '<rootDir>/dist/',

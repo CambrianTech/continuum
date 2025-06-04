@@ -4,13 +4,17 @@
  */
 
 const WebSocket = require('ws');
-const MessageQueue = require('./MessageQueue.cjs');
+const MessageQueue = require('../core/MessageQueue.cjs');
+const TabManager = require('../services/TabManager.cjs');
+const RemoteAgentManager = require('../services/RemoteAgentManager.cjs');
 
 class WebSocketServer {
   constructor(continuum, httpServer) {
     this.continuum = continuum;
     this.messageQueue = new MessageQueue();
     this.wss = new WebSocket.Server({ server: httpServer });
+    this.tabManager = new TabManager();
+    this.remoteAgentManager = new RemoteAgentManager(continuum);
     this.setupWebSocket();
   }
 
@@ -18,6 +22,9 @@ class WebSocketServer {
     this.wss.on('connection', (ws) => {
       // Create unique session for this connection
       const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Store session ID on WebSocket for later retrieval
+      ws.sessionId = sessionId;
       
       // Initialize session data with message queue
       this.messageQueue.initializeSession(ws, sessionId);
@@ -38,7 +45,13 @@ class WebSocketServer {
     });
   }
 
+  getSessionId(ws) {
+    return ws.sessionId;
+  }
+
   sendStatus(ws, sessionId) {
+    // Clear require cache to get fresh version info
+    delete require.cache[require.resolve('../../package.json')];
     const packageInfo = require('../../package.json');
     ws.send(JSON.stringify({
       type: 'status',
@@ -61,7 +74,14 @@ class WebSocketServer {
       console.log('📨 Received message:', message.toString());
       const data = JSON.parse(message);
       
-      if (data.type === 'task') {
+      if (data.type === 'tabRegister') {
+        await this.tabManager.registerTab(ws, data);
+        
+      } else if (data.type === 'agent_register' || data.type === 'agent_message') {
+        // Handle agent connections and messages
+        this.remoteAgentManager.handleAgentMessage(ws, message, this.getSessionId(ws));
+        
+      } else if (data.type === 'task') {
         const { role, task } = data;
         
         console.log(`🎯 Task: ${role} -> ${task}`);
@@ -350,10 +370,25 @@ class WebSocketServer {
     this.continuum.activeConnections.delete(sessionId);
     this.continuum.conversationThreads.delete(sessionId);
     this.messageQueue.cleanup(sessionId);
+    this.tabManager.cleanupSession(sessionId);
   }
 
   handleError(sessionId, error) {
     console.error(`WebSocket error for session ${sessionId}:`, error);
+  }
+
+  /**
+   * Get tab management status
+   */
+  getTabStatus() {
+    return this.tabManager.getStatus();
+  }
+
+  /**
+   * Trigger version update broadcast to all tabs
+   */
+  async broadcastVersionUpdate(newVersion) {
+    return this.tabManager.broadcastVersionUpdate(newVersion);
   }
 
   /**
