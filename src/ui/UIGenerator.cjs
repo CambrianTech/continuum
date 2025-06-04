@@ -12,6 +12,8 @@ class UIGenerator {
   }
 
   generateHTML() {
+    // Clear require cache to get fresh version info
+    delete require.cache[require.resolve('../../package.json')];
     const packageInfo = require('../../package.json');
     
     return `<!DOCTYPE html>
@@ -1543,10 +1545,93 @@ class UIGenerator {
                     ">
                         v${require('../../package.json').version || '1.0.0'}
                     </div>
+                    <button class="web-browser-btn" id="web-browser-btn" onclick="toggleWebBrowser()" style="
+                        background: rgba(102, 102, 102, 0.1);
+                        border: 1px solid #666;
+                        color: #666;
+                        padding: 4px 8px;
+                        border-radius: 8px;
+                        font-size: 11px;
+                        cursor: pointer;
+                        transition: all 0.3s ease;
+                        display: flex;
+                        align-items: center;
+                        gap: 4px;
+                    " title="Toggle Web Browser Tab">
+                        🌐 <span id="web-status">Web</span>
+                    </button>
                 </div>
             </div>
             
             <div class="chat-container" id="chat"></div>
+            
+            <!-- Web Browser Container -->
+            <div class="web-browser-container" id="web-browser-container" style="
+                display: none;
+                flex: 1;
+                background: #fff;
+                border-radius: 8px;
+                overflow: hidden;
+                margin: 0;
+                position: relative;
+            ">
+                <div class="web-browser-header" style="
+                    background: #f5f5f5;
+                    padding: 8px 12px;
+                    border-bottom: 1px solid #ddd;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    font-size: 12px;
+                    color: #666;
+                ">
+                    <div class="web-browser-controls" style="display: flex; gap: 4px;">
+                        <div style="width: 12px; height: 12px; background: #ff5f56; border-radius: 50%;"></div>
+                        <div style="width: 12px; height: 12px; background: #ffbd2e; border-radius: 50%;"></div>
+                        <div style="width: 12px; height: 12px; background: #27ca3f; border-radius: 50%;"></div>
+                    </div>
+                    <div class="web-address-bar" style="
+                        flex: 1;
+                        background: #fff;
+                        border: 1px solid #ddd;
+                        border-radius: 4px;
+                        padding: 4px 8px;
+                        font-size: 11px;
+                        color: #333;
+                    " id="web-address-bar">
+                        about:blank
+                    </div>
+                    <button onclick="reloadWebBrowser()" style="
+                        background: #007AFF;
+                        border: none;
+                        color: white;
+                        padding: 4px 8px;
+                        border-radius: 4px;
+                        cursor: pointer;
+                        font-size: 10px;
+                    ">⟳</button>
+                    <button onclick="toggleWebBrowser()" style="
+                        background: #FF3B30;
+                        border: none;
+                        color: white;
+                        padding: 4px 8px;
+                        border-radius: 4px;
+                        cursor: pointer;
+                        font-size: 10px;
+                    ">✕</button>
+                </div>
+                <iframe 
+                    id="web-browser-iframe"
+                    src="about:blank"
+                    style="
+                        width: 100%;
+                        height: calc(100% - 40px);
+                        border: none;
+                        background: white;
+                    "
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation"
+                ></iframe>
+            </div>
             
             <div class="input-area">
                 <div class="input-container">
@@ -1669,6 +1754,140 @@ class UIGenerator {
             }
         }
 
+        // Remote Agent Management
+        let allAvailableAgents = [];
+        
+        function updateAvailableAgents(agents) {
+            console.log('🤖 Updating available agents:', agents);
+            allAvailableAgents = agents;
+            renderAgentList();
+        }
+        
+        function renderAgentList() {
+            const agentList = document.querySelector('.agent-list');
+            if (!agentList) return;
+            
+            // Keep the existing Auto Route option
+            const existingAgents = agentList.innerHTML;
+            
+            // Separate remote agents by type
+            const remoteAIs = allAvailableAgents.filter(agent => 
+                agent.source === 'remote' && (agent.type === 'ai' || agent.type === 'system'));
+            const remoteHumans = allAvailableAgents.filter(agent => 
+                agent.source === 'remote' && (agent.type === 'human' || agent.type === 'user'));
+            
+            let additionalHTML = '';
+            
+            // Add remote humans section
+            if (remoteHumans.length > 0) {
+                const humanHTML = remoteHumans.map(agent => generateAgentHTML(agent)).join('');
+                additionalHTML += 
+                    '<div style="margin: 15px 0; padding: 10px 0; border-top: 1px solid rgba(255,255,255,0.1);">' +
+                    '<div style="color: #ff6b6b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">⚡ Network Operators</div>' +
+                    humanHTML +
+                    '</div>';
+            }
+            
+            // Add remote AIs section
+            if (remoteAIs.length > 0) {
+                const aiHTML = remoteAIs.map(agent => generateAgentHTML(agent)).join('');
+                additionalHTML += 
+                    '<div style="margin: 15px 0; padding: 10px 0; border-top: 1px solid rgba(255,255,255,0.1);">' +
+                    '<div style="color: #00d4ff; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">🌐 Network AI</div>' +
+                    aiHTML +
+                    '</div>';
+            }
+            
+            // Add remote agents after local ones
+            if (additionalHTML) {
+                const localAgentsEnd = agentList.innerHTML.lastIndexOf('</div>') + 6;
+                const beforeRemote = agentList.innerHTML.substring(0, localAgentsEnd);
+                const afterRemote = agentList.innerHTML.substring(localAgentsEnd);
+                
+                agentList.innerHTML = beforeRemote + additionalHTML + afterRemote;
+            }
+        }
+        
+        function generateAgentHTML(agent) {
+            const statusColor = agent.status === 'connected' ? 'online' : 
+                              agent.status === 'busy' ? 'busy' : 'offline';
+            const avatarEmoji = getAgentEmoji(agent);
+            const agentId = 'agent-remote-' + agent.id;
+            const isAI = agent.type === 'ai' || agent.type === 'system';
+            const isHuman = agent.type === 'human' || agent.type === 'user';
+            
+            // Different styling for AI vs Human
+            const avatarGradient = isHuman 
+                ? 'linear-gradient(135deg, #ff6b6b, #ee5a5a)' // Red for humans
+                : 'linear-gradient(135deg, #00d4ff, #0099cc)'; // Blue for AI
+            
+            return \`
+                <div class="agent-item" id="\${agentId}" onclick="selectAgent('\${agent.id}')">
+                    <div class="agent-avatar" style="background: \${avatarGradient};">
+                        \${avatarEmoji}
+                        <div class="agent-status \${statusColor}"></div>
+                    </div>
+                    <div class="agent-info">
+                        <div class="agent-name">
+                            \${agent.name}
+                            <span style="font-size: 9px; color: #666; margin-left: 6px; padding: 1px 4px; background: rgba(0,0,0,0.3); border-radius: 2px;" title="\${isHuman ? 'Human Operator' : 'AI Agent'}">\${isHuman ? 'H' : 'AI'}</span>
+                        </div>
+                        <div class="agent-role">\${agent.capabilities?.join(', ') || agent.role || 'General'}</div>
+                        <div style="font-size: 10px; color: #666; margin-top: 2px;">
+                            \${agent.hostInfo?.hostname || agent.host || 'Local'} • 
+                            \${agent.messageCount || 0} msgs
+                        </div>
+                    </div>
+                </div>
+            \`;
+        }
+        
+        function getAgentEmoji(agent) {
+            // Handle human vs AI differently
+            if (agent.type === 'human' || agent.type === 'user') {
+                return '👤'; // Clean human icon
+            }
+            
+            const capabilities = agent.capabilities || [];
+            if (capabilities.includes('code')) return '💻';
+            if (capabilities.includes('analysis')) return '📊';
+            if (capabilities.includes('planning')) return '📋';
+            if (capabilities.includes('creative')) return '🎨';
+            if (capabilities.includes('reasoning')) return '🧠';
+            if (capabilities.includes('visual')) return '👁️';
+            if (capabilities.includes('web')) return '🌐';
+            if (agent.type === 'system') return '⚡';
+            return '🤖';
+        }
+        
+        // Handle agent selection including remote agents
+        function selectAgent(agentId) {
+            console.log('🎯 Selected agent:', agentId);
+            
+            // Remove selected class from all agents
+            document.querySelectorAll('.agent-item').forEach(item => {
+                item.classList.remove('selected');
+            });
+            
+            // Add selected class to clicked agent
+            const selectedElement = document.getElementById('agent-' + agentId) || 
+                                   document.getElementById('agent-remote-' + agentId);
+            if (selectedElement) {
+                selectedElement.classList.add('selected');
+            }
+            
+            // Update global selected agent
+            selectedAgent = agentId;
+            
+            // Update chat title to show selected agent
+            const agent = allAvailableAgents.find(a => a.id === agentId);
+            if (agent) {
+                setChatTitle(\`Chat with \${agent.name}\${agent.source === 'remote' ? ' 🌐' : ''}\`);
+            } else {
+                setChatTitle('Chat with ' + agentId);
+            }
+        }
+
         // AI Cursor Control - Make HAL 9000 indicator become the AI's mouse
         let aiCursorActive = false;
         let aiCursorOriginalParent = null;
@@ -1680,7 +1899,7 @@ class UIGenerator {
 
             console.log('🤖 AI Cursor activated - HAL 9000 is now the mouse');
             
-            // Store original state
+            // Store original state and precise position
             aiCursorOriginalParent = indicator.parentElement;
             aiCursorOriginalStyle = indicator.style.cssText;
             
@@ -1688,10 +1907,15 @@ class UIGenerator {
             aiCursorActive = true;
             indicator.classList.add('ai-cursor');
             
-            // Move to current mouse position or center of screen
-            const rect = indicator.getBoundingClientRect();
-            indicator.style.left = (rect.left || window.innerWidth / 2) + 'px';
-            indicator.style.top = (rect.top || window.innerHeight / 2) + 'px';
+            // Apply Continuon-style centering (left: 33%; top: 33%)
+            const homeX = window.innerWidth * 0.33; // 33% from left
+            const homeY = window.innerHeight * 0.33; // 33% from top
+            
+            // Position at Continuon-style center location
+            indicator.style.left = homeX + 'px';
+            indicator.style.top = homeY + 'px';
+            
+            console.log('Continuon activated at centered position (' + homeX + ', ' + homeY + ') - 33% style');
             
             return indicator;
         }
@@ -1700,14 +1924,36 @@ class UIGenerator {
             const indicator = document.getElementById('connection-status');
             if (!indicator || !aiCursorActive) return;
 
-            console.log('🤖 AI Cursor deactivated - HAL 9000 returning to base');
+            console.log('🤖 AI Cursor deactivated - Continuon returning to base');
             
-            // Remove cursor mode
-            indicator.classList.remove('ai-cursor', 'ai-cursor-click');
-            
-            // Restore original style
-            if (aiCursorOriginalStyle) {
-                indicator.style.cssText = aiCursorOriginalStyle;
+            // Smooth return animation to Continuon-style centered position
+            const homeContainer = aiCursorOriginalParent;
+            if (homeContainer) {
+                // Return to the same Continuon-style center position (33%, 33%)
+                const homeX = window.innerWidth * 0.33;
+                const homeY = window.innerHeight * 0.33;
+                
+                // Animate return to Continuon center
+                indicator.style.transition = 'left 0.8s cubic-bezier(0.25, 0.46, 0.45, 0.94), top 0.8s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+                indicator.style.left = homeX + 'px';
+                indicator.style.top = homeY + 'px';
+                
+                // After animation, restore original state
+                setTimeout(() => {
+                    indicator.classList.remove('ai-cursor', 'ai-cursor-click');
+                    
+                    if (aiCursorOriginalStyle) {
+                        indicator.style.cssText = aiCursorOriginalStyle;
+                    }
+                    
+                    console.log('🟢 Continuon returned to centered base (33% style)');
+                }, 800);
+            } else {
+                // Immediate restoration if no home container
+                indicator.classList.remove('ai-cursor', 'ai-cursor-click');
+                if (aiCursorOriginalStyle) {
+                    indicator.style.cssText = aiCursorOriginalStyle;
+                }
             }
             
             // Reset state
@@ -1800,6 +2046,9 @@ class UIGenerator {
                 activateAICursor();
             }
             
+            // Create screenshot feedback rectangle
+            showScreenshotFeedback();
+            
             // Move to a corner briefly to indicate screenshot
             const indicator = document.getElementById('connection-status');
             if (indicator) {
@@ -1823,6 +2072,149 @@ class UIGenerator {
                 }, 1000);
             }
         }
+
+        // Import Screenshot Feedback Module
+        // This will be loaded via script tag in the HTML
+        function initializeScreenshotFeedback() {
+            // The ScreenshotFeedback module will be loaded separately
+            console.log('📸 Screenshot feedback system initialized');
+        }
+
+        // Global function to trigger screenshot feedback (callable from commands)
+        window.triggerScreenshotFeedback = function() {
+            if (typeof window.ScreenshotFeedback !== 'undefined') {
+                return new window.ScreenshotFeedback().show();
+            } else {
+                console.warn('ScreenshotFeedback module not loaded - falling back to basic implementation');
+                // Fallback implementation
+                showBasicScreenshotFeedback();
+            }
+        };
+
+        // Web Browser Control Functions
+        let webBrowserActive = false;
+
+        function toggleWebBrowser() {
+            const chatContainer = document.getElementById('chat');
+            const webContainer = document.getElementById('web-browser-container');
+            const webBtn = document.getElementById('web-browser-btn');
+            const webStatus = document.getElementById('web-status');
+
+            webBrowserActive = !webBrowserActive;
+
+            if (webBrowserActive) {
+                // Show web browser, hide chat
+                chatContainer.style.display = 'none';
+                webContainer.style.display = 'flex';
+                webBtn.style.background = 'rgba(0, 212, 255, 0.2)';
+                webBtn.style.borderColor = '#00d4ff';
+                webBtn.style.color = '#00d4ff';
+                webStatus.textContent = 'Active';
+                
+                console.log('🌐 Web browser activated in Continuum');
+                
+                // Initialize with a default page if blank
+                const iframe = document.getElementById('web-browser-iframe');
+                if (iframe.src === 'about:blank') {
+                    navigateWebBrowser('https://example.com');
+                }
+            } else {
+                // Show chat, hide web browser
+                chatContainer.style.display = 'flex';
+                webContainer.style.display = 'none';
+                webBtn.style.background = 'rgba(102, 102, 102, 0.1)';
+                webBtn.style.borderColor = '#666';
+                webBtn.style.color = '#666';
+                webStatus.textContent = 'Web';
+                
+                console.log('💬 Chat view restored in Continuum');
+            }
+        }
+
+        function navigateWebBrowser(url) {
+            const iframe = document.getElementById('web-browser-iframe');
+            const addressBar = document.getElementById('web-address-bar');
+            
+            // Ensure URL has protocol
+            if (!url.match(/^https?:\\/\\//)) {
+                url = 'https://' + url;
+            }
+            
+            console.log(\`🌐 Navigating to: \${url}\`);
+            iframe.src = url;
+            addressBar.textContent = url;
+            
+            // Activate Continuon for web interaction
+            if (typeof activateAICursor === 'function') {
+                setTimeout(() => {
+                    activateAICursor();
+                    console.log('🟢 Continuon activated for web interaction');
+                }, 1000);
+            }
+        }
+
+        function reloadWebBrowser() {
+            const iframe = document.getElementById('web-browser-iframe');
+            iframe.src = iframe.src; // Reload current page
+            console.log('🔄 Web browser reloaded');
+        }
+
+        // Web Browser Continuon Integration
+        function getWebBrowserPosition(x, y) {
+            const webContainer = document.getElementById('web-browser-container');
+            const iframe = document.getElementById('web-browser-iframe');
+            
+            if (!webBrowserActive || !webContainer || !iframe) {
+                return { x: x, y: y };
+            }
+            
+            // Convert screen coordinates to iframe coordinates
+            const containerRect = webContainer.getBoundingClientRect();
+            const iframeRect = iframe.getBoundingClientRect();
+            
+            const relativeX = x - iframeRect.left;
+            const relativeY = y - iframeRect.top;
+            
+            return {
+                x: Math.max(0, Math.min(relativeX, iframeRect.width)),
+                y: Math.max(0, Math.min(relativeY, iframeRect.height)),
+                isInIframe: relativeX >= 0 && relativeX <= iframeRect.width && 
+                           relativeY >= 0 && relativeY <= iframeRect.height
+            };
+        }
+
+        // Global web browser functions
+        window.toggleWebBrowser = toggleWebBrowser;
+        window.navigateWebBrowser = navigateWebBrowser;
+        window.reloadWebBrowser = reloadWebBrowser;
+        window.getWebBrowserPosition = getWebBrowserPosition;
+
+        // Basic fallback implementation
+        function showBasicScreenshotFeedback() {
+            const feedback = document.createElement('div');
+            feedback.style.cssText = \`
+                position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                border: 4px solid #00ff41; border-radius: 12px;
+                background: rgba(0, 255, 65, 0.1); pointer-events: none;
+                z-index: 9999; animation: basicFlash 2s ease-out forwards;
+            \`;
+            
+            if (!document.getElementById('basic-flash-style')) {
+                const style = document.createElement('style');
+                style.id = 'basic-flash-style';
+                style.textContent = \`
+                    @keyframes basicFlash {
+                        0% { opacity: 0; }
+                        15% { opacity: 1; }
+                        100% { opacity: 0; }
+                    }
+                \`;
+                document.head.appendChild(style);
+            }
+            
+            document.body.appendChild(feedback);
+            setTimeout(() => feedback.remove(), 2000);
+        }
         
         // Helper function to update chat title
         function setChatTitle(text) {
@@ -1832,17 +2224,52 @@ class UIGenerator {
             }
         }
         
+        // Version change detection and auto-reload via WebSocket
+        let currentVersion = '${packageInfo.version}';
+        
+        function checkVersionUpdate(serverVersion) {
+            if (serverVersion && serverVersion !== currentVersion) {
+                console.log(\`🔄 Version update detected: \${currentVersion} → \${serverVersion}\`);
+                console.log('🌐 Reloading browser to update interface...');
+                
+                // Show update notification
+                addSystemMessage(\`🔄 Continuum updated to v\${serverVersion} - Reloading interface...\`);
+                
+                // Reload after brief delay
+                setTimeout(() => {
+                    window.location.reload();
+                }, 2000);
+                
+                return true;
+            }
+            return false;
+        }
+
         // Initialize WebSocket connection
         function initWebSocket() {
             updateConnectionStatus('connecting');
             ws = new WebSocket(\`ws://localhost:\${window.location.port || '5555'}\`);
             
             ws.onopen = function() {
-                console.log('Connected to Continuum');
+                console.log('Connected to Continuum v' + currentVersion);
                 updateConnectionStatus('connected');
                 // Reset connection error flag on successful connection
                 window.connectionErrorShown = false;
-                // Don't flood chat with connection messages
+                
+                // Register this tab/window with server
+                const tabId = sessionStorage.getItem('continuum-tab-id') || Date.now().toString();
+                sessionStorage.setItem('continuum-tab-id', tabId);
+                
+                // Send tab registration to server
+                ws.send(JSON.stringify({
+                    type: 'tabRegister',
+                    tabId: tabId,
+                    version: currentVersion,
+                    url: window.location.href,
+                    timestamp: new Date().toISOString()
+                }));
+                
+                console.log(\`📱 Tab registered: \${tabId}\`);
             };
             
             ws.onmessage = function(event) {
@@ -1873,6 +2300,29 @@ class UIGenerator {
         }
         
         function handleWebSocketMessage(data) {
+            // Handle version updates from server
+            if (data.type === 'versionUpdate') {
+                if (checkVersionUpdate(data.version)) {
+                    return; // Browser will reload, stop processing
+                }
+            }
+            
+            // Handle tab management
+            if (data.type === 'tabRefresh') {
+                console.log('🔄 Server requesting tab refresh');
+                addSystemMessage('🔄 Refreshing to sync with latest session...');
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
+                return;
+            }
+            
+            if (data.type === 'tabFocus') {
+                console.log('🎯 Server requesting tab focus');
+                window.focus();
+                return;
+            }
+            
             if (data.type === 'response') {
                 addMessage(data.agent || 'AI Agent', data.message, 'ai');
                 updateCosts(data.cost, data.requests);
@@ -1902,6 +2352,10 @@ class UIGenerator {
             } else if (data.type === 'academy_status') {
                 // OLD POLLING METHOD - ignore these
                 console.log('🎓 Frontend: Ignoring old polling response');
+            } else if (data.type === 'agents_update') {
+                // Handle agent list updates (humans and AIs)
+                console.log('🤖 Received agents update:', data.agents);
+                updateAvailableAgents(data.agents);
             }
         }
         

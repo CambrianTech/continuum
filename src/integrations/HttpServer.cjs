@@ -35,9 +35,17 @@ class HttpServer {
   async handleRequest(req, res, body) {
     const url = new URL(req.url, `http://localhost:${this.continuum.port}`);
     
+    // Debug logging for version endpoint
+    if (url.pathname === '/version') {
+      console.log(`🔍 Version endpoint hit: ${req.method} ${url.pathname}`);
+    }
+    
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(this.continuum.generateUI());
+    } else if (req.method === 'GET' && url.pathname === '/version') {
+      console.log('🎯 Handling version request');
+      await this.handleVersionRequest(res);
     } else if (req.method === 'GET' && url.pathname === '/ask') {
       await this.handleAskRequest(url, res);
     } else if (req.method === 'GET' && (url.pathname === '/status' || url.pathname === '/api/status')) {
@@ -127,9 +135,21 @@ class HttpServer {
     res.end(JSON.stringify(statusWithVersion));
   }
 
+  async handleVersionRequest(res) {
+    const packageInfo = require('../../package.json');
+    const versionData = {
+      version: packageInfo.version,
+      name: packageInfo.name,
+      timestamp: new Date().toISOString()
+    };
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(versionData));
+  }
+
   async handlePersonaRequest(req, res, url, body) {
     try {
-      const Persona = require('./Persona.cjs');
+      const Persona = require('../core/Persona.cjs');
       
       if (req.method === 'GET' && url.pathname === '/api/personas') {
         // List all personas

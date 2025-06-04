@@ -5,7 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const LoRAAdapter = require('./LoRAAdapter.cjs');
+const LoRAAdapter = require('../adapters/LoRAAdapter.cjs');
 const PersonaRegistry = require('./PersonaRegistry.cjs');
 
 class Persona {

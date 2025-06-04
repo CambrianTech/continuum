@@ -4,12 +4,12 @@
  * ~400 lines focused on AI coordination and task routing
  */
 
-const HttpServer = require('./HttpServer.cjs');
-const WebSocketServer = require('./WebSocketServer.cjs');
+const HttpServer = require('../integrations/HttpServer.cjs');
+const WebSocketServer = require('../integrations/WebSocketServer.cjs');
 const CostTracker = require('./CostTracker.cjs');
 const { ModelRegistry } = require('./AIModel.cjs');
 const CommandProcessor = require('./CommandProcessor.cjs');
-const UIGenerator = require('./UIGenerator.cjs');
+const UIGenerator = require('../ui/UIGenerator.cjs');
 const ProtocolSheriff = require('./ProtocolSheriff.cjs');
 const ModelCaliber = require('./ModelCaliber.cjs');
 const VersionManager = require('./VersionManager.cjs');
@@ -474,12 +474,36 @@ class ContinuumCore {
     const url = `http://localhost:${this.port}`;
     
     try {
-      // Try to refresh/focus existing tab first
+      // Try to focus existing tabs via WebSocket TabManager first
+      if (this.webSocketServer && await this.focusExistingTabs()) {
+        console.log('🎯 Focused existing browser tab');
+        return;
+      }
+      
+      // Fall back to OS-level tab management
       await this.refreshExistingTab(url);
     } catch (error) {
-      // Fall back to opening new tab/window
+      // Only open new tab if no existing tabs found
+      console.log('📱 Opening new browser tab');
       await this.openNewTab(url);
     }
+  }
+
+  async focusExistingTabs() {
+    if (!this.webSocketServer?.tabManager) {
+      return false;
+    }
+    
+    const tabStatus = this.webSocketServer.getTabStatus();
+    if (tabStatus.activeTabs > 0) {
+      // Focus the first active tab
+      const firstActiveTab = tabStatus.tabs.find(tab => tab.isActive);
+      if (firstActiveTab) {
+        return await this.webSocketServer.tabManager.focusTab(firstActiveTab.tabId);
+      }
+    }
+    
+    return false;
   }
 
   async refreshExistingTab(url) {

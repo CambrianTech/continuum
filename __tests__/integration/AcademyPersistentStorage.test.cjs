@@ -5,7 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const AcademyWebInterface = require('../../src/core/AcademyWebInterface.cjs');
+const AcademyWebInterface = require('../../src/ui/AcademyWebInterface.cjs');
 
 // Mock dependencies
 const mockContinuum = {

@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.1869",
+  "version": "0.2.1880",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -11,7 +11,7 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "jest",
+    "test": "node check-imports.cjs && jest",
     "test:unit": "jest __tests__/unit --config jest.config.test.js --verbose",
     "test:integration": "jest __tests__/integration --config jest.config.test.js --verbose",
     "test:ai": "jest __tests__/integration/AICapabilities.test.js --config jest.config.test.js --verbose",
@@ -19,7 +19,7 @@
     "test:ui": "jest --config jest.config.ui.js",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "build": "npm run version:bump && npm run lint && npm run test",
+    "build": "npm run version:bump && npm run lint && node check-imports.cjs && npm run test",
     "build:ui": "tsc --project tsconfig.ui.json",
     "lint": "eslint . --ext .ts,.js --config eslint.config.js",
     "format": "prettier --write \"**/*.{js,ts,json,md}\"",

@@ -31,6 +31,32 @@ class CommandProcessor {
     this.commands.set('SCROLL', this.mouseScroll.bind(this));
     this.commands.set('TYPE', this.typeText.bind(this));
     this.commands.set('KEY', this.pressKey.bind(this));
+    
+    // Web Browser Commands
+    this.commands.set('ACTIVATE_WEB_BROWSER', this.activateWebBrowser.bind(this));
+    this.commands.set('DEACTIVATE_WEB_BROWSER', this.deactivateWebBrowser.bind(this));
+    this.commands.set('WEB_NAVIGATE', this.webNavigate.bind(this));
+    this.commands.set('WEB_RELOAD', this.webReload.bind(this));
+    
+    // Game Commands
+    this.commands.set('START_GAME', this.startGame.bind(this));
+    this.commands.set('START_AI_GAME', this.startAIGame.bind(this));
+    this.commands.set('START_VISUAL_GAME', this.startVisualGame.bind(this));
+    this.commands.set('VISUAL_GAME_STATUS', this.getVisualGameStatus.bind(this));
+    this.commands.set('SET_SCREENSHOT_INTERVAL', this.setScreenshotInterval.bind(this));
+    this.commands.set('HIGH_RES_SCREENSHOT', this.requestHighResScreenshot.bind(this));
+    this.commands.set('WATCH_GAME', this.watchGame.bind(this));
+    this.commands.set('MAKE_MOVE', this.makeMove.bind(this));
+    this.commands.set('GAME_STATUS', this.getGameStatus.bind(this));
+    this.commands.set('LIST_GAMES', this.listGames.bind(this));
+    this.commands.set('SET_GAME_SPEED', this.setGameSpeed.bind(this));
+    
+    // Web Visual Commands
+    this.commands.set('WATCH_MOVIE', this.watchMovieWithAI.bind(this));
+    this.commands.set('EDIT_DOCUMENT', this.editDocumentWithAI.bind(this));
+    this.commands.set('PLAY_WEB_GAME', this.playWebGameWithAI.bind(this));
+    this.commands.set('DRAW_TOGETHER', this.drawTogetherWithAI.bind(this));
+    this.commands.set('WEB_SESSION_STATUS', this.getWebSessionStatus.bind(this));
   }
 
   parseAIProtocol(response) {
@@ -314,8 +340,11 @@ class CommandProcessor {
                      lowRes ? 'low-res' : 'full-res';
       console.log(`📸 Taking ${resInfo} screenshot: ${args || 'full screen'}`);
       
-      // Trigger AI cursor screenshot effect
-      await this.executeJavaScript('aiCursorScreenshot();');
+      // Trigger visual feedback first
+      await this.executeJavaScript('triggerScreenshotFeedback();');
+      
+      // Brief delay to let the animation start
+      await new Promise(resolve => setTimeout(resolve, 200));
       
       await this.executeShellCommand(command);
       
@@ -717,6 +746,615 @@ Add-Type -AssemblyName System.Windows.Forms
     } catch (error) {
       console.error('❌ Press key failed:', error.message);
       return `Press key failed: ${error.message}`;
+    }
+  }
+
+  // Web Browser Command Implementations
+  async activateWebBrowser(params = '') {
+    try {
+      console.log('🌐 Activating web browser interface');
+      await this.executeJavaScript('toggleWebBrowser();');
+      return 'Web browser activated';
+    } catch (error) {
+      console.error('❌ Activate web browser failed:', error.message);
+      return `Activate web browser failed: ${error.message}`;
+    }
+  }
+
+  async deactivateWebBrowser(params = '') {
+    try {
+      console.log('💬 Deactivating web browser, returning to chat');
+      await this.executeJavaScript('if (webBrowserActive) { toggleWebBrowser(); }');
+      return 'Web browser deactivated, returned to chat';
+    } catch (error) {
+      console.error('❌ Deactivate web browser failed:', error.message);
+      return `Deactivate web browser failed: ${error.message}`;
+    }
+  }
+
+  async webNavigate(params = '') {
+    try {
+      const url = params.trim() || 'https://example.com';
+      console.log(`🌍 Navigating web browser to: ${url}`);
+      await this.executeJavaScript(`navigateWebBrowser('${url}');`);
+      return `Navigated to: ${url}`;
+    } catch (error) {
+      console.error('❌ Web navigate failed:', error.message);
+      return `Web navigate failed: ${error.message}`;
+    }
+  }
+
+  async webReload(params = '') {
+    try {
+      console.log('🔄 Reloading web browser');
+      await this.executeJavaScript('reloadWebBrowser();');
+      return 'Web browser reloaded';
+    } catch (error) {
+      console.error('❌ Web reload failed:', error.message);
+      return `Web reload failed: ${error.message}`;
+    }
+  }
+
+  // Game Command Implementations
+  async startGame(params = '') {
+    try {
+      if (!this.gameManager) {
+        const GameManager = require('../services/GameManager.cjs');
+        this.gameManager = new GameManager();
+      }
+
+      const [gameType, ...playerNames] = params.trim().split(' ');
+      const players = playerNames.length > 0 ? playerNames : ['Human', 'AI'];
+      
+      console.log(`🎮 Starting ${gameType} game with players: ${players.join(', ')}`);
+      const game = this.gameManager.startGame(gameType, players);
+      
+      return `🎮 Started ${gameType}! Players: ${players.join(' vs ')}\n${game.getStatus().board || 'Game ready!'}`;
+    } catch (error) {
+      console.error('❌ Start game failed:', error.message);
+      return `Start game failed: ${error.message}\nAvailable games: ${this.gameManager?.getAvailableGames().join(', ') || 'tic-tac-toe, word-chain'}`;
+    }
+  }
+
+  async makeMove(params = '') {
+    try {
+      if (!this.gameManager) {
+        throw new Error('No active games. Start a game first!');
+      }
+
+      const games = this.gameManager.getActiveGames();
+      if (games.length === 0) {
+        throw new Error('No active games. Start a game first!');
+      }
+
+      // Use the most recent game
+      const game = games[games.length - 1];
+      const [player, ...moveParts] = params.trim().split(' ');
+      const move = moveParts.join(' ');
+
+      console.log(`🎯 ${player} making move: ${move}`);
+      const result = this.gameManager.makeMove(game.id, player, move);
+      
+      if (!result.success) {
+        return `❌ Invalid move: ${result.message}`;
+      }
+
+      let response = `✅ Move successful!\n${result.board || result.chain || 'Move completed'}`;
+      
+      if (result.winner) {
+        response += `\n🏆 Winner: ${result.winner}!`;
+      } else if (result.nextPlayer) {
+        response += `\n👤 Next player: ${result.nextPlayer}`;
+      }
+      
+      return response;
+    } catch (error) {
+      console.error('❌ Make move failed:', error.message);
+      return `Make move failed: ${error.message}`;
+    }
+  }
+
+  async getGameStatus(params = '') {
+    try {
+      if (!this.gameManager) {
+        return 'No games active. Use [CMD:START_GAME] to begin!';
+      }
+
+      const games = this.gameManager.getActiveGames();
+      if (games.length === 0) {
+        return 'No active games. Use [CMD:START_GAME] to begin!';
+      }
+
+      const game = games[games.length - 1];
+      const status = game;
+      
+      let response = `🎮 Game: ${status.type}\n👥 Players: ${status.players.join(' vs ')}\n`;
+      
+      if (status.board) {
+        response += status.board;
+      } else if (status.chain) {
+        response += `📝 Word chain: ${status.chain}`;
+      }
+      
+      if (status.currentPlayer) {
+        response += `\n👤 Current player: ${status.currentPlayer}`;
+      }
+      
+      return response;
+    } catch (error) {
+      console.error('❌ Get game status failed:', error.message);
+      return `Get game status failed: ${error.message}`;
+    }
+  }
+
+  async listGames(params = '') {
+    try {
+      if (!this.gameManager) {
+        const GameManager = require('../services/GameManager.cjs');
+        this.gameManager = new GameManager();
+      }
+
+      const available = this.gameManager.getAvailableGames();
+      const active = this.gameManager.getActiveGames();
+      
+      let response = '🎮 Available Games:\n';
+      response += available.map(game => `  • ${game}`).join('\n');
+      
+      if (active.length > 0) {
+        response += '\n\n🎯 Active Games:\n';
+        response += active.map(game => `  • ${game.type} (${game.players.join(' vs ')})`).join('\n');
+      }
+      
+      response += '\n\nUse [CMD:START_GAME] tic-tac-toe to begin!';
+      
+      return response;
+    } catch (error) {
+      console.error('❌ List games failed:', error.message);
+      return `List games failed: ${error.message}`;
+    }
+  }
+
+  async startAIGame(params = '') {
+    try {
+      if (!this.gameManager) {
+        const GameManager = require('../services/GameManager.cjs');
+        this.gameManager = new GameManager();
+      }
+
+      const parts = params.trim().split(' ');
+      const gameType = parts[0] || 'tic-tac-toe';
+      const player1 = parts[1] || 'AI_Alpha';
+      const player2 = parts[2] || 'AI_Beta';
+      const speed = parseInt(parts[3]) || 2000;
+      
+      console.log(`🤖 Starting AI vs AI ${gameType}: ${player1} vs ${player2}`);
+      
+      const game = this.gameManager.startGame(gameType, [player1, player2], {
+        autoPlay: true,
+        speed: speed,
+        academy: true,
+        spectatable: true
+      });
+      
+      return `🤖 AI Battle Started!
+🎮 Game: ${gameType}
+👥 Players: ${player1} vs ${player2}
+⚡ Speed: ${speed}ms between moves
+👁️ Spectators can watch live
+🎯 Game ID: ${game.id}
+
+${game.getStatus().board || 'AI battle in progress...'}`;
+    } catch (error) {
+      console.error('❌ Start AI game failed:', error.message);
+      return `Start AI game failed: ${error.message}`;
+    }
+  }
+
+  async watchGame(params = '') {
+    try {
+      if (!this.gameManager) {
+        return 'No games to watch. Start an AI game first!';
+      }
+
+      const games = this.gameManager.getActiveGames();
+      if (games.length === 0) {
+        return 'No active games to watch. Use [CMD:START_AI_GAME] to create one!';
+      }
+
+      // Find the most recent AI game
+      const aiGame = games.find(game => 
+        game.players.some(p => p.includes('AI') || p.includes('Bot'))
+      ) || games[games.length - 1];
+
+      const status = aiGame;
+      
+      let response = `👁️ Watching Game: ${status.type}
+🤖 Players: ${status.players.join(' vs ')}
+⚡ Auto-play: ${status.options?.autoPlay ? 'ON' : 'OFF'}
+🎯 Game ID: ${status.id}
+
+${status.board || status.chain || 'Game state'}`;
+
+      if (status.currentPlayer) {
+        response += `\n👤 Current turn: ${status.currentPlayer}`;
+      }
+
+      if (status.gameOver) {
+        response += `\n🏆 Winner: ${status.winner || 'Tie'}`;
+      } else {
+        response += `\n🎮 Game in progress... Use [CMD:GAME_STATUS] for updates`;
+      }
+
+      return response;
+    } catch (error) {
+      console.error('❌ Watch game failed:', error.message);
+      return `Watch game failed: ${error.message}`;
+    }
+  }
+
+  async setGameSpeed(params = '') {
+    try {
+      if (!this.gameManager) {
+        const GameManager = require('../services/GameManager.cjs');
+        this.gameManager = new GameManager();
+      }
+
+      const speed = parseInt(params.trim()) || 2000;
+      this.gameManager.setGameSpeed(speed);
+      
+      return `⚡ Game speed set to ${speed}ms between AI moves
+🐌 Slow: 5000ms+ | 🚶 Normal: 2000ms | ⚡ Fast: 500ms | 🏃 Rapid: 100ms`;
+    } catch (error) {
+      console.error('❌ Set game speed failed:', error.message);
+      return `Set game speed failed: ${error.message}`;
+    }
+  }
+
+  // Visual Game Command Implementations
+  async startVisualGame(params = '') {
+    try {
+      if (!this.visualGameManager) {
+        const VisualGameManager = require('../services/VisualGameManager.cjs');
+        this.visualGameManager = new VisualGameManager(this);
+      }
+
+      const parts = params.trim().split(' ');
+      const gameType = parts[0] || 'tic-tac-toe';
+      const player1 = parts[1] || 'Human';
+      const player2 = parts[2] || 'AI_Visual';
+      const interval = parseInt(parts[3]) || 1000;
+      const resolution = parts[4] || 'low';
+
+      console.log(`📸🎮 Starting visual ${gameType}: ${player1} vs ${player2}`);
+
+      const game = await this.visualGameManager.startVisualGame(gameType, [player1, player2], {
+        screenshotInterval: interval,
+        resolution: resolution,
+        autoPlay: player1.includes('AI') && player2.includes('AI'),
+        academy: true,
+        speed: 3000
+      });
+
+      return `📸🎮 Visual Game Started!
+🎯 Type: ${gameType}
+👥 Players: ${player1} vs ${player2}
+📷 Screenshots: Every ${interval}ms
+🔍 Resolution: ${resolution}
+🤖 Auto-play: ${game.options.autoPlay ? 'ON' : 'OFF'}
+🎓 Academy mode: ON
+
+AIs will:
+• Take screenshots to see the game state
+• Use Continuon to click and interact
+• Learn from visual feedback
+• Generate training data from gameplay
+
+🎯 Game ID: ${game.id}`;
+    } catch (error) {
+      console.error('❌ Start visual game failed:', error.message);
+      return `Start visual game failed: ${error.message}`;
+    }
+  }
+
+  async getVisualGameStatus(params = '') {
+    try {
+      if (!this.visualGameManager) {
+        return 'No visual games active. Use [CMD:START_VISUAL_GAME] to begin!';
+      }
+
+      // Get all active visual games
+      const gameStatuses = [];
+      for (const [gameId, game] of this.visualGameManager.activeVisualGames) {
+        const status = this.visualGameManager.getVisualGameStatus(gameId);
+        gameStatuses.push(status);
+      }
+
+      if (gameStatuses.length === 0) {
+        return 'No active visual games. Use [CMD:START_VISUAL_GAME] to begin!';
+      }
+
+      let response = '📸🎮 Visual Game Status:\n\n';
+      
+      gameStatuses.forEach(status => {
+        const analysis = status.analysis;
+        response += `🎯 Game: ${status.type} (${status.id})\n`;
+        response += `👥 Players: ${status.players.join(' vs ')}\n`;
+        response += `👤 Current: ${analysis.currentPlayer}\n`;
+        response += `📷 Screenshots: ${analysis.screenshotCount}\n`;
+        response += `🎯 Moves: ${analysis.totalMoves}\n`;
+        response += `⏱️ Duration: ${Math.round(analysis.gameTimeMs / 1000)}s\n`;
+        response += `📊 Avg move time: ${Math.round(analysis.averageTimePerMove / 1000)}s\n\n`;
+      });
+
+      response += 'Use [CMD:HIGH_RES_SCREENSHOT] for detailed analysis';
+      
+      return response;
+    } catch (error) {
+      console.error('❌ Get visual game status failed:', error.message);
+      return `Get visual game status failed: ${error.message}`;
+    }
+  }
+
+  async setScreenshotInterval(params = '') {
+    try {
+      if (!this.visualGameManager) {
+        const VisualGameManager = require('../services/VisualGameManager.cjs');
+        this.visualGameManager = new VisualGameManager(this);
+      }
+
+      const interval = parseInt(params.trim()) || 1000;
+      this.visualGameManager.setScreenshotInterval(interval);
+      
+      return `📷 Screenshot interval set to ${interval}ms
+🏃 Fast: 200ms | ⚡ Normal: 1000ms | 🐌 Slow: 3000ms | 🎓 Academy: 500ms`;
+    } catch (error) {
+      console.error('❌ Set screenshot interval failed:', error.message);
+      return `Set screenshot interval failed: ${error.message}`;
+    }
+  }
+
+  async requestHighResScreenshot(params = '') {
+    try {
+      if (!this.visualGameManager) {
+        return 'No visual games active for high-res screenshot.';
+      }
+
+      const reason = params.trim() || 'analysis';
+      
+      // Get the most recent visual game
+      const gameIds = Array.from(this.visualGameManager.activeVisualGames.keys());
+      if (gameIds.length === 0) {
+        return 'No active visual games for high-res screenshot.';
+      }
+
+      const gameId = gameIds[gameIds.length - 1];
+      console.log(`📸📈 Taking high-res screenshot for: ${reason}`);
+      
+      const screenshot = await this.visualGameManager.requestHighResScreenshot(gameId, reason);
+      
+      if (screenshot) {
+        return `📸📈 High-resolution screenshot captured!
+🎯 Game: ${gameId}
+📷 File: ${screenshot.filename}
+🔍 Reason: ${reason}
+⏰ Timestamp: ${new Date(screenshot.timestamp).toLocaleTimeString()}
+
+Perfect for detailed AI analysis and training data.`;
+      } else {
+        return 'Failed to capture high-resolution screenshot.';
+      }
+    } catch (error) {
+      console.error('❌ High-res screenshot failed:', error.message);
+      return `High-res screenshot failed: ${error.message}`;
+    }
+  }
+
+  // Web Visual Command Implementations
+  async watchMovieWithAI(params = '') {
+    try {
+      if (!this.webVisualManager) {
+        const WebVisualManager = require('../services/WebVisualManager.cjs');
+        this.webVisualManager = new WebVisualManager(this);
+      }
+
+      const url = params.trim() || 'https://youtube.com';
+      
+      console.log(`🎬 Starting AI movie watching session: ${url}`);
+
+      const session = await this.webVisualManager.startWebVisualSession(
+        'movie', 
+        ['Human', 'AI_CinemaBot'], 
+        url,
+        {
+          screenshotInterval: 3000, // Slower for movie content
+          resolution: 'med',
+          aiParticipation: 'interactive'
+        }
+      );
+
+      return `🎬🤖 AI Movie Watching Started!
+🎯 Session: ${session.id}
+🔗 URL: ${url}
+👥 Watching with: AI_CinemaBot
+📷 Screenshots: Every 3 seconds
+🤖 AI will:
+• Watch and analyze visual content
+• Comment on interesting scenes
+• Learn storytelling patterns
+• Track character development
+• Identify visual elements
+
+Perfect for AI training on visual media!`;
+    } catch (error) {
+      console.error('❌ Watch movie failed:', error.message);
+      return `Watch movie failed: ${error.message}`;
+    }
+  }
+
+  async editDocumentWithAI(params = '') {
+    try {
+      if (!this.webVisualManager) {
+        const WebVisualManager = require('../services/WebVisualManager.cjs');
+        this.webVisualManager = new WebVisualManager(this);
+      }
+
+      const url = params.trim() || 'https://docs.google.com';
+      
+      console.log(`📝 Starting AI document collaboration: ${url}`);
+
+      const session = await this.webVisualManager.startWebVisualSession(
+        'document',
+        ['Human', 'AI_Editor'],
+        url,
+        {
+          screenshotInterval: 2000,
+          resolution: 'med',
+          aiParticipation: 'collaborative'
+        }
+      );
+
+      return `📝🤖 AI Document Collaboration Started!
+🎯 Session: ${session.id}
+🔗 URL: ${url}
+👥 Collaborating with: AI_Editor
+📷 Screenshots: Every 2 seconds
+🤖 AI will:
+• Help edit and improve text
+• Suggest content improvements
+• Track document changes
+• Learn writing patterns
+• Provide real-time assistance
+
+Start typing and watch AI collaborate!`;
+    } catch (error) {
+      console.error('❌ Document collaboration failed:', error.message);
+      return `Document collaboration failed: ${error.message}`;
+    }
+  }
+
+  async playWebGameWithAI(params = '') {
+    try {
+      if (!this.webVisualManager) {
+        const WebVisualManager = require('../services/WebVisualManager.cjs');
+        this.webVisualManager = new WebVisualManager(this);
+      }
+
+      const parts = params.trim().split(' ');
+      const url = parts[0] || 'https://atari.com/games';
+      const gameType = parts[1] || 'arcade';
+      
+      console.log(`🎮 Starting web game with AI: ${url}`);
+
+      const session = await this.webVisualManager.startWebVisualSession(
+        'game',
+        ['Human', 'AI_Gamer'],
+        url,
+        {
+          screenshotInterval: 500, // Fast for gaming
+          resolution: 'med',
+          aiParticipation: 'interactive'
+        }
+      );
+
+      return `🎮🤖 AI Web Gaming Started!
+🎯 Session: ${session.id}
+🔗 URL: ${url}
+🎮 Game Type: ${gameType}
+👥 Playing with: AI_Gamer
+📷 Screenshots: Every 500ms (gaming speed)
+🤖 AI will:
+• Learn game mechanics visually
+• Make strategic moves
+• Adapt to game patterns
+• Compete or cooperate
+• Master Atari-style games
+
+Perfect for simple web games within HTML rules!`;
+    } catch (error) {
+      console.error('❌ Web game failed:', error.message);
+      return `Web game failed: ${error.message}`;
+    }
+  }
+
+  async drawTogetherWithAI(params = '') {
+    try {
+      if (!this.webVisualManager) {
+        const WebVisualManager = require('../services/WebVisualManager.cjs');
+        this.webVisualManager = new WebVisualManager(this);
+      }
+
+      const url = params.trim() || 'https://sketchpad.app';
+      
+      console.log(`🎨 Starting AI drawing collaboration: ${url}`);
+
+      const session = await this.webVisualManager.startWebVisualSession(
+        'drawing',
+        ['Human', 'AI_Artist'],
+        url,
+        {
+          screenshotInterval: 1500,
+          resolution: 'med',
+          aiParticipation: 'collaborative'
+        }
+      );
+
+      return `🎨🤖 AI Drawing Collaboration Started!
+🎯 Session: ${session.id}
+🔗 URL: ${url}
+👥 Creating with: AI_Artist
+📷 Screenshots: Every 1.5 seconds
+🤖 AI will:
+• Add artistic elements
+• Suggest color choices
+• Learn drawing techniques
+• Complement your strokes
+• Create collaborative art
+
+Start drawing and watch AI contribute!`;
+    } catch (error) {
+      console.error('❌ Drawing collaboration failed:', error.message);
+      return `Drawing collaboration failed: ${error.message}`;
+    }
+  }
+
+  async getWebSessionStatus(params = '') {
+    try {
+      if (!this.webVisualManager) {
+        return 'No web visual sessions active. Start one with [CMD:WATCH_MOVIE], [CMD:EDIT_DOCUMENT], etc.';
+      }
+
+      const sessionStatuses = [];
+      for (const [sessionId, session] of this.webVisualManager.activeWebSessions) {
+        const status = this.webVisualManager.getWebSessionStatus(sessionId);
+        sessionStatuses.push(status);
+      }
+
+      if (sessionStatuses.length === 0) {
+        return `🌐 No active web visual sessions.
+
+Available commands:
+🎬 [CMD:WATCH_MOVIE] url - Watch movies with AI
+📝 [CMD:EDIT_DOCUMENT] url - Collaborate on documents  
+🎮 [CMD:PLAY_WEB_GAME] url - Play web games with AI
+🎨 [CMD:DRAW_TOGETHER] url - Create art collaboratively`;
+      }
+
+      let response = '🌐🤖 Active Web Visual Sessions:\n\n';
+      
+      sessionStatuses.forEach(status => {
+        response += `🎯 ${status.type.toUpperCase()}: ${status.id}\n`;
+        response += `🔗 URL: ${status.url}\n`;
+        response += `👥 Participants: ${status.participants.join(', ')}\n`;
+        response += `📷 Screenshots: ${status.screenshotCount}\n`;
+        response += `🤖 AI Interactions: ${status.interactionCount}\n`;
+        response += `⏱️ Duration: ${Math.round(status.duration / 1000)}s\n`;
+        response += `📊 Screenshot Rate: ${Math.round(status.avgScreenshotInterval / 1000)}s\n\n`;
+      });
+
+      return response;
+    } catch (error) {
+      console.error('❌ Get web session status failed:', error.message);
+      return `Get web session status failed: ${error.message}`;
     }
   }
 }

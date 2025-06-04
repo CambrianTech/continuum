@@ -3,7 +3,7 @@
  * Tests multi-agent conversations and coordination
  */
 
-const WebSocketServer = require('../../src/core/WebSocketServer.cjs');
+const WebSocketServer = require('../../src/integrations/WebSocketServer.cjs');
 const ContinuumCore = require('../../src/core/continuum-core.cjs');
 const WebSocket = require('ws');
 

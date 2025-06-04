@@ -2,12 +2,12 @@
  * Academy Web Interface - Shows training progress and Academy status
  */
 
-const Academy = require('./Academy.cjs');
-const { ModelRegistry } = require('./AIModel.cjs');
-const ModelCaliber = require('./ModelCaliber.cjs');
-const LoRAAdapter = require('./LoRAAdapter.cjs');
-const { ModelAdapterFactory } = require('./ModelAdapter.cjs');
-const PersistentStorage = require('./PersistentStorage.cjs');
+const Academy = require('../core/Academy.cjs');
+const { ModelRegistry } = require('../core/AIModel.cjs');
+const ModelCaliber = require('../core/ModelCaliber.cjs');
+const LoRAAdapter = require('../adapters/LoRAAdapter.cjs');
+const { ModelAdapterFactory } = require('../adapters/ModelAdapter.cjs');
+const PersistentStorage = require('../storage/PersistentStorage.cjs');
 
 class AcademyWebInterface {
   constructor(continuum) {
