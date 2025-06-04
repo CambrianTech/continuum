@@ -157,6 +157,13 @@ class UIGenerator {
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
             background: rgba(20, 25, 35, 0.8);
             backdrop-filter: blur(10px);
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+        }
+        
+        .chat-header-content {
+            flex: 1;
         }
         
         .chat-title {
@@ -169,6 +176,196 @@ class UIGenerator {
         .chat-subtitle {
             font-size: 14px;
             color: #8a92a5;
+        }
+        
+        .clear-chat-btn {
+            background: rgba(244, 67, 54, 0.2);
+            border: 1px solid #F44336;
+            color: #F44336;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            white-space: nowrap;
+        }
+        
+        .clear-chat-btn:hover {
+            background: rgba(244, 67, 54, 0.3);
+            transform: translateY(-1px);
+        }
+        
+        .connection-status {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin: 0;
+            transition: all 0.5s ease;
+            animation: hal-pulse 3s infinite;
+            vertical-align: middle;
+            position: relative;
+            flex-shrink: 0;
+        }
+        
+        .connection-status.connected {
+            background: radial-gradient(circle, #4CAF50 0%, #2E7D32 40%, rgba(76, 175, 80, 0.3) 70%, transparent 100%);
+            box-shadow: 
+                0 0 6px rgba(76, 175, 80, 0.8),
+                0 0 12px rgba(76, 175, 80, 0.6),
+                0 0 18px rgba(76, 175, 80, 0.4),
+                0 0 24px rgba(76, 175, 80, 0.2),
+                inset 0 0 6px rgba(255, 255, 255, 0.2);
+        }
+        
+        .connection-status.disconnected {
+            background: radial-gradient(circle, #F44336 0%, #C62828 40%, rgba(244, 67, 54, 0.3) 70%, transparent 100%);
+            box-shadow: 
+                0 0 6px rgba(244, 67, 54, 0.8),
+                0 0 12px rgba(244, 67, 54, 0.6),
+                0 0 18px rgba(244, 67, 54, 0.4),
+                0 0 24px rgba(244, 67, 54, 0.2),
+                inset 0 0 6px rgba(255, 255, 255, 0.2);
+            animation: hal-pulse-error 2s infinite;
+        }
+        
+        .connection-status.connecting {
+            background: radial-gradient(circle, #FF9800 0%, #F57C00 40%, rgba(255, 152, 0, 0.3) 70%, transparent 100%);
+            box-shadow: 
+                0 0 6px rgba(255, 152, 0, 0.8),
+                0 0 12px rgba(255, 152, 0, 0.6),
+                0 0 18px rgba(255, 152, 0, 0.4),
+                0 0 24px rgba(255, 152, 0, 0.2),
+                inset 0 0 6px rgba(255, 255, 255, 0.2);
+            animation: hal-pulse-warning 1.5s infinite;
+        }
+        
+        @keyframes hal-pulse {
+            0% { 
+                transform: scale(1); 
+                opacity: 0.9;
+                filter: blur(0px);
+            }
+            50% { 
+                transform: scale(1.05); 
+                opacity: 1;
+                filter: blur(0.5px);
+            }
+            100% { 
+                transform: scale(1); 
+                opacity: 0.9;
+                filter: blur(0px);
+            }
+        }
+        
+        @keyframes hal-pulse-error {
+            0% { 
+                transform: scale(1); 
+                opacity: 0.8;
+                filter: blur(0px);
+            }
+            25% { 
+                transform: scale(1.1); 
+                opacity: 1;
+                filter: blur(0.8px);
+            }
+            50% { 
+                transform: scale(0.95); 
+                opacity: 0.7;
+                filter: blur(0.3px);
+            }
+            75% { 
+                transform: scale(1.1); 
+                opacity: 1;
+                filter: blur(0.8px);
+            }
+            100% { 
+                transform: scale(1); 
+                opacity: 0.8;
+                filter: blur(0px);
+            }
+        }
+        
+        @keyframes hal-pulse-warning {
+            0% { 
+                transform: scale(1); 
+                opacity: 0.85;
+                filter: blur(0px);
+            }
+            33% { 
+                transform: scale(1.08); 
+                opacity: 1;
+                filter: blur(0.6px);
+            }
+            66% { 
+                transform: scale(0.98); 
+                opacity: 0.75;
+                filter: blur(0.2px);
+            }
+            100% { 
+                transform: scale(1); 
+                opacity: 0.85;
+                filter: blur(0px);
+            }
+        }
+
+        /* AI Cursor Mode - When HAL becomes the mouse */
+        .connection-status.ai-cursor {
+            position: fixed !important;
+            z-index: 10000 !important;
+            pointer-events: none;
+            transform: none !important;
+            transition: left 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94), 
+                       top 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            background: radial-gradient(circle, #00ff41, #00cc33) !important;
+            box-shadow: 0 0 20px rgba(0, 255, 65, 1), 
+                       0 0 40px rgba(0, 255, 65, 0.8),
+                       0 0 60px rgba(0, 255, 65, 0.6) !important;
+            animation: ai-cursor-pulse 1s infinite !important;
+            width: 16px !important;
+            height: 16px !important;
+        }
+
+        @keyframes ai-cursor-pulse {
+            0%, 100% { 
+                transform: scale(1);
+                background: radial-gradient(circle, #00ff41, #00cc33);
+                box-shadow: 0 0 20px rgba(0, 255, 65, 1), 
+                           0 0 40px rgba(0, 255, 65, 0.8),
+                           0 0 60px rgba(0, 255, 65, 0.6);
+            }
+            50% { 
+                transform: scale(1.2);
+                background: radial-gradient(circle, #00ff88, #00ff41);
+                box-shadow: 0 0 30px rgba(0, 255, 65, 1), 
+                           0 0 60px rgba(0, 255, 65, 0.9),
+                           0 0 90px rgba(0, 255, 65, 0.7);
+            }
+        }
+
+        /* Click feedback animation */
+        .connection-status.ai-cursor-click {
+            animation: ai-cursor-click 0.3s ease-out !important;
+        }
+
+        @keyframes ai-cursor-click {
+            0% { 
+                transform: scale(1);
+                background: radial-gradient(circle, #00ff41, #00cc33);
+            }
+            50% { 
+                transform: scale(2);
+                background: radial-gradient(circle, #ffffff, #00ff41);
+                box-shadow: 0 0 50px rgba(255, 255, 255, 1), 
+                           0 0 100px rgba(0, 255, 65, 1);
+            }
+            100% { 
+                transform: scale(1);
+                background: radial-gradient(circle, #00ff41, #00cc33);
+            }
         }
         
         .chat-container {
@@ -1029,15 +1226,35 @@ class UIGenerator {
             <div class="sidebar-header">
                 <div class="logo">
                     <div style="
-                        width: 24px; 
-                        height: 24px; 
-                        border: 2px solid #00d4ff; 
-                        border-radius: 50%; 
-                        background: transparent;
-                        box-shadow: 0 0 10px rgba(0, 212, 255, 0.3);
+                        position: relative; 
+                        width: 28px; 
+                        height: 28px; 
                         margin-right: 10px;
-                    "></div>
-                    <div class="logo-text" style="color: #00d4ff; text-shadow: 0 0 8px rgba(0, 212, 255, 0.4);">continuum</div>
+                        flex-shrink: 0;
+                    ">
+                        <div style="
+                            position: absolute;
+                            left: 0;
+                            top: 0;
+                            width: 28px; 
+                            height: 28px; 
+                            border: 2px solid #00d4ff; 
+                            border-radius: 50%; 
+                            background: transparent;
+                            box-shadow: 0 0 10px rgba(0, 212, 255, 0.3);
+                            z-index: 1;
+                        "></div>
+                        <span class="connection-status connecting" id="connection-status" style="
+                            position: absolute;
+                            left: 14px;
+                            top: 14px;
+                            transform: translate(-50%, -50%);
+                            z-index: 0;
+                        "></span>
+                    </div>
+                    <div class="logo-text" style="color: #00d4ff; text-shadow: 0 0 8px rgba(0, 212, 255, 0.4);">
+                        continuum
+                    </div>
                 </div>
                 <div class="subtitle">AI Workforce Construction</div>
                 <div class="status-pill">
@@ -1065,7 +1282,7 @@ class UIGenerator {
                         <div class="cost-label">Requests</div>
                     </div>
                     <div class="cost-item">
-                        <div class="cost-value" id="cost-total">$${this.continuum.costTracker ? this.continuum.costTracker.getTotal().toFixed(4) : '0.0000'}</div>
+                        <div class="cost-value" id="cost-total">$${this.continuum.costTracker ? this.continuum.costTracker.getTotal().toFixed(2) : '0.00'}</div>
                         <div class="cost-label">Cost</div>
                     </div>
                 </div>
@@ -1307,21 +1524,25 @@ class UIGenerator {
         <!-- Main Chat -->
         <div class="main-content">
             <div class="chat-header">
-                <div class="chat-title" id="chat-title">Active Chat</div>
-                <div class="chat-subtitle" id="chat-subtitle">Talk to specialized AI agents</div>
-                <div class="version-badge" style="
-                    position: absolute;
-                    top: 15px;
-                    right: 20px;
-                    background: rgba(0, 212, 255, 0.1);
-                    border: 1px solid #00d4ff;
-                    color: #00d4ff;
-                    padding: 4px 8px;
-                    border-radius: 12px;
-                    font-size: 11px;
-                    font-weight: bold;
-                ">
-                    v${require('../../package.json').version || '1.0.0'}
+                <div class="chat-header-content">
+                    <div class="chat-title" id="chat-title">Active Chat</div>
+                    <div class="chat-subtitle" id="chat-subtitle">Talk to specialized AI agents</div>
+                </div>
+                <div style="display: flex; align-items: flex-start; gap: 10px;">
+                    <button class="clear-chat-btn" onclick="clearChatHistory()">
+                        🗑️ Clear
+                    </button>
+                    <div class="version-badge" style="
+                        background: rgba(0, 212, 255, 0.1);
+                        border: 1px solid #00d4ff;
+                        color: #00d4ff;
+                        padding: 4px 8px;
+                        border-radius: 12px;
+                        font-size: 11px;
+                        font-weight: bold;
+                    ">
+                        v${require('../../package.json').version || '1.0.0'}
+                    </div>
                 </div>
             </div>
             
@@ -1430,12 +1651,197 @@ class UIGenerator {
             addMessage('System', '🗑️ Chat history cleared', 'ai', false, true);
         }
         
+        // Update connection status indicator
+        function updateConnectionStatus(status) {
+            const indicator = document.getElementById('connection-status');
+            if (indicator) {
+                indicator.className = 'connection-status ' + status;
+            }
+            
+            // Update subtle status text in chat subtitle
+            const subtitle = document.getElementById('chat-subtitle');
+            if (subtitle) {
+                const baseText = subtitle.textContent.split(' •')[0]; // Remove existing status
+                const statusText = status === 'connected' ? '• Connected' : 
+                                 status === 'connecting' ? '• Connecting...' : 
+                                 '• Reconnecting...';
+                subtitle.textContent = baseText + ' ' + statusText;
+            }
+        }
+
+        // AI Cursor Control - Make HAL 9000 indicator become the AI's mouse
+        let aiCursorActive = false;
+        let aiCursorOriginalParent = null;
+        let aiCursorOriginalStyle = null;
+
+        function activateAICursor() {
+            const indicator = document.getElementById('connection-status');
+            if (!indicator || aiCursorActive) return;
+
+            console.log('🤖 AI Cursor activated - HAL 9000 is now the mouse');
+            
+            // Store original state
+            aiCursorOriginalParent = indicator.parentElement;
+            aiCursorOriginalStyle = indicator.style.cssText;
+            
+            // Activate cursor mode
+            aiCursorActive = true;
+            indicator.classList.add('ai-cursor');
+            
+            // Move to current mouse position or center of screen
+            const rect = indicator.getBoundingClientRect();
+            indicator.style.left = (rect.left || window.innerWidth / 2) + 'px';
+            indicator.style.top = (rect.top || window.innerHeight / 2) + 'px';
+            
+            return indicator;
+        }
+
+        function deactivateAICursor() {
+            const indicator = document.getElementById('connection-status');
+            if (!indicator || !aiCursorActive) return;
+
+            console.log('🤖 AI Cursor deactivated - HAL 9000 returning to base');
+            
+            // Remove cursor mode
+            indicator.classList.remove('ai-cursor', 'ai-cursor-click');
+            
+            // Restore original style
+            if (aiCursorOriginalStyle) {
+                indicator.style.cssText = aiCursorOriginalStyle;
+            }
+            
+            // Reset state
+            aiCursorActive = false;
+            aiCursorOriginalParent = null;
+            aiCursorOriginalStyle = null;
+        }
+
+        function moveAICursor(x, y, smooth = true) {
+            const indicator = document.getElementById('connection-status');
+            if (!indicator || !aiCursorActive) return;
+
+            if (smooth) {
+                // Smooth Bezier-like movement
+                const currentX = parseInt(indicator.style.left) || 0;
+                const currentY = parseInt(indicator.style.top) || 0;
+                
+                // Create natural curve movement
+                const deltaX = x - currentX;
+                const deltaY = y - currentY;
+                const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+                
+                if (distance > 50) {
+                    // For longer distances, create a curved path
+                    const steps = Math.min(20, Math.max(10, distance / 50));
+                    const stepDelay = Math.max(30, 200 / steps);
+                    
+                    for (let i = 1; i <= steps; i++) {
+                        setTimeout(() => {
+                            const t = i / steps;
+                            // Bezier curve calculation
+                            const easeT = t * t * (3 - 2 * t); // Smoothstep
+                            
+                            // Add slight curve for natural movement
+                            const midX = (currentX + x) / 2 + (Math.random() - 0.5) * 50;
+                            const midY = (currentY + y) / 2 + (Math.random() - 0.5) * 50;
+                            
+                            const bezierX = currentX + t * deltaX + (1 - t) * t * (midX - currentX - t * deltaX);
+                            const bezierY = currentY + t * deltaY + (1 - t) * t * (midY - currentY - t * deltaY);
+                            
+                            indicator.style.left = Math.round(bezierX) + 'px';
+                            indicator.style.top = Math.round(bezierY) + 'px';
+                            
+                            if (i === steps) {
+                                // Ensure final position is exact
+                                indicator.style.left = x + 'px';
+                                indicator.style.top = y + 'px';
+                            }
+                        }, i * stepDelay);
+                    }
+                } else {
+                    // For short distances, move directly
+                    indicator.style.left = x + 'px';
+                    indicator.style.top = y + 'px';
+                }
+            } else {
+                // Instant movement
+                indicator.style.left = x + 'px';
+                indicator.style.top = y + 'px';
+            }
+        }
+
+        function aiCursorClick(x, y) {
+            const indicator = document.getElementById('connection-status');
+            if (!indicator || !aiCursorActive) return;
+
+            // Move to position if not already there
+            moveAICursor(x, y, true);
+            
+            // Add click animation after movement
+            setTimeout(() => {
+                indicator.classList.add('ai-cursor-click');
+                
+                // Remove click animation after it completes
+                setTimeout(() => {
+                    indicator.classList.remove('ai-cursor-click');
+                }, 300);
+                
+                // Simulate actual click at the position
+                const elementAtPoint = document.elementFromPoint(x, y);
+                if (elementAtPoint && elementAtPoint !== indicator) {
+                    console.log('🖱️ AI clicking element:', elementAtPoint.tagName, elementAtPoint.className);
+                    elementAtPoint.click();
+                }
+            }, 500); // Wait for movement to complete
+        }
+
+        function aiCursorScreenshot() {
+            if (!aiCursorActive) {
+                activateAICursor();
+            }
+            
+            // Move to a corner briefly to indicate screenshot
+            const indicator = document.getElementById('connection-status');
+            if (indicator) {
+                const originalX = parseInt(indicator.style.left) || 0;
+                const originalY = parseInt(indicator.style.top) || 0;
+                
+                // Flash to top-right corner
+                moveAICursor(window.innerWidth - 50, 50, true);
+                
+                setTimeout(() => {
+                    // Flash effect for screenshot
+                    indicator.style.background = 'radial-gradient(circle, #ffffff, #00ff41)';
+                    indicator.style.boxShadow = '0 0 100px rgba(255, 255, 255, 1)';
+                    
+                    setTimeout(() => {
+                        // Return to normal appearance and position
+                        indicator.style.background = '';
+                        indicator.style.boxShadow = '';
+                        moveAICursor(originalX, originalY, true);
+                    }, 200);
+                }, 1000);
+            }
+        }
+        
+        // Helper function to update chat title
+        function setChatTitle(text) {
+            const title = document.getElementById('chat-title');
+            if (title) {
+                title.textContent = text;
+            }
+        }
+        
         // Initialize WebSocket connection
         function initWebSocket() {
-            ws = new WebSocket('ws://localhost:${this.continuum.port}');
+            updateConnectionStatus('connecting');
+            ws = new WebSocket(\`ws://localhost:\${window.location.port || '5555'}\`);
             
             ws.onopen = function() {
                 console.log('Connected to Continuum');
+                updateConnectionStatus('connected');
+                // Reset connection error flag on successful connection
+                window.connectionErrorShown = false;
                 // Don't flood chat with connection messages
             };
             
@@ -1454,13 +1860,15 @@ class UIGenerator {
             
             ws.onclose = function() {
                 console.log('Disconnected from Continuum');
+                updateConnectionStatus('disconnected');
                 // Don't flood chat with disconnection messages
                 setTimeout(initWebSocket, 3000); // Reconnect
             };
             
             ws.onerror = function(error) {
                 console.error('WebSocket error:', error);
-                addSystemMessage('⚠️ Connection error');
+                updateConnectionStatus('disconnected');
+                // Don't show connection errors in chat - use visual status indicator instead
             };
         }
         
@@ -1989,10 +2397,10 @@ class UIGenerator {
             
             // Update chat header
             if (room === 'general') {
-                document.getElementById('chat-title').textContent = 'Active Chat';
+                setChatTitle('Active Chat');
                 document.getElementById('chat-subtitle').textContent = 'Talk to specialized AI agents';
             } else if (room === 'academy') {
-                document.getElementById('chat-title').textContent = 'Academy Training Room';
+                setChatTitle('Academy Training Room');
                 document.getElementById('chat-subtitle').textContent = 'Watch AI agents train and improve their skills';
                 
                 // INTERRUPT-DRIVEN: Request initial Academy status only once
@@ -2143,18 +2551,17 @@ class UIGenerator {
         }
         
         function updateChatHeader() {
-            const title = document.getElementById('chat-title');
             const subtitle = document.getElementById('chat-subtitle');
             
             if (currentRoom === 'general') {
                 if (isGroupChat && selectedAgents.size > 0) {
-                    title.textContent = \`Group Chat (\${selectedAgents.size} agents)\`;
+                    setChatTitle(\`Group Chat (\${selectedAgents.size} agents)\`);
                     subtitle.textContent = \`Talking to: \${Array.from(selectedAgents).join(', ')}\`;
                 } else if (selectedAgent !== 'auto') {
-                    title.textContent = \`Chat with \${selectedAgent}\`;
+                    setChatTitle(\`Chat with \${selectedAgent}\`);
                     subtitle.textContent = \`Direct conversation with \${selectedAgent}\`;
                 } else {
-                    title.textContent = 'General Chat';
+                    setChatTitle('General Chat');
                     subtitle.textContent = 'Smart agent routing with Protocol Sheriff validation';
                 }
             }
