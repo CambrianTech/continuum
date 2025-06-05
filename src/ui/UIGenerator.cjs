@@ -9,6 +9,10 @@ class UIGenerator {
     // Initialize Academy interface
     const AcademyWebInterface = require('./AcademyWebInterface.cjs');
     this.academyInterface = new AcademyWebInterface(continuum);
+    
+    // Initialize progressive web components enhancement
+    const WebComponentsIntegration = require('./WebComponentsIntegration.cjs');
+    this.webComponentsIntegration = new WebComponentsIntegration();
   }
 
   generateHTML() {
@@ -16,7 +20,7 @@ class UIGenerator {
     delete require.cache[require.resolve('../../package.json')];
     const packageInfo = require('../../package.json');
     
-    return `<!DOCTYPE html>
+    const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -988,12 +992,14 @@ class UIGenerator {
             background: transparent;
             border: none;
             color: rgba(0, 212, 255, 0.4);
-            font-size: 8px;
+            font-size: 14px;
             cursor: pointer;
-            padding: 0;
+            padding: 4px;
+            margin-left: 8px;
+            padding: 2px;
             margin-left: 6px;
-            width: 12px;
-            height: 12px;
+            width: 20px;
+            height: 20px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -1017,7 +1023,7 @@ class UIGenerator {
         
         .agent-dropdown-btn::after {
             content: '⬢';
-            font-size: 10px;
+            font-size: 16px;
             color: rgba(0, 212, 255, 0.3);
             transition: all 0.3s ease;
         }
@@ -2523,9 +2529,14 @@ class UIGenerator {
                 // Show update notification
                 addSystemMessage(\`🔄 Continuum updated to v\${serverVersion} - Reloading interface...\`);
                 
-                // Reload after brief delay
+                // Reload after brief delay with loop protection
                 setTimeout(() => {
-                    window.location.reload();
+                    if (window.reloadTracker && window.reloadTracker.checkReloadLoop()) {
+                        window.location.reload();
+                    } else {
+                        console.error('🚨 Reload blocked by safety mechanism');
+                        addSystemMessage('🚨 Update reload blocked - too many rapid reloads detected');
+                    }
                 }, 2000);
                 
                 return true;
@@ -2595,19 +2606,81 @@ class UIGenerator {
                 }
             }
             
-            // Handle tab management
+            // Handle tab management - DISABLED TO PREVENT ENDLESS RELOAD LOOP
             if (data.type === 'tabRefresh') {
-                console.log('🔄 Server requesting tab refresh');
-                addSystemMessage('🔄 Refreshing to sync with latest session...');
-                setTimeout(() => {
-                    window.location.reload();
-                }, 1000);
+                console.log('🔄 Server requesting tab refresh - IGNORING to prevent endless loop');
+                addSystemMessage('⚠️ Tab refresh request ignored (preventing reload loop)');
+                // REMOVED: window.location.reload() - was causing endless reloads
                 return;
             }
             
             if (data.type === 'tabFocus') {
                 console.log('🎯 Server requesting tab focus');
-                window.focus();
+                
+                // Multiple strategies to bring window to focus
+                try {
+                    // Strategy 1: Basic window focus
+                    window.focus();
+                    
+                    // Strategy 2: Click simulation to trigger user activation
+                    if (document.hasFocus && !document.hasFocus()) {
+                        // Create a temporary click event to trigger user interaction
+                        const clickEvent = new MouseEvent('click', {
+                            view: window,
+                            bubbles: true,
+                            cancelable: true
+                        });
+                        document.body.dispatchEvent(clickEvent);
+                        window.focus();
+                    }
+                    
+                    // Strategy 3: Modern focus with user activation
+                    if (navigator.userActivation && !navigator.userActivation.isActive) {
+                        // Request user activation and focus
+                        setTimeout(() => {
+                            window.focus();
+                        }, 100);
+                    }
+                    
+                    // Strategy 4: Audio context trick (if available)
+                    if (window.AudioContext || window.webkitAudioContext) {
+                        try {
+                            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                            if (audioContext.state === 'suspended') {
+                                audioContext.resume().then(() => {
+                                    window.focus();
+                                });
+                            }
+                        } catch (e) {
+                            // Audio context not available, continue
+                        }
+                    }
+                    
+                    // Visual indication that this tab should be used
+                    addSystemMessage('📍 This tab is now active. Please use this window.');
+                    
+                } catch (error) {
+                    console.warn('Focus strategies failed:', error);
+                    addSystemMessage('⚠️ Please click on this tab to activate it.');
+                }
+                
+                return;
+            }
+            
+            if (data.type === 'closeTab') {
+                console.log('🚪 Server requesting tab close:', data.message);
+                addSystemMessage(data.message);
+                
+                // Close this tab after a brief delay
+                setTimeout(() => {
+                    window.close();
+                }, 1000);
+                return;
+            }
+            
+            if (data.type === 'systemMessage') {
+                console.log('📢 System message:', data.message);
+                addSystemMessage(data.message);
                 return;
             }
             
@@ -4700,8 +4773,50 @@ Example:
         // Academy JavaScript
         ${this.academyInterface.generateAcademyJS()}
     </script>
+
+    <!-- Component System -->
+    <script src="/src/ui/utils/ComponentLoader.js"></script>
+    <script src="/src/ui/components/AgentSelector.js"></script>
+    <script>
+        // Initialize component system
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('🔧 Component system initialized');
+            
+            // For now, keep existing agent selector but prepare for migration
+            // Future: Replace .agent-selector with <agent-selector> component
+            
+            window.componentSystemReady = true;
+            document.dispatchEvent(new CustomEvent('component-system-ready'));
+            
+            // Reload loop protection
+            window.reloadAttempts = 0;
+            window.maxReloads = 3;
+            window.reloadTracker = {
+                count: 0,
+                lastReload: 0,
+                checkReloadLoop: function() {
+                    const now = Date.now();
+                    if (now - this.lastReload < 5000) { // Less than 5 seconds since last reload
+                        this.count++;
+                        if (this.count >= window.maxReloads) {
+                            console.error('🚨 RELOAD LOOP DETECTED - BLOCKING FURTHER RELOADS');
+                            addSystemMessage('🚨 Reload loop detected and blocked for safety');
+                            return false;
+                        }
+                    } else {
+                        this.count = 0; // Reset if enough time has passed
+                    }
+                    this.lastReload = now;
+                    return true;
+                }
+            };
+        });
+    </script>
 </body>
 </html>`;
+
+    // Apply progressive web components enhancement
+    return this.webComponentsIntegration.enhanceHTML(html);
   }
 
   generateConversationHistory() {

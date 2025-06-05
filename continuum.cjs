@@ -85,8 +85,43 @@ For more information, visit: https://github.com/CambrianTech/continuum
 async function forceRestart(options) {
   const fs = require('fs');
   const path = require('path');
+  const { spawn } = require('child_process');
   
   console.log('🔄 Force restarting Continuum server...');
+  
+  // Bump version first
+  console.log('📈 Bumping version...');
+  try {
+    await new Promise((resolve, reject) => {
+      const versionProcess = spawn('npm', ['version', 'patch', '--no-git-tag-version'], {
+        stdio: 'pipe',
+        cwd: __dirname
+      });
+      
+      let output = '';
+      versionProcess.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+      
+      versionProcess.on('close', (code) => {
+        if (code === 0) {
+          const newVersion = output.trim().replace(/^v/, '');
+          console.log(`✅ Version bumped to: ${newVersion}`);
+          resolve(newVersion);
+        } else {
+          console.log('⚠️ Version bump failed, continuing with restart...');
+          resolve(null);
+        }
+      });
+      
+      versionProcess.on('error', (error) => {
+        console.log('⚠️ Version bump error, continuing with restart...');
+        resolve(null);
+      });
+    });
+  } catch (error) {
+    console.log('⚠️ Version bump failed, continuing with restart...');
+  }
   
   // Look for existing PID files
   const cwd = process.cwd();
@@ -149,10 +184,10 @@ async function forceRestart(options) {
     console.log('🔍 No existing Continuum processes found');
   }
   
-  // Now start fresh
+  // Now start fresh with restart flag
   console.log('🚀 Starting fresh Continuum instance...');
   const Continuum = require('./src/core/continuum-core.cjs');
-  const continuum = new Continuum(options);
+  const continuum = new Continuum({ ...options, isRestart: true });
   
   return continuum.start();
 }
