@@ -43,6 +43,8 @@ class HttpServer {
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(this.continuum.generateUI());
+    } else if (req.method === 'GET' && url.pathname.startsWith('/components/')) {
+      await this.handleComponentRequest(url, res);
     } else if (req.method === 'GET' && url.pathname === '/version') {
       console.log('🎯 Handling version request');
       await this.handleVersionRequest(res);
@@ -59,6 +61,29 @@ class HttpServer {
     } else {
       res.writeHead(404);
       res.end('Not found');
+    }
+  }
+
+  async handleComponentRequest(url, res) {
+    const fs = require('fs');
+    const path = require('path');
+    
+    const componentName = url.pathname.split('/components/')[1];
+    const componentPath = path.join(__dirname, '..', 'ui', 'components', componentName);
+    
+    try {
+      if (fs.existsSync(componentPath)) {
+        const componentContent = fs.readFileSync(componentPath, 'utf8');
+        res.writeHead(200, { 'Content-Type': 'application/javascript' });
+        res.end(componentContent);
+      } else {
+        res.writeHead(404);
+        res.end('Component not found');
+      }
+    } catch (error) {
+      console.error('Error serving component:', error);
+      res.writeHead(500);
+      res.end('Server error');
     }
   }
 

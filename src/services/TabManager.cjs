@@ -22,18 +22,30 @@ class TabManager {
     const existingTab = this.findExistingTab(url);
     
     if (existingTab && existingTab.tabId !== tabId) {
-      console.log(`🔄 Duplicate tab detected, focusing existing tab: ${existingTab.tabId}`);
+      console.log(`🔄 Duplicate tab detected for ${url}`);
       
-      // Send focus command to existing tab
-      await this.focusTab(existingTab.tabId);
-      
-      // Send refresh command to new tab to close it gracefully
-      ws.send(JSON.stringify({
-        type: 'tabRefresh',
-        message: 'Focusing existing tab...'
-      }));
-      
-      return false; // Don't register this tab
+      // Check if existing tab is still alive by trying to ping it
+      try {
+        if (existingTab.ws && existingTab.ws.readyState === existingTab.ws.OPEN) {
+          console.log(`🎯 Focusing existing tab: ${existingTab.tabId}`);
+          await this.focusTab(existingTab.tabId);
+          
+          // Close this new tab since we have an existing one
+          ws.send(JSON.stringify({
+            type: 'closeTab',
+            message: 'Redirecting to existing tab...'
+          }));
+          
+          return false; // Don't register this tab
+        } else {
+          // Existing tab is dead, remove it and allow this one
+          console.log(`🗑️ Cleaning up dead tab: ${existingTab.tabId}`);
+          this.activeTabs.delete(existingTab.tabId);
+        }
+      } catch (error) {
+        console.log(`🗑️ Error checking existing tab, removing: ${error.message}`);
+        this.activeTabs.delete(existingTab.tabId);
+      }
     }
     
     // Register the new tab

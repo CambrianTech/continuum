@@ -13,6 +13,7 @@ const UIGenerator = require('../ui/UIGenerator.cjs');
 const ProtocolSheriff = require('./ProtocolSheriff.cjs');
 const ModelCaliber = require('./ModelCaliber.cjs');
 const VersionManager = require('./VersionManager.cjs');
+const { BrowserAdapter } = require('../adapters/BrowserAdapter.cjs');
 const { Anthropic } = require('@anthropic-ai/sdk');
 const { OpenAI } = require('openai');
 const fs = require('fs');
@@ -61,6 +62,7 @@ class ContinuumCore {
     this.sessions = new Map();
     this.port = options.port || process.env.CONTINUUM_PORT || 5555;
     this.username = username;
+    this.isRestart = options.isRestart || false;
     
     // Set up .continuum hierarchy
     this.homeContinuumDir = homeContinuumDir;
@@ -77,6 +79,7 @@ class ContinuumCore {
     this.uiGenerator = new UIGenerator(this);
     this.protocolSheriff = new ProtocolSheriff(this.modelRegistry, this.modelCaliber);
     this.versionManager = new VersionManager(this);
+    this.browserAdapter = new BrowserAdapter();
     
     // WebSocket management
     this.conversationThreads = new Map();
@@ -473,19 +476,41 @@ class ContinuumCore {
   async openWebInterface() {
     const url = `http://localhost:${this.port}`;
     
-    try {
-      // Try to focus existing tabs via WebSocket TabManager first
-      if (this.webSocketServer && await this.focusExistingTabs()) {
-        console.log('🎯 Focused existing browser tab');
-        return;
-      }
+    // For restarts, close existing tabs first, then focus/open one
+    if (this.isRestart) {
+      console.log('🔄 Restart detected, managing browser tabs...');
+      await this.browserAdapter.closeAllTabs(url);
       
-      // Fall back to OS-level tab management
-      await this.refreshExistingTab(url);
-    } catch (error) {
-      // Only open new tab if no existing tabs found
-      console.log('📱 Opening new browser tab');
-      await this.openNewTab(url);
+      const focused = await this.browserAdapter.focusExistingTab(url);
+      if (!focused) {
+        await this.browserAdapter.openNewTab(url);
+      }
+      return;
+    }
+    
+    // For normal starts, check if we have any active WebSocket connections first
+    if (this.webSocketServer && this.activeConnections.size > 0) {
+      console.log(`🎯 Found ${this.activeConnections.size} active connections, not opening new tab`);
+      return;
+    }
+    
+    // Try to focus existing tab via WebSocket first
+    if (this.webSocketServer && await this.focusExistingTabs()) {
+      console.log('🎯 Focused existing browser tab via WebSocket');
+      return;
+    }
+    
+    // Try to focus existing tab via browser adapter
+    const focused = await this.browserAdapter.focusExistingTab(url);
+    if (focused) {
+      return;
+    }
+    
+    // No existing tabs found, open new one if no active connections
+    if (this.activeConnections.size === 0) {
+      await this.browserAdapter.openNewTab(url);
+    } else {
+      console.log('📍 Browser tab should already be open. Please check your existing tabs.');
     }
   }
 
@@ -506,78 +531,7 @@ class ContinuumCore {
     return false;
   }
 
-  async refreshExistingTab(url) {
-    // On macOS, try to use AppleScript to focus existing Chrome/Safari tab
-    if (process.platform === 'darwin') {
-      const { spawn } = require('child_process');
-      
-      return new Promise((resolve, reject) => {
-        const script = `
-          tell application "Google Chrome"
-            set found to false
-            repeat with w in windows
-              repeat with t in tabs of w
-                if URL of t contains "localhost:${this.port}" then
-                  set active tab index of w to index of t
-                  set index of w to 1
-                  reload t
-                  set found to true
-                  exit repeat
-                end if
-              end repeat
-              if found then exit repeat
-            end repeat
-            if not found then error "Tab not found"
-          end tell
-        `;
-        
-        const osascript = spawn('osascript', ['-e', script]);
-        
-        osascript.on('close', (code) => {
-          if (code === 0) {
-            console.log(`🔄 Refreshed existing Continuum tab`);
-            resolve();
-          } else {
-            reject(new Error('No existing tab found'));
-          }
-        });
-        
-        osascript.on('error', () => reject(new Error('AppleScript failed')));
-      });
-    } else {
-      throw new Error('Platform not supported for tab refresh');
-    }
-  }
-
-  async openNewTab(url) {
-    const { spawn } = require('child_process');
-    
-    console.log(`🌐 Opening: ${url}`);
-    
-    let command;
-    let args;
-    
-    switch (process.platform) {
-      case 'darwin': // macOS
-        command = 'open';
-        args = [url];
-        break;
-      case 'win32': // Windows
-        command = 'start';
-        args = [url];
-        break;
-      default: // Linux and others
-        command = 'xdg-open';
-        args = [url];
-        break;
-    }
-    
-    try {
-      spawn(command, args, { detached: true, stdio: 'ignore' });
-    } catch (error) {
-      console.log(`⚠️ Could not auto-open browser. Please visit: ${url}`);
-    }
-  }
+  // Browser management now handled by BrowserAdapter
 
   generateUI() {
     return this.uiGenerator.generateHTML();

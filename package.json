@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.1880",
+  "version": "0.2.1889",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -27,16 +27,16 @@
     "ci": "./scripts/test-ci.sh",
     "validate-schema": "node scripts/validate-schema.js",
     "check-deps": "npm audit --production && npm outdated",
-    "version:patch": "lerna version patch --no-push --no-git-tag-version --yes",
-    "version:minor": "lerna version minor --no-push --no-git-tag-version --yes",
-    "version:major": "lerna version major --no-push --no-git-tag-version --yes",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:major": "npm version major --no-git-tag-version",
     "publish:dev": "lerna publish --dist-tag dev --no-push --no-git-tag-version",
     "build:packages": "npm run build --workspaces",
     "test:packages": "npm run test --workspaces",
     "lint:packages": "npm run lint --workspaces",
     "demo": "npx ts-node demo-complete-system.ts",
     "test-system": "npx jest tests/integration-full-system.test.ts",
-    "version:bump": "node scripts/bump-version.cjs"
+    "version:bump": "npm version patch --no-git-tag-version"
   },
   "keywords": [
     "ai",
