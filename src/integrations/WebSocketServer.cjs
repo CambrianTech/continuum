@@ -7,6 +7,7 @@ const WebSocket = require('ws');
 const MessageQueue = require('../core/MessageQueue.cjs');
 const TabManager = require('../services/TabManager.cjs');
 const RemoteAgentManager = require('../services/RemoteAgentManager.cjs');
+const BrowserLogger = require('../core/BrowserLogger.cjs');
 
 class WebSocketServer {
   constructor(continuum, httpServer) {
@@ -15,6 +16,7 @@ class WebSocketServer {
     this.wss = new WebSocket.Server({ server: httpServer });
     this.tabManager = new TabManager();
     this.remoteAgentManager = new RemoteAgentManager(continuum);
+    this.browserLogger = new BrowserLogger(continuum);
     this.setupWebSocket();
   }
 
@@ -328,6 +330,93 @@ class WebSocketServer {
           } catch (sendError) {
             console.error('🎓 ❌ Failed to send empty Academy status:', sendError);
           }
+        }
+        
+      } else if (data.type === 'console_log') {
+        // Handle console.log messages from browser
+        try {
+          const { level, message, timestamp } = data;
+          const sessionId = this.getSessionId(ws);
+          
+          // Log to console immediately (non-blocking)
+          console.log(`🖥️ Browser [${level}]:`, message);
+          
+          // Log to file (non-blocking)
+          this.browserLogger.logConsoleMessage(level, message, {
+            sessionId,
+            tabId: data.tabId,
+            url: data.url,
+            timestamp
+          }).catch(err => console.error('Failed to log browser console message:', err));
+        } catch (error) {
+          console.error('Error handling console_log message:', error);
+        }
+        
+      } else if (data.type === 'javascript_error') {
+        // Handle JavaScript errors from browser
+        try {
+          const { error, stack, url, line, column, timestamp } = data;
+          const sessionId = this.getSessionId(ws);
+          
+          // Log to console immediately (non-blocking)
+          console.error('🚨 Browser JS Error:', error);
+          
+          // Log to file (non-blocking)
+          this.browserLogger.logJavaScriptError(error, {
+            sessionId,
+            tabId: data.tabId,
+            stack,
+            url,
+            line,
+            column,
+            timestamp
+          }).catch(err => console.error('Failed to log browser JS error:', err));
+        } catch (error) {
+          console.error('Error handling javascript_error message:', error);
+        }
+        
+      } else if (data.type === 'js_error') {
+        // Handle JavaScript errors from browser (legacy)
+        try {
+          console.error('🚨 JavaScript Error from Browser:', {
+            message: data.message,
+            url: data.url,
+            line: data.line,
+            column: data.column,
+            error: data.error,
+            timestamp: data.timestamp
+          });
+          
+          const sessionId = this.getSessionId(ws);
+          this.browserLogger.logJavaScriptError(data.error || data.message, {
+            sessionId,
+            tabId: data.tabId,
+            url: data.url,
+            line: data.line,
+            column: data.column,
+            timestamp: data.timestamp
+          }).catch(err => console.error('Failed to log legacy JS error:', err));
+        } catch (error) {
+          console.error('Error handling js_error message:', error);
+        }
+        
+      } else if (data.type === 'js_promise_error') {
+        // Handle promise rejection errors from browser
+        try {
+          console.error('🚨 JavaScript Promise Error from Browser:', {
+            message: data.message,
+            timestamp: data.timestamp
+          });
+          
+          const sessionId = this.getSessionId(ws);
+          this.browserLogger.logJavaScriptError(data.message, {
+            sessionId,
+            tabId: data.tabId,
+            timestamp: data.timestamp,
+            type: 'promise_rejection'
+          }).catch(err => console.error('Failed to log promise error:', err));
+        } catch (error) {
+          console.error('Error handling js_promise_error message:', error);
         }
         
       } else if (data.type === 'version_check') {

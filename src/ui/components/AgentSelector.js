@@ -12,8 +12,15 @@ class AgentSelector extends HTMLElement {
     this.selectedAgent = 'auto';
     this.agents = this.getDefaultAgents();
     this.remoteAgents = [];
+    this.connectedUsers = this.getDefaultUsers();
     this.onAgentSelect = null;
     this.onAgentInfo = null;
+    this.onDrawerOpen = null;
+    
+    // Enhanced capabilities
+    this.searchQuery = '';
+    this.favoriteAgents = new Set();
+    this.agentMetrics = new Map();
   }
 
   connectedCallback() {
@@ -75,6 +82,33 @@ class AgentSelector extends HTMLElement {
     ];
   }
 
+  getDefaultUsers() {
+    return [
+      {
+        id: 'joel',
+        name: 'joel',
+        role: 'Project Owner',
+        avatar: '👤',
+        gradient: 'linear-gradient(135deg, #FFD700, #FFA500)',
+        status: 'online',
+        type: 'user',
+        sessionId: 'local',
+        lastActive: new Date().toISOString()
+      },
+      {
+        id: 'claude-code',
+        name: 'Claude Code',
+        role: 'AI Assistant',
+        avatar: '🤖',
+        gradient: 'linear-gradient(135deg, #00ff88, #00cc6a)',
+        status: 'online',
+        type: 'assistant',
+        sessionId: 'claude-code',
+        lastActive: new Date().toISOString()
+      }
+    ];
+  }
+
   updateRemoteAgents(agents) {
     this.remoteAgents = agents || [];
     this.render();
@@ -107,15 +141,38 @@ class AgentSelector extends HTMLElement {
 
   setupEventListeners() {
     this.shadowRoot.addEventListener('click', (e) => {
-      if (e.target.closest('.agent-item')) {
-        const agentId = e.target.closest('.agent-item').dataset.agentId;
-        this.selectAgent(agentId);
+      if (e.target.closest('.drawer-btn')) {
+        e.stopPropagation();
+        const agentId = e.target.closest('.drawer-btn').dataset.agentId;
+        this.openDrawer(agentId);
+        return;
+      }
+      
+      if (e.target.closest('.favorite-btn')) {
+        e.stopPropagation();
+        const agentId = e.target.closest('.favorite-btn').dataset.agentId;
+        this.toggleFavorite(agentId);
+        return;
       }
       
       if (e.target.closest('.agent-dropdown-btn')) {
         e.stopPropagation();
         const agentId = e.target.closest('.agent-item').dataset.agentId;
         this.showAgentInfo(agentId);
+        return;
+      }
+      
+      if (e.target.closest('.agent-item')) {
+        const agentId = e.target.closest('.agent-item').dataset.agentId;
+        this.selectAgent(agentId);
+      }
+    });
+
+    // Search input listener
+    this.shadowRoot.addEventListener('input', (e) => {
+      if (e.target.matches('.search-input')) {
+        this.searchQuery = e.target.value.toLowerCase();
+        this.filterAndRender();
       }
     });
   }
@@ -131,25 +188,76 @@ class AgentSelector extends HTMLElement {
     }));
   }
 
+  toggleFavorite(agentId) {
+    if (this.favoriteAgents.has(agentId)) {
+      this.favoriteAgents.delete(agentId);
+    } else {
+      this.favoriteAgents.add(agentId);
+    }
+    this.filterAndRender();
+    
+    this.dispatchEvent(new CustomEvent('agent-favorite-toggled', {
+      detail: { agentId, isFavorite: this.favoriteAgents.has(agentId) },
+      bubbles: true
+    }));
+  }
+
+  filterAndRender() {
+    this.render();
+  }
+
+  openDrawer(agentId) {
+    // Find the agent/user data
+    const allItems = [...this.connectedUsers, ...this.agents, ...this.remoteAgents];
+    const targetItem = allItems.find(item => item.id === agentId);
+    
+    if (this.onDrawerOpen) {
+      this.onDrawerOpen(agentId, targetItem);
+    }
+    
+    this.dispatchEvent(new CustomEvent('drawer-open-requested', {
+      detail: { agentId, item: targetItem },
+      bubbles: true
+    }));
+  }
+
   generateAgentHTML(agent) {
     const isSelected = agent.id === this.selectedAgent;
     const isRemote = agent.source === 'remote';
-    const isHuman = agent.type === 'human' || agent.type === 'user';
+    const isHuman = agent.type === 'human' || agent.type === 'user' || agent.type === 'assistant';
+    const isUser = agent.type === 'user' || agent.type === 'assistant';
+    const isFavorite = this.favoriteAgents.has(agent.id);
+    
+    // Filter based on search query
+    if (this.searchQuery && !agent.name.toLowerCase().includes(this.searchQuery) && 
+        !agent.role.toLowerCase().includes(this.searchQuery)) {
+      return '';
+    }
     
     return `
-      <div class="agent-item ${isSelected ? 'selected' : ''}" data-agent-id="${agent.id}">
+      <div class="agent-item ${isSelected ? 'selected' : ''} ${isFavorite ? 'favorite' : ''}" data-agent-id="${agent.id}">
         <div class="agent-avatar" style="background: ${agent.gradient};">
           ${agent.avatar}
           <div class="agent-status ${agent.status}"></div>
+          ${isFavorite ? '<div class="favorite-star">⭐</div>' : ''}
         </div>
         <div class="agent-info">
           <div class="agent-name">
             ${agent.name}
             ${isRemote ? '<span class="remote-indicator">' + (isHuman ? 'H' : 'AI') + '</span>' : ''}
-            ${agent.id !== 'auto' ? '<button class="agent-dropdown-btn" title="Agent details"></button>' : ''}
+            ${isUser ? '<span class="user-indicator">USER</span>' : ''}
           </div>
           <div class="agent-role">${agent.role}</div>
           ${isRemote ? `<div class="agent-meta">${agent.hostInfo?.hostname || 'Unknown'} • ${agent.messageCount || 0} msgs</div>` : ''}
+          ${isUser ? `<div class="agent-meta">Last active: ${new Date(agent.lastActive).toLocaleTimeString()}</div>` : ''}
+        </div>
+        <div class="agent-actions">
+          <button class="favorite-btn" data-agent-id="${agent.id}" title="${isFavorite ? 'Remove from favorites' : 'Add to favorites'}">
+            ${isFavorite ? '★' : '☆'}
+          </button>
+          <button class="drawer-btn" data-agent-id="${agent.id}" title="View ${agent.name} details">
+            <span class="drawer-icon">&gt;&gt;</span>
+          </button>
         </div>
       </div>
     `;
@@ -167,12 +275,26 @@ class AgentSelector extends HTMLElement {
   }
 
   render() {
+    console.log('[AgentSelector] Rendering component', {
+      searchQuery: this.searchQuery,
+      selectedAgent: this.selectedAgent,
+      totalAgents: this.agents.length,
+      remoteAgents: this.remoteAgents.length,
+      connectedUsers: this.connectedUsers.length,
+      favoriteCount: this.favoriteAgents.size
+    });
+
     const remoteHumans = this.remoteAgents.filter(agent => 
       agent.type === 'human' || agent.type === 'user');
     const remoteAIs = this.remoteAgents.filter(agent => 
       agent.type === 'ai' || agent.type === 'system');
 
     this.shadowRoot.innerHTML = `
+      <div class="search-container">
+        <input type="text" class="search-input" placeholder="Search agents..." value="${this.searchQuery}">
+        <div class="search-icon">🔍</div>
+      </div>
+      ${this.favoriteAgents.size > 0 ? this.generateFavoritesSection() : ''}
       <style>
         :host {
           display: block;
@@ -281,6 +403,48 @@ class AgentSelector extends HTMLElement {
           border-radius: 2px;
         }
 
+        .user-indicator {
+          font-size: 8px;
+          color: #FFD700;
+          padding: 1px 4px;
+          background: rgba(255, 215, 0, 0.2);
+          border-radius: 2px;
+          border: 1px solid rgba(255, 215, 0, 0.3);
+        }
+
+        .drawer-btn {
+          background: transparent;
+          border: 1px solid rgba(0, 212, 255, 0.3);
+          color: rgba(0, 212, 255, 0.6);
+          cursor: pointer;
+          padding: 4px 8px;
+          height: 24px;
+          border-radius: 4px;
+          transition: all 0.3s ease;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin-left: auto;
+          font-family: 'Courier New', monospace;
+          font-size: 10px;
+          letter-spacing: 1px;
+          opacity: 0.7;
+        }
+
+        .drawer-btn:hover {
+          border-color: rgba(0, 212, 255, 0.8);
+          color: rgba(0, 212, 255, 1);
+          background: rgba(0, 212, 255, 0.1);
+          box-shadow: 0 0 8px rgba(0, 212, 255, 0.3);
+          opacity: 1;
+          transform: translateX(2px);
+        }
+
+        .drawer-icon {
+          font-size: 10px;
+          font-weight: normal;
+        }
+
         .agent-dropdown-btn {
           background: transparent;
           border: none;
@@ -338,8 +502,9 @@ class AgentSelector extends HTMLElement {
         }
       </style>
 
-      <div class="title">Available Agents</div>
+      <div class="title">USERS & AGENTS</div>
       <div class="agent-list">
+        ${this.connectedUsers.map(user => this.generateAgentHTML(user)).join('')}
         ${this.agents.map(agent => this.generateAgentHTML(agent)).join('')}
         ${this.generateRemoteSection('⚡ Network Operators', remoteHumans, '#ff6b6b')}
         ${this.generateRemoteSection('🌐 Network AI', remoteAIs, '#00d4ff')}
@@ -360,6 +525,24 @@ class AgentSelector extends HTMLElement {
 
   setOnAgentInfo(callback) {
     this.onAgentInfo = callback;
+  }
+
+  addConnectedUser(user) {
+    // Check if user already exists
+    const existingIndex = this.connectedUsers.findIndex(u => u.sessionId === user.sessionId);
+    if (existingIndex >= 0) {
+      // Update existing user
+      this.connectedUsers[existingIndex] = user;
+    } else {
+      // Add new user
+      this.connectedUsers.push(user);
+    }
+    this.render();
+  }
+
+  removeConnectedUser(sessionId) {
+    this.connectedUsers = this.connectedUsers.filter(u => u.sessionId !== sessionId);
+    this.render();
   }
 }
 
