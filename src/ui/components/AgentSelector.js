@@ -3,7 +3,9 @@
  * Self-contained component for selecting and managing agents
  */
 
-class AgentSelector extends HTMLElement {
+// Prevent duplicate class declaration
+if (typeof window.AgentSelector === 'undefined') {
+  window.AgentSelector = class AgentSelector extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
@@ -560,7 +562,8 @@ class AgentSelector extends HTMLElement {
   }
 }
 
-// Register the custom element (browser only)
-if (!customElements.get('agent-selector')) {
-  customElements.define('agent-selector', AgentSelector);
+  // Register the custom element (browser only)
+  if (!customElements.get('agent-selector')) {
+    customElements.define('agent-selector', window.AgentSelector);
+  }
 }

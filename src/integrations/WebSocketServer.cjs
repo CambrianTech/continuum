@@ -4,13 +4,15 @@
  */
 
 const WebSocket = require('ws');
+const EventEmitter = require('events');
 const MessageQueue = require('../core/MessageQueue.cjs');
 const TabManager = require('../services/TabManager.cjs');
 const RemoteAgentManager = require('../services/RemoteAgentManager.cjs');
 const BrowserLogger = require('../core/BrowserLogger.cjs');
 
-class WebSocketServer {
+class WebSocketServer extends EventEmitter {
   constructor(continuum, httpServer) {
+    super(); // Call EventEmitter constructor
     this.continuum = continuum;
     this.messageQueue = new MessageQueue();
     this.wss = new WebSocket.Server({ server: httpServer });
@@ -97,6 +99,14 @@ class WebSocketServer {
           }
         } else {
           console.error('❌ Browser JavaScript execution failed:', data.error);
+          if (data.stack) {
+            console.error('📚 Error stack:', data.stack);
+          }
+        }
+        
+        // Emit result to waiting command if execution ID exists
+        if (data.executionId) {
+          this.emit(`js_result_${data.executionId}`, data);
         }
         
       } else if (data.type === 'agent_register' || data.type === 'agent_message') {

@@ -71,6 +71,20 @@ FEATURES:
 
 WEB INTERFACE:
   Navigate to http://localhost:5555 after starting
+
+AGENT AUTOMATION:
+  🛰️ Deep Space Probe Portal - Browser automation via WebSocket telemetry
+  
+  Quick Start:
+    js-send 'console.log("Hello from agent!")'  # Send JavaScript to browser
+    heal "Connection refused"                    # Auto-heal system issues
+    
+  Agent Scripts Directory: ./agent-scripts/
+    📁 tools/python/     - Core automation tools (js-send, heal, etc.)
+    📁 examples/         - Example scripts by category (jokes, diagnostics, fixes)
+    📁 docs/            - Architecture and usage documentation
+    
+  Learn more: ./agent-scripts/README.md
   
 EXAMPLES:
   continuum                   # Start on default port 5555

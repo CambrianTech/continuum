@@ -1,0 +1,1 @@
+alert("🤖 Why did the developer break up with CSS?\n\nBecause it had too many relationship issues!\n\nEvery time they tried to get close, CSS would say:\n'Sorry, I need more space... margin: 20px;'\n\nAnd when things got serious:\n'This isn't working... display: none;'\n\n- Your Debugging Relationship Counselor 💔");

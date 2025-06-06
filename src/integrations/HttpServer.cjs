@@ -537,25 +537,9 @@ class HttpServer {
         return;
       }
       
-      // Decode params based on encoding (defaults to utf-8)
-      let decodedParams = params;
-      if (encoding === 'base64') {
-        try {
-          decodedParams = Buffer.from(params, 'base64').toString('utf8');
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid base64 encoding' }));
-          return;
-        }
-      } else if (encoding !== 'utf-8' && encoding !== 'utf8') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Unsupported encoding: ${encoding}. Use 'utf-8' or 'base64'` }));
-        return;
-      }
-      
-      // Execute command through CommandProcessor
+      // Execute command through CommandProcessor with original params and encoding
       const cmd = command || type;
-      const result = await this.continuum.commandProcessor.executeCommand(cmd.toUpperCase(), decodedParams);
+      const result = await this.continuum.commandProcessor.executeCommand(cmd.toUpperCase(), params, encoding);
       
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({

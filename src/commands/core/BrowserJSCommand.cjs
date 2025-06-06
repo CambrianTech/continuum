@@ -12,34 +12,38 @@ class BrowserJSCommand {
       description: 'Execute JavaScript in browser',
       params: '<javascript_code> [encoding]',
       examples: [
-        '{"params": "console.log(\'test\')"}',
         '{"params": "Y29uc29sZS5sb2coJ3Rlc3QnKQ==", "encoding": "base64"}',
-        '{"params": "document.title = \'New Title\'"}',
-        '{"params": "document.querySelector(\'.btn\').click()"}'
+        '{"params": "ZG9jdW1lbnQudGl0bGUgPSAnTmV3IFRpdGxlJw==", "encoding": "base64"}',
+        '{"params": "ZG9jdW1lbnQucXVlcnlTZWxlY3RvcignLmJ0bicpLmNsaWNrKCk=", "encoding": "base64"}'
       ],
-      usage: 'Execute JavaScript in connected browsers. Use base64 encoding to avoid quote escaping issues.'
+      usage: 'Execute JavaScript in connected browsers. REQUIRES base64 encoding for safety.'
     };
   }
   
-  static async execute(params, continuum, encoding = 'utf-8') {
+  static async execute(params, continuum, encoding = 'base64') {
     console.log('💻 JavaScript command executed with params:', params);
     console.log('💻 Encoding:', encoding);
     
     try {
-      let jsCode = params;
+      // Enforce base64-only encoding for deep space probe safety
+      if (encoding !== 'base64') {
+        return {
+          executed: false,
+          error: 'Only base64 encoding is supported. Use base64 to avoid breaking probe communication.',
+          encoding_required: 'base64'
+        };
+      }
       
-      // Handle base64 encoding
-      if (encoding === 'base64') {
-        try {
-          jsCode = Buffer.from(params, 'base64').toString('utf8');
-          console.log('💻 Decoded base64 JavaScript:', jsCode);
-        } catch (error) {
-          return {
-            executed: false,
-            error: 'Invalid base64 encoding: ' + error.message,
-            error_stack: error.stack
-          };
-        }
+      let jsCode;
+      try {
+        jsCode = Buffer.from(params, 'base64').toString('utf8');
+        console.log('💻 Decoded base64 JavaScript:', jsCode);
+      } catch (error) {
+        return {
+          executed: false,
+          error: 'Invalid base64 encoding: ' + error.message,
+          error_stack: error.stack
+        };
       }
       
       // Validate JavaScript (basic check)
@@ -50,25 +54,62 @@ class BrowserJSCommand {
         };
       }
       
-      // Send to browsers via WebSocket
+      // Send to browsers via WebSocket and wait for response
       if (continuum.webSocketServer) {
+        const executionId = `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Create promise to wait for browser response
+        const executionPromise = new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            continuum.webSocketServer.removeListener(`js_result_${executionId}`, responseHandler);
+            reject(new Error('Browser execution timeout (10s)'));
+          }, 10000);
+          
+          const responseHandler = (result) => {
+            clearTimeout(timeout);
+            continuum.webSocketServer.removeListener(`js_result_${executionId}`, responseHandler);
+            resolve(result);
+          };
+          
+          continuum.webSocketServer.on(`js_result_${executionId}`, responseHandler);
+        });
+        
+        // Send command with execution ID
         continuum.webSocketServer.broadcast({
           type: 'execute_js',
           data: {
             command: jsCode,
             timestamp: new Date().toISOString(),
-            encoding: encoding
+            encoding: encoding,
+            executionId: executionId
           }
         });
         
-        return {
-          executed: true,
-          message: 'JavaScript sent to browser (execution pending)',
-          code: jsCode,
-          encoding: encoding,
-          timestamp: new Date().toISOString(),
-          note: 'Watch console output to verify actual execution'
-        };
+        // Wait for browser response
+        try {
+          const browserResult = await executionPromise;
+          
+          return {
+            executed: browserResult.success,
+            message: browserResult.success ? 'JavaScript executed successfully' : 'JavaScript execution failed',
+            code: jsCode,
+            encoding: encoding,
+            timestamp: new Date().toISOString(),
+            browserResponse: browserResult,
+            output: browserResult.output || [],
+            result: browserResult.result,
+            error: browserResult.error || null
+          };
+        } catch (timeoutError) {
+          return {
+            executed: false,
+            error: timeoutError.message,
+            code: jsCode,
+            encoding: encoding,
+            timestamp: new Date().toISOString(),
+            note: 'Browser did not respond within timeout period'
+          };
+        }
       }
       
       return {
