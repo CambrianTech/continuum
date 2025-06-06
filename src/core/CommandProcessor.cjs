@@ -275,70 +275,22 @@ class CommandProcessor {
     try {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const filename = `screenshot-${timestamp}.png`;
-      const outputPath = path.join(process.cwd(), '.continuum', filename);
       
-      // Ensure .continuum directory exists
-      const continuumDir = path.join(process.cwd(), '.continuum');
-      if (!fs.existsSync(continuumDir)) {
-        fs.mkdirSync(continuumDir, { recursive: true });
-      }
-      
-      let command;
+      // Parse screenshot options
       const args = params.trim().toLowerCase();
-      
-      // Parse resolution and quality options
       const resolutionMatch = args.match(/(\d+)x(\d+)/);
       const qualityMatch = args.match(/quality[:\s]*(\d+)/);
-      const region = args.includes('region') || args.includes('select');
-      const window = args.includes('window');
       const lowRes = args.includes('low') || args.includes('small') || args.includes('thumbnail');
       
-      if (process.platform === 'darwin') {
-        // macOS screencapture with cursor visible and resolution options
-        if (region) {
-          command = `screencapture -C -i "${outputPath}"`;
-        } else if (window) {
-          command = `screencapture -C -w "${outputPath}"`;
-        } else {
-          command = `screencapture -C "${outputPath}"`;
-        }
-        
-        // Add resolution scaling if requested
-        if (resolutionMatch || lowRes) {
-          const width = resolutionMatch ? resolutionMatch[1] : '800';
-          const height = resolutionMatch ? resolutionMatch[2] : '600';
-          const tempPath = outputPath.replace('.png', '-temp.png');
-          command = `${command.replace(outputPath, tempPath)} && sips -Z ${Math.max(width, height)} "${tempPath}" --out "${outputPath}" && rm "${tempPath}"`;
-        }
-        
-      } else if (process.platform === 'linux') {
-        // Linux with resolution options
-        if (region) {
-          command = `gnome-screenshot -a -f "${outputPath}" || import "${outputPath}"`;
-        } else if (window) {
-          command = `gnome-screenshot -w -f "${outputPath}" || import -window root "${outputPath}"`;
-        } else {
-          command = `gnome-screenshot -f "${outputPath}" || import -window root "${outputPath}"`;
-        }
-        
-        // Add ImageMagick resize if requested
-        if (resolutionMatch || lowRes) {
-          const width = resolutionMatch ? resolutionMatch[1] : '800';
-          const height = resolutionMatch ? resolutionMatch[2] : '600';
-          command += ` && convert "${outputPath}" -resize ${width}x${height} "${outputPath}"`;
-        }
-        
-      } else if (process.platform === 'win32') {
-        // Windows using PowerShell
-        const psCommand = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('%{PRTSC}')`;
-        command = `powershell -Command "${psCommand}"`;
-      } else {
-        throw new Error(`Screenshots not supported on platform: ${process.platform}`);
-      }
+      const options = {
+        quality: qualityMatch ? parseFloat(qualityMatch[1]) / 100 : 0.8,
+        width: resolutionMatch ? parseInt(resolutionMatch[1]) : null,
+        height: resolutionMatch ? parseInt(resolutionMatch[2]) : null,
+        lowRes: lowRes,
+        filename: filename
+      };
       
-      const resInfo = resolutionMatch ? `${resolutionMatch[1]}x${resolutionMatch[2]}` : 
-                     lowRes ? 'low-res' : 'full-res';
-      console.log(`📸 Taking ${resInfo} screenshot: ${args || 'full screen'}`);
+      console.log(`📸 Taking browser canvas screenshot: ${args || 'full viewport'}`);
       
       // Trigger visual feedback first
       await this.executeJavaScript('triggerScreenshotFeedback();');
@@ -346,20 +298,117 @@ class CommandProcessor {
       // Brief delay to let the animation start
       await new Promise(resolve => setTimeout(resolve, 200));
       
-      await this.executeShellCommand(command);
+      // Send screenshot command to browser via JavaScript
+      const screenshotJS = `
+        // Browser-based screenshot using canvas
+        (async function takeCanvasScreenshot() {
+          try {
+            const options = ${JSON.stringify(options)};
+            
+            // Use html2canvas or native browser screenshot APIs
+            if (typeof html2canvas !== 'undefined') {
+              // If html2canvas is available, use it
+              const canvas = await html2canvas(document.body, {
+                useCORS: true,
+                allowTaint: true,
+                scale: options.lowRes ? 0.5 : 1,
+                width: options.width || window.innerWidth,
+                height: options.height || window.innerHeight
+              });
+              
+              const dataURL = canvas.toDataURL('image/png', options.quality);
+              
+              // Send screenshot data back to server via WebSocket
+              if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                window.ws.send(JSON.stringify({
+                  type: 'screenshot_data',
+                  dataURL: dataURL,
+                  filename: options.filename,
+                  timestamp: new Date().toISOString(),
+                  dimensions: {
+                    width: canvas.width,
+                    height: canvas.height
+                  }
+                }));
+              }
+              
+              console.log('📸 Canvas screenshot captured and sent to server');
+              return dataURL;
+            } else {
+              // Fallback: Use getDisplayMedia API if available
+              if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+                const stream = await navigator.mediaDevices.getDisplayMedia({
+                  video: {
+                    mediaSource: 'screen',
+                    width: options.width || 1920,
+                    height: options.height || 1080
+                  }
+                });
+                
+                const video = document.createElement('video');
+                video.srcObject = stream;
+                video.play();
+                
+                return new Promise((resolve) => {
+                  video.addEventListener('loadedmetadata', () => {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    
+                    ctx.drawImage(video, 0, 0);
+                    
+                    const dataURL = canvas.toDataURL('image/png', options.quality);
+                    
+                    // Send to server
+                    if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                      window.ws.send(JSON.stringify({
+                        type: 'screenshot_data',
+                        dataURL: dataURL,
+                        filename: options.filename,
+                        timestamp: new Date().toISOString(),
+                        dimensions: {
+                          width: canvas.width,
+                          height: canvas.height
+                        }
+                      }));
+                    }
+                    
+                    stream.getTracks().forEach(track => track.stop());
+                    resolve(dataURL);
+                  });
+                });
+              } else {
+                throw new Error('No screenshot API available in browser');
+              }
+            }
+          } catch (error) {
+            console.error('Browser screenshot failed:', error);
+            
+            // Send error back to server
+            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+              window.ws.send(JSON.stringify({
+                type: 'screenshot_error',
+                error: error.message,
+                filename: options.filename,
+                timestamp: new Date().toISOString()
+              }));
+            }
+            
+            throw error;
+          }
+        })();
+      `;
       
-      // Verify screenshot was created
-      if (fs.existsSync(outputPath)) {
-        const stats = fs.statSync(outputPath);
-        const fileSizeKB = Math.round(stats.size / 1024);
-        console.log(`✅ Screenshot saved: ${filename} (${fileSizeKB}KB, ${resInfo})`);
-        return `Screenshot saved: ${outputPath} (${fileSizeKB}KB, ${resInfo})`;
-      } else {
-        throw new Error('Screenshot file was not created');
-      }
+      // Execute the browser-based screenshot
+      await this.executeJavaScript(screenshotJS);
+      
+      // Return immediately - the actual screenshot will be sent via WebSocket
+      return `Browser screenshot requested: ${filename}. Data will be received via WebSocket.`;
       
     } catch (error) {
-      console.error('❌ Screenshot failed:', error.message);
+      console.error('❌ Screenshot command failed:', error.message);
       return `Screenshot failed: ${error.message}`;
     }
   }

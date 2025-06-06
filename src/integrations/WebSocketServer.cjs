@@ -470,6 +470,63 @@ class WebSocketServer {
           }));
         }
         
+      } else if (data.type === 'screenshot_data') {
+        // Handle browser canvas screenshot data
+        try {
+          const { dataURL, filename, dimensions } = data;
+          const sessionId = this.getSessionId(ws);
+          
+          console.log(`📸 Received browser screenshot: ${filename} (${dimensions.width}x${dimensions.height})`);
+          
+          // Save screenshot data to file
+          const fs = require('fs');
+          const path = require('path');
+          
+          // Remove data URL prefix to get base64 data
+          const base64Data = dataURL.replace(/^data:image\/png;base64,/, '');
+          const buffer = Buffer.from(base64Data, 'base64');
+          
+          // Save to .continuum directory
+          const outputPath = path.join(process.cwd(), '.continuum', filename);
+          fs.writeFileSync(outputPath, buffer);
+          
+          const fileSizeKB = Math.round(buffer.length / 1024);
+          console.log(`✅ Browser screenshot saved: ${filename} (${fileSizeKB}KB)`);
+          
+          // Log to browser logger
+          this.browserLogger.logUserInteraction('screenshot', filename, {
+            sessionId,
+            tabId: data.tabId,
+            dimensions,
+            fileSize: fileSizeKB,
+            timestamp: data.timestamp
+          }).catch(err => console.error('Failed to log screenshot interaction:', err));
+          
+        } catch (error) {
+          console.error('❌ Failed to save browser screenshot:', error);
+        }
+        
+      } else if (data.type === 'screenshot_error') {
+        // Handle browser screenshot errors
+        try {
+          const { error, filename } = data;
+          const sessionId = this.getSessionId(ws);
+          
+          console.error(`❌ Browser screenshot failed: ${filename} - ${error}`);
+          
+          // Log error
+          this.browserLogger.logJavaScriptError(`Screenshot failed: ${error}`, {
+            sessionId,
+            tabId: data.tabId,
+            filename,
+            timestamp: data.timestamp,
+            type: 'screenshot_error'
+          }).catch(err => console.error('Failed to log screenshot error:', err));
+          
+        } catch (error) {
+          console.error('Error handling screenshot error message:', error);
+        }
+        
       }
     } catch (error) {
       console.error('Message error:', error);
