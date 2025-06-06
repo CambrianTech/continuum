@@ -2599,11 +2599,90 @@ class UIGenerator {
         }
         
         function handleWebSocketMessage(data) {
+            console.log('🔥 CLIENT v0.2.1896: Raw WebSocket message received:', data.type, data);
+            
             // Handle version updates from server
             if (data.type === 'versionUpdate') {
+                console.log('🔥 CLIENT: Version update received:', data.version);
                 if (checkVersionUpdate(data.version)) {
                     return; // Browser will reload, stop processing
                 }
+            }
+            
+            // Handle JavaScript execution from server
+            if (data.type === 'execute_js') {
+                console.log('🔥 CLIENT v0.2.1896: EXECUTE_JS received!', data);
+                console.log('🔥 CLIENT: JavaScript command:', data.data?.command);
+                
+                try {
+                    if (data.data && data.data.command) {
+                        console.log('🔥 CLIENT: About to execute JavaScript...');
+                        console.log('🔥 CLIENT: JS Code:', data.data.command);
+                        
+                        // Capture console output during execution
+                        const originalLog = console.log;
+                        const originalError = console.error;
+                        const originalWarn = console.warn;
+                        const capturedOutput = [];
+                        
+                        // Override console methods to capture output
+                        console.log = (...args) => {
+                            capturedOutput.push({level: 'log', message: args.join(' ')});
+                            originalLog.apply(console, args);
+                        };
+                        console.error = (...args) => {
+                            capturedOutput.push({level: 'error', message: args.join(' ')});
+                            originalError.apply(console, args);
+                        };
+                        console.warn = (...args) => {
+                            capturedOutput.push({level: 'warn', message: args.join(' ')});
+                            originalWarn.apply(console, args);
+                        };
+                        
+                        // Execute the JavaScript
+                        const result = eval(data.data.command);
+                        
+                        // Restore original console methods
+                        console.log = originalLog;
+                        console.error = originalError;
+                        console.warn = originalWarn;
+                        
+                        console.log('🔥 CLIENT: JavaScript executed successfully!');
+                        console.log('🔥 CLIENT: Captured output:', capturedOutput);
+                        
+                        // Send execution result and console output back to server
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({
+                                type: 'js_executed',
+                                success: true,
+                                timestamp: new Date().toISOString(),
+                                message: 'JavaScript executed successfully on client',
+                                output: capturedOutput,
+                                result: result !== undefined ? String(result) : undefined,
+                                url: window.location.href,
+                                userAgent: navigator.userAgent
+                            }));
+                            console.log('🔥 CLIENT: Sent execution result and output to server');
+                        }
+                    } else {
+                        console.error('🔥 CLIENT: No command found in execute_js message');
+                    }
+                } catch (error) {
+                    console.error('🔥 CLIENT: JavaScript execution failed:', error);
+                    console.error('🔥 CLIENT: Error stack:', error.stack);
+                    
+                    // Send error back to server
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'js_executed',
+                            success: false,
+                            error: error.message,
+                            stack: error.stack,
+                            timestamp: new Date().toISOString()
+                        }));
+                    }
+                }
+                return;
             }
             
             // Handle tab management - DISABLED TO PREVENT ENDLESS RELOAD LOOP

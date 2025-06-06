@@ -79,6 +79,26 @@ class WebSocketServer {
       if (data.type === 'tabRegister') {
         await this.tabManager.registerTab(ws, data);
         
+      } else if (data.type === 'js_executed') {
+        // Handle JavaScript execution results from browser (like webpack HMR)
+        console.log('🔥 SERVER: JavaScript execution result received from client:', data);
+        console.log('🔥 SERVER: Console output from browser:', data.output);
+        
+        if (data.success) {
+          console.log('✅ Browser JavaScript execution successful');
+          if (data.output && data.output.length > 0) {
+            console.log('📱 Browser console output:');
+            data.output.forEach(entry => {
+              console.log(`   [${entry.level}] ${entry.message}`);
+            });
+          }
+          if (data.result) {
+            console.log('📤 JavaScript return value:', data.result);
+          }
+        } else {
+          console.error('❌ Browser JavaScript execution failed:', data.error);
+        }
+        
       } else if (data.type === 'agent_register' || data.type === 'agent_message') {
         // Handle agent connections and messages
         this.remoteAgentManager.handleAgentMessage(ws, message, this.getSessionId(ws));
@@ -87,6 +107,45 @@ class WebSocketServer {
         const { role, task } = data;
         
         console.log(`🎯 Task: ${role} -> ${task}`);
+        
+        // Handle BROWSER_JS commands immediately
+        if (task.includes('[CMD:BROWSER_JS]')) {
+          const jsCode = task.replace('[CMD:BROWSER_JS]', '').trim();
+          let finalCode = jsCode;
+          
+          // Handle base64 decoding
+          try {
+            // Check if it looks like base64
+            if (/^[A-Za-z0-9+/=]+$/.test(jsCode) && jsCode.length % 4 === 0) {
+              finalCode = Buffer.from(jsCode, 'base64').toString('utf8');
+              console.log('🔓 Decoded base64 JavaScript');
+            }
+          } catch (e) {
+            // Not base64, use as-is
+          }
+          
+          console.log(`💻 Broadcasting JavaScript to all browsers: ${finalCode.substring(0, 50)}...`);
+          
+          // Broadcast to all connected browsers
+          this.broadcast({
+            type: 'execute_js',
+            data: {
+              command: finalCode,
+              timestamp: new Date().toISOString()
+            }
+          });
+          
+          // Send confirmation back to client
+          ws.send(JSON.stringify({
+            type: 'result',
+            data: {
+              task: task,
+              result: 'JavaScript sent to browsers',
+              role: role
+            }
+          }));
+          return;
+        }
         
         // Send working status immediately (not queued)
         ws.send(JSON.stringify({
