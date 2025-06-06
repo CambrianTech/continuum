@@ -3,9 +3,7 @@
  * Self-contained component for selecting and managing agents
  */
 
-// Prevent duplicate class declaration
-if (typeof AgentSelector === 'undefined') {
-  class AgentSelector extends HTMLElement {
+class AgentSelector extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
@@ -562,13 +560,7 @@ if (typeof AgentSelector === 'undefined') {
   }
 }
 
-// Register the custom element if in browser
-if (typeof customElements !== 'undefined') {
+// Register the custom element (browser only)
+if (!customElements.get('agent-selector')) {
   customElements.define('agent-selector', AgentSelector);
-}
-
-// Export for Node.js
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = AgentSelector;
-}
 }
