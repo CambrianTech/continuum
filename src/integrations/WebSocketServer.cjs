@@ -104,19 +104,43 @@ class WebSocketServer {
         console.log(`💬 ${room} message (auto-route): ${content}`);
         
         try {
+          // Check if AI models are available
+          if (!this.continuum.modelRegistry || this.continuum.modelRegistry.getAvailableModels().length === 0) {
+            ws.send(JSON.stringify({
+              type: 'response',
+              message: 'I need API keys configured to process AI requests. Please add ANTHROPIC_API_KEY or OPENAI_API_KEY to your .continuum/config.env file.',
+              agent: 'System',
+              room: room,
+              sheriff_status: 'NO_API_KEYS'
+            }));
+            return;
+          }
+
           const result = await this.continuum.intelligentRoute(content);
           
-          // Always run through Protocol Sheriff for validation
-          const validation = await this.continuum.protocolSheriff.validateResponse(
-            result.result, 
-            content, 
-            result.role
-          );
-          
+          // Always run through Protocol Sheriff for validation (if available)
           let finalResponse = result.result;
-          if (!validation.isValid && validation.correctedResponse) {
-            console.log(`🚨 Protocol Sheriff: Using corrected response`);
-            finalResponse = validation.correctedResponse;
+          let sheriffStatus = 'VALID';
+          
+          if (this.continuum.protocolSheriff && this.continuum.modelCaliber) {
+            try {
+              const validation = await this.continuum.protocolSheriff.validateResponse(
+                result.result, 
+                content, 
+                result.role
+              );
+              
+              if (!validation.isValid && validation.correctedResponse) {
+                console.log(`🚨 Protocol Sheriff: Using corrected response`);
+                finalResponse = validation.correctedResponse;
+                sheriffStatus = 'CORRECTED';
+              }
+            } catch (validationError) {
+              console.log('⚠️ Protocol Sheriff validation failed, using original response');
+              sheriffStatus = 'SHERIFF_ERROR';
+            }
+          } else {
+            sheriffStatus = 'SHERIFF_UNAVAILABLE';
           }
           
           ws.send(JSON.stringify({
@@ -124,14 +148,16 @@ class WebSocketServer {
             message: finalResponse,
             agent: result.role,
             room: room,
-            sheriff_status: validation.isValid ? 'VALID' : 'CORRECTED'
+            sheriff_status: sheriffStatus
           }));
         } catch (error) {
+          console.error('Message processing error:', error);
           ws.send(JSON.stringify({
             type: 'response',
-            message: 'Sorry, I encountered an error processing your message.',
+            message: `Sorry, I encountered an error: ${error.message}. Please check that your API keys are properly configured.`,
             agent: 'System',
-            room: room
+            room: room,
+            sheriff_status: 'ERROR'
           }));
         }
         

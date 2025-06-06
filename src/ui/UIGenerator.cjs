@@ -3454,21 +3454,31 @@ class UIGenerator {
         
         // Agent selection functions
         function selectAgent(agentId) {
+            // Clean up the agent ID if it has whitespace
+            agentId = agentId.toString().trim();
+            
             if (isGroupChat) {
                 // Multi-select mode for group chat
                 if (selectedAgents.has(agentId)) {
                     selectedAgents.delete(agentId);
-                    document.getElementById(\`agent-\${agentId}\`).classList.remove('selected');
+                    const element = document.getElementById(\`agent-\${agentId}\`);
+                    if (element) element.classList.remove('selected');
                 } else {
                     selectedAgents.add(agentId);
-                    document.getElementById(\`agent-\${agentId}\`).classList.add('selected');
+                    const element = document.getElementById(\`agent-\${agentId}\`);
+                    if (element) element.classList.add('selected');
                 }
                 updateGroupChatStatus();
             } else {
                 // Single select mode
                 selectedAgent = agentId;
                 document.querySelectorAll('.agent-item').forEach(item => item.classList.remove('selected'));
-                document.getElementById(\`agent-\${agentId}\`).classList.add('selected');
+                const element = document.getElementById(\`agent-\${agentId}\`);
+                if (element) {
+                    element.classList.add('selected');
+                } else {
+                    console.warn('Agent element not found:', \`agent-\${agentId}\`);
+                }
                 updateChatHeader();
             }
         }

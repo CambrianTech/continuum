@@ -3,7 +3,9 @@
  * Self-contained component for selecting and managing agents
  */
 
-class AgentSelector extends HTMLElement {
+// Prevent duplicate class declaration
+if (typeof AgentSelector === 'undefined') {
+  class AgentSelector extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
@@ -204,6 +206,20 @@ class AgentSelector extends HTMLElement {
 
   filterAndRender() {
     this.render();
+  }
+
+  generateFavoritesSection() {
+    const favoriteAgents = [...this.agents, ...this.remoteAgents, ...this.connectedUsers]
+      .filter(agent => this.favoriteAgents.has(agent.id));
+    
+    if (favoriteAgents.length === 0) return '';
+    
+    return `
+      <div class="favorites-section">
+        <div class="favorites-title">⭐ Favorites</div>
+        ${favoriteAgents.map(agent => this.generateAgentHTML(agent)).join('')}
+      </div>
+    `;
   }
 
   openDrawer(agentId) {
@@ -554,4 +570,5 @@ if (typeof customElements !== 'undefined') {
 // Export for Node.js
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = AgentSelector;
+}
 }

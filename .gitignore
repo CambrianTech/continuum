@@ -75,3 +75,18 @@ continuum_restart.log
 # Generated documentation
 *-AI-*.md
 generated-*/
+
+# Debug and temporary files
+debug-*.cjs
+debug-*.html
+debug-*.js
+*debug*.log
+*temp*.cjs
+fix-*.js
+stream-*.cjs
+test-*.cjs
+*-test.cjs
+claude-code-agent.cjs
+
+# Test data files
+.test-instance-*
