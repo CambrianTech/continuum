@@ -498,35 +498,77 @@ class ContinuumCore {
       
       const focused = await this.browserAdapter.focusExistingTab(url);
       if (!focused) {
-        await this.browserAdapter.openNewTab(url);
+        await this.openNewTab(url);
       }
       return;
     }
     
-    // For normal starts, check if we have any active WebSocket connections first
-    if (this.webSocketServer && this.activeConnections.size > 0) {
-      console.log(`🎯 Found ${this.activeConnections.size} active connections, not opening new tab`);
-      return;
+    try {
+      // Try to focus existing tabs via WebSocket TabManager first
+      if (this.webSocketServer && await this.focusExistingTabs()) {
+        console.log('🎯 Focused existing browser tab via WebSocket');
+        return;
+      }
+      
+      // Fall back to OS-level tab management
+      await this.refreshExistingTab(url);
+    } catch (error) {
+      // Only open new tab if no existing tabs found
+      console.log('📱 Opening new browser tab...');
+      await this.openNewTab(url);
+    }
+  }
+
+  async openNewTab(url) {
+    // Simple system default browser opening - always use this first
+    const { spawn } = require('child_process');
+    
+    try {
+      let command, args;
+      
+      switch (process.platform) {
+        case 'darwin':
+          command = 'open';
+          args = [url];
+          break;
+        case 'win32':
+          command = 'start';
+          args = ['', url];
+          break;
+        default:
+          command = 'xdg-open';
+          args = [url];
+      }
+      
+      spawn(command, args, { detached: true, stdio: 'ignore' });
+      console.log(`🌐 Opened with system default browser`);
+      return true;
+      
+    } catch (error) {
+      console.log(`⚠️ System default failed, trying BrowserAdapter...`);
+      // Fallback to BrowserAdapter if system default fails
+      try {
+        return await this.browserAdapter.openNewTab(url);
+      } catch (adapterError) {
+        console.log(`⚠️ Could not open browser. Please visit: ${url}`);
+        return false;
+      }
+    }
+  }
+
+  async refreshExistingTab(url) {
+    // Try BrowserAdapter first for advanced tab management
+    try {
+      const focused = await this.browserAdapter.focusExistingTab(url);
+      if (focused) {
+        return true;
+      }
+    } catch (error) {
+      // Continue to fallback
     }
     
-    // Try to focus existing tab via WebSocket first
-    if (this.webSocketServer && await this.focusExistingTabs()) {
-      console.log('🎯 Focused existing browser tab via WebSocket');
-      return;
-    }
-    
-    // Try to focus existing tab via browser adapter
-    const focused = await this.browserAdapter.focusExistingTab(url);
-    if (focused) {
-      return;
-    }
-    
-    // No existing tabs found, open new one if no active connections
-    if (this.activeConnections.size === 0) {
-      await this.browserAdapter.openNewTab(url);
-    } else {
-      console.log('📍 Browser tab should already be open. Please check your existing tabs.');
-    }
+    // Fallback to opening new tab
+    throw new Error('No existing tabs found');
   }
 
   async focusExistingTabs() {
