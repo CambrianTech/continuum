@@ -4784,6 +4784,9 @@ Example:
         ${this.academyInterface.generateAcademyJS()}
     </script>
 
+    <!-- External Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    
     <!-- Component System -->
     <script src="/src/ui/utils/ComponentLoader.js"></script>
     <script src="/src/ui/components/AgentSelector.js"></script>
