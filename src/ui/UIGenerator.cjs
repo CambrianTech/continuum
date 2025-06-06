@@ -2546,13 +2546,48 @@ class UIGenerator {
 
         // Initialize WebSocket connection
         function initWebSocket() {
+            // Prevent multiple connection attempts
+            if (window.wsConnecting) {
+                return;
+            }
+            window.wsConnecting = true;
+            
             updateConnectionStatus('connecting');
-            ws = new WebSocket(\`ws://localhost:\${window.location.port || '5555'}\`);
+            
+            try {
+                // Override console temporarily to suppress native WebSocket errors
+                const originalConsoleError = console.error;
+                console.error = function(...args) {
+                    const msg = args.join(' ');
+                    // Suppress native WebSocket connection errors
+                    if (msg.includes('WebSocket connection') && msg.includes('failed')) {
+                        return; // Silently ignore
+                    }
+                    originalConsoleError.apply(console, args);
+                };
+                
+                ws = new WebSocket('ws://localhost:' + (window.location.port || '9000'));
+                
+                // Restore console after a brief delay
+                setTimeout(() => {
+                    console.error = originalConsoleError;
+                }, 1000);
+            } catch (error) {
+                window.wsConnecting = false;
+                console.error('🚨 WebSocket creation failed:', error.message);
+                scheduleReconnect();
+                return;
+            }
             
             ws.onopen = function() {
-                console.log('Connected to Continuum v' + currentVersion);
+                window.wsConnecting = false;
+                console.log('🔌 Connected to Continuum v' + currentVersion);
                 updateConnectionStatus('connected');
-                // Reset connection error flag on successful connection
+                
+                // Reset all connection tracking on successful connection
+                window.reconnectAttempts = 0;
+                window.disconnectLogged = false;
+                window.errorLogged = false;
                 window.connectionErrorShown = false;
                 
                 // Register this tab/window with server
@@ -2584,18 +2619,60 @@ class UIGenerator {
                 handleWebSocketMessage(data);
             };
             
-            ws.onclose = function() {
-                console.log('Disconnected from Continuum');
+            ws.onclose = function(event) {
+                window.wsConnecting = false;
+                
+                // Only log if not a clean close and haven't logged recently
+                if (event.code !== 1000 && !window.disconnectLogged) {
+                    console.log('🔌 Disconnected from Continuum (will retry silently in background)');
+                    window.disconnectLogged = true;
+                    
+                    // Set a timer to allow logging again after 60 seconds
+                    setTimeout(() => {
+                        window.disconnectLogged = false;
+                    }, 60000);
+                }
+                
                 updateConnectionStatus('disconnected');
-                // Don't flood chat with disconnection messages
-                setTimeout(initWebSocket, 3000); // Reconnect
+                scheduleReconnect();
             };
             
             ws.onerror = function(error) {
-                console.error('WebSocket error:', error);
+                window.wsConnecting = false;
+                
+                // Severely limit error logging - only log once per 5 minutes
+                const now = Date.now();
+                if (!window.lastErrorLog || (now - window.lastErrorLog) > 300000) {
+                    console.error('🚨 WebSocket error (retrying in background)');
+                    window.lastErrorLog = now;
+                }
                 updateConnectionStatus('disconnected');
-                // Don't show connection errors in chat - use visual status indicator instead
             };
+        }
+        
+        function scheduleReconnect() {
+            // Prevent multiple reconnection timers
+            if (window.reconnectTimer) {
+                clearTimeout(window.reconnectTimer);
+            }
+            
+            if (!window.reconnectAttempts) window.reconnectAttempts = 0;
+            window.reconnectAttempts++;
+            
+            // Much longer delays - start at 30 seconds, max 10 minutes
+            const baseDelay = 30000; // 30 seconds base delay  
+            const maxDelay = 600000; // 10 minutes max delay
+            const delay = Math.min(baseDelay * Math.pow(2, Math.min(window.reconnectAttempts - 1, 6)), maxDelay);
+            
+            // Only log reconnection schedule occasionally
+            if (window.reconnectAttempts <= 3) {
+                console.log('🔄 Will retry connection in ' + Math.round(delay/1000) + 's (attempt ' + window.reconnectAttempts + ')');
+            }
+            
+            window.reconnectTimer = setTimeout(() => {
+                window.reconnectTimer = null;
+                initWebSocket();
+            }, delay);
         }
         
         function handleWebSocketMessage(data) {
@@ -2639,7 +2716,8 @@ class UIGenerator {
                             originalWarn.apply(console, args);
                         };
                         
-                        // Execute the JavaScript
+                        // Execute JavaScript directly (no cleaning needed with base64 encoding)
+                        console.log('🛰️ CLIENT: Executing probe telemetry command...');
                         const result = eval(data.data.command);
                         
                         // Restore original console methods
@@ -2660,7 +2738,8 @@ class UIGenerator {
                                 output: capturedOutput,
                                 result: result !== undefined ? String(result) : undefined,
                                 url: window.location.href,
-                                userAgent: navigator.userAgent
+                                userAgent: navigator.userAgent,
+                                executionId: data.data.executionId
                             }));
                             console.log('🔥 CLIENT: Sent execution result and output to server');
                         }
@@ -2671,6 +2750,11 @@ class UIGenerator {
                     console.error('🔥 CLIENT: JavaScript execution failed:', error);
                     console.error('🔥 CLIENT: Error stack:', error.stack);
                     
+                    // Restore console methods in case of error
+                    console.log = originalLog;
+                    console.error = originalError;
+                    console.warn = originalWarn;
+                    
                     // Send error back to server
                     if (ws && ws.readyState === WebSocket.OPEN) {
                         ws.send(JSON.stringify({
@@ -2678,7 +2762,11 @@ class UIGenerator {
                             success: false,
                             error: error.message,
                             stack: error.stack,
-                            timestamp: new Date().toISOString()
+                            timestamp: new Date().toISOString(),
+                            output: capturedOutput,
+                            url: window.location.href,
+                            userAgent: navigator.userAgent,
+                            executionId: data.data.executionId
                         }));
                     }
                 }
@@ -2694,7 +2782,12 @@ class UIGenerator {
             }
             
             if (data.type === 'tabFocus') {
-                console.log('🎯 Server requesting tab focus');
+                // Throttle tab focus spam - only log once per 30 seconds
+                const now = Date.now();
+                if (!window.lastTabFocusLog || (now - window.lastTabFocusLog) > 30000) {
+                    console.log('🎯 Server requesting tab focus');
+                    window.lastTabFocusLog = now;
+                }
                 
                 // Multiple strategies to bring window to focus
                 try {
@@ -2735,12 +2828,19 @@ class UIGenerator {
                         }
                     }
                     
-                    // Visual indication that this tab should be used
-                    addSystemMessage('📍 This tab is now active. Please use this window.');
+                    // Throttle tab active message - only show once per 30 seconds
+                    if (!window.lastTabActiveMsg || (now - window.lastTabActiveMsg) > 30000) {
+                        addSystemMessage('📍 This tab is now active. Please use this window.');
+                        window.lastTabActiveMsg = now;
+                    }
                     
                 } catch (error) {
                     console.warn('Focus strategies failed:', error);
-                    addSystemMessage('⚠️ Please click on this tab to activate it.');
+                    // Only show error message once per 30 seconds
+                    if (!window.lastTabErrorMsg || (now - window.lastTabErrorMsg) > 30000) {
+                        addSystemMessage('⚠️ Please click on this tab to activate it.');
+                        window.lastTabErrorMsg = now;
+                    }
                 }
                 
                 return;

@@ -90,3 +90,4 @@ claude-code-agent.cjs
 
 # Test data files
 .test-instance-*
+/agent-scripts/bin
