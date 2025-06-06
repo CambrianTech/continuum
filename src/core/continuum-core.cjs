@@ -76,6 +76,7 @@ class ContinuumCore {
     this.modelRegistry = new ModelRegistry();
     this.modelCaliber = new ModelCaliber();
     this.commandProcessor = new CommandProcessor();
+    this.commandProcessor.continuum = this;
     this.uiGenerator = new UIGenerator(this);
     this.protocolSheriff = new ProtocolSheriff(this.modelRegistry, this.modelCaliber);
     this.versionManager = new VersionManager(this);

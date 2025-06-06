@@ -7,10 +7,12 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+const CommandRegistry = require('../commands/CommandRegistry.cjs');
 
 class CommandProcessor {
   constructor() {
     this.commands = new Map();
+    this.commandRegistry = new CommandRegistry();
     this.setupDefaultCommands();
   }
 
@@ -133,11 +135,20 @@ class CommandProcessor {
     return results;
   }
 
-  async executeCommand(command, params) {
+  async executeCommand(command, params, encoding = 'utf-8') {
     console.log(`🔧 EXECUTING COMMAND: ${command} with params: ${params.substring(0, 50)}${params.length > 50 ? '...' : ''}`);
     
+    // First try modular commands from CommandRegistry
+    const modularCommand = this.commandRegistry.getCommand(command);
+    if (modularCommand) {
+      console.log(`📚 Using modular command: ${command}`);
+      return await this.commandRegistry.executeCommand(command, params, this.continuum, encoding);
+    }
+    
+    // Fallback to legacy commands
     const handler = this.commands.get(command);
     if (handler) {
+      console.log(`⚠️ Using legacy command: ${command}`);
       return await handler(params);
     } else {
       throw new Error(`Unknown command: ${command}`);
