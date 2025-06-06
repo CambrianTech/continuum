@@ -52,22 +52,44 @@ class MessageQueue {
 
   queueGreeting(ws, continuum) {
     this.queueMessage(ws, async () => {
+      // Check if we have any AI models available
+      if (!continuum.modelRegistry || continuum.modelRegistry.getAvailableModels().length === 0) {
+        console.log('⚠️ No AI models available, sending static greeting');
+        return {
+          type: 'result',
+          data: {
+            role: 'System',
+            task: 'user_connection_greeting',
+            result: "👋 Welcome to Continuum! I'm ready to help coordinate your tasks. Please note that AI features require API keys to be configured. You can add them in your .continuum/config.env file.",
+            costs: continuum.costs
+          }
+        };
+      }
+
       const connectionEvent = 'A new user just connected. Give them a brief, friendly greeting and ask how you can help. Keep it conversational and short - no long explanations about the system.';
       
       try {
         // Force greeting to use GeneralAI to avoid identity confusion
         const greeting = await continuum.sendTask('GeneralAI', connectionEvent);
         
-        // 🤖 Protocol Sheriff: Validate greeting
-        const validation = await continuum.protocolSheriff.validateResponse(
-          greeting, 
-          'user connection', 
-          'GeneralAI'
-        );
+        // 🤖 Protocol Sheriff: Validate greeting (only if Sheriff is available)
+        let finalGreeting = greeting;
+        if (continuum.protocolSheriff && continuum.modelCaliber) {
+          try {
+            const validation = await continuum.protocolSheriff.validateResponse(
+              greeting, 
+              'user connection', 
+              'GeneralAI'
+            );
+            
+            finalGreeting = (!validation.isValid && validation.correctedResponse) 
+              ? validation.correctedResponse 
+              : greeting;
+          } catch (validationError) {
+            console.log('⚠️ Protocol Sheriff validation failed, using original greeting');
+          }
+        }
         
-        const finalGreeting = (!validation.isValid && validation.correctedResponse) 
-          ? validation.correctedResponse 
-          : greeting;
         return {
           type: 'result',
           data: {
@@ -80,8 +102,13 @@ class MessageQueue {
       } catch (error) {
         console.error('AI greeting failed:', error);
         return {
-          type: 'error',
-          data: 'Greeting failed'
+          type: 'result',
+          data: {
+            role: 'System',
+            task: 'user_connection_greeting',
+            result: "👋 Welcome to Continuum! I'm a coordination system for managing AI agents and tasks. How can I help you today?",
+            costs: continuum.costs
+          }
         };
       }
     });

@@ -88,10 +88,25 @@ class ContinuumCore {
     
     // AI clients (only initialize if API keys are available)
     if (process.env.ANTHROPIC_API_KEY) {
-      this.anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      try {
+        this.anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+        console.log('✅ Anthropic API client initialized');
+      } catch (error) {
+        console.log('⚠️ Anthropic API client initialization failed:', error.message);
+      }
+    } else {
+      console.log('ℹ️ ANTHROPIC_API_KEY not found - AI features will be limited');
     }
+    
     if (process.env.OPENAI_API_KEY) {
-      this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      try {
+        this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        console.log('✅ OpenAI API client initialized');
+      } catch (error) {
+        console.log('⚠️ OpenAI API client initialization failed:', error.message);
+      }
+    } else {
+      console.log('ℹ️ OPENAI_API_KEY not found - AI features will be limited');
     }
     
     this.ensureContinuumDir();
@@ -539,6 +554,11 @@ class ContinuumCore {
 
   async intelligentRoute(task) {
     console.log(`🧠 Enhanced intelligent routing: ${task.substring(0, 50)}...`);
+    
+    // Check if we have any AI models available
+    if (!this.modelRegistry || this.modelRegistry.getAvailableModels().length === 0) {
+      throw new Error('No AI models available. Please configure ANTHROPIC_API_KEY or OPENAI_API_KEY.');
+    }
     
     // Determine best agent for the task
     const role = this.selectRole(task);
