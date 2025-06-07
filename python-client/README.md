@@ -133,10 +133,16 @@ await capture_element_by_id('sidebar')       # Capture by element ID
 await capture_multiple_formats('#content')   # Same element, multiple formats
 ```
 
-**📁 See [`examples/`](examples/) directory for complete screenshot examples:**
+**📁 See [`examples/`](examples/) directory for complete screenshot & debugging examples:**
 - [`simple_screenshot.py`](examples/simple_screenshot.py) - Basic capture and auto-open
 - [`find_and_capture.py`](examples/find_and_capture.py) - Smart element finding
 - [`screenshot_capture.py`](examples/screenshot_capture.py) - Full-featured capture class
+
+**🎬 UI Debugging & Validation Demos:**
+- [`natural_glass_submenu_demo.py`](examples/natural_glass_submenu_demo.py) - Star Trek TNG glass submenu demo
+- [`README_glass_submenu_demo.md`](examples/README_glass_submenu_demo.md) - Complete glass submenu documentation
+
+These utilities provide visual validation and automated testing macros for debugging UI components.
 
 ## Promise-Based Execution
 
