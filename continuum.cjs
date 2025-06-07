@@ -98,7 +98,10 @@ AGENT AUTOMATION:
     📸 simple_screenshot.py         - Basic screenshot capture
     🔍 find_and_capture.py          - Smart element finding
     
-  Learn more: ./agent-scripts/README.md, ./python-client/README.md
+  Learn more: 
+    ./agent-scripts/README.md       - Agent automation documentation
+    ./python-client/README.md       - Python WebSocket client guide  
+    ./docs/DEBUGGING_UTILITIES.md   - UI debugging & validation utilities
 
 WEBSOCKET AGENT CONNECTION:
   🔌 Direct agent connection (like telnet/ssh for AI agents)
