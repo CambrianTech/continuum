@@ -103,7 +103,21 @@ const savedPaths = await persona.save();
 console.log(`Share this file: ${savedPaths.checkpointPath} (15MB)`);
 ```
 
-### 7. Install Shared Adapters
+### 7. Test with Python Scripts (Visual Validation)
+```bash
+# Test the glass submenu system
+python test_glass_submenu_system.py
+
+# Debug component issues  
+python diagnose_component_issues.py
+
+# Fix and validate functionality
+python fix_and_test_glass_submenu.py
+
+# Screenshots saved to .continuum/screenshots/
+```
+
+### 8. Install Shared Adapters
 ```javascript
 const AdapterRegistry = require('./src/core/AdapterRegistry.cjs');
 const registry = new AdapterRegistry();
@@ -176,6 +190,159 @@ This enables AI agents to:
 - **Debug visual issues** without human intervention
 - **Validate layouts** across different states
 - **Monitor user experience** continuously
+
+## 🪟 Star Trek TNG Glass Submenu System
+
+Continuum features a **transparent glass submenu system** inspired by Star Trek: The Next Generation computer interfaces. When you click the `>>` buttons next to agents in the USERS & AGENTS section, beautiful glass panels slide out from behind the agent items with smooth left-to-right animations.
+
+### Glass Submenu Features
+- **🪟 Transparent Glass Aesthetic**: Backdrop blur effects with semi-transparent gradients
+- **🚀 Smooth Animations**: Slides out from behind agents (left-to-right) with cubic-bezier transitions  
+- **🎯 Agent-Specific Actions**: Different buttons based on agent type (AI vs User)
+- **🎓 Academy Integration**: Direct access to AI retraining from the submenu
+- **📁 Project Management**: Quick access to agent-specific projects
+- **🚀 Deployment Controls**: Deploy agents directly from the glass interface
+
+### Glass Submenu Actions
+- **🎓 Academy**: Send AI agents for retraining and specialization
+- **📁 Projects**: Access agent-specific project management 
+- **🚀 Deploy**: Deploy agents to active tasks
+
+### Component Architecture
+The glass submenu system is built using:
+- **AgentSelector Web Component** (`src/ui/components/AgentSelector.js`)
+- **Glass Submenu Methods**: `showGlassSubmenu()` and `closeGlassSubmenu()`
+- **Event System**: Custom events for Academy, Projects, and Deploy actions
+- **CSS Animations**: Star Trek-inspired transparent glass styling
+
+## 🧪 Python Testing & Validation System
+
+Continuum includes a comprehensive **Python testing framework** that acts as the developer's "eyes" for validating UI changes, testing functionality, and capturing visual evidence of features working correctly.
+
+### Python Testing Philosophy
+Instead of manually clicking through interfaces, Python scripts can:
+- **🔍 Inspect DOM structure** and component initialization
+- **🖱️ Simulate user interactions** (clicks, form inputs, navigation)
+- **📸 Capture screenshots** of before/after states
+- **🎯 Test specific features** like the glass submenu system
+- **🐛 Debug JavaScript errors** and component issues
+- **📊 Generate test reports** with visual evidence
+
+### Glass Submenu Testing Example
+```python
+#!/usr/bin/env python3
+"""Test the Star Trek glass submenu system"""
+import asyncio
+from continuum_client import ContinuumClient
+
+async def test_glass_submenu():
+    async with ContinuumClient() as client:
+        # Register as a test agent
+        await client.register_agent({
+            'agentId': 'glass-submenu-tester',
+            'agentName': 'Glass Submenu Tester', 
+            'agentType': 'ai'
+        })
+        
+        # Test component initialization
+        init_result = await client.js.get_value("""
+            return JSON.stringify({
+                agentSelectorExists: !!document.getElementById('main-agent-selector'),
+                drawerButtons: document.querySelectorAll('.drawer-btn').length,
+                webComponentDefined: !!customElements.get('agent-selector')
+            });
+        """)
+        
+        # Click agent drawer buttons to trigger glass submenu
+        click_result = await client.js.get_value("""
+            const drawerBtn = document.querySelector('.drawer-btn');
+            if (drawerBtn) {
+                drawerBtn.click();
+                
+                // Wait for glass submenu animation
+                setTimeout(() => {
+                    const glassSubmenu = document.querySelector('.glass-submenu');
+                    return JSON.stringify({
+                        glassSubmenuCreated: !!glassSubmenu,
+                        submenuWidth: glassSubmenu?.style.width,
+                        submenuOpacity: glassSubmenu?.style.opacity,
+                        actionButtons: glassSubmenu?.querySelectorAll('button').length
+                    });
+                }, 800);
+            }
+        """)
+        
+        # Capture screenshot evidence
+        screenshot = await client.js.get_value("""
+            return new Promise((resolve) => {
+                html2canvas(document.body, {scale: 0.8}).then(canvas => {
+                    resolve(JSON.stringify({
+                        success: true,
+                        dataUrl: canvas.toDataURL('image/png', 0.9)
+                    }));
+                });
+            });
+        """)
+        
+        # Save screenshot to .continuum/screenshots/
+        import base64
+        screenshot_data = json.loads(screenshot)
+        if screenshot_data['success']:
+            data_url = screenshot_data['dataUrl']
+            base64_data = data_url.split(',')[1]
+            image_data = base64.b64decode(base64_data)
+            
+            with open('.continuum/screenshots/glass_submenu_test.png', 'wb') as f:
+                f.write(image_data)
+            
+            print("✅ Glass submenu test complete!")
+            print("📸 Screenshot saved to .continuum/screenshots/glass_submenu_test.png")
+
+if __name__ == "__main__":
+    asyncio.run(test_glass_submenu())
+```
+
+### Testing Scripts Available
+- **`test_glass_submenu_system.py`**: Comprehensive glass submenu testing
+- **`diagnose_component_issues.py`**: Debug component loading and DOM issues
+- **`fix_and_test_glass_submenu.py`**: Fix component issues and validate functionality
+- **Python client examples** in `python-client/examples/`
+
+### Visual Testing Benefits
+- **🔍 See exactly what's happening** - Screenshots provide visual evidence
+- **🐛 Debug without guessing** - Capture error states and component issues  
+- **🧪 Automate regression testing** - Validate UI changes don't break existing features
+- **📊 Generate visual reports** - Before/after comparisons with screenshots
+- **🎯 Test specific interactions** - Click sequences, animations, state changes
+- **💻 Cross-browser validation** - Test on different browser configurations
+
+### Screenshot Management
+All test screenshots are automatically saved to:
+```
+.continuum/screenshots/
+├── glass_submenu_baseline.png      # Initial state before testing
+├── glass_submenu_active.png        # Glass submenu visible and active  
+├── glass_submenu_working.png       # Final working state validation
+├── component_diagnosis.png         # Component debugging screenshots
+└── [timestamp]_test_results.png    # Timestamped test results
+```
+
+### Python Testing Architecture
+```
+Python Test Script
+    ↓ (WebSocket commands)
+Continuum Server
+    ↓ (execute in browser)
+Browser JavaScript  
+    ↓ (DOM manipulation & capture)
+Visual Results (Screenshots)
+    ↓ (base64 data)
+Python Script (analysis & validation)
+    ↓ (save to .continuum/screenshots)
+Visual Evidence Files
+```
+
+This testing approach enables rapid iteration and validation of UI features without manual clicking, providing the "eyes" needed to see interface changes working correctly.
 
 ### Example: AI Interface Doctor
 ```python
@@ -349,6 +516,11 @@ continuum/
 │   └── tests/                  # Comprehensive client tests
 │       ├── unit/               # Unit tests (19/19 passing)
 │       └── integration/        # Integration tests
+├── src/ui/                     # Web interface components
+│   ├── components/             # Web Components
+│   │   └── AgentSelector.js    # Star Trek glass submenu component
+│   ├── UIGenerator.cjs         # Main interface generator
+│   └── WebComponentsIntegration.cjs # Component integration system
 ├── tests/                      # Comprehensive test suite
 │   ├── adversarial-protocol.test.cjs
 │   ├── lora-fine-tuning.test.cjs
@@ -356,9 +528,17 @@ continuum/
 │   ├── hierarchical-specialization.test.cjs
 │   └── complete-system-demo.cjs
 ├── examples/                   # Usage examples
+├── test_glass_submenu_system.py    # Comprehensive glass submenu testing
+├── diagnose_component_issues.py    # Debug component loading issues  
+├── fix_and_test_glass_submenu.py   # Fix & validate glass submenu system
 └── .continuum/                 # Generated personas and adapters
     ├── personas/               # Saved personas
-    └── adapter_registry/       # Shared adapters
+    ├── adapter_registry/       # Shared adapters
+    └── screenshots/            # Visual testing evidence
+        ├── glass_submenu_baseline.png
+        ├── glass_submenu_active.png
+        ├── glass_submenu_working.png
+        └── component_diagnosis.png
 ```
 
 ## 🌐 Future: Community Sharing (v0.3.0)

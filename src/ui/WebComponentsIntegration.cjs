@@ -9,7 +9,7 @@ class WebComponentsIntegration {
       {
         selector: '.agent-selector',
         component: 'agent-selector',
-        scriptPath: '/components/AgentSelector.js'
+        scriptPath: '/ui/components/AgentSelector.js'
       }
     ];
   }

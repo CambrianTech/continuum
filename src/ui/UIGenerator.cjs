@@ -1483,6 +1483,9 @@ class UIGenerator {
             }
         }
     </style>
+    
+    <!-- Web Components -->
+    <script src="/ui/components/AgentSelector.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -1590,7 +1593,11 @@ class UIGenerator {
                             🔄 Refresh
                         </button>
                     </div>
-                    <!-- Agent Selector -->
+                    
+                    <!-- AgentSelector Web Component for USERS & AGENTS -->
+                    <agent-selector id="main-agent-selector"></agent-selector>
+                    
+                    <!-- Agent Selector (Legacy - will be replaced) -->
                     <div class="agent-selector">
                         <h3>Available Agents</h3>
                         <div class="agent-list">
@@ -5036,12 +5043,43 @@ Example:
     <script src="/src/ui/utils/ComponentLoader.js"></script>
     <script src="/src/ui/components/AgentSelector.js"></script>
     <script>
+        // Initialize AgentSelector component
+        function initializeAgentSelector() {
+            const agentSelector = document.getElementById('main-agent-selector');
+            if (agentSelector) {
+                console.log('🪟 Initializing AgentSelector with glass submenu system');
+                
+                // Set up glass submenu event handlers
+                agentSelector.addEventListener('agent-academy-requested', (e) => {
+                    console.log('🎓 Academy requested for agent:', e.detail.name);
+                    retrainAgent(e.detail.agentId);
+                });
+                
+                agentSelector.addEventListener('agent-projects-requested', (e) => {
+                    console.log('📁 Projects requested for agent:', e.detail.name);
+                    // TODO: Implement project management for agent
+                    addMessage('System', \`📁 Project management for \${e.detail.name} - Coming soon!\`, 'system', false, true);
+                });
+                
+                agentSelector.addEventListener('agent-deploy-requested', (e) => {
+                    console.log('🚀 Deploy requested for agent:', e.detail.name);
+                    // TODO: Implement agent deployment
+                    addMessage('System', \`🚀 Deploying \${e.detail.name} - Coming soon!\`, 'system', false, true);
+                });
+                
+                // Set up agent selection callback
+                agentSelector.setOnAgentSelect(selectAgent);
+                
+                console.log('✅ AgentSelector glass submenu system initialized');
+            }
+        }
+
         // Initialize component system
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🔧 Component system initialized');
             
-            // For now, keep existing agent selector but prepare for migration
-            // Future: Replace .agent-selector with <agent-selector> component
+            // Initialize AgentSelector component with glass submenu
+            setTimeout(initializeAgentSelector, 100); // Small delay to ensure component is registered
             
             window.componentSystemReady = true;
             document.dispatchEvent(new CustomEvent('component-system-ready'));
