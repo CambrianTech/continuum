@@ -6,6 +6,7 @@
 
 const HttpServer = require('../integrations/HttpServer.cjs');
 const WebSocketServer = require('../integrations/WebSocketServer.cjs');
+const SimpleMenuBar = require('../integrations/SimpleMenuBar.cjs');
 const CostTracker = require('./CostTracker.cjs');
 const { ModelRegistry } = require('./AIModel.cjs');
 const CommandProcessor = require('./CommandProcessor.cjs');
@@ -422,6 +423,9 @@ class ContinuumCore {
         
         // Start version monitoring
         this.versionManager.startVersionChecking();
+        
+        // Initialize simple menu bar integration - click to open web portal
+        this.systemTray = new SimpleMenuBar(this);
         
         // Open the web interface automatically
         await this.openWebInterface();

@@ -37,6 +37,11 @@ class WebSocketServer extends EventEmitter {
       
       console.log(`👤 User connected (Session: ${sessionId})`);
       
+      // Update Continuon status indicator
+      if (this.continuum.systemTray) {
+        this.continuum.systemTray.onUserConnected();
+      }
+      
       // Send status immediately (not queued)
       this.sendStatus(ws, sessionId);
       
@@ -608,6 +613,11 @@ class WebSocketServer extends EventEmitter {
 
   handleDisconnect(sessionId) {
     console.log(`👤 User disconnected (Session: ${sessionId})`);
+    
+    // Update Continuon status indicator
+    if (this.continuum.systemTray) {
+      this.continuum.systemTray.onUserDisconnected();
+    }
     this.continuum.activeConnections.delete(sessionId);
     this.continuum.conversationThreads.delete(sessionId);
     this.messageQueue.cleanup(sessionId);

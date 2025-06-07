@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.1936",
+  "version": "0.2.1937",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -88,8 +88,10 @@
     "glob": "^11.0.1",
     "inquirer": "^12.5.2",
     "node-fetch": "^3.3.2",
+    "node-notifier": "^10.0.1",
     "openai": "^5.0.1",
     "punycode": "^2.3.1",
+    "systray": "^1.0.5",
     "ws": "^8.18.2",
     "yaml": "^2.7.1"
   }

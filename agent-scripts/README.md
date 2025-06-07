@@ -18,8 +18,9 @@ heal "Connection refused"
 ## Features
 
 - 🛰️ **Deep Space Probe Paradigm** - Browser control via WebSocket telemetry
+- 🔌 **Pure WebSocket** - No HTTP fallbacks, WebSockets everywhere
 - 🔧 **Auto-Healing** - Automatic error detection and recovery
-- 📡 **Base64 Encoding** - Safe JavaScript transmission
+- 📡 **Safe Transmission** - Secure JavaScript transmission via WebSocket
 - 🔄 **Hot Reload** - Webpack-style development workflow
 - 🧹 **Console Cleanup** - Smart spam prevention and throttling
 
@@ -58,7 +59,7 @@ Think of the browser as a **deep space probe** that you control remotely. Your o
 ### Safety Protocol
 
 - Make tiny changes each time
-- All JavaScript automatically base64 encoded for safe transmission
+- All JavaScript transmitted via secure WebSocket connection
 - Monitor server logs for telemetry
 - If communication fails, auto-healing kicks in
 
