@@ -23,6 +23,7 @@ if (typeof window.AgentSelector === 'undefined') {
     this.searchQuery = '';
     this.favoriteAgents = new Set();
     this.agentMetrics = new Map();
+    this.currentGlassSubmenu = null;
   }
 
   connectedCallback() {
@@ -31,7 +32,8 @@ if (typeof window.AgentSelector === 'undefined') {
   }
 
   disconnectedCallback() {
-    // Cleanup if needed
+    // Cleanup glass submenu
+    this.closeGlassSubmenu();
   }
 
   getDefaultAgents() {
@@ -234,6 +236,9 @@ if (typeof window.AgentSelector === 'undefined') {
     const allItems = [...this.connectedUsers, ...this.agents, ...this.remoteAgents];
     const targetItem = allItems.find(item => item.id === agentId);
     
+    // Show glass submenu instead of traditional drawer
+    this.showGlassSubmenu(agentId, targetItem);
+    
     if (this.onDrawerOpen) {
       this.onDrawerOpen(agentId, targetItem);
     }
@@ -242,6 +247,156 @@ if (typeof window.AgentSelector === 'undefined') {
       detail: { agentId, item: targetItem },
       bubbles: true
     }));
+  }
+
+  showGlassSubmenu(agentId, item) {
+    // Close any existing submenu
+    this.closeGlassSubmenu();
+    
+    // Find the agent element in the DOM
+    const agentElement = this.shadowRoot.querySelector(`[data-agent-id="${agentId}"]`);
+    if (!agentElement) return;
+    
+    // Get position relative to viewport
+    const rect = agentElement.getBoundingClientRect();
+    
+    // Create glass submenu
+    const submenu = document.createElement('div');
+    submenu.className = 'glass-submenu';
+    submenu.style.cssText = `
+      position: fixed;
+      left: ${rect.right + 15}px;
+      top: ${rect.top}px;
+      width: 0px;
+      height: 70px;
+      background: linear-gradient(135deg, 
+          rgba(0, 212, 255, 0.4) 0%, 
+          rgba(100, 200, 255, 0.25) 50%, 
+          rgba(0, 212, 255, 0.35) 100%);
+      backdrop-filter: blur(25px);
+      -webkit-backdrop-filter: blur(25px);
+      border: 3px solid rgba(0, 212, 255, 0.8);
+      border-radius: 15px;
+      z-index: 50000;
+      overflow: hidden;
+      transition: all 0.7s cubic-bezier(0.23, 1, 0.32, 1);
+      box-shadow: 
+          0 20px 60px rgba(0, 212, 255, 0.4),
+          inset 0 4px 0 rgba(255, 255, 255, 0.5),
+          0 0 0 2px rgba(0, 212, 255, 0.6),
+          0 0 30px rgba(0, 212, 255, 0.3);
+      opacity: 0;
+      display: flex;
+      align-items: center;
+      transform: translateX(-20px) scale(0.9);
+    `;
+    
+    // Create content based on agent type
+    const isAI = item?.type === 'ai' || item?.type === 'assistant' || item?.type === 'system';
+    const name = item?.name || agentId;
+    
+    submenu.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 15px; padding: 15px 20px; white-space: nowrap; height: 100%;">
+        ${isAI ? `
+          <button class="glass-btn academy" onclick="this.closest('.glass-submenu').dispatchEvent(new CustomEvent('academy-clicked', {detail: {agentId: '${agentId}', name: '${name}'}, bubbles: true}))" 
+                  style="background: linear-gradient(135deg, rgba(0, 212, 255, 0.4), rgba(255, 255, 255, 0.3)); 
+                         border: 2px solid rgba(0, 212, 255, 0.9); color: #ffffff; padding: 8px 12px; 
+                         border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 11px;
+                         text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5); transition: all 0.3s ease;
+                         box-shadow: 0 4px 12px rgba(0, 212, 255, 0.3);">
+              🎓 Academy
+          </button>
+        ` : ''}
+        <button class="glass-btn projects" onclick="this.closest('.glass-submenu').dispatchEvent(new CustomEvent('projects-clicked', {detail: {agentId: '${agentId}', name: '${name}'}, bubbles: true}))" 
+                style="background: linear-gradient(135deg, rgba(0, 212, 255, 0.4), rgba(255, 255, 255, 0.3)); 
+                       border: 2px solid rgba(0, 212, 255, 0.9); color: #ffffff; padding: 8px 12px; 
+                       border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 11px;
+                       text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5); transition: all 0.3s ease;
+                       box-shadow: 0 4px 12px rgba(0, 212, 255, 0.3);">
+            📁 Projects
+        </button>
+        <button class="glass-btn deploy" onclick="this.closest('.glass-submenu').dispatchEvent(new CustomEvent('deploy-clicked', {detail: {agentId: '${agentId}', name: '${name}'}, bubbles: true}))" 
+                style="background: linear-gradient(135deg, rgba(0, 212, 255, 0.4), rgba(255, 255, 255, 0.3)); 
+                       border: 2px solid rgba(0, 212, 255, 0.9); color: #ffffff; padding: 8px 12px; 
+                       border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 11px;
+                       text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5); transition: all 0.3s ease;
+                       box-shadow: 0 4px 12px rgba(0, 212, 255, 0.3);">
+            🚀 Deploy
+        </button>
+      </div>
+    `;
+    
+    // Add styles for button hover effects
+    const style = document.createElement('style');
+    style.textContent = `
+      .glass-btn:hover {
+        background: linear-gradient(135deg, rgba(0, 212, 255, 0.6), rgba(255, 255, 255, 0.4)) !important;
+        transform: translateY(-2px) scale(1.05);
+        box-shadow: 0 6px 20px rgba(0, 212, 255, 0.5) !important;
+      }
+    `;
+    document.head.appendChild(style);
+    
+    // Append to document body (outside shadow DOM for positioning)
+    document.body.appendChild(submenu);
+    this.currentGlassSubmenu = submenu;
+    
+    // Add event listeners
+    submenu.addEventListener('academy-clicked', (e) => {
+      console.log('🎓 Academy clicked for', e.detail.name);
+      this.dispatchEvent(new CustomEvent('agent-academy-requested', {
+        detail: e.detail,
+        bubbles: true
+      }));
+      this.closeGlassSubmenu();
+    });
+    
+    submenu.addEventListener('projects-clicked', (e) => {
+      console.log('📁 Projects clicked for', e.detail.name);
+      this.dispatchEvent(new CustomEvent('agent-projects-requested', {
+        detail: e.detail,
+        bubbles: true
+      }));
+      this.closeGlassSubmenu();
+    });
+    
+    submenu.addEventListener('deploy-clicked', (e) => {
+      console.log('🚀 Deploy clicked for', e.detail.name);
+      this.dispatchEvent(new CustomEvent('agent-deploy-requested', {
+        detail: e.detail,
+        bubbles: true
+      }));
+      this.closeGlassSubmenu();
+    });
+    
+    // Animate in
+    requestAnimationFrame(() => {
+      submenu.style.width = '380px';
+      submenu.style.opacity = '1';
+      submenu.style.transform = 'translateX(0px) scale(1)';
+    });
+    
+    // Auto-close after 10 seconds
+    setTimeout(() => {
+      this.closeGlassSubmenu();
+    }, 10000);
+  }
+
+  closeGlassSubmenu() {
+    if (this.currentGlassSubmenu) {
+      const submenu = this.currentGlassSubmenu;
+      submenu.style.width = '0px';
+      submenu.style.opacity = '0';
+      submenu.style.transform = 'translateX(-20px) scale(0.9)';
+      
+      setTimeout(() => {
+        if (submenu.parentNode) {
+          submenu.parentNode.removeChild(submenu);
+        }
+      }, 700);
+      
+      this.currentGlassSubmenu = null;
+    }
   }
 
   generateAgentHTML(agent) {
