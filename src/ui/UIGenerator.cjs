@@ -2730,12 +2730,29 @@ class UIGenerator {
                         
                         const executeAsync = async () => {
                             try {
-                                // Wrap user code in async function to allow returns
-                                const asyncWrapper = new Function('return (async () => {' + data.data.command + '})();');
-                                return await asyncWrapper();
-                            } catch (syncError) {
-                                // Fallback to sync execution for simple expressions
-                                return eval(data.data.command);
+                                // Check if command already contains return or is an expression
+                                const commandText = data.data.command.trim();
+                                
+                                if (commandText.startsWith('return ')) {
+                                    // Command already has return, wrap it in async function
+                                    const asyncWrapper = new Function('return (async () => { ' + commandText + ' })();');
+                                    return await asyncWrapper();
+                                } else if (commandText.includes('await') || commandText.includes('Promise')) {
+                                    // Contains async operations, wrap in async function
+                                    const asyncWrapper = new Function('return (async () => { return ' + commandText + ' })();');
+                                    return await asyncWrapper();
+                                } else {
+                                    // Simple expression, evaluate directly
+                                    return eval(commandText);
+                                }
+                            } catch (error) {
+                                // If all else fails, try wrapping the entire command
+                                try {
+                                    const fallbackWrapper = new Function(data.data.command);
+                                    return fallbackWrapper();
+                                } catch (fallbackError) {
+                                    throw error; // Throw original error
+                                }
                             }
                         };
                         
