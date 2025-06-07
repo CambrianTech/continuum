@@ -126,26 +126,29 @@ class UIGenerator {
         }
         
         .status-pill {
-            display: inline-flex;
+            display: flex;
             align-items: center;
+            justify-content: flex-start;
             padding: 6px 12px;
             background: rgba(76, 175, 80, 0.1);
             border: 1px solid rgba(76, 175, 80, 0.3);
             border-radius: 20px;
             font-size: 12px;
             color: #4CAF50;
+            gap: 8px;
+            line-height: 1.2;
         }
         
         .status-dot {
-            width: 6px;
-            height: 6px;
+            width: 8px;
+            height: 8px;
             background: #4CAF50;
             border-radius: 50%;
-            margin-right: 8px;
-            margin-top: 0;
-            margin-bottom: 0;
-            vertical-align: middle;
+            margin: 0;
+            padding: 0;
             flex-shrink: 0;
+            align-self: center;
+            display: inline-block;
             animation: pulse 2s infinite;
         }
         
@@ -1518,10 +1521,10 @@ class UIGenerator {
                         "></div>
                         <span class="connection-status connecting" id="connection-status" style="
                             position: absolute;
-                            left: 14px;
-                            top: 14px;
+                            left: 50%;
+                            top: 50%;
                             transform: translate(-50%, -50%);
-                            z-index: 0;
+                            z-index: 10;
                         "></span>
                     </div>
                     <div class="logo-text" style="color: #00d4ff; text-shadow: 0 0 8px rgba(0, 212, 255, 0.4);">
