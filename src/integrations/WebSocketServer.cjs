@@ -197,6 +197,9 @@ class WebSocketServer extends EventEmitter {
           const jsCode = task.replace('[CMD:BROWSER_JS]', '').trim();
           let finalCode = jsCode;
           
+          // Generate execution ID for promise-like behavior
+          const executionId = `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          
           // Handle base64 decoding
           try {
             // Check if it looks like base64
@@ -210,22 +213,55 @@ class WebSocketServer extends EventEmitter {
           
           console.log(`💻 Broadcasting JavaScript to all browsers: ${finalCode.substring(0, 50)}...`);
           
-          // Broadcast to all connected browsers
+          // Set up promise-like response handler
+          const responseHandler = (browserResult) => {
+            // Route browser result back to originating Python client
+            ws.send(JSON.stringify({
+              type: 'js_executed',
+              success: browserResult.success,
+              result: browserResult.result,
+              output: browserResult.output || [],
+              error: browserResult.error || null,
+              timestamp: browserResult.timestamp,
+              executionId: executionId
+            }));
+            
+            // Clean up listener
+            this.removeListener(`js_result_${executionId}`, responseHandler);
+          };
+          
+          // Listen for browser response
+          this.once(`js_result_${executionId}`, responseHandler);
+          
+          // Set timeout for promise rejection
+          setTimeout(() => {
+            this.removeListener(`js_result_${executionId}`, responseHandler);
+            ws.send(JSON.stringify({
+              type: 'js_executed', 
+              success: false,
+              error: 'JavaScript execution timeout',
+              executionId: executionId
+            }));
+          }, 10000);
+          
+          // Broadcast to all connected browsers with execution ID
           this.broadcast({
             type: 'execute_js',
             data: {
               command: finalCode,
-              timestamp: new Date().toISOString()
+              timestamp: new Date().toISOString(),
+              executionId: executionId
             }
           });
           
-          // Send confirmation back to client
+          // Send immediate confirmation (not the final result)
           ws.send(JSON.stringify({
             type: 'result',
             data: {
               task: task,
               result: 'JavaScript sent to browsers',
-              role: role
+              role: role,
+              executionId: executionId
             }
           }));
           return;

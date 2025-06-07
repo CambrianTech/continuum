@@ -2695,8 +2695,8 @@ class UIGenerator {
                 }
             }
             
-            // Handle JavaScript execution from server
-            if (data.type === 'execute_js') {
+            // Handle JavaScript execution from server (both legacy and promise modes)
+            if (data.type === 'execute_js' || data.type === 'execute_js_promise') {
                 console.log('🔥 CLIENT v0.2.1896: EXECUTE_JS received!', data);
                 console.log('🔥 CLIENT: JavaScript command:', data.data?.command);
                 
