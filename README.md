@@ -215,6 +215,26 @@ The glass submenu system is built using:
 - **Event System**: Custom events for Academy, Projects, and Deploy actions
 - **CSS Animations**: Star Trek-inspired transparent glass styling
 
+### 🎬 Glass Submenu Demo Utility
+
+**`python-client/examples/natural_glass_submenu_demo.py`** - A utility script that demonstrates the glass submenu system by automating clicks and capturing screenshots.
+
+```bash
+# Run the glass submenu demo
+cd /Users/joel/Development/ideem/vHSM/externals/continuum
+python python-client/examples/natural_glass_submenu_demo.py
+```
+
+**What it does:**
+- 🖱️ **Clicks the `>>` button** on Claude Code agent via JavaScript automation
+- 🪟 **Triggers the glass submenu** using the natural AgentSelector component
+- 📸 **Captures screenshot** showing the transparent glass panel with action buttons
+- ✅ **Validates functionality** with proper positioning and timing
+
+**Output:** Creates timestamped screenshot in `.continuum/screenshots/natural_glass_submenu_[timestamp].png` showing the working Star Trek TNG glass submenu with 🎓 Academy, 📁 Projects, and 🚀 Deploy buttons.
+
+See `python-client/examples/README_glass_submenu_demo.md` for complete documentation.
+
 ## 🧪 Python Testing & Validation System
 
 Continuum includes a comprehensive **Python testing framework** that acts as the developer's "eyes" for validating UI changes, testing functionality, and capturing visual evidence of features working correctly.
