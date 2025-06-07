@@ -60,6 +60,8 @@ USAGE:
   continuum --help            Show this help message
   continuum --port <number>   Specify custom port (default: 5555)
   continuum --restart         Force restart the server (kill existing instance)
+  continuum --daemon          Run as daemon (detached background process)
+  continuum --idle-timeout <minutes>  Auto-shutdown after idle time (default: 30)
 
 FEATURES:
   🎓 Academy adversarial training (Testing Droid vs Protocol Sheriff)
@@ -85,11 +87,19 @@ AGENT AUTOMATION:
     📁 docs/            - Architecture and usage documentation
     
   Learn more: ./agent-scripts/README.md
+
+DAEMON MODE:
+  continuum --daemon                        # Run as background daemon
+  continuum --daemon --idle-timeout 60     # Auto-shutdown after 60 min idle
+  continuum --daemon --idle-timeout 0      # Never auto-shutdown
+  
+  Agents can wake daemon: heal "Connection refused"
   
 EXAMPLES:
   continuum                   # Start on default port 5555
   continuum --port 8080       # Start on custom port
   continuum --restart         # Force restart existing server
+  continuum --daemon          # Run as background daemon with 30min timeout
   
 For more information, visit: https://github.com/CambrianTech/continuum
 `);
@@ -206,6 +216,45 @@ async function forceRestart(options) {
   return continuum.start();
 }
 
+// Start as daemon
+function startDaemon(options, flags) {
+  const { spawn } = require('child_process');
+  const path = require('path');
+  
+  console.log('🚀 Starting Continuum daemon...');
+  
+  // Build arguments for daemon process
+  const args = [];
+  
+  if (options.port) {
+    args.push('--port', options.port);
+  }
+  
+  if (options['idle-timeout']) {
+    args.push('--idle-timeout', options['idle-timeout']);
+  }
+  
+  // Don't pass --daemon flag to child process to avoid infinite recursion
+  
+  // Create daemon process
+  const daemon = spawn(process.execPath, [__filename, ...args], {
+    detached: true,
+    stdio: ['ignore', 'ignore', 'ignore'], // Fully detached
+    cwd: process.cwd()
+  });
+  
+  // Unref so parent can exit
+  daemon.unref();
+  
+  console.log(`📝 Daemon started with PID: ${daemon.pid}`);
+  console.log(`🌐 Will be available at: http://localhost:${options.port || '5555'}`);
+  console.log(`⏰ Auto-shutdown after ${options['idle-timeout'] || '30'} minutes of inactivity`);
+  console.log('🔧 Agents can wake daemon with: heal "Connection refused"');
+  console.log('✅ Daemon launched successfully');
+  
+  process.exit(0);
+}
+
 // Main CLI handler
 function main() {
   const { flags, options } = parseArgs();
@@ -231,9 +280,32 @@ function main() {
     return;
   }
   
+  // Handle daemon mode
+  if (flags.has('daemon')) {
+    startDaemon(options, flags);
+    return;
+  }
+  
   // Start the full Continuum system
   const Continuum = require('./src/core/continuum-core.cjs');
-  const continuum = new Continuum(options);
+  
+  // Add idle timeout support - default 30 minutes for foreground, 60 for background
+  const idleTimeoutMinutes = parseInt(options['idle-timeout']) || 30;
+  const finalOptions = { 
+    ...options, 
+    idleTimeout: idleTimeoutMinutes > 0 ? idleTimeoutMinutes * 60 * 1000 : 0 
+  };
+  
+  // User-kind messaging
+  console.log('🚀 Starting Continuum Academy...');
+  console.log(`🌐 Web interface: http://localhost:${options.port || '5555'}`);
+  console.log(`⏰ Auto-shutdown after ${idleTimeoutMinutes} minutes of inactivity`);
+  console.log('🛰️ Agent portal: Run "js-send" commands while server is active');
+  console.log('💡 Use "continuum --daemon" for background operation');
+  console.log('📚 Need help? Run "continuum --help"');
+  console.log('');
+  
+  const continuum = new Continuum(finalOptions);
   
   continuum.start().catch(error => {
     console.error('❌ Failed to start Continuum:', error);
