@@ -10,6 +10,10 @@ import logging
 
 from continuum_client import ContinuumClient, ContinuumServerManager
 from continuum_client.exceptions.js_errors import ConnectionError
+from continuum_client.utils import load_continuum_config
+
+# Load Continuum configuration
+load_continuum_config()
 
 logger = logging.getLogger(__name__)
 
@@ -74,37 +78,42 @@ class TestContinuumClient:
             logger.info("✅ Message sent successfully")
     
     @pytest.mark.asyncio
-    async def test_promise_post_office_flow(self, continuum_server):
+    async def test_promise_post_office_flow(self):
         """Test complete Promise Post Office System flow"""
         logger.info("📮 Testing Promise Post Office flow...")
         
-        async with ContinuumClient() as client:
-            # Register as test agent  
-            await client.register_agent({
-                'agentId': 'post-office-tester',
-                'agentName': 'Post Office Tester',
-                'agentType': 'ai'
-            })
+        # Use a fresh server for this test to avoid conflicts
+        with ContinuumServerManager() as server:
+            logger.info("✅ Fresh server started")
             
-            # Test 1: Simple promise resolution
-            logger.info("  📤 Sending JS for promise resolution...")
-            result = await client.js.get_value("return 'Hello from Promise Post Office!'")
-            assert result == 'Hello from Promise Post Office!'
-            logger.info("  ✅ Promise resolved successfully")
-            
-            # Test 2: Math calculation 
-            logger.info("  📤 Sending math calculation...")
-            result = await client.js.get_value("return 2 + 2")
-            assert result == 4
-            logger.info("  ✅ Math calculation resolved")
-            
-            # Test 3: DOM query (should work in browser context)
-            logger.info("  📤 Testing DOM query...")
-            title = await client.js.get_value("return document.title || 'Continuum Test'")
-            assert isinstance(title, str)
-            logger.info(f"  ✅ DOM query resolved: {title}")
-            
-            logger.info("✅ Promise Post Office flow complete!")
+            async with ContinuumClient() as client:
+                # Register as test agent  
+                await client.register_agent({
+                    'agentId': 'post-office-tester',
+                    'agentName': 'Post Office Tester',
+                    'agentType': 'ai'
+                })
+                logger.info("✅ Agent registered")
+                
+                # Test 1: Simple promise resolution
+                logger.info("  📤 Sending JS for promise resolution...")
+                result = await client.js.get_value("return 'Hello from Promise Post Office!'")
+                assert result == 'Hello from Promise Post Office!'
+                logger.info("  ✅ Promise resolved successfully")
+                
+                # Test 2: Math calculation 
+                logger.info("  📤 Sending math calculation...")
+                result = await client.js.get_value("return 2 + 2")
+                assert result == '4'  # WebSocket serializes as string
+                logger.info("  ✅ Math calculation resolved")
+                
+                # Test 3: DOM query (should work in browser context)
+                logger.info("  📤 Testing DOM query...")
+                title = await client.js.get_value("return document.title || 'Continuum Test'")
+                assert isinstance(title, str)
+                logger.info(f"  ✅ DOM query resolved: {title}")
+                
+                logger.info("✅ Promise Post Office flow complete!")
     
     def test_client_initialization(self):
         """Test client initialization"""

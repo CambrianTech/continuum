@@ -5,6 +5,7 @@ Main client class for connecting to Continuum WebSocket server
 
 import asyncio
 import json
+import os
 import websockets
 from typing import Optional, Callable, Dict, Any
 from ..exceptions.js_errors import ConnectionError
@@ -16,8 +17,10 @@ class ContinuumClient:
     Acts as the post office for routing WebSocket messages
     """
     
-    def __init__(self, url: str = "ws://localhost:9000", timeout: float = 10.0):
-        self.url = url
+    def __init__(self, url: Optional[str] = None, timeout: float = 10.0):
+        from ..utils.config import get_continuum_ws_url
+        # Get URL from environment or use provided/default
+        self.url = url or get_continuum_ws_url()
         self.timeout = timeout
         self.ws = None
         self.js = None

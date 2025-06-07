@@ -45,14 +45,19 @@ def check_virtual_env():
 
 def check_dependencies():
     """Check if required dependencies are installed"""
-    required_packages = ['pytest', 'pytest-asyncio', 'websockets', 'beautifulsoup4']
+    required_packages = {
+        'pytest': 'pytest',
+        'pytest-asyncio': 'pytest_asyncio', 
+        'websockets': 'websockets',
+        'beautifulsoup4': 'bs4'
+    }
     missing_packages = []
     
-    for package in required_packages:
+    for package_name, import_name in required_packages.items():
         try:
-            __import__(package.replace('-', '_'))
+            __import__(import_name)
         except ImportError:
-            missing_packages.append(package)
+            missing_packages.append(package_name)
     
     if missing_packages:
         print(f"🚨 Missing required packages: {', '.join(missing_packages)}")
@@ -69,8 +74,8 @@ def run_tests_with_server(verbose=False, coverage=False, html_report=False):
     with ContinuumServerManager() as server:
         print("✅ Continuum server is ready")
         
-        # Build pytest command
-        cmd = ['python', '-m', 'pytest', 'tests/integration/']
+        # Build pytest command - run all tests (integration and unit)
+        cmd = ['python', '-m', 'pytest', 'tests/']
         
         if verbose:
             cmd.extend(['-v', '-s'])
