@@ -2055,6 +2055,15 @@ class UIGenerator {
             console.log('🤖 Updating available agents:', agents);
             allAvailableAgents = agents;
             renderAgentList();
+            
+            // BRIDGE: Also update any AgentSelector web components
+            const agentSelectors = document.querySelectorAll('agent-selector');
+            agentSelectors.forEach(selector => {
+                if (selector && typeof selector.updateRemoteAgents === 'function') {
+                    console.log('🔄 Updating AgentSelector component with remote agents');
+                    selector.updateRemoteAgents(agents.filter(agent => agent.source === 'remote'));
+                }
+            });
         }
         
         function renderAgentList() {
@@ -2716,33 +2725,68 @@ class UIGenerator {
                             originalWarn.apply(console, args);
                         };
                         
-                        // Execute JavaScript directly (no cleaning needed with base64 encoding)
+                        // SAFE ASYNC EXECUTION: Handle promises and returns properly
                         console.log('🛰️ CLIENT: Executing probe telemetry command...');
-                        const result = eval(data.data.command);
                         
-                        // Restore original console methods
-                        console.log = originalLog;
-                        console.error = originalError;
-                        console.warn = originalWarn;
+                        const executeAsync = async () => {
+                            try {
+                                // Wrap user code in async function to allow returns
+                                const asyncWrapper = new Function('return (async () => {' + data.data.command + '})();');
+                                return await asyncWrapper();
+                            } catch (syncError) {
+                                // Fallback to sync execution for simple expressions
+                                return eval(data.data.command);
+                            }
+                        };
                         
-                        console.log('🔥 CLIENT: JavaScript executed successfully!');
-                        console.log('🔥 CLIENT: Captured output:', capturedOutput);
-                        
-                        // Send execution result and console output back to server
-                        if (ws && ws.readyState === WebSocket.OPEN) {
-                            ws.send(JSON.stringify({
-                                type: 'js_executed',
-                                success: true,
-                                timestamp: new Date().toISOString(),
-                                message: 'JavaScript executed successfully on client',
-                                output: capturedOutput,
-                                result: result !== undefined ? String(result) : undefined,
-                                url: window.location.href,
-                                userAgent: navigator.userAgent,
-                                executionId: data.data.executionId
-                            }));
-                            console.log('🔥 CLIENT: Sent execution result and output to server');
-                        }
+                        executeAsync().then(result => {
+                            // Restore original console methods
+                            console.log = originalLog;
+                            console.error = originalError;
+                            console.warn = originalWarn;
+                            
+                            console.log('🔥 CLIENT: JavaScript executed successfully!');
+                            console.log('🔥 CLIENT: Captured output:', capturedOutput);
+                            
+                            // Send execution result and console output back to server
+                            if (ws && ws.readyState === WebSocket.OPEN) {
+                                ws.send(JSON.stringify({
+                                    type: 'js_executed',
+                                    success: true,
+                                    timestamp: new Date().toISOString(),
+                                    message: 'JavaScript executed successfully on client',
+                                    output: capturedOutput,
+                                    result: result !== undefined ? String(result) : undefined,
+                                    url: window.location.href,
+                                    userAgent: navigator.userAgent,
+                                    executionId: data.data.executionId
+                                }));
+                                console.log('🔥 CLIENT: Sent execution result and output to server');
+                            }
+                        }).catch(error => {
+                            // Restore console methods in case of error
+                            console.log = originalLog;
+                            console.error = originalError;
+                            console.warn = originalWarn;
+                            
+                            console.error('🔥 CLIENT: Async JavaScript execution failed:', error);
+                            console.error('🔥 CLIENT: Error stack:', error.stack);
+                            
+                            // Send error back to server
+                            if (ws && ws.readyState === WebSocket.OPEN) {
+                                ws.send(JSON.stringify({
+                                    type: 'js_executed',
+                                    success: false,
+                                    error: error.message,
+                                    stack: error.stack,
+                                    timestamp: new Date().toISOString(),
+                                    output: capturedOutput,
+                                    url: window.location.href,
+                                    userAgent: navigator.userAgent,
+                                    executionId: data.data.executionId
+                                }));
+                            }
+                        });
                     } else {
                         console.error('🔥 CLIENT: No command found in execute_js message');
                     }
