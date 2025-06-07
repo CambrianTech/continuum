@@ -1521,8 +1521,8 @@ class UIGenerator {
                         "></div>
                         <span class="connection-status connecting" id="connection-status" style="
                             position: absolute;
-                            left: 50%;
-                            top: 50%;
+                            left: 33%;
+                            top: 33%;
                             transform: translate(-50%, -50%);
                             z-index: 10;
                         "></span>
