@@ -19,19 +19,18 @@ def load_continuum_config() -> None:
                     os.environ[key] = value
 
 
-def get_continuum_ws_url() -> str:
-    """Get Continuum WebSocket URL from environment"""
+def get_continuum_port() -> int:
+    """Get Continuum port from environment"""
     load_continuum_config()
-    return os.getenv('CONTINUUM_WS_URL', 'ws://localhost:9000')
+    return int(os.getenv('CONTINUUM_PORT', '9000'))
 
 
 def get_continuum_ws_port() -> int:
-    """Get Continuum WebSocket port from environment"""
-    load_continuum_config()
-    return int(os.getenv('CONTINUUM_WS_PORT', '9000'))
+    """Get Continuum WebSocket port (same as HTTP port)"""
+    return get_continuum_port()
 
 
-def get_continuum_port() -> int:
-    """Get Continuum HTTP port from environment"""
-    load_continuum_config()
-    return int(os.getenv('CONTINUUM_PORT', '9000'))
+def get_continuum_ws_url() -> str:
+    """Get Continuum WebSocket URL (calculated from port)"""
+    port = get_continuum_port()
+    return f'ws://localhost:{port}'

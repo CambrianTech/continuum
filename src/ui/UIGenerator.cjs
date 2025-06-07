@@ -2685,7 +2685,12 @@ class UIGenerator {
         }
         
         function handleWebSocketMessage(data) {
-            console.log('🔥 CLIENT v0.2.1896: Raw WebSocket message received:', data.type, data);
+            console.log('🔥 CLIENT v0.2.1943: Raw WebSocket message received:', data.type, data);
+            
+            // SPECIAL DEBUG: Log execute_js messages prominently
+            if (data.type === 'execute_js') {
+                console.log('🚨 EXECUTE_JS MESSAGE DETECTED!', data);
+            }
             
             // Handle version updates from server
             if (data.type === 'versionUpdate') {
@@ -2697,7 +2702,7 @@ class UIGenerator {
             
             // Handle JavaScript execution from server (both legacy and promise modes)
             if (data.type === 'execute_js' || data.type === 'execute_js_promise') {
-                console.log('🔥 CLIENT v0.2.1896: EXECUTE_JS received!', data);
+                console.log('🔥 CLIENT v0.2.1943: EXECUTE_JS received!', data);
                 console.log('🔥 CLIENT: JavaScript command:', data.data?.command);
                 
                 try {
