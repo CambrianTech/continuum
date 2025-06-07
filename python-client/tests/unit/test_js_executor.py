@@ -171,7 +171,7 @@ class TestJSExecutorPromisePostOffice:
             
             # Test console.log capture (simplified - just verify execution works)
             logger.info("  📤 Sending console.log...")
-            result = await client.js.get_value("console.log('Hello from browser!'); return 'logged';")
+            result = await client.js.get_value("return (console.log('Hello from browser!'), 'logged')")
             
             assert result == 'logged'
             
