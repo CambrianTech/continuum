@@ -29,6 +29,7 @@ Promise-based Python client for Continuum WebSocket server with clean async Java
 - ⚡ **JavaScript Execution** - Execute JS in browser with return values
 - 🎯 **Error Handling** - Proper promise rejection for JS errors  
 - 🔍 **DOM Querying** - Built-in DOM manipulation methods
+- 📸 **Screenshot Capture** - Capture page elements as PNG/JPEG/WebP images
 - 🤖 **Agent Support** - Register and communicate as AI agents
 - 📦 **Clean Architecture** - Well-organized, testable code structure
 
@@ -90,6 +91,73 @@ async def create_fred_agent():
         if fred_visible:
             await client.send_message("✅ I can see myself in the UI!", 'fred')
 ```
+
+## Screenshot Capture
+
+Capture screenshots of web page elements using the Promise Post Office System:
+
+```python
+from examples.screenshot_capture import ScreenshotCapture
+
+async def capture_examples():
+    async with ScreenshotCapture() as capture:
+        # Capture full page
+        await capture.capture(
+            selector='body',
+            format='png',
+            save_path='screenshots/full_page.png',
+            open_image=True
+        )
+        
+        # Find and capture element by search term
+        await capture.capture(
+            selector='agents',  # Searches for elements containing 'agents'
+            format='jpeg',
+            quality=0.8,
+            open_image=True
+        )
+        
+        # Capture specific element by CSS selector
+        await capture.capture(
+            selector='#sidebar',
+            format='png',
+            save_path='screenshots/sidebar.png'
+        )
+        
+        # Find element first, then capture
+        find_result = await capture.find_element(['user', 'profile', 'account'])
+        if find_result['found']:
+            await capture.capture(
+                selector=find_result['selector'],
+                format='webp',
+                quality=0.9,
+                open_image=True
+            )
+```
+
+### Screenshot Features
+
+- **Smart Element Finding** - Search by ID, class, selector, or text content
+- **Multiple Formats** - PNG, JPEG, WebP with quality control
+- **Auto-open Images** - Automatically open captured screenshots  
+- **Save to Files** - Save to specific paths with directory creation
+- **Promise-based** - Full integration with the Promise Post Office System
+- **Error Handling** - Graceful fallbacks and error reporting
+
+### Quick Screenshot Examples
+
+```python
+# Quick captures (see examples/screenshot_capture.py)
+await capture_full_page()                    # Full page screenshot
+await capture_by_search('agents')            # Find & capture agents section  
+await capture_element_by_id('sidebar')       # Capture by element ID
+await capture_multiple_formats('#content')   # Same element, multiple formats
+```
+
+**📁 See [`examples/`](examples/) directory for complete screenshot examples:**
+- [`simple_screenshot.py`](examples/simple_screenshot.py) - Basic capture and auto-open
+- [`find_and_capture.py`](examples/find_and_capture.py) - Smart element finding
+- [`screenshot_capture.py`](examples/screenshot_capture.py) - Full-featured capture class
 
 ## Promise-Based Execution
 
