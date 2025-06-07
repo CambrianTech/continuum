@@ -142,7 +142,12 @@ await capture_multiple_formats('#content')   # Same element, multiple formats
 - [`natural_glass_submenu_demo.py`](examples/natural_glass_submenu_demo.py) - Star Trek TNG glass submenu demo
 - [`README_glass_submenu_demo.md`](examples/README_glass_submenu_demo.md) - Complete glass submenu documentation
 
-These utilities provide visual validation and automated testing macros for debugging UI components.
+**🎨 UI Styling & CSS Fix Tools:**
+- [`ui_styling_debugger.py`](examples/ui_styling_debugger.py) - Before/after visual debugging for CSS fixes
+- [`component_css_fixer.py`](examples/component_css_fixer.py) - Quick CSS fix application tool
+- [`README_UI_STYLING_TOOLS.md`](examples/README_UI_STYLING_TOOLS.md) - Complete styling tools documentation
+
+These utilities provide visual validation, automated CSS fix application, and systematic debugging workflows for UI styling issues.
 
 ## Promise-Based Execution
 
