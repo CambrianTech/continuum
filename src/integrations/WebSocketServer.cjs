@@ -45,6 +45,9 @@ class WebSocketServer extends EventEmitter {
       // Send status immediately (not queued)
       this.sendStatus(ws, sessionId);
       
+      // Send connection banner with available commands (like terminal login)
+      this.sendConnectionBanner(ws, sessionId);
+      
       // Queue the greeting to be sent after any tasks
       this.messageQueue.queueGreeting(ws, this.continuum);
       
@@ -56,6 +59,72 @@ class WebSocketServer extends EventEmitter {
 
   getSessionId(ws) {
     return ws.sessionId;
+  }
+
+  sendConnectionBanner(ws, sessionId) {
+    const packageInfo = require('../../package.json');
+    
+    // Build command info dynamically from loaded commands
+    const commands = {};
+    const examples = {};
+    
+    for (const [commandName, commandClass] of this.continuum.commandProcessor.commands.entries()) {
+      try {
+        const definition = commandClass.getDefinition();
+        commands[commandName] = {
+          description: definition.description,
+          usage: `{"type": "task", "role": "system", "task": "[CMD:${commandName}] ${definition.params}"}`,
+          params: definition.params,
+          category: definition.category,
+          icon: definition.icon
+        };
+        
+        // Use first example if available
+        if (definition.examples && definition.examples.length > 0) {
+          examples[`${commandName} example`] = `{"type": "task", "role": "system", "task": "[CMD:${commandName}] ${definition.examples[0]}"}`;
+        }
+      } catch (error) {
+        // Fallback for commands without proper getDefinition
+        commands[commandName] = {
+          description: 'Available command',
+          usage: `{"type": "task", "role": "system", "task": "[CMD:${commandName}] <params>"}`
+        };
+      }
+    }
+    
+    // Get agents dynamically
+    const agents = this.continuum.getServiceAgents ? this.continuum.getServiceAgents() : [];
+    
+    const banner = {
+      type: 'connection_banner',
+      data: {
+        welcome: `Continuum v${packageInfo.version} - Agent Command Interface`,
+        motd: 'WebSocket Agent Terminal - Dynamic command discovery',
+        session: sessionId,
+        commands: {
+          available: Object.keys(commands),
+          details: commands
+        },
+        agents: {
+          available: agents.map(agent => ({ name: agent.name || agent, role: agent.role || agent })),
+          usage: 'Send messages: {"type": "message", "content": "your message", "agent": "AgentName"}'
+        },
+        examples: {
+          ...examples,
+          'Chat with AI': '{"type": "message", "content": "Hello", "room": "general"}',
+          'Direct agent': '{"type": "direct_message", "agent": "CodeAI", "content": "help me"}'
+        },
+        connection_info: {
+          protocol: 'WebSocket',
+          endpoint: `ws://localhost:${this.continuum.port}`,
+          session_timeout: '30 minutes idle',
+          encoding: 'JSON messages',
+          command_count: Object.keys(commands).length
+        }
+      }
+    };
+    
+    ws.send(JSON.stringify(banner));
   }
 
   sendStatus(ws, sessionId) {

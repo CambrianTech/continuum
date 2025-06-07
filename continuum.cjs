@@ -88,6 +88,39 @@ AGENT AUTOMATION:
     
   Learn more: ./agent-scripts/README.md
 
+WEBSOCKET AGENT CONNECTION:
+  🔌 Direct agent connection (like telnet/ssh for AI agents)
+  
+  Connection:
+    ws://localhost:5555             # WebSocket endpoint (default port)
+    
+  On Connect:
+    - Receives connection banner with available commands
+    - Dynamic command list from loaded modules
+    - Usage examples and agent information
+    - Session management and timeout info
+    
+  Message Types:
+    {"type": "task", "role": "system", "task": "[CMD:BROWSER_JS] <base64>"}
+    {"type": "message", "content": "Hello", "room": "general"}
+    {"type": "direct_message", "agent": "CodeAI", "content": "debug this"}
+    
+  Commands (loaded dynamically from modules):
+    Run 'continuum' to see full command list with descriptions
+    
+  Response Format:
+    {"type": "response", "message": "<result>", "agent": "Claude"}
+    {"type": "connection_banner", "data": {"commands": [...], "agents": [...]}}
+    
+  Examples:
+    # Send joke to browser
+    {"type": "task", "role": "system", "task": "[CMD:BROWSER_JS] Y29uc29sZS5sb2coJ0pva2UhJyk="}
+    
+    # Chat with Claude
+    {"type": "message", "content": "Tell me a joke", "room": "general"}
+    
+  Connection acts like terminal login - full command interface available
+
 DAEMON MODE:
   continuum --daemon                        # Run as background daemon
   continuum --daemon --idle-timeout 60     # Auto-shutdown after 60 min idle
