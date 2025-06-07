@@ -89,9 +89,14 @@ AGENT AUTOMATION:
     📁 docs/            - Architecture and usage documentation
     
   Python Client Directory: ./python-client/
-    📁 examples/         - Screenshot capture examples (simple_screenshot.py, etc.)
+    📁 examples/         - Screenshot capture & UI debugging demos
     📁 continuum_client/ - WebSocket client for AI agents
     📁 tests/           - Comprehensive test suite (19/19 passing)
+    
+  Debugging Demos: ./python-client/examples/
+    🪟 natural_glass_submenu_demo.py - Star Trek TNG glass submenu demo
+    📸 simple_screenshot.py         - Basic screenshot capture
+    🔍 find_and_capture.py          - Smart element finding
     
   Learn more: ./agent-scripts/README.md, ./python-client/README.md
 
