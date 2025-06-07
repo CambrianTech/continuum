@@ -41,7 +41,16 @@ export ANTHROPIC_API_KEY="your-key"
 export HUGGINGFACE_API_KEY="your-key"
 ```
 
-### 3. Train Your First Persona
+### 3. Start Continuum Server
+```bash
+# Start the WebSocket server
+node continuum.cjs
+
+# Server will start on http://localhost:9000
+# Web interface with Promise Post Office System available
+```
+
+### 4. Train Your First Persona
 ```javascript
 const Academy = require('./src/core/Academy.cjs');
 const { ModelRegistry } = require('./src/core/AIModel.cjs');
@@ -60,7 +69,7 @@ const persona = await academy.trainNewPersona(
 console.log(`🎓 ${persona.name} graduated with ${persona.graduationScore}% accuracy`);
 ```
 
-### 4. Create LoRA Adapters (Recommended)
+### 5. Create LoRA Adapters (Recommended)
 ```javascript
 const { ModelAdapterFactory } = require('./src/core/ModelAdapter.cjs');
 
@@ -78,7 +87,7 @@ const result = await adapter.fineTune('gpt-3.5-turbo', trainingData, {
 console.log(`📦 Adapter: ${result.fineTuneId} (${result.storageReduction}x smaller)`);
 ```
 
-### 5. Save and Share
+### 6. Save and Share
 ```javascript
 // Save persona with LoRA adapter
 const persona = new Persona({
@@ -94,7 +103,7 @@ const savedPaths = await persona.save();
 console.log(`Share this file: ${savedPaths.checkpointPath} (15MB)`);
 ```
 
-### 6. Install Shared Adapters
+### 7. Install Shared Adapters
 ```javascript
 const AdapterRegistry = require('./src/core/AdapterRegistry.cjs');
 const registry = new AdapterRegistry();
@@ -105,6 +114,90 @@ await registry.installAdapter('patent-expert-id', './my-adapters/patent-expert.j
 // Load and use
 const loadedPersona = Persona.load('patent-expert');
 const deployment = loadedPersona.deploy({ task: 'Patent analysis' });
+```
+
+## 🖼️ AI-Driven Web Interface Control
+
+Continuum includes a powerful **Promise Post Office System** that enables AI agents to interact with and control web interfaces through JavaScript execution and screenshot capture.
+
+### Screenshot Capture & Visual Debugging
+```python
+# Python client for AI-driven web interaction
+from python-client.examples.screenshot_capture import ScreenshotCapture
+
+async def ai_debug_interface():
+    async with ScreenshotCapture() as capture:
+        # AI can see the current state of the interface
+        screenshot = await capture.capture(
+            selector='body',
+            format='png',
+            save_path='debug/current_state.png'
+        )
+        
+        # AI can target specific UI components
+        agents_section = await capture.capture(
+            selector='agents',  # Smart search for agents UI
+            open_image=True     # AI can "see" the result
+        )
+        
+        # AI can capture errors or specific elements
+        error_state = await capture.capture(
+            selector='.error-message',
+            format='jpeg',
+            save_path='debug/error_analysis.jpg'
+        )
+```
+
+### AI Web Interaction Capabilities
+- 📸 **Visual Debugging** - AI can capture and analyze interface states
+- 🎯 **Smart Element Finding** - AI can locate UI components by description
+- 🔍 **Real-time Interface Monitoring** - Continuous visual feedback loop
+- 🤖 **Autonomous UI Fixes** - AI can identify and resolve interface issues
+- 📊 **Visual Test Validation** - Screenshot-based test verification
+
+### Promise Post Office Architecture
+```
+AI Agent (Python)
+    ↓ (WebSocket Command)
+Continuum Server  
+    ↓ (routes to browser)
+Browser JavaScript
+    ↓ (html2canvas capture)
+Base64 Image Data
+    ↓ (WebSocket response)
+AI Agent (receives image)
+    ↓ (visual analysis)
+Autonomous Actions
+```
+
+This enables AI agents to:
+- **See interface problems** through screenshots
+- **Identify UI regressions** automatically  
+- **Debug visual issues** without human intervention
+- **Validate layouts** across different states
+- **Monitor user experience** continuously
+
+### Example: AI Interface Doctor
+```python
+async def ai_interface_doctor():
+    """AI that monitors and fixes interface issues"""
+    async with ScreenshotCapture() as capture:
+        # Take diagnostic screenshot
+        current_state = await capture.capture('body')
+        
+        # AI analyzes the image for issues
+        issues = await ai_analyze_interface(current_state['dataURL'])
+        
+        # AI can fix problems autonomously
+        if 'sidebar_missing' in issues:
+            await fix_sidebar_layout()
+            
+        if 'agents_not_visible' in issues:
+            await refresh_agent_display()
+            
+        # Verify fixes with another screenshot
+        fixed_state = await capture.capture('body')
+        success = await ai_verify_fixes(fixed_state['dataURL'])
 ```
 
 ## 🏗️ Architecture Overview
@@ -244,6 +337,18 @@ continuum/
 │   ├── TestingDroid.cjs        # Adversarial test generator
 │   ├── ProtocolSheriff.cjs     # Protocol violation detector
 │   └── ModelCheckpoint.cjs     # Model persistence system
+├── src/commands/core/          # WebSocket command system
+│   ├── ScreenshotCommand.cjs   # Browser screenshot capture
+│   └── JSExecutor.cjs          # Promise Post Office System
+├── python-client/              # AI-driven web interaction
+│   ├── continuum_client/       # Python WebSocket client
+│   ├── examples/               # Screenshot & interaction examples
+│   │   ├── screenshot_capture.py    # Full-featured capture class
+│   │   ├── simple_screenshot.py     # Basic capture example
+│   │   └── find_and_capture.py      # Smart element finding
+│   └── tests/                  # Comprehensive client tests
+│       ├── unit/               # Unit tests (19/19 passing)
+│       └── integration/        # Integration tests
 ├── tests/                      # Comprehensive test suite
 │   ├── adversarial-protocol.test.cjs
 │   ├── lora-fine-tuning.test.cjs

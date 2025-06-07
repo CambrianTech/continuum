@@ -70,12 +70,14 @@ FEATURES:
   🤝 Cross-scope persona sharing (project/user/organization)
   📊 Real-time cost tracking and session management
   💬 Multi-provider AI integration (OpenAI, Anthropic, HuggingFace)
+  📸 AI screenshot capture & visual debugging (Promise Post Office System)
 
 WEB INTERFACE:
   Navigate to http://localhost:5555 after starting
 
 AGENT AUTOMATION:
   🛰️ Deep Space Probe Portal - Browser automation via WebSocket telemetry
+  📸 Promise Post Office System - AI-driven screenshot capture & web control
   
   Quick Start:
     js-send 'console.log("Hello from agent!")'  # Send JavaScript to browser
@@ -86,7 +88,12 @@ AGENT AUTOMATION:
     📁 examples/         - Example scripts by category (jokes, diagnostics, fixes)
     📁 docs/            - Architecture and usage documentation
     
-  Learn more: ./agent-scripts/README.md
+  Python Client Directory: ./python-client/
+    📁 examples/         - Screenshot capture examples (simple_screenshot.py, etc.)
+    📁 continuum_client/ - WebSocket client for AI agents
+    📁 tests/           - Comprehensive test suite (19/19 passing)
+    
+  Learn more: ./agent-scripts/README.md, ./python-client/README.md
 
 WEBSOCKET AGENT CONNECTION:
   🔌 Direct agent connection (like telnet/ssh for AI agents)
@@ -106,6 +113,8 @@ WEBSOCKET AGENT CONNECTION:
     {"type": "direct_message", "agent": "CodeAI", "content": "debug this"}
     
   Commands (loaded dynamically from modules):
+    SCREENSHOT - Capture browser screenshots (PNG/JPEG/WebP)
+    BROWSER_JS - Execute JavaScript with Promise-like returns
     Run 'continuum' to see full command list with descriptions
     
   Response Format:
@@ -116,8 +125,14 @@ WEBSOCKET AGENT CONNECTION:
     # Send joke to browser
     {"type": "task", "role": "system", "task": "[CMD:BROWSER_JS] Y29uc29sZS5sb2coJ0pva2UhJyk="}
     
+    # Capture screenshot
+    {"type": "task", "role": "system", "task": "[CMD:SCREENSHOT] {}"}
+    
     # Chat with Claude
     {"type": "message", "content": "Tell me a joke", "room": "general"}
+    
+    # Python AI screenshot example
+    python python-client/examples/simple_screenshot.py
     
   Connection acts like terminal login - full command interface available
 
