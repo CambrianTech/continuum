@@ -112,7 +112,14 @@ if (typeof window.AgentSelector === 'undefined') {
   }
 
   updateRemoteAgents(agents) {
-    this.remoteAgents = agents || [];
+    // Simple assignment - styling fallbacks handled in render
+    this.remoteAgents = (agents || []).map(agent => ({
+      ...agent,
+      source: 'remote',
+      id: agent.agentId || agent.id || 'unknown',
+      name: agent.agentName || agent.name || 'Unknown Agent',
+      type: agent.agentType || agent.type || 'ai'
+    }));
     this.render();
   }
 
@@ -239,39 +246,60 @@ if (typeof window.AgentSelector === 'undefined') {
 
   generateAgentHTML(agent) {
     const isSelected = agent.id === this.selectedAgent;
-    const isRemote = agent.source === 'remote';
-    const isHuman = agent.type === 'human' || agent.type === 'user' || agent.type === 'assistant';
-    const isUser = agent.type === 'user' || agent.type === 'assistant';
+    const isRemote = agent.category === 'remote' || agent.source === 'remote';
+    const isUser = agent.category === 'user' || agent.type === 'user' || agent.type === 'assistant';
+    const isLocal = agent.category === 'local';
     const isFavorite = this.favoriteAgents.has(agent.id);
+    
+    // Dynamic fallbacks based on agent category
+    let avatar, gradient, role, status;
+    
+    if (isUser) {
+      avatar = agent.avatar || '👤';
+      gradient = agent.gradient || 'linear-gradient(135deg, #FFD700, #FFA500)';
+      role = agent.role || 'Project Owner';
+      status = agent.status || 'online';
+    } else if (isRemote) {
+      avatar = agent.avatar || '🤖';
+      gradient = agent.gradient || 'linear-gradient(135deg, #00d4ff, #0099cc)';
+      role = agent.role || 'Remote AI Assistant';
+      status = agent.status || 'connected';
+    } else {
+      // Local agents
+      avatar = agent.avatar || '🧠';
+      gradient = agent.gradient || 'linear-gradient(135deg, #4FC3F7, #29B6F6)';
+      role = agent.role || 'AI Assistant';
+      status = agent.status || 'online';
+    }
     
     // Filter based on search query
     if (this.searchQuery && !agent.name.toLowerCase().includes(this.searchQuery) && 
-        !agent.role.toLowerCase().includes(this.searchQuery)) {
+        !role.toLowerCase().includes(this.searchQuery)) {
       return '';
     }
     
     return `
       <div class="agent-item ${isSelected ? 'selected' : ''} ${isFavorite ? 'favorite' : ''}" data-agent-id="${agent.id}">
-        <div class="agent-avatar" style="background: ${agent.gradient};">
-          ${agent.avatar}
-          <div class="agent-status ${agent.status}"></div>
+        <div class="agent-avatar" style="background: ${gradient};">
+          ${avatar}
+          <div class="agent-status ${status}"></div>
           ${isFavorite ? '<div class="favorite-star">⭐</div>' : ''}
         </div>
         <div class="agent-info">
           <div class="agent-name">
-            ${agent.name}
-            ${isRemote ? '<span class="remote-indicator">' + (isHuman ? 'H' : 'AI') + '</span>' : ''}
+            ${agent.name || 'Unknown Agent'}
             ${isUser ? '<span class="user-indicator">USER</span>' : ''}
+            ${isRemote ? '<span class="remote-indicator">AI</span>' : ''}
           </div>
-          <div class="agent-role">${agent.role}</div>
+          <div class="agent-role">${role}</div>
           ${isRemote ? `<div class="agent-meta">${agent.hostInfo?.hostname || 'Unknown'} • ${agent.messageCount || 0} msgs</div>` : ''}
-          ${isUser ? `<div class="agent-meta">Last active: ${new Date(agent.lastActive).toLocaleTimeString()}</div>` : ''}
+          ${isUser ? `<div class="agent-meta">Last active: ${new Date(agent.lastActive || Date.now()).toLocaleTimeString()}</div>` : ''}
         </div>
         <div class="agent-actions">
           <button class="favorite-btn" data-agent-id="${agent.id}" title="${isFavorite ? 'Remove from favorites' : 'Add to favorites'}">
             ${isFavorite ? '★' : '☆'}
           </button>
-          <button class="drawer-btn" data-agent-id="${agent.id}" title="View ${agent.name} details">
+          <button class="drawer-btn" data-agent-id="${agent.id}" title="View ${agent.name || 'Unknown Agent'} details">
             <span class="drawer-icon">&gt;&gt;</span>
           </button>
         </div>
@@ -290,6 +318,21 @@ if (typeof window.AgentSelector === 'undefined') {
     `;
   }
 
+  getAllAgentsUnified() {
+    // Combine all agents into one unified, dynamically sorted list
+    const allAgents = [
+      ...this.connectedUsers.map(user => ({...user, category: 'user', priority: 1})),
+      ...this.agents.map(agent => ({...agent, category: 'local', priority: 2})),
+      ...this.remoteAgents.map(agent => ({...agent, category: 'remote', priority: 3}))
+    ];
+    
+    // Sort by priority first, then by name
+    return allAgents.sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+  }
+
   render() {
     console.log('[AgentSelector] Rendering component', {
       searchQuery: this.searchQuery,
@@ -299,11 +342,6 @@ if (typeof window.AgentSelector === 'undefined') {
       connectedUsers: this.connectedUsers.length,
       favoriteCount: this.favoriteAgents.size
     });
-
-    const remoteHumans = this.remoteAgents.filter(agent => 
-      agent.type === 'human' || agent.type === 'user');
-    const remoteAIs = this.remoteAgents.filter(agent => 
-      agent.type === 'ai' || agent.type === 'system');
 
     this.shadowRoot.innerHTML = `
       <div class="search-container">
@@ -520,10 +558,7 @@ if (typeof window.AgentSelector === 'undefined') {
 
       <div class="title">USERS & AGENTS</div>
       <div class="agent-list">
-        ${this.connectedUsers.map(user => this.generateAgentHTML(user)).join('')}
-        ${this.agents.map(agent => this.generateAgentHTML(agent)).join('')}
-        ${this.generateRemoteSection('⚡ Network Operators', remoteHumans, '#ff6b6b')}
-        ${this.generateRemoteSection('🌐 Network AI', remoteAIs, '#00d4ff')}
+        ${this.getAllAgentsUnified().map(agent => this.generateAgentHTML(agent)).join('')}
       </div>
     `;
 
