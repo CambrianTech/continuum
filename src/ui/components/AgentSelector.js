@@ -507,20 +507,60 @@ if (typeof window.AgentSelector === 'undefined') {
       <style>
         :host {
           display: block;
-          margin: 20px;
-          background: rgba(255, 255, 255, 0.05);
+          margin: 15px;
+          background: rgba(255, 255, 255, 0.06);
           border-radius: 12px;
-          padding: 15px;
+          padding: 18px;
           max-height: 400px;
           overflow-y: auto;
         }
 
-        .title {
-          font-size: 14px;
+        /* Search container styles */
+        .search-container {
+          position: relative;
+          margin-bottom: 15px;
+        }
+        
+        .search-input {
+          width: 100%;
+          padding: 8px 12px 8px 35px;
+          background: rgba(255, 255, 255, 0.08);
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          border-radius: 8px;
+          color: #e0e6ed;
+          font-size: 13px;
+          box-sizing: border-box;
+          transition: all 0.3s ease;
+        }
+        
+        .search-input::placeholder {
           color: #8a92a5;
-          margin-bottom: 12px;
+        }
+        
+        .search-input:focus {
+          outline: none;
+          border-color: rgba(0, 212, 255, 0.5);
+          background: rgba(255, 255, 255, 0.12);
+          box-shadow: 0 0 8px rgba(0, 212, 255, 0.2);
+        }
+        
+        .search-icon {
+          position: absolute;
+          left: 12px;
+          top: 50%;
+          transform: translateY(-50%);
+          color: #8a92a5;
+          font-size: 14px;
+          pointer-events: none;
+        }
+
+        .title {
+          font-size: 12px;
+          color: #8a92a5;
+          margin-bottom: 15px;
           text-transform: uppercase;
-          letter-spacing: 0.5px;
+          letter-spacing: 1px;
+          font-weight: 600;
           flex-shrink: 0;
         }
 
@@ -536,7 +576,7 @@ if (typeof window.AgentSelector === 'undefined') {
         .agent-item {
           display: flex;
           align-items: center;
-          padding: 8px 10px;
+          padding: 10px 12px;
           border-radius: 8px;
           cursor: pointer;
           transition: all 0.3s ease;
@@ -621,6 +661,44 @@ if (typeof window.AgentSelector === 'undefined') {
           border: 1px solid rgba(255, 215, 0, 0.3);
         }
 
+        /* Fix favorite button positioning and actions container */
+        .agent-actions {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          margin-left: auto;
+        }
+        
+        .favorite-btn {
+          background: transparent;
+          border: none;
+          color: #8a92a5;
+          cursor: pointer;
+          padding: 4px;
+          width: 20px;
+          height: 20px;
+          border-radius: 4px;
+          transition: all 0.3s ease;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 12px;
+        }
+        
+        .favorite-btn:hover {
+          color: #FFD700;
+          background: rgba(255, 215, 0, 0.1);
+        }
+        
+        .agent-item.favorite .favorite-btn {
+          color: #FFD700;
+        }
+        
+        /* Remove clashing favorite star from avatar */
+        .favorite-star {
+          display: none !important;
+        }
+
         .drawer-btn {
           background: transparent;
           border: 1px solid rgba(0, 212, 255, 0.3);
@@ -633,7 +711,6 @@ if (typeof window.AgentSelector === 'undefined') {
           display: flex;
           align-items: center;
           justify-content: center;
-          margin-left: auto;
           font-family: 'Courier New', monospace;
           font-size: 10px;
           letter-spacing: 1px;
