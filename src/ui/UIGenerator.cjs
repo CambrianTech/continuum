@@ -142,6 +142,10 @@ class UIGenerator {
             background: #4CAF50;
             border-radius: 50%;
             margin-right: 8px;
+            margin-top: 0;
+            margin-bottom: 0;
+            vertical-align: middle;
+            flex-shrink: 0;
             animation: pulse 2s infinite;
         }
         
