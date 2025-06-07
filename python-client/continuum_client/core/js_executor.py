@@ -66,7 +66,11 @@ class JSExecutor:
         # Create promise-like future
         future = asyncio.Future()
         execution_id = f"py_exec_{id(future)}"
+        
+        # Store both ways: by our ID and by a placeholder for server ID
         self.pending_executions[execution_id] = future
+        # Also store by a special key that will be updated when we get server's execution ID
+        self.pending_executions['_latest'] = future
         
         try:
             # Send request
@@ -223,10 +227,38 @@ class JSExecutor:
         Routes js_executed responses to appropriate pending executions
         """
         if message.get('type') == 'js_executed':
-            # Find matching pending execution
-            # For now, resolve the first pending (can improve with execution ID tracking)
-            if self.pending_executions:
-                execution_id, future = next(iter(self.pending_executions.items()))
+            execution_id = message.get('executionId')
+            
+            # Try to match by server's execution ID first
+            if execution_id and execution_id in self.pending_executions:
+                future = self.pending_executions[execution_id]
                 if not future.done():
                     future.set_result(message)
                     self.pending_executions.pop(execution_id, None)
+                    # Clean up _latest if it's the same future
+                    if self.pending_executions.get('_latest') is future:
+                        self.pending_executions.pop('_latest', None)
+                    return
+            
+            # Try the latest pending execution
+            if '_latest' in self.pending_executions:
+                future = self.pending_executions['_latest']
+                if not future.done():
+                    future.set_result(message)
+                    # Store by server execution ID for future reference
+                    if execution_id:
+                        self.pending_executions[execution_id] = future
+                    # Clean up by removing our temporary keys
+                    self.pending_executions.pop('_latest', None)
+                    # Find and remove the original py_exec key
+                    for key in list(self.pending_executions.keys()):
+                        if key.startswith('py_exec_') and self.pending_executions[key] is future:
+                            self.pending_executions.pop(key, None)
+                    return
+            
+            # Final fallback: resolve any pending execution
+            if self.pending_executions:
+                key, future = next(iter(self.pending_executions.items()))
+                if not future.done():
+                    future.set_result(message)
+                    self.pending_executions.pop(key, None)
