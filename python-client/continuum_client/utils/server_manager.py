@@ -20,8 +20,10 @@ except ImportError:
 class ContinuumServerManager:
     """Manages Continuum server lifecycle for testing and development"""
     
-    def __init__(self, port: int = 5555):
-        self.port = port
+    def __init__(self, port: Optional[int] = None):
+        from .config import get_continuum_ws_port
+        # Get port from environment or use default
+        self.port = port or get_continuum_ws_port()
         self.process: Optional[subprocess.Popen] = None
         atexit.register(self.stop)
     
@@ -47,6 +49,38 @@ class ContinuumServerManager:
         
         return None
     
+    def kill_existing_server(self) -> bool:
+        """Kill any existing server on this port"""
+        try:
+            # Find process using the port
+            result = subprocess.run(
+                ['lsof', '-ti', f':{self.port}'], 
+                capture_output=True, 
+                text=True
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                print(f"🔫 Killing existing servers on port {self.port}: {pids}")
+                
+                for pid in pids:
+                    try:
+                        subprocess.run(['kill', '-9', pid], check=True)
+                        print(f"💀 Killed process {pid}")
+                    except subprocess.CalledProcessError:
+                        print(f"⚠️ Failed to kill process {pid}")
+                
+                # Wait a moment for processes to die
+                import time
+                time.sleep(2)
+                return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"⚠️ Error killing existing server: {e}")
+            return False
+    
     def is_server_healthy(self, timeout: int = 30) -> bool:
         """Check if Continuum server is running and healthy"""
         if not requests:
@@ -67,7 +101,7 @@ class ContinuumServerManager:
         return False
     
     def start(self, daemon: bool = True, restart: bool = True) -> bool:
-        """Start Continuum server"""
+        """Start Continuum server with robust error handling"""
         continuum_path = self.find_continuum_executable()
         if not continuum_path:
             raise FileNotFoundError(
@@ -75,34 +109,60 @@ class ContinuumServerManager:
                 "Please ensure continuum.cjs is accessible or install globally"
             )
         
+        print(f"🔧 Starting Continuum server on port {self.port}...")
+        
         try:
-            # Try restart first if requested
+            # Check if server is already running
+            if self.is_server_healthy(timeout=3):
+                print(f"✅ Server already running on port {self.port}")
+                return True
+            
+            # Kill any existing servers and start fresh
             if restart:
-                restart_cmd = ['node', str(continuum_path), '--restart', '--port', str(self.port)]
-                subprocess.run(restart_cmd, capture_output=True, text=True, timeout=10)
+                print("🔄 Cleaning up existing servers...")
+                self.kill_existing_server()
             
             # Start the server
             cmd = ['node', str(continuum_path), '--port', str(self.port)]
             if daemon:
                 cmd.extend(['--daemon', '--idle-timeout', '0'])
             
+            print(f"🚀 Executing: {' '.join(cmd)}")
+            
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                cwd=continuum_path.parent,  # Run from continuum directory
                 preexec_fn=os.setsid if hasattr(os, 'setsid') else None
             )
             
+            # Give daemon mode time to start
+            if daemon:
+                import time
+                time.sleep(3)
+            
             # Wait for server to be ready
+            print("⏳ Waiting for server to be ready...")
             if self.is_server_healthy(timeout=30):
+                print("✅ Continuum server is ready!")
                 return True
             else:
+                # Debug: show process output
+                if self.process:
+                    stdout, stderr = self.process.communicate(timeout=5)
+                    print(f"❌ Server failed to start")
+                    print(f"STDOUT: {stdout.decode()}")
+                    print(f"STDERR: {stderr.decode()}")
+                    print(f"Return code: {self.process.returncode}")
                 self.stop()
                 return False
                 
         except subprocess.TimeoutExpired:
+            print("⏱️ Server start timeout, checking health...")
             return self.is_server_healthy(timeout=10)
-        except Exception:
+        except Exception as e:
+            print(f"❌ Exception starting server: {e}")
             self.stop()
             return False
     
