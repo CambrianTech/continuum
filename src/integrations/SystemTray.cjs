@@ -28,7 +28,7 @@ class SystemTrayManager {
     
     // Click handler - open web interface
     this.tray.on('click', () => {
-      const port = this.continuum.options.port || 5555;
+      const port = this.continuum.options.port || process.env.CONTINUUM_PORT || 9000;
       shell.openExternal(`http://localhost:${port}`);
     });
     
@@ -108,7 +108,7 @@ class SystemTrayManager {
   }
 
   updateContextMenu() {
-    const port = this.continuum.options.port || 5555;
+    const port = this.continuum.options.port || process.env.CONTINUUM_PORT || 9000;
     const idleTimeout = this.continuum.options.idleTimeout;
     const timeoutMinutes = idleTimeout ? Math.round(idleTimeout / 60000) : 30;
     

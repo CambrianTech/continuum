@@ -15,13 +15,13 @@ Continuum automatically detects and resolves port conflicts when starting new in
 
 ```bash
 # Start first instance
-continuum start --port 5555
+continuum start --port 9000
 
 # Start second instance (will replace first)
-continuum start --port 5555  # Automatically shuts down first instance
+continuum start --port 9000  # Automatically shuts down first instance
 
 # Start with port discovery
-continuum start --port 5555  # Will use 5556 if 5555 is occupied by another process
+continuum start --port 9000  # Will use 5556 if 9000 is occupied by another process
 ```
 
 ### 2. Stay-Alive Mode
@@ -30,10 +30,10 @@ Prevent automatic replacement of existing instances:
 
 ```bash
 # Start first instance
-continuum start --port 5555
+continuum start --port 9000
 
 # Try to start second instance with stay-alive
-continuum start --stay-alive --port 5555  # Exits gracefully, keeps first instance running
+continuum start --stay-alive --port 9000  # Exits gracefully, keeps first instance running
 ```
 
 ### 3. Graceful Shutdown
@@ -131,7 +131,7 @@ export CONTINUUM_CONFIG_DIR=/custom/path
 continuum start [options]
 
 Options:
-  --port <number>     Custom port (default: 5555)
+  --port <number>     Custom port (default: 9000)
   --stay-alive        Don't replace existing instances
   --persist          Alias for --stay-alive
 ```
@@ -156,7 +156,7 @@ continuum status
 rm -rf .continuum/
 
 # Check port availability manually
-netstat -an | grep 5555
+netstat -an | grep 9000
 
 # View logs for debugging
 continuum start 2>&1 | tee continuum.log
@@ -191,14 +191,14 @@ module.exports = {
   apps: [{
     name: 'continuum',
     script: 'continuum.cjs',
-    args: 'start --port 5555',
+    args: 'start --port 9000',
     instances: 1,
     autorestart: true,
     watch: false,
     max_memory_restart: '1G',
     env: {
       NODE_ENV: 'production',
-      CONTINUUM_PORT: 5555
+      CONTINUUM_PORT: 9000
     }
   }]
 };
@@ -219,7 +219,7 @@ ExecStart=/usr/bin/node continuum.cjs start
 Restart=always
 RestartSec=10
 Environment=NODE_ENV=production
-Environment=CONTINUUM_PORT=5555
+Environment=CONTINUUM_PORT=9000
 
 [Install]
 WantedBy=multi-user.target

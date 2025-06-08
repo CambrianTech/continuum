@@ -13,7 +13,7 @@ async def simple_test():
     ws_url = get_continuum_ws_url()
     
     print(f"Testing {ws_url}")
-    print("Browser should be open at http://localhost:5555/")
+    print("Browser should be open at http://localhost:9000/")
     
     async with websockets.connect(ws_url) as ws:
         # Skip initial messages

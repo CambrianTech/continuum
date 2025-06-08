@@ -171,25 +171,25 @@
     "endpoint": "/ask",
     "method": "GET",
     "parameter": "task",
-    "format": "curl 'http://localhost:5555/ask?task=your_command_here'"
+    "format": "curl 'http://localhost:9000/ask?task=your_command_here'"
   },
   "example_commands": {
     "ui_interaction": [
-      "curl 'http://localhost:5555/ask?task=open the cyberpunk agent drawer'",
-      "curl 'http://localhost:5555/ask?task=take a screenshot of current interface'",
-      "curl 'http://localhost:5555/ask?task=select agent PlannerAI'", 
-      "curl 'http://localhost:5555/ask?task=switch to academy room'",
-      "curl 'http://localhost:5555/ask?task=send CodeAI to academy training'"
+      "curl 'http://localhost:9000/ask?task=open the cyberpunk agent drawer'",
+      "curl 'http://localhost:9000/ask?task=take a screenshot of current interface'",
+      "curl 'http://localhost:9000/ask?task=select agent PlannerAI'", 
+      "curl 'http://localhost:9000/ask?task=switch to academy room'",
+      "curl 'http://localhost:9000/ask?task=send CodeAI to academy training'"
     ],
     "system_operations": [
-      "curl 'http://localhost:5555/ask?task=show me system status'",
-      "curl 'http://localhost:5555/ask?task=list all available agents'",
-      "curl 'http://localhost:5555/ask?task=check academy training status'"
+      "curl 'http://localhost:9000/ask?task=show me system status'",
+      "curl 'http://localhost:9000/ask?task=list all available agents'",
+      "curl 'http://localhost:9000/ask?task=check academy training status'"
     ],
     "shell_execution": [
-      "curl 'http://localhost:5555/ask?task=execute date command'",
-      "curl 'http://localhost:5555/ask?task=fetch weather from wttr.in'",
-      "curl 'http://localhost:5555/ask?task=read package.json file'"
+      "curl 'http://localhost:9000/ask?task=execute date command'",
+      "curl 'http://localhost:9000/ask?task=fetch weather from wttr.in'",
+      "curl 'http://localhost:9000/ask?task=read package.json file'"
     ]
   }
 }

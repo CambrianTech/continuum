@@ -58,7 +58,7 @@ USAGE:
   continuum                    Start the Academy web interface
   continuum --version         Show version information
   continuum --help            Show this help message
-  continuum --port <number>   Specify custom port (default: 5555)
+  continuum --port <number>   Specify custom port (default: 9000)
   continuum --restart         Force restart the server (kill existing instance)
   continuum --daemon          Run as daemon (detached background process)
   continuum --idle-timeout <minutes>  Auto-shutdown after idle time (default: 30)
@@ -73,7 +73,7 @@ FEATURES:
   📸 AI screenshot capture & visual debugging (Promise Post Office System)
 
 WEB INTERFACE:
-  Navigate to http://localhost:5555 after starting
+  Navigate to http://localhost:9000 after starting
 
 AGENT AUTOMATION:
   🛰️ Deep Space Probe Portal - Browser automation via WebSocket telemetry
@@ -108,7 +108,7 @@ WEBSOCKET AGENT CONNECTION:
   🔌 Direct agent connection (like telnet/ssh for AI agents)
   
   Connection:
-    ws://localhost:5555             # WebSocket endpoint (default port)
+    ws://localhost:9000             # WebSocket endpoint (default port)
     
   On Connect:
     - Receives connection banner with available commands
@@ -156,7 +156,7 @@ DAEMON MODE:
   Agents can wake daemon: heal "Connection refused"
   
 EXAMPLES:
-  continuum                   # Start on default port 5555
+  continuum                   # Start on default port 9000
   continuum --port 8080       # Start on custom port
   continuum --restart         # Force restart existing server
   continuum --daemon          # Run as background daemon with 30min timeout
@@ -307,7 +307,7 @@ function startDaemon(options, flags) {
   daemon.unref();
   
   console.log(`📝 Daemon started with PID: ${daemon.pid}`);
-  console.log(`🌐 Will be available at: http://localhost:${options.port || '5555'}`);
+  console.log(`🌐 Will be available at: http://localhost:${options.port || process.env.CONTINUUM_PORT || '9000'}`);
   console.log(`⏰ Auto-shutdown after ${options['idle-timeout'] || '30'} minutes of inactivity`);
   console.log('🔧 Agents can wake daemon with: heal "Connection refused"');
   console.log('✅ Daemon launched successfully');
@@ -358,7 +358,7 @@ function main() {
   
   // User-kind messaging
   console.log('🚀 Starting Continuum Academy...');
-  console.log(`🌐 Web interface: http://localhost:${options.port || '5555'}`);
+  console.log(`🌐 Web interface: http://localhost:${options.port || process.env.CONTINUUM_PORT || '9000'}`);
   console.log(`⏰ Auto-shutdown after ${idleTimeoutMinutes} minutes of inactivity`);
   console.log('🛰️ Agent portal: Run "js-send" commands while server is active');
   console.log('💡 Use "continuum --daemon" for background operation');

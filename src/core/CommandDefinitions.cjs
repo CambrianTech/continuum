@@ -231,7 +231,7 @@ class CommandDefinitions {
         params: '<url>',
         examples: [
           '{"params": "https://github.com"}',
-          '{"params": "http://localhost:5555"}',
+          '{"params": "http://localhost:9000"}',
           '{"params": "https://api.example.com/docs"}'
         ],
         usage: 'Navigate browser to specific URL.'
@@ -299,7 +299,7 @@ DESCRIPTION:
   ${cmd.usage}
 
 EXAMPLES:
-${cmd.examples.map(ex => `  curl -X POST http://localhost:5555/connect -d '{"command": "${commandName.toUpperCase()}", "params": ${ex.replace('{}', '""')}}'`).join('\n')}
+${cmd.examples.map(ex => `  curl -X POST http://localhost:9000/connect -d '{"command": "${commandName.toUpperCase()}", "params": ${ex.replace('{}', '""')}}'`).join('\n')}
 
 PARAMETERS:
   ${cmd.params || 'No parameters required'}
@@ -327,10 +327,10 @@ For specific command: continuum --man <COMMAND_NAME>
     manual += `  # Get single command help:\n`;
     manual += `  continuum --man SCREENSHOT\n\n`;
     manual += `  # Execute command:\n`;
-    manual += `  curl -X POST http://localhost:5555/connect -d '{"command": "SCREENSHOT"}'\n\n`;
+    manual += `  curl -X POST http://localhost:9000/connect -d '{"command": "SCREENSHOT"}'\n\n`;
     manual += `  # Use base64 for complex JavaScript:\n`;
     manual += `  echo 'console.log("test")' | base64\n`;
-    manual += `  curl -X POST http://localhost:5555/connect -d '{"command": "BROWSER_JS", "params": "BASE64_HERE", "encoding": "base64"}'\n\n`;
+    manual += `  curl -X POST http://localhost:9000/connect -d '{"command": "BROWSER_JS", "params": "BASE64_HERE", "encoding": "base64"}'\n\n`;
     
     return manual;
   }
