@@ -1609,11 +1609,6 @@ class UIGenerator {
                     <!-- AgentSelector Web Component for USERS & AGENTS -->
                     <agent-selector id="main-agent-selector"></agent-selector>
                     
-                    <!-- Agent Selector (Legacy - will be replaced) -->
-                    <div class="agent-selector">
-                        <h3>Available Agents</h3>
-                        <div class="agent-list">
-                            <div class="agent-item selected" onclick="selectAgent('auto')" id="agent-auto">
                                 <div class="agent-avatar" style="background: linear-gradient(135deg, #4FC3F7, #29B6F6);">
                                     🧠
                                     <div class="agent-status online"></div>
@@ -1701,12 +1696,6 @@ class UIGenerator {
                             </div>
                         </div>
                         
-                        <div class="multi-select">
-                            <button class="group-chat-btn" onclick="startGroupChat()">
-                                👥 Start Group Chat
-                            </button>
-                        </div>
-                    </div>
                 </div>
                 
                 <!-- Academy Room Content -->
@@ -5053,7 +5042,6 @@ Example:
     
     <!-- Component System -->
     <script src="/src/ui/utils/ComponentLoader.js"></script>
-    <script src="/src/ui/components/AgentSelector.js"></script>
     <script>
         // Initialize AgentSelector component
         function initializeAgentSelector() {
