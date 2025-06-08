@@ -2,6 +2,25 @@
 
 This directory contains practical examples of using the Continuum Python Client for real-world tasks.
 
+## Complete Development Workflow Examples
+
+### 🎨 [`fix_ui_styling_with_feedback.py`](fix_ui_styling_with_feedback.py) ⭐ **NEW**
+**Complete UI development cycle** - The definitive example showing the full workflow of fixing UI issues with real-time feedback, testing, and verification.
+
+```bash
+python fix_ui_styling_with_feedback.py
+```
+
+**What it demonstrates:**
+- 📸 Before/after screenshot comparison workflow
+- 🎨 Live CSS injection and real-time testing
+- 💬 Comprehensive JavaScript feedback and console output
+- ⚡ Search functionality testing with debouncing
+- 🔄 Complete fix-test-verify cycle
+- 📊 Performance analysis and improvement tracking
+
+**Perfect for:** Learning Continuum development patterns, UI debugging, performance optimization
+
 ## Screenshot Capture Examples
 
 ### 📸 [`simple_screenshot.py`](simple_screenshot.py)

@@ -112,7 +112,14 @@ class WebSocketServer extends EventEmitter {
         examples: {
           ...examples,
           'Chat with AI': '{"type": "message", "content": "Hello", "room": "general"}',
-          'Direct agent': '{"type": "direct_message", "agent": "CodeAI", "content": "help me"}'
+          'Direct agent': '{"type": "direct_message", "agent": "CodeAI", "content": "help me"}',
+          'Complete UI workflow': 'python python-client/examples/fix_ui_styling_with_feedback.py'
+        },
+        learning: {
+          'Development Guide': './docs/AGENT_DEVELOPMENT_GUIDE.md',
+          'UI Workflow Example': './python-client/examples/fix_ui_styling_with_feedback.py',
+          'Screenshot Examples': './python-client/examples/',
+          'Help Command': 'continuum --help'
         },
         connection_info: {
           protocol: 'WebSocket',

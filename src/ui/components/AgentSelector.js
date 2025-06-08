@@ -24,6 +24,7 @@ if (typeof window.AgentSelector === 'undefined') {
     this.favoriteAgents = new Set();
     this.agentMetrics = new Map();
     this.currentGlassSubmenu = null;
+    this.searchTimeout = null;
   }
 
   connectedCallback() {
@@ -179,11 +180,14 @@ if (typeof window.AgentSelector === 'undefined') {
       }
     });
 
-    // Search input listener
+    // Search input listener with debouncing
     this.shadowRoot.addEventListener('input', (e) => {
       if (e.target.matches('.search-input')) {
-        this.searchQuery = e.target.value.toLowerCase();
-        this.filterAndRender();
+        clearTimeout(this.searchTimeout);
+        this.searchTimeout = setTimeout(() => {
+          this.searchQuery = e.target.value.toLowerCase();
+          this.filterAndRender();
+        }, 300);
       }
     });
   }
@@ -507,8 +511,9 @@ if (typeof window.AgentSelector === 'undefined') {
       <style>
         :host {
           display: block;
-          margin: 15px;
-          background: rgba(255, 255, 255, 0.06);
+          margin: 20px;
+          margin-bottom: 0;
+          background: rgba(255, 255, 255, 0.05);
           border-radius: 12px;
           padding: 18px;
           max-height: 400px;
@@ -584,12 +589,13 @@ if (typeof window.AgentSelector === 'undefined') {
         }
 
         .agent-item:hover {
-          background: rgba(255, 255, 255, 0.1);
+          background: rgba(255, 255, 255, 0.08);
+          transition: all 0.2s ease;
         }
 
         .agent-item.selected {
-          background: linear-gradient(135deg, rgba(79, 195, 247, 0.2), rgba(41, 182, 246, 0.2));
-          border-color: rgba(79, 195, 247, 0.5);
+          background: linear-gradient(135deg, rgba(79, 195, 247, 0.15), rgba(41, 182, 246, 0.15));
+          border-color: rgba(79, 195, 247, 0.4);
         }
 
         .agent-avatar {

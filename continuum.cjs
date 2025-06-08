@@ -94,9 +94,10 @@ AGENT AUTOMATION:
     📁 tests/           - Comprehensive test suite (19/19 passing)
     
   Debugging Demos: ./python-client/examples/
-    🪟 natural_glass_submenu_demo.py - Star Trek TNG glass submenu demo
-    📸 simple_screenshot.py         - Basic screenshot capture
-    🔍 find_and_capture.py          - Smart element finding
+    🎨 fix_ui_styling_with_feedback.py - Complete UI development workflow ⭐ NEW
+    🪟 natural_glass_submenu_demo.py   - Star Trek TNG glass submenu demo
+    📸 simple_screenshot.py           - Basic screenshot capture
+    🔍 find_and_capture.py            - Smart element finding
     
   Learn more: 
     ./agent-scripts/README.md       - Agent automation documentation
@@ -141,6 +142,9 @@ WEBSOCKET AGENT CONNECTION:
     
     # Python AI screenshot example
     python python-client/examples/simple_screenshot.py
+    
+    # Complete UI development workflow example  
+    python python-client/examples/fix_ui_styling_with_feedback.py
     
   Connection acts like terminal login - full command interface available
 
