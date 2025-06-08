@@ -264,7 +264,7 @@ class OperaAdapter extends BaseBrowserAdapter {
         repeat with w in windows
           set tabsToClose to {}
           repeat with t in tabs of w
-            if URL of t contains "${this.extractDomain(url)}" then
+            if (URL of t contains "localhost:9000") or (URL of t contains "${this.extractDomain(url)}") then
               set end of tabsToClose to t
             end if
           end repeat
@@ -290,10 +290,9 @@ class OperaAdapter extends BaseBrowserAdapter {
       tell application "Opera"
         repeat with w in windows
           repeat with t in tabs of w
-            if URL of t contains "${this.extractDomain(url)}" then
+            if (URL of t contains "localhost:9000") or (URL of t contains "${this.extractDomain(url)}") then
               set active tab index of w to index of t
               set index of w to 1
-              reload t
               activate
               return "found"
             end if
@@ -343,7 +342,7 @@ class ChromeAdapter extends BaseBrowserAdapter {
         repeat with w in windows
           set tabsToClose to {}
           repeat with t in tabs of w
-            if URL of t contains "${this.extractDomain(url)}" then
+            if (URL of t contains "localhost:9000") or (URL of t contains "${this.extractDomain(url)}") then
               set end of tabsToClose to t
             end if
           end repeat
@@ -369,10 +368,9 @@ class ChromeAdapter extends BaseBrowserAdapter {
       tell application "Google Chrome"
         repeat with w in windows
           repeat with t in tabs of w
-            if URL of t contains "${this.extractDomain(url)}" then
+            if (URL of t contains "localhost:9000") or (URL of t contains "${this.extractDomain(url)}") then
               set active tab index of w to index of t
               set index of w to 1
-              reload t
               activate
               return "found"
             end if
@@ -423,7 +421,7 @@ class SafariAdapter extends BaseBrowserAdapter {
         repeat with w in windows
           set tabsToClose to {}
           repeat with t in tabs of w
-            if URL of t contains "${this.extractDomain(url)}" then
+            if (URL of t contains "localhost:9000") or (URL of t contains "${this.extractDomain(url)}") then
               set end of tabsToClose to t
             end if
           end repeat
@@ -449,10 +447,9 @@ class SafariAdapter extends BaseBrowserAdapter {
       tell application "Safari"
         repeat with w in windows
           repeat with t in tabs of w
-            if URL of t contains "${this.extractDomain(url)}" then
+            if (URL of t contains "localhost:9000") or (URL of t contains "${this.extractDomain(url)}") then
               set current tab of w to t
               set index of w to 1
-              tell t to do JavaScript "location.reload()"
               activate
               return "found"
             end if
