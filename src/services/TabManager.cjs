@@ -202,9 +202,8 @@ class TabManager {
    * Get session ID from WebSocket (helper method)
    */
   getSessionId(ws) {
-    // Find session ID by matching WebSocket instance
-    // This is a simple implementation - could be improved with better session tracking
-    return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    // Return the session ID that was already assigned to this WebSocket
+    return ws.sessionId || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
   /**

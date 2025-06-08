@@ -496,20 +496,25 @@ class ContinuumCore {
   async openWebInterface() {
     const url = `http://localhost:${this.port}`;
     
-    // For restarts, close existing tabs first, then focus/open one
+    // For restarts, use browser-level tab management (WebSocket tabs are stale)
     if (this.isRestart) {
       console.log('🔄 Restart detected, managing browser tabs...');
-      await this.browserAdapter.closeAllTabs(url);
       
+      // Try to focus existing browser tabs first (don't close them)
       const focused = await this.browserAdapter.focusExistingTab(url);
-      if (!focused) {
-        await this.openNewTab(url);
+      if (focused) {
+        console.log('🎯 Focused existing browser tab');
+        return;
       }
+      
+      // If no existing tabs found, open new one
+      console.log('📱 No existing tabs found, opening new tab...');
+      await this.openNewTab(url);
       return;
     }
     
     try {
-      // Try to focus existing tabs via WebSocket TabManager first
+      // For normal startup, try WebSocket tab management first
       if (this.webSocketServer && await this.focusExistingTabs()) {
         console.log('🎯 Focused existing browser tab via WebSocket');
         return;
