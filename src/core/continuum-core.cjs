@@ -61,7 +61,7 @@ configPaths.forEach(configFile => {
 class ContinuumCore {
   constructor(options = {}) {
     this.sessions = new Map();
-    this.port = options.port || process.env.CONTINUUM_PORT || 5555;
+    this.port = options.port || process.env.CONTINUUM_PORT || 9000;
     this.username = username;
     this.isRestart = options.isRestart || false;
     
