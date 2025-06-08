@@ -11,7 +11,7 @@ from pathlib import Path
 
 # Add python-client to path
 script_dir = Path(__file__).parent
-client_dir = script_dir / 'python-client'
+client_dir = script_dir.parent.parent.parent / 'python-client'
 sys.path.append(str(client_dir))
 
 from continuum_client import ContinuumClient

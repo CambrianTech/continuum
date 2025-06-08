@@ -156,12 +156,12 @@ class UIGeneratorModular {
     </div>
 
     <!-- Load Component Scripts -->
-    <script src="/components/AgentSelector.js"></script>
-    <script src="/components/ChatHeader.js"></script>
-    <script src="/components/ChatArea.js"></script>
-    <script src="/components/RoomTabs.js"></script>
-    <script src="/components/StatusPill.js"></script>
-    <script src="/components/AcademySection.js"></script>
+    <script src="/src/ui/components/AgentSelector.js"></script>
+    <script src="/src/ui/components/ChatHeader.js"></script>
+    <script src="/src/ui/components/ChatArea.js"></script>
+    <script src="/src/ui/components/RoomTabs.js"></script>
+    <script src="/src/ui/components/StatusPill.js"></script>
+    <script src="/src/ui/components/AcademySection.js"></script>
     
     <!-- Application Logic -->
     <script>

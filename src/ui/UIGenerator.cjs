@@ -1492,7 +1492,12 @@ class UIGenerator {
     </style>
     
     <!-- Web Components -->
-    <script src="/ui/components/AgentSelector.js"></script>
+    <script src="/src/ui/components/AgentSelector.js"></script>
+    <script src="/src/ui/components/ChatHeader.js"></script>
+    <script src="/src/ui/components/ChatArea.js"></script>
+    <script src="/src/ui/components/RoomTabs.js"></script>
+    <script src="/src/ui/components/StatusPill.js"></script>
+    <script src="/src/ui/components/AcademySection.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -2021,7 +2026,7 @@ class UIGenerator {
                     showPendingTrainingButton();
                 }
                 
-                console.log(\`📚 Restored \${Object.values(roomMessages).flat().length} messages from local storage\`);
+                console.log('📚 Restored ' + Object.values(roomMessages).flat().length + ' messages from local storage');
                 return true;
             } catch (error) {
                 console.error('Failed to load chat history:', error);
@@ -2199,7 +2204,7 @@ class UIGenerator {
             // Update chat title to show selected agent
             const agent = allAvailableAgents.find(a => a.id === agentId);
             if (agent) {
-                setChatTitle(\`Chat with \${agent.name}\${agent.source === 'remote' ? ' 🌐' : ''}\`);
+                setChatTitle('Chat with ' + agent.name + (agent.source === 'remote' ? ' 🌐' : ''));
             } else {
                 setChatTitle('Chat with ' + agentId);
             }
@@ -2457,7 +2462,7 @@ class UIGenerator {
                 url = 'https://' + url;
             }
             
-            console.log(\`🌐 Navigating to: \${url}\`);
+            console.log('🌐 Navigating to: ' + url);
             iframe.src = url;
             addressBar.textContent = url;
             
@@ -2546,11 +2551,11 @@ class UIGenerator {
         
         function checkVersionUpdate(serverVersion) {
             if (serverVersion && serverVersion !== currentVersion) {
-                console.log(\`🔄 Version update detected: \${currentVersion} → \${serverVersion}\`);
+                console.log('🔄 Version update detected: ' + currentVersion + ' → ' + serverVersion);
                 console.log('🌐 Reloading browser to update interface...');
                 
                 // Show update notification
-                addSystemMessage(\`🔄 Continuum updated to v\${serverVersion} - Reloading interface...\`);
+                addSystemMessage('🔄 Continuum updated to v' + serverVersion + ' - Reloading interface...');
                 
                 // Reload after brief delay with loop protection
                 setTimeout(() => {
@@ -2699,7 +2704,7 @@ class UIGenerator {
         }
         
         function handleWebSocketMessage(data) {
-            console.log('🔥 CLIENT v0.2.1943: Raw WebSocket message received:', data.type, data);
+            console.log('🔥 CLIENT v${packageInfo.version}: Raw WebSocket message received:', data.type, data);
             
             // SPECIAL DEBUG: Log execute_js messages prominently
             if (data.type === 'execute_js') {
@@ -2716,7 +2721,7 @@ class UIGenerator {
             
             // Handle JavaScript execution from server (both legacy and promise modes)
             if (data.type === 'execute_js' || data.type === 'execute_js_promise') {
-                console.log('🔥 CLIENT v0.2.1943: EXECUTE_JS received!', data);
+                console.log('🔥 CLIENT v${packageInfo.version}: EXECUTE_JS received!', data);
                 console.log('🔥 CLIENT: JavaScript command:', data.data?.command);
                 
                 try {
