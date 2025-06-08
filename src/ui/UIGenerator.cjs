@@ -1493,6 +1493,8 @@ class UIGenerator {
     
     <!-- Web Components -->
     <script src="/src/ui/components/AgentSelector.js"></script>
+    <script src="/src/ui/components/SimpleAgentSelector.js"></script>
+    <script src="/src/ui/components/GlassMenu.js"></script>
     <script src="/src/ui/components/ChatHeader.js"></script>
     <script src="/src/ui/components/ChatArea.js"></script>
     <script src="/src/ui/components/RoomTabs.js"></script>
@@ -1607,7 +1609,7 @@ class UIGenerator {
                     </div>
                     
                     <!-- AgentSelector Web Component for USERS & AGENTS -->
-                    <agent-selector id="main-agent-selector"></agent-selector>
+                    <simple-agent-selector id="simple-agent-selector"></simple-agent-selector>
                 </div>
                 
                 <!-- Academy Room Content -->
@@ -2044,25 +2046,28 @@ class UIGenerator {
                 ? 'linear-gradient(135deg, #ff6b6b, #ee5a5a)' // Red for humans
                 : 'linear-gradient(135deg, #00d4ff, #0099cc)'; // Blue for AI
             
-            return \`
-                <div class="agent-item" id="\${agentId}" onclick="selectAgent('\${agent.id}')">
-                    <div class="agent-avatar" style="background: \${avatarGradient};">
-                        \${avatarEmoji}
-                        <div class="agent-status \${statusColor}"></div>
-                    </div>
-                    <div class="agent-info">
-                        <div class="agent-name">
-                            \${agent.name}
-                            <span style="font-size: 9px; color: #666; margin-left: 6px; padding: 1px 4px; background: rgba(0,0,0,0.3); border-radius: 2px;" title="\${isHuman ? 'Human Operator' : 'AI Agent'}">\${isHuman ? 'H' : 'AI'}</span>
-                        </div>
-                        <div class="agent-role">\${agent.capabilities?.join(', ') || agent.role || 'General'}</div>
-                        <div style="font-size: 10px; color: #666; margin-top: 2px;">
-                            \${agent.hostInfo?.hostname || agent.host || 'Local'} • 
-                            \${agent.messageCount || 0} msgs
-                        </div>
-                    </div>
-                </div>
-            \`;
+            const titleText = isHuman ? 'Human Operator' : 'AI Agent';
+            const roleText = isHuman ? 'H' : 'AI';
+            const capabilitiesText = agent.capabilities?.join(', ') || agent.role || 'General';
+            const hostText = agent.hostInfo?.hostname || agent.host || 'Local';
+            const messageCount = agent.messageCount || 0;
+            
+            return '<div class="agent-item" id="' + agentId + '" onclick="selectAgent(' + "'" + agent.id + "'" + ')">' +
+                '<div class="agent-avatar" style="background: ' + avatarGradient + ';">' +
+                    avatarEmoji +
+                    '<div class="agent-status ' + statusColor + '"></div>' +
+                '</div>' +
+                '<div class="agent-info">' +
+                    '<div class="agent-name">' +
+                        agent.name +
+                        '<span style="font-size: 9px; color: #666; margin-left: 6px; padding: 1px 4px; background: rgba(0,0,0,0.3); border-radius: 2px;" title="' + titleText + '">' + roleText + '</span>' +
+                    '</div>' +
+                    '<div class="agent-role">' + capabilitiesText + '</div>' +
+                    '<div style="font-size: 10px; color: #666; margin-top: 2px;">' +
+                        hostText + ' • ' + messageCount + ' msgs' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
         }
         
         function getAgentEmoji(agent) {

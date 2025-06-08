@@ -106,7 +106,7 @@ DESCRIPTION:
   ${definition.usage}
 
 EXAMPLES:
-${definition.examples.map(ex => `  curl -X POST http://localhost:5555/connect -d '{"command": "${definition.name}", ${ex.replace('{}', '"params": ""')}}'`).join('\n')}
+${definition.examples.map(ex => `  curl -X POST http://localhost:9000/connect -d '{"command": "${definition.name}", ${ex.replace('{}', '"params": ""')}}'`).join('\n')}
 
 PARAMETERS:
   ${definition.params || 'No parameters required'}
@@ -133,12 +133,12 @@ For specific command: continuum --man <COMMAND_NAME>
     manual += `  2. EXAMPLE WORKFLOW FOR UI FIXES:\n`;
     manual += `     # Step 1: Encode and execute JavaScript\n`;
     manual += `     echo 'console.log("Testing..."); const elem = document.querySelector(".button");' | base64\n`;
-    manual += `     curl -X POST http://localhost:5555/connect -d '{"command": "BROWSER_JS", "params": "BASE64_HERE", "encoding": "base64"}'\n\n`;
+    manual += `     curl -X POST http://localhost:9000/connect -d '{"command": "BROWSER_JS", "params": "BASE64_HERE", "encoding": "base64"}'\n\n`;
     manual += `     # Step 2: Take screenshot to see current state\n`;
-    manual += `     curl -X POST http://localhost:5555/connect -d '{"command": "SCREENSHOT"}'\n\n`;
+    manual += `     curl -X POST http://localhost:9000/connect -d '{"command": "SCREENSHOT"}'\n\n`;
     manual += `     # Step 3: Create/fix UI elements with proper styling\n`;
     manual += `     echo 'const pane = document.createElement("div"); pane.innerHTML = "<div style=\\"background: rgba(0, 255, 136, 0.15); backdrop-filter: blur(15px);\\">Content</div>"; document.body.appendChild(pane);' | base64\n`;
-    manual += `     curl -X POST http://localhost:5555/connect -d '{"command": "BROWSER_JS", "params": "BASE64_HERE", "encoding": "base64"}'\n\n`;
+    manual += `     curl -X POST http://localhost:9000/connect -d '{"command": "BROWSER_JS", "params": "BASE64_HERE", "encoding": "base64"}'\n\n`;
     manual += `  3. DESIGN PRINCIPLES:\n`;
     manual += `     • Glass morphism with cyan/blue gradients: rgba(0, 255, 136, 0.15)\n`;
     manual += `     • Angular video game aesthetics with clip-path polygons\n`;
@@ -171,10 +171,10 @@ For specific command: continuum --man <COMMAND_NAME>
     manual += `  # Get single command help:\n`;
     manual += `  continuum --man SCREENSHOT\n\n`;
     manual += `  # Execute command:\n`;
-    manual += `  curl -X POST http://localhost:5555/connect -d '{"command": "SCREENSHOT"}'\n\n`;
+    manual += `  curl -X POST http://localhost:9000/connect -d '{"command": "SCREENSHOT"}'\n\n`;
     manual += `  # Use base64 for complex JavaScript:\n`;
     manual += `  echo 'console.log("test")' | base64\n`;
-    manual += `  curl -X POST http://localhost:5555/connect -d '{"command": "BROWSER_JS", "params": "BASE64_HERE", "encoding": "base64"}'\n\n`;
+    manual += `  curl -X POST http://localhost:9000/connect -d '{"command": "BROWSER_JS", "params": "BASE64_HERE", "encoding": "base64"}'\n\n`;
     manual += `📚 Available commands: ${Array.from(this.definitions.keys()).join(', ')}\n`;
     
     return manual;

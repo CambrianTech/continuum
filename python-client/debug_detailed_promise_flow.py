@@ -19,7 +19,7 @@ async def debug_complete_flow():
     
     print(f"🔧 Debugging Promise Post Office System")
     print(f"📍 WebSocket URL: {ws_url}")
-    print(f"🌐 HTML Interface: http://localhost:5555/")
+    print(f"🌐 HTML Interface: http://localhost:9000/")
     print()
     
     print("🔌 Connecting to Continuum...")
@@ -106,7 +106,7 @@ async def debug_complete_flow():
     print("🔚 Debug complete!")
     print()
     print("🔍 Next steps if issues found:")
-    print("   1. Check if browser is open at http://localhost:5555/")
+    print("   1. Check if browser is open at http://localhost:9000/")
     print("   2. Check browser console for JavaScript errors")
     print("   3. Check Continuum server logs")
     print("   4. Verify WebSocket message routing")

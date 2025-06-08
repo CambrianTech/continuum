@@ -25,7 +25,7 @@ class SimpleSystemTray {
     // Show startup notification
     this.showNotification(
       'Continuum Academy Started', 
-      `🎯 Continuon active on port ${this.continuum.options.port || 5555}`
+      `🎯 Continuon active on port ${this.continuum.options.port || process.env.CONTINUUM_PORT || 9000}`
     );
   }
 

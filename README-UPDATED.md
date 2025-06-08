@@ -85,7 +85,7 @@ node continuum.cjs
 ```
 
 ### 3. Access the Interface
-Open your browser to `http://localhost:5555` to see:
+Open your browser to `http://localhost:9000` to see:
 - **💬 Real-time AI chat** - Direct communication with AI agents
 - **🟢 Continuon status indicator** - Visual AI presence system
 - **📊 Academy training interface** - Manage AI persona development
@@ -256,7 +256,7 @@ echo '[CMD:SCREENSHOT] low 800x600' | continuum --stdin
 ### API Integration
 ```javascript
 const WebSocket = require('ws');
-const ws = new WebSocket('ws://localhost:5555');
+const ws = new WebSocket('ws://localhost:9000');
 
 ws.send(JSON.stringify({
     type: 'userMessage',
