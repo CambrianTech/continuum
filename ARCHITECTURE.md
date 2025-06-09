@@ -215,6 +215,260 @@ class Academy {
 }
 ```
 
+## 🔌 Client/Server Architecture
+
+### Sibling Client Classes
+
+All client connections inherit from the same base parent class and use the unified bus system:
+
+```javascript
+BaseClientConnection
+├── BrowserClient.cjs      // Handles browser WebSocket connections
+├── PythonClient.cjs       // Handles Python agent connections  
+├── ConsoleClient.cjs      // Handles human console connections
+└── APIRestClient.cjs      // Handles REST API connections
+```
+
+**Unified Bus System**: All clients route commands through the same promise-based bus:
+- `[CMD:BROWSER_JS]` - Execute JavaScript in browser
+- `[CMD:SCREENSHOT]` - Capture browser screenshots  
+- `[CMD:PYTHON_EXEC]` - Execute Python in agent environment
+- `[CMD:CONSOLE_LOG]` - Human console interaction
+
+### Cross-Client Validation Architecture
+
+**Self-Validation Pattern**: Each client validates itself on connection and caches results:
+
+```javascript
+// BrowserClient.cjs - Self-validates on connection
+class BrowserClient extends BaseClientConnection {
+  async validateSelf() {
+    const validation = {
+      jsExecution: await this.testJavaScriptExecution(),
+      consoleCapture: await this.testConsoleCapture(),
+      screenshot: await this.captureVersionBadge(),
+      version: await this.detectVersion()
+    };
+    
+    // Cache validation results and artifacts
+    this.validationComplete = true;
+    this.validationResults = validation;
+    this.validationScreenshot = validation.screenshot.filename;
+    
+    // Log to server log system
+    this.server.log(`BrowserClient validation complete: ${validation.screenshot.filename}`);
+    
+    return validation;
+  }
+}
+```
+
+**Cross-Client Promise Resolution**: Clients can request each other's validation status:
+
+```javascript
+// PythonClient.cjs - Checks BrowserClient validation
+class PythonClient extends BaseClientConnection {
+  async validateBrowserClient() {
+    const browserClient = this.server.getBrowserClient();
+    
+    if (browserClient.validationComplete) {
+      // Already validated - resolve immediately with cached results
+      return {
+        success: true,
+        screenshotFile: browserClient.validationScreenshot,
+        version: browserClient.detectedVersion,
+        cached: true,
+        timestamp: browserClient.validationTimestamp
+      };
+    } else {
+      // Trigger validation and wait for completion
+      return await browserClient.performValidation();
+    }
+  }
+  
+  async validateSystem() {
+    // 1. Check BrowserClient validation (cached or fresh)
+    const browserValidation = await this.validateBrowserClient();
+    
+    // 2. Wait on server log system for confirmation
+    const serverLogs = await this.waitForServerLogs([
+      'Screenshot saved to .continuum/screenshots/',
+      'Version badge captured: v0.2.1983', 
+      'BrowserClient validation complete'
+    ]);
+    
+    // 3. Cross-reference results for full system validation
+    return {
+      browserValidation,
+      serverConfirmation: serverLogs,
+      systemHealthy: browserValidation.success && serverLogs.complete
+    };
+  }
+}
+```
+
+**Server Log Coordination**: Server log system acts as authoritative record:
+
+```javascript
+class ContinuumServer {
+  log(message, level = 'info', client = null) {
+    const logEntry = {
+      timestamp: Date.now(),
+      level,
+      message,
+      client: client?.id,
+      session: this.currentSession
+    };
+    
+    // Store in server log system
+    this.serverLogs.push(logEntry);
+    
+    // Notify waiting clients
+    this.notifyLogWaiters(logEntry);
+  }
+  
+  async waitForLog(pattern, timeout = 10000) {
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => reject(new Error('Log timeout')), timeout);
+      
+      this.logWaiters.push({
+        pattern,
+        resolve: (entry) => {
+          clearTimeout(timeoutId);
+          resolve(entry);
+        }
+      });
+    });
+  }
+}
+```
+
+**Python Debugger Portal**: Unified tool connects to PythonClient for system validation:
+
+```python
+# agent-scripts/tools/python/unified-debugger.py
+class UnifiedDebugger:
+    async def validate_system(self):
+        # Connect through PythonClient.cjs (not directly to bus)
+        async with websockets.connect(self.python_client_url) as ws:
+            # PythonClient handles bus routing and cross-validation
+            validation = await self.request_full_system_validation(ws)
+            
+            return {
+                'browser_validation': validation['browserValidation'],
+                'server_logs': validation['serverConfirmation'], 
+                'screenshots': validation['artifacts'],
+                'system_healthy': validation['systemHealthy']
+            }
+```
+
+**Benefits**:
+- **No duplicate work**: Validation happens once per client connection
+- **Instant resolution**: Cached results for subsequent cross-client requests  
+- **Async coordination**: Clients can check each other's validation status
+- **Shared artifacts**: Screenshot files and validation data available across clients
+- **Server log authority**: Log system provides authoritative validation record
+- **Self-organizing**: Creates validation network where clients validate themselves and share results
+
+### Multi-Modal User & Agent Architecture
+
+**Single Identity, Multiple Entry Points**: Users and agents maintain consistent identity across different client types:
+
+```
+Joel (User Identity)
+├── BrowserClient      // Web interface at localhost:9000
+├── ConsoleClient      // Terminal/command line access
+├── MobileClient       // Future: Mobile app access
+└── VSCodeClient       // Future: IDE integration
+
+Claude (AI Agent Identity)  
+├── PythonClient       // Debugging/validation portal
+├── ChatClient         // Conversation through web UI
+├── APIClient          // Future: Direct API access
+└── SlackClient        // Future: Slack integration
+```
+
+**Cross-Client Communication**: Enables natural conversation between users and agents:
+
+```javascript
+// Web Interface Chat
+Joel (BrowserClient): "Hey Claude, validate the screenshot system"
+Claude (PythonClient): "✅ Running validation... 5/5 milestones passed"
+
+// Terminal Interface  
+$ continuum chat "Claude, debug the console capture issue"
+Claude: "Found String(result) bug in UIGenerator.cjs:2706"
+
+// Future: Mixed interaction modes
+Joel (Mobile): "Claude, take a screenshot of the current page"
+Claude (PythonClient): "📸 Screenshot captured: dashboard_v0.2.1983.png"
+```
+
+**Session Coordination**: Server maintains unified state across all client connections:
+
+```javascript
+class ContinuumServer {
+  constructor() {
+    this.users = new Map();     // User identity → multiple clients
+    this.agents = new Map();    // Agent identity → multiple clients
+  }
+  
+  registerClientConnection(identity, clientType, connection) {
+    if (!this.users.has(identity)) {
+      this.users.set(identity, {
+        identity,
+        clients: new Map(),
+        activeSession: generateSessionId(),
+        conversationHistory: [],
+        preferences: {}
+      });
+    }
+    
+    const user = this.users.get(identity);
+    user.clients.set(clientType, connection);
+    
+    // Share state across all client connections
+    this.syncUserState(identity);
+  }
+  
+  async routeMessage(fromIdentity, toIdentity, message, clientType) {
+    const targetUser = this.users.get(toIdentity) || this.agents.get(toIdentity);
+    
+    // Deliver to all active clients for target identity
+    for (const [type, client] of targetUser.clients) {
+      if (client.isActive()) {
+        await client.deliverMessage(message, fromIdentity, clientType);
+      }
+    }
+  }
+}
+```
+
+**Conversational AI Integration**: Natural conversation mixed with system commands:
+
+```
+Conversation Flow Examples:
+
+Joel: "Claude, what's the current system status?"
+Claude: "System healthy - BrowserClient validated, screenshots working"
+
+Joel: "Debug why console.log is showing [object Object]"  
+Claude: "Checking UIGenerator.cjs... found String(result) conversion issue"
+Claude: "Applied fix: proper JSON serialization for objects"
+
+Joel: "Take a screenshot of the version badge"
+Claude: "📸 Captured: version_badge_v0.2.1983_1749445123.png"
+Claude: "OCR detected: v0.2.1983 - version reading validated"
+```
+
+**Architecture Benefits**:
+- **Identity Persistence**: Same user/agent across all connection types
+- **Seamless Switching**: Move between browser, terminal, mobile without losing context
+- **Shared State**: Conversation history, preferences, session data synchronized
+- **Multi-Modal Commands**: Debug via Python, chat via web, control via terminal
+- **Future Extensibility**: Easy to add new client types (mobile, IDE, Slack, etc.)
+- **Natural Integration**: AI agents become conversational partners in development workflow
+
 ## 📊 Data Flow Architecture
 
 ### Training Flow

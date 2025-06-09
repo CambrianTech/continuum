@@ -601,8 +601,8 @@ class WebSocketServer extends EventEmitter {
           const base64Data = dataURL.replace(/^data:image\/png;base64,/, '');
           const buffer = Buffer.from(base64Data, 'base64');
           
-          // Save to .continuum directory
-          const outputPath = path.join(process.cwd(), '.continuum', filename);
+          // Save to .continuum/screenshots directory
+          const outputPath = path.join(process.cwd(), '.continuum', 'screenshots', filename);
           fs.writeFileSync(outputPath, buffer);
           
           const fileSizeKB = Math.round(buffer.length / 1024);

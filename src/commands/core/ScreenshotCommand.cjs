@@ -208,29 +208,106 @@ class ScreenshotCommand {
           }
         }
         
-        // Pre-filter problematic elements to prevent canvas errors
-        console.log('📸 Pre-filtering zero-dimension elements...');
+        // AGGRESSIVE element filtering to prevent createPattern errors
+        console.log('📸 AGGRESSIVE filtering of ALL problematic elements...');
         const problematicElements = [];
-        const canvasElements = document.querySelectorAll('canvas');
         
-        canvasElements.forEach(canvas => {
-          if (canvas.width === 0 || canvas.height === 0) {
-            console.log('📸 Hiding zero-dimension canvas temporarily:', canvas);
-            canvas.style.display = 'none';
-            canvas.setAttribute('data-screenshot-hidden', 'true');
-            problematicElements.push(canvas);
+        // Remove ALL canvas elements temporarily - they cause createPattern errors
+        const allCanvases = document.querySelectorAll('canvas');
+        allCanvases.forEach(canvas => {
+          console.log('📸 Removing canvas element:', {
+            width: canvas.width,
+            height: canvas.height,
+            offsetWidth: canvas.offsetWidth,
+            offsetHeight: canvas.offsetHeight
+          });
+          canvas.style.display = 'none';
+          canvas.setAttribute('data-screenshot-hidden', 'true');
+          problematicElements.push(canvas);
+        });
+        
+        // Also remove other problematic elements that can cause issues
+        const problematicSelectors = [
+          'svg[width="0"]',
+          'svg[height="0"]', 
+          'img[width="0"]',
+          'img[height="0"]',
+          'iframe[width="0"]',
+          'iframe[height="0"]',
+          'video[width="0"]',
+          'video[height="0"]'
+        ];
+        
+        problematicSelectors.forEach(selector => {
+          try {
+            const elements = document.querySelectorAll(selector);
+            elements.forEach(element => {
+              console.log('📸 Hiding problematic element:', selector);
+              element.style.display = 'none';
+              element.setAttribute('data-screenshot-hidden', 'true');
+              problematicElements.push(element);
+            });
+          } catch (e) {
+            // Ignore selector errors
           }
         });
         
-        // Add ignoreElements function to capture options
+        // Final pass - hide anything with zero dimensions
+        const allElements = document.querySelectorAll('*');
+        allElements.forEach(element => {
+          if (element.offsetWidth === 0 || element.offsetHeight === 0) {
+            if (['CANVAS', 'SVG', 'IMG', 'VIDEO', 'IFRAME'].includes(element.tagName)) {
+              if (!element.hasAttribute('data-screenshot-hidden')) {
+                console.log('📸 Final pass - hiding zero element:', element.tagName);
+                element.style.display = 'none';
+                element.setAttribute('data-screenshot-hidden', 'true');
+                problematicElements.push(element);
+              }
+            }
+          }
+        });
+        
+        console.log('📸 Hidden ' + problematicElements.length + ' problematic elements');
+        
+        // ULTRA-AGGRESSIVE ignoreElements function 
         captureOptions.ignoreElements = function(element) {
-          // Skip elements that might cause issues
-          if (element.tagName === 'CANVAS' && (element.width === 0 || element.height === 0)) {
-            console.log('📸 Ignoring zero-dimension canvas:', element);
+          // Ignore ALL canvas elements to prevent createPattern errors
+          if (element.tagName === 'CANVAS') {
+            console.log('📸 Ignoring ALL canvas elements');
             return true;
           }
+          
+          // Ignore SVG elements with zero dimensions
+          if (element.tagName === 'SVG') {
+            if (element.offsetWidth === 0 || element.offsetHeight === 0 ||
+                element.getAttribute('width') === '0' || element.getAttribute('height') === '0') {
+              console.log('📸 Ignoring zero SVG element');
+              return true;
+            }
+          }
+          
+          // Ignore any element with zero dimensions or that's hidden
+          if (element.offsetWidth === 0 || element.offsetHeight === 0 ||
+              element.clientWidth === 0 || element.clientHeight === 0 ||
+              element.style.display === 'none' ||
+              element.style.visibility === 'hidden' ||
+              element.hasAttribute('data-screenshot-hidden')) {
+            return true;
+          }
+          
+          // Ignore elements that could cause createPattern issues
+          if (['IMG', 'VIDEO', 'IFRAME'].includes(element.tagName)) {
+            if (element.offsetWidth === 0 || element.offsetHeight === 0) {
+              console.log('📸 Ignoring zero media element:', element.tagName);
+              return true;
+            }
+          }
+          
           return false;
         };
+        
+        // Try html2canvas with proper error handling
+        console.log('📸 Starting html2canvas with target:', targetElement.tagName);
         
         html2canvas(targetElement, captureOptions).then(function(canvas) {
           // Restore hidden elements
@@ -342,23 +419,87 @@ class ScreenshotCommand {
           });
           
           console.error('📸 Screenshot failed:', error);
+          
+          // Provide meaningful error analysis
+          let errorDiagnosis = 'Unknown screenshot error';
+          let errorSolution = 'Check browser console for details';
+          
+          if (error.message.includes('createPattern')) {
+            errorDiagnosis = 'createPattern error - zero-dimension canvas elements detected';
+            errorSolution = 'Remove or hide all canvas elements with width/height of 0';
+          } else if (error.message.includes('tainted')) {
+            errorDiagnosis = 'Canvas tainted by cross-origin content';
+            errorSolution = 'Enable CORS or use allowTaint option';
+          } else if (error.message.includes('SecurityError')) {
+            errorDiagnosis = 'Security error - cross-origin restrictions';
+            errorSolution = 'Check CORS headers and domain restrictions';
+          }
+          
+          console.error('📊 Error diagnosis:', errorDiagnosis);
+          console.error('💡 Suggested solution:', errorSolution);
+          
+          // Send meaningful error via WebSocket
+          if (typeof WebSocket !== 'undefined' && window.ws && window.ws.readyState === WebSocket.OPEN) {
+            window.ws.send(JSON.stringify({
+              type: 'screenshot_error',
+              error: error.message,
+              diagnosis: errorDiagnosis,
+              solution: errorSolution,
+              timestamp: Date.now()
+            }));
+          }
+          
           console.log('📸 Attempting fallback screenshot without problematic elements...');
           
-          // Try a simpler fallback approach
+          // Try a more aggressive fallback approach
           try {
+            // Hide ALL canvas elements for fallback
+            const allCanvases = document.querySelectorAll('canvas');
+            const fallbackHidden = [];
+            allCanvases.forEach(canvas => {
+              canvas.style.display = 'none';
+              canvas.setAttribute('data-fallback-hidden', 'true');
+              fallbackHidden.push(canvas);
+            });
+            
+            console.log('📸 Fallback: Hidden ' + fallbackHidden.length + ' canvas elements');
+            
             const fallbackOptions = {
               allowTaint: true,
               useCORS: true,
-              scale: 0.5,
+              scale: 0.3,
+              backgroundColor: '#1a1a1a',
               ignoreElements: function(element) {
-                return element.tagName === 'CANVAS' || 
-                       element.style.display === 'none' ||
-                       element.offsetWidth === 0 || 
-                       element.offsetHeight === 0;
+                // Be very aggressive about filtering problematic elements
+                if (element.tagName === 'CANVAS' || 
+                    element.tagName === 'SVG' ||
+                    element.style.display === 'none' ||
+                    element.style.visibility === 'hidden' ||
+                    element.offsetWidth === 0 || 
+                    element.offsetHeight === 0 ||
+                    element.clientWidth === 0 ||
+                    element.clientHeight === 0 ||
+                    element.hasAttribute('data-screenshot-hidden') ||
+                    element.hasAttribute('data-fallback-hidden')) {
+                  return true;
+                }
+                
+                // Skip any element that might cause createPattern errors
+                if (element.width === 0 || element.height === 0) {
+                  return true;
+                }
+                
+                return false;
               }
             };
             
             html2canvas(document.body, fallbackOptions).then(function(fallbackCanvas) {
+              // Restore fallback hidden elements
+              fallbackHidden.forEach(element => {
+                element.style.display = '';
+                element.removeAttribute('data-fallback-hidden');
+              });
+              
               const fallbackDataURL = fallbackCanvas.toDataURL('image/png');
               const fallbackFilename = 'continuum-fallback-screenshot-' + Date.now() + '.png';
               
@@ -374,6 +515,11 @@ class ScreenshotCommand {
                 console.log('✅ Fallback screenshot captured and sent');
               }
             }).catch(function(fallbackError) {
+              // Restore fallback hidden elements even on error
+              fallbackHidden.forEach(element => {
+                element.style.display = '';
+                element.removeAttribute('data-fallback-hidden');
+              });
               console.error('📸 Fallback screenshot also failed:', fallbackError);
             });
           } catch (fallbackError) {
