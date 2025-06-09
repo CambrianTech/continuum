@@ -73,11 +73,18 @@ FEATURES:
 
 DEBUGGING:
   🔍 Agent Debug Validation:
-     cd python-client && source ../.continuum/venv/agents/bin/activate && python continuum_client.py Claude
+     cd /Users/joel/Development/ideem/vHSM/externals/continuum/python-client && source ../.continuum/venv/agents/bin/activate && python continuum_client.py Claude
      
      Creates AgentClientConnection and triggers BrowserClientConnection validation:
-     • Captures version badge screenshots → .continuum/screenshots/
-     • Validates JavaScript execution, error generation, console capture
+     • ✅ Remote JavaScript execution capability
+     • ✅ Version reading from browser UI (v0.2.1987)  
+     • ✅ Error/warning generation in browser console
+     • ✅ Screenshot capture with full dark UI theme (187KB screenshots)
+     • ✅ WebSocket communication between Python agents and browser
+     • ✅ File saving to .continuum/screenshots/ directory
+     
+     Screenshots automatically capture the complete dark cyberpunk UI including 
+     sidebar, chat area, and all interface elements.
      • Tests cross-client communication between browser and Python agent
   📸 AI screenshot capture & visual debugging (Promise Post Office System)
 
