@@ -30,6 +30,12 @@ class ProtocolSheriff {
       return { isValid: true, violations: [] };
     }
     
+    // Handle non-string queries
+    if (typeof userQuery !== 'string') {
+      console.log('🤖 Protocol Sheriff: Non-string userQuery, skipping validation');
+      return { isValid: true, violations: [] };
+    }
+    
     // Quick cache check for exact matches
     const cacheKey = `${aiResponse.substring(0, 100)}:${userQuery.substring(0, 50)}`;
     if (this.validationCache.has(cacheKey)) {

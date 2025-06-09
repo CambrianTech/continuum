@@ -169,17 +169,31 @@ class ScreenshotCommand {
       
       const captureParams = ${JSON.stringify(options)};
       
+      // Wait for HTML to fully load before proceeding
+      function waitForPageReady(callback) {
+        if (document.readyState === 'complete') {
+          console.log('📸 Page already loaded, proceeding...');
+          setTimeout(callback, 100); // Small delay to ensure rendering is complete
+        } else {
+          console.log('📸 Waiting for page to load...');
+          window.addEventListener('load', function() {
+            console.log('📸 Page loaded, proceeding...');
+            setTimeout(callback, 100); // Small delay after load
+          });
+        }
+      }
+      
       // Load html2canvas if not already loaded
       if (typeof html2canvas === 'undefined') {
         const script = document.createElement('script');
         script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
         script.onload = function() {
-          console.log('📸 html2canvas loaded, starting capture...');
-          captureScreenshot();
+          console.log('📸 html2canvas loaded, waiting for page ready...');
+          waitForPageReady(captureScreenshot);
         };
         document.head.appendChild(script);
       } else {
-        captureScreenshot();
+        waitForPageReady(captureScreenshot);
       }
       
       function captureScreenshot() {
@@ -271,36 +285,43 @@ class ScreenshotCommand {
         
         // ULTRA-AGGRESSIVE ignoreElements function 
         captureOptions.ignoreElements = function(element) {
-          // Ignore ALL canvas elements to prevent createPattern errors
+          // Ignore ALL canvas elements completely - no exceptions
           if (element.tagName === 'CANVAS') {
-            console.log('📸 Ignoring ALL canvas elements');
             return true;
           }
           
-          // Ignore SVG elements with zero dimensions
-          if (element.tagName === 'SVG') {
-            if (element.offsetWidth === 0 || element.offsetHeight === 0 ||
-                element.getAttribute('width') === '0' || element.getAttribute('height') === '0') {
-              console.log('📸 Ignoring zero SVG element');
-              return true;
-            }
+          // Ignore ALL iframe elements - they can cause issues
+          if (element.tagName === 'IFRAME') {
+            return true;
           }
           
-          // Ignore any element with zero dimensions or that's hidden
+          // Ignore any element with zero dimensions
           if (element.offsetWidth === 0 || element.offsetHeight === 0 ||
-              element.clientWidth === 0 || element.clientHeight === 0 ||
-              element.style.display === 'none' ||
+              element.clientWidth === 0 || element.clientHeight === 0) {
+            return true;
+          }
+          
+          // Ignore hidden elements
+          if (element.style.display === 'none' ||
               element.style.visibility === 'hidden' ||
               element.hasAttribute('data-screenshot-hidden')) {
             return true;
           }
           
-          // Ignore elements that could cause createPattern issues
-          if (['IMG', 'VIDEO', 'IFRAME'].includes(element.tagName)) {
-            if (element.offsetWidth === 0 || element.offsetHeight === 0) {
-              console.log('📸 Ignoring zero media element:', element.tagName);
+          // Ignore SVG elements with problematic dimensions
+          if (element.tagName === 'SVG') {
+            const width = element.getAttribute('width');
+            const height = element.getAttribute('height');
+            if (width === '0' || height === '0' || 
+                element.offsetWidth === 0 || element.offsetHeight === 0) {
               return true;
             }
+          }
+          
+          // Ignore video elements that might be problematic
+          if (element.tagName === 'VIDEO' && 
+              (element.offsetWidth === 0 || element.offsetHeight === 0)) {
+            return true;
           }
           
           return false;
