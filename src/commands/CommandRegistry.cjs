@@ -42,7 +42,7 @@ class CommandRegistry {
             const definition = CommandClass.getDefinition();
             const commandName = definition.name.toUpperCase();
             
-            this.commands.set(commandName, CommandClass.execute);
+            this.commands.set(commandName, CommandClass.execute.bind(CommandClass));
             this.definitions.set(commandName, definition);
             
             console.log(`📚 Loaded command: ${commandName} (${definition.category})`);

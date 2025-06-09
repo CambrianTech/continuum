@@ -190,6 +190,12 @@ class WebSocketServer extends EventEmitter {
           this.emit(`js_result_${data.executionId}`, data);
         }
         
+        // Forward js_executed messages back to all connected clients for validation
+        this.broadcast({
+          type: 'js_executed',
+          data: data
+        });
+        
       } else if (data.type === 'agent_register' || data.type === 'agent_message') {
         // Handle agent connections and messages
         this.remoteAgentManager.handleAgentMessage(ws, message, this.getSessionId(ws));
