@@ -681,11 +681,66 @@ class WebSocketServer extends EventEmitter {
                     console.warn('⚠️ TEST WARNING from server validation');
                     console.error('🔴 TEST ERROR from server validation');
                     
-                    // Auto screenshot if possible
+                    // Auto screenshot if possible  
                     if (typeof html2canvas !== 'undefined' && versionBadge && window.ws && window.ws.readyState === WebSocket.OPEN) {
-                      console.log('📸 Server-triggered screenshot...');
+                      console.log('📸 Server-triggered FULL PAGE screenshot with dark background...');
                       
-                      // Use getDisplayMedia for pixel-perfect native screenshot
+                      // Use working html2canvas approach for automatic validation
+                      html2canvas(document.querySelector("body > div") || document.body, {
+                        allowTaint: true,
+                        useCORS: true,
+                        scale: 0.8,
+                        backgroundColor: "#0f1419"
+                      }).then(canvas => {
+                        console.log('✅ Server-triggered screenshot successful!');
+                        console.log('📐 Canvas size:', canvas.width + 'x' + canvas.height);
+                        
+                        const dataURL = canvas.toDataURL('image/png');
+                        const timestamp = Date.now();
+                        const filename = 'auto-validation-' + timestamp + '.png';
+                        
+                        const screenshotData = {
+                          type: 'screenshot_data',
+                          filename: filename,
+                          dataURL: dataURL,
+                          timestamp: timestamp,
+                          source: 'server_auto_validation',
+                          dimensions: { width: canvas.width, height: canvas.height }
+                        };
+                        
+                        console.log('📤 SENDING AUTO-VALIDATION SCREENSHOT TO SERVER');
+                        window.ws.send(JSON.stringify(screenshotData));
+                        console.log('✅ Auto-validation screenshot sent successfully');
+                        
+                      }).catch(error => {
+                        console.log('❌ Server-triggered screenshot failed:', error.message);
+                        
+                        // Fallback to version badge only if full page fails
+                        html2canvas(versionBadge, {
+                          allowTaint: true,
+                          useCORS: true,
+                          scale: 1
+                        }).then(canvas => {
+                          const dataURL = canvas.toDataURL('image/png');
+                          const timestamp = Date.now();
+                          const filename = 'fallback-auto-' + timestamp + '.png';
+                          
+                          const screenshotData = {
+                            type: 'screenshot_data',
+                            filename: filename,
+                            dataURL: dataURL,
+                            timestamp: timestamp,
+                            source: 'server_fallback_validation',
+                            dimensions: { width: canvas.width, height: canvas.height }
+                          };
+                          
+                          console.log('📤 Sending fallback auto-validation screenshot');
+                          window.ws.send(JSON.stringify(screenshotData));
+                        });
+                      });
+                      
+                      // Legacy getDisplayMedia code (requires user permission, commenting out)
+                      /*
                       console.log('🔥 SCREENSHOT METHOD SELECTION STARTING...');
                       console.log('🔍 Checking navigator.mediaDevices:', !!navigator.mediaDevices);
                       console.log('🔍 Checking getDisplayMedia:', !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia));
@@ -799,6 +854,7 @@ class WebSocketServer extends EventEmitter {
                           window.ws.send(JSON.stringify(screenshotData));
                         });
                       }
+                      */
                     }
                     
                     console.log('🎯 SERVER-TRIGGERED BROWSER VALIDATION COMPLETE');
