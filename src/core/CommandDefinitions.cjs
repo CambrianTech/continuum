@@ -74,6 +74,18 @@ class CommandDefinitions {
         usage: 'Write content to files on the server filesystem.'
       },
       
+      SAVE_FILE: {
+        category: 'Core',
+        icon: '💾',
+        description: 'Save file from base64 data to filesystem',
+        params: '{"filename": "name.ext", "directory": "path", "content": "base64_data", "mimeType": "type"}',
+        examples: [
+          '{"params": "{\\"filename\\": \\"test.txt\\", \\"directory\\": \\".continuum/screenshots\\", \\"content\\": \\"SGVsbG8gV29ybGQ=\\", \\"mimeType\\": \\"text/plain\\"}"}',
+          '{"params": "{\\"filename\\": \\"image.png\\", \\"directory\\": \\".continuum/screenshots\\", \\"content\\": \\"base64_image_data\\", \\"mimeType\\": \\"image/png\\"}"}'
+        ],
+        usage: 'Save files to server filesystem from base64 blob data. Creates directories as needed. Perfect for screenshots, documents, and any binary data.'
+      },
+      
       WEBFETCH: {
         category: 'Core',
         icon: '🌐',

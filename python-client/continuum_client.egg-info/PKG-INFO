@@ -154,10 +154,21 @@ await capture_element_by_id('sidebar')       # Capture by element ID
 await capture_multiple_formats('#content')   # Same element, multiple formats
 ```
 
-**📁 See [`examples/`](examples/) directory for complete screenshot examples:**
+**📁 See [`examples/`](examples/) directory for complete screenshot & debugging examples:**
 - [`simple_screenshot.py`](examples/simple_screenshot.py) - Basic capture and auto-open
 - [`find_and_capture.py`](examples/find_and_capture.py) - Smart element finding
 - [`screenshot_capture.py`](examples/screenshot_capture.py) - Full-featured capture class
+
+**🎬 UI Debugging & Validation Demos:**
+- [`natural_glass_submenu_demo.py`](examples/natural_glass_submenu_demo.py) - Star Trek TNG glass submenu demo
+- [`README_glass_submenu_demo.md`](examples/README_glass_submenu_demo.md) - Complete glass submenu documentation
+
+**🎨 UI Styling & CSS Fix Tools:**
+- [`ui_styling_debugger.py`](examples/ui_styling_debugger.py) - Before/after visual debugging for CSS fixes
+- [`component_css_fixer.py`](examples/component_css_fixer.py) - Quick CSS fix application tool
+- [`README_UI_STYLING_TOOLS.md`](examples/README_UI_STYLING_TOOLS.md) - Complete styling tools documentation
+
+These utilities provide visual validation, automated CSS fix application, and systematic debugging workflows for UI styling issues.
 
 ## Promise-Based Execution
 

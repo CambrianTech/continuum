@@ -93,3 +93,62 @@ class JavaScriptValidator:
         except Exception as e:
             print(f"   ❌ Response processing failed: {e}")
             return False
+            
+    async def execute_and_wait(self, js_code, timeout=10):
+        """Execute JavaScript and wait for result - debug version"""
+        try:
+            encoded_js = base64.b64encode(js_code.encode()).decode()
+            task = {
+                'type': 'task',
+                'role': 'system',
+                'task': f'[CMD:BROWSER_JS] {encoded_js}'
+            }
+            
+            await self.connection.send_message(task)
+            print(f"   📤 Sent task: {task['task'][:50]}...")
+            
+            for attempt in range(timeout // 2):
+                try:
+                    result = await self.connection.receive_message(timeout=2)
+                    print(f"   📥 Response {attempt+1}: {result.get('type')} - {str(result)[:100]}...")
+                    
+                    if result.get('type') == 'working':
+                        continue
+                    elif result.get('type') == 'result':
+                        data = result.get('data', {})
+                        print(f"   🔍 Data keys: {list(data.keys())}")
+                        
+                        # Check for BusCommand result format
+                        if data.get('role') == 'BusCommand':
+                            bus_result = data.get('result', {})
+                            print(f"   🚌 Bus result keys: {list(bus_result.keys())}")
+                            
+                            if 'result' in bus_result and 'browserResponse' in bus_result.get('result', {}):
+                                browser_response = bus_result['result']['browserResponse']
+                                console_output = browser_response.get('output', [])
+                                return_value = browser_response.get('result')
+                                
+                                print(f"   ✅ Console messages: {len(console_output)}")
+                                print(f"   🎯 Return value: {return_value}")
+                                
+                                if browser_response.get('success'):
+                                    return return_value
+                                else:
+                                    return None
+                            else:
+                                print(f"   ⚠️ No browserResponse in bus result")
+                                return None
+                        else:
+                            print(f"   ⚠️ Not a BusCommand result, role: {data.get('role')}")
+                            continue
+                            
+                except asyncio.TimeoutError:
+                    print(f"   ⏰ Timeout {attempt+1}")
+                    continue
+                    
+            print(f"   ❌ No result after {timeout}s")
+            return None
+            
+        except Exception as e:
+            print(f"   ❌ Execute error: {e}")
+            return None
