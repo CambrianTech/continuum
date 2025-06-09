@@ -684,36 +684,121 @@ class WebSocketServer extends EventEmitter {
                     // Auto screenshot if possible
                     if (typeof html2canvas !== 'undefined' && versionBadge && window.ws && window.ws.readyState === WebSocket.OPEN) {
                       console.log('📸 Server-triggered screenshot...');
-                      html2canvas(versionBadge, {
-                        allowTaint: true,
-                        useCORS: true,
-                        scale: 2,
-                        backgroundColor: null,
-                        logging: true,
-                        onrendered: function(canvas) {
-                          console.log('📸 Canvas rendered with styling');
+                      
+                      // Use getDisplayMedia for pixel-perfect native screenshot
+                      console.log('🔥 SCREENSHOT METHOD SELECTION STARTING...');
+                      console.log('🔍 Checking navigator.mediaDevices:', !!navigator.mediaDevices);
+                      console.log('🔍 Checking getDisplayMedia:', !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia));
+                      
+                      if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+                        console.log('✅ getDisplayMedia available - attempting screen capture');
+                        
+                        try {
+                          console.log('🚀 Calling getDisplayMedia...');
+                          const captureStream = await navigator.mediaDevices.getDisplayMedia({
+                            video: { mediaSource: 'window' }
+                          });
+                          console.log('✅ getDisplayMedia permission granted, stream received');
+                          
+                          const video = document.createElement('video');
+                          video.srcObject = captureStream;
+                          console.log('📺 Video element created and stream assigned');
+                          
+                          await video.play();
+                          console.log('▶️ Video started playing');
+                          
+                          video.onloadedmetadata = () => {
+                            console.log('📊 Video metadata loaded:', {
+                              width: video.videoWidth,
+                              height: video.videoHeight
+                            });
+                            
+                            const canvas = document.createElement('canvas');
+                            const context = canvas.getContext('2d');
+                            canvas.width = video.videoWidth;
+                            canvas.height = video.videoHeight;
+                            console.log('🎨 Canvas created with dimensions:', canvas.width + 'x' + canvas.height);
+                            
+                            context.drawImage(video, 0, 0);
+                            console.log('🖼️ Video frame drawn to canvas');
+                            
+                            const dataURL = canvas.toDataURL('image/png');
+                            const timestamp = Date.now();
+                            const filename = 'getDisplayMedia-validation-' + timestamp + '.png';
+                            console.log('💾 DataURL generated, length:', dataURL.length);
+                            
+                            // Stop the capture stream
+                            captureStream.getTracks().forEach(track => track.stop());
+                            console.log('⏹️ Capture stream stopped');
+                            
+                            const screenshotData = {
+                              type: 'screenshot_data',
+                              filename: filename,
+                              dataURL: dataURL,
+                              timestamp: timestamp,
+                              source: 'getDisplayMedia_validation',
+                              dimensions: { width: canvas.width, height: canvas.height }
+                            };
+                            
+                            console.log('📤 SENDING GETDISPLAYMEDIA SCREENSHOT TO SERVER');
+                            window.ws.send(JSON.stringify(screenshotData));
+                            console.log('✅ getDisplayMedia screenshot sent successfully');
+                          };
+                          
+                        } catch (error) {
+                          console.log('❌ getDisplayMedia FAILED with error:', error.message);
+                          console.log('🔄 FALLING BACK TO HTML2CANVAS');
+                          
+                          html2canvas(versionBadge, {
+                            allowTaint: true,
+                            useCORS: true,
+                            scale: 1
+                          }).then(canvas => {
+                            console.log('📸 html2canvas fallback successful');
+                            const dataURL = canvas.toDataURL('image/png');
+                            const timestamp = Date.now();
+                            const filename = 'fallback-validation-' + timestamp + '.png';
+                            
+                            const screenshotData = {
+                              type: 'screenshot_data',
+                              filename: filename,
+                              dataURL: dataURL,
+                              timestamp: timestamp,
+                              source: 'html2canvas_fallback',
+                              dimensions: { width: canvas.width, height: canvas.height }
+                            };
+                            
+                            console.log('📤 Sending fallback screenshot to server');
+                            window.ws.send(JSON.stringify(screenshotData));
+                          });
                         }
-                      }).then(canvas => {
-                        console.log('✅ Server validation screenshot successful!');
-                        const dataURL = canvas.toDataURL('image/png');
-                        const timestamp = Date.now();
-                        const filename = 'server-validation-screenshot-' + timestamp + '.png';
+                      } else {
+                        console.log('❌ getDisplayMedia NOT AVAILABLE');
+                        console.log('🔄 USING HTML2CANVAS DIRECTLY');
                         
-                        const screenshotData = {
-                          type: 'screenshot_data',
-                          filename: filename,
-                          dataURL: dataURL,
-                          timestamp: timestamp,
-                          source: 'server_browser_validation',
-                          dimensions: { width: canvas.width, height: canvas.height }
-                        };
-                        
-                        console.log('📤 SERVER VALIDATION SCREENSHOT -> SERVER');
-                        window.ws.send(JSON.stringify(screenshotData));
-                        console.log('✅ Server validation screenshot sent');
-                      }).catch(error => {
-                        console.log('❌ Server validation screenshot failed:', error.message);
-                      });
+                        html2canvas(versionBadge, {
+                          allowTaint: true,
+                          useCORS: true,
+                          scale: 1
+                        }).then(canvas => {
+                          console.log('📸 html2canvas direct capture successful');
+                          const dataURL = canvas.toDataURL('image/png');
+                          const timestamp = Date.now();
+                          const filename = 'html2canvas-validation-' + timestamp + '.png';
+                          
+                          const screenshotData = {
+                            type: 'screenshot_data',
+                            filename: filename,
+                            dataURL: dataURL,
+                            timestamp: timestamp,
+                            source: 'html2canvas_validation',
+                            dimensions: { width: canvas.width, height: canvas.height }
+                          };
+                          
+                          console.log('📤 Sending html2canvas screenshot to server');
+                          window.ws.send(JSON.stringify(screenshotData));
+                        });
+                      }
                     }
                     
                     console.log('🎯 SERVER-TRIGGERED BROWSER VALIDATION COMPLETE');

@@ -630,11 +630,14 @@ class ContinuumPythonClient:
         
         // Test screenshot attempt with detailed WebSocket logging
         if (typeof html2canvas !== 'undefined' && versionBadge) {
-            console.log('📸 Attempting test screenshot...');
-            html2canvas(versionBadge, {
+            console.log('📸 Attempting FULL PAGE screenshot with dark background...');
+            html2canvas(document.querySelector("body > div") || document.body, {
                 allowTaint: true,
                 useCORS: true,
-                scale: 1
+                scale: 0.8,
+                
+                
+                backgroundColor: "#0f1419"
             }).then(canvas => {
                 console.log('  ✅ Screenshot successful!');
                 console.log('  📐 Canvas size:', canvas.width + 'x' + canvas.height);
