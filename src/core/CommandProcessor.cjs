@@ -22,7 +22,8 @@ class CommandProcessor {
     this.commands.set('FILE_WRITE', this.writeFile.bind(this));
     this.commands.set('WEBFETCH', this.webFetch.bind(this));
     this.commands.set('PYTHON', this.executePython.bind(this));
-    this.commands.set('SCREENSHOT', this.takeScreenshot.bind(this));
+    // Route SCREENSHOT to proper ScreenshotCommand instead of legacy implementation
+    this.commands.set('SCREENSHOT', this.routeToScreenshotCommand.bind(this));
     
     // AI Cursor & Control Commands
     this.commands.set('ACTIVATE_CURSOR', this.activateAICursor.bind(this));
@@ -137,6 +138,14 @@ class CommandProcessor {
 
   async executeCommand(command, params, encoding = 'utf-8') {
     console.log(`🔧 EXECUTING COMMAND: ${command} with params: ${params.substring(0, 50)}${params.length > 50 ? '...' : ''}`);
+    
+    // Auto-detect base64 encoding for BROWSER_JS commands
+    if (command === 'BROWSER_JS' && /^[A-Za-z0-9+/=]+$/.test(params) && params.length % 4 === 0) {
+      console.log(`🔧 AUTO-DETECTED: BROWSER_JS with base64 encoding`);
+      encoding = 'base64';
+    }
+    
+    console.log(`🔧 COMMAND_EXECUTION: Using encoding: ${encoding}`);
     
     // First try modular commands from CommandRegistry
     const modularCommand = this.commandRegistry.getCommand(command);
@@ -282,7 +291,28 @@ class CommandProcessor {
     }
   }
 
+  async routeToScreenshotCommand(params = '') {
+    console.log('📸 COMMAND_PROCESSOR: Routing to ScreenshotCommand with params:', params);
+    
+    try {
+      // Import and use the proper ScreenshotCommand
+      const ScreenshotCommand = require('../commands/core/ScreenshotCommand.cjs');
+      const result = await ScreenshotCommand.execute(params, this.continuum);
+      
+      console.log('📸 COMMAND_PROCESSOR: ScreenshotCommand result:', result.success ? 'SUCCESS' : 'FAILED');
+      if (!result.success) {
+        console.log('📸 COMMAND_PROCESSOR: ScreenshotCommand error:', result.error);
+      }
+      
+      return result.message || result.error || 'Screenshot command completed';
+    } catch (error) {
+      console.log('📸 COMMAND_PROCESSOR: Error routing to ScreenshotCommand:', error.message);
+      return `Screenshot routing error: ${error.message}`;
+    }
+  }
+
   async takeScreenshot(params = '') {
+    console.log('📸 COMMAND_PROCESSOR: takeScreenshot called with params:', params);
     try {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const filename = `screenshot-${timestamp}.png`;
@@ -301,31 +331,65 @@ class CommandProcessor {
         filename: filename
       };
       
-      console.log(`📸 Taking browser canvas screenshot: ${args || 'full viewport'}`);
+      console.log(`📸 COMMAND_PROCESSOR: Taking browser canvas screenshot: ${args || 'full viewport'}`);
+      console.log('📸 COMMAND_PROCESSOR: Screenshot options:', options);
       
       // Trigger visual feedback first
+      console.log('📸 COMMAND_PROCESSOR: Triggering screenshot feedback');
       await this.executeJavaScript('triggerScreenshotFeedback();');
       
       // Brief delay to let the animation start
       await new Promise(resolve => setTimeout(resolve, 200));
       
       // Send screenshot command to browser via JavaScript
+      console.log('📸 COMMAND_PROCESSOR: Executing screenshot JavaScript in browser');
       const screenshotJS = `
         // Browser-based screenshot using canvas
+        console.log('📸 BROWSER: takeCanvasScreenshot function starting');
         (async function takeCanvasScreenshot() {
           try {
             const options = ${JSON.stringify(options)};
+            console.log('📸 BROWSER: Screenshot options received:', options);
             
             // Use html2canvas or native browser screenshot APIs
             if (typeof html2canvas !== 'undefined') {
+              console.log('📸 BROWSER: html2canvas is available, using it');
+              console.log('📸 BROWSER: Targeting document.body for capture');
+              
+              // Pre-filter elements to avoid zero-dimension canvas issues
+              console.log('📸 BROWSER: Pre-filtering problematic elements...');
+              const canvasElements = document.querySelectorAll('canvas');
+              const problematicElements = [];
+              
+              canvasElements.forEach(canvas => {
+                if (canvas.width === 0 || canvas.height === 0) {
+                  console.log('📸 BROWSER: Found zero-dimension canvas, hiding temporarily:', canvas);
+                  canvas.style.display = 'none';
+                  canvas.setAttribute('data-screenshot-hidden', 'true');
+                  problematicElements.push(canvas);
+                }
+              });
+              
               // If html2canvas is available, use it
               const canvas = await html2canvas(document.body, {
                 useCORS: true,
                 allowTaint: true,
                 scale: options.lowRes ? 0.5 : 1,
                 width: options.width || window.innerWidth,
-                height: options.height || window.innerHeight
+                height: options.height || window.innerHeight,
+                ignoreElements: (element) => {
+                  // Skip elements that might cause issues
+                  return element.tagName === 'CANVAS' && (element.width === 0 || element.height === 0);
+                }
               });
+              
+              // Restore hidden elements
+              problematicElements.forEach(element => {
+                element.style.display = '';
+                element.removeAttribute('data-screenshot-hidden');
+              });
+              
+              console.log('📸 BROWSER: Canvas capture completed successfully');
               
               const dataURL = canvas.toDataURL('image/png', options.quality);
               

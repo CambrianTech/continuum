@@ -22,10 +22,12 @@ class ScreenshotCommand {
   }
   
   static async execute(params, continuum) {
-    console.log('📸 Screenshot command executed with params:', params);
+    console.log('📸 SCREENSHOT COMMAND: Starting execution with params:', params);
+    console.log('📸 SCREENSHOT COMMAND: Continuum has webSocketServer:', !!continuum.webSocketServer);
     
     // Parse parameters
     const options = ScreenshotCommand.parseParams(params);
+    console.log('📸 SCREENSHOT COMMAND: Parsed options:', options);
     
     // Send screenshot request to browser via WebSocket
     if (continuum.webSocketServer) {
@@ -48,12 +50,18 @@ class ScreenshotCommand {
       }
       
       // Send screenshot request
+      console.log('📸 SCREENSHOT COMMAND: Broadcasting to WebSocket with data:', screenshotData);
+      const jsCommand = ScreenshotCommand.generateScreenshotJS(screenshotData);
+      console.log('📸 SCREENSHOT COMMAND: Generated JS command length:', jsCommand.length);
+      
       continuum.webSocketServer.broadcast({
         type: 'execute_js',
         data: {
-          command: ScreenshotCommand.generateScreenshotJS(screenshotData)
+          command: jsCommand
         }
       });
+      
+      console.log('📸 SCREENSHOT COMMAND: WebSocket broadcast complete');
       
       // Wait for screenshot data to be received (up to 10 seconds)
       const timeout = 10000;
@@ -200,7 +208,37 @@ class ScreenshotCommand {
           }
         }
         
+        // Pre-filter problematic elements to prevent canvas errors
+        console.log('📸 Pre-filtering zero-dimension elements...');
+        const problematicElements = [];
+        const canvasElements = document.querySelectorAll('canvas');
+        
+        canvasElements.forEach(canvas => {
+          if (canvas.width === 0 || canvas.height === 0) {
+            console.log('📸 Hiding zero-dimension canvas temporarily:', canvas);
+            canvas.style.display = 'none';
+            canvas.setAttribute('data-screenshot-hidden', 'true');
+            problematicElements.push(canvas);
+          }
+        });
+        
+        // Add ignoreElements function to capture options
+        captureOptions.ignoreElements = function(element) {
+          // Skip elements that might cause issues
+          if (element.tagName === 'CANVAS' && (element.width === 0 || element.height === 0)) {
+            console.log('📸 Ignoring zero-dimension canvas:', element);
+            return true;
+          }
+          return false;
+        };
+        
         html2canvas(targetElement, captureOptions).then(function(canvas) {
+          // Restore hidden elements
+          problematicElements.forEach(element => {
+            element.style.display = '';
+            element.removeAttribute('data-screenshot-hidden');
+          });
+          console.log('📸 Canvas capture completed successfully');
           let finalCanvas = canvas;
           
           // Handle coordinate-based cropping
@@ -297,7 +335,50 @@ class ScreenshotCommand {
           console.log('📸 Screenshot captured:', filename);
           
         }).catch(function(error) {
+          // Restore hidden elements even on error
+          problematicElements.forEach(element => {
+            element.style.display = '';
+            element.removeAttribute('data-screenshot-hidden');
+          });
+          
           console.error('📸 Screenshot failed:', error);
+          console.log('📸 Attempting fallback screenshot without problematic elements...');
+          
+          // Try a simpler fallback approach
+          try {
+            const fallbackOptions = {
+              allowTaint: true,
+              useCORS: true,
+              scale: 0.5,
+              ignoreElements: function(element) {
+                return element.tagName === 'CANVAS' || 
+                       element.style.display === 'none' ||
+                       element.offsetWidth === 0 || 
+                       element.offsetHeight === 0;
+              }
+            };
+            
+            html2canvas(document.body, fallbackOptions).then(function(fallbackCanvas) {
+              const fallbackDataURL = fallbackCanvas.toDataURL('image/png');
+              const fallbackFilename = 'continuum-fallback-screenshot-' + Date.now() + '.png';
+              
+              if (typeof WebSocket !== 'undefined' && window.ws && window.ws.readyState === WebSocket.OPEN) {
+                window.ws.send(JSON.stringify({
+                  type: 'screenshot_data',
+                  dataURL: fallbackDataURL,
+                  filename: fallbackFilename,
+                  timestamp: Date.now(),
+                  fallback: true
+                }));
+                
+                console.log('✅ Fallback screenshot captured and sent');
+              }
+            }).catch(function(fallbackError) {
+              console.error('📸 Fallback screenshot also failed:', fallbackError);
+            });
+          } catch (fallbackError) {
+            console.error('📸 Could not attempt fallback screenshot:', fallbackError);
+          }
         });
       }
     `;

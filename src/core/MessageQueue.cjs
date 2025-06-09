@@ -115,9 +115,15 @@ class MessageQueue {
   }
 
   queueTaskResult(ws, task, role, continuum) {
+    console.log(`📋 MESSAGE_QUEUE: queueTaskResult called with task: "${task}"`);
+    console.log(`📋 MESSAGE_QUEUE: Role: "${role}"`);
+    console.log(`📋 MESSAGE_QUEUE: About to call continuum.intelligentRoute`);
+    
     this.queueMessage(ws, async () => {
       try {
+        console.log(`📋 MESSAGE_QUEUE: Calling intelligentRoute with task: "${task}"`);
         const result = await continuum.intelligentRoute(task);
+        console.log(`📋 MESSAGE_QUEUE: intelligentRoute returned:`, result);
         
         // 🤖 Protocol Sheriff: Validate response before sending via WebSocket
         const validation = await continuum.protocolSheriff.validateResponse(

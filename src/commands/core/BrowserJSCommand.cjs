@@ -74,8 +74,8 @@ class BrowserJSCommand {
           continuum.webSocketServer.on(`js_result_${executionId}`, responseHandler);
         });
         
-        // Send command with execution ID
-        continuum.webSocketServer.broadcast({
+        // Send command only to browser tabs (not to Python/agent clients)
+        const message = JSON.stringify({
           type: 'execute_js',
           data: {
             command: jsCode,
@@ -84,6 +84,34 @@ class BrowserJSCommand {
             executionId: executionId
           }
         });
+        
+        // Send to browser tabs via TabManager
+        const tabManager = continuum.webSocketServer.tabManager;
+        if (tabManager && tabManager.activeTabs) {
+          let sentToTabs = 0;
+          for (const [tabId, tabData] of tabManager.activeTabs) {
+            if (tabData.ws && tabData.ws.readyState === tabData.ws.OPEN) {
+              try {
+                tabData.ws.send(message);
+                sentToTabs++;
+              } catch (error) {
+                console.error(`❌ Failed to send JavaScript to tab ${tabId}:`, error);
+              }
+            }
+          }
+          console.log(`💻 JavaScript sent to ${sentToTabs} browser tabs`);
+        } else {
+          console.warn('⚠️ No TabManager available - falling back to broadcast');
+          continuum.webSocketServer.broadcast({
+            type: 'execute_js',
+            data: {
+              command: jsCode,
+              timestamp: new Date().toISOString(),
+              encoding: encoding,
+              executionId: executionId
+            }
+          });
+        }
         
         // Wait for browser response
         try {
