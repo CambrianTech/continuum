@@ -24,6 +24,12 @@ class ProtocolSheriff {
 
     console.log('🤖 Protocol Sheriff: Validating response...');
     
+    // Handle non-string responses (like bus command results)
+    if (typeof aiResponse !== 'string') {
+      console.log('🤖 Protocol Sheriff: Non-string response (bus command result), skipping validation');
+      return { isValid: true, violations: [] };
+    }
+    
     // Quick cache check for exact matches
     const cacheKey = `${aiResponse.substring(0, 100)}:${userQuery.substring(0, 50)}`;
     if (this.validationCache.has(cacheKey)) {

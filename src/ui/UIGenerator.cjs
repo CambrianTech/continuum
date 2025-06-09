@@ -2703,7 +2703,7 @@ class UIGenerator {
                                     timestamp: new Date().toISOString(),
                                     message: 'JavaScript executed successfully on client',
                                     output: capturedOutput,
-                                    result: result !== undefined ? String(result) : undefined,
+                                    result: result !== undefined ? (typeof result === 'object' ? JSON.stringify(result) : String(result)) : undefined,
                                     url: window.location.href,
                                     userAgent: navigator.userAgent,
                                     executionId: data.data.executionId

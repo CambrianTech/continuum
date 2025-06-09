@@ -605,9 +605,61 @@ class ContinuumCore {
   }
 
   async intelligentRoute(task) {
-    console.log(`🧠 Enhanced intelligent routing: ${task.substring(0, 50)}...`);
+    console.log(`🧠 INTELLIGENCE_ROUTE: Enhanced intelligent routing: ${task.substring(0, 100)}...`);
+    console.log(`🧠 INTELLIGENCE_ROUTE: Full task string: "${task}"`);
+    console.log(`🧠 INTELLIGENCE_ROUTE: Task includes [CMD:? ${task.includes('[CMD:')}`);
     
-    // Check if we have any AI models available
+    // UNIVERSAL BUS COMMAND DETECTION: Check for direct commands first
+    if (task.includes('[CMD:')) {
+      console.log(`🚀 BUS_COMMAND_DETECTED: Processing direct command instead of AI routing`);
+      console.log(`🚀 BUS_COMMAND_DETECTED: Task contains [CMD: - proceeding with command parsing`);
+      
+      // Parse command using CommandProcessor protocol parsing
+      const parsed = this.commandProcessor.parseAIProtocol(task);
+      console.log(`🚀 BUS_COMMAND_DETECTED: Parsed result:`, JSON.stringify(parsed, null, 2));
+      
+      if (parsed.commands.length > 0) {
+        console.log(`🎯 BUS_COMMAND_EXECUTE: Executing ${parsed.commands.length} bus command(s) directly`);
+        console.log(`🎯 BUS_COMMAND_EXECUTE: Commands:`, parsed.commands);
+        
+        const results = [];
+        for (const cmd of parsed.commands) {
+          console.log(`🎯 BUS_COMMAND_EXECUTE: Processing command: ${cmd.command} with params: ${cmd.params}`);
+          try {
+            const commandResult = await this.commandProcessor.executeCommand(cmd.command, cmd.params);
+            console.log(`✅ BUS_COMMAND_SUCCESS: Command ${cmd.command} result:`, commandResult);
+            results.push({
+              command: cmd.command,
+              params: cmd.params,
+              result: commandResult
+            });
+          } catch (error) {
+            console.error(`❌ BUS_COMMAND_ERROR: Command ${cmd.command} failed:`, error.message);
+            console.error(`❌ BUS_COMMAND_ERROR: Stack:`, error.stack);
+            results.push({
+              command: cmd.command,
+              params: cmd.params,
+              error: error.message
+            });
+          }
+        }
+        
+        console.log(`🎯 BUS_COMMAND_COMPLETE: Returning results:`, results);
+        
+        // Return bus command results in standard format
+        return {
+          result: results.length === 1 ? results[0] : results,
+          role: 'BusCommand',
+          type: 'bus_command_execution'
+        };
+      } else {
+        console.log(`❌ BUS_COMMAND_PARSE_FAILED: No commands found in parsed result`);
+      }
+    } else {
+      console.log(`🧠 INTELLIGENCE_ROUTE: No [CMD: detected, proceeding with AI routing`);
+    }
+    
+    // Check if we have any AI models available for non-command tasks
     if (!this.modelRegistry || this.modelRegistry.getAvailableModels().length === 0) {
       throw new Error('No AI models available. Please configure ANTHROPIC_API_KEY or OPENAI_API_KEY.');
     }

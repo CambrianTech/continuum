@@ -34,7 +34,7 @@ class ExecCommand {
     }
     
     try {
-      const result = await this.executeShellCommand(params);
+      const result = await ExecCommand.executeShellCommand(params);
       return {
         success: true,
         command: params,

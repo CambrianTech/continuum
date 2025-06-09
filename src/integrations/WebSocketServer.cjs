@@ -197,82 +197,9 @@ class WebSocketServer extends EventEmitter {
       } else if (data.type === 'task') {
         const { role, task } = data;
         
-        console.log(`🎯 Task: ${role} -> ${task}`);
-        
-        // Handle BROWSER_JS commands immediately
-        if (task.includes('[CMD:BROWSER_JS]')) {
-          const jsCode = task.replace('[CMD:BROWSER_JS]', '').trim();
-          let finalCode = jsCode;
-          
-          // Generate execution ID for promise-like behavior
-          const executionId = `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-          
-          // Handle base64 decoding
-          try {
-            // Check if it looks like base64
-            if (/^[A-Za-z0-9+/=]+$/.test(jsCode) && jsCode.length % 4 === 0) {
-              finalCode = Buffer.from(jsCode, 'base64').toString('utf8');
-              console.log('🔓 Decoded base64 JavaScript');
-            }
-          } catch (e) {
-            // Not base64, use as-is
-          }
-          
-          console.log(`💻 Broadcasting JavaScript to all browsers: ${finalCode.substring(0, 50)}...`);
-          
-          // Set up promise-like response handler
-          const responseHandler = (browserResult) => {
-            // Route browser result back to originating Python client
-            ws.send(JSON.stringify({
-              type: 'js_executed',
-              success: browserResult.success,
-              result: browserResult.result,
-              output: browserResult.output || [],
-              error: browserResult.error || null,
-              timestamp: browserResult.timestamp,
-              executionId: executionId
-            }));
-            
-            // Clean up listener
-            this.removeListener(`js_result_${executionId}`, responseHandler);
-          };
-          
-          // Listen for browser response
-          this.once(`js_result_${executionId}`, responseHandler);
-          
-          // Set timeout for promise rejection
-          setTimeout(() => {
-            this.removeListener(`js_result_${executionId}`, responseHandler);
-            ws.send(JSON.stringify({
-              type: 'js_executed', 
-              success: false,
-              error: 'JavaScript execution timeout',
-              executionId: executionId
-            }));
-          }, 10000);
-          
-          // Broadcast to all connected browsers with execution ID
-          this.broadcast({
-            type: 'execute_js',
-            data: {
-              command: finalCode,
-              timestamp: new Date().toISOString(),
-              executionId: executionId
-            }
-          });
-          
-          // Send immediate confirmation (not the final result)
-          ws.send(JSON.stringify({
-            type: 'result',
-            data: {
-              task: task,
-              result: 'JavaScript sent to browsers',
-              role: role,
-              executionId: executionId
-            }
-          }));
-          return;
-        }
+        console.log(`🎯 WEBSOCKET_TASK: ${role} -> ${task}`);
+        console.log(`🎯 WEBSOCKET_TASK: Full task string: "${task}"`);
+        console.log(`🎯 WEBSOCKET_TASK: Task contains [CMD:? ${task.includes('[CMD:')}`);
         
         // Send working status immediately (not queued)
         ws.send(JSON.stringify({
@@ -280,7 +207,9 @@ class WebSocketServer extends EventEmitter {
           data: `🤖 ${role} processing: ${task.substring(0, 50)}...`
         }));
         
-        // Queue the task result
+        console.log(`🎯 WEBSOCKET_TASK: Calling messageQueue.queueTaskResult`);
+        
+        // Queue the task result - this should call intelligentRoute
         this.messageQueue.queueTaskResult(ws, task, role, this.continuum);
         
       } else if (data.type === 'message') {
