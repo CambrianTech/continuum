@@ -163,6 +163,9 @@ class UIGeneratorModular {
     <script src="/src/ui/components/StatusPill.js"></script>
     <script src="/src/ui/components/AcademySection.js"></script>
     
+    <!-- Continuum API -->
+    <script src="/src/ui/continuum-api.js"></script>
+    
     <!-- Application Logic -->
     <script>
         // WebSocket connection
@@ -177,6 +180,11 @@ class UIGeneratorModular {
         let roomTabs = null;
         let statusPill = null;
         let academySection = null;
+        
+        // Update continuum version after script loads
+        if (window.continuum) {
+            window.continuum.version = '${packageInfo.version}';
+        }
         
         // Initialize application
         document.addEventListener('DOMContentLoaded', function() {
@@ -252,11 +260,16 @@ class UIGeneratorModular {
             
             ws = new WebSocket(wsUrl);
             
+            // Make WebSocket globally accessible for validation scripts
+            window.ws = ws;
+            
             ws.onopen = function() {
                 isConnected = true;
                 statusPill?.setStatus('connected', 'Connected');
                 chatArea?.setConnected(true);
                 console.log('✅ WebSocket connected');
+                
+                // Don't run validation immediately - wait for server handshake completion
             };
             
             ws.onmessage = function(event) {
@@ -303,6 +316,17 @@ class UIGeneratorModular {
                     
                 case 'academy_status_push':
                     academySection?.updateAcademyStatus(data.status);
+                    break;
+                    
+                case 'connection_banner':
+                    // Connection is fully established - initialize continuum client
+                    console.log('🎯 Connection banner received - system ready');
+                    setTimeout(() => {
+                        if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                            console.log('🚀 Dispatching continuum-ready event...');
+                            document.dispatchEvent(new CustomEvent('continuum-ready'));
+                        }
+                    }, 100); // Small delay to ensure all promises resolved
                     break;
                     
                 default:

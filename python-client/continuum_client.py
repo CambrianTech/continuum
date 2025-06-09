@@ -628,7 +628,7 @@ class ContinuumPythonClient:
             );
         }
         
-        // Test screenshot attempt
+        // Test screenshot attempt with detailed WebSocket logging
         if (typeof html2canvas !== 'undefined' && versionBadge) {
             console.log('📸 Attempting test screenshot...');
             html2canvas(versionBadge, {
@@ -638,7 +638,54 @@ class ContinuumPythonClient:
             }).then(canvas => {
                 console.log('  ✅ Screenshot successful!');
                 console.log('  📐 Canvas size:', canvas.width + 'x' + canvas.height);
-                console.log('  💾 Data URL length:', canvas.toDataURL().length);
+                
+                const dataURL = canvas.toDataURL('image/png');
+                console.log('  💾 Data URL length:', dataURL.length);
+                console.log('  🔍 Data URL preview:', dataURL.substring(0, 100) + '...');
+                
+                // Test WebSocket send with detailed logging
+                if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                    const timestamp = Date.now();
+                    const filename = `validation_screenshot_${timestamp}.png`;
+                    
+                    const screenshotData = {
+                        type: 'screenshot_data',
+                        filename: filename,
+                        dataURL: dataURL,
+                        timestamp: timestamp,
+                        source: 'continuum_client_py_validation',
+                        dimensions: {
+                            width: canvas.width,
+                            height: canvas.height
+                        }
+                    };
+                    
+                    console.log('📤 SENDING SCREENSHOT DATA TO SERVER:');
+                    console.log('  📋 Message type:', screenshotData.type);
+                    console.log('  📁 Filename:', filename);
+                    console.log('  📏 Data length:', dataURL.length);
+                    console.log('  📊 Dimensions:', canvas.width + 'x' + canvas.height);
+                    console.log('  🕐 Timestamp:', timestamp);
+                    console.log('  📡 WebSocket state:', window.ws.readyState);
+                    
+                    window.ws.send(JSON.stringify(screenshotData));
+                    console.log('  ✅ Screenshot data sent to server via WebSocket');
+                    
+                    // Also send debug message
+                    const debugMsg = {
+                        type: 'debug_message',
+                        message: 'Screenshot data sent from browser validation',
+                        filename: filename,
+                        dataSize: dataURL.length
+                    };
+                    window.ws.send(JSON.stringify(debugMsg));
+                    console.log('  📋 Debug message sent to server');
+                    
+                } else {
+                    console.log('  ❌ WebSocket not available for sending screenshot');
+                    console.log('  📊 WebSocket state:', window.ws ? window.ws.readyState : 'no ws');
+                }
+                
             }).catch(error => {
                 console.log('  ❌ Screenshot failed:', error.message);
             });
@@ -660,23 +707,8 @@ class ContinuumPythonClient:
         self.log("   📤 Browser validation experiment sent", force=True)
         self.log("   📊 Check Continuum server console for detailed output", force=True)
         
-        # Listen for any validation responses
-        self.log("👂 Listening for validation responses...", force=True)
-        for i in range(3):
-            try:
-                message = await asyncio.wait_for(self.ws.recv(), timeout=1.0)
-                data = json.loads(message)
-                msg_type = data.get("type", "unknown")
-                self.log(f"   📥 Received: {msg_type}", force=True)
-                
-                # Log full message if it looks important
-                if any(keyword in str(data).lower() for keyword in ['validation', 'screenshot', 'browser', 'error']):
-                    self.log(f"      🔍 Full message: {json.dumps(data, indent=2)[:200]}...", force=True)
-                    
-            except asyncio.TimeoutError:
-                self.log(f"   ⏱️ No response {i+1}/3", force=True)
-            except Exception as e:
-                self.log(f"   ❌ Listen error: {e}", force=True)
+        # Brief wait for processing
+        await asyncio.sleep(2)
         
         # Test 3: Request screenshot via bus command
         self.log("📸 Testing screenshot via bus command...", force=True)

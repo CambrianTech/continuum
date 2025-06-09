@@ -156,8 +156,10 @@ class WebSocketServer extends EventEmitter {
 
   async handleMessage(ws, message) {
     try {
-      console.log('📨 Received message:', message.toString());
+      const messageStr = message.toString();
+      console.log('📨 RAW MESSAGE RECEIVED:', messageStr.length > 200 ? messageStr.substring(0, 200) + '...' : messageStr);
       const data = JSON.parse(message);
+      console.log('📋 PARSED MESSAGE TYPE:', data.type);
       
       if (data.type === 'tabRegister') {
         await this.tabManager.registerTab(ws, data);
@@ -591,9 +593,133 @@ class WebSocketServer extends EventEmitter {
           }));
         }
         
+      } else if (data.type === 'client_initialize') {
+        // Handle client initialization - create server-side ClientConnection
+        try {
+          console.log('🚀 CLIENT INITIALIZATION:', data.clientType);
+          const sessionId = this.getSessionId(ws);
+          
+          if (data.clientType === 'browser') {
+            // Create BrowserClientConnection for this session
+            console.log('🌐 Creating BrowserClientConnection for session:', sessionId);
+            
+            // Store the browser client connection
+            if (!this.continuum.browserConnections) {
+              this.continuum.browserConnections = new Map();
+            }
+            
+            const browserConnection = {
+              sessionId: sessionId,
+              ws: ws,
+              capabilities: data.capabilities || [],
+              connected: true,
+              startTime: Date.now(),
+              
+              async validate() {
+                console.log('🔥 BrowserClientConnection.validate() starting...');
+                
+                try {
+                  // Wait for client to be ready
+                  console.log('⏳ Waiting for browser client ready state...');
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                  
+                  // Send validation script to browser
+                  console.log('📤 Sending validation script to browser...');
+                  const validationScript = \`
+                    console.log('🔥 SERVER-TRIGGERED BROWSER VALIDATION STARTED');
+                    console.log('⏰ Timestamp:', new Date().toISOString());
+                    console.log('🌐 User Agent:', navigator.userAgent);
+                    
+                    // Test version reading
+                    const versionBadge = document.querySelector('.version-badge');
+                    const versionText = versionBadge ? versionBadge.textContent.trim() : 'NO_VERSION_FOUND';
+                    console.log('📋 VERSION_READ_RESULT:', versionText);
+                    
+                    // Test error generation
+                    console.warn('⚠️ TEST WARNING from server validation');
+                    console.error('🔴 TEST ERROR from server validation');
+                    
+                    // Auto screenshot if possible
+                    if (typeof html2canvas !== 'undefined' && versionBadge && window.ws && window.ws.readyState === WebSocket.OPEN) {
+                      console.log('📸 Server-triggered screenshot...');
+                      html2canvas(versionBadge, {
+                        allowTaint: true,
+                        useCORS: true,
+                        scale: 1
+                      }).then(canvas => {
+                        console.log('✅ Server validation screenshot successful!');
+                        const dataURL = canvas.toDataURL('image/png');
+                        const timestamp = Date.now();
+                        const filename = \\\`server-validation-screenshot-\\\${timestamp}.png\\\`;
+                        
+                        const screenshotData = {
+                          type: 'screenshot_data',
+                          filename: filename,
+                          dataURL: dataURL,
+                          timestamp: timestamp,
+                          source: 'server_browser_validation',
+                          dimensions: { width: canvas.width, height: canvas.height }
+                        };
+                        
+                        console.log('📤 SERVER VALIDATION SCREENSHOT -> SERVER');
+                        window.ws.send(JSON.stringify(screenshotData));
+                        console.log('✅ Server validation screenshot sent');
+                      }).catch(error => {
+                        console.log('❌ Server validation screenshot failed:', error.message);
+                      });
+                    }
+                    
+                    console.log('🎯 SERVER-TRIGGERED BROWSER VALIDATION COMPLETE');
+                    "SERVER_VALIDATION_COMPLETE";
+                  \`;
+                  
+                  // Send via BROWSER_JS command
+                  const encoded = Buffer.from(validationScript).toString('base64');
+                  const command = {
+                    type: 'task',
+                    role: 'system',
+                    task: \`[CMD:BROWSER_JS] \${encoded}\`
+                  };
+                  
+                  ws.send(JSON.stringify(command));
+                  console.log('✅ BrowserClientConnection validation script sent');
+                  
+                  return { success: true, message: 'Browser validation triggered' };
+                  
+                } catch (error) {
+                  console.error('❌ BrowserClientConnection.validate() failed:', error);
+                  return { success: false, error: error.message };
+                }
+              }
+            };
+            
+            this.continuum.browserConnections.set(sessionId, browserConnection);
+            console.log('✅ BrowserClientConnection created for session:', sessionId);
+            
+            // Call validate() automatically
+            setTimeout(async () => {
+              console.log('🔥 Auto-calling BrowserClientConnection.validate()...');
+              const result = await browserConnection.validate();
+              console.log('📊 Validation result:', result);
+            }, 200);
+            
+          } else {
+            console.log('🤖 Other client type:', data.clientType);
+          }
+          
+        } catch (error) {
+          console.error('❌ Failed to handle client initialization:', error);
+        }
+        
       } else if (data.type === 'screenshot_data') {
         // Handle browser canvas screenshot data
         try {
+          console.log('📸 PROCESSING SCREENSHOT_DATA MESSAGE');
+          console.log('📸 Data keys:', Object.keys(data));
+          console.log('📸 Filename:', data.filename);
+          console.log('📸 DataURL length:', data.dataURL ? data.dataURL.length : 'undefined');
+          console.log('📸 Dimensions:', data.dimensions);
+          
           const { dataURL, filename, dimensions } = data;
           const sessionId = this.getSessionId(ws);
           
