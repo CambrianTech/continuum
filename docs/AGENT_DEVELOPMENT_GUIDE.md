@@ -744,6 +744,440 @@ This executes:
 
 The bus command architecture makes screenshot capture a **first-class system capability** rather than an ad-hoc script injection.
 
+## 🐛 Debugging Client-Side JavaScript from Python Client
+
+The Python client provides powerful debugging capabilities to capture browser console logs, errors, and JavaScript execution results in real-time.
+
+### Method 1: Real-Time Console Monitoring
+
+Create a comprehensive debugging session that captures all browser activity:
+
+```python
+import asyncio
+import websockets
+import json
+import base64
+
+class BrowserDebugger:
+    def __init__(self, ws_url="ws://localhost:9000"):
+        self.ws_url = ws_url
+        self.ws = None
+        
+    async def connect(self):
+        """Connect to Continuum WebSocket"""
+        self.ws = await websockets.connect(self.ws_url)
+        
+        # Register as debugging agent
+        register_msg = {
+            "type": "agent_register",
+            "agentName": "BrowserDebugger",
+            "capabilities": ["console_monitoring", "error_capture", "js_execution"]
+        }
+        await self.ws.send(json.dumps(register_msg))
+        print("🔗 Connected as Browser Debugger")
+        
+    async def enable_console_monitoring(self):
+        """Enable real-time console monitoring in browser"""
+        monitor_script = '''
+        console.log('🔍 ENABLING BROWSER DEBUG MONITORING...');
+        
+        // Store original console methods
+        const originalConsole = {
+            log: console.log.bind(console),
+            warn: console.warn.bind(console),
+            error: console.error.bind(console),
+            info: console.info.bind(console)
+        };
+        
+        // Override console methods to capture and send to Python
+        const sendToDebugger = (level, args) => {
+            const message = args.map(arg => 
+                typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+            ).join(' ');
+            
+            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                window.ws.send(JSON.stringify({
+                    type: 'debug_console',
+                    level: level,
+                    message: message,
+                    timestamp: Date.now(),
+                    url: window.location.href,
+                    source: 'browser_debug_monitor'
+                }));
+            }
+            
+            // Call original console method
+            originalConsole[level](args);
+        };
+        
+        console.log = (...args) => sendToDebugger('log', args);
+        console.warn = (...args) => sendToDebugger('warn', args);
+        console.error = (...args) => sendToDebugger('error', args);
+        console.info = (...args) => sendToDebugger('info', args);
+        
+        // Monitor JavaScript errors
+        window.addEventListener('error', (event) => {
+            const errorData = {
+                type: 'debug_error',
+                message: event.message,
+                filename: event.filename,
+                lineno: event.lineno,
+                colno: event.colno,
+                error: event.error ? event.error.toString() : null,
+                stack: event.error ? event.error.stack : null,
+                timestamp: Date.now()
+            };
+            
+            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                window.ws.send(JSON.stringify(errorData));
+            }
+        });
+        
+        // Monitor promise rejections
+        window.addEventListener('unhandledrejection', (event) => {
+            const rejectionData = {
+                type: 'debug_rejection',
+                reason: event.reason ? event.reason.toString() : 'Unknown',
+                timestamp: Date.now()
+            };
+            
+            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                window.ws.send(JSON.stringify(rejectionData));
+            }
+        });
+        
+        console.log('✅ Browser debug monitoring enabled');
+        return 'DEBUG_MONITORING_ENABLED';
+        '''
+        
+        await self.send_js_command(monitor_script)
+        print("✅ Console monitoring enabled")
+        
+    async def send_js_command(self, js_code):
+        """Send JavaScript command to browser and wait for result"""
+        encoded_js = base64.b64encode(js_code.encode()).decode()
+        command = {
+            "type": "task",
+            "role": "system",
+            "task": f"[CMD:BROWSER_JS] {encoded_js}"
+        }
+        
+        await self.ws.send(json.dumps(command))
+        
+        # Wait for js_executed response
+        return await self.wait_for_js_result()
+        
+    async def wait_for_js_result(self, timeout=10):
+        """Wait for JavaScript execution result"""
+        start_time = asyncio.get_event_loop().time()
+        
+        while asyncio.get_event_loop().time() - start_time < timeout:
+            try:
+                message = await asyncio.wait_for(self.ws.recv(), timeout=1.0)
+                data = json.loads(message)
+                
+                if data.get("type") == "js_executed":
+                    return {
+                        "success": data.get("success", False),
+                        "result": data.get("result"),
+                        "output": data.get("output", []),
+                        "error": data.get("error"),
+                        "timestamp": data.get("timestamp")
+                    }
+                    
+            except asyncio.TimeoutError:
+                continue
+                
+        return {"success": False, "error": "Timeout waiting for result"}
+        
+    async def listen_for_debug_messages(self, duration=30):
+        """Listen for debug messages from browser"""
+        print(f"👂 Listening for debug messages for {duration} seconds...")
+        start_time = asyncio.get_event_loop().time()
+        
+        while asyncio.get_event_loop().time() - start_time < duration:
+            try:
+                message = await asyncio.wait_for(self.ws.recv(), timeout=1.0)
+                data = json.loads(message)
+                
+                # Handle different types of debug messages
+                msg_type = data.get("type")
+                
+                if msg_type == "debug_console":
+                    level = data.get("level", "log").upper()
+                    message_text = data.get("message", "")
+                    timestamp = data.get("timestamp", 0)
+                    print(f"📱 [{level}] {message_text}")
+                    
+                elif msg_type == "debug_error":
+                    print(f"🚨 JavaScript Error: {data.get('message')}")
+                    print(f"   📁 File: {data.get('filename')}:{data.get('lineno')}")
+                    if data.get('stack'):
+                        print(f"   📚 Stack: {data.get('stack')[:200]}...")
+                        
+                elif msg_type == "debug_rejection":
+                    print(f"💥 Promise Rejection: {data.get('reason')}")
+                    
+                elif msg_type == "screenshot_data":
+                    filename = data.get("filename", "unknown")
+                    dimensions = data.get("dimensions", {})
+                    print(f"📸 Screenshot captured: {filename} ({dimensions.get('width')}x{dimensions.get('height')})")
+                    
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                print(f"❌ Error listening: {e}")
+                break
+                
+        print("👂 Debug listening session complete")
+
+# Usage example
+async def debug_browser_session():
+    debugger = BrowserDebugger()
+    await debugger.connect()
+    await debugger.enable_console_monitoring()
+    
+    # Test some JavaScript
+    test_result = await debugger.send_js_command('''
+        console.log('🧪 Testing JavaScript execution');
+        console.warn('⚠️ This is a test warning');
+        console.error('🔴 This is a test error');
+        
+        // Test DOM manipulation
+        const testDiv = document.createElement('div');
+        testDiv.textContent = 'Debug test element';
+        document.body.appendChild(testDiv);
+        console.log('✅ DOM manipulation successful');
+        
+        // Test intentional error
+        try {
+            nonExistentFunction();
+        } catch (e) {
+            console.error('🚨 Caught intentional error:', e.message);
+        }
+        
+        return 'DEBUG_TEST_COMPLETE';
+    ''')
+    
+    print(f"📊 Test result: {test_result}")
+    
+    # Listen for real-time debug messages
+    await debugger.listen_for_debug_messages(30)
+
+# Run the debugger
+if __name__ == "__main__":
+    asyncio.run(debug_browser_session())
+```
+
+### Method 2: Quick Debug Commands
+
+For quick debugging sessions, use these one-liner commands:
+
+```bash
+# Debug JavaScript execution with console output
+cd /Users/joel/Development/ideem/vHSM/externals/continuum/python-client && source ../.continuum/venv/agents/bin/activate && python -c "
+import asyncio
+from continuum_client import ContinuumPythonClient
+
+async def quick_debug():
+    client = ContinuumPythonClient()
+    await client.connect()
+    
+    result = await client.execute_browser_script('
+        console.log(\"🔍 Quick debug test\");
+        console.log(\"📊 DOM ready state:\", document.readyState);
+        console.log(\"🌐 Current URL:\", window.location.href);
+        console.log(\"📏 Viewport:\", window.innerWidth + \"x\" + window.innerHeight);
+        return \"DEBUG_COMPLETE\";
+    ')
+    
+    print(f\"Result: {result['success']}\")
+    if result['output']:
+        for entry in result['output']:
+            print(f\"[{entry['level']}] {entry['message']}\")
+
+asyncio.run(quick_debug())
+"
+```
+
+### Method 3: Error Capture and Analysis
+
+Capture and analyze JavaScript errors systematically:
+
+```python
+async def capture_browser_errors():
+    debugger = BrowserDebugger()
+    await debugger.connect()
+    
+    # Set up comprehensive error capture
+    error_capture_script = '''
+    console.log('🔍 Setting up comprehensive error capture...');
+    
+    const errorLog = [];
+    
+    // Capture syntax errors
+    window.addEventListener('error', (e) => {
+        const error = {
+            type: 'syntax_error',
+            message: e.message,
+            filename: e.filename,
+            line: e.lineno,
+            column: e.colno,
+            stack: e.error ? e.error.stack : null,
+            timestamp: Date.now()
+        };
+        errorLog.push(error);
+        console.error('🚨 Syntax Error Captured:', error);
+    });
+    
+    // Capture promise rejections
+    window.addEventListener('unhandledrejection', (e) => {
+        const error = {
+            type: 'promise_rejection',
+            reason: e.reason ? e.reason.toString() : 'Unknown',
+            timestamp: Date.now()
+        };
+        errorLog.push(error);
+        console.error('💥 Promise Rejection Captured:', error);
+    });
+    
+    // Function to get all captured errors
+    window.getBrowserErrors = () => {
+        console.log('📊 Retrieved', errorLog.length, 'errors');
+        return errorLog;
+    };
+    
+    console.log('✅ Error capture system ready');
+    return 'ERROR_CAPTURE_ENABLED';
+    '''
+    
+    result = await debugger.send_js_command(error_capture_script)
+    print(f"Error capture setup: {result}")
+    
+    # Trigger some test errors
+    test_errors_script = '''
+    console.log('🧪 Testing error capture...');
+    
+    // Test 1: Reference error
+    try {
+        undefinedVariable.someMethod();
+    } catch (e) {
+        console.error('Test Error 1:', e.message);
+    }
+    
+    // Test 2: Promise rejection
+    Promise.reject('Test rejection reason');
+    
+    // Test 3: Async error
+    setTimeout(() => {
+        throw new Error('Test async error');
+    }, 100);
+    
+    return 'ERROR_TESTS_TRIGGERED';
+    '''
+    
+    await debugger.send_js_command(test_errors_script)
+    
+    # Wait for errors to be captured
+    await asyncio.sleep(2)
+    
+    # Retrieve captured errors
+    get_errors_result = await debugger.send_js_command('return window.getBrowserErrors();')
+    
+    if get_errors_result['success'] and get_errors_result['result']:
+        errors = json.loads(get_errors_result['result'])
+        print(f"📊 Captured {len(errors)} errors:")
+        for i, error in enumerate(errors):
+            print(f"  {i+1}. [{error['type']}] {error['message']}")
+```
+
+### Method 4: Live Widget Debugging
+
+Debug widget development in real-time:
+
+```python
+async def debug_widget_development():
+    debugger = BrowserDebugger()
+    await debugger.connect()
+    await debugger.enable_console_monitoring()
+    
+    # Create a test widget with debugging
+    widget_script = '''
+    console.log('🎨 Creating test widget with debugging...');
+    
+    const widget = document.createElement('div');
+    widget.id = 'debug-test-widget';
+    widget.innerHTML = `
+        <div style="
+            background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
+            border: 1px solid #00d4ff;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px;
+            color: #e0e6ed;
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 10000;
+            max-width: 300px;
+        ">
+            <h3 style="margin: 0 0 8px 0; color: #00d4ff;">Debug Widget</h3>
+            <div id="debug-info">Initializing...</div>
+            <button id="debug-test-btn" style="
+                background: #00d4ff;
+                color: #0f1419;
+                border: none;
+                padding: 4px 8px;
+                border-radius: 4px;
+                margin-top: 8px;
+                cursor: pointer;
+            ">Test Action</button>
+        </div>
+    `;
+    
+    document.body.appendChild(widget);
+    console.log('✅ Debug widget created');
+    
+    // Add interaction logging
+    const testBtn = document.getElementById('debug-test-btn');
+    const debugInfo = document.getElementById('debug-info');
+    
+    testBtn.addEventListener('click', () => {
+        console.log('🖱️ Debug button clicked');
+        debugInfo.textContent = `Clicked at ${new Date().toLocaleTimeString()}`;
+    });
+    
+    // Update debug info periodically
+    setInterval(() => {
+        debugInfo.textContent = `Active - ${new Date().toLocaleTimeString()}`;
+        console.log('🔄 Debug widget heartbeat');
+    }, 5000);
+    
+    return 'DEBUG_WIDGET_CREATED';
+    '''
+    
+    result = await debugger.send_js_command(widget_script)
+    print(f"Widget creation: {result}")
+    
+    # Listen for widget interactions
+    print("🎯 Debug widget created. Interact with it and watch the console...")
+    await debugger.listen_for_debug_messages(60)
+
+# Usage
+asyncio.run(debug_widget_development())
+```
+
+### Best Practices for Browser Debugging
+
+1. **Start with Monitoring** - Always enable console monitoring first
+2. **Capture Everything** - Log JavaScript errors, promise rejections, and console output
+3. **Use Visual Feedback** - Create debug widgets for visual confirmation
+4. **Test Systematically** - Use structured error testing
+5. **Real-time Analysis** - Monitor browser activity as it happens
+6. **Screenshot Validation** - Combine debugging with screenshot capture
+
+This debugging approach gives you complete visibility into browser-side JavaScript execution, errors, and console output directly from your Python agent environment.
+
 ### What This Example Teaches
 
 This comprehensive example demonstrates the **complete UI development workflow** that makes Continuum unique:
