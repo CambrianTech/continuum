@@ -3,7 +3,9 @@
  * Client-side interface for browser connections to Continuum server
  */
 
-window.continuum = {
+// Wait for DOM and other scripts to be ready before initializing
+function initializeContinuum() {
+    window.continuum = {
     version: '0.2.1987', // Will be updated dynamically
     clientType: 'browser',
     connected: false,
@@ -11,23 +13,54 @@ window.continuum = {
     start: function() {
         console.log('🚀 window.continuum.start() called');
         
-        if (window.ws && window.ws.readyState === WebSocket.OPEN) {
-            // Send client initialization to create server-side BrowserClientConnection
-            const initMessage = {
-                type: 'client_initialize',
-                clientType: 'browser',
-                capabilities: ['screenshot', 'dom_access', 'js_execution', 'validation'],
-                timestamp: Date.now()
-            };
-            
-            window.ws.send(JSON.stringify(initMessage));
-            console.log('📤 Browser client initialization sent to server');
-            window.continuum.connected = true;
-            return true;
-        } else {
-            console.warn('❌ WebSocket not ready for continuum.start()');
-            return false;
-        }
+        return new Promise((resolve, reject) => {
+            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                // Send client initialization to create server-side BrowserClientConnection
+                const initMessage = {
+                    type: 'client_initialize',
+                    clientType: 'browser',
+                    capabilities: ['screenshot', 'dom_access', 'js_execution', 'validation'],
+                    timestamp: Date.now()
+                };
+                
+                try {
+                    // Set up listener for server confirmation
+                    const handleConnectionConfirm = (event) => {
+                        try {
+                            const data = JSON.parse(event.data);
+                            if (data.type === 'client_connection_confirmed' && data.clientType === 'browser') {
+                                console.log('✅ Server confirmed browser client connection');
+                                window.continuum.connected = true;
+                                window.ws.removeEventListener('message', handleConnectionConfirm);
+                                resolve(true);
+                            }
+                        } catch (e) {
+                            // Ignore parse errors for other messages
+                        }
+                    };
+                    
+                    // Listen for server confirmation
+                    window.ws.addEventListener('message', handleConnectionConfirm);
+                    
+                    // Send initialization message
+                    window.ws.send(JSON.stringify(initMessage));
+                    console.log('📤 Browser client initialization sent to server - waiting for confirmation...');
+                    
+                    // Timeout after 10 seconds
+                    setTimeout(() => {
+                        window.ws.removeEventListener('message', handleConnectionConfirm);
+                        reject(new Error('Server confirmation timeout'));
+                    }, 10000);
+                    
+                } catch (error) {
+                    console.error('❌ Failed to send initialization message:', error);
+                    reject(error);
+                }
+            } else {
+                console.warn('❌ WebSocket not ready for continuum.start()');
+                reject(new Error('WebSocket not ready'));
+            }
+        });
     },
     
     api: {
@@ -59,7 +92,10 @@ window.continuum = {
             }
         }
     }
-};
+    };
+
+    console.log('✅ window.continuum initialized');
+}
 
 // Browser validation function - runs automatically via server trigger
 function runBrowserValidation() {
@@ -151,10 +187,101 @@ function runBrowserValidation() {
     return true;
 }
 
+// Promise-based WebSocket readiness check
+function waitForWebSocket() {
+    return new Promise((resolve, reject) => {
+        console.log('⏳ Waiting for WebSocket connection...');
+        
+        // Check if WebSocket is already ready
+        if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+            console.log('✅ WebSocket already connected');
+            resolve(window.ws);
+            return;
+        }
+        
+        // Wait for WebSocket to be assigned and connected
+        const checkInterval = setInterval(() => {
+            if (window.ws) {
+                if (window.ws.readyState === WebSocket.OPEN) {
+                    console.log('✅ WebSocket connection established');
+                    clearInterval(checkInterval);
+                    resolve(window.ws);
+                } else if (window.ws.readyState === WebSocket.CLOSED || window.ws.readyState === WebSocket.CLOSING) {
+                    console.error('❌ WebSocket connection failed');
+                    clearInterval(checkInterval);
+                    reject(new Error('WebSocket connection failed'));
+                }
+                // Continue waiting if CONNECTING (1)
+            }
+        }, 50); // Check every 50ms
+        
+        // Timeout after 10 seconds
+        setTimeout(() => {
+            clearInterval(checkInterval);
+            reject(new Error('WebSocket connection timeout'));
+        }, 10000);
+    });
+}
+
+// Promise-based continuum API readiness check
+function waitForContinuumAPI() {
+    return new Promise((resolve, reject) => {
+        console.log('⏳ Waiting for window.continuum to be initialized...');
+        
+        // Check if continuum is already ready
+        if (window.continuum && window.continuum.start) {
+            console.log('✅ window.continuum already initialized');
+            resolve(window.continuum);
+            return;
+        }
+        
+        // Wait for continuum to be initialized
+        const checkInterval = setInterval(() => {
+            if (window.continuum && window.continuum.start) {
+                console.log('✅ window.continuum initialization complete');
+                clearInterval(checkInterval);
+                resolve(window.continuum);
+            }
+        }, 50); // Check every 50ms
+        
+        // Timeout after 5 seconds
+        setTimeout(() => {
+            clearInterval(checkInterval);
+            reject(new Error('window.continuum initialization timeout'));
+        }, 5000);
+    });
+}
+
 // Auto-initialize when connection banner is received
-document.addEventListener('continuum-ready', function() {
-    console.log('🎯 Continuum ready event - calling continuum.start()');
-    window.continuum.start();
+document.addEventListener('continuum-ready', async function() {
+    console.log('🎯 Continuum ready event received - waiting for dependencies...');
+    console.log('🔍 DEBUG: window.continuum exists:', !!window.continuum);
+    console.log('🔍 DEBUG: continuum.start exists:', !!(window.continuum && window.continuum.start));
+    
+    try {
+        // Wait for both WebSocket and continuum API to be ready
+        console.log('⏳ Waiting for WebSocket and continuum API...');
+        const [ws, continuum] = await Promise.all([
+            waitForWebSocket(),
+            waitForContinuumAPI()
+        ]);
+        
+        console.log('🚀 All dependencies ready - calling continuum.start()');
+        const result = await continuum.start();
+        console.log('📤 continuum.start() completed:', result);
+        console.log('🎯 Browser client fully connected and validated!');
+        
+    } catch (error) {
+        console.error('❌ Failed to wait for dependencies:', error.message);
+    }
 });
+
+// Initialize when DOM is ready and after other scripts load
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeContinuum);
+} else {
+    // DOM already loaded
+    initializeContinuum();
+}
 
 console.log('✅ continuum-api.js loaded');
