@@ -585,6 +585,165 @@ setupErrorRecovery();
 
 This approach ensures you can quickly identify, diagnose, and fix issues while maintaining visual quality and system stability.
 
+## 🚌 Bus Command Architecture: How Screenshots Actually Work
+
+The screenshot system uses Continuum's **bus command architecture**, not direct JavaScript injection. Here's the complete flow:
+
+### Bus Command Flow
+
+```mermaid
+Python Agent → WebSocket → Server → Command Processor → Browser → Screenshot Service → File System
+```
+
+### Step 1: Python Agent Sends Bus Command
+
+```python
+# continuum_client.py sends this bus command
+screenshot_cmd = {
+    "type": "task",
+    "role": "system", 
+    "task": "[CMD:SCREENSHOT]"
+}
+await self.send_message(screenshot_cmd)
+```
+
+### Step 2: Server Routes to Command Processor
+
+The WebSocket server receives the bus command and routes it to the appropriate command handler:
+
+```javascript
+// WebSocketServer.cjs processes the task
+if (data.type === 'task') {
+    const { task } = data;
+    // Task contains "[CMD:SCREENSHOT]"
+    // Route to CommandProcessor
+}
+```
+
+### Step 3: ScreenshotCommand.cjs Executes
+
+Located at `src/commands/core/ScreenshotCommand.cjs`, this command:
+
+```javascript
+static async execute(params, continuum) {
+    // 1. Parse parameters (selector, coordinates, format, quality)
+    const options = ScreenshotCommand.parseParams(params);
+    
+    // 2. Generate JavaScript for browser execution
+    const jsCommand = ScreenshotCommand.generateScreenshotJS(options);
+    
+    // 3. Broadcast to browser via WebSocket
+    continuum.webSocketServer.broadcast({
+        type: 'execute_js',
+        data: { command: jsCommand }
+    });
+    
+    // 4. Wait for screenshot data to be received
+    // 5. Save via ScreenshotService
+}
+```
+
+### Step 4: Browser Executes Generated JavaScript
+
+The command generates JavaScript that:
+
+```javascript
+function captureScreenshot() {
+    const timestamp = Date.now();
+    let filename = 'continuum-screenshot-' + timestamp + '.png';
+    
+    // Use our working configuration
+    let targetElement = document.querySelector("body > div") || document.body;
+    let captureOptions = {
+        allowTaint: true,
+        useCORS: true,
+        scale: 0.8,
+        backgroundColor: '#0f1419'  // Dark theme
+    };
+    
+    html2canvas(targetElement, captureOptions).then(canvas => {
+        const dataURL = canvas.toDataURL('image/png');
+        
+        // Send back to server via WebSocket
+        window.ws.send(JSON.stringify({
+            type: 'screenshot_data',
+            filename: filename,
+            dataURL: dataURL,
+            timestamp: timestamp,
+            dimensions: { width: canvas.width, height: canvas.height }
+        }));
+    });
+}
+```
+
+### Step 5: Server Saves Screenshot
+
+The WebSocketServer receives the screenshot data and saves it:
+
+```javascript
+// WebSocketServer.cjs handles screenshot_data
+else if (data.type === 'screenshot_data') {
+    const { dataURL, filename } = data;
+    
+    // Save to .continuum/screenshots directory
+    const base64Data = dataURL.replace(/^data:image\/png;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+    const outputPath = path.join(process.cwd(), '.continuum', 'screenshots', filename);
+    fs.writeFileSync(outputPath, buffer);
+}
+```
+
+### Command Parameters
+
+The SCREENSHOT command supports various parameters:
+
+```javascript
+// Basic screenshot
+"[CMD:SCREENSHOT]"
+
+// With selector
+"[CMD:SCREENSHOT] {\"selector\": \".sidebar\"}"
+
+// With coordinates  
+"[CMD:SCREENSHOT] {\"x\": 100, \"y\": 200, \"width\": 800, \"height\": 600}"
+
+// With format and quality
+"[CMD:SCREENSHOT] {\"format\": \"jpeg\", \"quality\": 0.8}"
+```
+
+### Why Bus Commands vs Direct JavaScript
+
+**Bus Commands provide:**
+- ✅ **Standardized interface** - Consistent command structure
+- ✅ **Parameter validation** - Built-in parsing and validation
+- ✅ **Error handling** - Centralized error management
+- ✅ **Logging and monitoring** - Complete command execution tracking
+- ✅ **Reusability** - Commands can be called from any agent or interface
+- ✅ **Security** - Controlled execution environment
+
+**Direct JavaScript injection would be:**
+- ❌ **Ad-hoc** - No standardization
+- ❌ **Unsafe** - Direct code execution
+- ❌ **Difficult to monitor** - No centralized logging
+- ❌ **Hard to maintain** - Scattered code
+
+### Testing the Bus Command System
+
+Validate the complete bus command flow:
+
+```bash
+cd /Users/joel/Development/ideem/vHSM/externals/continuum/python-client && source ../.continuum/venv/agents/bin/activate && python continuum_client.py Claude
+```
+
+This executes:
+1. **AgentClientConnection** established
+2. **Bus command sent**: `[CMD:SCREENSHOT]`
+3. **ScreenshotCommand.cjs** executes
+4. **Browser captures** full dark UI (187KB screenshots)
+5. **File saved** to `.continuum/screenshots/validation_screenshot_*.png`
+
+The bus command architecture makes screenshot capture a **first-class system capability** rather than an ad-hoc script injection.
+
 ### What This Example Teaches
 
 This comprehensive example demonstrates the **complete UI development workflow** that makes Continuum unique:
