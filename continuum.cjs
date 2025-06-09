@@ -70,6 +70,15 @@ FEATURES:
   🤝 Cross-scope persona sharing (project/user/organization)
   📊 Real-time cost tracking and session management
   💬 Multi-provider AI integration (OpenAI, Anthropic, HuggingFace)
+
+DEBUGGING:
+  🔍 Agent Debug Validation:
+     cd python-client && source ../.continuum/venv/agents/bin/activate && python continuum_client.py Claude
+     
+     Creates AgentClientConnection and triggers BrowserClientConnection validation:
+     • Captures version badge screenshots → .continuum/screenshots/
+     • Validates JavaScript execution, error generation, console capture
+     • Tests cross-client communication between browser and Python agent
   📸 AI screenshot capture & visual debugging (Promise Post Office System)
 
 WEB INTERFACE:

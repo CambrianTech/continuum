@@ -298,6 +298,7 @@ class UIGeneratorModular {
         }
         
         function handleWebSocketMessage(data) {
+            console.log('🔧 DEBUG: handleWebSocketMessage called with type:', data.type);
             switch (data.type) {
                 case 'message':
                     addMessage(data);
@@ -321,10 +322,18 @@ class UIGeneratorModular {
                 case 'connection_banner':
                     // Connection is fully established - initialize continuum client
                     console.log('🎯 Connection banner received - system ready');
+                    console.log('🔍 DEBUG: WebSocket state:', window.ws ? window.ws.readyState : 'no ws');
+                    console.log('🔍 DEBUG: WebSocket.OPEN constant:', WebSocket.OPEN);
                     setTimeout(() => {
+                        console.log('🔍 DEBUG: In setTimeout - checking WebSocket...');
                         if (window.ws && window.ws.readyState === WebSocket.OPEN) {
                             console.log('🚀 Dispatching continuum-ready event...');
                             document.dispatchEvent(new CustomEvent('continuum-ready'));
+                            console.log('✅ continuum-ready event dispatched');
+                        } else {
+                            console.warn('❌ WebSocket not ready for continuum-ready dispatch');
+                            console.log('   ws exists:', !!window.ws);
+                            console.log('   ws.readyState:', window.ws ? window.ws.readyState : 'undefined');
                         }
                     }, 100); // Small delay to ensure all promises resolved
                     break;

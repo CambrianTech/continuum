@@ -237,6 +237,25 @@ BaseClientConnection
 
 ### Cross-Client Validation Architecture
 
+**Self-Validation Pattern**: Each client validates itself on connection and caches results.
+
+**Cross-Client Triggering**: When an AgentClientConnection connects, it automatically triggers validation on all active BrowserClientConnections. This ensures reliable screenshot capture and browser validation.
+
+#### Agent Debugging Command
+
+To debug as an agent and trigger browser validation, use this single command:
+
+```bash
+cd /Users/joel/Development/ideem/vHSM/externals/continuum/python-client && source ../.continuum/venv/agents/bin/activate && python continuum_client.py Claude
+```
+
+**What this does:**
+1. Creates an AgentClientConnection to the Continuum server
+2. Automatically triggers BrowserClientConnection.validate() on all browser tabs  
+3. Screenshots are saved to `.continuum/screenshots/`
+4. Validates browser capabilities (version reading, error generation, screenshot capture)
+5. Provides comprehensive validation output in both browser console and server logs
+
 **Self-Validation Pattern**: Each client validates itself on connection and caches results:
 
 ```javascript

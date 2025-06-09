@@ -1500,6 +1500,9 @@ class UIGenerator {
     <script src="/src/ui/components/RoomTabs.js"></script>
     <script src="/src/ui/components/StatusPill.js"></script>
     <script src="/src/ui/components/AcademySection.js"></script>
+    
+    <!-- Continuum API -->
+    <script src="/src/ui/continuum-api.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -2502,6 +2505,9 @@ class UIGenerator {
                 
                 ws = new WebSocket('ws://localhost:' + (window.location.port || '9000'));
                 
+                // Make WebSocket globally accessible for validation scripts
+                window.ws = ws;
+                
                 // Restore console after a brief delay
                 setTimeout(() => {
                     console.error = originalConsoleError;
@@ -2623,6 +2629,28 @@ class UIGenerator {
                 if (checkVersionUpdate(data.version)) {
                     return; // Browser will reload, stop processing
                 }
+            }
+            
+            // Handle connection banner - trigger continuum client initialization
+            if (data.type === 'connection_banner') {
+                console.log('🎯 Connection banner received - dispatching continuum-ready event');
+                console.log('🔍 DEBUG: window.ws exists:', !!window.ws);
+                console.log('🔍 DEBUG: WebSocket.OPEN constant:', WebSocket.OPEN);
+                if (window.ws) {
+                    console.log('🔍 DEBUG: ws.readyState:', window.ws.readyState);
+                }
+                
+                // Dispatch event immediately since WebSocket is already ready
+                if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                    console.log('🚀 Dispatching continuum-ready event...');
+                    document.dispatchEvent(new CustomEvent('continuum-ready'));
+                    console.log('✅ continuum-ready event dispatched');
+                } else {
+                    console.warn('❌ WebSocket not ready for continuum-ready dispatch');
+                    console.log('   ws exists:', !!window.ws);
+                    console.log('   ws.readyState:', window.ws ? window.ws.readyState : 'undefined');
+                }
+                return;
             }
             
             // Handle JavaScript execution from server (both legacy and promise modes)

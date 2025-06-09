@@ -202,6 +202,48 @@ class WebSocketServer extends EventEmitter {
         // Handle agent connections and messages
         this.remoteAgentManager.handleAgentMessage(ws, message, this.getSessionId(ws));
         
+        // Create AgentClientConnection and trigger cross-client validation
+        if (data.type === 'agent_register') {
+          const sessionId = this.getSessionId(ws);
+          console.log('🤖 AgentClientConnection registered for session:', sessionId);
+          
+          // Create AgentClientConnection
+          const agentConnection = {
+            sessionId: sessionId,
+            ws: ws,
+            clientType: 'agent',
+            agentName: data.agentName || 'Unknown',
+            capabilities: data.capabilities || [],
+            connected: true,
+            startTime: Date.now(),
+            
+            async validate() {
+              console.log('🔥 AgentClientConnection.validate() - agent validation logic here');
+              return { success: true, message: 'Agent validation complete' };
+            }
+          };
+          
+          // Store AgentClientConnection
+          if (!this.continuum.agentConnections) {
+            this.continuum.agentConnections = new Map();
+          }
+          this.continuum.agentConnections.set(sessionId, agentConnection);
+          
+          // Trigger validation on all browser connections when agent connects
+          console.log('🤖 Agent client connected - triggering browser validations');
+          if (this.activeBrowserConnections) {
+            for (const [browserSessionId, browserConnection] of this.activeBrowserConnections.entries()) {
+              try {
+                console.log(`📸 Triggering validation for browser ${browserSessionId} due to agent connection`);
+                const result = await browserConnection.validate();
+                console.log('📊 Cross-client validation result:', result);
+              } catch (error) {
+                console.error(`❌ Cross-client validation failed for ${browserSessionId}:`, error);
+              }
+            }
+          }
+        }
+        
       } else if (data.type === 'task') {
         const { role, task } = data;
         
@@ -625,7 +667,7 @@ class WebSocketServer extends EventEmitter {
                   
                   // Send validation script to browser
                   console.log('📤 Sending validation script to browser...');
-                  const validationScript = \`
+                  const validationScript = `
                     console.log('🔥 SERVER-TRIGGERED BROWSER VALIDATION STARTED');
                     console.log('⏰ Timestamp:', new Date().toISOString());
                     console.log('🌐 User Agent:', navigator.userAgent);
@@ -645,12 +687,17 @@ class WebSocketServer extends EventEmitter {
                       html2canvas(versionBadge, {
                         allowTaint: true,
                         useCORS: true,
-                        scale: 1
+                        scale: 2,
+                        backgroundColor: null,
+                        logging: true,
+                        onrendered: function(canvas) {
+                          console.log('📸 Canvas rendered with styling');
+                        }
                       }).then(canvas => {
                         console.log('✅ Server validation screenshot successful!');
                         const dataURL = canvas.toDataURL('image/png');
                         const timestamp = Date.now();
-                        const filename = \\\`server-validation-screenshot-\\\${timestamp}.png\\\`;
+                        const filename = 'server-validation-screenshot-' + timestamp + '.png';
                         
                         const screenshotData = {
                           type: 'screenshot_data',
@@ -671,14 +718,14 @@ class WebSocketServer extends EventEmitter {
                     
                     console.log('🎯 SERVER-TRIGGERED BROWSER VALIDATION COMPLETE');
                     "SERVER_VALIDATION_COMPLETE";
-                  \`;
+                  `;
                   
                   // Send via BROWSER_JS command
                   const encoded = Buffer.from(validationScript).toString('base64');
                   const command = {
                     type: 'task',
                     role: 'system',
-                    task: \`[CMD:BROWSER_JS] \${encoded}\`
+                    task: `[CMD:BROWSER_JS] ${encoded}`
                   };
                   
                   ws.send(JSON.stringify(command));
@@ -696,12 +743,28 @@ class WebSocketServer extends EventEmitter {
             this.continuum.browserConnections.set(sessionId, browserConnection);
             console.log('✅ BrowserClientConnection created for session:', sessionId);
             
-            // Call validate() automatically
+            // Send confirmation to browser client
+            const confirmationMessage = {
+              type: 'client_connection_confirmed',
+              clientType: 'browser',
+              sessionId: sessionId,
+              timestamp: Date.now()
+            };
+            ws.send(JSON.stringify(confirmationMessage));
+            console.log('📤 Browser client connection confirmation sent');
+            
+            // Call validate() automatically after confirmation
             setTimeout(async () => {
               console.log('🔥 Auto-calling BrowserClientConnection.validate()...');
               const result = await browserConnection.validate();
               console.log('📊 Validation result:', result);
             }, 200);
+            
+            // Store reference for cross-client validation
+            if (!this.activeBrowserConnections) {
+              this.activeBrowserConnections = new Map();
+            }
+            this.activeBrowserConnections.set(sessionId, browserConnection);
             
           } else {
             console.log('🤖 Other client type:', data.clientType);
@@ -786,6 +849,17 @@ class WebSocketServer extends EventEmitter {
 
   handleDisconnect(sessionId) {
     console.log(`👤 User disconnected (Session: ${sessionId})`);
+    
+    // Clean up ClientConnections
+    if (this.activeBrowserConnections) {
+      this.activeBrowserConnections.delete(sessionId);
+    }
+    if (this.continuum.agentConnections) {
+      this.continuum.agentConnections.delete(sessionId);
+    }
+    if (this.continuum.browserConnections) {
+      this.continuum.browserConnections.delete(sessionId);
+    }
     
     // Update Continuon status indicator
     if (this.continuum.systemTray) {
