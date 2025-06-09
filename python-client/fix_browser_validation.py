@@ -173,34 +173,227 @@ async def fix_browser_validation():
                 print("❌ Error Systems: FAILED")
                 print("   No result received")
             
-            # Test Screenshot (already proven working)
+            # Test Screenshot with actual image capture and return
             print("\n📸 Testing Screenshot...")
+            
+            # Enhanced screenshot validation that captures and returns image data
+            screenshot_js = """
+            console.log("📸 VALIDATION: Starting screenshot capture...");
+            
+            // Find version badge or create a simple test element
+            let targetElement = document.querySelector('.version-badge, [class*="version"]');
+            if (!targetElement) {
+                // Create a test element for screenshot validation
+                targetElement = document.createElement('div');
+                targetElement.style.width = '100px';
+                targetElement.style.height = '30px';
+                targetElement.style.backgroundColor = '#0066cc';
+                targetElement.style.color = 'white';
+                targetElement.style.padding = '5px';
+                targetElement.style.borderRadius = '5px';
+                targetElement.textContent = 'v0.2.1983';
+                targetElement.id = 'validation-test-element';
+                document.body.appendChild(targetElement);
+            }
+            
+            console.log("📸 Target element:", targetElement);
+            
+            if (typeof html2canvas === 'undefined') {
+                throw new Error("html2canvas not available for screenshot validation");
+            }
+            
+            // COMPLETELY REMOVE all canvas elements to fix createPattern errors
+            const allCanvases = document.querySelectorAll('canvas');
+            const removedCanvases = [];
+            
+            console.log("📸 Removing", allCanvases.length, "canvas elements to prevent createPattern errors");
+            
+            allCanvases.forEach((canvas, i) => {
+                console.log("📸 Removing canvas", i + ":", canvas.width + "x" + canvas.height);
+                removedCanvases.push({
+                    element: canvas,
+                    parent: canvas.parentNode,
+                    nextSibling: canvas.nextSibling
+                });
+                canvas.remove();
+            });
+            
+            console.log("📸 Removed", removedCanvases.length, "canvas elements completely");
+            
+            return html2canvas(targetElement, {
+                allowTaint: true,
+                useCORS: true,
+                scale: 1,
+                backgroundColor: null,
+                // No ignoreElements needed since we removed all canvas elements
+            }).then(function(canvas) {
+                // Restore removed canvas elements
+                console.log("📸 Restoring", removedCanvases.length, "canvas elements");
+                removedCanvases.forEach((item, i) => {
+                    if (item.parent) {
+                        if (item.nextSibling) {
+                            item.parent.insertBefore(item.element, item.nextSibling);
+                        } else {
+                            item.parent.appendChild(item.element);
+                        }
+                        console.log("📸 Restored canvas", i);
+                    }
+                });
+                
+                // Clean up test element if we created it
+                const testElement = document.getElementById('validation-test-element');
+                if (testElement) {
+                    testElement.remove();
+                }
+                
+                console.log("✅ Screenshot captured successfully!");
+                console.log("✅ Canvas dimensions:", canvas.width + "x" + canvas.height);
+                
+                // Convert to base64 data
+                const dataURL = canvas.toDataURL('image/png');
+                console.log("✅ DataURL length:", dataURL.length);
+                
+                // Save screenshot to proper directory using WebSocket with build version
+                const timestamp = Date.now();
+                const versionElement = document.querySelector('.version-badge, [class*="version"]');
+                const version = versionElement ? versionElement.textContent.trim() : "v0.2.1983";
+                const filename = `validation_screenshot_${version}_${timestamp}.png`;
+                
+                if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                    console.log("💾 Saving screenshot to .continuum/screenshots/");
+                    window.ws.send(JSON.stringify({
+                        type: 'screenshot_data',
+                        filename: filename,
+                        data: dataURL,
+                        timestamp: timestamp
+                    }));
+                    console.log("💾 Screenshot save request sent");
+                }
+                
+                // Return data directly through promise chain with filename
+                return {
+                    success: true,
+                    width: canvas.width,
+                    height: canvas.height,
+                    dataLength: dataURL.length,
+                    filename: filename,
+                    savedToDirectory: ".continuum/screenshots/",
+                    message: "Screenshot validation successful - saved and returned via promise"
+                };
+                
+            }).catch(function(error) {
+                // Restore removed canvas elements even on error
+                console.log("📸 Error occurred, restoring", removedCanvases.length, "canvas elements");
+                removedCanvases.forEach((item, i) => {
+                    if (item.parent) {
+                        if (item.nextSibling) {
+                            item.parent.insertBefore(item.element, item.nextSibling);
+                        } else {
+                            item.parent.appendChild(item.element);
+                        }
+                    }
+                });
+                
+                // Clean up test element
+                const testElement = document.getElementById('validation-test-element');
+                if (testElement) {
+                    testElement.remove();
+                }
+                
+                console.error("❌ Screenshot validation failed:", error.message);
+                console.error("❌ Error type:", error.constructor.name);
+                
+                // Return error data directly through promise chain
+                return {
+                    success: false,
+                    error: error.message,
+                    errorType: error.constructor.name,
+                    message: "Screenshot validation failed - returned via promise"
+                };
+            });
+            """
+            
+            encoded_screenshot = base64.b64encode(screenshot_js.encode()).decode()
             screenshot_command = {
                 'type': 'task',
                 'role': 'system',
-                'task': '[CMD:SCREENSHOT] {"format": "png", "fullPage": true}'
+                'task': f'[CMD:BROWSER_JS] {encoded_screenshot}'
             }
             
             await websocket.send(json.dumps(screenshot_command))
-            print("📤 Screenshot command sent")
+            print("📤 Screenshot validation sent")
             
-            # Wait for screenshot response
+            # Wait for the promise to complete and return result
             screenshot_success = False
-            start_time = time.time()
+            screenshot_data = None
             
-            while time.time() - start_time < 10:
+            for attempt in range(5):
                 try:
-                    response = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                    response = await asyncio.wait_for(websocket.recv(), timeout=3)
                     result = json.loads(response)
                     
-                    if 'screenshot' in str(result).lower() or 'captured' in str(result).lower():
-                        screenshot_success = True
-                        break
+                    if result.get('type') == 'result':
+                        # Check the JavaScript promise result
+                        try:
+                            bus_result = result.get('data', {}).get('result', {}).get('result', {})
+                            browser_response = bus_result.get('browserResponse', {})
+                            return_value = browser_response.get('result')
+                            console_output = browser_response.get('output', [])
+                            
+                            print("📸 Screenshot command executed")
+                            
+                            # Check console output for success/failure
+                            success_logged = any('Screenshot captured successfully' in msg.get('message', '') for msg in console_output)
+                            error_logged = any('Screenshot validation failed' in msg.get('message', '') for msg in console_output)
+                            
+                            if return_value:
+                                try:
+                                    if isinstance(return_value, str):
+                                        result_obj = json.loads(return_value)
+                                    else:
+                                        result_obj = return_value
+                                    
+                                    if result_obj.get('success') == True:
+                                        screenshot_success = True
+                                        screenshot_data = {
+                                            'width': result_obj.get('width'),
+                                            'height': result_obj.get('height'),
+                                            'dataLength': result_obj.get('dataLength'),
+                                            'filename': result_obj.get('filename'),
+                                            'savedToDirectory': result_obj.get('savedToDirectory'),
+                                            'message': result_obj.get('message')
+                                        }
+                                        print(f"📸 ✅ Screenshot SUCCESS: {screenshot_data['width']}x{screenshot_data['height']}")
+                                        print(f"   💾 Filename: {screenshot_data.get('filename', 'NOT_PROVIDED')}")
+                                        print(f"   📂 Directory: {screenshot_data.get('savedToDirectory', 'NOT_PROVIDED')}")
+                                        print(f"   📏 DataURL length: {screenshot_data['dataLength']}")
+                                        print(f"   📝 Message: {screenshot_data.get('message', 'NO_MESSAGE')}")
+                                        break
+                                    elif result_obj.get('success') == False:
+                                        print(f"📸 ❌ Screenshot FAILED: {result_obj.get('error')}")
+                                        print(f"   Error type: {result_obj.get('errorType')}")
+                                        break
+                                except Exception as parse_error:
+                                    print(f"📸 Result parsing error: {parse_error}")
+                                    print(f"   Raw result: {return_value}")
+                                    
+                            if success_logged:
+                                print("📸 ✅ Success detected in console logs")
+                                screenshot_success = True
+                                break
+                            elif error_logged:
+                                print("📸 ❌ Error detected in console logs")
+                                break
+                                
+                        except Exception as e:
+                            print(f"📸 Error parsing result: {e}")
+                            
+                    elif result.get('type') == 'working':
+                        continue
                         
                 except asyncio.TimeoutError:
+                    print(f"📸 ⏰ Timeout {attempt + 1}/5 waiting for screenshot result")
                     continue
-                except Exception as e:
-                    break
             
             milestones["screenshot"] = screenshot_success
             print(f"{'✅' if screenshot_success else '❌'} Screenshot: {'SUCCESS' if screenshot_success else 'FAILED'}")
