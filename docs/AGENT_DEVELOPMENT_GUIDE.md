@@ -11,6 +11,24 @@ cd python-client/examples
 python fix_ui_styling_with_feedback.py
 ```
 
+## 🧪 Agent Validation and Debugging
+
+For debugging agent connections and validating the complete system, use:
+
+```bash
+cd /Users/joel/Development/ideem/vHSM/externals/continuum/python-client && source ../.continuum/venv/agents/bin/activate && python continuum_client.py Claude
+```
+
+This command validates:
+- ✅ **Remote JavaScript execution** capability
+- ✅ **Version reading** from browser UI (v0.2.1987)
+- ✅ **Error/warning generation** in browser console
+- ✅ **Screenshot capture** with full dark UI theme (187KB screenshots)
+- ✅ **WebSocket communication** between Python agents and browser
+- ✅ **File saving** to `.continuum/screenshots/` directory
+
+**Screenshots automatically capture the complete dark cyberpunk UI** including sidebar, chat area, and all interface elements.
+
 ### What This Example Teaches
 
 This comprehensive example demonstrates the **complete UI development workflow** that makes Continuum unique:
