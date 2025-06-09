@@ -150,17 +150,28 @@ class CommandProcessor {
     // First try modular commands from CommandRegistry
     const modularCommand = this.commandRegistry.getCommand(command);
     if (modularCommand) {
-      console.log(`📚 Using modular command: ${command}`);
+      console.log(`📚 ✅ FOUND: Using modular command: ${command}`);
       return await this.commandRegistry.executeCommand(command, params, this.continuum, encoding);
     }
     
     // Fallback to legacy commands
     const handler = this.commands.get(command);
     if (handler) {
-      console.log(`⚠️ Using legacy command: ${command}`);
+      console.log(`⚠️ ✅ FOUND: Using legacy command: ${command}`);
       return await handler(params);
     } else {
-      throw new Error(`Unknown command: ${command}`);
+      // LOG UNRECOGNIZED COMMANDS FOR DEBUGGING
+      console.log(`❌ UNRECOGNIZED COMMAND: ${command}`);
+      console.log(`   📤 Command sent: ${command}`);
+      console.log(`   📊 Params length: ${params.length} chars`);
+      console.log(`   🔍 Params preview: ${params.substring(0, 100)}${params.length > 100 ? '...' : ''}`);
+      console.log(`   🎯 Encoding: ${encoding}`);
+      console.log(`   📋 Available modular commands: ${this.commandRegistry.getAllDefinitions().map(d => d.name).join(', ')}`);
+      console.log(`   📋 Available legacy commands: ${Array.from(this.commands.keys()).join(', ')}`);
+      console.log(`   ⚠️ DEBUGGING HINT: Check if command name matches exactly (case-sensitive)`);
+      console.log(`   🔧 DEBUGGING HINT: Use the debugger server log manager to see this error`);
+      
+      throw new Error(`❌ UNRECOGNIZED COMMAND: ${command}. Available commands: ${this.commandRegistry.getAllDefinitions().map(d => d.name).join(', ')}, ${Array.from(this.commands.keys()).join(', ')}`);
     }
   }
 

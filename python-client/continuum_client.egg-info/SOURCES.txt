@@ -1,5 +1,15 @@
 README.md
 setup.py
+claude_debugger/__init__.py
+claude_debugger/main.py
+claude_debugger/connection/__init__.py
+claude_debugger/connection/websocket_connection.py
+claude_debugger/managers/__init__.py
+claude_debugger/managers/screenshot_manager.py
+claude_debugger/managers/server_log_manager.py
+claude_debugger/validation/__init__.py
+claude_debugger/validation/connection_validator.py
+claude_debugger/validation/javascript_validator.py
 continuum_client/__init__.py
 continuum_client.egg-info/PKG-INFO
 continuum_client.egg-info/SOURCES.txt

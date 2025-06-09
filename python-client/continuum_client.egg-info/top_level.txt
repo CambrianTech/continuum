@@ -1,1 +1,2 @@
+claude_debugger
 continuum_client
