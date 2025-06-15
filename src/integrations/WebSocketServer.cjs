@@ -189,7 +189,10 @@ class WebSocketServer extends EventEmitter {
         
         // Emit result to waiting command if execution ID exists
         if (data.executionId) {
+          console.log(`🎯 SERVER: Emitting js_result_${data.executionId} with data:`, data);
           this.emit(`js_result_${data.executionId}`, data);
+        } else {
+          console.log('⚠️ SERVER: No executionId found in js_executed response:', data);
         }
         
         // Forward js_executed messages back to all connected clients for validation

@@ -66,11 +66,13 @@ class BrowserJSCommand {
           }, 10000);
           
           const responseHandler = (result) => {
+            console.log(`💻 BROWSER_JS: Received result for execution ${executionId}:`, result);
             clearTimeout(timeout);
             continuum.webSocketServer.removeListener(`js_result_${executionId}`, responseHandler);
             resolve(result);
           };
           
+          console.log(`💻 BROWSER_JS: Setting up listener for js_result_${executionId}`);
           continuum.webSocketServer.on(`js_result_${executionId}`, responseHandler);
         });
         
