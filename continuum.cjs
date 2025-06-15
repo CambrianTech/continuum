@@ -73,7 +73,7 @@ FEATURES:
 
 DEBUGGING:
   🔍 Agent Debug Validation:
-     cd /Users/joel/Development/ideem/vHSM/externals/continuum/python-client && source ../.continuum/venv/agents/bin/activate && python continuum_client.py Claude
+     cd python-client && python continuum_client.py Claude
      
      Creates AgentClientConnection and triggers BrowserClientConnection validation:
      • ✅ Remote JavaScript execution capability
@@ -171,6 +171,11 @@ DAEMON MODE:
   
   Agents can wake daemon: heal "Connection refused"
   
+DEVELOPMENT SETUP:
+  # For developers working with this repository:
+  npm install -g .            # Install continuum globally from local code
+  # Now 'continuum' command works from anywhere and uses your local changes
+
 EXAMPLES:
   continuum                   # Start on default port 9000
   continuum --port 8080       # Start on custom port
