@@ -46,7 +46,13 @@ class JSExecutor:
         # Prepare JavaScript code
         final_code = js_code
         if expect_return and not js_code.strip().startswith('return'):
-            final_code = f"return ({js_code});"
+            # Only wrap in return if it's a simple expression, not a statement
+            if (';' not in js_code and 
+                not any(keyword in js_code for keyword in ['console.', 'document.', 'window.', 'if', 'for', 'function', 'var', 'let', 'const'])):
+                final_code = f"return ({js_code});"
+            else:
+                # For complex code, wrap in an immediately invoked function
+                final_code = f"(function() {{ {js_code}; }})();"
             
         # Encode for transmission
         if encoding == 'base64':
