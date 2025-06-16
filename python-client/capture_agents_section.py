@@ -8,6 +8,8 @@ import json
 import base64
 import subprocess
 import tempfile
+from pathlib import Path
+from datetime import datetime
 import os
 from continuum_client import ContinuumClient
 from continuum_client.utils import load_continuum_config
@@ -183,14 +185,24 @@ async def capture_agents_section():
             print(f"   Element: {result['selector']}")
             print(f"   Data size: {len(result['dataURL'])} characters")
             
-            # Extract base64 data and save to temporary file
+            # Extract base64 data and save to .continuum/screenshots/
             base64_data = result['dataURL'].split(',')[1]
             image_bytes = base64.b64decode(base64_data)
             
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
-                temp_file.write(image_bytes)
-                temp_path = temp_file.name
+            # Create .continuum/screenshots directory if it doesn't exist
+            screenshots_dir = Path('.continuum/screenshots')
+            screenshots_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create filename with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f'agents_section_{timestamp}.png'
+            screenshot_path = screenshots_dir / filename
+            
+            # Save screenshot
+            with open(screenshot_path, 'wb') as f:
+                f.write(image_bytes)
+            
+            temp_path = str(screenshot_path)
             
             print(f"💾 Saved screenshot to: {temp_path}")
             print(f"📁 Opening image...")
@@ -208,16 +220,9 @@ async def capture_agents_section():
                 print("🖼️ Image should now be open in your default image viewer!")
                 print(f"📍 File location: {temp_path}")
                 
-                # Keep the file for a bit so user can see it
-                print("\n⏳ Keeping file open for 60 seconds...")
-                await asyncio.sleep(60)
-                
-                # Clean up
-                try:
-                    os.unlink(temp_path)
-                    print("🧹 Temporary file cleaned up")
-                except:
-                    print(f"ℹ️ Note: Temporary file not cleaned up: {temp_path}")
+                # Keep the file permanently in .continuum/screenshots/
+                print(f"\n✅ Screenshot saved permanently to: {temp_path}")
+                print("📁 File will remain in .continuum/screenshots/ for future reference")
                     
             except Exception as e:
                 print(f"❌ Error opening image: {e}")
