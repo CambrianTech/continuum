@@ -25,7 +25,7 @@ class UIGenerator {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Continuum Academy - AI Workforce Construction</title>
+    <title>Continuum Academy - Modular Widgets v${packageInfo.version}</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎓</text></svg>">
     <style>
         * {
@@ -49,12 +49,40 @@ class UIGenerator {
         
         /* Sidebar */
         .sidebar {
-            width: 300px;
+            width: 350px;
+            min-width: 250px;
+            max-width: 800px;
             background: rgba(20, 25, 35, 0.95);
             backdrop-filter: blur(10px);
             border-right: 1px solid rgba(255, 255, 255, 0.1);
             display: flex;
             flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            position: relative;
+            resize: horizontal;
+            resize: none; /* Disable default resize, we'll use custom handle */
+        }
+        
+        /* Resize Handle */
+        .sidebar-resize-handle {
+            position: absolute;
+            top: 0;
+            right: -3px;
+            width: 6px;
+            height: 100%;
+            cursor: col-resize;
+            background: transparent;
+            z-index: 1000;
+            transition: background 0.2s ease;
+        }
+        
+        .sidebar-resize-handle:hover {
+            background: rgba(79, 195, 247, 0.3);
+        }
+        
+        .sidebar-resize-handle:active {
+            background: rgba(79, 195, 247, 0.5);
         }
         
         /* Room Selection */
@@ -65,6 +93,7 @@ class UIGenerator {
             background: rgba(255, 255, 255, 0.05);
             border-radius: 12px;
             padding: 4px;
+            flex-shrink: 0;
         }
         
         .room-tab {
@@ -93,6 +122,7 @@ class UIGenerator {
         .sidebar-header {
             padding: 20px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            flex-shrink: 0;
         }
         
         .logo {
@@ -772,7 +802,9 @@ class UIGenerator {
             padding: 15px;
             background: rgba(255, 255, 255, 0.05);
             border-radius: 8px;
-            margin-bottom: 20px;
+            margin: 20px;
+            margin-top: 0;
+            flex-shrink: 0;
         }
         
         .cost-display h3 {
@@ -802,6 +834,52 @@ class UIGenerator {
         .cost-label {
             color: #8a92a5;
             margin-top: 4px;
+        }
+        
+        /* Scrollable Widget Area */
+        #room-content {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 0 20px;
+            margin-bottom: 20px;
+        }
+        
+        #room-content::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        #room-content::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        
+        #room-content::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 3px;
+        }
+        
+        #room-content::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        
+        .room-content {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        /* Modular Widget Spacing */
+        active-projects,
+        saved-personas,
+        user-selector {
+            display: block;
+            margin-bottom: 15px;
+        }
+        
+        active-projects:last-child,
+        saved-personas:last-child,
+        user-selector:last-child {
+            margin-bottom: 0;
         }
         
         /* Project Management */
@@ -890,110 +968,7 @@ class UIGenerator {
             margin-bottom: 15px;
         }
         
-        .persona-card {
-            background: rgba(255,255,255,0.08);
-            border-radius: 8px;
-            padding: 12px;
-            margin-bottom: 8px;
-            border: 1px solid rgba(255,255,255,0.1);
-            transition: all 0.2s ease;
-        }
-        
-        .persona-card:hover {
-            background: rgba(255,255,255,0.12);
-            transform: translateY(-1px);
-        }
-        
-        .persona-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-        
-        .persona-name {
-            font-weight: bold;
-            color: #FFB74D;
-            font-size: 13px;
-        }
-        
-        .persona-scope {
-            font-size: 9px;
-            padding: 2px 6px;
-            border-radius: 10px;
-            text-transform: uppercase;
-            font-weight: bold;
-            letter-spacing: 0.5px;
-        }
-        
-        .persona-scope.project {
-            background: rgba(76, 175, 80, 0.3);
-            color: #4CAF50;
-        }
-        
-        .persona-scope.user {
-            background: rgba(33, 150, 243, 0.3);
-            color: #2196F3;
-        }
-        
-        .persona-scope.organization {
-            background: rgba(156, 39, 176, 0.3);
-            color: #9C27B0;
-        }
-        
-        .persona-info {
-            font-size: 11px;
-            color: #8a92a5;
-            margin-bottom: 8px;
-        }
-        
-        .persona-specialization {
-            color: #4FC3F7;
-            font-weight: 500;
-        }
-        
-        .persona-actions {
-            display: flex;
-            gap: 4px;
-            flex-wrap: wrap;
-        }
-        
-        .persona-action-btn {
-            background: rgba(255,255,255,0.1);
-            border: 1px solid rgba(255,255,255,0.2);
-            color: #E0E0E0;
-            padding: 3px 6px;
-            border-radius: 4px;
-            font-size: 9px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            text-transform: uppercase;
-            font-weight: bold;
-            letter-spacing: 0.5px;
-        }
-        
-        .persona-action-btn:hover {
-            background: rgba(255,255,255,0.2);
-            transform: translateY(-1px);
-        }
-        
-        .persona-action-btn.deploy {
-            background: rgba(76, 175, 80, 0.3);
-            color: #4CAF50;
-            border-color: #4CAF50;
-        }
-        
-        .persona-action-btn.share {
-            background: rgba(255, 193, 7, 0.3);
-            color: #FFC107;
-            border-color: #FFC107;
-        }
-        
-        .persona-action-btn.retrain {
-            background: rgba(255, 152, 0, 0.3);
-            color: #FF9800;
-            border-color: #FF9800;
-        }
+        /* All persona styles moved to SavedPersonas.css component */
         
         .agent-dropdown-btn {
             background: transparent;
@@ -1293,19 +1268,6 @@ class UIGenerator {
             }
         }
         
-        .persona-action-btn.delete {
-            background: rgba(244, 67, 54, 0.3);
-            color: #F44336;
-            border-color: #F44336;
-        }
-        
-        .persona-lora-info {
-            font-size: 9px;
-            color: #4FC3F7;
-            margin-top: 4px;
-            display: flex;
-            gap: 8px;
-        }
         
         .refresh-personas-btn {
             background: rgba(79, 195, 247, 0.2);
@@ -1492,8 +1454,16 @@ class UIGenerator {
     </style>
     
     <!-- Web Components -->
-    <script src="/src/ui/components/AgentSelector.js"></script>
-    <script src="/src/ui/components/SimpleAgentSelector.js"></script>
+    <!-- Shared Base Widget -->
+    <script src="/src/ui/components/shared/BaseWidget.js"></script>
+    <script src="/src/ui/components/shared/SidebarWidget.js"></script>
+    
+    <!-- Modular Widgets -->
+    <script src="/src/ui/components/UserSelector/UserSelector.js"></script>
+    <script src="/src/ui/components/SavedPersonas/SavedPersonas.js"></script>
+    <script src="/src/ui/components/ActiveProjects/ActiveProjects.js"></script>
+    
+    <!-- Other Components -->
     <script src="/src/ui/components/GlassMenu.js"></script>
     <script src="/src/ui/components/ChatHeader.js"></script>
     <script src="/src/ui/components/ChatArea.js"></script>
@@ -1507,7 +1477,8 @@ class UIGenerator {
 <body>
     <div class="app-container">
         <!-- Sidebar -->
-        <div class="sidebar">
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-resize-handle" id="sidebar-resize-handle"></div>
             <div class="sidebar-header">
                 <div class="logo">
                     <div style="
@@ -1592,27 +1563,11 @@ class UIGenerator {
             <div id="room-content">
                 <!-- General Room Content -->
                 <div id="general-room" class="room-content">
-                    <!-- Project Management -->
-                    <div class="project-manager">
-                        <h3>Active Projects</h3>
-                        <div class="project-list" id="project-list">
-                            <div class="loading">Loading projects...</div>
-                        </div>
-                    </div>
+                    <!-- New Modular Widgets -->
+                    <active-projects></active-projects>
+                    <user-selector></user-selector>
+                    <saved-personas></saved-personas>
                     
-                    <!-- Persona Management -->
-                    <div class="persona-manager">
-                        <h3>Saved Personas</h3>
-                        <div class="persona-list" id="persona-list">
-                            <div class="loading">Loading personas...</div>
-                        </div>
-                        <button class="refresh-personas-btn" onclick="refreshPersonas()">
-                            🔄 Refresh
-                        </button>
-                    </div>
-                    
-                    <!-- AgentSelector Web Component for USERS & AGENTS -->
-                    <simple-agent-selector id="simple-agent-selector"></simple-agent-selector>
                 </div>
                 
                 <!-- Academy Room Content -->
@@ -3802,7 +3757,9 @@ class UIGenerator {
         }
         
         // Persona Management Functions
+        // DEPRECATED: Legacy function - now handled by SavedPersonas web component
         async function refreshPersonas() {
+            return; // Using modern SavedPersonas web component instead
             const personaList = document.getElementById('persona-list');
             personaList.innerHTML = '<div class="loading">Loading personas...</div>';
             
@@ -3885,7 +3842,7 @@ class UIGenerator {
                 
                 if (result.success) {
                     addSystemMessage(\`🤝 Persona shared to \${toScope}: \${result.personaName}\`);
-                    await refreshPersonas(); // Refresh the list
+                    // Modern SavedPersonas widget handles refresh via WebSocket
                 } else {
                     addSystemMessage(\`❌ Failed to share persona: \${result.error}\`);
                 }
@@ -3940,7 +3897,7 @@ class UIGenerator {
                 
                 if (result.success) {
                     addSystemMessage(\`🗑️ Persona deleted: \${result.personaName}\`);
-                    await refreshPersonas(); // Refresh the list
+                    // Modern SavedPersonas widget handles refresh via WebSocket
                 } else {
                     addSystemMessage(\`❌ Failed to delete persona: \${result.error}\`);
                 }
@@ -4021,7 +3978,9 @@ class UIGenerator {
         }
         
         // Project Management Functions
+        // DEPRECATED: Legacy function - now handled by ActiveProjects web component
         async function refreshProjects() {
+            return; // Using modern ActiveProjects web component instead
             const projectList = document.getElementById('project-list');
             projectList.innerHTML = '<div class="loading">Loading projects...</div>';
             
@@ -4944,8 +4903,7 @@ Example:
                 selectAgent(selectedAgent);
             }
             
-            refreshProjects(); // Load active projects
-            refreshPersonas(); // Load personas on startup
+            // Modern widgets handle their own loading
             
             if (historyLoaded && Object.values(roomMessages).flat().length > 0) {
                 // Only show restore message if there was actual content restored
@@ -4968,8 +4926,7 @@ Example:
         } else {
             switchRoom('general');
             updateChatHeader();
-            refreshProjects(); // Load active projects
-            refreshPersonas(); // Load personas on startup
+            // Modern widgets handle their own loading
         }
         
         // Load conversation history
@@ -5047,7 +5004,56 @@ Example:
                     return true;
                 }
             };
+            
+            // Sidebar Resize Functionality
+            setupSidebarResize();
         });
+        
+        function setupSidebarResize() {
+            const sidebar = document.getElementById('sidebar');
+            const resizeHandle = document.getElementById('sidebar-resize-handle');
+            let isResizing = false;
+            let startX = 0;
+            let startWidth = 0;
+            
+            if (!sidebar || !resizeHandle) return;
+            
+            resizeHandle.addEventListener('mousedown', (e) => {
+                isResizing = true;
+                startX = e.clientX;
+                startWidth = parseInt(document.defaultView.getComputedStyle(sidebar).width, 10);
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+                e.preventDefault();
+            });
+            
+            document.addEventListener('mousemove', (e) => {
+                if (!isResizing) return;
+                
+                const width = startWidth + e.clientX - startX;
+                const minWidth = 250;
+                const maxWidth = Math.min(800, window.innerWidth * 0.6);
+                
+                if (width >= minWidth && width <= maxWidth) {
+                    sidebar.style.width = width + 'px';
+                    localStorage.setItem('sidebar-width', width);
+                }
+            });
+            
+            document.addEventListener('mouseup', () => {
+                if (isResizing) {
+                    isResizing = false;
+                    document.body.style.cursor = '';
+                    document.body.style.userSelect = '';
+                }
+            });
+            
+            // Load saved width
+            const savedWidth = localStorage.getItem('sidebar-width');
+            if (savedWidth) {
+                sidebar.style.width = savedWidth + 'px';
+            }
+        }
     </script>
 </body>
 </html>`;

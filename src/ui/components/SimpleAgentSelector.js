@@ -46,8 +46,12 @@ class SimpleAgentSelector extends HTMLElement {
         }
         
         .header {
-          color: #8a92a5;
+          color: #e0e6ed;
           font-size: 14px;
+          font-weight: 600;
+          text-transform: uppercase;
+          margin-bottom: 15px;
+          letter-spacing: 0.5px;
           font-weight: 600;
           margin-bottom: 12px;
           text-transform: uppercase;

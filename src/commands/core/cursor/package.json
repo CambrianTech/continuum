@@ -1,5 +1,6 @@
 {
   "name": "cursor",
+  "version": "1.0.0",
   "type": "module",
   "main": "index.server.js",
   "continuum": {

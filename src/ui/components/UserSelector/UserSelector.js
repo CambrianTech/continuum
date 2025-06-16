@@ -1,14 +1,22 @@
 /**
- * Agent Selector Web Component
- * Self-contained component for selecting and managing agents
+ * User Selector Widget
+ * Modular user and agent selection widget extending SidebarWidget
  */
 
-// Prevent duplicate class declaration
-if (typeof window.AgentSelector === 'undefined') {
-  window.AgentSelector = class AgentSelector extends HTMLElement {
+// Import sidebar widget functionality
+import('../shared/SidebarWidget.js');
+
+// Guard against duplicate declarations
+if (!customElements.get('user-selector')) {
+
+class UserSelector extends SidebarWidget {
   constructor() {
     super();
-    this.attachShadow({ mode: 'open' });
+    
+    // Widget metadata
+    this.widgetName = 'UserSelector';
+    this.widgetIcon = '👥';
+    this.widgetCategory = 'Sidebar';
     
     // Component state
     this.selectedAgent = 'auto';
@@ -30,6 +38,8 @@ if (typeof window.AgentSelector === 'undefined') {
   connectedCallback() {
     this.render();
     this.setupEventListeners();
+    this.setupWebSocketListeners();
+    this.loadRealAgents();
   }
 
   disconnectedCallback() {
@@ -152,6 +162,8 @@ if (typeof window.AgentSelector === 'undefined') {
   }
 
   setupEventListeners() {
+    super.setupEventListeners(); // CRITICAL: Enable collapse functionality
+    
     this.shadowRoot.addEventListener('click', (e) => {
       if (e.target.closest('.drawer-btn')) {
         e.stopPropagation();
@@ -493,33 +505,23 @@ if (typeof window.AgentSelector === 'undefined') {
   }
 
   render() {
-    console.log('[AgentSelector] Rendering component', {
-      searchQuery: this.searchQuery,
-      selectedAgent: this.selectedAgent,
-      totalAgents: this.agents.length,
-      remoteAgents: this.remoteAgents.length,
-      connectedUsers: this.connectedUsers.length,
-      favoriteCount: this.favoriteAgents.size
-    });
-
-    this.shadowRoot.innerHTML = `
+    const headerTitle = this.getAttribute('title') || 'Users & Agents';
+    
+    const content = `
       <div class="search-container">
         <input type="text" class="search-input" placeholder="Search agents..." value="${this.searchQuery}">
         <div class="search-icon">🔍</div>
       </div>
       ${this.favoriteAgents.size > 0 ? this.generateFavoritesSection() : ''}
+      <div class="agent-list">
+        ${this.getAllAgentsUnified().map(agent => this.generateAgentHTML(agent)).join('')}
+      </div>
+    `;
+    
+    this.shadowRoot.innerHTML = `
       <style>
-        :host {
-          display: block;
-          margin: 20px;
-          margin-bottom: 0;
-          background: rgba(255, 255, 255, 0.05);
-          border-radius: 12px;
-          padding: 18px;
-          max-height: 400px;
-          overflow-y: auto;
-        }
-
+        ${this.getHeaderStyle()}
+        
         /* Search container styles */
         .search-container {
           position: relative;
@@ -557,16 +559,6 @@ if (typeof window.AgentSelector === 'undefined') {
           color: #8a92a5;
           font-size: 14px;
           pointer-events: none;
-        }
-
-        .title {
-          font-size: 12px;
-          color: #8a92a5;
-          margin-bottom: 15px;
-          text-transform: uppercase;
-          letter-spacing: 1px;
-          font-weight: 600;
-          flex-shrink: 0;
         }
 
         .agent-list {
@@ -667,7 +659,6 @@ if (typeof window.AgentSelector === 'undefined') {
           border: 1px solid rgba(255, 215, 0, 0.3);
         }
 
-        /* Fix favorite button positioning and actions container */
         .agent-actions {
           display: flex;
           align-items: center;
@@ -698,11 +689,6 @@ if (typeof window.AgentSelector === 'undefined') {
         
         .agent-item.favorite .favorite-btn {
           color: #FFD700;
-        }
-        
-        /* Remove clashing favorite star from avatar */
-        .favorite-star {
-          display: none !important;
         }
 
         .drawer-btn {
@@ -736,68 +722,9 @@ if (typeof window.AgentSelector === 'undefined') {
           font-size: 10px;
           font-weight: normal;
         }
-
-        .agent-dropdown-btn {
-          background: transparent;
-          border: none;
-          color: rgba(0, 212, 255, 0.4);
-          cursor: pointer;
-          padding: 2px;
-          width: 14px;
-          height: 14px;
-          font-size: 8px;
-          border-radius: 2px;
-          transition: all 0.3s ease;
-          position: relative;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-
-        .agent-dropdown-btn::after {
-          content: '⬢';
-          font-size: 10px;
-          color: rgba(0, 212, 255, 0.3);
-          transition: all 0.3s ease;
-        }
-
-        .agent-dropdown-btn:hover::after {
-          color: rgba(0, 212, 255, 0.8);
-          text-shadow: 0 0 8px rgba(0, 212, 255, 0.6);
-        }
-
-        .remote-section {
-          margin-top: 15px;
-          padding-top: 15px;
-          border-top: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .remote-title {
-          font-size: 11px;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-          margin-bottom: 10px;
-        }
-
-        ::-webkit-scrollbar {
-          width: 6px;
-        }
-
-        ::-webkit-scrollbar-track {
-          background: rgba(255, 255, 255, 0.05);
-          border-radius: 3px;
-        }
-
-        ::-webkit-scrollbar-thumb {
-          background: rgba(0, 212, 255, 0.3);
-          border-radius: 3px;
-        }
       </style>
-
-      <div class="title">USERS & AGENTS</div>
-      <div class="agent-list">
-        ${this.getAllAgentsUnified().map(agent => this.generateAgentHTML(agent)).join('')}
-      </div>
+      
+      ${this.renderSidebarStructure(headerTitle, content)}
     `;
 
     this.updateSelectionState();
@@ -833,10 +760,79 @@ if (typeof window.AgentSelector === 'undefined') {
     this.connectedUsers = this.connectedUsers.filter(u => u.sessionId !== sessionId);
     this.render();
   }
-}
 
-  // Register the custom element (browser only)
-  if (!customElements.get('agent-selector')) {
-    customElements.define('agent-selector', window.AgentSelector);
+  setupWebSocketListeners() {
+    if (typeof window !== 'undefined' && window.ws) {
+      window.ws.addEventListener('message', (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'agents_update') {
+          console.log('🤖 UserSelector: Received real agents update:', data.agents);
+          this.updateRealAgents(data.agents);
+        }
+      });
+    }
+  }
+
+  async loadRealAgents() {
+    try {
+      // Try to get current agents from server
+      const response = await fetch('/api/agents');
+      if (response.ok) {
+        const agents = await response.json();
+        console.log('🤖 UserSelector: Loaded real agents from API:', agents);
+        this.updateRealAgents(agents);
+      }
+    } catch (error) {
+      console.log('🤖 UserSelector: Using default agents (API not available)');
+    }
+  }
+
+  updateRealAgents(realAgents) {
+    // Keep the Auto Route option but replace other hardcoded agents with real ones
+    const autoRoute = this.agents.find(a => a.id === 'auto');
+    this.agents = [autoRoute, ...realAgents.map(agent => ({
+      id: agent.id || agent.agentId || 'unknown',
+      name: agent.name || agent.agentName || 'Unknown Agent',
+      role: agent.role || agent.capabilities?.join(', ') || 'General',
+      avatar: this.getAgentAvatar(agent.type || agent.agentType),
+      gradient: this.getAgentGradient(agent.type || agent.agentType),
+      status: agent.status || 'online',
+      type: agent.type || agent.agentType || 'ai',
+      source: agent.source || 'remote',
+      host: agent.host || agent.hostInfo?.hostname || 'Unknown'
+    }))];
+    this.render();
+  }
+
+  getAgentAvatar(type) {
+    const avatars = {
+      'ai': '🤖',
+      'human': '👤', 
+      'user': '👨‍💻',
+      'system': '⚙️'
+    };
+    return avatars[type] || '🤖';
+  }
+
+  getAgentGradient(type) {
+    const gradients = {
+      'ai': 'linear-gradient(135deg, #4FC3F7, #29B6F6)',
+      'human': 'linear-gradient(135deg, #ff6b6b, #ee5a24)',
+      'user': 'linear-gradient(135deg, #5f27cd, #341f97)',
+      'system': 'linear-gradient(135deg, #00d2d3, #54a0ff)'
+    };
+    return gradients[type] || 'linear-gradient(135deg, #4FC3F7, #29B6F6)';
   }
 }
+
+// Register the custom element
+customElements.define('user-selector', UserSelector);
+
+// Export for module systems
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = UserSelector;
+} else if (typeof window !== 'undefined') {
+  window.UserSelector = UserSelector;
+}
+
+} // End guard

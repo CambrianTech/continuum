@@ -9,6 +9,22 @@ const execAsync = promisify(exec);
  * Handles text input with realistic human-like typing patterns
  */
 class TypeCommand extends BaseCommand {
+  static getDefinition() {
+    return {
+      name: 'TYPE',
+      category: 'keyboard control',
+      icon: '⌨️',
+      description: 'Type text with natural human-like timing and rhythm',
+      params: '{"text": string, "speed": number, "delay": number}',
+      examples: [
+        '{"text": "Hello World"}',
+        '{"text": "Slow typing", "speed": 200}',
+        '{"text": "With delay", "delay": 500}'
+      ],
+      usage: 'Simulates natural keyboard typing with configurable speed and timing'
+    };
+  }
+
   constructor() {
     super();
     this.name = 'type';

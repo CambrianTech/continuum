@@ -5,6 +5,22 @@ const BaseCommand = require('../../BaseCommand.cjs');
  * Manages the visual representation of AI control over the interface
  */
 class CursorCommand extends BaseCommand {
+  static getDefinition() {
+    return {
+      name: 'CURSOR',
+      category: 'continuon control',
+      icon: '🟢',
+      description: 'Control continuon (AI cursor) activation, deactivation, and positioning',
+      params: '{"action": "activate|deactivate|position|status", "x": number, "y": number}',
+      examples: [
+        '{"action": "activate"}',
+        '{"action": "position", "x": 100, "y": 200}',
+        '{"action": "status"}'
+      ],
+      usage: 'Controls the visual AI cursor representation'
+    };
+  }
+
   constructor() {
     super();
     this.name = 'cursor';

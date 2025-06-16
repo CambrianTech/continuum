@@ -10,6 +10,9 @@
       "default": "./index.server.js"
     }
   },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
   "continuum": {
     "commandName": "exec",
     "capabilities": ["execution", "system", "command"]

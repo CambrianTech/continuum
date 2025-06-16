@@ -9,6 +9,22 @@ const execAsync = promisify(exec);
  * Supports Bezier curve movement for natural mouse behavior
  */
 class MoveCommand extends BaseCommand {
+  static getDefinition() {
+    return {
+      name: 'MOVE',
+      category: 'Mouse Control',
+      icon: '🎯',
+      description: 'Move mouse cursor to specified coordinates with natural animation',
+      params: '{"x": number, "y": number, "duration": number, "easing": string}',
+      examples: [
+        '{"x": 100, "y": 200}',
+        '{"x": 500, "y": 300, "duration": 1000}',
+        '{"x": 250, "y": 150, "easing": "bezier"}'
+      ],
+      usage: 'Moves mouse cursor with natural animation and optional easing'
+    };
+  }
+
   constructor() {
     super();
     this.name = 'move';
@@ -56,10 +72,10 @@ class MoveCommand extends BaseCommand {
         currentPos.x = parseInt(coords[0]) || 0;
         currentPos.y = parseInt(coords[1]) || 0;
       } catch (error) {
-        console.log('⚠️ Could not get current cursor position, using (0,0)');
+        try { console.log('⚠️ Could not get current cursor position, using (0,0)'); } catch(e) {}
       }
 
-      console.log(`🎯 Moving cursor from (${currentPos.x}, ${currentPos.y}) to (${x}, ${y}) with ${animation} animation`);
+      try { console.log(`🎯 Moving cursor from (${currentPos.x}, ${currentPos.y}) to (${x}, ${y}) with ${animation} animation`); } catch(e) {}
 
       // Execute movement based on animation type
       let moveCommand;

@@ -7,9 +7,19 @@ class WebComponentsIntegration {
   constructor() {
     this.componentsToInject = [
       {
-        selector: '.agent-selector',
-        component: 'agent-selector',
-        scriptPath: '/src/ui/components/AgentSelector.js'
+        selector: '.user-selector',
+        component: 'user-selector',
+        scriptPath: '/src/ui/components/UserSelector/UserSelector.js'
+      },
+      {
+        selector: '.saved-personas',
+        component: 'saved-personas',
+        scriptPath: '/src/ui/components/SavedPersonas/SavedPersonas.js'
+      },
+      {
+        selector: '.active-projects',
+        component: 'active-projects',
+        scriptPath: '/src/ui/components/ActiveProjects/ActiveProjects.js'
       }
     ];
   }
@@ -38,29 +48,57 @@ class WebComponentsIntegration {
         });
 
         function progressivelyEnhanceUI() {
-          // Replace agent selector if it exists
-          const agentSelector = document.querySelector('.agent-selector');
-          if (agentSelector && typeof customElements !== 'undefined' && customElements.get('agent-selector')) {
+          // Replace user selector if it exists
+          const userSelector = document.querySelector('.user-selector');
+          if (userSelector && typeof customElements !== 'undefined' && customElements.get('user-selector')) {
             try {
-              const newComponent = document.createElement('agent-selector');
+              const newComponent = document.createElement('user-selector');
               
               // Copy any existing state/data
-              const existingData = extractAgentSelectorData(agentSelector);
+              const existingData = extractUserSelectorData(userSelector);
               if (existingData) {
                 newComponent.agents = existingData.agents;
                 newComponent.selectedAgent = existingData.selectedAgent;
               }
               
               // Replace the old element
-              agentSelector.parentNode.replaceChild(newComponent, agentSelector);
-              console.log('✅ Enhanced agent selector with web component');
+              userSelector.parentNode.replaceChild(newComponent, userSelector);
+              console.log('✅ Enhanced user selector with web component');
             } catch (error) {
-              console.warn('Failed to enhance agent selector:', error);
+              console.warn('Failed to enhance user selector:', error);
+            }
+          }
+
+          // Replace saved personas if it exists
+          const savedPersonas = document.querySelector('.saved-personas');
+          if (savedPersonas && typeof customElements !== 'undefined' && customElements.get('saved-personas')) {
+            try {
+              const newComponent = document.createElement('saved-personas');
+              
+              // Replace the old element
+              savedPersonas.parentNode.replaceChild(newComponent, savedPersonas);
+              console.log('✅ Enhanced saved personas with web component');
+            } catch (error) {
+              console.warn('Failed to enhance saved personas:', error);
+            }
+          }
+
+          // Replace active projects if it exists
+          const activeProjects = document.querySelector('.active-projects');
+          if (activeProjects && typeof customElements !== 'undefined' && customElements.get('active-projects')) {
+            try {
+              const newComponent = document.createElement('active-projects');
+              
+              // Replace the old element
+              activeProjects.parentNode.replaceChild(newComponent, activeProjects);
+              console.log('✅ Enhanced active projects with web component');
+            } catch (error) {
+              console.warn('Failed to enhance active projects:', error);
             }
           }
         }
 
-        function extractAgentSelectorData(element) {
+        function extractUserSelectorData(element) {
           // Extract data from existing HTML structure
           const agents = [];
           const agentItems = element.querySelectorAll('.agent-item');

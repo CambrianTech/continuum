@@ -1,13 +1,24 @@
 /**
- * Promise-Based API Tests for Screenshot Command Module
- * Migrated from __tests__/unit/PromiseBasedAPI.test.cjs
- * Tests promise-based validation and error handling
+ * Screenshot Promise-Based API Tests - SERVER SIDE ONLY
+ * Tests server-side promise patterns, NOT client-side browser code
+ * Client-side ScreenshotUtils is browser-only and should NOT be tested here
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { createRequire } from 'module';
 
-const require = createRequire(import.meta.url);
+// Mock ScreenshotUtils for server-side testing - DO NOT import browser code
+const MockScreenshotUtils = {
+  takeScreenshot: (element, options = {}) => {
+    if (!element || element.offsetWidth === 0) {
+      return Promise.reject(new Error('Cannot screenshot element with 0 dimensions'));
+    }
+    return Promise.resolve({
+      success: true,
+      dataUrl: 'data:image/png;base64,mockdata',
+      filename: options.filename || 'screenshot.png'
+    });
+  }
+};
 
 describe('Screenshot Command Promise-Based API', () => {
   let mockDocument;

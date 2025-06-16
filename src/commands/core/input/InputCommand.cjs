@@ -9,6 +9,22 @@ const execAsync = promisify(exec);
  * Handles mouse, touch, keyboard, and gesture events in one unified command
  */
 class InputCommand extends BaseCommand {
+  static getDefinition() {
+    return {
+      name: 'INPUT',
+      category: 'input control',
+      icon: '🎮',
+      description: 'Unified input event handling: mouse, touch, keyboard, gestures',
+      params: '{"event": "click|key|scroll|gesture", "x": number, "y": number, "text": string}',
+      examples: [
+        '{"event": "click", "x": 100, "y": 200}',
+        '{"event": "key", "text": "Hello World"}',
+        '{"event": "scroll", "direction": "down"}'
+      ],
+      usage: 'Handles all types of input events in a unified interface'
+    };
+  }
+
   constructor() {
     super();
     this.name = 'input';
