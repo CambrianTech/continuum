@@ -1,0 +1,40 @@
+{
+  "name": "active-projects-widget",
+  "version": "1.0.0", 
+  "description": "ActiveProjects Widget Module",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./component": "./ActiveProjects.js"
+  },
+  "files": [
+    "ActiveProjects.js",
+    "index.js"
+  ],
+  "keywords": ["widget", "projects", "ui", "continuum"],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "continuum": {
+    "widgetName": "ActiveProjects",
+    "widgetType": "ui-component", 
+    "category": "User Interface",
+    "icon": "📁",
+    "componentFile": "ActiveProjects.js",
+    "description": "Dynamic project management and status widget",
+    "selectors": [
+      ".active-projects",
+      "[class*=\"project\"]",
+      "#project-list",
+      ".project-list",
+      "[id*=\"project\"]",
+      ".projects-container"
+    ],
+    "fallbackSelector": "body",
+    "capabilities": ["screenshot", "interaction", "validation", "dynamic-discovery", "api-integration"],
+    "dependencies": ["persistent", "screenshot"],
+    "hasTests": true,
+    "testDir": "./test"
+  }
+}

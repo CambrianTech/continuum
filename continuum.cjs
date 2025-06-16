@@ -498,13 +498,49 @@ function startDaemon(options, commands) {
   // Unref so parent can exit
   daemon.unref();
   
+  const port = options.port || process.env.CONTINUUM_PORT || '9000';
+  
   console.log(`📝 Daemon started with PID: ${daemon.pid}`);
-  console.log(`🌐 Will be available at: http://localhost:${options.port || process.env.CONTINUUM_PORT || '9000'}`);
+  console.log(`🌐 Will be available at: http://localhost:${port}`);
   console.log(`⏰ Auto-shutdown after ${options['idle-timeout'] || '30'} minutes of inactivity`);
   console.log('🔧 Agents can wake daemon with: heal "Connection refused"');
-  console.log('✅ Daemon launched successfully');
   
-  process.exit(0);
+  // Actually verify the daemon is working before claiming success
+  console.log('🔍 Verifying daemon is responding...');
+  
+  const http = require('http');
+  let attempts = 0;
+  const maxAttempts = 10;
+  
+  const checkDaemon = () => {
+    attempts++;
+    const req = http.get(`http://localhost:${port}`, (res) => {
+      console.log('✅ Daemon launched successfully');
+      process.exit(0);
+    });
+    
+    req.on('error', (err) => {
+      if (attempts >= maxAttempts) {
+        console.log('❌ Daemon failed to start - not responding after 10 attempts');
+        process.exit(1);
+      } else {
+        setTimeout(checkDaemon, 1000); // Try again in 1 second
+      }
+    });
+    
+    req.setTimeout(2000, () => {
+      req.destroy();
+      if (attempts >= maxAttempts) {
+        console.log('❌ Daemon failed to start - timeout after 10 attempts');
+        process.exit(1);
+      } else {
+        setTimeout(checkDaemon, 1000);
+      }
+    });
+  };
+  
+  // Start checking after 2 seconds to give daemon time to start
+  setTimeout(checkDaemon, 2000);
 }
 
 // Run built-in system tests

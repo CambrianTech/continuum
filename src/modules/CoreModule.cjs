@@ -19,11 +19,18 @@ class CoreModule extends CommandModule {
     const path = require('path');
     const commandsDir = path.join(__dirname, '../commands/core');
     
-    console.log('🔍 Auto-discovering command modules...');
+    try { console.log('🔍 Auto-discovering command modules...'); } catch(e) {}
     
-    const entries = fs.readdirSync(commandsDir, { withFileTypes: true });
+    let entries = [];
     const loadedModules = [];
     const loadedLegacy = [];
+    
+    try {
+      entries = fs.readdirSync(commandsDir, { withFileTypes: true });
+    } catch (error) {
+      try { console.error(`❌ Cannot read commands directory: ${error.message}`); } catch(e) {}
+      return; // Don't crash the daemon, just skip command loading
+    }
     
     for (const entry of entries) {
       if (entry.isDirectory()) {
@@ -39,7 +46,7 @@ class CoreModule extends CommandModule {
             const packageInfo = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
             const commandName = packageInfo.continuum?.commandName || packageInfo.name || entry.name;
             
-            console.log(`📦 Loading ES module: ${commandName} v${packageInfo.version}`);
+            try { console.log(`📦 Loading ES module: ${commandName} v${packageInfo.version}`); } catch(e) {}
             
             // Dynamic import of server entry point
             const moduleUrl = `file://${serverEntryPath}`;
@@ -63,7 +70,7 @@ class CoreModule extends CommandModule {
               };
             }
           } catch (error) {
-            console.error(`❌ ES Module ${entry.name} failed:`, error.message);
+            try { console.error(`❌ ES Module ${entry.name} failed:`, error.message); } catch(e) {}
             
             // Fallback to legacy system
             const legacyIndexPath = path.join(modulePath, 'index.cjs');
@@ -76,7 +83,7 @@ class CoreModule extends CommandModule {
                   loadedModules.push(`${commandName} (legacy)`);
                 }
               } catch (legacyError) {
-                console.error(`❌ Legacy fallback ${entry.name} failed:`, legacyError.message);
+                try { console.error(`❌ Legacy fallback ${entry.name} failed:`, legacyError.message); } catch(e) {}
               }
             }
           }
@@ -88,14 +95,14 @@ class CoreModule extends CommandModule {
           this.registerCommand(commandName, require(path.join(commandsDir, entry.name)));
           loadedLegacy.push(commandName);
         } catch (error) {
-          console.error(`❌ Legacy ${entry.name} failed:`, error.message);
+          try { console.error(`❌ Legacy ${entry.name} failed:`, error.message); } catch(e) {}
         }
       }
     }
     
-    console.log(`✅ Loaded ${loadedModules.length} ES modules: ${loadedModules.join(', ')}`);
-    console.log(`✅ Loaded ${loadedLegacy.length} legacy commands: ${loadedLegacy.join(', ')}`);
-    console.log(`📋 Total commands registered: ${this.commands.size}`);
+    try { console.log(`✅ Loaded ${loadedModules.length} ES modules: ${loadedModules.join(', ')}`); } catch(e) {}
+    try { console.log(`✅ Loaded ${loadedLegacy.length} legacy commands: ${loadedLegacy.join(', ')}`); } catch(e) {}
+    try { console.log(`📋 Total commands registered: ${this.commands.size}`); } catch(e) {}
   }
 
   // Get client module entry points for dynamic ES module loading
@@ -129,23 +136,38 @@ class CoreModule extends CommandModule {
   }
 
   async initialize(continuum) {
-    await super.initialize(continuum);
-    
-    // Dynamic command discovery and wiring
-    await this.discoverAndWireCommands(continuum);
+    try {
+      await super.initialize(continuum);
+      
+      // Dynamic command discovery and wiring - don't let this crash the daemon
+      try {
+        await this.discoverAndWireCommands(continuum);
+      } catch (error) {
+        try { console.error(`❌ Command discovery failed: ${error.message}`); } catch(e) {}
+        // Continue with daemon startup even if command loading fails
+      }
 
-    // Register elegant macros with proper CommandRegistry
-    console.log('🔗 Creating FluentAPI macros with CommandRegistry...');
-    const macros = FluentAPI.createMacros(this.commandRegistry);
-    this.registerMacro('shareScreenshot', macros.shareScreenshot);
-    this.registerMacro('quickDiagnostics', macros.quickDiagnostics);
-    // Remove hardcoded user-specific macros - use proper chaining instead
-
-    // Create the beautiful fluent API
-    this.fluentAPI = FluentAPI.createMacros(this.commandRegistry);
-    
-    console.log(`✨ Core module loaded with ${this.commands.size} commands and ${this.macros.size} macros`);
-    return true;
+      // Register elegant macros with proper CommandRegistry
+      try { console.log('🔗 Creating FluentAPI macros with CommandRegistry...'); } catch(e) {}
+      
+      try {
+        const macros = FluentAPI.createMacros(this.commandRegistry);
+        this.registerMacro('shareScreenshot', macros.shareScreenshot);
+        this.registerMacro('quickDiagnostics', macros.quickDiagnostics);
+        
+        // Create the beautiful fluent API
+        this.fluentAPI = FluentAPI.createMacros(this.commandRegistry);
+      } catch (error) {
+        try { console.error(`❌ FluentAPI creation failed: ${error.message}`); } catch(e) {}
+        // Continue without FluentAPI if it fails
+      }
+      
+      try { console.log(`✨ Core module loaded with ${this.commands.size} commands and ${this.macros.size} macros`); } catch(e) {}
+      return true;
+    } catch (error) {
+      try { console.error(`❌ CoreModule initialization failed: ${error.message}`); } catch(e) {}
+      return false; // Return false but don't crash
+    }
   }
 
   // Expose the fluent API for global use

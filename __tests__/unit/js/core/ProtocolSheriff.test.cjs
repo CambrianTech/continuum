@@ -3,7 +3,7 @@
  * Tests response validation and garbage prevention
  */
 
-const ProtocolSheriff = require('../../src/core/ProtocolSheriff.cjs');
+const ProtocolSheriff = require('../../../../src/core/ProtocolSheriff.cjs');
 
 describe('ProtocolSheriff', () => {
   let sheriff;

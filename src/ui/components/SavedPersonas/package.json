@@ -1,0 +1,39 @@
+{
+  "name": "saved-personas-widget",
+  "version": "1.0.0",
+  "description": "SavedPersonas Widget Module",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./component": "./SavedPersonas.js"
+  },
+  "files": [
+    "SavedPersonas.js",
+    "index.js"
+  ],
+  "keywords": ["widget", "personas", "ui", "continuum"],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "continuum": {
+    "widgetName": "SavedPersonas",
+    "widgetType": "ui-component",
+    "category": "User Interface",
+    "icon": "👤",
+    "componentFile": "SavedPersonas.js",
+    "description": "Dynamic persona management and selection widget",
+    "selectors": [
+      ".persona-manager",
+      "[class*=\"persona\"]",
+      "#persona-list",
+      ".persona-list",
+      "[id*=\"persona\"]"
+    ],
+    "fallbackSelector": "body",
+    "capabilities": ["screenshot", "interaction", "validation", "dynamic-discovery", "api-integration"],
+    "dependencies": ["persistent", "screenshot"],
+    "hasTests": true,
+    "testDir": "./test"
+  }
+}

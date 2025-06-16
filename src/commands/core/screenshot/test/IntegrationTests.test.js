@@ -1,13 +1,13 @@
 /**
- * Screenshot Integration Tests
- * Migrated from integration test files to cover end-to-end scenarios
- * Tests full screenshot pipeline, different capture modes, and real-world scenarios
+ * Screenshot Integration Tests - Server Side
+ * Tests integration patterns that work in Node.js environment
+ * Client-side browser tests should be separate
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
-describe('Screenshot Integration', () => {
-  test('should handle full screen capture simulation', () => {
+describe('Screenshot Integration - Server Side', () => {
+  test('should validate element data structure', () => {
     const mockViewport = {
       tagName: 'DIV',
       offsetWidth: 1920,
@@ -69,14 +69,14 @@ describe('Screenshot Integration', () => {
     assert.strictEqual(result.captureMode, 'widget');
   });
 
-  test('should handle screenshot pipeline with file saving', () => {
+  test('should handle screenshot pipeline with file saving', async () => {
     const mockElement = {
       tagName: 'DIV',
       offsetWidth: 800,
       offsetHeight: 600
     };
     
-    const simulateScreenshotPipeline = async (element, saveOptions = {}) => {
+    const simulateScreenshotPipeline = (element, saveOptions = {}) => {
       if (!element) {
         throw new Error('Element required for screenshot pipeline');
       }
@@ -105,7 +105,7 @@ describe('Screenshot Integration', () => {
       };
     };
     
-    const result = await simulateScreenshotPipeline(mockElement, { 
+    const result = simulateScreenshotPipeline(mockElement, { 
       filename: 'test-widget.png' 
     });
     

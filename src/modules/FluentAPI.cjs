@@ -23,7 +23,7 @@ class FluentAPI {
         throw new Error('Command registry definitions is not a Map - cannot iterate entries');
       }
       
-      console.log(`🔗 FluentAPI: Creating methods for ${this.registry.definitions.size} commands`);
+      try { console.log(`🔗 FluentAPI: Creating methods for ${this.registry.definitions.size} commands`); } catch(e) {}
       
       // Create fluent methods for all registered commands
       for (const [commandName, definition] of this.registry.definitions.entries()) {

@@ -5,7 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const PersistentStorage = require('../../src/storage/PersistentStorage.cjs');
+const PersistentStorage = require('../../../../src/storage/PersistentStorage.cjs');
 
 // Test utilities
 const TEST_DIR = path.join(__dirname, 'test-storage');

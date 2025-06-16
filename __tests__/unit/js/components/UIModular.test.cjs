@@ -3,8 +3,8 @@
  * Tests the new component-based UI structure
  */
 
-describe('Modular UI Generator', () => {
-  let UIGeneratorModular;
+describe('UI Generator', () => {
+  let UIGenerator;
   let mockContinuum;
 
   beforeEach(() => {
@@ -16,18 +16,18 @@ describe('Modular UI Generator', () => {
       }
     };
 
-    // Import the modular UI generator
-    UIGeneratorModular = require('../../src/ui/UIGeneratorModular.cjs');
+    // Import the UI generator
+    UIGenerator = require('../../../../src/ui/UIGenerator.cjs');
   });
 
-  test('should create UIGeneratorModular instance', () => {
-    const generator = new UIGeneratorModular(mockContinuum);
-    expect(generator).toBeInstanceOf(UIGeneratorModular);
+  test('should create UIGenerator instance', () => {
+    const generator = new UIGenerator(mockContinuum);
+    expect(generator).toBeInstanceOf(UIGenerator);
     expect(generator.continuum).toBe(mockContinuum);
   });
 
   test('should generate HTML with web components', () => {
-    const generator = new UIGeneratorModular(mockContinuum);
+    const generator = new UIGenerator(mockContinuum);
     const html = generator.generateHTML();
     
     expect(html).toContain('<!DOCTYPE html>');
@@ -40,7 +40,7 @@ describe('Modular UI Generator', () => {
   });
 
   test('should include component script imports', () => {
-    const generator = new UIGeneratorModular(mockContinuum);
+    const generator = new UIGenerator(mockContinuum);
     const html = generator.generateHTML();
     
     expect(html).toContain('<script src="/components/AgentSelector.js">');
@@ -52,7 +52,7 @@ describe('Modular UI Generator', () => {
   });
 
   test('should include application logic', () => {
-    const generator = new UIGeneratorModular(mockContinuum);
+    const generator = new UIGenerator(mockContinuum);
     const html = generator.generateHTML();
     
     expect(html).toContain('initializeComponents');
@@ -62,7 +62,7 @@ describe('Modular UI Generator', () => {
   });
 
   test('should maintain existing styles', () => {
-    const generator = new UIGeneratorModular(mockContinuum);
+    const generator = new UIGenerator(mockContinuum);
     const html = generator.generateHTML();
     
     expect(html).toContain('.app-container');
@@ -72,7 +72,7 @@ describe('Modular UI Generator', () => {
   });
 
   test('should have reduced HTML size compared to old generator', () => {
-    const generator = new UIGeneratorModular(mockContinuum);
+    const generator = new UIGenerator(mockContinuum);
     const html = generator.generateHTML();
     
     // Modular version should be significantly smaller than the old monolithic version

@@ -7,27 +7,32 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import fs from 'fs';
 import path from 'path';
+import { promisify } from 'util';
+import { exec } from 'child_process';
+
+const execAsync = promisify(exec);
 
 describe('Widget Iteration Functional Tests', () => {
 
   test('should iterate through UI widgets and capture screenshots', async () => {
     // Setup for this test
-    const testSessionId = `widget_test_${Date.now()}`;
-    const screenshotsDir = path.join(process.cwd(), '.continuum', 'screenshots', testSessionId);
+    const screenshotsDir = path.join(process.cwd(), '.continuum', 'screenshots');
     fs.mkdirSync(screenshotsDir, { recursive: true });
 
-    // Simulate widget discovery
+    // Real UI widgets from the codebase
     const widgets = [
-      { name: 'users_agents', selector: '.users-agents', expectedContent: ['user', 'agent'] },
-      { name: 'active_projects', selector: '.project-list', expectedContent: ['project'] },
-      { name: 'chat_interface', selector: '.chat-container', expectedContent: ['message'] }
+      { name: 'agent_selector', selector: '[class*="agent-selector"], [class*="AgentSelector"]', component: 'AgentSelector.js' },
+      { name: 'chat_area', selector: '[class*="chat-area"], [class*="ChatArea"]', component: 'ChatArea.js' },
+      { name: 'status_pill', selector: '[class*="status-pill"], [class*="StatusPill"]', component: 'StatusPill.js' },
+      { name: 'user_drawer', selector: '[class*="user-drawer"], [class*="UserDrawer"]', component: 'UserDrawer.js' },
+      { name: 'ai_widget', selector: '[class*="ai-widget"], [class*="AIWidget"]', component: 'AIWidget.js' }
     ];
 
     const captureResults = [];
 
     for (const widget of widgets) {
-      // Simulate screenshot command execution for each widget
-      const screenshotResult = await simulateWidgetScreenshot(widget, screenshotsDir);
+      // Use real Python screenshot command for each widget
+      const screenshotResult = await captureWidgetScreenshot(widget);
       captureResults.push(screenshotResult);
       
       // Validate screenshot was created
@@ -52,39 +57,37 @@ describe('Widget Iteration Functional Tests', () => {
 
   test('should validate screenshot content and feedback', async () => {
     // Setup for this test
-    const testSessionId = `feedback_test_${Date.now()}`;
-    const screenshotsDir = path.join(process.cwd(), '.continuum', 'screenshots', testSessionId);
+    const screenshotsDir = path.join(process.cwd(), '.continuum', 'screenshots');
     fs.mkdirSync(screenshotsDir, { recursive: true });
 
     const widget = { 
-      name: 'test_widget', 
-      selector: '.test-element',
-      expectedContent: ['test', 'content'],
+      name: 'agent_selector_validation', 
+      selector: '[class*="agent-selector"], [class*="AgentSelector"]',
+      component: 'AgentSelector.js',
       minWidth: 100,
       minHeight: 50
     };
 
-    const result = await simulateWidgetScreenshot(widget, screenshotsDir);
+    const result = await captureWidgetScreenshot(widget);
     
     // Validate basic capture
     assert(result.success, 'Widget capture should succeed');
     assert(result.filePath, 'Should have file path');
     
-    // Simulate content validation (like OCR or element analysis)
-    const contentValidation = await simulateContentValidation(result);
+    // Real content validation
+    const contentValidation = await validateScreenshotContent(result);
     
     assert(contentValidation.hasExpectedDimensions, 'Should meet minimum dimensions');
-    assert(contentValidation.containsExpectedContent, 'Should contain expected content');
+    assert(contentValidation.fileIntegrity, 'Should have valid PNG file');
     assert(contentValidation.feedback, 'Should provide feedback on quality');
   });
 
   test('should handle self-diagnostics workflow', async () => {
     // Setup for this test
-    const testSessionId = `diagnostics_test_${Date.now()}`;
-    const screenshotsDir = path.join(process.cwd(), '.continuum', 'screenshots', testSessionId);
+    const screenshotsDir = path.join(process.cwd(), '.continuum', 'screenshots');
     fs.mkdirSync(screenshotsDir, { recursive: true });
 
-    const diagnosticsResult = await simulateSelfDiagnostics(screenshotsDir);
+    const diagnosticsResult = await runSelfDiagnostics();
     
     // Validate diagnostics captured system state
     assert(diagnosticsResult.systemHealth, 'Should check system health');

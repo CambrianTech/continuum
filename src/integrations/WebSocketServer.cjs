@@ -1017,6 +1017,82 @@ class WebSocketServer extends EventEmitter {
           console.error('Error handling screenshot error message:', error);
         }
         
+      } else if (data.type === 'get_component_css') {
+        // Handle CSS loading for modular components
+        console.log('📄 ================================');
+        console.log('📄 CSS REQUEST RECEIVED');
+        console.log('📄 Component:', data.component);
+        console.log('📄 Path:', data.path);
+        console.log('📄 ================================');
+        
+        try {
+          const fs = require('fs');
+          const path = require('path');
+          
+          if (data.path && data.component) {
+            // Path should be relative to project root, not relative to WebSocketServer
+            const projectRoot = path.join(__dirname, '..', '..');
+            const cssPath = path.join(projectRoot, 'src', data.path.replace(/^\//, ''));
+            
+            console.log('📄 Project root:', projectRoot);
+            console.log('📄 Requested path:', data.path);
+            console.log('📄 Final CSS path:', cssPath);
+            console.log('📄 File exists check:', fs.existsSync(cssPath));
+            
+            if (fs.existsSync(cssPath)) {
+              console.log('📄 Reading CSS file...');
+              const cssContent = fs.readFileSync(cssPath, 'utf8');
+              console.log('📄 ✅ CSS loaded successfully, length:', cssContent.length);
+              
+              const response = {
+                type: 'component_css_response',
+                component: data.component,
+                css: cssContent,
+                path: data.path
+              };
+              
+              console.log('📄 Sending CSS response...');
+              ws.send(JSON.stringify(response));
+              console.log('📄 ✅ CSS response sent successfully');
+              
+            } else {
+              console.log('📄 ❌ CSS file not found at:', cssPath);
+              
+              // Try listing the directory to see what's there
+              const dir = path.dirname(cssPath);
+              console.log('📄 Directory listing for:', dir);
+              try {
+                const files = fs.readdirSync(dir);
+                console.log('📄 Files in directory:', files);
+              } catch (dirError) {
+                console.log('📄 Could not read directory:', dirError.message);
+              }
+              
+              ws.send(JSON.stringify({
+                type: 'component_css_response',
+                component: data.component,
+                css: null,
+                error: 'CSS file not found'
+              }));
+            }
+          } else {
+            console.log('📄 ❌ Invalid CSS request, missing component or path');
+            ws.send(JSON.stringify({
+              type: 'component_css_response',
+              error: 'Invalid request - missing component or path'
+            }));
+          }
+        } catch (error) {
+          console.error('📄 ❌ Error handling CSS request:', error);
+          console.error('📄 Error stack:', error.stack);
+          ws.send(JSON.stringify({
+            type: 'component_css_response',
+            error: error.message
+          }));
+        }
+        
+        console.log('📄 ================================');
+        
       }
     } catch (error) {
       console.error('Message error:', error);

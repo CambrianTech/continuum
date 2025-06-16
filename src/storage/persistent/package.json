@@ -1,0 +1,30 @@
+{
+  "name": "persistent-storage",
+  "version": "1.0.0",
+  "description": "Continuum Persistent Storage Module",
+  "type": "module",
+  "main": "index.server.js",
+  "exports": {
+    ".": {
+      "node": "./index.server.js",
+      "default": "./index.server.js"
+    },
+    "./server": "./index.server.js"
+  },
+  "files": [
+    "PersistentStorage.cjs",
+    "index.server.js"
+  ],
+  "keywords": ["storage", "persistent", "filesystem", "continuum"],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "continuum": {
+    "moduleName": "persistent-storage",
+    "moduleType": "storage",
+    "serverFiles": ["PersistentStorage.cjs"],
+    "capabilities": ["filesystem", "json", "persistence"],
+    "hasTests": true,
+    "testDir": "./test"
+  }
+}
