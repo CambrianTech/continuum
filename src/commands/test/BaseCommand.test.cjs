@@ -3,7 +3,7 @@
  * Tests the core command interface and helper methods
  */
 
-const BaseCommand = require('../../src/commands/BaseCommand.cjs');
+const BaseCommand = require('../BaseCommand.cjs');
 
 describe('BaseCommand', () => {
   
