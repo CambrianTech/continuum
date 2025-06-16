@@ -327,10 +327,28 @@ class ScreenshotCommand {
           return false;
         };
         
-        // Try html2canvas with proper error handling
+        // Try html2canvas with proper error handling and createPattern protection
         console.log('📸 Starting html2canvas with target:', targetElement.tagName);
         
+        // Temporarily override createPattern to handle zero-dimension canvas errors
+        const originalCreatePattern = CanvasRenderingContext2D.prototype.createPattern;
+        CanvasRenderingContext2D.prototype.createPattern = function(image, repetition) {
+          try {
+            // Check if image is a canvas with zero dimensions
+            if (image && image.tagName === 'CANVAS' && (image.width === 0 || image.height === 0)) {
+              console.log('📸 Blocked zero-dimension canvas in createPattern');
+              return null; // Return null instead of throwing error
+            }
+            return originalCreatePattern.call(this, image, repetition);
+          } catch (err) {
+            console.log('📸 createPattern error caught and handled:', err.message);
+            return null; // Return null on any createPattern error
+          }
+        };
+        
         html2canvas(targetElement, captureOptions).then(function(canvas) {
+          // Restore original createPattern method
+          CanvasRenderingContext2D.prototype.createPattern = originalCreatePattern;
           // Restore hidden elements
           problematicElements.forEach(element => {
             element.style.display = '';
@@ -433,6 +451,9 @@ class ScreenshotCommand {
           console.log('📸 Screenshot captured:', filename);
           
         }).catch(function(error) {
+          // Restore original createPattern method
+          CanvasRenderingContext2D.prototype.createPattern = originalCreatePattern;
+          
           // Restore hidden elements even on error
           problematicElements.forEach(element => {
             element.style.display = '';
