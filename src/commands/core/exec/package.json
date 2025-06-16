@@ -1,0 +1,17 @@
+{
+  "name": "exec",
+  "version": "1.0.0",
+  "description": "Continuum Exec Command Module",
+  "type": "module",
+  "main": "index.server.js",
+  "exports": {
+    ".": {
+      "node": "./index.server.js",
+      "default": "./index.server.js"
+    }
+  },
+  "continuum": {
+    "commandName": "exec",
+    "capabilities": ["execution", "system", "command"]
+  }
+}

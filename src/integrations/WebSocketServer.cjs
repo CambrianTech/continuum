@@ -927,7 +927,7 @@ class WebSocketServer extends EventEmitter {
         }
         
       } else if (data.type === 'screenshot_data') {
-        // Handle browser canvas screenshot data
+        // Handle browser canvas screenshot data using centralized ScreenshotService
         try {
           console.log('📸 PROCESSING SCREENSHOT_DATA MESSAGE');
           console.log('📸 Data keys:', Object.keys(data));
@@ -938,29 +938,57 @@ class WebSocketServer extends EventEmitter {
           const { dataURL, filename, dimensions } = data;
           const sessionId = this.getSessionId(ws);
           
-          console.log(`📸 Received browser screenshot: ${filename} (${dimensions.width}x${dimensions.height})`);
+          console.log(`📸 Received browser screenshot: ${filename} (${dimensions?.width}x${dimensions?.height})`);
           
-          // Save screenshot data to file
-          const fs = require('fs');
-          const path = require('path');
+          // Delegate to FileSave command - proper command architecture
+          try {
+            const FileSaveCommand = require('../commands/core/FileSaveCommand.cjs');
+            const fileSaveCmd = new FileSaveCommand();
+            
+            const fileSaveParams = JSON.stringify({
+              filename: filename,
+              data: dataURL,
+              baseDirectory: '.continuum/screenshots',
+              mimeType: 'image/png'
+            });
+            
+            console.log(`💾 Delegating to FileSave command: ${filename}`);
+            const result = await fileSaveCmd.execute(fileSaveParams, this.continuum);
+            
+            if (result.success) {
+              console.log(`✅ FileSave completed: ${result.data.filename} (${result.data.fileSizeKB}KB)`);
+              
+              // Log to browser logger with actual file size
+              this.browserLogger.logUserInteraction('screenshot', filename, {
+                sessionId,
+                tabId: data.tabId,
+                dimensions,
+                fileSize: result.data.fileSize,
+                timestamp: data.timestamp
+              }).catch(err => console.error('Failed to log screenshot interaction:', err));
+              
+            } else {
+              console.error(`❌ FileSave failed: ${result.message}`);
+            }
+          } catch (error) {
+            console.error(`❌ Failed to execute FileSave command: ${error.message}`);
+          }
           
-          // Remove data URL prefix to get base64 data
-          const base64Data = dataURL.replace(/^data:image\/png;base64,/, '');
-          const buffer = Buffer.from(base64Data, 'base64');
-          
-          // Save to .continuum/screenshots directory
-          const outputPath = path.join(process.cwd(), '.continuum', 'screenshots', filename);
-          fs.writeFileSync(outputPath, buffer);
-          
-          const fileSizeKB = Math.round(buffer.length / 1024);
-          console.log(`✅ Browser screenshot saved: ${filename} (${fileSizeKB}KB)`);
+          // Use ShareCommand for auto-opening (when available)
+          try {
+            const ShareCommand = require('../commands/core/ShareCommand.cjs');
+            await ShareCommand.share(outputPath, 'user');
+            console.log(`📤 Screenshot shared via ShareCommand`);
+          } catch (error) {
+            console.log(`⚠️ ShareCommand not available: ${error.message}`);
+          }
           
           // Log to browser logger
           this.browserLogger.logUserInteraction('screenshot', filename, {
             sessionId,
             tabId: data.tabId,
             dimensions,
-            fileSize: fileSizeKB,
+            fileSize: buffer.length,
             timestamp: data.timestamp
           }).catch(err => console.error('Failed to log screenshot interaction:', err));
           

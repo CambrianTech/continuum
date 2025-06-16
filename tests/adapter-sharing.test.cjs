@@ -7,9 +7,9 @@ require('dotenv').config();
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const LoRAAdapter = require('../src/core/LoRAAdapter.cjs');
-const AdapterRegistry = require('../src/core/AdapterRegistry.cjs');
-const { ModelAdapterFactory } = require('../src/core/ModelAdapter.cjs');
+const LoRAAdapter = require('../src/adapters/LoRAAdapter.cjs');
+const AdapterRegistry = require('../src/adapters/AdapterRegistry.cjs');
+const { ModelAdapterFactory } = require('../src/adapters/ModelAdapter.cjs');
 
 async function runAdapterSharingTest() {
   console.log('🌐 Running Adapter Sharing Test...\n');

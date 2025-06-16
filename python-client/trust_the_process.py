@@ -145,9 +145,9 @@ python python-client/trust_the_process.py --validate    # Quick validation
                 else:
                     print("❌")
                 
-                # Screenshot capture using elegant command API
+                # Screenshot capture using proper command.screenshot API
                 print("   📸 Screenshot capture... ", end="", flush=True)
-                screenshot_result = await self.capture_screenshot_command_api(client)
+                screenshot_result = await client.command.screenshot()
                 if screenshot_result:
                     success_criteria['screenshot_capture'] = True
                     print("✅")
@@ -178,96 +178,96 @@ python python-client/trust_the_process.py --validate    # Quick validation
         return success_criteria
     
     async def capture_screenshot_command_api(self, client):
-        """Capture screenshot using working approach while we build elegant command API"""
+        """Capture screenshot using working pipeline approach"""
         try:
-            # Use working JS execution for now - will transition to command API when server ready
+            print(f"\n   📸 Using working screenshot pipeline...")
+            
+            # Use working approach similar to capture_version_badge but for integrity check
             result = await client.js.execute("""
-                console.log('📸 Capturing users & agents section');
+                console.log('📸 INTEGRITY: Capturing interface section');
                 
+                // Find best target element (agents section or fallback to body)
                 const selectors = [
-                    '[id*="agent"]',
-                    '[class*="agent"]', 
+                    '[class*="agent"]',
+                    '[id*="agent"]', 
                     '#sidebar',
                     '.sidebar',
-                    '[class*="user"]'
+                    '[class*="user"]',
+                    'body'
                 ];
                 
                 let targetElement = null;
-                let targetSelector = null;
-                
                 for (const selector of selectors) {
                     const element = document.querySelector(selector);
                     if (element && element.offsetWidth > 0 && element.offsetHeight > 0) {
                         targetElement = element;
-                        targetSelector = selector;
                         break;
                     }
                 }
                 
                 if (!targetElement) {
                     targetElement = document.body;
-                    targetSelector = 'body';
                 }
                 
-                console.log('📸 Capturing', targetSelector);
-                
-                return new Promise((resolve) => {
+                // Wait for CSS to load properly
+                setTimeout(() => {
                     html2canvas(targetElement, {
                         allowTaint: true,
                         useCORS: true,
                         scale: 1,
                         backgroundColor: '#1a1a1a'
                     }).then(function(canvas) {
-                        const dataURL = canvas.toDataURL('image/png');
-                        resolve({
-                            success: true,
+                    var dataURL = canvas.toDataURL('image/png');
+                    var timestamp = Date.now();
+                    var filename = 'integrity_check_' + timestamp + '.png';
+                    
+                    if (window.ws && window.ws.readyState === 1) {
+                        window.ws.send(JSON.stringify({
+                            type: 'screenshot_data',
                             dataURL: dataURL,
-                            width: canvas.width,
-                            height: canvas.height,
-                            selector: targetSelector
-                        });
-                    }).catch(function(error) {
-                        console.error('📸 Screenshot failed:', error);
-                        resolve({
-                            success: false,
-                            error: error.message
-                        });
+                            filename: filename,
+                            timestamp: timestamp,
+                            dimensions: { width: canvas.width, height: canvas.height }
+                        }));
+                        console.log('✅ Integrity screenshot sent via working pipeline');
+                    }
                     });
-                });
+                }, 1000); // Wait 1 second for CSS
+                return 'SUCCESS';
             """)
             
-            if result['success']:
-                screenshot_data = json.loads(result['result'])
-                if screenshot_data['success']:
-                    # Save to .continuum/screenshots/
-                    self.screenshots_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    filename = f'integrity_check_{timestamp}.png'
-                    screenshot_path = self.screenshots_dir / filename
-                    
-                    # Extract base64 and save
-                    import base64
-                    base64_data = screenshot_data['dataURL'].split(',')[1]
-                    image_bytes = base64.b64decode(base64_data)
-                    
-                    with open(screenshot_path, 'wb') as f:
-                        f.write(image_bytes)
-                    
-                    print(f"\n   📁 Screenshot saved: {screenshot_path}")
-                    
-                    # CRITICAL: Open screenshot for User (required by process)
-                    try:
-                        import subprocess
-                        subprocess.run(['open', str(screenshot_path)], check=False)
-                        print(f"   🖼️ Screenshot opened for User: {screenshot_path.name}")
-                    except Exception as e:
-                        print(f"   ⚠️ Could not auto-open screenshot: {e}")
-                        print(f"   📖 MANUAL: Please open {screenshot_path}")
-                    
-                    return True
-                    
-            return False
+            if result.get('success') and result.get('result') == 'SUCCESS':
+                print(f"   ✅ Screenshot sent via working pipeline")
+                
+                # Wait for server processing
+                import time
+                time.sleep(3.0)  # Increased wait time
+                
+                # Find the newest screenshot file
+                if self.screenshots_dir.exists():
+                    screenshot_files = list(self.screenshots_dir.glob('integrity_check_*.png'))
+                    if screenshot_files:
+                        # Get most recent file
+                        newest_screenshot = max(screenshot_files, key=lambda f: f.stat().st_mtime)
+                        
+                        print(f"   📁 Screenshot saved: {newest_screenshot}")
+                        
+                        # CRITICAL: Open screenshot for User (required by process)
+                        try:
+                            import subprocess
+                            subprocess.run(['open', str(newest_screenshot)], check=False)
+                            print(f"   🖼️ Screenshot opened for User: {newest_screenshot.name}")
+                        except Exception as e:
+                            print(f"   ⚠️ Could not auto-open screenshot: {e}")
+                            print(f"   📖 MANUAL: Please open {newest_screenshot}")
+                        
+                        return True
+                
+                print(f"   ⚠️ Working pipeline succeeded but no file found")
+                return False
+            else:
+                print(f"   ❌ Working pipeline failed: {result.get('error', 'Unknown error')}")
+                return False
             
         except Exception as e:
             print(f"\n   ❌ Screenshot error: {e}")
@@ -341,7 +341,7 @@ python python-client/trust_the_process.py --validate    # Quick validation
                 'agentType': 'ai'
             })
             
-            success = await self.capture_screenshot_internal(client)
+            success = await client.command.screenshot()
             if success:
                 print("✅ Screenshot captured successfully")
             else:

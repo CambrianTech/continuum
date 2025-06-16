@@ -1,0 +1,36 @@
+{
+  "name": "screenshot",
+  "version": "1.2.0",
+  "description": "Continuum Screenshot Command Module",
+  "type": "module",
+  "main": "index.server.js",
+  "browser": "index.client.js",
+  "exports": {
+    ".": {
+      "node": "./index.server.js",
+      "browser": "./index.client.js",
+      "default": "./index.server.js"
+    },
+    "./server": "./index.server.js",
+    "./client": "./index.client.js"
+  },
+  "files": [
+    "ScreenshotCommand.cjs",
+    "ScreenshotCommand.client.js", 
+    "ScreenshotUtils.js",
+    "index.server.js",
+    "index.client.js"
+  ],
+  "keywords": ["screenshot", "html2canvas", "continuum", "command"],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "continuum": {
+    "commandName": "screenshot",
+    "serverFiles": ["ScreenshotCommand.cjs"],
+    "clientFiles": ["ScreenshotUtils.js", "ScreenshotCommand.client.js"],
+    "capabilities": ["screenshot", "browser", "websocket"],
+    "hasTests": true,
+    "testDir": "./test"
+  }
+}

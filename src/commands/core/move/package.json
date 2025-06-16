@@ -1,0 +1,13 @@
+{
+  "name": "move",
+  "type": "module",
+  "main": "index.server.js",
+  "continuum": {
+    "commandName": "move",
+    "category": "Mouse Control",
+    "capabilities": ["mouse-control", "animation", "positioning"],
+    "dependencies": ["cliclick"],
+    "hasTests": true,
+    "testDir": "test"
+  }
+}

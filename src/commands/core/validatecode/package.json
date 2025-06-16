@@ -1,0 +1,17 @@
+{
+  "name": "validateCode",
+  "version": "1.0.0",
+  "description": "Continuum ValidateCode Command Module",
+  "type": "module",
+  "main": "index.server.js",
+  "exports": {
+    ".": {
+      "node": "./index.server.js",
+      "default": "./index.server.js"
+    }
+  },
+  "continuum": {
+    "commandName": "validateCode",
+    "capabilities": ["validation", "code-analysis", "quality"]
+  }
+}

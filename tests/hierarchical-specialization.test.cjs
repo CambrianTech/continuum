@@ -7,9 +7,9 @@ require('dotenv').config();
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const HierarchicalAdapter = require('../src/core/HierarchicalAdapter.cjs');
-const LoRAAdapter = require('../src/core/LoRAAdapter.cjs');
-const AdapterRegistry = require('../src/core/AdapterRegistry.cjs');
+const HierarchicalAdapter = require('../src/adapters/HierarchicalAdapter.cjs');
+const LoRAAdapter = require('../src/adapters/LoRAAdapter.cjs');
+const AdapterRegistry = require('../src/adapters/AdapterRegistry.cjs');
 
 async function runHierarchicalTest() {
   console.log('🏗️ Running Hierarchical Specialization Test...\n');

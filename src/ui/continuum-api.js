@@ -9,7 +9,8 @@ function initializeContinuum() {
     window.continuum = {
     version: '0.2.1987', // Will be updated dynamically
     fileVersions: {
-        'ScreenshotUtils.js': '1.0.0' // Track individual file versions
+        // Track individual file versions for public UI utilities only
+        // ScreenshotUtils.js is private to screenshot command
     },
     clientType: 'browser',
     connected: false,
@@ -121,60 +122,14 @@ function initializeContinuum() {
     
     command: {
         screenshot: function(params = {}) {
-            const {
-                selector = 'body',
-                name_prefix = 'screenshot',
-                scale = 1.0,
-                manual = false
-            } = params;
+            console.log(`📸 continuum.command.screenshot() - routing through fluent API system:`, params);
             
-            console.log(`📸 continuum.command.screenshot() called:`, params);
-            
-            const timestamp = Date.now();
-            const filename = `${name_prefix}_${timestamp}.png`;
-            
-            return new Promise((resolve, reject) => {
-                // Find target element
-                let targetElement = document.querySelector(selector);
-                if (!targetElement) {
-                    console.warn(`⚠️ Element not found: ${selector}, using body`);
-                    targetElement = document.body;
-                }
-                
-                console.log(`📸 Capturing ${selector} -> ${filename}`);
-                
-                if (typeof html2canvas === 'undefined') {
-                    const error = 'html2canvas not available';
-                    console.error(`❌ ${error}`);
-                    reject(new Error(error));
-                    return;
-                }
-                
-                if (typeof window.ScreenshotUtils !== 'undefined') {
-                    window.ScreenshotUtils.takeScreenshotAndSend(targetElement, {
-                        filename: filename,
-                        selector: selector,
-                        source: 'continuum_api'
-                    }, {
-                        scale: scale,
-                        source: 'command_api'
-                    }).then(result => {
-                        resolve({
-                            success: true,
-                            filename: filename,
-                            dimensions: result.canvas ? { width: result.canvas.width, height: result.canvas.height } : null
-                        });
-                    }).catch(error => {
-                        console.error(`❌ Screenshot failed:`, error);
-                        reject(error);
-                    });
-                } else {
-                    // Fallback if ScreenshotUtils not loaded
-                    const error = 'ScreenshotUtils not available';
-                    console.error(`❌ ${error}`);
-                    reject(new Error(error));
-                }
-            });
+            // Route through fluent API command system (proper architecture)
+            if (typeof window.ScreenshotCommandClient !== 'undefined') {
+                return window.ScreenshotCommandClient.handleAPICall(params);
+            } else {
+                return Promise.reject(new Error('ScreenshotCommandClient not available in fluent API system'));
+            }
         }
     },
     
@@ -248,26 +203,19 @@ function runBrowserValidation() {
     const versionText = versionBadge ? versionBadge.textContent.trim() : 'NO_VERSION_FOUND';
     console.log('📋 VERSION_READ_RESULT:', versionText);
     
-    // Auto screenshot if possible
-    if (typeof html2canvas !== 'undefined' && versionBadge && window.ws && window.ws.readyState === WebSocket.OPEN) {
-        console.log('📸 Auto-capturing validation screenshot...');
+    // Auto screenshot if possible - USE PROPER COMMAND SYSTEM
+    if (versionBadge && window.ws && window.ws.readyState === WebSocket.OPEN) {
+        console.log('📸 Auto-capturing validation screenshot via proper command system...');
         
-        if (typeof window.ScreenshotUtils !== 'undefined') {
-            const timestamp = Date.now();
-            const filename = `validation-screenshot-${timestamp}.png`;
-            
-            window.ScreenshotUtils.takeScreenshotAndSend(versionBadge, {
-                filename: filename,
-                source: 'browser_validation'
-            }, {
-                scale: 1,
-                source: 'validation'
-            }).then(() => {
-                console.log('  ✅ Validation screenshot sent via centralized utility');
-            }).catch(error => {
-                console.log('  ❌ Validation screenshot failed:', error.message);
-            });
-        }
+        // Use proper command routing instead of direct ScreenshotUtils access
+        const message = {
+            command: 'SCREENSHOT',
+            params: 'selector .version-badge',
+            source: 'browser_validation'
+        };
+        
+        window.ws.send(JSON.stringify(message));
+        console.log('  ✅ Validation screenshot request sent via proper command system');
     }
     
     console.log('🎯 BROWSER VALIDATION COMPLETE');

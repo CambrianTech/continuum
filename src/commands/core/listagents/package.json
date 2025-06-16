@@ -1,0 +1,14 @@
+{
+  "name": "@continuum/listagents-command",
+  "version": "1.0.0",
+  "description": "Agent discovery and status command for continuum",
+  "main": "index.server.js",
+  "type": "module",
+  "exports": {
+    ".": "./index.server.js",
+    "./server": "./index.server.js"
+  },
+  "keywords": ["continuum", "agents", "list", "discovery", "command"],
+  "author": "Continuum Team",
+  "license": "MIT"
+}

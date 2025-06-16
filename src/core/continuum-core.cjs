@@ -15,6 +15,7 @@ const ProtocolSheriff = require('./ProtocolSheriff.cjs');
 const ModelCaliber = require('./ModelCaliber.cjs');
 const VersionManager = require('./VersionManager.cjs');
 const { BrowserAdapter } = require('../adapters/BrowserAdapter.cjs');
+const ScreenshotService = require('../services/ScreenshotService.cjs');
 const { Anthropic } = require('@anthropic-ai/sdk');
 const { OpenAI } = require('openai');
 const fs = require('fs');
@@ -82,6 +83,7 @@ class ContinuumCore {
     this.protocolSheriff = new ProtocolSheriff(this.modelRegistry, this.modelCaliber);
     this.versionManager = new VersionManager(this);
     this.browserAdapter = new BrowserAdapter();
+    this.screenshotService = new ScreenshotService(this);
     
     // WebSocket management
     this.conversationThreads = new Map();

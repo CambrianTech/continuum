@@ -1,0 +1,14 @@
+{
+  "name": "@continuum/loadrooms-command",
+  "version": "1.0.0",
+  "description": "Room state management command for continuum",
+  "main": "index.server.js",
+  "type": "module",
+  "exports": {
+    ".": "./index.server.js",
+    "./server": "./index.server.js"
+  },
+  "keywords": ["continuum", "rooms", "state", "unread", "command"],
+  "author": "Continuum Team",
+  "license": "MIT"
+}

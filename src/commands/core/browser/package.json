@@ -1,0 +1,14 @@
+{
+  "name": "@continuum/browser-command",
+  "version": "1.0.0", 
+  "description": "Browser WebSocket coordination command for continuum",
+  "main": "index.server.js",
+  "type": "module",
+  "exports": {
+    ".": "./index.server.js",
+    "./server": "./index.server.js"
+  },
+  "keywords": ["continuum", "browser", "websocket", "command"],
+  "author": "Continuum Team",
+  "license": "MIT"
+}

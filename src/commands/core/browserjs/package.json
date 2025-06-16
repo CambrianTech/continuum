@@ -1,0 +1,17 @@
+{
+  "name": "browserJS",
+  "version": "1.0.0",
+  "description": "Continuum BrowserJS Command Module",
+  "type": "module",
+  "main": "index.server.js",
+  "exports": {
+    ".": {
+      "node": "./index.server.js",
+      "default": "./index.server.js"
+    }
+  },
+  "continuum": {
+    "commandName": "browserJS",
+    "capabilities": ["browser", "javascript", "execution"]
+  }
+}

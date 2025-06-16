@@ -1,0 +1,13 @@
+{
+  "name": "input",
+  "type": "module",
+  "main": "index.server.js",
+  "continuum": {
+    "commandName": "input",
+    "category": "input control",
+    "capabilities": ["mouse-control", "touch-control", "keyboard-control", "gesture-control"],
+    "dependencies": ["cliclick"],
+    "hasTests": true,
+    "testDir": "test"
+  }
+}

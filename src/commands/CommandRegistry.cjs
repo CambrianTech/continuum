@@ -32,26 +32,107 @@ class CommandRegistry {
     }
     
     const files = fs.readdirSync(dir);
+    let loadedCount = 0;
+    let errorCount = 0;
     
     for (const file of files) {
+      const filePath = path.join(dir, file);
+      const stat = fs.statSync(filePath);
+      
+      // If it's a directory, recursively load from subdirectory
+      if (stat.isDirectory()) {
+        // Skip test directories
+        if (file.includes('test') || file.includes('Test')) {
+          console.log(`⏩ Skipping test directory: ${file}`);
+          continue;
+        }
+        
+        this.loadCommandsFromDirectory(filePath);
+        continue;
+      }
+      
+      // Skip test files, utility files, and non-command files
+      if (file.includes('test') || file.includes('Test') || file.includes('-test') || 
+          file.includes('runner') || file.includes('validation-test') ||
+          file.startsWith('index.') || file.includes('Utils') || file.includes('utils') ||
+          file.includes('Config') || file.includes('config') || file.includes('Definition') ||
+          file.includes('Animator') || file.includes('Renderer') || 
+          file.includes('.client.') || file.includes('.server.')) {
+        console.log(`⏩ Skipping non-command file: ${file}`);
+        continue;
+      }
+      
       if (file.endsWith('.cjs') || file.endsWith('.js')) {
         try {
-          const CommandClass = require(path.join(dir, file));
+          // Clear require cache to ensure fresh load
+          delete require.cache[require.resolve(filePath)];
           
-          if (CommandClass.getDefinition && CommandClass.execute) {
-            const definition = CommandClass.getDefinition();
-            const commandName = definition.name.toUpperCase();
-            
-            this.commands.set(commandName, CommandClass.execute.bind(CommandClass));
-            this.definitions.set(commandName, definition);
-            
-            console.log(`📚 Loaded command: ${commandName} (${definition.category})`);
+          const CommandClass = require(filePath);
+          
+          // Validate command class structure
+          if (!CommandClass) {
+            console.warn(`⚠️ Command file ${file} exported null/undefined`);
+            continue;
           }
+          
+          if (!CommandClass.getDefinition || typeof CommandClass.getDefinition !== 'function') {
+            console.warn(`⚠️ Command ${file} missing getDefinition() method`);
+            continue;
+          }
+          
+          if (!CommandClass.execute || typeof CommandClass.execute !== 'function') {
+            console.warn(`⚠️ Command ${file} missing execute() method`);
+            continue;
+          }
+          
+          // Validate command definition
+          let definition;
+          try {
+            definition = CommandClass.getDefinition();
+          } catch (defError) {
+            console.error(`❌ Command ${file} getDefinition() failed:`, defError.message);
+            continue;
+          }
+          
+          if (!definition || !definition.name) {
+            console.error(`❌ Command ${file} has invalid definition (missing name)`);
+            continue;
+          }
+          
+          const commandName = definition.name.toUpperCase();
+          
+          // Check for duplicate commands
+          if (this.commands.has(commandName)) {
+            console.warn(`⚠️ Duplicate command: ${commandName} (overriding previous)`);
+          }
+          
+          // Register command
+          this.commands.set(commandName, CommandClass.execute.bind(CommandClass));
+          this.definitions.set(commandName, definition);
+          
+          console.log(`📚 Loaded command: ${commandName} (${definition.category || 'uncategorized'})`);
+          loadedCount++;
+          
         } catch (error) {
+          errorCount++;
           console.error(`❌ Failed to load command from ${file}:`, error.message);
+          
+          if (error.code === 'MODULE_NOT_FOUND') {
+            console.error(`   Missing dependency in ${file}. Check require() statements.`);
+            console.error(`   Full path: ${error.requireStack?.[0] || 'unknown'}`);
+          } else if (error instanceof SyntaxError) {
+            console.error(`   Syntax error in ${file}. Check JavaScript syntax.`);
+          } else {
+            console.error(`   Error details:`, error.stack);
+          }
+          
+          // Continue loading other commands instead of stopping
+          console.log(`   ⏭️ Skipping ${file} - continuing with other commands...`);
         }
       }
     }
+    
+    console.log(`📂 Directory ${path.basename(dir)}: ${loadedCount} loaded, ${errorCount} failed`);
   }
   
   getCommand(name) {

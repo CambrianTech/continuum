@@ -1,0 +1,21 @@
+{
+  "name": "help",
+  "version": "1.0.0",
+  "description": "Continuum Help Command Module", 
+  "type": "module",
+  "main": "index.server.js",
+  "exports": {
+    ".": {
+      "node": "./index.server.js",
+      "default": "./index.server.js"
+    }
+  },
+  "continuum": {
+    "commandName": "help",
+    "capabilities": ["documentation", "usage-info"],
+    "helpFile": "./help.md",
+    "aliases": ["--help", "-h"],
+    "category": "system",
+    "icon": "📖"
+  }
+}

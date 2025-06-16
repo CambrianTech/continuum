@@ -1,0 +1,13 @@
+{
+  "name": "cursor",
+  "type": "module",
+  "main": "index.server.js",
+  "continuum": {
+    "commandName": "cursor",
+    "category": "continuon control",
+    "capabilities": ["cursor-control", "visual-feedback", "continuon"],
+    "dependencies": ["websocket"],
+    "hasTests": true,
+    "testDir": "test"
+  }
+}

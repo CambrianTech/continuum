@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.1990",
+  "version": "0.2.2028",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -11,7 +11,9 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "node check-imports.cjs && jest",
+    "test": "node check-imports.cjs && jest && npm run test:commands && npm run test:functional",
+    "test:commands": "node --test src/commands/core/test/test/*.test.js",
+    "test:functional": "node --test __tests__/functional/*.test.js",
     "test:unit": "jest __tests__/unit --config jest.config.test.js --verbose",
     "test:integration": "jest __tests__/integration --config jest.config.test.js --verbose",
     "test:ai": "jest __tests__/integration/AICapabilities.test.js --config jest.config.test.js --verbose",
@@ -86,6 +88,7 @@
     "ajv": "^8.17.1",
     "dotenv": "^16.5.0",
     "glob": "^11.0.1",
+    "html2canvas": "^1.4.1",
     "inquirer": "^12.5.2",
     "node-fetch": "^3.3.2",
     "node-notifier": "^10.0.1",

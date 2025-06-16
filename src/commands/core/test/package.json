@@ -1,0 +1,22 @@
+{
+  "name": "test",
+  "version": "1.0.0",
+  "description": "Continuum Test Command Module", 
+  "type": "module",
+  "main": "index.server.js",
+  "exports": {
+    ".": {
+      "node": "./index.server.js",
+      "default": "./index.server.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "continuum": {
+    "commandName": "test",
+    "capabilities": ["testing", "validation", "unit-tests"],
+    "hasTests": true,
+    "testDir": "./test"
+  }
+}

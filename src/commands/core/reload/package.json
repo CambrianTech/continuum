@@ -1,0 +1,17 @@
+{
+  "name": "reload",
+  "version": "1.0.0",
+  "description": "Continuum Reload Command Module",
+  "type": "module",
+  "main": "index.server.js",
+  "exports": {
+    ".": {
+      "node": "./index.server.js",
+      "default": "./index.server.js"
+    }
+  },
+  "continuum": {
+    "commandName": "reload",
+    "capabilities": ["reload", "refresh", "restart"]
+  }
+}
