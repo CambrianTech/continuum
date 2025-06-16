@@ -2693,23 +2693,32 @@ class UIGenerator {
                                 
                                 if (commandText.startsWith('return ')) {
                                     // Command already has return, wrap it in async function
-                                    const asyncWrapper = new Function('return (async () => { ' + commandText + ' })();');
+                                    const asyncWrapper = new Function('', 'return (async () => { ' + commandText + ' })();');
                                     return await asyncWrapper();
                                 } else if (commandText.includes('await') || commandText.includes('Promise')) {
                                     // Contains async operations, wrap in async function
-                                    const asyncWrapper = new Function('return (async () => { return ' + commandText + ' })();');
+                                    const asyncWrapper = new Function('', 'return (async () => { try { return (' + commandText + '); } catch(e) { return ' + commandText + '; } })();');
                                     return await asyncWrapper();
                                 } else {
-                                    // Simple expression, evaluate directly
-                                    return eval(commandText);
+                                    // Simple expression, evaluate directly with proper error handling
+                                    try {
+                                        return eval('(' + commandText + ')');
+                                    } catch (evalError) {
+                                        return eval(commandText);
+                                    }
                                 }
                             } catch (error) {
                                 // If all else fails, try wrapping the entire command
                                 try {
-                                    const fallbackWrapper = new Function(data.data.command);
+                                    const fallbackWrapper = new Function('', 'return (' + data.data.command + ')');
                                     return fallbackWrapper();
                                 } catch (fallbackError) {
-                                    throw error; // Throw original error
+                                    try {
+                                        const fallbackWrapper2 = new Function('', data.data.command);
+                                        return fallbackWrapper2();
+                                    } catch (fallbackError2) {
+                                        throw error; // Throw original error
+                                    }
                                 }
                             }
                         };
