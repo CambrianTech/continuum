@@ -12,6 +12,7 @@ describe('Continuum Version Management', () => {
         // Mock continuum object
         mockContinuum = {
             fileVersions: {
+                'ScreenshotUtils.js': '1.0.0',   // Added for test consistency
                 'CommandHandler.js': '2.0.0',
                 'ComponentLoader.js': '1.0.0'
             },
@@ -126,7 +127,7 @@ describe('Continuum Version Management', () => {
                 oldScript.remove();
             }
             
-            expect(mockDocument.querySelector).toHaveBeenCalledWith('script[data-continuum-file=\"ScreenshotUtils.js\"]');
+            expect(mockDocument.querySelector).toHaveBeenCalledWith('script[data-continuum-file=\"CommandHandler.js\"]');
             expect(existingScript.remove).toHaveBeenCalled();
         });
     });
