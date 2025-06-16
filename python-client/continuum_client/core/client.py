@@ -71,6 +71,14 @@ class ContinuumClient:
                     if data.get('type') == 'js_executed' and self.js:
                         self.js.handle_ws_message(data)
                     
+                    # Route command responses to pending promises (elegant pattern)
+                    if data.get('type') == 'command_response' and hasattr(self, 'pending_commands'):
+                        command_id = data.get('commandId')
+                        if command_id and command_id in self.pending_commands:
+                            future = self.pending_commands[command_id]
+                            if not future.done():
+                                future.set_result(data.get('result', data))
+                    
                     # Route to registered message handlers
                     for handler in self.message_handlers:
                         try:
@@ -91,6 +99,55 @@ class ContinuumClient:
         """Add a custom message handler"""
         self.message_handlers.append(handler)
     
+    async def send_command(self, command: str, params: Dict = None, timeout: float = 10.0) -> Dict:
+        """
+        Send command to Continuum server using elegant promise-based protocol
+        
+        Args:
+            command: Command name (e.g., 'SCREENSHOT')
+            params: Command parameters dict
+            timeout: Command timeout in seconds
+            
+        Returns:
+            Command result dict (promise-like interface)
+        """
+        if not self.connected:
+            return {'success': False, 'error': 'Not connected to server'}
+            
+        # Create promise-like future for command response
+        future = asyncio.Future()
+        command_id = f"{command}_{asyncio.get_event_loop().time()}"
+        
+        # Store pending command (like js_executor does)
+        if not hasattr(self, 'pending_commands'):
+            self.pending_commands = {}
+        self.pending_commands[command_id] = future
+        
+        message = {
+            'type': 'command',
+            'command': command,
+            'params': params or {},
+            'commandId': command_id
+        }
+        
+        try:
+            await self.ws.send(json.dumps(message))
+            
+            # Wait for response with timeout (promise-like behavior)
+            result = await asyncio.wait_for(future, timeout=timeout)
+            
+            # Clean up pending command
+            self.pending_commands.pop(command_id, None)
+            
+            return result
+            
+        except asyncio.TimeoutError:
+            self.pending_commands.pop(command_id, None)
+            return {'success': False, 'error': f'{command} command timed out after {timeout}s'}
+        except Exception as e:
+            self.pending_commands.pop(command_id, None)
+            return {'success': False, 'error': str(e)}
+
     async def register_agent(self, agent_info: Dict) -> None:
         """
         Register as an agent with the Continuum server
