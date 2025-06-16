@@ -25,8 +25,8 @@ describe('Continuon AI Cursor Positioning - Core Logic', () => {
       const expectedX = desktopWidth * 0.33; // 633.6px
       const expectedY = desktopHeight * 0.33; // 356.4px
       
-      expect(expectedX).toBe(633.6);
-      expect(expectedY).toBe(356.4);
+      expect(Math.round(expectedX * 10) / 10).toBe(633.6);
+      expect(Math.round(expectedY * 10) / 10).toBe(356.4);
     });
     
     test('should handle small viewport sizes', () => {
@@ -68,8 +68,8 @@ describe('Continuon AI Cursor Positioning - Core Logic', () => {
     // Mock functions for testing the logic
     function calculateContinuonPosition(windowWidth, windowHeight) {
       return {
-        x: windowWidth * 0.33,
-        y: windowHeight * 0.33
+        x: Math.round((windowWidth * 0.33) * 10) / 10,
+        y: Math.round((windowHeight * 0.33) * 10) / 10
       };
     }
     

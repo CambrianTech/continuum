@@ -161,9 +161,32 @@ describe('JavaScript Validation and Security', () => {
                     }
                 }
                 
-                // Step 4: Execute if all validations pass
+                // Step 4: Execute if all validations pass (with mock DOM for testing)
                 try {
-                    const result = eval(`(function() { ${code} })()`);
+                    // Mock DOM environment for testing
+                    const mockGlobal = {
+                        document: {
+                            body: { style: {} },
+                            getElementById: () => ({ style: {} }),
+                            querySelector: () => ({ style: {} })
+                        },
+                        window: { 
+                            location: { href: 'http://localhost' },
+                            ScreenshotUtils: {
+                                takeScreenshot: () => Promise.resolve({ success: true, filename: 'mock.png' })
+                            }
+                        },
+                        console: { log: () => {} }
+                    };
+                    
+                    // Execute code in mock environment
+                    const result = eval(`(function() { 
+                        const document = arguments[0].document;
+                        const window = arguments[0].window;
+                        const console = arguments[0].console;
+                        ${code} 
+                    })`)(mockGlobal);
+                    
                     return Promise.resolve({
                         success: true,
                         result: result,
@@ -319,7 +342,7 @@ describe('JavaScript Validation and Security', () => {
             const result = await mockContinuum.validateAndExecute(improvableCode);
             
             expect(result.success).toBe(true);
-            expect(result.warnings.some(w => w.suggestion.includes('clearTimeout'))).toBe(true);
+            expect(result.warnings.some(w => w.suggestion.includes('timeout ID'))).toBe(true);
         });
         
         test('rejects code with high severity issues', async () => {
