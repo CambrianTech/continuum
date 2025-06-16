@@ -5,10 +5,66 @@
 
 // Wait for DOM and other scripts to be ready before initializing
 function initializeContinuum() {
+    console.warn('🚀 CRITICAL: initializeContinuum() called - browser API starting...');
     window.continuum = {
     version: '0.2.1987', // Will be updated dynamically
+    fileVersions: {
+        'ScreenshotUtils.js': '1.0.0' // Track individual file versions
+    },
     clientType: 'browser',
     connected: false,
+    
+    // Version-aware JavaScript reloading
+    checkVersions: function(serverVersions) {
+        const needsUpdate = [];
+        
+        for (const [filename, serverVersion] of Object.entries(serverVersions)) {
+            const currentVersion = this.fileVersions[filename];
+            if (!currentVersion || currentVersion !== serverVersion) {
+                needsUpdate.push({filename, currentVersion, serverVersion});
+            }
+        }
+        
+        return needsUpdate;
+    },
+    
+    reloadScripts: function(filesToUpdate) {
+        const promises = [];
+        
+        for (const file of filesToUpdate) {
+            console.log(`🔄 Reloading ${file.filename}: ${file.currentVersion} → ${file.serverVersion}`);
+            
+            const promise = new Promise((resolve, reject) => {
+                // Remove old script if it exists
+                const oldScript = document.querySelector(`script[data-continuum-file="${file.filename}"]`);
+                if (oldScript) {
+                    oldScript.remove();
+                }
+                
+                // Load new script
+                const script = document.createElement('script');
+                script.src = `/src/ui/utils/${file.filename}?v=${file.serverVersion}`;
+                script.setAttribute('data-continuum-file', file.filename);
+                
+                script.onload = () => {
+                    console.log(`✅ Reloaded ${file.filename} v${file.serverVersion}`);
+                    this.fileVersions[file.filename] = file.serverVersion;
+                    resolve();
+                };
+                
+                script.onerror = () => {
+                    console.error(`❌ Failed to reload ${file.filename}`);
+                    reject(new Error(`Failed to reload ${file.filename}`));
+                };
+                
+                document.head.appendChild(script);
+            });
+            
+            promises.push(promise);
+        }
+        
+        return Promise.all(promises);
+    },
     
     start: function() {
         console.log('🚀 window.continuum.start() called');
@@ -63,25 +119,70 @@ function initializeContinuum() {
         });
     },
     
+    command: {
+        screenshot: function(params = {}) {
+            const {
+                selector = 'body',
+                name_prefix = 'screenshot',
+                scale = 1.0,
+                manual = false
+            } = params;
+            
+            console.log(`📸 continuum.command.screenshot() called:`, params);
+            
+            const timestamp = Date.now();
+            const filename = `${name_prefix}_${timestamp}.png`;
+            
+            return new Promise((resolve, reject) => {
+                // Find target element
+                let targetElement = document.querySelector(selector);
+                if (!targetElement) {
+                    console.warn(`⚠️ Element not found: ${selector}, using body`);
+                    targetElement = document.body;
+                }
+                
+                console.log(`📸 Capturing ${selector} -> ${filename}`);
+                
+                if (typeof html2canvas === 'undefined') {
+                    const error = 'html2canvas not available';
+                    console.error(`❌ ${error}`);
+                    reject(new Error(error));
+                    return;
+                }
+                
+                if (typeof window.ScreenshotUtils !== 'undefined') {
+                    window.ScreenshotUtils.takeScreenshotAndSend(targetElement, {
+                        filename: filename,
+                        selector: selector,
+                        source: 'continuum_api'
+                    }, {
+                        scale: scale,
+                        source: 'command_api'
+                    }).then(result => {
+                        resolve({
+                            success: true,
+                            filename: filename,
+                            dimensions: result.canvas ? { width: result.canvas.width, height: result.canvas.height } : null
+                        });
+                    }).catch(error => {
+                        console.error(`❌ Screenshot failed:`, error);
+                        reject(error);
+                    });
+                } else {
+                    // Fallback if ScreenshotUtils not loaded
+                    const error = 'ScreenshotUtils not available';
+                    console.error(`❌ ${error}`);
+                    reject(new Error(error));
+                }
+            });
+        }
+    },
+    
     api: {
         screenshot: {
             take: function(name = 'browser-validation') {
-                const timestamp = Date.now();
-                const filename = `${name}-${timestamp}.png`;
-                console.log(`📸 Taking screenshot: ${filename}`);
-                
-                if (window.ws && window.ws.readyState === WebSocket.OPEN) {
-                    const command = {
-                        type: 'task',
-                        role: 'system',
-                        task: `[CMD:SCREENSHOT] {"format": "png", "filename": "${filename}"}`
-                    };
-                    window.ws.send(JSON.stringify(command));
-                    return filename;
-                } else {
-                    console.warn('❌ WebSocket not connected for screenshot');
-                    return null;
-                }
+                console.log(`📸 Legacy API: redirecting to continuum.command.screenshot()`);
+                return window.continuum.command.screenshot({ name_prefix: name });
             }
         },
         
@@ -94,7 +195,7 @@ function initializeContinuum() {
     }
     };
 
-    console.log('✅ window.continuum initialized');
+    console.warn('✅ CRITICAL: window.continuum initialization completed successfully!');
 }
 
 // Browser validation function - runs automatically via server trigger
@@ -150,37 +251,23 @@ function runBrowserValidation() {
     // Auto screenshot if possible
     if (typeof html2canvas !== 'undefined' && versionBadge && window.ws && window.ws.readyState === WebSocket.OPEN) {
         console.log('📸 Auto-capturing validation screenshot...');
-        html2canvas(versionBadge, {
-            allowTaint: true,
-            useCORS: true,
-            scale: 1
-        }).then(canvas => {
-            console.log('  ✅ Validation screenshot successful!');
-            console.log('  📐 Canvas size:', canvas.width + 'x' + canvas.height);
-            
-            const dataURL = canvas.toDataURL('image/png');
+        
+        if (typeof window.ScreenshotUtils !== 'undefined') {
             const timestamp = Date.now();
             const filename = `validation-screenshot-${timestamp}.png`;
             
-            const screenshotData = {
-                type: 'screenshot_data',
+            window.ScreenshotUtils.takeScreenshotAndSend(versionBadge, {
                 filename: filename,
-                dataURL: dataURL,
-                timestamp: timestamp,
-                source: 'browser_validation',
-                dimensions: {
-                    width: canvas.width,
-                    height: canvas.height
-                }
-            };
-            
-            console.log('📤 SENDING VALIDATION SCREENSHOT TO SERVER');
-            window.ws.send(JSON.stringify(screenshotData));
-            console.log('  ✅ Validation screenshot data sent to server');
-            
-        }).catch(error => {
-            console.log('  ❌ Validation screenshot failed:', error.message);
-        });
+                source: 'browser_validation'
+            }, {
+                scale: 1,
+                source: 'validation'
+            }).then(() => {
+                console.log('  ✅ Validation screenshot sent via centralized utility');
+            }).catch(error => {
+                console.log('  ❌ Validation screenshot failed:', error.message);
+            });
+        }
     }
     
     console.log('🎯 BROWSER VALIDATION COMPLETE');
@@ -277,11 +364,20 @@ document.addEventListener('continuum-ready', async function() {
 });
 
 // Initialize when DOM is ready and after other scripts load
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initializeContinuum);
-} else {
-    // DOM already loaded
-    initializeContinuum();
+try {
+    console.warn('🔧 CRITICAL: continuum-api.js starting initialization process...');
+    
+    if (document.readyState === 'loading') {
+        console.warn('⏳ DOM loading - will initialize on DOMContentLoaded');
+        document.addEventListener('DOMContentLoaded', initializeContinuum);
+    } else {
+        // DOM already loaded
+        console.warn('✅ DOM ready - initializing immediately');
+        initializeContinuum();
+    }
+    
+    console.warn('✅ CRITICAL: continuum-api.js loaded and initialization scheduled');
+} catch (error) {
+    console.error('❌ CRITICAL FAILURE: continuum-api.js initialization failed:', error.message);
+    console.error('❌ Stack trace:', error.stack);
 }
-
-console.log('✅ continuum-api.js loaded');
