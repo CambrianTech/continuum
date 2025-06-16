@@ -16,7 +16,7 @@ const __dirname = path.dirname(__filename);
 const execAsync = promisify(exec);
 
 export class BaseWidgetTest {
-  constructor(widgetName, widgetSelector, widgetPath = '..') {
+  constructor(widgetName, widgetSelector, widgetPath = '.') {
     this.widgetName = widgetName;
     this.widgetSelector = widgetSelector;
     this.widgetPath = widgetPath;

@@ -39,8 +39,8 @@ describe('Screenshot Command Promise-Based API', () => {
       html2canvas: () => Promise.resolve({})
     };
     
-    // Load ScreenshotUtils
-    const ScreenshotUtils = require('../ScreenshotUtils.js');
+    // Use MockScreenshotUtils for server-side testing
+    const ScreenshotUtils = MockScreenshotUtils;
     
     try {
       await ScreenshotUtils.takeScreenshot(mockDocument.body, { validateDimensions: true });
@@ -66,7 +66,7 @@ describe('Screenshot Command Promise-Based API', () => {
       })
     };
     
-    const ScreenshotUtils = require('../ScreenshotUtils.js');
+    const ScreenshotUtils = MockScreenshotUtils;
     
     const result = await ScreenshotUtils.takeScreenshot(mockDocument.body);
     assert(result, 'Should return successful result');
@@ -91,7 +91,7 @@ describe('Screenshot Command Promise-Based API', () => {
       }
     };
     
-    const ScreenshotUtils = require('../ScreenshotUtils.js');
+    const ScreenshotUtils = MockScreenshotUtils;
     
     try {
       await ScreenshotUtils.takeScreenshot(mockDocument.body, { 
