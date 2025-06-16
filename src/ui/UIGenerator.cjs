@@ -1936,11 +1936,11 @@ class UIGenerator {
             allAvailableAgents = agents;
             renderAgentList();
             
-            // BRIDGE: Also update any AgentSelector web components
+            // BRIDGE: Also update any UserSelector web components
             const agentSelectors = document.querySelectorAll('agent-selector');
             agentSelectors.forEach(selector => {
                 if (selector && typeof selector.updateRemoteAgents === 'function') {
-                    console.log('🔄 Updating AgentSelector component with remote agents');
+                    console.log('🔄 Updating UserSelector component with remote agents');
                     selector.updateRemoteAgents(agents.filter(agent => agent.source === 'remote'));
                 }
             });
@@ -4941,11 +4941,11 @@ Example:
     <!-- Component System -->
     <script src="/src/ui/utils/ComponentLoader.js"></script>
     <script>
-        // Initialize AgentSelector component
-        function initializeAgentSelector() {
+        // Initialize UserSelector component
+        function initializeUserSelector() {
             const agentSelector = document.getElementById('main-agent-selector');
             if (agentSelector) {
-                console.log('🪟 Initializing AgentSelector with glass submenu system');
+                console.log('🪟 Initializing UserSelector with glass submenu system');
                 
                 // Set up glass submenu event handlers
                 agentSelector.addEventListener('agent-academy-requested', (e) => {
@@ -4968,7 +4968,7 @@ Example:
                 // Set up agent selection callback
                 agentSelector.setOnAgentSelect(selectAgent);
                 
-                console.log('✅ AgentSelector glass submenu system initialized');
+                console.log('✅ UserSelector glass submenu system initialized');
             }
         }
 
@@ -4976,8 +4976,8 @@ Example:
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🔧 Component system initialized');
             
-            // Initialize AgentSelector component with glass submenu
-            setTimeout(initializeAgentSelector, 100); // Small delay to ensure component is registered
+            // Initialize UserSelector component with glass submenu
+            setTimeout(initializeUserSelector, 100); // Small delay to ensure component is registered
             
             window.componentSystemReady = true;
             document.dispatchEvent(new CustomEvent('component-system-ready'));

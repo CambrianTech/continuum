@@ -21,7 +21,7 @@ describe('Widget Iteration Functional Tests', () => {
 
     // Real UI widgets from the codebase
     const widgets = [
-      { name: 'agent_selector', selector: '[class*="agent-selector"], [class*="AgentSelector"]', component: 'AgentSelector.js' },
+      { name: 'user_selector', selector: '[class*="user-selector"], [class*="UserSelector"]', component: 'UserSelector.js' },
       { name: 'chat_area', selector: '[class*="chat-area"], [class*="ChatArea"]', component: 'ChatArea.js' },
       { name: 'status_pill', selector: '[class*="status-pill"], [class*="StatusPill"]', component: 'StatusPill.js' },
       { name: 'user_drawer', selector: '[class*="user-drawer"], [class*="UserDrawer"]', component: 'UserDrawer.js' },
@@ -62,8 +62,8 @@ describe('Widget Iteration Functional Tests', () => {
 
     const widget = { 
       name: 'agent_selector_validation', 
-      selector: '[class*="agent-selector"], [class*="AgentSelector"]',
-      component: 'AgentSelector.js',
+      selector: '[class*="user-selector"], [class*="UserSelector"]',
+      component: 'UserSelector.js',
       minWidth: 100,
       minHeight: 50
     };
