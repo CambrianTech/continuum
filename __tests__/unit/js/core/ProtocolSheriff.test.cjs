@@ -7,9 +7,33 @@ const ProtocolSheriff = require('../../../../src/core/ProtocolSheriff.cjs');
 
 describe('ProtocolSheriff', () => {
   let sheriff;
+  let mockModelRegistry;
+  let mockModelCaliber;
+  let mockAPIClient;
 
   beforeEach(() => {
-    sheriff = new ProtocolSheriff();
+    // Mock API client
+    mockAPIClient = {
+      messages: {
+        create: jest.fn()
+      }
+    };
+
+    // Mock model registry
+    mockModelRegistry = {
+      getAPIClient: jest.fn(() => mockAPIClient)
+    };
+
+    // Mock model caliber
+    mockModelCaliber = {
+      isCaliberAvailable: jest.fn(() => true),
+      getModelForCaliber: jest.fn(() => ({
+        name: 'claude-3-haiku-20240307',
+        provider: 'anthropic'
+      }))
+    };
+
+    sheriff = new ProtocolSheriff(mockModelRegistry, mockModelCaliber);
   });
 
   describe('Response Validation', () => {
@@ -17,6 +41,11 @@ describe('ProtocolSheriff', () => {
       const response = 'The weather in San Francisco on Friday will be partly cloudy with a high of 72°F.';
       const query = 'What is the weather like on Friday in San Francisco?';
       const agent = 'PlannerAI';
+
+      // Mock API to return valid response
+      mockAPIClient.messages.create.mockResolvedValue({
+        content: [{ text: 'VALID: true\nVIOLATIONS: []' }]
+      });
 
       const result = await sheriff.validateResponse(response, query, agent);
 
@@ -29,6 +58,11 @@ describe('ProtocolSheriff', () => {
       const response = 'The weather is nice, but let me tell you about my weekend trip to the mountains where I saw a bear...';
       const query = 'What is the weather like today?';
       const agent = 'GeneralAI';
+
+      // Mock API to return invalid response with violation
+      mockAPIClient.messages.create.mockResolvedValue({
+        content: [{ text: 'VALID: false\nVIOLATIONS: Off-topic content\nCORRECTION: The weather today is partly cloudy with mild temperatures.' }]
+      });
 
       const result = await sheriff.validateResponse(response, query, agent);
 

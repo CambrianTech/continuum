@@ -165,7 +165,11 @@ class PersistentStorage {
     for (const [key, value] of Object.entries(obj)) {
       if (dateFields.includes(key) && typeof value === 'string') {
         try {
-          obj[key] = new Date(value);
+          const date = new Date(value);
+          // Only convert if the date is valid
+          if (!isNaN(date.getTime())) {
+            obj[key] = date;
+          }
         } catch (error) {
           console.warn(`⚠️ Failed to convert ${key} to Date:`, error.message);
         }
