@@ -2842,19 +2842,7 @@ class UIGenerator {
                         }, 100);
                     }
                     
-                    // Strategy 4: Audio context trick (if available)
-                    if (window.AudioContext || window.webkitAudioContext) {
-                        try {
-                            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                            if (audioContext.state === 'suspended') {
-                                audioContext.resume().then(() => {
-                                    window.focus();
-                                });
-                            }
-                        } catch (e) {
-                            // Audio context not available, continue
-                        }
-                    }
+                    // Strategy 4: Simple window focus (removed AudioContext - unnecessary and causes warnings)
                     
                     // Throttle tab active message - only show once per 30 seconds
                     if (!window.lastTabActiveMsg || (now - window.lastTabActiveMsg) > 30000) {
