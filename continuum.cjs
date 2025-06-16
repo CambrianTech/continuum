@@ -57,9 +57,25 @@ function showAgentHelp() {
 QUICK START FOR FRESH AGENTS:
   continuum --help             Show full user/admin help
   continuum --agents           Show this agent-specific help
+
+📍 SETUP & LOCATIONS (Do This First):
+  🔧 Python Environment Setup:
+  cd python-client                         # Work from python-client directory
+  python -m venv .venv                     # Create venv IN python-client/.venv
+  source .venv/bin/activate                # Activate venv (required for all Python work)
+  pip install -e .                        # Install continuum-client package
+  pip install -e .[dev]                   # Install dev dependencies (pytest, etc.)
+  
+  📁 Key Directories:
+  python-client/                           # Your working directory for Python code
+  python-client/.venv/                     # Python virtual environment (you create this)
+  .continuum/screenshots/                  # Screenshots auto-saved here
+  .continuum/logs/                         # Debug logs
+  .continuum/shared/                       # Communication with Joel
+  src/                                     # JavaScript/Node.js code (edit existing files only)
   
 🚨 CRITICAL: TRUST THE PROCESS - Follow this exactly:
-  python python-client/trust_the_process.py    # Single command does everything!
+  cd python-client && python trust_the_process.py    # Single command does everything!
 
 📋 BABY STEPS DEVELOPMENT CYCLE:
   1️⃣  Clear old data: Avoid confusion/cheating
@@ -91,8 +107,14 @@ QUICK START FOR FRESH AGENTS:
   • Validate after every change
 
 📸 SCREENSHOT VALIDATION:
-  python python-client/trust_the_process.py --screenshot  # Quick screenshot
-  python python-client/trust_the_process.py --validate    # Quick validation
+  cd python-client && python trust_the_process.py --screenshot  # Quick screenshot
+  cd python-client && python trust_the_process.py --validate    # Quick validation
+
+💾 GIT WORKFLOW:
+  git status                               # Check what you've changed
+  git add [files]                          # Add only legitimate changes
+  git commit -m "Description"              # Commit when ALL success criteria pass
+  # Work from main continuum directory for git commands
 
 🔍 DEBUGGING:
   • Use logs as debugger (.continuum/logs/browser/, server logs)
