@@ -49,6 +49,93 @@ function getVersion() {
   }
 }
 
+// Show agent-specific help
+function showAgentHelp() {
+  console.log(`
+🤖 Continuum Agent Help v${getVersion()} - AI Agent Development Guide
+
+QUICK START FOR FRESH AGENTS:
+  continuum --help             Show full user/admin help
+  continuum --agents           Show this agent-specific help
+  
+🚨 CRITICAL: TRUST THE PROCESS - Follow this exactly:
+  python python-client/trust_the_process.py    # Single command does everything!
+
+📋 BABY STEPS DEVELOPMENT CYCLE:
+  1️⃣  Clear old data: Avoid confusion/cheating
+  2️⃣  Make small change: Max 50 lines, one file only  
+  3️⃣  Bump version: Auto-increment for tracking
+  4️⃣  Test immediately: Screenshot + console + validation ← AUTOMATED
+  5️⃣  Fix ANY errors: Zero tolerance for breaking system
+  6️⃣  Commit when stable: Only when everything works
+
+🛡️ SAFETY RULES (Never Break These):
+  • NEVER break the system (immediate rollback if anything fails)
+  • NEVER commit broken code (test everything first)
+  • ALWAYS increase stability (every commit improves system)
+  • ALWAYS follow surgical precision (small, careful changes)
+  • ALWAYS edit existing files (avoid creating new files)
+
+🎯 SUCCESS CRITERIA (All Must Pass):
+  • All tests pass ✅
+  • No console errors ✅
+  • Screenshots capture correctly ✅
+  • Version numbers match ✅
+  • System more stable than before ✅
+
+🏗️ ARCHITECTURE PRINCIPLES:
+  • JavaScript injection = "hot coding" (development speed only)
+  • Command APIs = elegant production approach  
+  • Promise-based patterns for WebSocket communication
+  • Clean up junk files immediately
+  • Validate after every change
+
+📸 SCREENSHOT VALIDATION:
+  python python-client/trust_the_process.py --screenshot  # Quick screenshot
+  python python-client/trust_the_process.py --validate    # Quick validation
+
+🔍 DEBUGGING:
+  • Use logs as debugger (.continuum/logs/browser/, server logs)
+  • Take screenshots after every change (visual verification)
+  • Read JavaScript console errors immediately
+  • Check version numbers in UI vs server logs
+  • Work independently - debug before asking for help
+
+📝 COMMUNICATION:
+  • Update .continuum/shared/ with findings
+  • Use .continuum/shared/claude-thoughts.md for persistent chat with Joel
+  • Continue conversation threads across agent sessions
+
+🎓 COMMAND REFERENCE:
+`);
+
+  // Dynamically load and display commands from CommandRegistry
+  try {
+    const CommandRegistry = require('./src/commands/CommandRegistry.cjs');
+    const registry = new CommandRegistry();
+    
+    console.log('  Available Commands (dynamically loaded):');
+    
+    for (const [name, definition] of registry.definitions.entries()) {
+      console.log(`    ${definition.icon} ${name} - ${definition.description}`);
+      if (definition.examples && definition.examples.length > 0) {
+        console.log(`      Example: ${definition.examples[0]}`);
+      }
+    }
+  } catch (error) {
+    console.log('  Commands: Run continuum to see dynamically loaded command list');
+  }
+
+  console.log(`
+📖 FULL PROCESS DOCUMENTATION:
+  cat .continuum/process.md                # Complete methodology guide
+  continuum --help                         # User/admin documentation
+  
+Remember: This process ensures system stability and bootstraps future agents.
+Any agent can follow this exactly and be productive immediately.
+`);
+}
+
 // Show help
 function showHelp() {
   console.log(`
@@ -57,7 +144,8 @@ function showHelp() {
 USAGE:
   continuum                    Start the Academy web interface
   continuum --version         Show version information
-  continuum --help            Show this help message
+  continuum --help            Show this help message (users/admins)
+  continuum --agents          Show agent-specific development help
   continuum --port <number>   Specify custom port (default: 9000)
   continuum --restart         Force restart the server (kill existing instance)
   continuum --daemon          Run as daemon (detached background process)
@@ -404,6 +492,12 @@ function main() {
   // Handle version flag
   if (flags.has('version') || flags.has('v')) {
     console.log(`continuum v${getVersion()}`);
+    process.exit(0);
+  }
+  
+  // Handle agents flag (agent-specific help)
+  if (flags.has('agents')) {
+    showAgentHelp();
     process.exit(0);
   }
   

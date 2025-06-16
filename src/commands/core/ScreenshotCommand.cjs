@@ -1,11 +1,9 @@
 /**
- * Screenshot Command - Elegant implementation following CommandInterface protocol
+ * Screenshot Command - Elegant implementation following command protocol
  * Captures browser screenshots with precise control and consistent API
  */
 
-const CommandInterface = require('../interfaces/CommandInterface.cjs');
-
-class ScreenshotCommand extends CommandInterface {
+class ScreenshotCommand {
   static getDefinition() {
     return {
       name: 'SCREENSHOT',
