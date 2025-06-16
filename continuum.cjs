@@ -74,11 +74,14 @@ FEATURES:
 🚨 AGENT DEVELOPMENT PROCESS (TRUST THE PROCESS):
   ⚠️  CRITICAL: Follow this methodology to ensure system stability ⚠️
   
-  📋 Baby Steps Development Cycle:
+  🎯 SIMPLE COMMAND FOR FRESH AGENTS:
+  python python-client/trust_the_process.py    # Single function call does it all!
+  
+  📋 Baby Steps Development Cycle (Automated):
   1️⃣  Clear old data: Delete .continuum/screenshots/ (avoid cheating/confusion)
   2️⃣  Make small change: Max 50 lines, single file only
   3️⃣  Bump version: Auto-increment build number for tracking
-  4️⃣  Test immediately: Screenshot + console check + unit tests
+  4️⃣  Test immediately: Screenshot + console check + unit tests ← AUTOMATED
   5️⃣  Fix ANY errors: Zero tolerance for breaking the system
   6️⃣  Commit when stable: Only when everything works perfectly
   
@@ -114,7 +117,12 @@ FEATURES:
   4️⃣  pip install -e .
   5️⃣  pip install -e .[dev]
   
-  🔄 Daily Usage:
+  🔄 Daily Usage (Simple):
+  cd python-client && python trust_the_process.py    # Full integrity check
+  cd python-client && python trust_the_process.py --screenshot  # Quick screenshot
+  cd python-client && python trust_the_process.py --validate    # Quick validation
+  
+  🔄 Daily Usage (Advanced):
   cd python-client && source .venv/bin/activate && python continuum_client.py Claude
 
 DEBUGGING:
