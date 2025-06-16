@@ -98,10 +98,13 @@ FEATURES:
   • ALWAYS increase stability (every commit should improve the system)
   • ALWAYS follow surgical precision (small, careful changes only)
   
-  📝 Documentation:
+  📝 Documentation & Communication:
   • Update .continuum/shared/ with findings and progress
   • Share screenshots with team when debugging
   • Document what worked/didn't work for future agents
+  • Use .continuum/shared/claude-thoughts.md to communicate with Joel
+  • Update claude-thoughts.md regularly until built-in chat system is ready
+  • Joel monitors claude-thoughts.md file and responds there
   
   🎯 Success Criteria:
   • All tests pass ✅
