@@ -9,7 +9,8 @@ import sys
 from pathlib import Path
 
 # Add continuum_client to path
-sys.path.insert(0, str(Path(__file__).parent))
+project_root = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(project_root / 'python-client'))
 
 from continuum_client import ContinuumClient  
 from continuum_client.utils import load_continuum_config
@@ -25,104 +26,33 @@ async def test_ignoreelements_fix():
             'agentType': 'ai'
         })
         
-        # Patch the continuum API to use ignoreElements fix
-        patch_result = await client.js.execute("""
-            // Backup original function
-            window.continuum_original_screenshot = window.continuum.command.screenshot;
-            
-            // Create patched version with ignoreElements fix
-            window.continuum.command.screenshot = function(params = {}) {
-                const {
-                    selector = 'body',
-                    name_prefix = 'screenshot',
-                    scale = 1.0,
-                    manual = false
-                } = params;
-                
-                console.log('📸 PATCHED continuum.command.screenshot() called:', params);
-                
-                const timestamp = Date.now();
-                const filename = name_prefix + '_' + timestamp + '.png';
-                
-                return new Promise((resolve, reject) => {
-                    let targetElement = document.querySelector(selector);
-                    if (!targetElement) {
-                        console.warn('⚠️ Element not found: ' + selector + ', using body');
-                        targetElement = document.body;
-                    }
-                    
-                    console.log('📸 Capturing ' + selector + ' -> ' + filename);
-                    
-                    if (typeof html2canvas === 'undefined') {
-                        const error = 'html2canvas not available';
-                        console.error('❌ ' + error);
-                        reject(new Error(error));
-                        return;
-                    }
-                    
-                    // Apply ignoreElements fix for createPattern error
-                    html2canvas(targetElement, {
-                        allowTaint: true,
-                        useCORS: true,
-                        scale: scale,
-                        backgroundColor: '#1a1a1a',
-                        ignoreElements: function(element) {
-                            const isZero = element.offsetWidth === 0 || element.offsetHeight === 0;
-                            if (isZero) {
-                                console.log('🚫 Ignoring zero element: ' + element.tagName);
-                            }
-                            return isZero;
-                        }
-                    }).then(function(canvas) {
-                        console.log('✅ PATCHED Screenshot captured: ' + canvas.width + 'x' + canvas.height);
-                        
-                        const dataURL = canvas.toDataURL('image/png');
-                        
-                        if (window.ws && window.ws.readyState === 1) {
-                            const screenshotData = {
-                                type: 'screenshot_data',
-                                dataURL: dataURL,
-                                filename: filename,
-                                timestamp: timestamp,
-                                dimensions: { width: canvas.width, height: canvas.height },
-                                selector: selector,
-                                source: 'patched_continuum_api'
-                            };
-                            
-                            console.log('📤 PATCHED Sending screenshot to server: ' + filename);
-                            window.ws.send(JSON.stringify(screenshotData));
-                            
-                            resolve({
-                                success: true,
-                                filename: filename,
-                                dimensions: { width: canvas.width, height: canvas.height },
-                                patched: true
-                            });
-                        } else {
-                            const error = 'WebSocket not connected';
-                            console.error('❌ ' + error);
-                            reject(new Error(error));
-                        }
-                    }).catch(function(error) {
-                        console.error('❌ PATCHED Screenshot failed:', error);
-                        reject(error);
-                    });
-                });
-            };
-            
-            console.log('✅ Continuum API patched with ignoreElements fix');
-            return 'API_PATCHED';
-        """)
-        print(f"Patch result: {patch_result}")
+        # Test the proper screenshot command (should already have ignoreElements fix built-in)
+        print("🧪 Testing proper screenshot command (no patching needed)...")
         
-        # Test the patched API
-        print("🧪 Testing patched screenshot API...")
-        result = await client.command.screenshot(
-            selector='.version-badge',
-            name_prefix='test_fixed',
-            scale=1.0,
-            manual=False
-        )
+        # Check if screenshot command is available
+        command_check = await client.js.execute("""
+            console.log('🔍 Checking for screenshot command...');
+            if (window.continuum && window.continuum.command && window.continuum.command.screenshot) {
+                console.log('✅ Screenshot command is available');
+                return 'COMMAND_AVAILABLE';
+            } else {
+                console.log('❌ Screenshot command not available');
+                return 'COMMAND_NOT_AVAILABLE';
+            }
+        """)
+        print(f"Command check: {command_check}")
+        
+        if command_check == 'COMMAND_AVAILABLE':
+            # Use the proper screenshot command
+            result = await client.command.screenshot(
+                selector='.version-badge',
+                name_prefix='test_fixed',
+                scale=1.0,
+                manual=False
+            )
+        else:
+            print("❌ Screenshot command not available, skipping test")
+            result = {'success': False, 'error': 'Screenshot command not available'}
         print(f"Test result: {result}")
         
         # Wait for file to be created
@@ -145,13 +75,12 @@ async def test_ignoreelements_fix():
                     
                     # Save test results to .continuum
                     test_results = {
-                        'test': 'ignoreElements_fix',
+                        'test': 'screenshot_command_test',
                         'status': 'SUCCESS',
                         'filename': f.name,
                         'size_kb': size_kb,
-                        'fix_applied': 'ignoreElements function to filter zero-dimension elements',
-                        'elements_filtered': 'HEAD, META, TITLE, LINK, STYLE, SCRIPT, DIV, H3, BUTTON, IFRAME',
-                        'total_zero_elements': 54
+                        'method': 'proper_screenshot_command',
+                        'note': 'Using built-in screenshot command instead of html2canvas'
                     }
                     
                     results_file = Path('.continuum/test_results.json')

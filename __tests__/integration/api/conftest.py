@@ -6,7 +6,14 @@ Shared fixtures and utilities for integration testing
 import pytest
 import asyncio
 import logging
+import sys
+from pathlib import Path
 from typing import Generator
+
+# Add continuum_client to path
+project_root = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(project_root / 'python-client'))
+
 from continuum_client import ContinuumServerManager
 
 # Configure test logging

@@ -239,8 +239,8 @@ async def comprehensive_validation():
                     timestamp: Date.now(),
                     userAgent: navigator.userAgent,
                     websocket: !!window.ws && window.ws.readyState === 1,
-                    html2canvas: typeof html2canvas !== 'undefined',
-                    dependencies_loaded: typeof html2canvas !== 'undefined' && !!window.ws
+                    screenshot_command: !!(window.continuum && window.continuum.command && window.continuum.command.screenshot),
+                    dependencies_loaded: !!(window.continuum && window.continuum.command && window.continuum.command.screenshot) && !!window.ws
                 };
             """)
             
@@ -267,25 +267,26 @@ async def comprehensive_validation():
                 else:
                     print(f'⚠️ Console errors found: {error_data["error_count"]}')
             
-            # Screenshot capture using working approach
+            # Screenshot capture using proper screenshot command
             screenshot_result = await client.js.execute("""
-                console.log('📸 COMPREHENSIVE: Screenshot test starting...');
-                if (typeof html2canvas !== 'undefined' && window.ws) {
-                    var element = document.querySelector('.version-badge') || document.body;
-                    html2canvas(element, {allowTaint: true, useCORS: true}).then(function(canvas) {
-                        var dataURL = canvas.toDataURL('image/png');
-                        var message = {
-                            type: 'screenshot_data',
-                            dataURL: dataURL,
-                            filename: '${testSessionId}/comprehensive_test.png',
-                            timestamp: Date.now()
-                        };
-                        window.ws.send(JSON.stringify(message));
-                        console.log('✅ Comprehensive screenshot sent');
-                    });
-                    return 'SCREENSHOT_STARTED';
+                console.log('📸 COMPREHENSIVE: Screenshot test using proper command...');
+                if (window.continuum && window.continuum.command && window.continuum.command.screenshot) {
+                    try {
+                        const result = window.continuum.command.screenshot({
+                            selector: '.version-badge',
+                            name_prefix: 'comprehensive_test',
+                            scale: 1.0,
+                            manual: false
+                        });
+                        console.log('✅ Comprehensive screenshot command executed');
+                        return 'SCREENSHOT_STARTED';
+                    } catch (error) {
+                        console.error('❌ Screenshot command failed:', error);
+                        return 'SCREENSHOT_FAILED';
+                    }
                 } else {
-                    return 'MISSING_DEPS';
+                    console.error('❌ Screenshot command not available');
+                    return 'MISSING_COMMAND';
                 }
             """)
             

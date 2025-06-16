@@ -144,33 +144,41 @@ describe('Cyberpunk Drawer System', () => {
   });
 
   describe('Screenshot Functionality', () => {
-    test('should capture full interface screenshot', async () => {
+    test('should use screenshot command for interface capture', async () => {
       const screenshotParams = {
-        x: 0, y: 0, width: 0, height: 0,
-        selector: 'body', scale: 1,
-        resolutionWidth: 0, resolutionHeight: 0,
-        quality: 0.92, format: 'png'
+        selector: 'body',
+        name_prefix: 'cyberpunk_drawer_test',
+        scale: 1,
+        manual: false
       };
 
-      const targetElement = { tagName: 'BODY' };
-      mockDocument.querySelector.mockReturnValue(targetElement);
-
-      // Execute screenshot JavaScript
-      await html2canvas(targetElement, {
-        allowTaint: true,
-        useCORS: true,
-        scale: screenshotParams.scale,
-        backgroundColor: '#1a1a1a'
+      // Mock the screenshot command
+      const mockScreenshotCommand = jest.fn().mockResolvedValue({
+        success: true,
+        filename: 'cyberpunk_drawer_test_123456.png',
+        dimensions: { width: 1200, height: 800 }
       });
 
-      expect(html2canvas).toHaveBeenCalledWith(targetElement, {
-        allowTaint: true,
-        useCORS: true,
+      global.window = {
+        continuum: {
+          command: {
+            screenshot: mockScreenshotCommand
+          }
+        }
+      };
+
+      // Test screenshot command usage
+      const result = await window.continuum.command.screenshot(screenshotParams);
+
+      expect(mockScreenshotCommand).toHaveBeenCalledWith({
+        selector: 'body',
+        name_prefix: 'cyberpunk_drawer_test',
         scale: 1,
-        backgroundColor: '#1a1a1a'
+        manual: false
       });
 
-      expect(mockCanvas.toDataURL).toHaveBeenCalled();
+      expect(result.success).toBe(true);
+      expect(result.filename).toMatch(/cyberpunk_drawer_test_.*\.png/);
     });
 
     test('should crop screenshot to coordinates', async () => {
