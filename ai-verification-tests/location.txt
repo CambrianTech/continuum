@@ -1,2 +1,0 @@
-Current working directory: /Users/joel/Development/ideem/vHSM/externals/continuum/ai-verification-tests
-Parent: /Users/joel/Development/ideem/vHSM/externals/continuum
