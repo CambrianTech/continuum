@@ -1,3 +1,0 @@
-Line 1: Original
-Line 2: MODIFIED
-Line 3: Original
