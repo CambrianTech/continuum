@@ -38,9 +38,9 @@ describe('initCommand', () => {
   
   beforeEach(() => {
     // Setup mocks
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
+     
     consoleLogMock = jest.spyOn(console, 'log').mockImplementation(() => { /* empty for testing */ });
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
+     
     consoleErrorMock = jest.spyOn(console, 'error').mockImplementation(() => { /* empty for testing */ });
     
     // Reset all mock data
@@ -69,9 +69,9 @@ describe('initCommand', () => {
     (writeConfigFile as jest.Mock).mockResolvedValue(undefined);
     
     // Provide empty function implementations for mock console functions
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
+     
     jest.spyOn(console, 'log').mockImplementation(() => { /* empty for testing */ });
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
+     
     jest.spyOn(console, 'error').mockImplementation(() => { /* empty for testing */ });
     
     // Mock inquirer responses

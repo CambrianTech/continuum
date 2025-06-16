@@ -107,7 +107,7 @@ export class ClaudeAdapter implements ConfigAdapter {
       // Handle known extensions
       if (config.extensions.compliance) {
         prompt += `Compliance requirements:\n`;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         const compliance = config.extensions.compliance as { standards?: string[], enforcement?: string };
         
         if (compliance.standards?.length) {
@@ -121,7 +121,7 @@ export class ClaudeAdapter implements ConfigAdapter {
       
       if (config.extensions.security) {
         prompt += `\nSecurity requirements:\n`;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         const security = config.extensions.security as { prevent_vulnerabilities?: string[], security_first?: boolean };
         
         if (security.prevent_vulnerabilities?.length) {
@@ -131,7 +131,7 @@ export class ClaudeAdapter implements ConfigAdapter {
       
       if (config.extensions.tdd) {
         prompt += `\nTest-Driven Development requirements:\n`;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         const tdd = config.extensions.tdd as { test_first?: boolean, coverage_target?: number, frameworks?: string[] };
         
         if (tdd.test_first) {

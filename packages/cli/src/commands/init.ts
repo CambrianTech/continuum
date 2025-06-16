@@ -155,7 +155,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
             { name: 'HIPAA', value: 'HIPAA' },
             { name: 'PCI-DSS', value: 'PCI-DSS' }
           ],
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           default: ((baseConfig.extensions?.compliance || {}) as Record<string, unknown>).standards || []
         },
         {
