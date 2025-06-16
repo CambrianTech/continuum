@@ -8,7 +8,7 @@ jest.mock('chalk', () => ({
 
 // Mock the internal modules with their own imports
 jest.mock('../src/index', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+   
   const { Command } = require('commander');
   const program = new Command();
   program.name('continuum')
