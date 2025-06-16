@@ -255,6 +255,16 @@ python python-client/trust_the_process.py --validate    # Quick validation
                         f.write(image_bytes)
                     
                     print(f"\n   📁 Screenshot saved: {screenshot_path}")
+                    
+                    # CRITICAL: Open screenshot for User (required by process)
+                    try:
+                        import subprocess
+                        subprocess.run(['open', str(screenshot_path)], check=False)
+                        print(f"   🖼️ Screenshot opened for User: {screenshot_path.name}")
+                    except Exception as e:
+                        print(f"   ⚠️ Could not auto-open screenshot: {e}")
+                        print(f"   📖 MANUAL: Please open {screenshot_path}")
+                    
                     return True
                     
             return False
