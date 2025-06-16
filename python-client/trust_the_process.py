@@ -59,6 +59,48 @@ class TrustTheProcess:
         
         print("   ✅ Old data cleared")
         
+    async def update_shared_documentation(self, status="in_progress", findings=None):
+        """Update .continuum/shared/ with current status and findings"""
+        print("📝 Updating shared documentation...")
+        
+        shared_dir = self.base_dir / '.continuum' / 'shared'
+        shared_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Update process status file
+        status_file = shared_dir / 'process_status.md'
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        status_content = f"""# Process Status - {timestamp}
+
+## Current Status: {status.upper()}
+
+## Locations:
+- Screenshots: `.continuum/screenshots/` 
+- Logs: `.continuum/logs/browser/`
+- Shared notes: `.continuum/shared/`
+
+## Last Integrity Check:
+- Timestamp: {timestamp}
+- Agent: trust_the_process.py
+- Status: {status}
+
+## Findings:
+{findings or "Running integrity check..."}
+
+## Quick Commands:
+```bash
+python python-client/trust_the_process.py    # Full check
+python python-client/trust_the_process.py --screenshot  # Quick screenshot
+python python-client/trust_the_process.py --validate    # Quick validation
+```
+"""
+        
+        with open(status_file, 'w') as f:
+            f.write(status_content)
+            
+        print(f"   📄 Updated: {status_file}")
+        print("   ✅ Shared documentation updated")
+        
     async def test_immediately(self):
         """Step 4: Test immediately with screenshot + console check + validation"""
         print("🧪 Step 4: Testing immediately...")
@@ -88,8 +130,10 @@ class TrustTheProcess:
                 print("   🤖 Agent validation... ", end="", flush=True)
                 validation_result = await client.js.execute("""
                     console.log('🧪 TRUST THE PROCESS: Agent validation test');
+                    const versionElement = document.querySelector('.version-badge');
+                    const versionText = versionElement ? versionElement.textContent.trim() : 'unknown';
                     return {
-                        version: window.continuumVersion || 'unknown',
+                        version: versionText.replace('v', '') || 'unknown',
                         timestamp: Date.now(),
                         userAgent: navigator.userAgent,
                         websocket: !!window.ws && window.ws.readyState === 1
@@ -252,8 +296,15 @@ class TrustTheProcess:
         print("=" * 50)
         
         await self.clear_old_data()
+        await self.update_shared_documentation("testing", "Starting integrity check...")
+        
         criteria = await self.test_immediately()
         success = await self.check_success_criteria(criteria)
+        
+        # Update shared documentation with results
+        status = "success" if success else "needs_attention"
+        findings = self._format_criteria_findings(criteria)
+        await self.update_shared_documentation(status, findings)
         
         print("\n📋 PROCESS COMPLETE")
         if success:
@@ -262,6 +313,15 @@ class TrustTheProcess:
             print("🔴 SYSTEM NEEDS ATTENTION")
             
         return success
+    
+    def _format_criteria_findings(self, criteria):
+        """Format success criteria for documentation"""
+        findings = "## Success Criteria Results:\n"
+        for criterion, passed in criteria.items():
+            status = "✅ PASS" if passed else "❌ FAIL"
+            readable_name = criterion.replace('_', ' ').title()
+            findings += f"- {status}: {readable_name}\n"
+        return findings
     
     async def quick_screenshot(self):
         """Just take a screenshot for verification"""
