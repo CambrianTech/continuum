@@ -1,0 +1,14 @@
+{
+  "name": "@continuum/joinroom-command",
+  "version": "1.0.0",
+  "description": "Room subscription command for continuum",
+  "main": "index.server.js",
+  "type": "module",
+  "exports": {
+    ".": "./index.server.js",
+    "./server": "./index.server.js"
+  },
+  "keywords": ["continuum", "join", "room", "subscribe", "command"],
+  "author": "Continuum Team",
+  "license": "MIT"
+}

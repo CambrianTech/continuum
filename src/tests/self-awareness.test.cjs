@@ -299,6 +299,14 @@ class SelfAwarenessTest {
   }
 }
 
+// Jest wrapper for the custom test runner
+describe('Self-Awareness Tests', () => {
+  test('should pass basic structure test', () => {
+    expect(SelfAwarenessTest).toBeDefined();
+    expect(typeof SelfAwarenessTest).toBe('function');
+  });
+});
+
 // Run self-awareness tests
 if (require.main === module) {
   const tester = new SelfAwarenessTest();

@@ -47,6 +47,8 @@ class HttpServer {
       await this.handleDebugRequest(res);
     } else if (req.method === 'GET' && url.pathname.startsWith('/components/')) {
       await this.handleComponentRequest(url, res);
+    } else if (req.method === 'GET' && url.pathname.startsWith('/node_modules/')) {
+      await this.handleNodeModulesRequest(url, res);
     } else if (req.method === 'GET' && url.pathname.endsWith('.js')) {
       await this.handleJavaScriptRequest(url, res);
     } else if (req.method === 'GET' && url.pathname === '/version') {
@@ -133,6 +135,47 @@ class HttpServer {
     console.log(`❌ JS file not found: ${url.pathname}`);
     res.writeHead(404);
     res.end('JavaScript file not found');
+  }
+
+  async handleNodeModulesRequest(url, res) {
+    const fs = require('fs');
+    const path = require('path');
+    
+    try {
+      // Strip /node_modules/ prefix and resolve to actual node_modules directory
+      const moduleFilePath = url.pathname.substring('/node_modules/'.length);
+      const fullPath = path.join(__dirname, '..', '..', 'node_modules', moduleFilePath);
+      
+      console.log(`📦 Attempting to serve: ${url.pathname} -> ${fullPath}`);
+      
+      if (fs.existsSync(fullPath)) {
+        const content = fs.readFileSync(fullPath);
+        
+        // Set appropriate content type based on file extension
+        const ext = path.extname(fullPath).toLowerCase();
+        let contentType = 'application/octet-stream';
+        
+        if (ext === '.js') {
+          contentType = 'application/javascript';
+        } else if (ext === '.css') {
+          contentType = 'text/css';
+        } else if (ext === '.json') {
+          contentType = 'application/json';
+        }
+        
+        res.writeHead(200, { 'Content-Type': contentType });
+        res.end(content);
+        console.log(`✅ Served node_modules file: ${moduleFilePath}`);
+      } else {
+        console.log(`❌ Node module file not found: ${fullPath}`);
+        res.writeHead(404);
+        res.end('Node module file not found');
+      }
+    } catch (error) {
+      console.error('Error serving node_modules file:', error);
+      res.writeHead(500);
+      res.end('Server error');
+    }
   }
 
   async handleComponentRequest(url, res) {

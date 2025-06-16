@@ -1,0 +1,17 @@
+{
+  "name": "preferences",
+  "version": "1.0.0",
+  "description": "Continuum Preferences Command Module",
+  "type": "module",
+  "main": "index.server.js",
+  "exports": {
+    ".": {
+      "node": "./index.server.js",
+      "default": "./index.server.js"
+    }
+  },
+  "continuum": {
+    "commandName": "preferences",
+    "capabilities": ["preferences", "settings", "configuration"]
+  }
+}

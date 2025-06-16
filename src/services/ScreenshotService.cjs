@@ -41,6 +41,11 @@ class ScreenshotService {
       fs.writeFileSync(screenshotPath, base64Image, 'base64');
       
       console.log(`📸 Screenshot saved: ${screenshotPath}`);
+      
+      // Use centralized SHARE command
+      const ShareCommand = require('../commands/core/ShareCommand.cjs');
+      await ShareCommand.share(screenshotPath, 'user');
+      
       return {
         success: true,
         path: screenshotPath,
@@ -57,6 +62,7 @@ class ScreenshotService {
       };
     }
   }
+  
 
   /**
    * Take screenshot and provide feedback to user

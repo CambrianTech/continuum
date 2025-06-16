@@ -27,6 +27,9 @@ class ContinuumClient:
         self.connected = False
         self.message_handlers = []
         
+        # Universal command interface - initialized after connection
+        self.command = None
+        
     async def connect(self) -> None:
         """
         Connect to Continuum WebSocket server
@@ -47,6 +50,10 @@ class ContinuumClient:
             
             # Start message handling loop
             asyncio.create_task(self._message_loop())
+            
+            # Initialize universal command interface after connection
+            from .command_interface import CommandInterface
+            self.command = CommandInterface(self)
             
         except Exception as e:
             raise ConnectionError(f"Failed to connect to {self.url}: {str(e)}")
@@ -72,12 +79,24 @@ class ContinuumClient:
                         self.js.handle_ws_message(data)
                     
                     # Route command responses to pending promises (elegant pattern)
-                    if data.get('type') == 'command_response' and hasattr(self, 'pending_commands'):
-                        command_id = data.get('commandId')
-                        if command_id and command_id in self.pending_commands:
-                            future = self.pending_commands[command_id]
-                            if not future.done():
-                                future.set_result(data.get('result', data))
+                    # Handle both command_response and response types for task-based commands
+                    if (data.get('type') in ['command_response', 'response']) and hasattr(self, 'pending_commands'):
+                        # For task-based commands, we need to match by recent timestamp
+                        # Since server doesn't echo commandId for task responses
+                        if self.pending_commands and data.get('type') == 'response':
+                            # Get most recent pending command (task-based approach)
+                            recent_command_id = max(self.pending_commands.keys()) if self.pending_commands else None
+                            if recent_command_id:
+                                future = self.pending_commands[recent_command_id]
+                                if not future.done():
+                                    future.set_result(data)
+                        else:
+                            # Traditional command_response with commandId
+                            command_id = data.get('commandId')
+                            if command_id and command_id in self.pending_commands:
+                                future = self.pending_commands[command_id]
+                                if not future.done():
+                                    future.set_result(data.get('result', data))
                     
                     # Route to registered message handlers
                     for handler in self.message_handlers:
@@ -123,10 +142,12 @@ class ContinuumClient:
             self.pending_commands = {}
         self.pending_commands[command_id] = future
         
+        # Use task format that server expects (like other command integrations)
+        params_str = json.dumps(params or {})
         message = {
-            'type': 'command',
-            'command': command,
-            'params': params or {},
+            'type': 'task',
+            'role': 'system',
+            'task': f'[CMD:{command}] {params_str}',
             'commandId': command_id
         }
         
@@ -147,6 +168,40 @@ class ContinuumClient:
         except Exception as e:
             self.pending_commands.pop(command_id, None)
             return {'success': False, 'error': str(e)}
+    
+    async def screenshot(self, selector='body', name_prefix='screenshot', scale=1.0) -> Dict:
+        """
+        Elegant screenshot capture using Continuum SCREENSHOT command
+        
+        Args:
+            selector: CSS selector for target element (default: 'body' for full page)
+            name_prefix: Prefix for filename (default: 'screenshot')
+            scale: Scale factor for capture (default: 1.0)
+            
+        Returns:
+            Dict with success status, filename, and server response
+        """
+        params = {
+            'selector': selector,
+            'name_prefix': name_prefix,
+            'scale': scale,
+            'source': 'python_client'
+        }
+        
+        result = await self.send_command('SCREENSHOT', params)
+        
+        if result.get('success'):
+            return {
+                'success': True,
+                'message': 'Screenshot captured via elegant SCREENSHOT command',
+                'server_response': result
+            }
+        else:
+            return {
+                'success': False,
+                'error': f"Screenshot command failed: {result.get('error', 'Unknown error')}",
+                'server_response': result
+            }
 
     async def register_agent(self, agent_info: Dict) -> None:
         """

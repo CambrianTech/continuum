@@ -1,0 +1,17 @@
+{
+  "name": "saveFile",
+  "version": "1.0.0",
+  "description": "Continuum SaveFile Command Module",
+  "type": "module",
+  "main": "index.server.js",
+  "exports": {
+    ".": {
+      "node": "./index.server.js",
+      "default": "./index.server.js"
+    }
+  },
+  "continuum": {
+    "commandName": "saveFile",
+    "capabilities": ["file-saving", "storage", "persistence"]
+  }
+}

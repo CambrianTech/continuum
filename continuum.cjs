@@ -11,10 +11,10 @@
 const fs = require('fs');
 const path = require('path');
 
-// Parse command line arguments
+// Parse command line arguments for new command pattern
 function parseArgs() {
   const args = process.argv.slice(2);
-  const flags = new Set();
+  const commands = [];
   const options = {};
   
   for (let i = 0; i < args.length; i++) {
@@ -28,14 +28,19 @@ function parseArgs() {
         options[flagName] = args[i + 1];
         i++; // Skip next arg since we consumed it
       } else {
-        flags.add(flagName);
+        // Convert flags to commands
+        commands.push(flagName);
       }
     } else if (arg.startsWith('-')) {
-      flags.add(arg.slice(1));
+      // Convert short flags to commands
+      commands.push(arg.slice(1));
+    } else {
+      // Direct command name
+      commands.push(arg);
     }
   }
   
-  return { flags, options, args };
+  return { commands, options, args };
 }
 
 // Get package version
@@ -49,114 +54,103 @@ function getVersion() {
   }
 }
 
-// Show agent-specific help
-function showAgentHelp() {
-  console.log(`
-🤖 Continuum Agent Help v${getVersion()} - AI Agent Development Guide
-
-QUICK START FOR FRESH AGENTS:
-  continuum --help             Show full user/admin help
-  continuum --agents           Show this agent-specific help
-
-📍 SETUP & LOCATIONS (Do This First):
-  🔧 Python Environment Setup:
-  cd python-client                         # Work from python-client directory
-  python -m venv .venv                     # Create venv IN python-client/.venv
-  source .venv/bin/activate                # Activate venv (required for all Python work)
-  pip install -e .                        # Install continuum-client package
-  pip install -e .[dev]                   # Install dev dependencies (pytest, etc.)
+// Command executor with modular architecture
+async function executeCommands(commands, options) {
+  // Initialize core module
+  const CoreModule = require('./src/modules/CoreModule.cjs');
+  const coreModule = new CoreModule();
+  await coreModule.initialize();
   
-  📁 Key Directories:
-  python-client/                           # Your working directory for Python code
-  python-client/.venv/                     # Python virtual environment (you create this)
-  .continuum/screenshots/                  # Screenshots auto-saved here
-  .continuum/logs/                         # Debug logs
-  .continuum/shared/                       # Communication with Joel
-  src/                                     # JavaScript/Node.js code (edit existing files only)
-  
-🚨 CRITICAL: TRUST THE PROCESS - Follow this exactly:
-  cd python-client && python trust_the_process.py    # Single command does everything!
-
-📋 BABY STEPS DEVELOPMENT CYCLE:
-  1️⃣  Clear old data: Avoid confusion/cheating
-  2️⃣  Make small change: Max 50 lines, one file only  
-  3️⃣  Bump version: Auto-increment for tracking
-  4️⃣  Test immediately: Screenshot + console + validation ← AUTOMATED
-  5️⃣  Fix ANY errors: Zero tolerance for breaking system
-  6️⃣  Commit when stable: Only when everything works
-
-🛡️ SAFETY RULES (Never Break These):
-  • NEVER break the system (immediate rollback if anything fails)
-  • NEVER commit broken code (test everything first)
-  • ALWAYS increase stability (every commit improves system)
-  • ALWAYS follow surgical precision (small, careful changes)
-  • ALWAYS edit existing files (avoid creating new files)
-
-🎯 SUCCESS CRITERIA (All Must Pass):
-  • All tests pass ✅
-  • No console errors ✅
-  • Screenshots capture correctly ✅
-  • Version numbers match ✅
-  • System more stable than before ✅
-
-🏗️ ARCHITECTURE PRINCIPLES:
-  • JavaScript injection = "hot coding" (development speed only)
-  • Command APIs = elegant production approach  
-  • Promise-based patterns for WebSocket communication
-  • Clean up junk files immediately
-  • Validate after every change
-
-📸 SCREENSHOT VALIDATION:
-  cd python-client && python trust_the_process.py --screenshot  # Quick screenshot
-  cd python-client && python trust_the_process.py --validate    # Quick validation
-
-💾 GIT WORKFLOW:
-  git status                               # Check what you've changed
-  git add [files]                          # Add only legitimate changes
-  git commit -m "Description"              # Commit when ALL success criteria pass
-  # Work from main continuum directory for git commands
-
-🔍 DEBUGGING:
-  • Use logs as debugger (.continuum/logs/browser/, server logs)
-  • Take screenshots after every change (visual verification)
-  • Read JavaScript console errors immediately
-  • Check version numbers in UI vs server logs
-  • Work independently - debug before asking for help
-
-📝 COMMUNICATION:
-  • Update .continuum/shared/ with findings
-  • Use .continuum/shared/claude-thoughts.md for persistent chat with Joel
-  • Continue conversation threads across agent sessions
-
-🎓 COMMAND REFERENCE:
-`);
-
-  // Dynamically load and display commands from CommandRegistry
-  try {
-    const CommandRegistry = require('./src/commands/CommandRegistry.cjs');
-    const registry = new CommandRegistry();
+  const commandMap = {
+    // Core module commands
+    'help': () => coreModule.getCommand('help'),
+    'h': () => coreModule.getCommand('help'),
+    'agents': () => coreModule.getCommand('agents'),
+    'diagnostics': () => coreModule.getCommand('diagnostics'),
+    'test': () => coreModule.getCommand('diagnostics'),  // Alias
+    'restart': () => coreModule.getCommand('restart'),
     
-    console.log('  Available Commands (dynamically loaded):');
-    
-    for (const [name, definition] of registry.definitions.entries()) {
-      console.log(`    ${definition.icon} ${name} - ${definition.description}`);
-      if (definition.examples && definition.examples.length > 0) {
-        console.log(`      Example: ${definition.examples[0]}`);
+    // Built-in commands
+    'version': () => ({ 
+      execute: () => {
+        console.log(`continuum v${getVersion()}`);
+        return Promise.resolve({ success: true, message: 'Version displayed' });
       }
-    }
-  } catch (error) {
-    console.log('  Commands: Run continuum to see dynamically loaded command list');
-  }
-
-  console.log(`
-📖 FULL PROCESS DOCUMENTATION:
-  cat .continuum/process.md                # Complete methodology guide
-  continuum --help                         # User/admin documentation
+    }),
+    'v': () => ({ 
+      execute: () => {
+        console.log(`continuum v${getVersion()}`);
+        return Promise.resolve({ success: true, message: 'Version displayed' });
+      }
+    }),
+    
+    // Special handling
+    'daemon': () => ({ 
+      execute: () => Promise.resolve({ success: true, message: 'Daemon handled in main()' })
+    })
+  };
   
-Remember: This process ensures system stability and bootstraps future agents.
-Any agent can follow this exactly and be productive immediately.
-`);
+  // If no commands, start the main interface
+  if (commands.length === 0) {
+    return startMainInterface(options);
+  }
+  
+  // Execute commands in sequence (promise chaining)
+  let results = [];
+  
+  for (const commandName of commands) {
+    try {
+      const commandFactory = commandMap[commandName];
+      
+      if (!commandFactory) {
+        console.error(`❌ Unknown command: ${commandName}`);
+        process.exit(1);
+      }
+      
+      const CommandClass = commandFactory();
+      const result = await CommandClass.execute(JSON.stringify(options), null);
+      results.push(result);
+      
+      // If command failed, stop execution
+      if (!result.success) {
+        console.error(`❌ Command '${commandName}' failed:`, result.message);
+        process.exit(1);
+      }
+      
+    } catch (error) {
+      console.error(`❌ Error executing '${commandName}':`, error);
+      process.exit(1);
+    }
+  }
+  
+  return results;
 }
+
+// Start main Continuum interface
+async function startMainInterface(options) {
+  const Continuum = require('./src/core/continuum-core.cjs');
+  
+  // Add idle timeout support - default 30 minutes for foreground, 60 for background
+  const idleTimeoutMinutes = parseInt(options['idle-timeout']) || 30;
+  const finalOptions = { 
+    ...options, 
+    idleTimeout: idleTimeoutMinutes > 0 ? idleTimeoutMinutes * 60 * 1000 : 0 
+  };
+  
+  // User-kind messaging
+  console.log('🚀 Starting Continuum Academy...');
+  console.log(`🌐 Web interface: http://localhost:${options.port || process.env.CONTINUUM_PORT || '9000'}`);
+  console.log(`⏰ Auto-shutdown after ${idleTimeoutMinutes} minutes of inactivity`);
+  console.log('🛰️ Agent portal: Run "js-send" commands while server is active');
+  console.log('💡 Use "continuum --daemon" for background operation');
+  console.log('📚 Need help? Run "continuum.help()"');
+  console.log('');
+  
+  const continuum = new Continuum(finalOptions);
+  
+  return continuum.start();
+}
+
 
 // Show help
 function showHelp() {
@@ -168,6 +162,8 @@ USAGE:
   continuum --version         Show version information
   continuum --help            Show this help message (users/admins)
   continuum --agents          Show agent-specific development help
+  continuum --test            Run built-in system tests (isolated, fresh logs)
+  continuum --test --screenshot  Test screenshot system only  
   continuum --port <number>   Specify custom port (default: 9000)
   continuum --restart         Force restart the server (kill existing instance)
   continuum --daemon          Run as daemon (detached background process)
@@ -185,7 +181,7 @@ FEATURES:
   ⚠️  CRITICAL: Follow this methodology to ensure system stability ⚠️
   
   📖 COMPLETE PROCESS GUIDE:
-  cat .continuum/process.md                     # Full baby steps methodology
+  cat process.md                               # Full baby steps methodology
   
   🎯 SIMPLE COMMAND FOR FRESH AGENTS:
   python python-client/trust_the_process.py    # Single function call does it all!
@@ -469,7 +465,7 @@ async function forceRestart(options) {
 }
 
 // Start as daemon
-function startDaemon(options, flags) {
+function startDaemon(options, commands) {
   const { spawn } = require('child_process');
   const path = require('path');
   
@@ -487,6 +483,10 @@ function startDaemon(options, flags) {
   }
   
   // Don't pass --daemon flag to child process to avoid infinite recursion
+  const filteredCommands = commands.filter(cmd => cmd !== 'daemon');
+  for (const cmd of filteredCommands) {
+    args.push('--' + cmd);
+  }
   
   // Create daemon process
   const daemon = spawn(process.execPath, [__filename, ...args], {
@@ -507,68 +507,69 @@ function startDaemon(options, flags) {
   process.exit(0);
 }
 
-// Main CLI handler
-function main() {
-  const { flags, options } = parseArgs();
+// Run built-in system tests
+async function runBuiltInTests(flags, options) {
+  console.log('🧪 CONTINUUM BUILT-IN SYSTEM TESTS');
+  console.log('=' * 50);
   
-  // Handle version flag
-  if (flags.has('version') || flags.has('v')) {
-    console.log(`continuum v${getVersion()}`);
-    process.exit(0);
+  const { spawn } = require('child_process');
+  const path = require('path');
+  
+  // Determine test type
+  let testScript = 'isolated_test_suite.py';
+  if (flags.has('screenshot')) {
+    testScript = 'fresh_log_test.py';
   }
   
-  // Handle agents flag (agent-specific help)
-  if (flags.has('agents')) {
-    showAgentHelp();
-    process.exit(0);
-  }
+  const pythonClientDir = path.join(__dirname, 'python-client');
+  const testPath = path.join(pythonClientDir, testScript);
   
-  // Handle help flag
-  if (flags.has('help') || flags.has('h')) {
-    showHelp();
-    process.exit(0);
-  }
-  
-  // Handle restart flag
-  if (flags.has('restart')) {
-    forceRestart(options).catch(error => {
-      console.error('❌ Failed to restart Continuum:', error);
-      process.exit(1);
-    });
-    return;
-  }
-  
-  // Handle daemon mode
-  if (flags.has('daemon')) {
-    startDaemon(options, flags);
-    return;
-  }
-  
-  // Start the full Continuum system
-  const Continuum = require('./src/core/continuum-core.cjs');
-  
-  // Add idle timeout support - default 30 minutes for foreground, 60 for background
-  const idleTimeoutMinutes = parseInt(options['idle-timeout']) || 30;
-  const finalOptions = { 
-    ...options, 
-    idleTimeout: idleTimeoutMinutes > 0 ? idleTimeoutMinutes * 60 * 1000 : 0 
-  };
-  
-  // User-kind messaging
-  console.log('🚀 Starting Continuum Academy...');
-  console.log(`🌐 Web interface: http://localhost:${options.port || process.env.CONTINUUM_PORT || '9000'}`);
-  console.log(`⏰ Auto-shutdown after ${idleTimeoutMinutes} minutes of inactivity`);
-  console.log('🛰️ Agent portal: Run "js-send" commands while server is active');
-  console.log('💡 Use "continuum --daemon" for background operation');
-  console.log('📚 Need help? Run "continuum --help"');
+  console.log(`📝 Running: ${testScript}`);
+  console.log(`📁 Directory: ${pythonClientDir}`);
+  console.log('🔒 Tests use isolated subdirectories and fresh logs');
+  console.log('✨ No false confidence from old files!');
   console.log('');
   
-  const continuum = new Continuum(finalOptions);
-  
-  continuum.start().catch(error => {
-    console.error('❌ Failed to start Continuum:', error);
-    process.exit(1);
+  return new Promise((resolve, reject) => {
+    const testProcess = spawn('python3', [testPath], {
+      cwd: pythonClientDir,
+      stdio: 'inherit'
+    });
+    
+    testProcess.on('close', (code) => {
+      if (code === 0) {
+        console.log('\n🎉 Built-in tests completed successfully!');
+        resolve();
+      } else {
+        console.log('\n❌ Built-in tests failed!');
+        reject(new Error(`Test process exited with code ${code}`));
+      }
+    });
+    
+    testProcess.on('error', (error) => {
+      console.error('\n❌ Failed to run test process:', error);
+      reject(error);
+    });
   });
+}
+
+// Main CLI handler
+async function main() {
+  const { commands, options } = parseArgs();
+  
+  try {
+    // Handle daemon mode specially since it needs to spawn a detached process
+    if (commands.includes('daemon')) {
+      return startDaemon(options, commands);
+    }
+    
+    // Execute commands using the new promise-based pattern
+    await executeCommands(commands, options);
+    
+  } catch (error) {
+    console.error('❌ Command execution failed:', error);
+    process.exit(1);
+  }
 }
 
 // Run main function if this file is executed directly

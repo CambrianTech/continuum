@@ -1,0 +1,14 @@
+{
+  "name": "@continuum/chat-command",
+  "version": "1.0.0",
+  "description": "Multi-agent chat orchestration command for continuum",
+  "main": "index.server.js",
+  "type": "module",
+  "exports": {
+    ".": "./index.server.js",
+    "./server": "./index.server.js"
+  },
+  "keywords": ["continuum", "chat", "multi-agent", "command"],
+  "author": "Continuum Team",
+  "license": "MIT"
+}

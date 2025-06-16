@@ -1,0 +1,13 @@
+{
+  "name": "type",
+  "type": "module",
+  "main": "index.server.js",
+  "continuum": {
+    "commandName": "type",
+    "category": "keyboard control",
+    "capabilities": ["keyboard-control", "text-input", "natural-timing"],
+    "dependencies": ["cliclick"],
+    "hasTests": true,
+    "testDir": "test"
+  }
+}

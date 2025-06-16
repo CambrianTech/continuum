@@ -4979,8 +4979,7 @@ Example:
         ${this.academyInterface.generateAcademyJS()}
     </script>
 
-    <!-- External Libraries -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <!-- External Libraries will be loaded dynamically by commands as needed -->
     
     <!-- Component System -->
     <script src="/src/ui/utils/ComponentLoader.js"></script>

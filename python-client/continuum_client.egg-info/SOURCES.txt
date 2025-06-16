@@ -5,7 +5,6 @@ claude_debugger/main.py
 claude_debugger/connection/__init__.py
 claude_debugger/connection/websocket_connection.py
 claude_debugger/managers/__init__.py
-claude_debugger/managers/screenshot_manager.py
 claude_debugger/managers/server_log_manager.py
 claude_debugger/validation/__init__.py
 claude_debugger/validation/connection_validator.py
@@ -18,4 +17,5 @@ continuum_client.egg-info/requires.txt
 continuum_client.egg-info/top_level.txt
 continuum_client/utils/__init__.py
 continuum_client/utils/config.py
+continuum_client/utils/screenshot.py
 continuum_client/utils/server_manager.py

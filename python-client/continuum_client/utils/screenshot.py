@@ -18,28 +18,10 @@ class ScreenshotCapture:
     Supports intelligent naming and automatic file management
     """
     
-    def __init__(self, screenshots_dir: Optional[Path] = None):
-        """
-        Initialize screenshot capture utility
-        
-        Args:
-            screenshots_dir: Directory to save screenshots (default: .continuum/screenshots)
-        """
-        if screenshots_dir is None:
-            # Auto-detect .continuum/screenshots directory
-            current_dir = Path.cwd()
-            while current_dir.parent != current_dir:
-                continuum_dir = current_dir / '.continuum' / 'screenshots'
-                if continuum_dir.parent.exists():
-                    screenshots_dir = continuum_dir
-                    break
-                current_dir = current_dir.parent
-            
-            if screenshots_dir is None:
-                screenshots_dir = Path('.continuum/screenshots')
-        
-        self.screenshots_dir = Path(screenshots_dir)
-        self.screenshots_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self):
+        """Initialize screenshot capture utility - continuum core handles all paths"""
+        # Minimal path for client-side operations - server handles actual saving
+        self.screenshots_dir = Path('.continuum/screenshots')
     
     async def capture_by_selector(
         self, 
@@ -240,14 +222,50 @@ class ScreenshotCapture:
 
 # Convenience functions for common use cases
 async def capture_version_badge(client: ContinuumClient) -> Dict[str, Any]:
-    """Capture version badge screenshot with elegant naming"""
-    capture = ScreenshotCapture()
-    return await capture.capture_by_selector(
-        client, 
-        selector='.version-badge', 
-        name_prefix='version',
-        scale=2.0
-    )
+    """Capture version badge screenshot using WORKING pipeline"""
+    # Use the SAME approach as working integrity check
+    result = await client.js.execute("""
+        console.log('📸 WORKING PIPELINE: Capturing version badge');
+        var versionElement = document.querySelector('.version-badge');
+        if (versionElement) {
+            html2canvas(versionElement, {
+                allowTaint: true,
+                useCORS: true,
+                scale: 2,
+                backgroundColor: '#1a1a1a'
+            }).then(function(canvas) {
+                var dataURL = canvas.toDataURL('image/png');
+                var timestamp = Date.now();
+                var filename = 'version_badge_' + timestamp + '.png';
+                
+                if (window.ws && window.ws.readyState === 1) {
+                    window.ws.send(JSON.stringify({
+                        type: 'screenshot_data',
+                        dataURL: dataURL,
+                        filename: filename,
+                        timestamp: timestamp
+                    }));
+                    console.log('✅ Version sent via WebSocket');
+                }
+            });
+            return 'SUCCESS';
+        } else {
+            return 'ELEMENT_NOT_FOUND';
+        }
+    """)
+    
+    if result.get('success') and result.get('result') == 'SUCCESS':
+        return {
+            'success': True,
+            'message': 'Version screenshot captured using working pipeline',
+            'pipeline': 'working'
+        }
+    else:
+        return {
+            'success': False,
+            'error': 'Version screenshot failed',
+            'result': result
+        }
 
 
 async def capture_users_agents(client: ContinuumClient) -> Dict[str, Any]:

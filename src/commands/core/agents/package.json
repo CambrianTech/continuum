@@ -1,0 +1,58 @@
+{
+  "name": "agents",
+  "version": "1.0.0",
+  "description": "Continuum Agents Command Module",
+  "type": "module",
+  "main": "index.server.js",
+  "exports": {
+    ".": {
+      "node": "./index.server.js",
+      "default": "./index.server.js"
+    }
+  },
+  "continuum": {
+    "commandName": "agents",
+    "capabilities": ["agent-management", "discovery"],
+    "helpFile": "./agents.md",
+    "aliases": ["--agents", "-a"],
+    "category": "agent-management",
+    "icon": "🤖",
+    "defaultAgents": [
+      {
+        "id": "auto",
+        "name": "Auto",
+        "description": "Intelligent agent selection",
+        "type": "system",
+        "capabilities": ["task-routing", "agent-selection"]
+      },
+      {
+        "id": "claude",
+        "name": "Claude",
+        "description": "Anthropic's Claude AI",
+        "type": "ai",
+        "capabilities": ["conversation", "analysis", "coding"]
+      },
+      {
+        "id": "gpt",
+        "name": "GPT",
+        "description": "OpenAI's GPT models",
+        "type": "ai",
+        "capabilities": ["conversation", "generation", "reasoning"]
+      },
+      {
+        "id": "gemini",
+        "name": "Gemini",
+        "description": "Google's Gemini AI",
+        "type": "ai",
+        "capabilities": ["multimodal", "reasoning", "search"]
+      },
+      {
+        "id": "local",
+        "name": "Local",
+        "description": "Local AI models",
+        "type": "local",
+        "capabilities": ["privacy", "offline", "custom"]
+      }
+    ]
+  }
+}
