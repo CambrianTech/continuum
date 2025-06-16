@@ -9,7 +9,8 @@ import sys
 from pathlib import Path
 
 # Add continuum_client to path
-sys.path.insert(0, str(Path(__file__).parent))
+project_root = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(project_root / 'python-client'))
 
 from continuum_client import ContinuumClient  
 from continuum_client.utils import load_continuum_config
@@ -26,60 +27,47 @@ async def test_users_widget():
             'agentType': 'ai'
         })
         
-        # Use EXACT same JavaScript as working version badge but target users widget
-        result = await client.js.execute("""
-            console.log('📸 WORKING PIPELINE: Capturing users widget');
-            
-            // Find users widget using multiple selectors
-            const selectors = [
-                '[class*="user"]',
-                '[class*="agent"]', 
-                '[id*="user"]',
-                '[id*="agent"]',
-                '#sidebar',
-                '.sidebar',
-                'body'  // fallback
-            ];
-            
-            let targetElement = null;
-            let targetSelector = null;
-            
-            for (const selector of selectors) {
-                const element = document.querySelector(selector);
-                if (element && element.offsetWidth > 0 && element.offsetHeight > 0) {
-                    targetElement = element;
-                    targetSelector = selector;
-                    console.log('📸 Found target:', selector, element.offsetWidth + 'x' + element.offsetHeight);
-                    break;
-                }
-            }
-            
-            if (targetElement) {
-                html2canvas(targetElement, {
-                    allowTaint: true,
-                    useCORS: true,
-                    scale: 2,
-                    backgroundColor: '#1a1a1a'
-                }).then(function(canvas) {
-                    var dataURL = canvas.toDataURL('image/png');
-                    var timestamp = Date.now();
-                    var filename = 'users_widget_' + timestamp + '.png';
+        # Use proper screenshot command instead of direct html2canvas
+        print("📸 Using proper screenshot command for users widget")
+        
+        # Try multiple selectors for users widget
+        selectors = [
+            '[class*="user"]',
+            '[class*="agent"]', 
+            '[id*="user"]',
+            '[id*="agent"]',
+            '#sidebar',
+            '.sidebar',
+            'body'  # fallback
+        ]
+        
+        result = None
+        for selector in selectors:
+            try:
+                result = await client.js.execute(f"""
+                    if (window.continuum && window.continuum.command && window.continuum.command.screenshot) {{
+                        console.log('📸 Using continuum.command.screenshot for: {selector}');
+                        return window.continuum.command.screenshot({{
+                            selector: '{selector}',
+                            name_prefix: 'users_widget_test',
+                            scale: 2.0,
+                            manual: false
+                        }});
+                    }} else {{
+                        console.log('❌ Screenshot command not available');
+                        return 'NO_SCREENSHOT_COMMAND';
+                    }}
+                """)
+                
+                if result and result.get('success'):
+                    print(f"✅ Screenshot successful with selector: {selector}")
+                    break
+                else:
+                    print(f"❌ Screenshot failed with selector: {selector}")
                     
-                    if (window.ws && window.ws.readyState === 1) {
-                        window.ws.send(JSON.stringify({
-                            type: 'screenshot_data',
-                            dataURL: dataURL,
-                            filename: filename,
-                            timestamp: timestamp
-                        }));
-                        console.log('✅ Users widget sent via WebSocket');
-                    }
-                });
-                return 'SUCCESS';
-            } else {
-                return 'ELEMENT_NOT_FOUND';
-            }
-        """)
+            except Exception as e:
+                print(f"❌ Error with selector {selector}: {e}")
+                continue
         
         print(f'Result: {result}')
         

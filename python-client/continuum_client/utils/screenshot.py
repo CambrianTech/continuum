@@ -51,97 +51,25 @@ class ScreenshotCapture:
             selector_name = self._selector_to_name(selector)
             filename = f'{name_prefix}_{selector_name}_{timestamp}.{format}'
             
-            # Use proven working approach from trust_the_process.py
-            if selector == 'body':
-                # Full page capture - use working selectors for agents section
-                screenshot_js = """
-                console.log('📸 Elegant full page capture');
+            # Use proper screenshot command instead of direct html2canvas
+            screenshot_js = f"""
+                console.log('📸 Using continuum.command.screenshot for: {selector}');
                 
-                const selectors = [
-                    '[id*="agent"]',
-                    '[class*="agent"]', 
-                    '#sidebar',
-                    '.sidebar',
-                    '[class*="user"]'
-                ];
-                
-                let targetElement = null;
-                let targetSelector = null;
-                
-                for (const selector of selectors) {
-                    const element = document.querySelector(selector);
-                    if (element && element.offsetWidth > 0 && element.offsetHeight > 0) {
-                        targetElement = element;
-                        targetSelector = selector;
-                        break;
-                    }
-                }
-                
-                if (!targetElement) {
-                    targetElement = document.body;
-                    targetSelector = 'body';
-                }
-                
-                console.log('📸 Capturing', targetSelector);
-                
-                return new Promise((resolve) => {
-                    html2canvas(targetElement, {
-                        allowTaint: true,
-                        useCORS: true,
-                        scale: 1,
-                        backgroundColor: '#1a1a1a'
-                    }).then(function(canvas) {
-                        const dataURL = canvas.toDataURL('image/png');
-                        resolve({
-                            success: true,
-                            dataURL: dataURL,
-                            width: canvas.width,
-                            height: canvas.height,
-                            selector: targetSelector
-                        });
-                    }).catch(function(error) {
-                        console.error('📸 Screenshot failed:', error);
-                        resolve({
-                            success: false,
-                            error: error.message
-                        });
-                    });
-                });
-                """
-            else:
-                # Specific selector capture
-                screenshot_js = f"""
-                console.log('📸 Elegant selector capture: {selector}');
-                
-                const targetElement = document.querySelector('{selector}');
-                if (!targetElement) {{
-                    return {{success: false, error: 'Selector not found: {selector}'}};
-                }}
-                
-                return new Promise((resolve) => {{
-                    html2canvas(targetElement, {{
-                        allowTaint: true,
-                        useCORS: true,
+                if (window.continuum && window.continuum.command && window.continuum.command.screenshot) {{
+                    return window.continuum.command.screenshot({{
+                        selector: '{selector}',
+                        name_prefix: '{name_prefix}_{selector_name}',
                         scale: {scale},
-                        backgroundColor: null
-                    }}).then(function(canvas) {{
-                        const dataURL = canvas.toDataURL('image/{format}');
-                        resolve({{
-                            success: true,
-                            dataURL: dataURL,
-                            width: canvas.width,
-                            height: canvas.height,
-                            selector: '{selector}'
-                        }});
-                    }}).catch(function(error) {{
-                        console.error('📸 Screenshot failed:', error);
-                        resolve({{
-                            success: false,
-                            error: error.message
-                        }});
+                        manual: false
                     }});
-                }});
-                """
+                }} else {{
+                    console.error('❌ Screenshot command not available');
+                    return {{
+                        success: false,
+                        error: 'Screenshot command not available'
+                    }};
+                }}
+            """
             
             result = await client.js.execute(screenshot_js)
             
@@ -222,50 +150,41 @@ class ScreenshotCapture:
 
 # Convenience functions for common use cases
 async def capture_version_badge(client: ContinuumClient) -> Dict[str, Any]:
-    """Capture version badge screenshot using WORKING pipeline"""
-    # Use the SAME approach as working integrity check
+    """Capture version badge screenshot using proper screenshot command"""
+    # Use the proper screenshot command instead of html2canvas
     result = await client.js.execute("""
-        console.log('📸 WORKING PIPELINE: Capturing version badge');
-        var versionElement = document.querySelector('.version-badge');
-        if (versionElement) {
-            html2canvas(versionElement, {
-                allowTaint: true,
-                useCORS: true,
-                scale: 2,
-                backgroundColor: '#1a1a1a'
-            }).then(function(canvas) {
-                var dataURL = canvas.toDataURL('image/png');
-                var timestamp = Date.now();
-                var filename = 'version_badge_' + timestamp + '.png';
-                
-                if (window.ws && window.ws.readyState === 1) {
-                    window.ws.send(JSON.stringify({
-                        type: 'screenshot_data',
-                        dataURL: dataURL,
-                        filename: filename,
-                        timestamp: timestamp
-                    }));
-                    console.log('✅ Version sent via WebSocket');
-                }
+        console.log('📸 Using continuum.command.screenshot for version badge');
+        
+        if (window.continuum && window.continuum.command && window.continuum.command.screenshot) {
+            return window.continuum.command.screenshot({
+                selector: '.version-badge',
+                name_prefix: 'version_badge',
+                scale: 2.0,
+                manual: false
             });
-            return 'SUCCESS';
         } else {
-            return 'ELEMENT_NOT_FOUND';
+            console.error('❌ Screenshot command not available');
+            return {
+                success: false,
+                error: 'Screenshot command not available'
+            };
         }
     """)
     
-    if result.get('success') and result.get('result') == 'SUCCESS':
-        return {
-            'success': True,
-            'message': 'Version screenshot captured using working pipeline',
-            'pipeline': 'working'
-        }
-    else:
-        return {
-            'success': False,
-            'error': 'Version screenshot failed',
-            'result': result
-        }
+    if result.get('success'):
+        screenshot_result = result.get('result', {})
+        if isinstance(screenshot_result, dict) and screenshot_result.get('success'):
+            return {
+                'success': True,
+                'message': 'Version screenshot captured using screenshot command',
+                'result': screenshot_result
+            }
+    
+    return {
+        'success': False,
+        'error': 'Version screenshot failed',
+        'result': result
+    }
 
 
 async def capture_users_agents(client: ContinuumClient) -> Dict[str, Any]:

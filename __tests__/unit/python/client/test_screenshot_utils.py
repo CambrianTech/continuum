@@ -4,7 +4,14 @@ Unit tests for elegant screenshot utilities
 
 import pytest
 import asyncio
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+# Add continuum_client to path
+project_root = Path(__file__).parent.parent.parent.parent.parent
+sys.path.insert(0, str(project_root / 'python-client'))
+
 from continuum_client.utils.screenshot import ScreenshotCapture, capture_version_badge, capture_users_agents
 
 
