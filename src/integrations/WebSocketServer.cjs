@@ -161,6 +161,14 @@ class WebSocketServer extends EventEmitter {
       const data = JSON.parse(message);
       console.log('📋 PARSED MESSAGE TYPE:', data.type);
       
+      // SPECIAL DEBUG: Track screenshot_data messages
+      if (data.type === 'screenshot_data') {
+        console.log('🔥 SCREENSHOT_DATA MESSAGE DETECTED IN WEBSOCKET HANDLER!');
+        console.log('🔥 Data keys:', Object.keys(data));
+        console.log('🔥 Filename:', data.filename);
+        console.log('🔥 DataURL length:', data.dataURL ? data.dataURL.length : 'no dataURL');
+      }
+      
       if (data.type === 'tabRegister') {
         await this.tabManager.registerTab(ws, data);
         
