@@ -59,16 +59,28 @@ export ANTHROPIC_API_KEY="your-key"
 export HUGGINGFACE_API_KEY="your-key"
 ```
 
-### 3. Start Continuum Server
+### 3. Install Continuum Globally (For Developers)
 ```bash
-# Start the WebSocket server
-node continuum.cjs
+# Install continuum command globally from local code
+npm install -g .
+
+# Now you can use 'continuum' from anywhere in your terminal
+# The command will use your local development changes
+```
+
+### 4. Start Continuum Server
+```bash
+# Start the WebSocket server (from anywhere now!)
+continuum
+
+# Or using the old method:
+# node continuum.cjs
 
 # Server will start on http://localhost:9000
 # Web interface with Promise Post Office System available
 ```
 
-### 4. Train Your First Persona
+### 5. Train Your First Persona
 ```javascript
 const Academy = require('./src/core/Academy.cjs');
 const { ModelRegistry } = require('./src/core/AIModel.cjs');

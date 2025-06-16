@@ -1,4 +1,4 @@
-#!/Users/joel/Development/ideem/vHSM/externals/continuum/.continuum/venv/agents/bin/python
+#!/usr/bin/env python3
 """
 Deep Space Probe JavaScript Sender - WebSocket Edition
 Sends JavaScript to browser via WebSocket messages with base64 encoding

@@ -107,20 +107,30 @@ FEATURES:
   • Version numbers match ✅
   • System is more stable than before ✅
 
+🐍 PYTHON ENVIRONMENT SETUP (First Time):
+  1️⃣  cd python-client
+  2️⃣  python -m venv .venv
+  3️⃣  source .venv/bin/activate  # Linux/Mac OR .venv\\Scripts\\activate on Windows
+  4️⃣  pip install -e .
+  5️⃣  pip install -e .[dev]
+  
+  🔄 Daily Usage:
+  cd python-client && source .venv/bin/activate && python continuum_client.py Claude
+
 DEBUGGING:
-  🔍 Agent Debug Validation:
-     cd python-client && python continuum_client.py Claude
+  🔍 Agent Debug Validation (with proper venv):
+     cd python-client && source .venv/bin/activate && python continuum_client.py Claude
      
      Creates AgentClientConnection and triggers BrowserClientConnection validation:
      • ✅ Remote JavaScript execution capability
-     • ✅ Version reading from browser UI (v0.2.1987)  
-     • ✅ Error/warning generation in browser console
-     • ✅ Screenshot capture with full dark UI theme (187KB screenshots)
+     • ✅ Version reading from browser UI (current version)
+     • ✅ Error/warning generation in browser console  
+     • ✅ Screenshot capture with full dark UI theme (saves to .continuum/screenshots/)
      • ✅ WebSocket communication between Python agents and browser
-     • ✅ File saving to .continuum/screenshots/ directory
+     • ✅ File saving to .continuum/screenshots/ directory (not temp files!)
      
-     Screenshots automatically capture the complete dark cyberpunk UI including 
-     sidebar, chat area, and all interface elements.
+     Screenshots automatically capture complete dark cyberpunk UI and save permanently
+     to .continuum/screenshots/ for future reference and sharing.
      • Tests cross-client communication between browser and Python agent
   📸 AI screenshot capture & visual debugging (Promise Post Office System)
 

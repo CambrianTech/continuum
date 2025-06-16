@@ -1,4 +1,4 @@
-#!/Users/joel/Development/ideem/vHSM/externals/continuum/.continuum/venv/agents/bin/python
+#!/usr/bin/env python3
 """
 🛰️ CRITICAL PROBE SAFETY MANAGER
 Ensures safe communication with deep space probe (browser)
