@@ -15,6 +15,8 @@ continuum_client.egg-info/SOURCES.txt
 continuum_client.egg-info/dependency_links.txt
 continuum_client.egg-info/requires.txt
 continuum_client.egg-info/top_level.txt
+continuum_client/diagnostics/__init__.py
+continuum_client/diagnostics/self_diagnostics.py
 continuum_client/utils/__init__.py
 continuum_client/utils/config.py
 continuum_client/utils/screenshot.py
