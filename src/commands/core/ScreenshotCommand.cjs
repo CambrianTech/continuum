@@ -1,124 +1,125 @@
 /**
- * Screenshot Command
- * Captures browser screenshots with various options
+ * Screenshot Command - Elegant implementation following CommandInterface protocol
+ * Captures browser screenshots with precise control and consistent API
  */
 
-class ScreenshotCommand {
+const CommandInterface = require('../interfaces/CommandInterface.cjs');
+
+class ScreenshotCommand extends CommandInterface {
   static getDefinition() {
     return {
       name: 'SCREENSHOT',
       category: 'Core',
       icon: '📸',
-      description: 'Take screenshot of browser',
-      params: '[selector] [coordinates] [resolution] [format] [quality]',
+      description: 'Capture browser screenshot with selector precision',
+      params: '{"selector": ".element", "filename": "custom.png", "format": "png|jpeg|webp", "quality": 0.8}',
       examples: [
-        '{}',
-        '{"params": "selector .sidebar"}',
-        '{"params": "100,200,800,600"}',
-        '{"params": "1920x1080 format jpeg quality 0.8"}'
+        '{}', // Full page
+        '{"selector": ".version-badge"}', // Specific element
+        '{"selector": ".users-agents", "filename": "users.png"}', // Custom filename
+        '{"selector": "body", "format": "jpeg", "quality": 0.9}' // Custom format
       ],
-      usage: 'Captures current browser state. Use selector for specific elements, coordinates for regions, or leave empty for full page.'
+      usage: 'Elegant screenshot API with selector precision. One command, infinite possibilities.',
+      schema: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector for target element' },
+          filename: { type: 'string', description: 'Custom filename (auto-generated if omitted)' },
+          format: { type: 'string', enum: ['png', 'jpeg', 'webp'], default: 'png' },
+          quality: { type: 'number', minimum: 0.1, maximum: 1.0, default: 0.8 }
+        }
+      }
     };
   }
   
   static async execute(params, continuum) {
-    console.log('📸 SCREENSHOT COMMAND: Starting execution with params:', params);
-    console.log('📸 SCREENSHOT COMMAND: Continuum has webSocketServer:', !!continuum.webSocketServer);
+    // Parse and validate parameters using elegant CommandInterface protocol
+    const options = this.parseParams(params);
+    const validation = this.validateParams(options);
     
-    // Parse parameters
-    const options = ScreenshotCommand.parseParams(params);
-    console.log('📸 SCREENSHOT COMMAND: Parsed options:', options);
-    
-    // Send screenshot request to browser via WebSocket
-    if (continuum.webSocketServer) {
-      const screenshotData = {
-        x: options.x || 0,
-        y: options.y || 0,
-        width: options.width || 0,
-        height: options.height || 0,
-        selector: options.selector || '',
-        scale: options.scale || 1,
-        resolutionWidth: options.resolutionWidth || 0,
-        resolutionHeight: options.resolutionHeight || 0,
-        quality: options.quality || 0.92,
-        format: options.format || 'png'
-      };
-      
-      // Initialize screenshot data storage if not exists
-      if (!continuum.screenshotData) {
-        continuum.screenshotData = new Map();
-      }
-      
-      // Send screenshot request
-      console.log('📸 SCREENSHOT COMMAND: Broadcasting to WebSocket with data:', screenshotData);
-      const jsCommand = ScreenshotCommand.generateScreenshotJS(screenshotData);
-      console.log('📸 SCREENSHOT COMMAND: Generated JS command length:', jsCommand.length);
-      
-      continuum.webSocketServer.broadcast({
-        type: 'execute_js',
-        data: {
-          command: jsCommand
-        }
-      });
-      
-      console.log('📸 SCREENSHOT COMMAND: WebSocket broadcast complete');
-      
-      // Wait for screenshot data to be received (up to 10 seconds)
-      const timeout = 10000;
-      const startTime = Date.now();
-      
-      while (Date.now() - startTime < timeout) {
-        // Check if any new screenshots were captured
-        for (const [screenshotId, data] of continuum.screenshotData.entries()) {
-          if (data.capturedAt && new Date(data.capturedAt).getTime() > startTime) {
-            // Found a recent screenshot, save it using ScreenshotService
-            let saveResult = null;
-            if (continuum.screenshotService && data.dataURL) {
-              saveResult = await continuum.screenshotService.saveBrowserScreenshot(
-                data.dataURL,
-                data.filename
-              );
-            }
-            
-            const result = {
-              success: true,
-              message: saveResult && saveResult.success 
-                ? `Screenshot captured and saved: ${saveResult.filename}`
-                : 'Screenshot captured (save failed)',
-              parameters: screenshotData,
-              filename: data.filename,
-              timestamp: data.timestamp,
-              dataURL: data.dataURL,
-              screenshotId: screenshotId,
-              saved: saveResult && saveResult.success,
-              savePath: saveResult && saveResult.path
-            };
-            
-            // Clean up the stored screenshot data
-            continuum.screenshotData.delete(screenshotId);
-            
-            return result;
-          }
-        }
-        
-        // Wait 100ms before checking again
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      
-      // Timeout - return partial success
-      return {
-        success: true,
-        message: 'Screenshot command sent to browser (waiting for response timed out)',
-        parameters: screenshotData,
-        timestamp: new Date().toISOString(),
-        note: 'Screenshot may still be processing in browser'
-      };
+    if (!validation.valid) {
+      return this.createErrorResult('Invalid parameters', validation.errors);
     }
     
-    return {
-      success: false,
-      error: 'WebSocket server not available'
+    // Ensure WebSocket server availability 
+    if (!continuum.webSocketServer) {
+      return this.createErrorResult('WebSocket server not available');
+    }
+    
+    // Initialize screenshot storage elegantly
+    continuum.screenshotData = continuum.screenshotData || new Map();
+    
+    // Build capture configuration with elegant defaults
+    const captureConfig = {
+      selector: options.selector || '',
+      format: options.format || 'png',
+      quality: options.quality || 0.92,
+      scale: options.scale || 1,
+      x: options.x || 0,
+      y: options.y || 0,
+      width: options.width || 0,
+      height: options.height || 0,
+      resolutionWidth: options.resolutionWidth || 0,
+      resolutionHeight: options.resolutionHeight || 0
     };
+    
+    // Execute screenshot via WebSocket with elegant error handling
+    const jsCommand = this.generateScreenshotJS(captureConfig);
+    continuum.webSocketServer.broadcast({
+      type: 'execute_js',
+      data: { command: jsCommand }
+    });
+    
+    // Await result with elegant timeout handling
+    return await this.awaitScreenshotResult(continuum, captureConfig, 10000);
+  }
+  
+  static async awaitScreenshotResult(continuum, config, timeout) {
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < timeout) {
+      // Check for new screenshot data elegantly
+      for (const [screenshotId, data] of continuum.screenshotData.entries()) {
+        if (data.capturedAt && new Date(data.capturedAt).getTime() > startTime) {
+          // Process and save screenshot elegantly
+          const saveResult = await this.saveScreenshotData(continuum, data);
+          
+          // Clean up and return elegant success result
+          continuum.screenshotData.delete(screenshotId);
+          
+          return this.createSuccessResult({
+            filename: data.filename,
+            timestamp: data.timestamp,
+            parameters: config,
+            saved: saveResult?.success || false,
+            savePath: saveResult?.path
+          }, saveResult?.success 
+            ? `Screenshot captured and saved: ${saveResult.filename}`
+            : 'Screenshot captured (save failed)'
+          );
+        }
+      }
+      
+      // Elegant polling delay
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    // Elegant timeout response
+    return this.createSuccessResult({
+      parameters: config,
+      timestamp: new Date().toISOString(),
+      note: 'Screenshot processing in browser'
+    }, 'Screenshot command sent (awaiting browser response)');
+  }
+  
+  static async saveScreenshotData(continuum, data) {
+    if (continuum.screenshotService && data.dataURL) {
+      return await continuum.screenshotService.saveBrowserScreenshot(
+        data.dataURL,
+        data.filename
+      );
+    }
+    return null;
   }
   
   static parseParams(params) {

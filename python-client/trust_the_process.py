@@ -46,16 +46,13 @@ class TrustTheProcess:
         """Step 1: Clear old data to avoid cheating/confusion"""
         print("🧹 Step 1: Clearing old data...")
         
-        # Clear screenshots but keep a few recent ones
+        # Clear ALL screenshots to avoid cheating/confusion (per process requirement)
         if self.screenshots_dir.exists():
             screenshots = list(self.screenshots_dir.glob('*.png'))
-            if len(screenshots) > 5:
-                # Keep 3 most recent, delete rest
-                screenshots.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-                for old_screenshot in screenshots[3:]:
-                    old_screenshot.unlink()
-                    print(f"   🗑️ Removed old screenshot: {old_screenshot.name}")
-            print(f"   📁 Screenshots directory: {len(list(self.screenshots_dir.glob('*.png')))} files kept")
+            for screenshot in screenshots:
+                screenshot.unlink()
+                print(f"   🗑️ Removed old screenshot: {screenshot.name}")
+            print(f"   📁 Screenshots directory: cleared completely")
         
         print("   ✅ Old data cleared")
         
@@ -148,9 +145,9 @@ python python-client/trust_the_process.py --validate    # Quick validation
                 else:
                     print("❌")
                 
-                # Screenshot capture
+                # Screenshot capture using elegant command API
                 print("   📸 Screenshot capture... ", end="", flush=True)
-                screenshot_result = await self.capture_screenshot_internal(client)
+                screenshot_result = await self.capture_screenshot_command_api(client)
                 if screenshot_result:
                     success_criteria['screenshot_capture'] = True
                     print("✅")
@@ -180,66 +177,64 @@ python python-client/trust_the_process.py --validate    # Quick validation
             
         return success_criteria
     
-    async def capture_screenshot_internal(self, client):
-        """Internal screenshot capture for testing"""
+    async def capture_screenshot_command_api(self, client):
+        """Capture screenshot using working approach while we build elegant command API"""
         try:
-            # Find agents section and capture
-            find_and_capture_js = """
-            console.log('📸 TRUST THE PROCESS: Finding agents section...');
-            
-            const selectors = [
-                '[id*="agent"]',
-                '[class*="agent"]', 
-                '#sidebar',
-                '.sidebar',
-                '[class*="user"]'
-            ];
-            
-            let targetElement = null;
-            let targetSelector = null;
-            
-            for (const selector of selectors) {
-                const element = document.querySelector(selector);
-                if (element && element.offsetWidth > 0 && element.offsetHeight > 0) {
-                    targetElement = element;
-                    targetSelector = selector;
-                    break;
+            # Use working JS execution for now - will transition to command API when server ready
+            result = await client.js.execute("""
+                console.log('📸 Capturing users & agents section');
+                
+                const selectors = [
+                    '[id*="agent"]',
+                    '[class*="agent"]', 
+                    '#sidebar',
+                    '.sidebar',
+                    '[class*="user"]'
+                ];
+                
+                let targetElement = null;
+                let targetSelector = null;
+                
+                for (const selector of selectors) {
+                    const element = document.querySelector(selector);
+                    if (element && element.offsetWidth > 0 && element.offsetHeight > 0) {
+                        targetElement = element;
+                        targetSelector = selector;
+                        break;
+                    }
                 }
-            }
-            
-            if (!targetElement) {
-                targetElement = document.body;
-                targetSelector = 'body';
-            }
-            
-            console.log('📸 TRUST THE PROCESS: Capturing', targetSelector);
-            
-            return new Promise((resolve) => {
-                html2canvas(targetElement, {
-                    allowTaint: true,
-                    useCORS: true,
-                    scale: 1,
-                    backgroundColor: '#1a1a1a'
-                }).then(function(canvas) {
-                    const dataURL = canvas.toDataURL('image/png');
-                    resolve({
-                        success: true,
-                        dataURL: dataURL,
-                        width: canvas.width,
-                        height: canvas.height,
-                        selector: targetSelector
-                    });
-                }).catch(function(error) {
-                    console.error('📸 TRUST THE PROCESS: Screenshot failed:', error);
-                    resolve({
-                        success: false,
-                        error: error.message
+                
+                if (!targetElement) {
+                    targetElement = document.body;
+                    targetSelector = 'body';
+                }
+                
+                console.log('📸 Capturing', targetSelector);
+                
+                return new Promise((resolve) => {
+                    html2canvas(targetElement, {
+                        allowTaint: true,
+                        useCORS: true,
+                        scale: 1,
+                        backgroundColor: '#1a1a1a'
+                    }).then(function(canvas) {
+                        const dataURL = canvas.toDataURL('image/png');
+                        resolve({
+                            success: true,
+                            dataURL: dataURL,
+                            width: canvas.width,
+                            height: canvas.height,
+                            selector: targetSelector
+                        });
+                    }).catch(function(error) {
+                        console.error('📸 Screenshot failed:', error);
+                        resolve({
+                            success: false,
+                            error: error.message
+                        });
                     });
                 });
-            });
-            """
-            
-            result = await client.js.execute(find_and_capture_js)
+            """)
             
             if result['success']:
                 screenshot_data = json.loads(result['result'])
@@ -248,7 +243,7 @@ python python-client/trust_the_process.py --validate    # Quick validation
                     self.screenshots_dir.mkdir(parents=True, exist_ok=True)
                     
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    filename = f'trust_process_{timestamp}.png'
+                    filename = f'integrity_check_{timestamp}.png'
                     screenshot_path = self.screenshots_dir / filename
                     
                     # Extract base64 and save
@@ -267,6 +262,7 @@ python python-client/trust_the_process.py --validate    # Quick validation
         except Exception as e:
             print(f"\n   ❌ Screenshot error: {e}")
             return False
+    
     
     async def check_success_criteria(self, criteria):
         """Check all success criteria and provide guidance"""
