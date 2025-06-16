@@ -77,12 +77,12 @@ describe('Import Validation', () => {
 
       // Try importing core module that depends on others
       expect(() => {
-        require('../../src/core/continuum-core.cjs');
+        require('../../../../src/core/continuum-core.cjs');
       }).not.toThrow();
     });
 
     test('should allow multiple imports of the same module', () => {
-      const modulePath = '../../src/storage/PersistentStorage.cjs';
+      const modulePath = '../../../../src/storage/PersistentStorage.cjs';
       
       expect(() => {
         const first = require(modulePath);
@@ -94,9 +94,9 @@ describe('Import Validation', () => {
 
   describe('Module structure validation', () => {
     test('should export classes/functions as expected', () => {
-      const PersistentStorage = require('../../src/storage/PersistentStorage.cjs');
-      const CommandProcessor = require('../../src/core/CommandProcessor.cjs');
-      const TabManager = require('../../src/services/TabManager.cjs');
+      const PersistentStorage = require('../../../../src/storage/PersistentStorage.cjs');
+      const CommandProcessor = require('../../../../src/core/CommandProcessor.cjs');
+      const TabManager = require('../../../../src/services/TabManager.cjs');
 
       expect(typeof PersistentStorage).toBe('function');
       expect(typeof CommandProcessor).toBe('function');
@@ -104,9 +104,9 @@ describe('Import Validation', () => {
     });
 
     test('should instantiate classes without errors', () => {
-      const PersistentStorage = require('../../src/storage/PersistentStorage.cjs');
-      const CommandProcessor = require('../../src/core/CommandProcessor.cjs');
-      const TabManager = require('../../src/services/TabManager.cjs');
+      const PersistentStorage = require('../../../../src/storage/PersistentStorage.cjs');
+      const CommandProcessor = require('../../../../src/core/CommandProcessor.cjs');
+      const TabManager = require('../../../../src/services/TabManager.cjs');
 
       expect(() => {
         new PersistentStorage();

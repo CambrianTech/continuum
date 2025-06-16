@@ -74,6 +74,7 @@ describe('Continuon AI Cursor Positioning', () => {
       const homeY = window.innerHeight * 0.33; // 33% from top
       
       // Position at Continuon-style center location
+      indicator.style.position = 'fixed';
       indicator.style.left = homeX + 'px';
       indicator.style.top = homeY + 'px';
       
@@ -88,19 +89,17 @@ describe('Continuon AI Cursor Positioning', () => {
 
       console.log('🤖 AI Cursor deactivated - Continuon returning to base');
       
+      // Reset state first
+      indicator.classList.remove('ai-cursor', 'ai-cursor-click');
+      
       // Return to the same Continuon-style center position (33%, 33%)
       const homeX = window.innerWidth * 0.33;
       const homeY = window.innerHeight * 0.33;
       
-      // Set return position
+      // Set return position (keep Continuon positioning, don't restore original style)
       indicator.style.left = homeX + 'px';
       indicator.style.top = homeY + 'px';
-      
-      // Reset state
-      indicator.classList.remove('ai-cursor', 'ai-cursor-click');
-      if (global.aiCursorOriginalStyle) {
-        indicator.style.cssText = global.aiCursorOriginalStyle;
-      }
+      indicator.style.position = 'fixed'; // Ensure positioning works
       
       global.aiCursorActive = false;
       global.aiCursorOriginalParent = null;
@@ -128,8 +127,8 @@ describe('Continuon AI Cursor Positioning', () => {
       window.innerWidth = 1920;
       window.innerHeight = 1080;
       
-      const expectedX = 1920 * 0.33; // 633.6px
-      const expectedY = 1080 * 0.33; // 356.4px
+      const expectedX = Math.round((1920 * 0.33) * 10) / 10; // 633.6px
+      const expectedY = Math.round((1080 * 0.33) * 10) / 10; // 356.4px
       
       expect(expectedX).toBe(633.6);
       expect(expectedY).toBe(356.4);
