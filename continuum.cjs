@@ -71,6 +71,42 @@ FEATURES:
   📊 Real-time cost tracking and session management
   💬 Multi-provider AI integration (OpenAI, Anthropic, HuggingFace)
 
+🚨 AGENT DEVELOPMENT PROCESS (TRUST THE PROCESS):
+  ⚠️  CRITICAL: Follow this methodology to ensure system stability ⚠️
+  
+  📋 Baby Steps Development Cycle:
+  1️⃣  Clear old data: Delete .continuum/screenshots/ (avoid cheating/confusion)
+  2️⃣  Make small change: Max 50 lines, single file only
+  3️⃣  Bump version: Auto-increment build number for tracking
+  4️⃣  Test immediately: Screenshot + console check + unit tests
+  5️⃣  Fix ANY errors: Zero tolerance for breaking the system
+  6️⃣  Commit when stable: Only when everything works perfectly
+  
+  🔁 Continuous Feedback Loop:
+  • Use logs as your debugger (.continuum/logs/browser/, server logs)
+  • Take screenshots after every change (visual verification required)
+  • Read JavaScript console errors immediately (fix before proceeding)
+  • Check version numbers in UI (top right corner) vs server logs
+  • Work independently - don't ask for help until you've tried debugging
+  
+  🛡️ Safety Rules:
+  • NEVER break the system (immediate rollback if anything fails)
+  • NEVER commit broken code (test everything first)
+  • ALWAYS increase stability (every commit should improve the system)
+  • ALWAYS follow surgical precision (small, careful changes only)
+  
+  📝 Documentation:
+  • Update .continuum/shared/ with findings and progress
+  • Share screenshots with team when debugging
+  • Document what worked/didn't work for future agents
+  
+  🎯 Success Criteria:
+  • All tests pass ✅
+  • No console errors ✅ 
+  • Screenshots capture correctly ✅
+  • Version numbers match ✅
+  • System is more stable than before ✅
+
 DEBUGGING:
   🔍 Agent Debug Validation:
      cd python-client && python continuum_client.py Claude
