@@ -74,6 +74,9 @@ FEATURES:
 🚨 AGENT DEVELOPMENT PROCESS (TRUST THE PROCESS):
   ⚠️  CRITICAL: Follow this methodology to ensure system stability ⚠️
   
+  📖 COMPLETE PROCESS GUIDE:
+  cat .continuum/process.md                     # Full baby steps methodology
+  
   🎯 SIMPLE COMMAND FOR FRESH AGENTS:
   python python-client/trust_the_process.py    # Single function call does it all!
   
@@ -102,9 +105,10 @@ FEATURES:
   • Update .continuum/shared/ with findings and progress
   • Share screenshots with team when debugging
   • Document what worked/didn't work for future agents
-  • Use .continuum/shared/claude-thoughts.md to communicate with Joel
-  • Update claude-thoughts.md regularly until built-in chat system is ready
-  • Joel monitors claude-thoughts.md file and responds there
+  • Use .continuum/shared/claude-thoughts.md as persistent chat with Joel
+  • This is a bidirectional conversation - Joel writes to you here too
+  • Read entire claude-thoughts.md history to understand context across agents
+  • Continue the conversation thread - it survives context switches
   
   🎯 Success Criteria:
   • All tests pass ✅
