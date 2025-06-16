@@ -1,0 +1,56 @@
+{
+  "layout": {
+    "sidebar": {
+      "width": "300px",
+      "sections": [
+        {
+          "id": "room-tabs",
+          "type": "tabs",
+          "tabs": [
+            {"id": "general", "label": "💬 Active", "active": true},
+            {"id": "academy", "label": "🎓 Academy"}
+          ]
+        },
+        {
+          "id": "cost-tracker",
+          "type": "cost-display",
+          "title": "Session Costs"
+        },
+        {
+          "id": "widgets",
+          "type": "widget-container",
+          "widgets": [
+            {
+              "component": "active-projects",
+              "title": "Active Projects",
+              "icon": "📁"
+            },
+            {
+              "component": "saved-personas", 
+              "title": "Saved Personas",
+              "icon": "👤"
+            },
+            {
+              "component": "user-selector",
+              "title": "Users & Agents", 
+              "icon": "👥"
+            }
+          ]
+        }
+      ]
+    },
+    "main": {
+      "type": "chat-area",
+      "components": ["chat-header", "chat-container", "input-area"]
+    }
+  },
+  "theme": {
+    "colors": {
+      "primary": "#4FC3F7",
+      "secondary": "#29B6F6", 
+      "background": "#0f1419",
+      "sidebar": "#1a1f2e",
+      "text": "#e0e6ed"
+    }
+  }
+}
