@@ -116,27 +116,33 @@ class ScreenshotCommand extends BaseCommand {
       }
     };
     
-    console.log(`📸 Broadcasting screenshot command: ${generatedFilename}`);
-    continuum.webSocketServer.broadcast(screenshotMessage);
+    console.log(`📸 Sending screenshot command to browser: ${generatedFilename}`);
     
-    // For file destination, the promise completes when FileSave command finishes
-    // The WebSocket server will call FileSave command when browser sends screenshot_data
-    // This creates a proper command chain: Screenshot → Browser → WebSocket → FileSave
+    // Use proper command interface instead of direct WebSocket
+    if (continuum.commandProcessor) {
+      // Send browser command to capture screenshot
+      await continuum.commandProcessor.execute('browserjs', screenshotMessage);
+    } else {
+      // Fallback to WebSocket if command processor not available
+      continuum.webSocketServer.broadcast(screenshotMessage);
+    }
     
+    // For file destination, wait for screenshot data and save file
     if (destination === 'file') {
-      // Screenshot command initiates the process, FileSave completes it
-      return this.createSuccessResult({
-        requestId,
-        filename: generatedFilename,
-        selector,
-        scale,
-        manual,
-        source,
-        timestamp,
-        format,
-        destination,
-        message: `Screenshot initiated: ${generatedFilename} (will complete via FileSave command)`
-      }, `Screenshot command chain started: ${generatedFilename}`);
+      // Wait for browser to capture screenshot and return file save promise
+      try {
+        // This will wait for the browser to capture screenshot and call fileSave
+        const fileSaveResult = await continuum.commandProcessor.execute('fileSave', {
+          filename: generatedFilename,
+          data: 'PENDING_SCREENSHOT_DATA', // Placeholder - browser will provide actual data
+          baseDirectory: '.continuum/screenshots'
+        });
+        
+        // Return the actual file save result
+        return fileSaveResult;
+      } catch (error) {
+        return this.createErrorResult(`Screenshot failed: ${error.message}`);
+      }
     } else {
       // For bytes mode, return immediately 
       return this.createSuccessResult({

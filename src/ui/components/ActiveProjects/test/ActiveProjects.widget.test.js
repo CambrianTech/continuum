@@ -4,17 +4,20 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'url';
 import { BaseWidgetTest } from '../../shared/BaseWidget.test.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 class ActiveProjectsTest extends BaseWidgetTest {
   constructor() {
-    super('ActiveProjects', 'active-projects');
+    super('ActiveProjects', 'active-projects', '../');
   }
 
   testSidebarWidgetExtension() {
-    const fs = require('fs');
-    const path = require('path');
-    
     const widgetFile = fs.readFileSync(path.resolve(__dirname, this.widgetPath, `${this.widgetName}.js`), 'utf8');
     
     assert(widgetFile.includes('import(\'../shared/SidebarWidget.js\')'), 'Should import SidebarWidget');
@@ -26,9 +29,6 @@ class ActiveProjectsTest extends BaseWidgetTest {
   }
 
   testProjectFilteringFeatures() {
-    const fs = require('fs');
-    const path = require('path');
-    
     const widgetFile = fs.readFileSync(path.resolve(__dirname, this.widgetPath, `${this.widgetName}.js`), 'utf8');
     
     assert(widgetFile.includes('filter-tabs'), 'Should have filter tabs');
@@ -41,9 +41,6 @@ class ActiveProjectsTest extends BaseWidgetTest {
   }
 
   testProjectSpecificFeatures() {
-    const fs = require('fs');
-    const path = require('path');
-    
     const widgetFile = fs.readFileSync(path.resolve(__dirname, this.widgetPath, `${this.widgetName}.js`), 'utf8');
     
     assert(widgetFile.includes('getMockProjects'), 'Should have mock data method');
