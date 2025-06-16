@@ -74,7 +74,7 @@ async def test_widget_websocket_sync():
             print(f"WebSocket connected: {data['wsConnected']}")
             print(f"SavedPersonas present: {data['savedPersonasPresent']}")
             print(f"ActiveProjects present: {data['activeProjectsPresent']}")
-            print(f"AgentSelector present: {data['agentSelectorPresent']}")
+            print(f"UserSelector present: {data['userSelectorPresent']}")
             
             if data['wsConnected']:
                 print("✅ WebSocket connection established")

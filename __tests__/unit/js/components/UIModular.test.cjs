@@ -31,7 +31,7 @@ describe('UI Generator', () => {
     const html = generator.generateHTML();
     
     expect(html).toContain('<!DOCTYPE html>');
-    expect(html).toContain('<agent-selector>');
+    expect(html).toContain('<user-selector>');
     expect(html).toContain('chat-header');
     expect(html).toContain('chat-area');
     expect(html).toContain('<room-tabs>');
@@ -43,7 +43,7 @@ describe('UI Generator', () => {
     const generator = new UIGenerator(mockContinuum);
     const html = generator.generateHTML();
     
-    expect(html).toContain('<script src="/components/AgentSelector.js">');
+    expect(html).toContain('<script src="/components/UserSelector.js">');
     expect(html).toContain('<script src="/components/ChatHeader.js">');
     expect(html).toContain('<script src="/components/ChatArea.js">');
     expect(html).toContain('<script src="/components/RoomTabs.js">');

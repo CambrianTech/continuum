@@ -11,7 +11,15 @@ export default [
       'node_modules/**',
       'coverage/**',
       '*.config.js',
-      '**/dist/**'
+      '**/dist/**',
+      '.continuum/**',
+      'python-client/.venv/**',
+      'python-client/**/*.log',
+      'test_screenshots/**',
+      'agents/workspace/**',
+      '**/venv/**',
+      '**/env/**',
+      '**/htmlfiles/**'
     ],
     languageOptions: {
       parser: tsParser,

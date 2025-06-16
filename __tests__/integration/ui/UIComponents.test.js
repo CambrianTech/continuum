@@ -45,7 +45,7 @@ describe('UI Components Integration', () => {
     const html = ui.generateHTML();
 
     expect(html).toContain('ComponentLoader.js');
-    expect(html).toContain('AgentSelector.js');
+    expect(html).toContain('UserSelector.js');
     expect(html).toContain('component-system-ready');
   });
 

@@ -709,7 +709,7 @@ asyncio.run(test_screenshot())
         'WebSocketStreaming', 'VersionManagement', 'UIModular', 'ScreenshotIntegration',
         'ScreenshotFeedback', 'ScreenshotCommand', 'ProtocolSheriff', 'PromiseBasedAPI',
         'JSValidationCommand', 'JavaScriptValidation', 'ImportValidation', 'CyberpunkDrawer',
-        'ContinuonPositioning', 'CommandStreamer', 'CommandProcessor', 'AgentSelector',
+        'ContinuonPositioning', 'CommandStreamer', 'CommandProcessor', 'UserSelector',
         'BaseCommand', 'WidgetCapture', 'WholeScreenCapture', 'ScreenshotPipeline',
         'ModularCommandSystem', 'FullScreenCapture', 'AICapabilities', 'GroupChat', 'UIComponents'
       ];
