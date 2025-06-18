@@ -44,13 +44,31 @@ class CommandInterface:
         try:
             result = await self.client.send_command('SCREENSHOT', params)
             
-            return {
-                'success': result.get('success', False),
-                'message': result.get('message', 'Screenshot command completed'),
-                'filename': result.get('data', {}).get('filename'),
-                'path': result.get('data', {}).get('path'),
-                'server_response': result
-            }
+            # Handle both string and dict responses
+            if isinstance(result, str):
+                return {
+                    'success': True,
+                    'message': result,
+                    'filename': None,
+                    'path': None,
+                    'server_response': result
+                }
+            elif isinstance(result, dict):
+                return {
+                    'success': result.get('success', False),
+                    'message': result.get('message', 'Screenshot command completed'),
+                    'filename': result.get('data', {}).get('filename'),
+                    'path': result.get('data', {}).get('path'),
+                    'server_response': result
+                }
+            else:
+                return {
+                    'success': True,
+                    'message': str(result),
+                    'filename': None,
+                    'path': None,
+                    'server_response': result
+                }
             
         except Exception as e:
             return {
