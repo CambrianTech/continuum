@@ -31,12 +31,16 @@ Building the world's first **COMPLETELY AUTONOMOUS AI workforce construction pla
 - [x] **Unit tests** for dashboard system
 
 ### 🔄 In Progress  
+- [x] **FILES.md Structure Documentation** - Living tree with agent comments for every file
+- [ ] **CRITICAL: spawn command broken** - exec command doesn't actually execute, blocks agent observation workflow
+- [ ] **URGENT: Test Organization & Health** - Fix messy test structure, import issues, broken test discovery
+- [ ] **Dashboard Test Health Integration** - Make dashboard track and flag test organization issues  
+- [ ] **Dynamic Method Generation with Tests** - Implement `client.alert()` style API with proper unit tests
 - [ ] **Hierarchical specialization stacking** for agent training
 - [ ] **Academy enrollment system** for sending agents to training
 - [ ] Fix 8 broken foundation commands (3 completed, 5 remaining)
 - [ ] Complete README documentation for all commands
 - [ ] **Autonomous agent deployment** and lifecycle management
-- [ ] Stabilize test integration
 
 ---
 
@@ -118,6 +122,8 @@ Building the world's first **COMPLETELY AUTONOMOUS AI workforce construction pla
 ## 💡 Feature Backlog
 
 ### High Priority
+- [ ] 🧪 **Test Infrastructure Overhaul** - Organize tests, fix imports, add test health to dashboard
+- [ ] 🔗 **Universal Client API** - Dynamic method generation: `client.alert()`, `continuum.screenshot()` 
 - [ ] 📊 Command execution timing dashboard
 - [ ] 🧪 Test result history and trends
 - [ ] 📈 Git commit impact correlation
@@ -142,10 +148,11 @@ Building the world's first **COMPLETELY AUTONOMOUS AI workforce construction pla
 **Choose any item to work on! Each contribution makes the system more autonomous.**
 
 ### Immediate Impact (1-2 hours)
-1. Fix broken foundation commands (`docs`, `exec`, `browser`)
-2. Add performance timing to command execution
-3. Create simple web widget showing project health
-4. Improve error messages with specific fix suggestions
+1. **Fix exec command** - Critical for spawn functionality and agent observation workflow
+2. **Start commenting FILES.md** - Agent intelligence on every file (confusion = intelligence)
+3. **Fix test organization crisis** - Move tests to correct directories, fix imports
+4. **Add test health to dashboard** - Show broken/passing tests, import issues 
+5. **Implement dynamic method generation** - `client.alert()` with unit tests
 
 ### Medium Projects (1-2 days)
 1. Implement Sentinel test runner automation

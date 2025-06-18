@@ -34,11 +34,15 @@ USAGE EXAMPLES:
   python3 ai-portal.py --cmd restart  # Version bump + server restart
   python3 ai-portal.py --cmd help     # Live command documentation
   python3 ai-portal.py --cmd help --params '{"sync": true}'  # Sync docs
+  python3 ai-portal.py spawn         # Spawn fresh agent in tmux for observation
+  # Note: Currently exec has issues, use manual: tmux new-session -d -s agent-observer
 """
 
 import asyncio
 import json
 import click
+import time
+import os
 from pathlib import Path
 from datetime import datetime
 
@@ -508,6 +512,10 @@ def get_command_tokenizer():
         'health': lambda args: {  # quick health check
             'command': 'help',
             'params': {}
+        },
+        'spawn': lambda args: {  # spawn fresh agent observer in tmux
+            'command': 'exec',
+            'params': {'command': f'tmux new-session -d -s agent-observer-{int(time.time())} -c {os.getcwd()} && echo "🤖 Fresh agent session created! Attach with: tmux attach -t $(tmux list-sessions | grep agent-observer | cut -d: -f1 | tail -1)"'}
         }
     }
 
@@ -544,6 +552,7 @@ def tokenize_command(cmd, args):
 @click.option('--quick', is_flag=True, help='Show quick status')
 @click.option('--test', is_flag=True, help='Run Continuum test suite')
 @click.option('--roadmap', is_flag=True, help='Show development roadmap and vision')
+@click.option('--files', is_flag=True, help='Show codebase structure and reduction mission')
 @click.pass_context
 
 # Command-specific natural argument options
@@ -572,14 +581,14 @@ def tokenize_command(cmd, args):
 @click.option('--list-scripts', is_flag=True, help='List available scripts')
 @click.option('--help-cmd', help='Show help for specific command')
 @click.option('--debug', is_flag=True, help='Show full debug output including stack traces')
-def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick, test, roadmap, action, task, workspace, selector, filename, 
+def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick, test, roadmap, files, action, task, workspace, selector, filename, 
          verbose, sync, output, run, script_args, timeout, return_result, exec, shell_timeout,
          program, script, save_script, list_scripts, help_cmd, debug):
     """AI Portal - Your Robot Agent for Continuum development workflow"""
     
     async def run_cli():
         # Handle dashboard options first
-        if dashboard or broken or recent or quick or test or roadmap:
+        if dashboard or broken or recent or quick or test or roadmap or files:
             try:
                 # Import ai-agent functionality
                 import importlib.util
@@ -591,6 +600,8 @@ def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick
                     await ai_agent.run_tests()
                 elif roadmap:
                     await ai_agent.show_roadmap()
+                elif files:
+                    await ai_agent.show_files_structure()
                 elif broken:
                     await ai_agent.show_broken()
                 elif recent:

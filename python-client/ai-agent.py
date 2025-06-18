@@ -264,6 +264,7 @@ async def show_dashboard():
     print("\n🎯 QUICK ACTIONS:")
     print("   python3 ai-agent.py --broken     # See what's broken in fix order")
     print("   python3 ai-agent.py --roadmap    # View roadmap & add your ideas") 
+    print("   python3 ai-agent.py --files      # See file structure & reduction mission")
     print("   python3 ai-agent.py --logs       # View debugging logs with Sentinel") 
     print("   python3 ai-portal.py --cmd [cmd] # Test individual command")
     print("   python3 ai-portal.py --cmd docs  # Update main dashboard")
@@ -459,6 +460,47 @@ async def run_tests():
     
     print(f"\n📊 Current Status: {broken_count} broken commands need attention")
 
+async def show_files_structure():
+    """Show codebase structure and reduction plans"""
+    files_path = Path(__file__).parent.parent / 'FILES.md'
+    
+    print("📁 CODEBASE STRUCTURE & REDUCTION MISSION")
+    print("=" * 50)
+    
+    if files_path.exists():
+        try:
+            content = files_path.read_text()
+            # Show just the header and goals section
+            lines = content.split('\n')
+            in_goals = False
+            for line in lines[:50]:  # First 50 lines for overview
+                if "## 🎯 Structure Goals" in line:
+                    in_goals = True
+                if "## 📋 File Tree" in line:
+                    break
+                if in_goals or line.startswith('# ') or line.startswith('> '):
+                    print(line)
+            
+            print("\n🔧 STRUCTURE REDUCTION ACTIONS:")
+            print("   1. Comment on every file in FILES.md - what it does, why it exists")
+            print("   2. Identify consolidation opportunities (similar functionality)")
+            print("   3. Flag files for deletion (dead code, redundant)")
+            print("   4. Flatten deep directory structures")
+            print("   5. Rename unclear files to be self-documenting")
+            
+            print(f"\n📊 Current metrics available in: {files_path}")
+            print("   Run: ./scripts/generate-files-tree.sh  # To refresh structure")
+            
+        except Exception as e:
+            print(f"❌ Error reading FILES.md: {e}")
+    else:
+        print("📋 FILES.md not found. Generate with:")
+        print("   ./scripts/generate-files-tree.sh")
+        print("\n🎯 STRUCTURE MISSION:")
+        print("   Every file should be commented and justified.")
+        print("   Goal: Reduce complexity, improve organization.")
+        print("   Focus: Comment on leaves first, then consolidate.")
+
 async def show_roadmap():
     """Show development roadmap loaded from ROADMAP.md"""
     roadmap_path = Path(__file__).parent.parent / 'ROADMAP.md'
@@ -572,6 +614,7 @@ def main():
     parser.add_argument('--quick', action='store_true', help='Show quick status only')
     parser.add_argument('--test', action='store_true', help='Run Continuum test suite')
     parser.add_argument('--roadmap', action='store_true', help='Show development roadmap and big picture vision')
+    parser.add_argument('--files', action='store_true', help='Show codebase structure and reduction mission')
     parser.add_argument('--sort', choices=['priority', 'date', 'name'], default='priority', 
                        help='Sort tickets by priority, date, or name')
     parser.add_argument('--filter', choices=['all', 'broken', 'testing', 'stable', 'untested'], default='all',
@@ -585,6 +628,8 @@ def main():
             await run_tests()
         elif args.roadmap:
             await show_roadmap()
+        elif args.files:
+            await show_files_structure()
         elif args.broken:
             await show_broken()
         elif args.recent:
