@@ -431,8 +431,8 @@ class CommandProcessor {
     
     try {
       // Import and use the proper ScreenshotCommand
-      const ScreenshotCommand = require('../commands/core/ScreenshotCommand.cjs');
-      const result = await ScreenshotCommand.execute(params, this.continuum);
+      const ScreenshotCommand = require('../commands/core/screenshot/ScreenshotCommand.cjs');
+      const result = await ScreenshotCommand.execute(params, this);
       
       console.log('📸 COMMAND_PROCESSOR: ScreenshotCommand result:', result.success ? 'SUCCESS' : 'FAILED');
       if (!result.success) {
