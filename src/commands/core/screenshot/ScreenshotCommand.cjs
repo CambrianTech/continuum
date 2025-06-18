@@ -101,6 +101,8 @@ class ScreenshotCommand extends BaseCommand {
   }
   
   static async execute(params, continuum) {
+    console.log('🔥 SCREENSHOT_COMMAND: Execute called with params:', params);
+    console.log('🔥 SCREENSHOT_COMMAND: Continuum object keys:', Object.keys(continuum || {}));
     const options = this.parseParams(params);
     
     // Default parameters for elegant API
@@ -167,45 +169,14 @@ class ScreenshotCommand extends BaseCommand {
     
     console.log(`📸 Sending screenshot command to browser: ${generatedFilename}`);
     
-    // Use proper command interface instead of direct WebSocket
-    if (continuum.commandProcessor) {
-      // Send browser command to capture screenshot
-      await continuum.commandProcessor.execute('browserjs', screenshotMessage);
-    } else {
-      // Fallback to WebSocket if command processor not available
-      continuum.webSocketServer.broadcast(screenshotMessage);
-    }
+    // Send to browser and return success
+    continuum.webSocketServer.broadcast(screenshotMessage);
     
-    // For file destination, wait for screenshot data and save file
-    if (destination === 'file') {
-      // Wait for browser to capture screenshot and return file save promise
-      try {
-        // This will wait for the browser to capture screenshot and call fileSave
-        const fileSaveResult = await continuum.commandProcessor.execute('fileSave', {
-          filename: generatedFilename,
-          data: 'PENDING_SCREENSHOT_DATA', // Placeholder - browser will provide actual data
-          baseDirectory: '.continuum/screenshots'
-        });
-        
-        // Return the actual file save result
-        return fileSaveResult;
-      } catch (error) {
-        return this.createErrorResult(`Screenshot failed: ${error.message}`);
-      }
-    } else {
-      // For bytes mode, return immediately 
-      return this.createSuccessResult({
-        requestId,
-        selector,
-        scale,
-        manual,
-        source,
-        timestamp,
-        format,
-        destination,
-        message: 'Screenshot bytes will be returned via WebSocket'
-      }, `Screenshot bytes mode: ${requestId}`);
-    }
+    return this.createSuccessResult({
+      filename: generatedFilename,
+      selector,
+      timestamp
+    }, 'Screenshot sent to browser');
   }
 }
 
