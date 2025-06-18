@@ -109,49 +109,13 @@ cat > "$TEMP_FILE" << 'EOF'
 ```
 EOF
 
-# Generate tree structure with filtering and markdown links
-echo "🔗 **Click any file below to jump to detailed comments**" >> "$TEMP_FILE"
+# Generate tree structure - clean and simple
+echo "**File structure overview (detailed analysis in sections below)**" >> "$TEMP_FILE"
 echo "" >> "$TEMP_FILE"
 
-# Generate tree with links and one-liner comments
-tree -a -I 'node_modules|.git|__pycache__|\*.pyc|\.DS_Store|\.pytest_cache|htmlcov|\*.egg-info|dist|build' \
-    --dirsfirst | while IFS= read -r line; do
-    # Extract just the filename from tree structure
-    filename=$(echo "$line" | sed -E 's/^[│├└─ ]+//')
-    
-    if [[ -f "$filename" && "$filename" != "." ]]; then
-        # Convert filename to markdown anchor
-        anchor=$(echo "$filename" | sed 's|/|-|g' | sed 's/[^a-zA-Z0-9._-]/-/g' | tr '[:upper:]' '[:lower:]')
-        # Get existing comment if available
-        existing_comment=""
-        if [[ -f "$OUTPUT_FILE" ]]; then
-            existing_comment=$(grep -A1 "^### ${filename}" "$OUTPUT_FILE" 2>/dev/null | tail -n1 | grep "^  # " | sed "s/^  # //" || echo "")
-        fi
-        
-        # Add comment based on file type
-        comment=""
-        case "$filename" in
-            *.md) comment="📖 Documentation" ;;
-            *.js|*.cjs) comment="⚡ JavaScript/Node.js" ;;
-            *.py) comment="🐍 Python" ;;
-            *.json) comment="📋 Configuration/Data" ;;
-            *.sh) comment="🔧 Shell Script" ;;
-            *) comment="📄 File" ;;
-        esac
-        
-        # Use existing comment if available
-        if [[ -n "$existing_comment" ]]; then
-            comment="$existing_comment"
-        fi
-        
-        # Replace filename in line with markdown link and add comment
-        prefix=$(echo "$line" | sed -E 's/[^│├└─ ].*//')
-        echo "${prefix}[${filename}](#${anchor}) # ${comment}"
-    else
-        # Keep directory structure as-is
-        echo "$line"
-    fi
-done >> "$TEMP_FILE"
+# Generate clean tree structure - comments are in detailed sections below
+tree -I 'node_modules|.git|__pycache__|\*.pyc|\.DS_Store|\.pytest_cache|htmlcov|\*.egg-info|dist|build|.*|venv|env' \
+    --dirsfirst -L 4 | head -100 >> "$TEMP_FILE"
 
 echo "" >> "$TEMP_FILE"
 
@@ -211,20 +175,8 @@ find . -maxdepth 1 -type d ! -name '.*' ! -path '.' | sort | while read -r dir; 
     fi
 done
 
-# Check for deleted files and add tombstones
-if [[ -f "$OUTPUT_FILE" ]]; then
-    echo "" >> "$TEMP_FILE"
-    echo "## 🪦 Deleted Files (Tombstones)" >> "$TEMP_FILE"
-    echo "" >> "$TEMP_FILE"
-    
-    # Extract file paths from previous FILES.md detailed sections
-    grep "^### .*{#.*}$" "$OUTPUT_FILE" | sed 's/^### \(.*\) {#.*}$/\1/' | while read -r old_file; do
-        # Skip tombstone entries and check if file still exists
-        if [[ ! "$old_file" =~ ^🪦 ]] && [[ ! -f "$old_file" ]] && [[ ! -d "$old_file" ]]; then
-            add_tombstone "$old_file" "" >> "$TEMP_FILE"
-        fi
-    done
-fi
+# Skip auto-generating tombstones - they're handled in preserved content
+# This prevents duplicate/empty tombstones on top of the rich archaeological ones
 
 # Add footer with commands
 # Append preserved content if it exists
