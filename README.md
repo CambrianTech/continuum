@@ -12,6 +12,8 @@ Continuum is a revolutionary AI workforce construction platform with clean archi
 - **🛡️ Sentinel System**: Monitoring and logging for AI task management  
 - **📁 Workspace Management**: No hardcoded paths, configurable workspaces
 - **📚 Self-documenting**: Live help system keeps docs in sync
+- **🎓 Academy System**: Matrix-inspired adversarial training with TestingDroid vs ProtocolSheriff
+- **🤖 Agent Spawn System**: Fresh agent observers for pure usability testing
 
 ### Quick Start
 
@@ -42,6 +44,73 @@ python3 python-client/ai-portal.py --cmd help          # Live API documentation
 # All commands are self-documenting
 python3 python-client/ai-portal.py --cmd [command] --help
 ```
+
+## 🎓 Academy & Agent Systems
+
+### Academy: Matrix-Inspired Adversarial Training
+
+The Academy system implements a revolutionary GAN-like approach where AI agents evolve through adversarial competition:
+
+```bash
+# Train new AI personas through Academy boot camp
+node scripts/run-academy.cjs
+
+# Enroll agents in specialized training programs
+python3 python-client/ai-portal.py --cmd academy --params '{"agent": "sheriff-mahoney", "specialization": "protocol_enforcement"}'
+```
+
+**Core Adversarial Pairs:**
+- **🛡️ ProtocolSheriff vs ⚔️ TestingDroid**: Security validation and adversarial testing
+- **🧠 CodeCritic vs 💻 CodeGenerator**: Code quality and bug detection  
+- **📊 FactChecker vs 🔍 Researcher**: Information accuracy and validation
+
+**Training Features:**
+- **LoRA Fine-tuning**: 190,735x storage reduction with specialized adapters
+- **Graduated Personas**: Saved to `.continuum/personas/` with deployment-ready configs
+- **Academy Metrics**: Real-time training progress and graduation scoring
+- **UI Integration**: SavedPersonas widget shows academy progress and deployment options
+
+### Agent Spawn System: Fresh Observer Testing
+
+Create fresh agent observers for pure usability testing without prior context:
+
+```bash
+# Spawn fresh agent observer for system exploration
+python3 python-client/ai-portal.py --cmd spawn system_exploration
+
+# Spawn agent for specific testing missions
+python3 python-client/ai-portal.py --cmd spawn dashboard_testing
+python3 python-client/ai-portal.py --cmd spawn ui_analysis
+python3 python-client/ai-portal.py --cmd spawn command_testing
+```
+
+**Observer Missions:**
+- **system_exploration**: General system discovery and navigation testing
+- **dashboard_testing**: UI/UX usability testing and confusion point identification
+- **interface_analysis**: Design analysis and improvement suggestions
+- **command_testing**: Command validation and workflow testing
+- **bug_hunting**: System issue detection and documentation
+- **documentation_review**: Documentation clarity and completeness assessment
+
+**Agent Observer Philosophy:**
+Like AR app user testing from 2011 - observe agents without intervention to gather pure intelligence about system usability, onboarding effectiveness, and natural discovery patterns.
+
+### Academy Training Room
+
+The Academy Training Room provides real-time visualization of adversarial training sessions:
+- **Live Training Metrics**: Watch TestingDroid vs ProtocolSheriff battles in real-time
+- **Adversarial Pair Evolution**: See both agents improve through competition
+- **Training History**: Track graduation scores and iteration progress  
+- **Manual Intervention Controls**: Pause, adjust parameters, or guide training
+- **Graduation Ceremonies**: Real-time notifications when agents complete boot camp
+
+### Persona Management UI
+
+Access trained personas through the integrated SavedPersonas widget:
+- **Academy Progress**: Real-time training metrics and graduation status
+- **Deployment Actions**: DEPLOY, RETRAIN, SHARE ORG buttons
+- **Threshold Controls**: Drag to adjust graduation requirements
+- **Status Tracking**: Training, graduated, failed, ready-for-observation states
 
 ### Architecture Principles for AI Agents
 
@@ -131,9 +200,17 @@ python3 python-client/ai-portal.py --cmd [command] --help
 | `.continuum/` | Workspace directory (managed by workspace command) |
 | `.continuum/ai-portal/` | AI portal workspace and logs |
 | `.continuum/sentinel/` | Sentinel monitoring and task logs |
+| `.continuum/personas/` | Academy-trained AI agent personas with LoRA adapters |
+| `.continuum/observations/` | Agent observer session logs and findings |
+| `src/core/Academy.cjs` | Main academy adversarial training system |
+| `src/core/ProtocolSheriff.cjs` | "Neo" agent - response validator in academy GAN |
+| `src/core/TestingDroid.cjs` | "Morpheus" agent - adversarial attack generator |
+| `src/ui/components/SavedPersonas/` | Persona management widget for UI |
+| `scripts/run-academy.cjs` | Academy training script for persona boot camp |
+| `src/core/academy/README.md` | Matrix-inspired academy documentation |
 | `docs/AI_PORTAL_ARCHITECTURE.md` | Detailed architecture documentation |
 
 ---
-*Documentation auto-generated on 2025-06-18T03:29:27.276Z*  
+*Documentation auto-generated on 2025-06-18T03:40:18.376Z*  
 *Source: Live help system via `help --sync` command*  
 *Architecture: Command bus with thin client adapters*
