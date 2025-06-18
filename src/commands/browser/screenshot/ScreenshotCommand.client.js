@@ -41,15 +41,25 @@ class ScreenshotCommandClient {
         
         console.log('📸 ScreenshotClient: Delegating to ScreenshotUtils...');
         
-        // Delegate to core ScreenshotUtils for execution
+        // Delegate to core ScreenshotUtils for execution with callback support
+        const screenshotOptions = {
+            scale: scale,
+            source: 'client_orchestration'
+        };
+        
+        // Add callback orchestration if provided in params
+        if (params.callback) {
+            console.log('📡 ScreenshotClient: Adding callback orchestration', params.callback);
+            screenshotOptions.callback = params.callback;
+        } else {
+            console.log('⚠️ ScreenshotClient: NO CALLBACK in params:', Object.keys(params));
+        }
+        
         return await window.ScreenshotUtils.takeScreenshotAndSend(targetElement, {
             filename: filename,
             source: source,
             selector: selector
-        }, {
-            scale: scale,
-            source: 'client_orchestration'
-        });
+        }, screenshotOptions);
     }
     
     /**

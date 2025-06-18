@@ -109,36 +109,79 @@ export class ScreenshotUtils {
     }
 
     /**
-     * Take screenshot and send via WebSocket
+     * Take screenshot and send via WebSocket with orchestration support
      * @param {HTMLElement} targetElement - Element to screenshot  
      * @param {Object} messageData - WebSocket message data
-     * @param {Object} options - Screenshot options
+     * @param {Object} options - Screenshot options including callback
      */
     static async takeScreenshotAndSend(targetElement, messageData, options = {}) {
         try {
             const canvas = await this.takeScreenshot(targetElement, options);
             const dataURL = canvas.toDataURL('image/png');
+            const base64Data = dataURL.replace(/^data:image\/png;base64,/, '');
             
-            const screenshotMessage = {
-                type: 'screenshot_data',
-                dataURL: dataURL,
-                dimensions: { width: canvas.width, height: canvas.height },
-                timestamp: Date.now(),
-                ...messageData
-            };
-
             // Calculate data sizes for detailed logging
             const dataURLSize = dataURL.length;
-            const messageSize = JSON.stringify(screenshotMessage).length;
-            const base64ImageSize = dataURL.replace(/^data:image\/png;base64,/, '').length;
+            const base64ImageSize = base64Data.length;
             const estimatedPNGSize = Math.floor(base64ImageSize * 0.75); // Base64 to binary size estimate
 
+            console.log(`📊 Screenshot captured: ${canvas.width}x${canvas.height}, Base64: ${base64ImageSize} chars, Est PNG: ${estimatedPNGSize} bytes`);
+
             if (window.ws && window.ws.readyState === WebSocket.OPEN) {
-                console.log(`📤 Sending screenshot: ${messageData.filename || 'unnamed'}`);
-                console.log(`📊 Data sizes - Canvas: ${canvas.width}x${canvas.height}, DataURL: ${dataURLSize} chars, Message: ${messageSize} bytes, Est PNG: ${estimatedPNGSize} bytes`);
-                window.ws.send(JSON.stringify(screenshotMessage));
-                return { success: true, canvas, dataURL, dataSizes: { dataURLSize, messageSize, estimatedPNGSize } };
+                console.log(`🔍 ScreenshotUtils: WebSocket ready, checking callback options:`, options.callback);
+                
+                // Check if callback orchestration is requested
+                if (options.callback && options.callback.command === 'wstransfer') {
+                    console.log(`📡 Orchestrating screenshot via WSTransfer callback`);
+                    
+                    const wsTransferMessage = {
+                        type: 'command_execution',
+                        command: 'wstransfer',
+                        params: {
+                            data: base64Data,
+                            type: 'image',
+                            filename: options.callback.params.filename,
+                            requestId: options.callback.params.requestId,
+                            source: options.callback.params.source || 'screenshot'
+                        },
+                        metadata: {
+                            dimensions: { width: canvas.width, height: canvas.height },
+                            timestamp: Date.now(),
+                            originalFilename: messageData.filename,
+                            orchestration: 'html2canvas → wstransfer'
+                        }
+                    };
+                    
+                    console.log(`📤 Sending WSTransfer orchestration: ${wsTransferMessage.params.filename || 'bytes only'}`);
+                    window.ws.send(JSON.stringify(wsTransferMessage));
+                    
+                    return { 
+                        success: true, 
+                        canvas, 
+                        dataURL, 
+                        orchestration: 'wstransfer',
+                        dataSizes: { dataURLSize, base64ImageSize, estimatedPNGSize } 
+                    };
+                } else {
+                    console.log(`❌ ScreenshotUtils: NO CALLBACK ORCHESTRATION - using legacy path`);
+                    console.log(`🔍 ScreenshotUtils: options.callback:`, options.callback);
+                    // Legacy direct screenshot_data message
+                    console.log(`📤 Sending legacy screenshot_data: ${messageData.filename || 'unnamed'}`);                
+                    
+                    const screenshotMessage = {
+                        type: 'screenshot_data',
+                        dataURL: dataURL,
+                        dimensions: { width: canvas.width, height: canvas.height },
+                        timestamp: Date.now(),
+                        ...messageData
+                    };
+                    
+                    window.ws.send(JSON.stringify(screenshotMessage));
+                    return { success: true, canvas, dataURL, dataSizes: { dataURLSize, base64ImageSize, estimatedPNGSize } };
+                }
             } else {
+                console.error(`❌ ScreenshotUtils: WebSocket NOT READY`);
+                console.error(`🔍 WebSocket state: ws=${!!window.ws}, readyState=${window.ws?.readyState}`);
                 throw new Error('WebSocket not available');
             }
         } catch (error) {

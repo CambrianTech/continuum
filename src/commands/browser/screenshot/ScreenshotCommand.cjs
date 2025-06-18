@@ -168,16 +168,41 @@ class ScreenshotCommand extends BaseCommand {
       }
     };
     
-    console.log(`📸 Sending screenshot command to browser: ${generatedFilename}`);
+    console.log(`📸 Orchestrating screenshot: browser capture → WSTransfer → ${destination === 'file' ? 'FileSave' : 'bytes only'}`);
     
-    // Send to browser and return success
-    continuum.webSocketServer.broadcast(screenshotMessage);
+    // Step 1: Send html2canvas command to browser with proper WSTransfer callback
+    const enhancedMessage = {
+      ...screenshotMessage,
+      params: {
+        ...screenshotMessage.params,
+        // Add WSTransfer callback configuration
+        callback: {
+          command: 'wstransfer',
+          params: {
+            type: 'image',
+            filename: destination === 'file' ? generatedFilename : null,
+            requestId,
+            source: 'screenshot'
+          }
+        }
+      }
+    };
+    
+    continuum.webSocketServer.broadcast(enhancedMessage);
+    
+    // Step 2: Browser will execute html2canvas and automatically call WSTransfer with base64 data
+    // Step 3: WSTransfer will conditionally orchestrate to FileSave if filename provided
+    // This creates proper command orchestration that EventBus can track
     
     return this.createSuccessResult({
       filename: generatedFilename,
       selector,
-      timestamp
-    }, 'Screenshot sent to browser');
+      timestamp,
+      destination,
+      requestId,
+      workflow: `html2canvas → WSTransfer → ${destination === 'file' ? 'FileSave' : 'bytes only'}`,
+      orchestration: true
+    }, `Screenshot workflow initiated (${destination} mode)`);
   }
 }
 

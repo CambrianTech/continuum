@@ -282,6 +282,55 @@ class WebSocketServer extends EventEmitter {
           }
         }
         
+      } else if (data.type === 'command_execution') {
+        // Handle command execution from browser (WSTransfer orchestration)
+        console.log('🔥 SERVER: command_execution message received!');
+        console.log('🔍 SERVER: Full message:', JSON.stringify(data, null, 2));
+        console.log('📡 SERVER: command_execution message received:', data.command);
+        console.log('📡 SERVER: Command params:', data.params);
+        
+        try {
+          const { command, params } = data;
+          
+          if (!command) {
+            console.error('📡 SERVER: No command specified in command_execution');
+            return;
+          }
+          
+          console.log(`📡 SERVER: Executing command ${command} via CommandProcessor`);
+          console.log(`🔍 SERVER: Continuum available: ${!!this.continuum}`);
+          console.log(`🔍 SERVER: CommandProcessor available: ${!!this.continuum?.commandProcessor}`);
+          
+          // Execute the command through the command processor
+          if (this.continuum.commandProcessor) {
+            const result = await this.continuum.commandProcessor.executeCommand(command.toUpperCase(), params);
+            console.log(`📡 SERVER: Command ${command} result:`, result.success ? 'SUCCESS' : 'FAILED');
+            
+            if (result.success) {
+              console.log(`📡 SERVER: ${command} completed successfully`);
+              if (result.data && result.data.filepath) {
+                console.log(`📡 SERVER: File saved: ${result.data.filepath}`);
+              }
+            } else {
+              console.error(`📡 SERVER: ${command} failed:`, result.error);
+            }
+            
+            // Optionally send response back to browser
+            ws.send(JSON.stringify({
+              type: 'command_execution_result',
+              command: command,
+              success: result.success,
+              data: result.data,
+              error: result.error
+            }));
+          } else {
+            console.error('📡 SERVER: No command processor available for command_execution');
+          }
+        } catch (error) {
+          console.error('🔥 SERVER: command_execution FAILED:', error.message);
+          console.error('📡 SERVER: Error handling command_execution:', error);
+        }
+        
       } else if (data.type === 'task') {
         const { role, task, commandId } = data;
         
