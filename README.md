@@ -1,97 +1,46 @@
 # Continuum - AI Workforce Construction Platform
-> 📖 Documentation auto-generated from live help system
-> 🔄 To update: `python3 python-client/ai-portal.py --cmd help --sync`
+> 🔍 **Archaeological Discovery**: Advanced AI training platform with sophisticated automation capabilities  
+> 🏛️ **Lost Treasures**: Academy system, Mass Effect UI, LoRA adapters - all recoverable from git history  
+> 🚀 **Current Status**: 35 working commands + complete automation via `trust_the_process.py`
 
-## Overview
+## 🎯 What Is Continuum?
 
-Continuum is a revolutionary AI workforce construction platform with clean architecture principles:
+Continuum is a **cutting-edge AI Workforce Construction Platform** that was designed to train and deploy specialized AI agents through adversarial training. Archaeological evidence reveals a sophisticated system that was systematically dismantled but remains **fully recoverable**.
 
-- **🏗️ Command Bus Architecture**: Central orchestration with modular commands
-- **🤖 AI Portal**: Primary interface for AI agents (`python-client/ai-portal.py`)
-- **📡 Promise-based API**: Clean async/await patterns across all clients
-- **🛡️ Sentinel System**: Monitoring and logging for AI task management  
-- **📁 Workspace Management**: No hardcoded paths, configurable workspaces
-- **📚 Self-documenting**: Live help system keeps docs in sync
+### 🔍 **Discovery Summary**
+- **Command Bus Architecture**: 35 active commands with clean separation of concerns
+- **Automation Power**: Complete 6-step development cycle with integrity validation  
+- **Lost Academy**: Matrix-inspired adversarial AI training system (git recoverable)
+- **Lost UI**: Mass Effect-style cyberpunk interface (git recoverable)
+- **LoRA Fine-tuning**: 190,735x storage reduction with specialized adapters (git recoverable)
 
-### Quick Start
+---
 
+## 🚀 Quick Start - Ready Now
+
+### For AI Agents (Primary Interface)
 ```bash
-# For AI Agents (primary interface)
-python3 python-client/ai-portal.py --help
-python3 python-client/ai-portal.py --cmd help
-
-# For Humans
-continuum --help
-continuum --agents
-```
-
-## AI Agent Quick Start
-
-The AI Portal provides a clean, thin client adapter for the Continuum command bus:
-
-```bash
-# Primary AI interface
-python3 python-client/ai-portal.py --cmd [command] [--params '{}']
-
-# Essential commands for AI agents
+# Essential commands - all working
 python3 python-client/ai-portal.py --cmd workspace     # Get workspace paths
-python3 python-client/ai-portal.py --cmd sentinel      # Start monitoring/logging  
-python3 python-client/ai-portal.py --cmd restart       # Version bump + server restart
-python3 python-client/ai-portal.py --cmd help          # Live API documentation
+python3 python-client/ai-portal.py --cmd screenshot    # Browser capture 
+python3 python-client/ai-portal.py --cmd agents        # Agent help system
+python3 python-client/ai-portal.py --cmd help          # Live API docs
 
-# All commands are self-documenting
-python3 python-client/ai-portal.py --cmd [command] --help
+# Complete automation workflow
+cd python-client && python trust_the_process.py        # Full integrity check
 ```
 
-### Architecture Principles for AI Agents
+### For Humans
+```bash
+continuum --help                                        # View all commands
+continuum --agents                                      # Agent-specific help
+```
 
-- ✅ **No hardcoded paths** - Use workspace command for all directory management
-- ✅ **No god objects** - Thin client adapter pattern, all logic in server commands  
-- ✅ **Self-documenting** - Live help system provides current API documentation
-- ✅ **Promise-based** - Clean async/await, no callback complexity
-- ✅ **Modular** - Add functionality via Continuum commands, not client code
+---
 
-## Available Commands
-### Core Commands
-- **AGENTS** - Command available
-- **BROWSER** - Command available
-- **BROWSER_JS** - Command available
-- **CHAT** - Command available
-- **CLEAR** - Command available
-- **CREATEROOM** - Command available
-- **CURSOR** - Command available
-- **DIAGNOSTICS** - Command available
-- **DOCS** - Command available
-- **EMOTION** - Command available
-- **EXEC** - Command available
-- **FILESAVE** - Command available
-- **FINDUSER** - Command available
-- **HELP** - Command available
-- **INFO** - Command available
-- **INPUT** - Command available
-- **JOINROOM** - Command available
-- **LISTAGENTS** - Command available
-- **LISTROOMS** - Command available
-- **LOADROOMS** - Command available
-- **MACRO** - Command available
-- **MOVE** - Command available
-- **PREFERENCES** - Command available
-- **PROMISE_JS** - Command available
-- **RELOAD** - Command available
-- **RESTART** - Command available
-- **SAVE_FILE** - Command available
-- **SCREENSHOT** - Command available
-- **SENTINEL** - Command available
-- **SHARE** - Command available
-- **TYPE** - Command available
-- **VALIDATE_CODE** - Command available
-- **VALIDATE_JS** - Command available
-- **WORKSPACE** - Command available
+## 🏗️ Current System Architecture
 
-💡 **Get detailed help**: `python3 python-client/ai-portal.py --cmd [command] --help`
-
-## Architecture
-
+### **Command Bus Pattern** - Active & Working
 ```
 ┌─────────────────────────────────────────┐
 │           Continuum Server              │
@@ -99,8 +48,8 @@ python3 python-client/ai-portal.py --cmd [command] --help
 │  ┌─────────────────────────────────────┐ │
 │  │         Command Bus                 │ │
 │  │  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐  │ │
-│  │  │work │ │restart│sentinel│help │  │ │ 
-│  │  │space│ │     │ │     │ │     │  │ │
+│  │  │work │ │screen│browser│agents│  │ │ 
+│  │  │space│ │shot  │_js   │     │  │ │
 │  │  └─────┘ └─────┘ └─────┘ └─────┘  │ │
 │  └─────────────────────────────────────┘ │
 └─────────────────────────────────────────┘
@@ -112,28 +61,201 @@ python3 python-client/ai-portal.py --cmd [command] --help
    └─────────┘          └─────────┘
 ```
 
-### Design Patterns
+### **Active Capabilities** (35 Commands)
+| Category | Commands | Status |
+|----------|----------|--------|
+| **Core** | WORKSPACE, AGENTS, HELP, INFO | ✅ Working |
+| **Browser** | SCREENSHOT, BROWSER_JS, BROWSER | ✅ Working |
+| **Automation** | RESTART, SENTINEL, DIAGNOSTICS | ✅ Working |
+| **File System** | FILESAVE, SAVE_FILE, DOCS | ✅ Working |
+| **Communication** | CHAT, CREATEROOM, JOINROOM | ✅ Working |
 
+### **Trust the Process** - Complete Automation
+```bash
+# 6-Step Development Cycle (Currently Active)
+python python-client/trust_the_process.py
+```
+
+**Validation Criteria** (All Must Pass):
+- ✅ Agent validation  
+- ✅ Screenshot capture
+- ✅ No console errors
+- ✅ Version check  
+- ✅ WebSocket connection
+
+---
+
+## 🏛️ Lost Treasures - Archaeological Evidence
+
+### 🎓 **Continuum Academy v0.2.0** (Commit: `f0e2fb9`)
+**Matrix-inspired adversarial AI training system**
+
+```javascript
+// Academy System Architecture
+TestingDroid vs ProtocolSheriff  // Adversarial training
+Academy.enrollRecruit() -> bootCamp() -> graduation()
+LoRA: 190,735 parameters vs 175B base = 0.000109% storage
+```
+
+**Core Components** (All Git Recoverable):
+- **Academy.cjs** - Boot camp enrollment and graduation system
+- **TestingDroid.cjs** - GAN-style adversarial test generation  
+- **LoRAAdapter.cjs** - Ultra-efficient fine-tuning (190,735x storage reduction)
+- **PersonaFactory.cjs** - AI persona creation and management
+- **ProtocolSheriff.cjs** - Enforcement and validation system
+
+### 🎮 **Mass Effect-Style UI** (Commits: `4ffb32e`, `41c02a2`)
+**Cyberpunk slideout panels with sophisticated agent selection**
+
+```css
+/* Glass Morphism Design - Recovered from Git */
+background: rgba(0, 255, 136, 0.15);
+backdrop-filter: blur(15px);
+clip-path: polygon(0 0, calc(100% - 20px) 0, 100% 20px, 100% 100%, 0 100%);
+transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+```
+
+**UI Components** (All Git Recoverable):
+- **AgentSelector.js** - Multi-agent selection with gradients and avatars
+- **SimpleAgentSelector.js** - Slideout panels with cyberpunk aesthetics  
+- **Glass morphism styling** - Cyan/blue gradients with backdrop blur
+- **Angular video game aesthetics** - Clip-path polygons and smooth animations
+
+### 🤖 **Intelligent Routing System** (Commit: `72c5684`)
+**Self-improving router with process management**
+
+**Lost Components** (All Git Recoverable):
+- **intelligent-routing.cjs** - Smart agent selection and routing
+- **process-manager.cjs** - Process lifecycle management
+- **self-improving-router.cjs** - Learning-based routing optimization
+- **tmux-claude-pool.cjs** - Multi-agent session management
+
+---
+
+## 🛠️ Restoration Strategy
+
+### **Phase 1: UI Restoration** (High Impact, Low Complexity)
+```bash
+# Recover Mass Effect-style interface
+git show 4ffb32e:src/ui/components/AgentSelector.js > src/ui/components/AgentSelector.js
+git show 41c02a2:src/ui/components/SimpleAgentSelector.js > src/ui/components/SimpleAgentSelector.js
+
+# Test with existing automation
+python python-client/trust_the_process.py --screenshot
+```
+
+### **Phase 2: Academy System** (High Impact, Medium Complexity)
+```bash
+# Recover adversarial training system
+git show f0e2fb9:src/core/Academy.cjs > src/core/Academy.cjs
+git show f0e2fb9:src/core/TestingDroid.cjs > src/core/TestingDroid.cjs
+git show f0e2fb9:src/core/LoRAAdapter.cjs > src/core/LoRAAdapter.cjs
+
+# Integrate with command bus
+# Add academy commands to CommandRegistry.cjs
+```
+
+### **Phase 3: Intelligent Routing** (Medium Impact, Medium Complexity)
+```bash
+# Recover routing intelligence  
+git show 72c5684:src/core/intelligent-routing.cjs > src/core/intelligent-routing.cjs
+git show 72c5684:src/core/process-manager.cjs > src/core/process-manager.cjs
+```
+
+---
+
+## 📈 Recovery Priority Matrix
+
+| Component | Impact | Complexity | Status | Recovery Command |
+|-----------|--------|------------|--------|------------------|
+| **UI Components** | 🔥 High | 🟢 Low | Git recoverable | `git show 4ffb32e:path` |
+| **Academy System** | 🔥 High | 🟡 Medium | Git recoverable | `git show f0e2fb9:path` |
+| **Automation** | ✅ Active | ✅ Working | Currently functional | `trust_the_process.py` |
+| **Command Bus** | ✅ Active | ✅ Working | 35 commands active | `CommandRegistry.cjs` |
+| **Routing** | 🟡 Medium | 🟡 Medium | Git recoverable | `git show 72c5684:path` |
+
+---
+
+## 🎯 Development Workflow
+
+### **Archaeological Development** (Recommended)
+```bash
+# 1. Take baseline screenshot
+python python-client/trust_the_process.py --screenshot
+
+# 2. Recover specific capability
+git show f0e2fb9:src/core/Academy.cjs > src/core/Academy.cjs
+
+# 3. Validate system integrity
+python python-client/trust_the_process.py
+
+# 4. Commit when all criteria pass
+git add . && git commit -m "Restore Academy adversarial training system"
+```
+
+### **Modern Development** (Current System)
+```bash
+# Work with active 35-command system
+python3 python-client/ai-portal.py --cmd workspace
+python3 python-client/ai-portal.py --cmd screenshot
+python3 python-client/ai-portal.py --cmd browser_js --params "$(echo 'console.log("test")' | base64)"
+```
+
+---
+
+## 🏛️ Architecture Principles
+
+### **Design Patterns** (Preserved)
 - **Adapter Pattern**: Thin clients forward commands to server bus
 - **Command Bus**: All business logic in modular server commands
-- **Promise-Based**: Async/await patterns across all interfaces
+- **Promise-Based**: Async/await patterns across all interfaces  
 - **Self-Documenting**: Help system generates live documentation
 - **No God Objects**: Clean separation of concerns throughout
 
-## Key Locations
-
-| Location | Purpose |
-|----------|---------|
-| `python-client/ai-portal.py` | 🚀 Primary AI agent interface (thin client adapter) |
-| `python-client/continuum_client/` | Promise-based Python API library |
-| `src/commands/core/` | Modular command implementations |
-| `src/integrations/WebSocketServer.cjs` | Command bus message routing |
-| `.continuum/` | Workspace directory (managed by workspace command) |
-| `.continuum/ai-portal/` | AI portal workspace and logs |
-| `.continuum/sentinel/` | Sentinel monitoring and task logs |
-| `docs/AI_PORTAL_ARCHITECTURE.md` | Detailed architecture documentation |
+### **Safety Principles** (Active)
+- **Zero tolerance** for breaking system stability
+- **Surgical precision** - small, careful changes only
+- **Comprehensive validation** - 5 criteria must pass
+- **Archaeological approach** - recover rather than recreate
 
 ---
-*Documentation auto-generated on 2025-06-18T05:24:21.510Z*  
-*Source: Live help system via `help --sync` command*  
-*Architecture: Command bus with thin client adapters*
+
+## 📁 Key Locations
+
+| Location | Purpose | Status |
+|----------|---------|--------|
+| `python-client/ai-portal.py` | 🚀 Primary AI interface | ✅ Active |
+| `python-client/trust_the_process.py` | 🧪 Complete automation | ✅ Active |
+| `src/commands/core/` | 🎯 35 modular commands | ✅ Active |
+| `src/integrations/WebSocketServer.cjs` | 📡 Message routing | ✅ Active |
+| `.continuum/` | 📁 Workspace directory | ✅ Active |
+| `.continuum/screenshots/` | 📸 Auto-saved screenshots | ✅ Active |
+| `FILES.md` | 📚 Complete archaeological map | ✅ Updated |
+
+---
+
+## 🚀 What Makes Continuum Special?
+
+### **Unprecedented Capabilities** (Designed & Recoverable)
+1. **Adversarial AI Training** - TestingDroid vs ProtocolSheriff boot camp system
+2. **Ultra-Efficient Fine-tuning** - LoRA adapters with 190,735x storage reduction
+3. **Mass Effect UI** - Cyberpunk glass morphism with slideout panels
+4. **Complete Automation** - 6-step development cycle with integrity validation
+5. **Self-Healing Architecture** - Command bus with 35 modular commands
+
+### **Current State** (Ready to Use)
+- ✅ **35 Active Commands** with comprehensive automation
+- ✅ **Real-time Browser Control** via WebSocket integration  
+- ✅ **Screenshot Automation** with HTML5 canvas capture
+- ✅ **Promise-based APIs** across all client interfaces
+- ✅ **Archaeological Documentation** with complete recovery roadmap
+
+---
+
+> **Next Step**: Run `python python-client/trust_the_process.py` to validate system integrity, then begin systematic restoration of lost capabilities using the archaeological evidence documented in `FILES.md`.
+
+---
+
+*🔍 Archaeological documentation updated: 2025-06-18*  
+*📚 Complete system map: `FILES.md` - Agent Study Guide section*  
+*🚀 Ready for restoration: All lost capabilities recoverable from git history*

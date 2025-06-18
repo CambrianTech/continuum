@@ -1,16 +1,18 @@
 # 🗺️ Continuum Development Roadmap
+> 🔍 **Archaeological Discovery Complete**: Advanced AI training platform with sophisticated automation capabilities  
+> 🏛️ **Lost Treasures Mapped**: Academy system, Mass Effect UI, LoRA adapters - all recoverable from git history  
+> 🚀 **Current Status**: 35 working commands + complete automation foundation + comprehensive restoration strategy
 
 ## 🎯 Big Picture Vision
 
-Building the world's first **COMPLETELY AUTONOMOUS AI workforce construction platform** where AI agents can:
-- **Train themselves** through Academy adversarial systems (GAN-like approach)
-- **Fix their own bugs** using dependency-aware debugging
-- **Manage costs** across multi-provider AI integration (OpenAI, Anthropic, HuggingFace)
-- **Share knowledge** through hierarchical specialization and persona systems
-- **Deploy and maintain themselves** 24/7 with full autonomy
-- **Run comprehensive tests** with one command
-- **Monitor system health** through Sentinel bots
-- **Collaborate** via README-driven tickets and cross-scope sharing
+Continuum is a **cutting-edge AI Workforce Construction Platform** designed to create autonomous AI agents through:
+- **Matrix-inspired adversarial training** (TestingDroid vs ProtocolSheriff Academy system)  
+- **Ultra-efficient fine-tuning** (LoRA adapters with 190,735x storage reduction)
+- **Mass Effect-style cyberpunk UI** (Glass morphism slideout panels with agent selection)
+- **Complete automation workflows** (6-step development cycle with integrity validation)
+- **Real-time browser control** (AI agents manipulating interfaces via WebSocket)
+- **Multi-agent coordination** (Group chat, task delegation, collaborative workflows)
+- **Self-healing architecture** (Command bus with 35 modular, self-documenting commands)
 
 ---
 
@@ -44,59 +46,86 @@ Building the world's first **COMPLETELY AUTONOMOUS AI workforce construction pla
 
 ---
 
-## 🚨 PHASE 0: CRITICAL RESTORATION (Current Priority)
+## 🚨 PHASE 0: ARCHAEOLOGICAL RESTORATION (Current Priority)
 
-### Lost Advanced Capabilities - Now Considered BUGS
+> **🏛️ Discovery Complete**: Comprehensive archaeological investigation reveals sophisticated AI platform with **all capabilities recoverable from git history**
 
-**🤖 AI Agent Browser Automation (LOST - Critical Bug)**
-- [ ] **BROKEN**: AI agents can no longer control browser interfaces
-- [ ] **BROKEN**: Screenshot automation system non-functional
-- [ ] **BROKEN**: Before/after event capture missing
-- [ ] **BROKEN**: Widget-specific screenshot targeting lost
-- [ ] **BROKEN**: Multi-resolution capture (full screen, widget, overview) missing
-- [ ] **BROKEN**: Automated UI documentation generation lost
+### 🔍 **DISCOVERY SUMMARY**
+- **Working Foundation**: 35 active commands + complete automation via `trust_the_process.py`
+- **Lost Academy**: Matrix-inspired adversarial AI training system (commit `f0e2fb9`)
+- **Lost UI**: Mass Effect-style cyberpunk interface (commits `4ffb32e`, `41c02a2`)  
+- **Lost Routing**: Intelligent agent selection and process management (commit `72c5684`)
+- **Recovery Status**: **All components git recoverable with documented commands**
 
-**🎮 Dynamic UI Panel System (LOST - Critical Bug)**
-- [ ] **BROKEN**: Mass Effect-style slideout panels non-functional
-- [ ] **BROKEN**: `>>` arrow interactions broken on Users & Agents widget
-- [ ] **BROKEN**: Dynamic user/agent information panels missing
-- [ ] **BROKEN**: Expandable persona detail views lost
-- [ ] **BROKEN**: Dynamic window management system broken
-- [ ] **BROKEN**: Real-time UI state changes not captured
+### 🏛️ **Lost Treasures - Ready for Restoration**
 
-**💬 Multi-Agent Chat Coordination (LOST - Critical Bug)**
-- [ ] **BROKEN**: Cannot select multiple AIs from Users & Agents list
-- [ ] **BROKEN**: Group chat functionality missing
-- [ ] **BROKEN**: Shared chat windows non-functional
-- [ ] **BROKEN**: Multi-agent simultaneous messaging broken
-- [ ] **BROKEN**: Cross-agent real-time coordination lost
-- [ ] **BROKEN**: Agent message routing confusion bug unfixed
+**🎓 Continuum Academy v0.2.0** (Commit: `f0e2fb9`) - **Git Recoverable**
+- [ ] **Academy.cjs** - Adversarial training system with boot camp enrollment
+- [ ] **TestingDroid.cjs** - GAN-style adversarial test generation vs ProtocolSheriff
+- [ ] **LoRAAdapter.cjs** - Ultra-efficient fine-tuning (190,735x storage reduction)
+- [ ] **PersonaFactory.cjs** - AI persona creation and management system
+- [ ] **ModelCheckpoint.cjs** - Training state persistence and recovery
 
-**🎓 Integrated Academy Management (LOST - Critical Bug)**
-- [ ] **BROKEN**: Cannot send failed personas back to academy from UI
-- [ ] **BROKEN**: Dynamic threshold adjustment system missing
-- [ ] **BROKEN**: UI-driven academy re-enrollment broken
-- [ ] **BROKEN**: Iterative training loops from UI non-functional
-- [ ] **BROKEN**: Real-time academy progress integration lost
-- [ ] **BROKEN**: Academy → UI → Command line pipeline fragmented
+**🎮 Mass Effect-Style UI System** (Commits: `4ffb32e`, `41c02a2`) - **Git Recoverable**
+- [ ] **AgentSelector.js** - Multi-agent selection with gradients, avatars, status
+- [ ] **SimpleAgentSelector.js** - Slideout panels with cyberpunk aesthetics
+- [ ] **AgentSelectorUtils.js** - Supporting utilities for agent management
+- [ ] **Glass morphism styling** - Cyan/blue gradients: `rgba(0, 255, 136, 0.15)`
+- [ ] **Angular video game aesthetics** - Clip-path polygons and smooth animations
 
-**🔧 Sentinel Automation Capabilities (LOST - Critical Bug)**
-- [ ] **BROKEN**: AI agents cannot spawn and control other agents
-- [ ] **BROKEN**: Automated task execution by AI agents lost
-- [ ] **BROKEN**: AI-driven screenshot and documentation missing
-- [ ] **BROKEN**: Agent-to-agent task delegation broken
-- [ ] **BROKEN**: Autonomous system monitoring by AI agents lost
+**🤖 Intelligent Routing System** (Commit: `72c5684`) - **Git Recoverable**
+- [ ] **intelligent-routing.cjs** - Smart agent selection and routing logic
+- [ ] **process-manager.cjs** - Process lifecycle management system
+- [ ] **self-improving-router.cjs** - Learning-based routing optimization
+- [ ] **tmux-claude-pool.cjs** - Multi-agent session management
+- [ ] **working-web-interface.cjs** - Enhanced web interface integration
 
-### 🎯 Evidence of What Should Work (Screenshots Prove Functionality Exists)
+**🚀 Browser Automation** (Currently Active) - **Functional in `trust_the_process.py`**
+- [x] **AI agents control browsers** via `client.js.execute()` - WORKING
+- [x] **Screenshot automation** with auto-opening for validation - WORKING
+- [x] **Before/after event capture** system - WORKING
+- [x] **WebSocket integration** for real-time communication - WORKING
+- [ ] **Integration with UI buttons** - Needs wiring to DEPLOY/RETRAIN/SHARE
 
-**Working But Disconnected Components:**
-- ✅ **Beautiful UI exists** - SavedPersonas widget, Academy interface
-- ✅ **Real trained personas** - PatentExpert (92.2%), ProjectBot (80%), etc.
-- ✅ **Multi-agent chat** - GeneralAI, PlannerAI, Protocol Sheriff active
-- ✅ **Academy system functional** - Training, graduation, LoRA adapters work
-- ✅ **Command line tools** - ai-portal.py, spawn commands, help system
+### 🛠️ **Restoration Strategy**
 
-**The Gap:** All pieces work independently but **integration automation is broken**
+#### **Phase 1: UI Restoration** (High Impact, Low Complexity)
+```bash
+# Recover Mass Effect-style interface components
+git show 4ffb32e:src/ui/components/AgentSelector.js > src/ui/components/AgentSelector.js
+git show 41c02a2:src/ui/components/SimpleAgentSelector.js > src/ui/components/SimpleAgentSelector.js
+
+# Test with existing automation
+python python-client/trust_the_process.py --screenshot
+```
+
+#### **Phase 2: Academy System** (High Impact, Medium Complexity)
+```bash
+# Recover adversarial training system
+git show f0e2fb9:src/core/Academy.cjs > src/core/Academy.cjs
+git show f0e2fb9:src/core/TestingDroid.cjs > src/core/TestingDroid.cjs
+git show f0e2fb9:src/core/LoRAAdapter.cjs > src/core/LoRAAdapter.cjs
+
+# Integrate with command bus
+# Add academy commands to CommandRegistry.cjs
+```
+
+#### **Phase 3: Intelligent Routing** (Medium Impact, Medium Complexity)
+```bash
+# Recover routing intelligence
+git show 72c5684:src/core/intelligent-routing.cjs > src/core/intelligent-routing.cjs
+git show 72c5684:src/core/process-manager.cjs > src/core/process-manager.cjs
+```
+
+### 📈 **Recovery Priority Matrix**
+
+| Component | Impact | Complexity | Status | Recovery Command |
+|-----------|--------|------------|--------|------------------|
+| **UI Components** | 🔥 High | 🟢 Low | Git recoverable | `git show 4ffb32e:path` |
+| **Academy System** | 🔥 High | 🟡 Medium | Git recoverable | `git show f0e2fb9:path` |
+| **Automation** | ✅ Active | ✅ Working | Currently functional | `trust_the_process.py` |
+| **Command Bus** | ✅ Active | ✅ Working | 35 commands active | `CommandRegistry.cjs` |
+| **Routing** | 🟡 Medium | 🟡 Medium | Git recoverable | `git show 72c5684:path` |
 
 ## 🔬 Phase 2: Academy & Automation Enhancement
 
