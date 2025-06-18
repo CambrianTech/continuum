@@ -199,12 +199,12 @@ class ContinuumClient:
             self.pending_commands = {}
         self.pending_commands[command_id] = future
         
-        # Send task with clean CLI syntax
+        # Send task with clean CLI syntax (no [CMD: prefix)
         params_str = json.dumps(params or {})
         message = {
             'type': 'task',
             'role': 'system',
-            'task': f'{command} {params_str}',
+            'task': f'{command.lower()} {params_str}',
             'commandId': command_id
         }
         
