@@ -1,31 +1,76 @@
 /**
- * RoadmapParser - Extract and analyze roadmap items from ROADMAP.md
- * Focused, testable module for roadmap data management
+ * Roadmap Command - Parse and analyze project roadmap
+ * Self-contained command for roadmap management and analysis
  */
 
+const BaseCommand = require('../../../BaseCommand.cjs');
 const fs = require('fs');
 const path = require('path');
 
-class RoadmapParser {
-  constructor(roadmapPath = null) {
-    this.roadmapPath = roadmapPath || path.join(process.cwd(), 'ROADMAP.md');
-  }
-
-  /**
-   * Command system compatibility - not meant to be called as command
-   */
+class RoadmapCommand extends BaseCommand {
   static getDefinition() {
-    return {
-      name: 'ROADMAP_PARSER',
-      description: 'Internal utility - not a user command',
-      category: 'internal',
-      parameters: [],
-      examples: []
-    };
+    // README-driven: Read definition from README.md
+    const fs = require('fs');
+    const path = require('path');
+    
+    try {
+      const readmePath = path.join(__dirname, 'README.md');
+      const readme = fs.readFileSync(readmePath, 'utf8');
+      return this.parseReadmeDefinition(readme);
+    } catch (error) {
+      // Fallback definition if README.md not found
+      return {
+        name: 'roadmap',
+        description: 'Parse and analyze project roadmap items',
+        icon: '🗺️',
+        category: 'planning',
+        parameters: {
+          action: { type: 'string', required: false, description: 'Action: list, analyze, filter, status' },
+          filter: { type: 'string', required: false, description: 'Filter by: high-impact, low-complexity, ready' },
+          format: { type: 'string', required: false, description: 'Output format: json, table, summary' },
+          file: { type: 'string', required: false, description: 'Custom roadmap file path' }
+        },
+        examples: [
+          'roadmap',
+          'roadmap --action list --format json',
+          'roadmap --filter high-impact',
+          'roadmap --action status'
+        ]
+      };
+    }
   }
 
   static async execute(params, continuum) {
-    return 'This is an internal utility module, not a user command';
+    try {
+      const parsedParams = this.parseParams(params);
+      const action = parsedParams.action || 'list';
+      const format = parsedParams.format || 'table';
+      const filter = parsedParams.filter || 'all';
+      const file = parsedParams.file || path.join(process.cwd(), 'ROADMAP.md');
+
+      const parser = new RoadmapCommand();
+      parser.roadmapPath = file;
+
+      switch (action) {
+        case 'list':
+          return await parser.listItems(filter, format);
+        case 'analyze':
+          return await parser.analyzeRoadmap(format);
+        case 'filter':
+          return await parser.filterItems(filter, format);
+        case 'status':
+          return await parser.getRoadmapStatus(format);
+        default:
+          return parser.formatError(`Unknown action: ${action}. Use list, analyze, filter, or status.`);
+      }
+    } catch (error) {
+      return this.formatError(`Roadmap command failed: ${error.message}`);
+    }
+  }
+
+  constructor(roadmapPath = null) {
+    super();
+    this.roadmapPath = roadmapPath || path.join(process.cwd(), 'ROADMAP.md');
   }
 
   /**

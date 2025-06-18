@@ -4,16 +4,10 @@
  */
 
 const InfoCommand = require('../info/InfoCommand.cjs');
-const RoadmapParser = require('./modules/RoadmapParser.cjs');
-const StrategicAnalyzer = require('./modules/StrategicAnalyzer.cjs');
-const RestorationPlanner = require('./modules/RestorationPlanner.cjs');
 
 class AgentsCommand extends InfoCommand {
   constructor() {
     super();
-    this.roadmapParser = new RoadmapParser();
-    this.strategicAnalyzer = new StrategicAnalyzer();
-    this.restorationPlanner = new RestorationPlanner();
   }
 
   static getDefinition() {
