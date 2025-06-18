@@ -284,17 +284,24 @@ async def run_command(cmd: str, params: str = "{}", verbose: bool = False):
                     params_dict = json.loads(params) if params != "{}" else {}
                     result = await client.send_command(cmd, params_dict)
                 
-                # Clean output by default, verbose if requested
+                # Handle both string and dict responses
                 if verbose:
                     print(f"✅ Result: {result}")
                 else:
-                    if result.get('result', {}).get('success', True):
-                        print(f"✅ {result.get('result', {}).get('message', 'Command completed')}")
+                    # Handle string responses
+                    if isinstance(result, str):
+                        print(f"✅ {result}")
+                    # Handle dict responses
+                    elif isinstance(result, dict):
+                        if result.get('result', {}).get('success', True):
+                            print(f"✅ {result.get('result', {}).get('message', 'Command completed')}")
+                        else:
+                            error_msg = result.get('result', {}).get('error', 'Unknown error')
+                            print(f"❌ {result.get('result', {}).get('message', 'Command failed')}")
+                            if isinstance(error_msg, str) and error_msg != 'Unknown error':
+                                print(f"   {error_msg}")
                     else:
-                        error_msg = result.get('result', {}).get('error', 'Unknown error')
-                        print(f"❌ {result.get('result', {}).get('message', 'Command failed')}")
-                        if isinstance(error_msg, str) and error_msg != 'Unknown error':
-                            print(f"   {error_msg}")
+                        print(f"✅ Command completed: {result}")
                 
                 write_log(f"COMMAND: {cmd} {params} -> {result}")
                 return result

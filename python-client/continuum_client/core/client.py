@@ -247,16 +247,26 @@ class ContinuumClient:
         
         result = await self.send_command('SCREENSHOT', params)
         
-        if result.get('success'):
+        # Handle both string and dict responses
+        if isinstance(result, str):
+            # String response - assume success
+            return {
+                'success': True,
+                'message': result,
+                'server_response': result
+            }
+        elif isinstance(result, dict) and result.get('success'):
             return {
                 'success': True,
                 'message': 'Screenshot captured via elegant SCREENSHOT command',
                 'server_response': result
             }
         else:
+            # Failed dict response or unknown format
+            error_msg = result.get('error', 'Unknown error') if isinstance(result, dict) else str(result)
             return {
                 'success': False,
-                'error': f"Screenshot command failed: {result.get('error', 'Unknown error')}",
+                'error': f"Screenshot command failed: {error_msg}",
                 'server_response': result
             }
 
