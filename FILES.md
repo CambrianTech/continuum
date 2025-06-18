@@ -4220,37 +4220,60 @@ The automation exists but may not be integrated with:
 
 ## 📸 UI VISUAL DOCUMENTATION: What Agents Should See
 
-**Evidence Screenshots: `docs/images/continuum-main-interface.png` & `docs/images/academy-training-room.png`**
+**For AI Agents: These screenshots prove the system works and show you what to expect when exploring the interface.**
 
-### 🎯 Main Interface Screenshot (`continuum-main-interface.png`)
+![Continuum Main Interface](docs/images/continuum-main-interface.png)
+*Multi-agent collaboration interface showing real working personas and chat*
 
-**What AI Agents See:**
-This is the primary multi-agent collaboration interface showing the system actually working:
+![Academy Training Room](docs/images/academy-training-room.png)  
+*Academy Training Room with adversarial training controls and graduation metrics*
 
-**Left Sidebar - USERS & AGENTS:**
-- **Claude Code** (AI Assistant) - Active
-- **joel** (Human User) - Active  
-- **Auto Route** (Agent workflow)
-- **CodeAI** (Code analysis & debugging)
-- **GeneralAI** (General assistance)
-- **PlannerAI** (Strategy & web commands)
-- **Protocol Sheriff** (Response validation)
+## 🔍 DETAILED INTERFACE ANALYSIS FOR AGENTS
 
-**Left Sidebar - SAVED PERSONAS (The Money Shot):**
-- **FAKE - Training Test**: IN ACADEMY status (shows academy integration works)
-- **FAKE - Failed Test**: FAILED status (shows failure handling)
-- **Fine-Tune Test**: GRADUATED 70.0% Academy Score (REAL trained agent!)
-- **PatentExpert**: GRADUATED 92.2% Academy Score (REAL specialized agent!)
-- **ProjectBot**: GRADUATED 80.0% Academy Score (REAL development agent!)
-- **Legal Test**: LOADED 82% Academy Score (REAL legal compliance agent!)
+### 🎯 Main Chat Interface Analysis (`continuum-main-interface.png`)
 
-**Right Main Area - Active Chat:**
-- Real conversations between GeneralAI, PlannerAI, and human
-- Agent-to-agent coordination visible
-- "Are you there now?" / "claude doesn't believe this works" conversation
-- Proves multi-agent communication is functional
+**🚨 CRITICAL FOR AGENTS: This proves the system actually works with real data!**
 
-**Files Involved in This Interface:**
+**🔝 Top Navigation Bar:**
+- **continuum** logo with "AI Workforce Construction" tagline
+- **Academy Ready** status indicator (green dot - system operational)
+- **Session costs tracker**: "$0.0000" with request counter
+- **Version badge**: "v0.2.1983" (Matrix-inspired versioning)
+
+**📋 Left Sidebar - SAVED PERSONAS Widget (THE PROOF!):**
+- **FAKE - Training Test**: "IN ACADEMY" status (bright orange - shows academy integration works)
+- **FAKE - Failed Test**: "FAILED" status (red X - shows failure handling)  
+- **Fine-Tune Test**: "GRADUATED" 73.0% Academy Score (green checkmark - REAL trained agent!)
+- **PatentExpert**: "GRADUATED" 92.2% Academy Score (green checkmark - REAL specialized agent!)
+- **ProjectBot**: "GRADUATED" 80.0% Academy Score (green checkmark - REAL development agent!)
+- **Legal Test**: "LOADED" 82% Academy Score (green checkmark - REAL legal compliance agent!)
+
+**Each persona card shows:**
+- **DEPLOY** button (green) - Deploy to active use
+- **RETRAIN** button (orange) - Send back to academy  
+- **SHARE ORG** button (blue) - Share across organization
+- **Academy progress bar** with percentage scores
+- **Specialization badges** (Protocol Enforcement, Patent Law, Legal Compliance, etc.)
+
+**💬 Right Main Area - Active Chat Interface:**
+- **"Active Chat"** header with "GeneralAI & 4 Agents" indicator
+- **Real conversations** showing:
+  - **SYSTEM**: "This tab is now active. Please use this window."
+  - **GENERALAI**: Multi-line responses about programming assistance and coordination
+  - **PLANNERAI**: "[CHAT] I'm here to help and prove how effective we can be..."
+  - **YOU**: Human responses like "are you there now?" and "claude doesn't believe this works"
+- **Message timestamps** (11:48 PM, 11:49 PM, etc.)
+- **Send button** (blue arrow) for message input
+- **Multi-agent coordination** clearly visible with agents responding to each other
+
+**🎮 UI Design Elements:**
+- **Dark theme** with cyberpunk/sci-fi aesthetic
+- **Gradient progress bars** on persona cards
+- **Status indicators** with color coding (green=good, orange=training, red=failed)
+- **Real-time messaging** with smooth chat flow
+- **Responsive layout** with collapsible sidebar panels
+
+**🔧 Files Responsible for Main Interface:**
 - **[SavedPersonas.js](#src-ui-components-savedpersonas-savedpersonas.js)** - The personas sidebar widget
 - **[ChatArea.js](#src-ui-components-chatarea.js)** - Main chat interface
 - **[UserSelector/UserSelector.js](#src-ui-components-userselector-userselector.js)** - User & agent list
@@ -4259,34 +4282,63 @@ This is the primary multi-agent collaboration interface showing the system actua
 - **[continuum-api.js](#src-ui-continuum-api.js)** - API connections to backend
 - **[WebSocketServer.cjs](#src-integrations-websocketserver.cjs)** - Real-time messaging
 
-### 🎓 Academy Training Room Screenshot (`academy-training-room.png`)
+### 🎓 Academy Training Room Analysis (`academy-training-room.png`)
 
 **What AI Agents See:**
 The Matrix-inspired training facility where TestingDroid vs ProtocolSheriff adversarial training happens:
 
-**Academy Tab Active:**
-- "Academy Training Room" header
-- "Watch AI agents train and see their progress in real-time"
+**🔝 Top Navigation Bar:**
+- **continuum** logo with "AI Workforce Construction" tagline  
+- **Academy Training Room** main header
+- **"Watch AI agents train and improve their skills"** subtitle
+- **Academy Ready** status indicator (green dot - system operational)
+- **Version badge**: "v0.2.1983" (Matrix-inspired versioning)
 
-**Left Panel - Training Controls:**
-- **TRAINING STATUS**: "No active training sessions" (shows monitoring system)
-- **Deploy Sheriff** button (launches ProtocolSheriff training)
-- **Custom Training** button (manual training configuration)
+**📊 Left Sidebar - Session Management:**
+- **Active/Academy tab selector** (Academy tab currently selected)
+- **SESSION COSTS**: "$0.0000" with request counter and "Cost History" link
 
-**Left Panel - Academy Statistics:**
-- **0 Training** (current active sessions)
-- **0 Graduated** (recent completion stats)
-- Real-time metrics dashboard
+**🎯 Training Status Widget:**
+- **"TRAINING STATUS"** header
+- **"No active training sessions"** status display
+- Shows real-time monitoring of academy activity
 
-**Left Panel - Recent Graduates:**
-- **❌ PatentAI-enhanced-1749847974118**: Failed 70.0% accuracy (needed 85%)
-- **❌ claude-code-enhanced-1749413989522**: Failed 86.7% accuracy (needed 95%)
-- Shows actual training history with real failure analysis
+**🔧 Training Controls:**
+- **🛡️ Deploy Sheriff** button (green) - Launch ProtocolSheriff training
+- **⚙️ Custom Training** button (blue) - Manual training configuration
+- Direct access to start adversarial training sessions
 
-**Right Main Area:**
-- Training visualization space (currently empty, waiting for active sessions)
-- Real-time progress display area
-- Adversarial battle visualization zone
+**📈 Academy Statistics Widget:**
+- **"ACADEMY STATISTICS"** header
+- **"0 Training"** - Current active training sessions counter
+- **"0 Graduated"** - Recent graduation completion stats
+- Real-time metrics dashboard for tracking academy performance
+
+**📋 Recent Graduates Widget:**
+- **"RECENT GRADUATES"** header with training history
+- **❌ PatentAI-enhanced-1749847974118**: 
+  - Status: "Failed 78.0% accuracy (needed 85%)"
+  - Shows real failure analysis with specific accuracy metrics
+- **❌ claude-code-enhanced-1749413986522**:
+  - Status: "Failed 86.7% accuracy (needed 95%)" 
+  - Demonstrates higher threshold requirements for code agents
+- **Red X indicators** showing failed graduation attempts
+- **Timestamp-based naming** showing agent creation times
+
+**💬 Right Main Area - Training Visualization:**
+- **Large central space** for real-time training visualization
+- **"Welcome to the Academy!"** system message  
+- **"Here you can watch AI agents train and see their progress in real-time."**
+- Currently empty, awaiting active training sessions
+- **Send button** (blue arrow) for academy command input
+- **Training battle display area** for TestingDroid vs ProtocolSheriff visualization
+
+**🎮 UI Design Elements:**
+- **Consistent dark theme** with cyberpunk/Matrix aesthetic
+- **Real training data** showing actual failure rates and thresholds
+- **Color-coded status indicators** (green=active, red=failed)
+- **Professional training interface** suitable for monitoring AI development
+- **Responsive layout** with dedicated training visualization space
 
 **Files Involved in Academy Interface:**
 - **[AcademySection.js](#src-ui-components-academysection.js)** - Main academy interface component
@@ -4460,6 +4512,49 @@ reportResults()                     // Success/failure reporting
 4. **🟢 LOW:** `debug-academy-ui.html` - Nice-to-have debugging tools
 
 **The Gap Identified:** The sophisticated UI components existed and worked, but were deleted during cleanup. Restoring these files should reconnect the beautiful interface to the powerful automation system that's already functional in `trust_the_process.py`.
+
+---
+
+## 🤖 FOR THE FILES TREE GENERATOR & FUTURE AGENTS
+
+**Note: This section is specifically for the `generate-files-tree.sh` script and agents working on file organization.**
+
+### 📋 Tree Generation Guidelines
+
+**When updating the file tree:**
+1. **Preserve existing agent comments** - Don't overwrite the detailed analysis above
+2. **Add tombstones automatically** when deleted files are detected in git
+3. **Link tree items** to detailed sections below using markdown anchors
+4. **Preserve the minimized tombstone format** in the dedicated tombstone section
+
+**Current Tombstone Strategy:**
+- Use `<details>` sections for minimized view
+- Include git commit references for recovery
+- Provide restoration strategies and dependencies
+- Mark priority levels (HIGH/MEDIUM/LOW)
+
+**File Organization Philosophy for Agents:**
+- **FILES.md is agent-focused** - include ALL technical details
+- **README.md is user-focused** - keep it clean and accessible
+- **Visual documentation belongs here** - screenshots, widget analysis, interface details
+- **Tombstones are critical** - they preserve institutional memory
+
+### 🔧 Generator Enhancement Suggestions
+
+**For `scripts/generate-files-tree.sh`:**
+1. **Auto-detect deleted files** from git history and add to tombstone section
+2. **Preserve visual documentation** sections when regenerating
+3. **Maintain existing detailed analysis** while updating tree structure
+4. **Cross-reference tree items** with detailed sections below
+
+**Tombstone Detection Logic:**
+```bash
+# Find recently deleted files
+git log --diff-filter=D --summary --since="30 days ago" | grep "delete mode"
+
+# Add them to tombstone section with commit info
+# Preserve existing tombstones unless they've been restored
+```
 
 ### 🤖 For AI Agents Reading This:
 
