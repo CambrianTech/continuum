@@ -36,14 +36,14 @@
 │   │   └── mocks
 │   ├── functional
 │   │   ├── user-scenarios
-│   │   │   └── WidgetIterationTests.test.js
+│   │   │   └── WidgetIterationTests.test.js 🧪
 │   │   ├── visual
-│   │   │   └── VisualControlModule.test.js
+│   │   │   └── VisualControlModule.test.js 🧪
 │   │   └── workflows
-│   │       └── CommandIntegrationTests.test.js
+│   │       └── CommandIntegrationTests.test.js 🧪
 │   ├── integration
 │   │   ├── ai
-│   │   │   └── AICapabilities.test.js
+│   │   │   └── AICapabilities.test.js 🧪
 │   │   ├── api
 │   │   │   ├── AcademyPersistentStorage.test.cjs
 │   │   │   ├── conftest.py
@@ -62,25 +62,25 @@
 │   │   │   ├── test_modular_commands.py
 │   │   │   └── test_validate_code_command.py
 │   │   ├── screenshot
-│   │   │   ├── full-screen-capture.test.py
-│   │   │   ├── screenshot-pipeline.test.py
+│   │   │   ├── full-screen-capture.test.py 🧪
+│   │   │   ├── screenshot-pipeline.test.py 🧪
 │   │   │   ├── ScreenshotIntegration.test.cjs
 │   │   │   ├── test_screenshot_bytes_mode.py
 │   │   │   ├── test_screenshot_simple.py
 │   │   │   ├── test_screenshot.py
-│   │   │   ├── whole-screen-capture.test.py
-│   │   │   └── widget-capture.test.py
+│   │   │   ├── whole-screen-capture.test.py 🧪
+│   │   │   └── widget-capture.test.py 🧪
 │   │   ├── ui
-│   │   │   ├── GroupChat.test.js
+│   │   │   ├── GroupChat.test.js 🧪
 │   │   │   ├── test_ignoreelements_fix.py
 │   │   │   ├── test_permanent_fix.py
 │   │   │   ├── test_users_widget.py
 │   │   │   ├── test_validation_fix.py
-│   │   │   └── UIComponents.test.js
+│   │   │   └── UIComponents.test.js 🧪
 │   │   ├── websocket
 │   │   │   └── test_connection.py
 │   │   └── widgets
-│   │       └── WebSocketSync.test.js
+│   │       └── WebSocketSync.test.js 🧪
 │   ├── python
 │   │   └── screenshot-client.py
 │   ├── unit
@@ -705,198 +705,198 @@
 📁 **archive/**
   📁 **archive/docs/**
   ### AI-INTELLIGENCE-VERIFIED.md {#archive-docs-ai-intelligence-verified.md}
-    # 📖 Documentation
+    # 📦 Archived documentation
 
   ### CHANGELOG.md {#archive-docs-changelog.md}
-    # 📖 Documentation
+    # 📦 Archived documentation
 
   ### CONTRIBUTING.md {#archive-docs-contributing.md}
-    # 📖 Documentation
+    # 📦 Archived documentation
 
   ### LERNA_UPDATE.md {#archive-docs-lerna_update.md}
-    # 📖 Documentation
+    # 📦 Archived documentation
 
   ### PR_CI_DESCRIPTION.md {#archive-docs-pr_ci_description.md}
-    # 📖 Documentation
+    # 📦 Archived documentation
 
   ### PR_DESCRIPTION.md {#archive-docs-pr_description.md}
-    # 📖 Documentation
+    # 📦 Archived documentation
 
   ### README-AI-HEALING.md {#archive-docs-readme-ai-healing.md}
-    # 📖 Documentation
+    # 📦 Archived documentation
 
   ### RELEASING.md {#archive-docs-releasing.md}
-    # 📖 Documentation
+    # 📦 Archived documentation
 
   ### ROADMAP.md {#archive-docs-roadmap.md}
     # 📖 Documentation
 
   ### SYSTEM_ARCHITECTURE.md {#archive-docs-system_architecture.md}
-    # 📖 Documentation
+    # 📦 Archived documentation
 
     📁 **archive/docs/docs/**
     ### ai_assistant_config_tool.md {#archive-docs-docs-ai_assistant_config_tool.md}
-      # 📖 Documentation
+      # 📦 Archived documentation
 
       📁 **archive/docs/docs/architecture/**
       ### implementation-specs.md {#archive-docs-docs-architecture-implementation-specs.md}
-        # 📖 Documentation
+        # 📦 Archived documentation
 
       📁 **archive/docs/docs/design/**
       ### human-in-the-loop.md {#archive-docs-docs-design-human-in-the-loop.md}
-        # 📖 Documentation
+        # 📦 Archived documentation
 
   📁 **archive/legacy-tests/**
   📁 **archive/old-experiments/**
   ### advanced-ai-system.cjs {#archive-old-experiments-advanced-ai-system.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### ai-process.cjs {#archive-old-experiments-ai-process.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### claude-auto-wrapper.cjs {#archive-old-experiments-claude-auto-wrapper.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### claude-cognition-test.cjs {#archive-old-experiments-claude-cognition-test.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### claude-direct.cjs {#archive-old-experiments-claude-direct.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### claude-qa-test.cjs {#archive-old-experiments-claude-qa-test.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### continuum-launcher.cjs {#archive-old-experiments-continuum-launcher.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### continuum.cjs {#archive-old-experiments-continuum.cjs}
     # ⚡ JavaScript/Node.js
 
   ### dynamic-ai-system.cjs {#archive-old-experiments-dynamic-ai-system.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### enhanced-ai-dev.cjs {#archive-old-experiments-enhanced-ai-dev.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### final-ai-system.cjs {#archive-old-experiments-final-ai-system.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### focused-ai-system.cjs {#archive-old-experiments-focused-ai-system.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### git-capable-ai.cjs {#archive-old-experiments-git-capable-ai.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### github-ai-integration.cjs {#archive-old-experiments-github-ai-integration.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### guardian-ai-fixed.cjs {#archive-old-experiments-guardian-ai-fixed.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### guardian-ai.cjs {#archive-old-experiments-guardian-ai.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### guardian-continuum.cjs {#archive-old-experiments-guardian-continuum.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### interactive-continuum.cjs {#archive-old-experiments-interactive-continuum.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### launch-continuum.cjs {#archive-old-experiments-launch-continuum.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### minimal-claude.cjs {#archive-old-experiments-minimal-claude.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### monitored-ai.cjs {#archive-old-experiments-monitored-ai.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### multi-continuum.cjs {#archive-old-experiments-multi-continuum.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### nasa-grade-ai-dev.cjs {#archive-old-experiments-nasa-grade-ai-dev.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### organized-ai-process.cjs {#archive-old-experiments-organized-ai-process.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### organized-ai-system.cjs {#archive-old-experiments-organized-ai-system.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### pr-fixing-ai.cjs {#archive-old-experiments-pr-fixing-ai.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### real-ai-interface.cjs {#archive-old-experiments-real-ai-interface.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### real-claude-connector.cjs {#archive-old-experiments-real-claude-connector.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### real-claude-pool.cjs {#archive-old-experiments-real-claude-pool.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### real-claude-tmux.cjs {#archive-old-experiments-real-claude-tmux.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### real-continuum.cjs {#archive-old-experiments-real-continuum.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### real-pool-manager.cjs {#archive-old-experiments-real-pool-manager.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### real-working-ai.cjs {#archive-old-experiments-real-working-ai.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### realistic-continuum.cjs {#archive-old-experiments-realistic-continuum.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### resilient-ai-dev.cjs {#archive-old-experiments-resilient-ai-dev.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### self-healing-ai.cjs {#archive-old-experiments-self-healing-ai.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### self-modifying-ai.cjs {#archive-old-experiments-self-modifying-ai.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### self-modifying-continuum.cjs {#archive-old-experiments-self-modifying-continuum.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### simple-ai.cjs {#archive-old-experiments-simple-ai.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### simple-claude-worker.cjs {#archive-old-experiments-simple-claude-worker.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### simple-test-ai.cjs {#archive-old-experiments-simple-test-ai.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### simple-test.cjs {#archive-old-experiments-simple-test.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### smart-ai-coordinator.cjs {#archive-old-experiments-smart-ai-coordinator.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### talk-to-ai.cjs {#archive-old-experiments-talk-to-ai.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### verified-ai-process.cjs {#archive-old-experiments-verified-ai-process.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### verified-ai-system.cjs {#archive-old-experiments-verified-ai-system.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### working-ai-system.cjs {#archive-old-experiments-working-ai-system.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### working-ai.cjs {#archive-old-experiments-working-ai.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### working-continuum.cjs {#archive-old-experiments-working-continuum.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
   ### working-pool.cjs {#archive-old-experiments-working-pool.cjs}
-    # ⚡ JavaScript/Node.js
+    # 🗄️ Archived JavaScript (filed away)
 
 
 📁 **archived/**
@@ -953,48 +953,48 @@
 
     📁 **archived/python-client/temp-files/**
     ### continuum-debug.log {#archived-python-client-temp-files-continuum-debug.log}
-      # 📄 File
+      # 🗑️ Log file (should be gitignored!)
 
     ### pyvenv.cfg {#archived-python-client-temp-files-pyvenv.cfg}
-      # 📄 File
+      # 🗂️ Archived file (shelved)
 
       📁 **archived/python-client/temp-files/bin/**
       ### activate {#archived-python-client-temp-files-bin-activate}
         # 🔧 Shell Script
 
       ### activate.csh {#archived-python-client-temp-files-bin-activate.csh}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
       ### activate.fish {#archived-python-client-temp-files-bin-activate.fish}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
       ### Activate.ps1 {#archived-python-client-temp-files-bin-activate.ps1}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
       ### pip {#archived-python-client-temp-files-bin-pip}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
       ### pip3 {#archived-python-client-temp-files-bin-pip3}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
       ### pip3.9 {#archived-python-client-temp-files-bin-pip3.9}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
       ### websockets {#archived-python-client-temp-files-bin-websockets}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
       📁 **archived/python-client/temp-files/include/**
       📁 **archived/python-client/temp-files/lib/**
         📁 **archived/python-client/temp-files/lib/python3.9/**
           📁 **archived/python-client/temp-files/lib/python3.9/site-packages/**
           ### continuum-client.egg-link {#archived-python-client-temp-files-lib-python3.9-site-packages-continuum-client.egg-link}
-            # 📄 File
+            # 🗂️ Archived file (shelved)
 
           ### distutils-precedence.pth {#archived-python-client-temp-files-lib-python3.9-site-packages-distutils-precedence.pth}
-            # 📄 File
+            # 🗂️ Archived file (shelved)
 
           ### easy-install.pth {#archived-python-client-temp-files-lib-python3.9-site-packages-easy-install.pth}
-            # 📄 File
+            # 🗂️ Archived file (shelved)
 
             📁 **archived/python-client/temp-files/lib/python3.9/site-packages/pip/**
             ### __init__.py {#archived-python-client-temp-files-lib-python3.9-site-packages-pip-__init__.py}
@@ -1004,7 +1004,7 @@
               # 🐍 Python
 
             ### py.typed {#archived-python-client-temp-files-lib-python3.9-site-packages-pip-py.typed}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
               📁 **archived/python-client/temp-files/lib/python3.9/site-packages/pip/_internal/**
               ### __init__.py {#archived-python-client-temp-files-lib-python3.9-site-packages-pip-_internal-__init__.py}
@@ -1432,7 +1432,7 @@
                 # 🐍 Python
 
               ### vendor.txt {#archived-python-client-temp-files-lib-python3.9-site-packages-pip-_vendor-vendor.txt}
-                # 📄 File
+                # 🗂️ Archived file (shelved)
 
                 📁 **archived/python-client/temp-files/lib/python3.9/site-packages/pip/_vendor/cachecontrol/**
                 ### __init__.py {#archived-python-client-temp-files-lib-python3.9-site-packages-pip-_vendor-cachecontrol-__init__.py}
@@ -1483,7 +1483,7 @@
                   # 🐍 Python
 
                 ### cacert.pem {#archived-python-client-temp-files-lib-python3.9-site-packages-pip-_vendor-certifi-cacert.pem}
-                  # 📄 File
+                  # 🗂️ Archived file (shelved)
 
                 ### core.py {#archived-python-client-temp-files-lib-python3.9-site-packages-pip-_vendor-certifi-core.py}
                   # 🐍 Python
@@ -2195,13 +2195,13 @@
               # 🐍 Python
 
             ### cli-32.exe {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-cli-32.exe}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
             ### cli-64.exe {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-cli-64.exe}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
             ### cli.exe {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-cli.exe}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
             ### config.py {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-config.py}
               # 🐍 Python
@@ -2225,13 +2225,13 @@
               # 🐍 Python
 
             ### gui-32.exe {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-gui-32.exe}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
             ### gui-64.exe {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-gui-64.exe}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
             ### gui.exe {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-gui.exe}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
             ### installer.py {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-installer.py}
               # 🐍 Python
@@ -2258,10 +2258,10 @@
               # 🐍 Python
 
             ### script (dev).tmpl {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-script--dev-.tmpl}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
             ### script.tmpl {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-script.tmpl}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
             ### unicode_utils.py {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-unicode_utils.py}
               # 🐍 Python
@@ -2376,7 +2376,7 @@
                 # 🐍 Python
 
               ### launcher manifest.xml {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-command-launcher-manifest.xml}
-                # 📄 File
+                # 🗂️ Archived file (shelved)
 
               ### py36compat.py {#archived-python-client-temp-files-lib-python3.9-site-packages-setuptools-command-py36compat.py}
                 # 🐍 Python
@@ -2453,19 +2453,19 @@
               # 🐍 Python
 
             ### py.typed {#archived-python-client-temp-files-lib-python3.9-site-packages-websockets-py.typed}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
             ### server.py {#archived-python-client-temp-files-lib-python3.9-site-packages-websockets-server.py}
               # 🐍 Python
 
             ### speedups.c {#archived-python-client-temp-files-lib-python3.9-site-packages-websockets-speedups.c}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
             ### speedups.cpython-39-darwin.so {#archived-python-client-temp-files-lib-python3.9-site-packages-websockets-speedups.cpython-39-darwin.so}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
             ### speedups.pyi {#archived-python-client-temp-files-lib-python3.9-site-packages-websockets-speedups.pyi}
-              # 📄 File
+              # 🗂️ Archived file (shelved)
 
             ### streams.py {#archived-python-client-temp-files-lib-python3.9-site-packages-websockets-streams.py}
               # 🐍 Python
@@ -2575,61 +2575,61 @@
       # 🐍 Python
 
     ### server_file_save_hook.js {#archived-python-client-test-scripts-server_file_save_hook.js}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
       📁 **archived/python-client/test-scripts/test_screenshots/**
       ### bytes_mode_version.png {#archived-python-client-test-scripts-test_screenshots-bytes_mode_version.png}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
   📁 **archived/root-level/**
     📁 **archived/root-level/temp-files/**
     ### continuon.markdown {#archived-root-level-temp-files-continuon.markdown}
-      # 📄 File
+      # 🗂️ Archived file (shelved)
 
     ### continuum_restart.log {#archived-root-level-temp-files-continuum_restart.log}
-      # 📄 File
+      # 🗑️ Log file (should be gitignored!)
 
     ### continuum-core.log {#archived-root-level-temp-files-continuum-core.log}
-      # 📄 File
+      # 🗑️ Log file (should be gitignored!)
 
     ### continuum-fixed.log {#archived-root-level-temp-files-continuum-fixed.log}
-      # 📄 File
+      # 🗑️ Log file (should be gitignored!)
 
     ### continuum.cjs.OLD {#archived-root-level-temp-files-continuum.cjs.old}
-      # 📄 File
+      # 🗂️ Archived file (shelved)
 
     ### continuum.log {#archived-root-level-temp-files-continuum.log}
       # 📄 File
 
     ### daemon-crash.log {#archived-root-level-temp-files-daemon-crash.log}
-      # 📄 File
+      # 🗑️ Log file (should be gitignored!)
 
     ### daemon-debug.log {#archived-root-level-temp-files-daemon-debug.log}
-      # 📄 File
+      # 🗑️ Log file (should be gitignored!)
 
     ### debug-academy-ui.html {#archived-root-level-temp-files-debug-academy-ui.html}
-      # 📄 File
+      # 🗃️ Archived HTML (stored away)
 
     ### debug-ui.html {#archived-root-level-temp-files-debug-ui.html}
-      # 📄 File
+      # 🗃️ Archived HTML (stored away)
 
     ### FluentAPI.cjs.bak {#archived-root-level-temp-files-fluentapi.cjs.bak}
-      # 📄 File
+      # 🗂️ Archived file (shelved)
 
     ### latest-daemon-attempt.log {#archived-root-level-temp-files-latest-daemon-attempt.log}
-      # 📄 File
+      # 🗑️ Log file (should be gitignored!)
 
     ### MoveCommand.cjs.bak2 {#archived-root-level-temp-files-movecommand.cjs.bak2}
-      # 📄 File
+      # 🗂️ Archived file (shelved)
 
     ### MoveCommand.cjs.bak3 {#archived-root-level-temp-files-movecommand.cjs.bak3}
-      # 📄 File
+      # 🗂️ Archived file (shelved)
 
     ### server.log {#archived-root-level-temp-files-server.log}
       # 📄 File
 
     ### simple-daemon.cjs {#archived-root-level-temp-files-simple-daemon.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
       📁 **archived/root-level/temp-files/test-run/**
       📁 **archived/root-level/temp-files/untitled folder/**
@@ -2641,16 +2641,16 @@
       # 🐍 Python
 
     ### chat-with-user.cjs {#archived-root-level-test-files-chat-with-user.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### check_screenshot_logs.py {#archived-root-level-test-files-check_screenshot_logs.py}
       # 🐍 Python
 
     ### check-imports.cjs {#archived-root-level-test-files-check-imports.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### claude-code-agent.cjs {#archived-root-level-test-files-claude-code-agent.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### complete_browser_client_validation.py {#archived-root-level-test-files-complete_browser_client_validation.py}
       # 🐍 Python
@@ -2662,10 +2662,10 @@
       # 🐍 Python
 
     ### continuum-web-browser-test.cjs {#archived-root-level-test-files-continuum-web-browser-test.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### cursor-movement-demo.cjs {#archived-root-level-test-files-cursor-movement-demo.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### debug_canvas_elements.py {#archived-root-level-test-files-debug_canvas_elements.py}
       # 🐍 Python
@@ -2680,22 +2680,22 @@
       # 🐍 Python
 
     ### debug-drawer.cjs {#archived-root-level-test-files-debug-drawer.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### demo-claude-agent.cjs {#archived-root-level-test-files-demo-claude-agent.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### demo-visual-gaming.cjs {#archived-root-level-test-files-demo-visual-gaming.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### dev-shop-coordinator.cjs {#archived-root-level-test-files-dev-shop-coordinator.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### direct-test.cjs {#archived-root-level-test-files-direct-test.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### final-message.cjs {#archived-root-level-test-files-final-message.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### fix_browser_connection_and_m6.py {#archived-root-level-test-files-fix_browser_connection_and_m6.py}
       # 🐍 Python
@@ -2704,31 +2704,31 @@
       # 🐍 Python
 
     ### intelligent-pr-monitor.cjs {#archived-root-level-test-files-intelligent-pr-monitor.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### jest.config.test.js {#archived-root-level-test-files-jest.config.test.js}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### live-cyberpunk-dev.cjs {#archived-root-level-test-files-live-cyberpunk-dev.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### monitor-pr-63.cjs {#archived-root-level-test-files-monitor-pr-63.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### monitored-spawn.cjs {#archived-root-level-test-files-monitored-spawn.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### pr-monitor-bot.cjs {#archived-root-level-test-files-pr-monitor-bot.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### proper-agent-connection.cjs {#archived-root-level-test-files-proper-agent-connection.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### protected-spawn.cjs {#archived-root-level-test-files-protected-spawn.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### quick-cursor-test.cjs {#archived-root-level-test-files-quick-cursor-test.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### read_debug_logs.py {#archived-root-level-test-files-read_debug_logs.py}
       # 🐍 Python
@@ -2737,19 +2737,19 @@
       # 🐍 Python
 
     ### reload-browser.cjs {#archived-root-level-test-files-reload-browser.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### safe_integration_test.cjs {#archived-root-level-test-files-safe_integration_test.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### screenshot-and-center.cjs {#archived-root-level-test-files-screenshot-and-center.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### self-controlling-ai.cjs {#archived-root-level-test-files-self-controlling-ai.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### self-testing-spawn.cjs {#archived-root-level-test-files-self-testing-spawn.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### simple_canvas_debug.py {#archived-root-level-test-files-simple_canvas_debug.py}
       # 🐍 Python
@@ -2758,10 +2758,10 @@
       # 🐍 Python
 
     ### smart-ecosystem.cjs {#archived-root-level-test-files-smart-ecosystem.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### stream-commands.cjs {#archived-root-level-test-files-stream-commands.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### test_browser_websocket.py {#archived-root-level-test-files-test_browser_websocket.py}
       # 🐍 Python
@@ -2770,10 +2770,10 @@
       # 🐍 Python
 
     ### test_fluent_api.cjs {#archived-root-level-test-files-test_fluent_api.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### test_macro_commands.cjs {#archived-root-level-test-files-test_macro_commands.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### test_screenshot_data_api.py {#archived-root-level-test-files-test_screenshot_data_api.py}
       # 🐍 Python
@@ -2782,37 +2782,37 @@
       # 🐍 Python
 
     ### test-ai-connection.html {#archived-root-level-test-files-test-ai-connection.html}
-      # 📄 File
+      # 🗃️ Archived HTML (stored away)
 
     ### test-ai-cursor.cjs {#archived-root-level-test-files-test-ai-cursor.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### test-continuon-demo.cjs {#archived-root-level-test-files-test-continuon-demo.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### test-mouse-control.cjs {#archived-root-level-test-files-test-mouse-control.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### test-persistent-storage.cjs {#archived-root-level-test-files-test-persistent-storage.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### test-tab-focus.cjs {#archived-root-level-test-files-test-tab-focus.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### test-tab-registration.cjs {#archived-root-level-test-files-test-tab-registration.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### test-version-endpoint.cjs {#archived-root-level-test-files-test-version-endpoint.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### test-web-browser-demo.cjs {#archived-root-level-test-files-test-web-browser-demo.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### test-websocket-client.cjs {#archived-root-level-test-files-test-websocket-client.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### trigger-planner-training.cjs {#archived-root-level-test-files-trigger-planner-training.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### validate_milestone_debugger.py {#archived-root-level-test-files-validate_milestone_debugger.py}
       # 🐍 Python
@@ -2821,10 +2821,10 @@
       # 🐍 Python
 
     ### visual-control-module.cjs {#archived-root-level-test-files-visual-control-module.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### websocket-queue-test.cjs {#archived-root-level-test-files-websocket-queue-test.cjs}
-      # ⚡ JavaScript/Node.js
+      # 🗄️ Archived JavaScript (filed away)
 
     ### working_milestone_debugger.py {#archived-root-level-test-files-working_milestone_debugger.py}
       # 🐍 Python
@@ -2835,138 +2835,138 @@
       📁 **archived/root-level/test-files/ai-iterative-tests/**
       📁 **archived/root-level/test-files/ai-verification-tests/**
       ### config.txt {#archived-root-level-test-files-ai-verification-tests-config.txt}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
       ### count.txt {#archived-root-level-test-files-ai-verification-tests-count.txt}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
       ### date-test.txt {#archived-root-level-test-files-ai-verification-tests-date-test.txt}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
       ### location.txt {#archived-root-level-test-files-ai-verification-tests-location.txt}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
       ### system-info.txt {#archived-root-level-test-files-ai-verification-tests-system-info.txt}
-        # 📄 File
+        # 🗂️ Archived file (shelved)
 
         📁 **archived/root-level/test-files/ai-verification-tests/test-folder/**
         ### readme.md {#archived-root-level-test-files-ai-verification-tests-test-folder-readme.md}
-          # 📖 Documentation
+          # 📦 Archived documentation
 
       📁 **archived/root-level/test-files/tests-directory/**
       ### academy-fine-tuning.test.cjs {#archived-root-level-test-files-tests-directory-academy-fine-tuning.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### adapter-sharing.test.cjs {#archived-root-level-test-files-tests-directory-adapter-sharing.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### adversarial-protocol.test.cjs {#archived-root-level-test-files-tests-directory-adversarial-protocol.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### basic.cjs {#archived-root-level-test-files-tests-directory-basic.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### build-system.test.cjs {#archived-root-level-test-files-tests-directory-build-system.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### command-processing.test.cjs {#archived-root-level-test-files-tests-directory-command-processing.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### complete-system-demo.cjs {#archived-root-level-test-files-tests-directory-complete-system-demo.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### comprehensive-api-test.cjs {#archived-root-level-test-files-tests-directory-comprehensive-api-test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### continuum-hierarchy.test.cjs {#archived-root-level-test-files-tests-directory-continuum-hierarchy.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### cyberpunk-theme.test.cjs {#archived-root-level-test-files-tests-directory-cyberpunk-theme.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### hierarchical-specialization.test.cjs {#archived-root-level-test-files-tests-directory-hierarchical-specialization.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### integration-full-system.test.ts {#archived-root-level-test-files-tests-directory-integration-full-system.test.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
       ### integration.test.cjs {#archived-root-level-test-files-tests-directory-integration.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### lora-fine-tuning.test.cjs {#archived-root-level-test-files-tests-directory-lora-fine-tuning.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### master-test-runner.cjs {#archived-root-level-test-files-tests-directory-master-test-runner.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### memory-package.test.cjs {#archived-root-level-test-files-tests-directory-memory-package.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### model-adapter-pricing.test.cjs {#archived-root-level-test-files-tests-directory-model-adapter-pricing.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### modular-system.test.cjs {#archived-root-level-test-files-tests-directory-modular-system.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### orchestrator.test.ts {#archived-root-level-test-files-tests-directory-orchestrator.test.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
       ### performance.test.cjs {#archived-root-level-test-files-tests-directory-performance.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### persona-hierarchy-storage.test.cjs {#archived-root-level-test-files-tests-directory-persona-hierarchy-storage.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### persona-lifecycle.test.cjs {#archived-root-level-test-files-tests-directory-persona-lifecycle.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### prevent-claude-communication-errors.test.ts {#archived-root-level-test-files-tests-directory-prevent-claude-communication-errors.test.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
       ### prevent-constant-reassignment.test.ts {#archived-root-level-test-files-tests-directory-prevent-constant-reassignment.test.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
       ### protocol-sheriff.test.cjs {#archived-root-level-test-files-tests-directory-protocol-sheriff.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### screenshot-command.test.cjs {#archived-root-level-test-files-tests-directory-screenshot-command.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### security.test.cjs {#archived-root-level-test-files-tests-directory-security.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### self-validation.test.cjs {#archived-root-level-test-files-tests-directory-self-validation.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
       ### unit.test.cjs {#archived-root-level-test-files-tests-directory-unit.test.cjs}
-        # ⚡ JavaScript/Node.js
+        # 🗄️ Archived JavaScript (filed away)
 
         📁 **archived/root-level/test-files/tests-directory/communication/**
         ### AgentChannels.test.ts {#archived-root-level-test-files-tests-directory-communication-agentchannels.test.ts}
-          # 📄 File
+          # 🔗 TypeScript (missing from JS loop?)
 
         📁 **archived/root-level/test-files/tests-directory/integration/**
         ### console-logs.test.cjs {#archived-root-level-test-files-tests-directory-integration-console-logs.test.cjs}
-          # ⚡ JavaScript/Node.js
+          # 🗄️ Archived JavaScript (filed away)
 
         ### ContinuumChannels.test.ts {#archived-root-level-test-files-tests-directory-integration-continuumchannels.test.ts}
-          # 📄 File
+          # 🔗 TypeScript (missing from JS loop?)
 
         📁 **archived/root-level/test-files/tests-directory/system/**
         ### BasicTaskTests.test.ts {#archived-root-level-test-files-tests-directory-system-basictasktests.test.ts}
-          # 📄 File
+          # 🔗 TypeScript (missing from JS loop?)
 
         📁 **archived/root-level/test-files/tests-directory/tmp-core-test/**
           📁 **archived/root-level/test-files/tests-directory/tmp-core-test/test-project/**
         📁 **archived/root-level/test-files/tests-directory/ui/**
         ### ActionTracker.test.ts {#archived-root-level-test-files-tests-directory-ui-actiontracker.test.ts}
-          # 📄 File
+          # 🔗 TypeScript (missing from JS loop?)
 
         ### StatusIndicator.test.ts {#archived-root-level-test-files-tests-directory-ui-statusindicator.test.ts}
-          # 📄 File
+          # 🔗 TypeScript (missing from JS loop?)
 
         ### UIController.test.ts {#archived-root-level-test-files-tests-directory-ui-uicontroller.test.ts}
-          # 📄 File
+          # 🔗 TypeScript (missing from JS loop?)
 
 
 📁 **assets/**
@@ -2984,904 +2984,904 @@
 
   📁 **coverage/lcov-report/**
   ### base.css {#coverage-lcov-report-base.css}
-    # 📄 File
+    # 🧤 File debris (spring cleaning time?)
 
   ### block-navigation.js {#coverage-lcov-report-block-navigation.js}
-    # ⚡ JavaScript/Node.js
+    # 🧽 JavaScript debris (cleanup needed?)
 
   ### index.html {#coverage-lcov-report-index.html}
-    # 📄 File
+    # 🧼 HTML scraps (temp/debug files?)
 
   ### prettify.css {#coverage-lcov-report-prettify.css}
-    # 📄 File
+    # 🧤 File debris (spring cleaning time?)
 
   ### prettify.js {#coverage-lcov-report-prettify.js}
-    # ⚡ JavaScript/Node.js
+    # 🧽 JavaScript debris (cleanup needed?)
 
   ### sorter.js {#coverage-lcov-report-sorter.js}
-    # ⚡ JavaScript/Node.js
+    # 🧽 JavaScript debris (cleanup needed?)
 
     📁 **coverage/lcov-report/cli/**
       📁 **coverage/lcov-report/cli/src/**
       ### ask.js.html {#coverage-lcov-report-cli-src-ask.js.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### context.js.html {#coverage-lcov-report-cli-src-context.js.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.html {#coverage-lcov-report-cli-src-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.ts.html {#coverage-lcov-report-cli-src-index.ts.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### templates.ts.html {#coverage-lcov-report-cli-src-templates.ts.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### types.d.ts.html {#coverage-lcov-report-cli-src-types.d.ts.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
         📁 **coverage/lcov-report/cli/src/adapters/**
         ### claude.ts.html {#coverage-lcov-report-cli-src-adapters-claude.ts.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### gpt.ts.html {#coverage-lcov-report-cli-src-adapters-gpt.ts.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### index.html {#coverage-lcov-report-cli-src-adapters-index.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### index.ts.html {#coverage-lcov-report-cli-src-adapters-index.ts.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         📁 **coverage/lcov-report/cli/src/commands/**
         ### adapt.ts.html {#coverage-lcov-report-cli-src-commands-adapt.ts.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### index.html {#coverage-lcov-report-cli-src-commands-index.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### init.ts.html {#coverage-lcov-report-cli-src-commands-init.ts.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### validate.ts.html {#coverage-lcov-report-cli-src-commands-validate.ts.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
     📁 **coverage/lcov-report/core/**
       📁 **coverage/lcov-report/core/src/**
       ### index.html {#coverage-lcov-report-core-src-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.ts.html {#coverage-lcov-report-core-src-index.ts.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### types.ts.html {#coverage-lcov-report-core-src-types.ts.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### utils.ts.html {#coverage-lcov-report-core-src-utils.ts.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
     📁 **coverage/lcov-report/memory/**
       📁 **coverage/lcov-report/memory/src/**
       ### index.html {#coverage-lcov-report-memory-src-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.ts.html {#coverage-lcov-report-memory-src-index.ts.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
     📁 **coverage/lcov-report/src/**
     ### index.html {#coverage-lcov-report-src-index.html}
-      # 📄 File
+      # 🧼 HTML scraps (temp/debug files?)
 
     ### intelligent-routing.cjs.html {#coverage-lcov-report-src-intelligent-routing.cjs.html}
-      # 📄 File
+      # 🧼 HTML scraps (temp/debug files?)
 
     ### orchestrator.ts.html {#coverage-lcov-report-src-orchestrator.ts.html}
-      # 📄 File
+      # 🧼 HTML scraps (temp/debug files?)
 
     ### process-manager.cjs.html {#coverage-lcov-report-src-process-manager.cjs.html}
-      # 📄 File
+      # 🧼 HTML scraps (temp/debug files?)
 
     ### self-improving-router.cjs.html {#coverage-lcov-report-src-self-improving-router.cjs.html}
-      # 📄 File
+      # 🧼 HTML scraps (temp/debug files?)
 
     ### tmux-claude-pool.cjs.html {#coverage-lcov-report-src-tmux-claude-pool.cjs.html}
-      # 📄 File
+      # 🧼 HTML scraps (temp/debug files?)
 
     ### working-web-interface.cjs.html {#coverage-lcov-report-src-working-web-interface.cjs.html}
-      # 📄 File
+      # 🧼 HTML scraps (temp/debug files?)
 
       📁 **coverage/lcov-report/src/adapters/**
       ### AdapterRegistry.cjs.html {#coverage-lcov-report-src-adapters-adapterregistry.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### BrowserAdapter.cjs.html {#coverage-lcov-report-src-adapters-browseradapter.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### HierarchicalAdapter.cjs.html {#coverage-lcov-report-src-adapters-hierarchicaladapter.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.html {#coverage-lcov-report-src-adapters-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### LoRAAdapter.cjs.html {#coverage-lcov-report-src-adapters-loraadapter.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### ModelAdapter.cjs.html {#coverage-lcov-report-src-adapters-modeladapter.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       📁 **coverage/lcov-report/src/agents/**
       ### Agent.ts.html {#coverage-lcov-report-src-agents-agent.ts.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### AgentFactory.ts.html {#coverage-lcov-report-src-agents-agentfactory.ts.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### base-agent.js.html {#coverage-lcov-report-src-agents-base-agent.js.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.html {#coverage-lcov-report-src-agents-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### planner-ai.js.html {#coverage-lcov-report-src-agents-planner-ai.js.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### ScreenshotAgent.cjs.html {#coverage-lcov-report-src-agents-screenshotagent.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       📁 **coverage/lcov-report/src/commands/**
       ### BaseCommand.cjs.html {#coverage-lcov-report-src-commands-basecommand.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### CommandRegistry.cjs.html {#coverage-lcov-report-src-commands-commandregistry.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.html {#coverage-lcov-report-src-commands-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
         📁 **coverage/lcov-report/src/commands/core/**
         ### index.html {#coverage-lcov-report-src-commands-core-index.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### test-runner.cjs.html {#coverage-lcov-report-src-commands-core-test-runner.cjs.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### validation-test.cjs.html {#coverage-lcov-report-src-commands-core-validation-test.cjs.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/agents/**
           ### AgentsCommand.cjs.html {#coverage-lcov-report-src-commands-core-agents-agentscommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-agents-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-agents-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/browser/**
           ### BrowserCommand.cjs.html {#coverage-lcov-report-src-commands-core-browser-browsercommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-browser-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-browser-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/browserjs/**
           ### BrowserJSCommand.cjs.html {#coverage-lcov-report-src-commands-core-browserjs-browserjscommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-browserjs-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-browserjs-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/chat/**
           ### ChatCommand.cjs.html {#coverage-lcov-report-src-commands-core-chat-chatcommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-chat-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-chat-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/clear/**
           ### ClearCommand.cjs.html {#coverage-lcov-report-src-commands-core-clear-clearcommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-clear-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-clear-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/createroom/**
           ### CreateRoomCommand.cjs.html {#coverage-lcov-report-src-commands-core-createroom-createroomcommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-createroom-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-createroom-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/cursor/**
           ### CursorCommand.cjs.html {#coverage-lcov-report-src-commands-core-cursor-cursorcommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-cursor-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-cursor-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
             📁 **coverage/lcov-report/src/commands/core/cursor/graphics/**
             ### GraphicsRenderer.js.html {#coverage-lcov-report-src-commands-core-cursor-graphics-graphicsrenderer.js.html}
-              # 📄 File
+              # 🧼 HTML scraps (temp/debug files?)
 
             ### index.html {#coverage-lcov-report-src-commands-core-cursor-graphics-index.html}
-              # 📄 File
+              # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/diagnostics/**
           ### DiagnosticsCommand.cjs.html {#coverage-lcov-report-src-commands-core-diagnostics-diagnosticscommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.cjs.html {#coverage-lcov-report-src-commands-core-diagnostics-index.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-diagnostics-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-diagnostics-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/emotion/**
           ### EmotionCommand.cjs.html {#coverage-lcov-report-src-commands-core-emotion-emotioncommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### emotionConfigs.cjs.html {#coverage-lcov-report-src-commands-core-emotion-emotionconfigs.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### emotionConfigs.js.html {#coverage-lcov-report-src-commands-core-emotion-emotionconfigs.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### emotionDefinition.cjs.html {#coverage-lcov-report-src-commands-core-emotion-emotiondefinition.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-emotion-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-emotion-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/exec/**
           ### ExecCommand.cjs.html {#coverage-lcov-report-src-commands-core-exec-execcommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-exec-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-exec-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/fileSave/**
           ### FileSaveCommand.cjs.html {#coverage-lcov-report-src-commands-core-filesave-filesavecommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-filesave-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-filesave-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/findUser/**
           ### FindUserCommand.cjs.html {#coverage-lcov-report-src-commands-core-finduser-findusercommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.cjs.html {#coverage-lcov-report-src-commands-core-finduser-index.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-finduser-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-finduser-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/help/**
           ### HelpCommand.cjs.html {#coverage-lcov-report-src-commands-core-help-helpcommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.cjs.html {#coverage-lcov-report-src-commands-core-help-index.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-help-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-help-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/info/**
           ### index.html {#coverage-lcov-report-src-commands-core-info-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-info-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### InfoCommand.cjs.html {#coverage-lcov-report-src-commands-core-info-infocommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/input/**
           ### index.html {#coverage-lcov-report-src-commands-core-input-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-input-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### InputCommand.cjs.html {#coverage-lcov-report-src-commands-core-input-inputcommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/joinroom/**
           ### index.html {#coverage-lcov-report-src-commands-core-joinroom-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-joinroom-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### JoinRoomCommand.cjs.html {#coverage-lcov-report-src-commands-core-joinroom-joinroomcommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/listagents/**
           ### index.html {#coverage-lcov-report-src-commands-core-listagents-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-listagents-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### ListAgentsCommand.cjs.html {#coverage-lcov-report-src-commands-core-listagents-listagentscommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/listrooms/**
           ### index.html {#coverage-lcov-report-src-commands-core-listrooms-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### ListRoomsCommand.cjs.html {#coverage-lcov-report-src-commands-core-listrooms-listroomscommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/loadrooms/**
           ### index.html {#coverage-lcov-report-src-commands-core-loadrooms-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-loadrooms-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### LoadRoomsCommand.cjs.html {#coverage-lcov-report-src-commands-core-loadrooms-loadroomscommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/macro/**
           ### index.html {#coverage-lcov-report-src-commands-core-macro-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-macro-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### MacroCommand.cjs.html {#coverage-lcov-report-src-commands-core-macro-macrocommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/move/**
           ### index.html {#coverage-lcov-report-src-commands-core-move-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-move-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### MoveCommand.cjs.html {#coverage-lcov-report-src-commands-core-move-movecommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/preferences/**
           ### index.html {#coverage-lcov-report-src-commands-core-preferences-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-preferences-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### PreferencesCommand.cjs.html {#coverage-lcov-report-src-commands-core-preferences-preferencescommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/promisejs/**
           ### index.html {#coverage-lcov-report-src-commands-core-promisejs-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-promisejs-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### PromiseJSCommand.cjs.html {#coverage-lcov-report-src-commands-core-promisejs-promisejscommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/reload/**
           ### index.html {#coverage-lcov-report-src-commands-core-reload-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-reload-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### ReloadCommand.cjs.html {#coverage-lcov-report-src-commands-core-reload-reloadcommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/restart/**
           ### index.html {#coverage-lcov-report-src-commands-core-restart-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-restart-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### RestartCommand.cjs.html {#coverage-lcov-report-src-commands-core-restart-restartcommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/savefile/**
           ### index.html {#coverage-lcov-report-src-commands-core-savefile-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-savefile-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### SaveFileCommand.cjs.html {#coverage-lcov-report-src-commands-core-savefile-savefilecommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/screenshot/**
           ### ContinuonAnimator.js.html {#coverage-lcov-report-src-commands-core-screenshot-continuonanimator.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.cjs.html {#coverage-lcov-report-src-commands-core-screenshot-index.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.client.js.html {#coverage-lcov-report-src-commands-core-screenshot-index.client.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-screenshot-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-screenshot-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### ScreenshotCommand.cjs.html {#coverage-lcov-report-src-commands-core-screenshot-screenshotcommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### ScreenshotCommand.client.js.html {#coverage-lcov-report-src-commands-core-screenshot-screenshotcommand.client.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### ScreenshotUtils.js.html {#coverage-lcov-report-src-commands-core-screenshot-screenshotutils.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/share/**
           ### index.cjs.html {#coverage-lcov-report-src-commands-core-share-index.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-share-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-share-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### ShareCommand.cjs.html {#coverage-lcov-report-src-commands-core-share-sharecommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/test/**
           ### index.cjs.html {#coverage-lcov-report-src-commands-core-test-index.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.html {#coverage-lcov-report-src-commands-core-test-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-test-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### TestCommand.cjs.html {#coverage-lcov-report-src-commands-core-test-testcommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/type/**
           ### index.html {#coverage-lcov-report-src-commands-core-type-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-type-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### TypeCommand.cjs.html {#coverage-lcov-report-src-commands-core-type-typecommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/validatecode/**
           ### index.html {#coverage-lcov-report-src-commands-core-validatecode-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-validatecode-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### ValidateCodeCommand.cjs.html {#coverage-lcov-report-src-commands-core-validatecode-validatecodecommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           📁 **coverage/lcov-report/src/commands/core/validatejs/**
           ### index.html {#coverage-lcov-report-src-commands-core-validatejs-index.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### index.server.js.html {#coverage-lcov-report-src-commands-core-validatejs-index.server.js.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
           ### ValidateJSCommand.cjs.html {#coverage-lcov-report-src-commands-core-validatejs-validatejscommand.cjs.html}
-            # 📄 File
+            # 🧼 HTML scraps (temp/debug files?)
 
       📁 **coverage/lcov-report/src/core/**
       ### Academy.cjs.html {#coverage-lcov-report-src-core-academy.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### AdversarialPair.cjs.html {#coverage-lcov-report-src-core-adversarialpair.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### AICapabilityMatcher.cjs.html {#coverage-lcov-report-src-core-aicapabilitymatcher.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### AIModel.cjs.html {#coverage-lcov-report-src-core-aimodel.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### BrowserLogger.cjs.html {#coverage-lcov-report-src-core-browserlogger.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### CommandDefinitions.cjs.html {#coverage-lcov-report-src-core-commanddefinitions.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### CommandProcessor.cjs.html {#coverage-lcov-report-src-core-commandprocessor.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### CommandTeacher.cjs.html {#coverage-lcov-report-src-core-commandteacher.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### continuum-core.cjs.html {#coverage-lcov-report-src-core-continuum-core.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### CostTracker.cjs.html {#coverage-lcov-report-src-core-costtracker.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### FineTuningDataGenerator.cjs.html {#coverage-lcov-report-src-core-finetuningdatagenerator.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### GameTrainer.cjs.html {#coverage-lcov-report-src-core-gametrainer.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.html {#coverage-lcov-report-src-core-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### MessageQueue.cjs.html {#coverage-lcov-report-src-core-messagequeue.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### ModelCaliber.cjs.html {#coverage-lcov-report-src-core-modelcaliber.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### Persona.cjs.html {#coverage-lcov-report-src-core-persona.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### PersonaBootcamp.cjs.html {#coverage-lcov-report-src-core-personabootcamp.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### PersonaFactory.cjs.html {#coverage-lcov-report-src-core-personafactory.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### PersonaLibrary.cjs.html {#coverage-lcov-report-src-core-personalibrary.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### PersonaRegistry.cjs.html {#coverage-lcov-report-src-core-personaregistry.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### ProtocolSheriff.cjs.html {#coverage-lcov-report-src-core-protocolsheriff.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### RequestManagerDroid.cjs.html {#coverage-lcov-report-src-core-requestmanagerdroid.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### SheriffTrainer.cjs.html {#coverage-lcov-report-src-core-sherifftrainer.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### TestingDroid.cjs.html {#coverage-lcov-report-src-core-testingdroid.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### ValidationPipeline.cjs.html {#coverage-lcov-report-src-core-validationpipeline.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### VersionManager.cjs.html {#coverage-lcov-report-src-core-versionmanager.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       📁 **coverage/lcov-report/src/integrations/**
       ### ContinuonRing.cjs.html {#coverage-lcov-report-src-integrations-continuonring.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### ContinuonTray.cjs.html {#coverage-lcov-report-src-integrations-continuontray.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### github-ci.cjs.html {#coverage-lcov-report-src-integrations-github-ci.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### HttpServer.cjs.html {#coverage-lcov-report-src-integrations-httpserver.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.html {#coverage-lcov-report-src-integrations-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### MacOSMenuBar.cjs.html {#coverage-lcov-report-src-integrations-macosmenubar.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### ScreenshotIntegration.cjs.html {#coverage-lcov-report-src-integrations-screenshotintegration.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### SimpleMenuBar.cjs.html {#coverage-lcov-report-src-integrations-simplemenubar.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### SystemTray.cjs.html {#coverage-lcov-report-src-integrations-systemtray.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### SystemTraySimple.cjs.html {#coverage-lcov-report-src-integrations-systemtraysimple.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### WebSocketServer.cjs.html {#coverage-lcov-report-src-integrations-websocketserver.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       📁 **coverage/lcov-report/src/interfaces/**
       ### agent-interface.js.html {#coverage-lcov-report-src-interfaces-agent-interface.js.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### agent.interface.ts.html {#coverage-lcov-report-src-interfaces-agent.interface.ts.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.html {#coverage-lcov-report-src-interfaces-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### tool-interface.js.html {#coverage-lcov-report-src-interfaces-tool-interface.js.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       📁 **coverage/lcov-report/src/modules/**
       ### CommandModule.cjs.html {#coverage-lcov-report-src-modules-commandmodule.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### CoreModule.cjs.html {#coverage-lcov-report-src-modules-coremodule.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### FluentAPI.cjs.html {#coverage-lcov-report-src-modules-fluentapi.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.html {#coverage-lcov-report-src-modules-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
         📁 **coverage/lcov-report/src/modules/ui/**
         ### AgentSelector.js.html {#coverage-lcov-report-src-modules-ui-agentselector.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### index.html {#coverage-lcov-report-src-modules-ui-index.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### ScreenshotFeedback.js.html {#coverage-lcov-report-src-modules-ui-screenshotfeedback.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
       📁 **coverage/lcov-report/src/services/**
       ### CommandDiscoveryService.cjs.html {#coverage-lcov-report-src-services-commanddiscoveryservice.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### GameManager.cjs.html {#coverage-lcov-report-src-services-gamemanager.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.html {#coverage-lcov-report-src-services-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### ModelDiscoveryService.js.html {#coverage-lcov-report-src-services-modeldiscoveryservice.js.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### ModelDiscoveryService.ts.html {#coverage-lcov-report-src-services-modeldiscoveryservice.ts.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### RemoteAgentManager.cjs.html {#coverage-lcov-report-src-services-remoteagentmanager.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### ScreenshotService.cjs.html {#coverage-lcov-report-src-services-screenshotservice.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### TabManager.cjs.html {#coverage-lcov-report-src-services-tabmanager.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### VisualGameManager.cjs.html {#coverage-lcov-report-src-services-visualgamemanager.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### WebVisualManager.cjs.html {#coverage-lcov-report-src-services-webvisualmanager.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       📁 **coverage/lcov-report/src/storage/**
       ### index.html {#coverage-lcov-report-src-storage-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### ModelCheckpoint.cjs.html {#coverage-lcov-report-src-storage-modelcheckpoint.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### PersistentStorage.cjs.html {#coverage-lcov-report-src-storage-persistentstorage.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
         📁 **coverage/lcov-report/src/storage/persistent/**
         ### index.html {#coverage-lcov-report-src-storage-persistent-index.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### index.server.js.html {#coverage-lcov-report-src-storage-persistent-index.server.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### PersistentStorage.cjs.html {#coverage-lcov-report-src-storage-persistent-persistentstorage.cjs.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
       📁 **coverage/lcov-report/src/tests/**
       ### demo-graceful-shutdown.cjs.html {#coverage-lcov-report-src-tests-demo-graceful-shutdown.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.html {#coverage-lcov-report-src-tests-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### run-all-tests.cjs.html {#coverage-lcov-report-src-tests-run-all-tests.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-agent-channels.cjs.html {#coverage-lcov-report-src-tests-test-agent-channels.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-ai-basic-tasks.cjs.html {#coverage-lcov-report-src-tests-test-ai-basic-tasks.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-ai-file-operations.cjs.html {#coverage-lcov-report-src-tests-test-ai-file-operations.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-ai-greeting.cjs.html {#coverage-lcov-report-src-tests-test-ai-greeting.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-ai-iterative.cjs.html {#coverage-lcov-report-src-tests-test-ai-iterative.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-ai-verifiable.cjs.html {#coverage-lcov-report-src-tests-test-ai-verifiable.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-ai-with-tools.cjs.html {#coverage-lcov-report-src-tests-test-ai-with-tools.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-continuum-spawn.cjs.html {#coverage-lcov-report-src-tests-test-continuum-spawn.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-continuum-system.cjs.html {#coverage-lcov-report-src-tests-test-continuum-system.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-continuum-web.cjs.html {#coverage-lcov-report-src-tests-test-continuum-web.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-everything.cjs.html {#coverage-lcov-report-src-tests-test-everything.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-graceful-shutdown.cjs.html {#coverage-lcov-report-src-tests-test-graceful-shutdown.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-interactive.cjs.html {#coverage-lcov-report-src-tests-test-interactive.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-live-continuum.cjs.html {#coverage-lcov-report-src-tests-test-live-continuum.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-real-ai-intelligence.cjs.html {#coverage-lcov-report-src-tests-test-real-ai-intelligence.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-real-interaction.cjs.html {#coverage-lcov-report-src-tests-test-real-interaction.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-real-pool.cjs.html {#coverage-lcov-report-src-tests-test-real-pool.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-routing-logic.cjs.html {#coverage-lcov-report-src-tests-test-routing-logic.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-send-function.cjs.html {#coverage-lcov-report-src-tests-test-send-function.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-shell-call.cjs.html {#coverage-lcov-report-src-tests-test-shell-call.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-simple-ai.cjs.html {#coverage-lcov-report-src-tests-test-simple-ai.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-smart-integration.cjs.html {#coverage-lcov-report-src-tests-test-smart-integration.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-tool-execution.cjs.html {#coverage-lcov-report-src-tests-test-tool-execution.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### test-working-pool.cjs.html {#coverage-lcov-report-src-tests-test-working-pool.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       📁 **coverage/lcov-report/src/tools/**
       ### index.html {#coverage-lcov-report-src-tools-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### PromiseJSExecutor.cjs.html {#coverage-lcov-report-src-tools-promisejsexecutor.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### web-fetch-tool.js.html {#coverage-lcov-report-src-tools-web-fetch-tool.js.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       📁 **coverage/lcov-report/src/ui/**
       ### AcademyWebInterface.cjs.html {#coverage-lcov-report-src-ui-academywebinterface.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### command-handler.js.html {#coverage-lcov-report-src-ui-command-handler.js.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### continuum-api.js.html {#coverage-lcov-report-src-ui-continuum-api.js.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### index.html {#coverage-lcov-report-src-ui-index.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### UIGenerator.cjs.html {#coverage-lcov-report-src-ui-uigenerator.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### UIGeneratorModular.cjs.html {#coverage-lcov-report-src-ui-uigeneratormodular.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
       ### WebComponentsIntegration.cjs.html {#coverage-lcov-report-src-ui-webcomponentsintegration.cjs.html}
-        # 📄 File
+        # 🧼 HTML scraps (temp/debug files?)
 
         📁 **coverage/lcov-report/src/ui/components/**
         ### AcademySection.js.html {#coverage-lcov-report-src-ui-components-academysection.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### AgentSelector.js.html {#coverage-lcov-report-src-ui-components-agentselector.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### AIWidget.js.html {#coverage-lcov-report-src-ui-components-aiwidget.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### ChatArea.js.html {#coverage-lcov-report-src-ui-components-chatarea.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### ChatHeader.js.html {#coverage-lcov-report-src-ui-components-chatheader.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### GlassMenu.js.html {#coverage-lcov-report-src-ui-components-glassmenu.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### index.html {#coverage-lcov-report-src-ui-components-index.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### RoomTabs.js.html {#coverage-lcov-report-src-ui-components-roomtabs.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### SimpleAgentSelector.js.html {#coverage-lcov-report-src-ui-components-simpleagentselector.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### StatusPill.js.html {#coverage-lcov-report-src-ui-components-statuspill.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### UserDrawer.js.html {#coverage-lcov-report-src-ui-components-userdrawer.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         📁 **coverage/lcov-report/src/ui/utils/**
         ### AgentSelectorUtils.js.html {#coverage-lcov-report-src-ui-utils-agentselectorutils.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### ComponentLoader.js.html {#coverage-lcov-report-src-ui-utils-componentloader.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### index.html {#coverage-lcov-report-src-ui-utils-index.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         📁 **coverage/lcov-report/src/ui/widgets/**
         ### AgentWidget.js.html {#coverage-lcov-report-src-ui-widgets-agentwidget.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### BaseConnectionWidget.js.html {#coverage-lcov-report-src-ui-widgets-baseconnectionwidget.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### index.html {#coverage-lcov-report-src-ui-widgets-index.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
         ### UnifiedSlideoutPanel.js.html {#coverage-lcov-report-src-ui-widgets-unifiedslideoutpanel.js.html}
-          # 📄 File
+          # 🧼 HTML scraps (temp/debug files?)
 
 
 📁 **docs/**
@@ -3956,17 +3956,17 @@
 
     📁 **packages/cli/__tests__/**
     ### cli.test.ts {#packages-cli-__tests__-cli.test.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
       📁 **packages/cli/__tests__/commands/**
       ### adapt.test.ts {#packages-cli-__tests__-commands-adapt.test.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
       ### init.test.ts {#packages-cli-__tests__-commands-init.test.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
       ### validate.test.ts {#packages-cli-__tests__-commands-validate.test.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
     📁 **packages/cli/bin/**
     ### continuum.js {#packages-cli-bin-continuum.js}
@@ -3980,33 +3980,33 @@
       # ⚡ JavaScript/Node.js
 
     ### index.ts {#packages-cli-src-index.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
     ### templates.ts {#packages-cli-src-templates.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
     ### types.d.ts {#packages-cli-src-types.d.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
       📁 **packages/cli/src/adapters/**
       ### claude.ts {#packages-cli-src-adapters-claude.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
       ### gpt.ts {#packages-cli-src-adapters-gpt.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
       ### index.ts {#packages-cli-src-adapters-index.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
       📁 **packages/cli/src/commands/**
       ### adapt.ts {#packages-cli-src-commands-adapt.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
       ### init.ts {#packages-cli-src-commands-init.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
       ### validate.ts {#packages-cli-src-commands-validate.ts}
-        # 📄 File
+        # 🔗 TypeScript (missing from JS loop?)
 
   📁 **packages/core/**
   ### package.json {#packages-core-package.json}
@@ -4020,17 +4020,17 @@
 
     📁 **packages/core/__tests__/**
     ### core.test.ts {#packages-core-__tests__-core.test.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
     📁 **packages/core/src/**
     ### index.ts {#packages-core-src-index.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
     ### types.ts {#packages-core-src-types.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
     ### utils.ts {#packages-core-src-utils.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
   📁 **packages/memory/**
   ### package.json {#packages-memory-package.json}
@@ -4041,7 +4041,7 @@
 
     📁 **packages/memory/src/**
     ### index.ts {#packages-memory-src-index.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
   📁 **packages/plugins/**
   ### package.json {#packages-plugins-package.json}
@@ -4050,21 +4050,21 @@
   📁 **packages/revenue/**
     📁 **packages/revenue/src/**
     ### cloud-deployment-ai.ts {#packages-revenue-src-cloud-deployment-ai.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
     ### revenue-generation-ai.ts {#packages-revenue-src-revenue-generation-ai.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
   📁 **packages/self-development/**
     📁 **packages/self-development/src/**
     ### continuum-developer-ai.ts {#packages-self-development-src-continuum-developer-ai.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
     ### git-aware-developer.ts {#packages-self-development-src-git-aware-developer.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
     ### self-improvement-coordinator.ts {#packages-self-development-src-self-improvement-coordinator.ts}
-      # 📄 File
+      # 🔗 TypeScript (missing from JS loop?)
 
   📁 **packages/web-tester/**
   ### continuum.log {#packages-web-tester-continuum.log}
@@ -4344,16 +4344,16 @@
 
   📁 **src/agents/**
   ### Agent.ts {#src-agents-agent.ts}
-    # 📄 File
+    # 🔗 TypeScript (missing from JS loop?)
 
   ### AgentFactory.ts {#src-agents-agentfactory.ts}
-    # 📄 File
+    # 🔗 TypeScript (missing from JS loop?)
 
   ### base-agent.js {#src-agents-base-agent.js}
     # ⚡ JavaScript/Node.js
 
   ### planner-agent.ts {#src-agents-planner-agent.ts}
-    # 📄 File
+    # 🔗 TypeScript (missing from JS loop?)
 
   ### planner-ai.js {#src-agents-planner-ai.js}
     # ⚡ JavaScript/Node.js
@@ -5086,7 +5086,7 @@
     # ⚡ JavaScript/Node.js
 
   ### agent.interface.ts {#src-interfaces-agent.interface.ts}
-    # 📄 File
+    # 🔗 TypeScript (missing from JS loop?)
 
   ### tool-interface.js {#src-interfaces-tool-interface.js}
     # ⚡ JavaScript/Node.js
@@ -5120,7 +5120,7 @@
     # ⚡ JavaScript/Node.js
 
   ### ModelDiscoveryService.ts {#src-services-modeldiscoveryservice.ts}
-    # 📄 File
+    # 🔗 TypeScript (missing from JS loop?)
 
   ### RemoteAgentManager.cjs {#src-services-remoteagentmanager.cjs}
     # ⚡ JavaScript/Node.js
@@ -5264,10 +5264,10 @@
 
   📁 **src/tools/**
   ### filesystem-tool.ts {#src-tools-filesystem-tool.ts}
-    # 📄 File
+    # 🔗 TypeScript (missing from JS loop?)
 
   ### git-tool.ts {#src-tools-git-tool.ts}
-    # 📄 File
+    # 🔗 TypeScript (missing from JS loop?)
 
   ### PromiseJSExecutor.cjs {#src-tools-promisejsexecutor.cjs}
     # ⚡ JavaScript/Node.js
@@ -5276,7 +5276,7 @@
     # ⚡ JavaScript/Node.js
 
   ### web-fetch-tool.ts {#src-tools-web-fetch-tool.ts}
-    # 📄 File
+    # 🔗 TypeScript (missing from JS loop?)
 
   📁 **src/ui/**
   ### AcademyWebInterface.cjs {#src-ui-academywebinterface.cjs}
