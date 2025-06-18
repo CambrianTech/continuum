@@ -10,7 +10,7 @@ const path = require('path');
 class ClearCommand {
   static getDefinition() {
     return {
-      name: 'CLEAR',
+      name: 'clear',
       category: 'Core',
       icon: '🧹',
       description: 'Clear debug data for fresh sessions',

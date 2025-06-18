@@ -16,11 +16,19 @@ class CommandRegistry {
   loadCommands() {
     console.log('📚 Loading command definitions...');
     
-    // Load core commands
-    this.loadCommandsFromDirectory(path.join(__dirname, 'core'));
-    this.loadCommandsFromDirectory(path.join(__dirname, 'automation'));
-    this.loadCommandsFromDirectory(path.join(__dirname, 'browser'));
-    this.loadCommandsFromDirectory(path.join(__dirname, 'gaming'));
+    // Load commands from all module directories
+    const commandsDir = __dirname;
+    const moduleDirectories = fs.readdirSync(commandsDir, { withFileTypes: true })
+      .filter(dirent => dirent.isDirectory())
+      .map(dirent => dirent.name)
+      .filter(name => !name.startsWith('.') && !name.includes('test'));
+    
+    console.log(`📁 Found ${moduleDirectories.length} command modules: ${moduleDirectories.join(', ')}`);
+    
+    moduleDirectories.forEach(moduleName => {
+      console.log(`📦 Loading module: ${moduleName}`);
+      this.loadCommandsFromDirectory(path.join(__dirname, moduleName));
+    });
     
     console.log(`📚 Loaded ${this.commands.size} commands`);
   }

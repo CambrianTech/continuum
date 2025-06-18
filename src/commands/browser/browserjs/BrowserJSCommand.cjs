@@ -6,7 +6,7 @@
 class BrowserJSCommand {
   static getDefinition() {
     return {
-      name: 'BROWSER_JS',
+      name: 'browserJs',
       category: 'Core',
       icon: '💻',
       description: 'Execute JavaScript in browser',

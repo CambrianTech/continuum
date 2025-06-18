@@ -8,7 +8,7 @@ const PromiseJSExecutor = require('../../../tools/PromiseJSExecutor.cjs');
 class PromiseJSCommand {
   static getDefinition() {
     return {
-      name: 'PROMISE_JS',
+      name: 'promiseJs',
       category: 'Core',
       icon: '⚡',
       description: 'Execute JavaScript in browser with promise support',

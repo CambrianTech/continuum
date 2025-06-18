@@ -3,7 +3,7 @@
  * Self-contained command for roadmap management and analysis
  */
 
-const BaseCommand = require('../../../BaseCommand.cjs');
+const BaseCommand = require('../../BaseCommand.cjs');
 const fs = require('fs');
 const path = require('path');
 

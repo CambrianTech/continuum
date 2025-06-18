@@ -7,7 +7,7 @@ const BaseCommand = require('../../BaseCommand.cjs');
 class CursorCommand extends BaseCommand {
   static getDefinition() {
     return {
-      name: 'CURSOR',
+      name: 'cursor',
       category: 'continuon control',
       icon: '🟢',
       description: 'Control continuon (AI cursor) activation, deactivation, and positioning',
