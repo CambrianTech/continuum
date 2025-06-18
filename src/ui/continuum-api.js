@@ -6,6 +6,65 @@
 // Wait for DOM and other scripts to be ready before initializing
 function initializeContinuum() {
     console.warn('🚀 CRITICAL: initializeContinuum() called - browser API starting...');
+
+// Console forwarding to server for complete logging
+function setupConsoleForwarding() {
+    if (window.consoleForwardingSetup) return; // Avoid duplicate setup
+    window.consoleForwardingSetup = true;
+    
+    // Store original console methods
+    const originalConsole = {
+        log: console.log,
+        warn: console.warn,
+        error: console.error,
+        info: console.info
+    };
+    
+    // Helper to send console messages to server
+    function forwardToServer(level, args) {
+        if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+            const message = {
+                type: 'client_console_log',
+                level: level,
+                message: args.map(arg => 
+                    typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+                ).join(' '),
+                timestamp: Date.now(),
+                url: window.location.href
+            };
+            
+            try {
+                window.ws.send(JSON.stringify(message));
+            } catch (e) {
+                // Silent fail - don't break console if WebSocket fails
+            }
+        }
+    }
+    
+    // Override console methods to forward to server
+    console.log = function(...args) {
+        originalConsole.log.apply(console, args);
+        forwardToServer('log', args);
+    };
+    
+    console.warn = function(...args) {
+        originalConsole.warn.apply(console, args);
+        forwardToServer('warn', args);
+    };
+    
+    console.error = function(...args) {
+        originalConsole.error.apply(console, args);
+        forwardToServer('error', args);
+    };
+    
+    console.info = function(...args) {
+        originalConsole.info.apply(console, args);
+        forwardToServer('info', args);
+    };
+    
+    // Store originals for potential restoration
+    window.originalConsole = originalConsole;
+}
     window.continuum = {
     version: '0.2.1987', // Will be updated dynamically
     fileVersions: {
@@ -150,6 +209,9 @@ function initializeContinuum() {
     }
     };
 
+    // Set up console forwarding to server
+    setupConsoleForwarding();
+    
     console.warn('✅ CRITICAL: window.continuum initialization completed successfully!');
 }
 
