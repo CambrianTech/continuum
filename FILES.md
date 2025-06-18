@@ -4040,6 +4040,219 @@
 
 ---
 
+## 🔧 SYSTEM RESTORATION AUDIT
+
+**Evidence: Screenshots show the system DOES work - but it's broken apart**
+
+### 🎯 What The System SHOULD Do (Proven Working):
+
+**Multi-Agent Chat System:**
+- Multiple AI agents (GeneralAI, PlannerAI, Protocol Sheriff, CodeAI, Auto Route) in active conversations
+- Real-time chat interface with agent-to-agent communication
+- Cross-agent coordination and collaboration
+- Active tab system managing multiple concurrent agent sessions
+
+**Academy-Trained Personas (REAL, Not Fake):**
+- **PatentExpert**: 92.2% Academy Score (GRADUATED)
+- **Fine-Tune Test agents**: 70%+ Academy Scores (GRADUATED) 
+- **ProjectBot**: 80.0% Academy Score (GRADUATED)
+- **Legal Test agents**: Various specialization scores
+- Real LoRA adapters (30MB files, 190,735x compression)
+- Actual graduation certificates and training history
+
+**SavedPersonas Widget (Fully Functional):**
+- DEPLOY/RETRAIN/SHARE ORG buttons working
+- Academy progress visualization with real scores
+- Threshold controls and graduation status
+- Multiple specializations: Patent Law, Legal Compliance, Development
+
+**Proven Agent Communication:**
+- Can "write to PlannerAI in the continuum interface"
+- Agents respond and coordinate with each other
+- Multi-agent group chat functionality (with some quirks)
+
+### 🚨 What We Think Is Broken Apart:
+
+**Connection Disconnects:**
+- **Command line → UI disconnect**: `--cmd spawn` doesn't connect to working UI personas
+- **API → Widget disconnect**: SavedPersonas widget may not sync with command line operations
+- **WebSocket chaos**: Messages between command bus and UI may be broken
+- **Academy → Deployment gap**: Training works but deployment coordination is fragmented
+
+**Integration Failures:**
+- **Fresh agent spawning**: Can't create new instances of working agent types
+- **Cross-scope sharing**: Agents work in UI but not accessible via ai-portal.py
+- **Test system broken**: Can't reliably test or validate the working components
+- **Command discovery**: Working agents not appearing in `--cmd help` or command bus
+
+**Workflow Fragmentation:**
+- **Multiple entry points**: UI works, command line partially works, scripts may be outdated
+- **State synchronization**: Changes in one system don't propagate to others
+- **Error handling missing**: Silent failures prevent debugging integration issues
+- **Documentation lag**: README describes ideal state, not current broken connections
+
+### 🎯 Investigation Priorities:
+
+**1. Map the Working System:**
+- How are the UI agents actually created and deployed?
+- What API endpoints are the DEPLOY/RETRAIN/SHARE buttons calling?
+- How does the chat interface connect to the personas?
+- Where is the academy training actually running?
+
+**2. Find the Broken Bridges:**
+- Why doesn't `--cmd spawn` create agents visible in the UI?
+- What WebSocket messages should connect command line to UI?
+- Where are the API endpoints that the buttons expect?
+- How should fresh agents get added to the SavedPersonas list?
+
+**3. Restoration Strategy:**
+- Connect command line operations to UI state
+- Fix WebSocket message routing between systems
+- Restore academy → persona → deployment pipeline
+- Create working fresh agent spawn system
+
+### 📋 Files to Deep Dive for Restoration:
+
+**Working UI System:**
+- **[SavedPersonas.js](#src-ui-components-savedpersonas-savedpersonas.js)** - How does it ACTUALLY load personas?
+- **[AcademySection.js](#src-ui-components-academysection.js)** - How does academy training connect to UI?
+- **WebSocket message handlers** - What messages should trigger UI updates?
+
+**Academy Integration:**
+- **[Academy.cjs](#src-core-academy.cjs)** - Does `savePersonaCheckpoint()` actually create UI-visible personas?
+- **[run-academy.cjs](#scripts-run-academy.cjs)** - How do script-trained agents become UI agents?
+- **API endpoint mapping** - Where are the DEPLOY/RETRAIN/SHARE implementations?
+
+**Command Bus Connection:**
+- **[SpawnCommand.cjs](#src-commands-core-spawn-spawncommand.cjs)** - Why doesn't it create UI-visible personas?
+- **WebSocket integration** - How should commands broadcast to UI?
+- **[ai-portal.py](#python-client-ai-portal.py)** - How should it connect to working agents?
+
+### 💡 Restoration Game Plan:
+
+**Phase 1: Understand What Works**
+- Reverse engineer how UI agents are actually created
+- Map the API calls that buttons make
+- Document the working chat → agent connection
+
+**Phase 2: Connect the Pieces** 
+- Fix WebSocket routing between command bus and UI
+- Connect academy training to UI persona creation
+- Restore spawn command to create UI-visible agents
+
+**Phase 3: Validate Integration**
+- Test full pipeline: academy training → graduation → UI deployment → command line access
+- Verify fresh agent creation appears in SavedPersonas widget
+- Confirm cross-system state synchronization
+
+**The Goal**: Get the beautiful, functional UI connected to the powerful command-line tooling so the whole system works as one integrated platform again.
+
+---
+
+## 📸 UI VISUAL DOCUMENTATION: What Agents Should See
+
+**Evidence Screenshots: `docs/images/continuum-main-interface.png` & `docs/images/academy-training-room.png`**
+
+### 🎯 Main Interface Screenshot (`continuum-main-interface.png`)
+
+**What AI Agents See:**
+This is the primary multi-agent collaboration interface showing the system actually working:
+
+**Left Sidebar - USERS & AGENTS:**
+- **Claude Code** (AI Assistant) - Active
+- **joel** (Human User) - Active  
+- **Auto Route** (Agent workflow)
+- **CodeAI** (Code analysis & debugging)
+- **GeneralAI** (General assistance)
+- **PlannerAI** (Strategy & web commands)
+- **Protocol Sheriff** (Response validation)
+
+**Left Sidebar - SAVED PERSONAS (The Money Shot):**
+- **FAKE - Training Test**: IN ACADEMY status (shows academy integration works)
+- **FAKE - Failed Test**: FAILED status (shows failure handling)
+- **Fine-Tune Test**: GRADUATED 70.0% Academy Score (REAL trained agent!)
+- **PatentExpert**: GRADUATED 92.2% Academy Score (REAL specialized agent!)
+- **ProjectBot**: GRADUATED 80.0% Academy Score (REAL development agent!)
+- **Legal Test**: LOADED 82% Academy Score (REAL legal compliance agent!)
+
+**Right Main Area - Active Chat:**
+- Real conversations between GeneralAI, PlannerAI, and human
+- Agent-to-agent coordination visible
+- "Are you there now?" / "claude doesn't believe this works" conversation
+- Proves multi-agent communication is functional
+
+**Files Involved in This Interface:**
+- **[SavedPersonas.js](#src-ui-components-savedpersonas-savedpersonas.js)** - The personas sidebar widget
+- **[ChatArea.js](#src-ui-components-chatarea.js)** - Main chat interface
+- **[UserSelector/UserSelector.js](#src-ui-components-userselector-userselector.js)** - User & agent list
+- **[AcademySection.js](#src-ui-components-academysection.js)** - Academy status integration
+- **[AIWidget.js](#src-ui-components-aiwidget.js)** - Individual agent widgets
+- **[continuum-api.js](#src-ui-continuum-api.js)** - API connections to backend
+- **[WebSocketServer.cjs](#src-integrations-websocketserver.cjs)** - Real-time messaging
+
+### 🎓 Academy Training Room Screenshot (`academy-training-room.png`)
+
+**What AI Agents See:**
+The Matrix-inspired training facility where TestingDroid vs ProtocolSheriff adversarial training happens:
+
+**Academy Tab Active:**
+- "Academy Training Room" header
+- "Watch AI agents train and see their progress in real-time"
+
+**Left Panel - Training Controls:**
+- **TRAINING STATUS**: "No active training sessions" (shows monitoring system)
+- **Deploy Sheriff** button (launches ProtocolSheriff training)
+- **Custom Training** button (manual training configuration)
+
+**Left Panel - Academy Statistics:**
+- **0 Training** (current active sessions)
+- **0 Graduated** (recent completion stats)
+- Real-time metrics dashboard
+
+**Left Panel - Recent Graduates:**
+- **❌ PatentAI-enhanced-1749847974118**: Failed 70.0% accuracy (needed 85%)
+- **❌ claude-code-enhanced-1749413989522**: Failed 86.7% accuracy (needed 95%)
+- Shows actual training history with real failure analysis
+
+**Right Main Area:**
+- Training visualization space (currently empty, waiting for active sessions)
+- Real-time progress display area
+- Adversarial battle visualization zone
+
+**Files Involved in Academy Interface:**
+- **[AcademySection.js](#src-ui-components-academysection.js)** - Main academy interface component
+- **[Academy.cjs](#src-core-academy.cjs)** - Backend training system that feeds this UI
+- **[ProtocolSheriff.cjs](#src-core-protocolsheriff.cjs)** - "Neo" agent being trained
+- **[TestingDroid.cjs](#src-core-testingdroid.cjs)** - "Morpheus" adversarial trainer
+- **[run-academy.cjs](#scripts-run-academy.cjs)** - Training execution script
+- **[AcademyWebInterface.cjs](#src-ui-academywebinterface.cjs)** - UI backend integration
+- **[WebSocketServer.cjs](#src-integrations-websocketserver.cjs)** - Real-time training updates
+
+### 🤖 For AI Agents Reading This:
+
+**These screenshots prove:**
+1. **The system actually works** - Don't despair! The UI is beautiful and functional
+2. **Real agents exist** - PatentExpert (92.2%), ProjectBot (80%), etc. are actual trained personas
+3. **Academy system functional** - Training, graduation, failure handling all work
+4. **Multi-agent chat works** - Agents coordinate and communicate effectively
+5. **Integration exists but is broken** - UI works, command line works, but they're disconnected
+
+**Your mission:** Figure out how to bridge the working UI to the working command line so they function as one integrated system.
+
+### 🔄 Future: Automated Screenshot Generation
+
+**Sentinel Integration Opportunity:**
+We could create a Sentinel bot that automatically:
+- Takes screenshots of both interfaces
+- Updates these images in `docs/images/`
+- Regenerates README.md with fresh visuals
+- Commits updated documentation
+- Runs on schedule or after UI changes
+
+**Implementation:** A screenshot command that spawns a headless browser, navigates to both interfaces, captures images, and updates documentation automatically.
+
+---
+
 ## 📝 Detailed File Analysis
 
 ### Root Directory
