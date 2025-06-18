@@ -71,7 +71,8 @@ You've joined a team where everyone leaves the codebase better than they found i
 Each README is a shared ticket with notes from the last person to help you.
 
 🚀 YOUR DASHBOARD (Check this first!):
-  python3 python-client/ai-portal.py --cmd status    # See all tickets with status
+  python3 python-client/ai-portal.py --dashboard     # Full AI agent dashboard
+  python3 python-client/ai-portal.py --broken        # Just broken commands  
   python3 python-client/ai-portal.py --cmd docs      # Generate updated docs
 
 📋 QUICK TICKET GUIDE:
@@ -81,7 +82,7 @@ Each README is a shared ticket with notes from the last person to help you.
   🟢 Green = Stable and working
 
 💡 PICK YOUR FIRST TICKET:
-  1. Run: python3 python-client/ai-portal.py --cmd status
+  1. Run: python3 python-client/ai-portal.py --dashboard
   2. Look for 🔴 or 🟠 tickets that interest you
   3. Test: python3 python-client/ai-portal.py --cmd [command-name]
   4. Update the README with what you learn (even if you don't fix it!)
@@ -216,6 +217,52 @@ Any agent can follow this exactly and be productive immediately.
     return this.createSuccessResult({ version: this.getVersion() }, 'Agent help displayed');
   }
   
+  static async getProjectHealthOneLiner() {
+    const fs = require('fs');
+    const path = require('path');
+    let totalCommands = 0;
+    let brokenCount = 0;
+    let stableCount = 0;
+    let testingCount = 0;
+    let untestedCount = 0;
+    
+    try {
+      const commandDirs = fs.readdirSync('./src/commands/core');
+      
+      for (const dir of commandDirs) {
+        const dirPath = path.join('./src/commands/core', dir);
+        if (fs.statSync(dirPath).isDirectory()) {
+          totalCommands++;
+          const readmePath = path.join(dirPath, 'README.md');
+          
+          if (fs.existsSync(readmePath)) {
+            const readme = fs.readFileSync(readmePath, 'utf8');
+            const statusMatch = readme.match(/\*\*Status\*\*:\s*([^\n]+)/);
+            
+            if (statusMatch) {
+              const status = statusMatch[1].trim();
+              if (status.includes('🔴')) brokenCount++;
+              else if (status.includes('🟢')) stableCount++;
+              else if (status.includes('🟡')) testingCount++;
+              else if (status.includes('🟠')) untestedCount++;
+            } else {
+              untestedCount++;
+            }
+          } else {
+            untestedCount++;
+          }
+        }
+      }
+    } catch (error) {
+      return "Unable to assess project health";
+    }
+    
+    const healthyPercent = Math.round((stableCount / totalCommands) * 100);
+    const status = brokenCount > 5 ? "🚨 CRITICAL" : brokenCount > 2 ? "⚠️ DEGRADED" : brokenCount > 0 ? "🟡 STABLE" : "🟢 HEALTHY";
+    
+    return `${status} - ${stableCount}/${totalCommands} stable (${healthyPercent}%), ${brokenCount} broken, ${untestedCount} untested`;
+  }
+
   static async getBrokenCommands() {
     const fs = require('fs');
     const path = require('path');

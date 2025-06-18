@@ -538,6 +538,12 @@ def tokenize_command(cmd, args):
 @click.option('--clear', help='Clear logs with optional label')
 @click.option('--cmd', help='Run any continuum command (e.g. "restart", "screenshot")')
 @click.option('--params', default='', help='Command params: JSON {"key":"value"} or natural key=value,key2=value2')
+@click.option('--dashboard', is_flag=True, help='Show AI agent dashboard')
+@click.option('--broken', is_flag=True, help='Show broken commands')
+@click.option('--recent', is_flag=True, help='Show recent work')
+@click.option('--quick', is_flag=True, help='Show quick status')
+@click.option('--test', is_flag=True, help='Run Continuum test suite')
+@click.option('--roadmap', is_flag=True, help='Show development roadmap and vision')
 @click.pass_context
 
 # Command-specific natural argument options
@@ -566,12 +572,39 @@ def tokenize_command(cmd, args):
 @click.option('--list-scripts', is_flag=True, help='List available scripts')
 @click.option('--help-cmd', help='Show help for specific command')
 @click.option('--debug', is_flag=True, help='Show full debug output including stack traces')
-def main(ctx, buffer, logs, clear, cmd, params, action, task, workspace, selector, filename, 
+def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick, test, roadmap, action, task, workspace, selector, filename, 
          verbose, sync, output, run, script_args, timeout, return_result, exec, shell_timeout,
          program, script, save_script, list_scripts, help_cmd, debug):
     """AI Portal - Your Robot Agent for Continuum development workflow"""
     
     async def run_cli():
+        # Handle dashboard options first
+        if dashboard or broken or recent or quick or test or roadmap:
+            try:
+                # Import ai-agent functionality
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("ai_agent", Path(__file__).parent / "ai-agent.py")
+                ai_agent = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(ai_agent)
+                
+                if test:
+                    await ai_agent.run_tests()
+                elif roadmap:
+                    await ai_agent.show_roadmap()
+                elif broken:
+                    await ai_agent.show_broken()
+                elif recent:
+                    await ai_agent.show_recent()
+                elif quick:
+                    await ai_agent.show_quick()
+                else:  # dashboard
+                    await ai_agent.show_dashboard()
+                return
+            except Exception as e:
+                print(f"❌ Dashboard error: {e}")
+                print("💡 Try: python3 ai-agent.py --dashboard")
+                return
+        
         if help_cmd:
             await show_help(help_cmd)
         elif run:

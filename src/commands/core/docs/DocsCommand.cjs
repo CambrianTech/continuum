@@ -99,6 +99,13 @@ class DocsCommand extends BaseCommand {
         content.push('\n');
       }
       
+      // Add dashboard status report
+      if (include === 'all' || include === 'status') {
+        content.push('## Project Status Dashboard\n');
+        content.push(await this.getDashboardReport());
+        content.push('\n');
+      }
+      
       content.push('## Architecture\n');
       content.push(this.getArchitectureContent());
       content.push('\n');
@@ -123,6 +130,61 @@ class DocsCommand extends BaseCommand {
     return content.join('');
   }
   
+  static async getDashboardReport() {
+    try {
+      // Call the Python dashboard to get status report
+      const { spawn } = require('child_process');
+      const pythonPath = path.join(process.cwd(), 'python-client', 'ai-agent.py');
+      
+      return new Promise((resolve) => {
+        const python = spawn('python3', [pythonPath, '--broken'], {
+          cwd: process.cwd(),
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+        
+        let output = '';
+        python.stdout.on('data', (data) => {
+          output += data.toString();
+        });
+        
+        python.on('close', (code) => {
+          if (code === 0) {
+            // Convert console output to markdown format
+            const lines = output.split('\n');
+            const markdownOutput = [];
+            
+            markdownOutput.push('> 📊 **Live Status Report** - Generated from dependency-aware dashboard\n');
+            markdownOutput.push('```');
+            markdownOutput.push(output.trim());
+            markdownOutput.push('```\n');
+            
+            markdownOutput.push('### Quick Commands for Development\n');
+            markdownOutput.push('```bash');
+            markdownOutput.push('# View full dashboard');
+            markdownOutput.push('python3 python-client/ai-portal.py --dashboard');
+            markdownOutput.push('');
+            markdownOutput.push('# View broken commands in fix order');
+            markdownOutput.push('python3 python-client/ai-portal.py --broken');
+            markdownOutput.push('');
+            markdownOutput.push('# Test any command');
+            markdownOutput.push('python3 python-client/ai-portal.py --cmd [command-name]');
+            markdownOutput.push('```\n');
+            
+            resolve(markdownOutput.join('\n'));
+          } else {
+            resolve('> ⚠️ Dashboard status unavailable - run `python3 python-client/ai-portal.py --dashboard` manually\n');
+          }
+        });
+        
+        python.on('error', () => {
+          resolve('> ⚠️ Dashboard status unavailable - run `python3 python-client/ai-portal.py --dashboard` manually\n');
+        });
+      });
+    } catch (error) {
+      return '> ⚠️ Dashboard status unavailable - run `python3 python-client/ai-portal.py --dashboard` manually\n';
+    }
+  }
+
   static async getHelpContent(continuum) {
     try {
       // Execute help command to get live content

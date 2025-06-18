@@ -10,6 +10,25 @@
 ## Overview
 The Sentinel command provides comprehensive monitoring, logging, and task management for AI development workflows. Acts as a JTAG-style debugging interface for AI agents.
 
+**🎯 THE VISION: Completely Autonomous Agent Code Generation**
+
+Sentinel is the foundation for fully autonomous AI agent development with:
+- **📊 Full Observability**: Complete logs of client, server, browser console activity
+- **🛡️ Task-Based Monitoring**: Organized logging per debugging session  
+- **🔄 Code Execution Tracking**: Monitor command execution with full context
+- **📸 Visual Verification**: Screenshots captured automatically during testing
+- **🤖 Future Autonomous Agents**: Sentinels will run as persistent AI bots executing Continuum JS scripts
+
+**How This Enables Autonomous Development:**
+1. **Agent picks ticket** from dashboard
+2. **Starts sentinel** for organized logging
+3. **Tests & debugs** with full log capture
+4. **Reviews logs** to understand failures
+5. **Documents findings** for next agent
+6. **Repeats** until system is stable
+
+Future: Sentinel bots will execute complex debugging scripts autonomously, sleep, check results, and continue without human intervention.
+
 ## Parameters
 - `action`: Action to perform (start, stop, status, logs, path)
 - `task`: Task name for organized logging (optional)
@@ -60,9 +79,37 @@ python3 ai-portal.py --cmd sentinel --params '{"action": "stop", "task": "debug-
 │   └── issues-YYYYMMDD.log         # Issues and errors
 ```
 
-## Future: AI Agent Integration
-The sentinel system is designed to eventually run AI agents:
-- Deploy AI agents as persistent sentinels
-- Organized logging helps AI agents track their work
-- Command bus access gives AI agents full system capabilities
-- Workspace integration provides clean working directories
+## Log Contents (Critical for Debugging)
+
+**🔥 issues-*.log**: Most important for debugging
+- JavaScript console errors and warnings
+- Browser console.log statements  
+- Runtime exceptions and stack traces
+- Command execution failures
+
+**🖥️ server-monitor-*.log**: Server-side execution  
+- Command processing logs
+- Server startup/shutdown events
+- WebSocket connection events
+- Backend error traces
+
+**🌐 client-monitor-*.log**: Browser client activity
+- Page load events
+- DOM manipulation logs
+- Client-side script execution
+- Browser navigation events
+
+**🛡️ sentinel-*.log**: Sentinel bot activity
+- Task start/stop events
+- Monitoring configuration
+- Sentinel bot health status
+- Future: Autonomous script execution logs
+
+## Future: Autonomous Sentinel Agents
+The sentinel system is designed to eventually run AI agents autonomously:
+- **Deploy AI agents as persistent sentinels** running 24/7
+- **Execute complex debugging scripts** written in Continuum JS
+- **Sleep, wake, and check results** without human intervention
+- **Command bus access** gives sentinels full system capabilities
+- **Organized logging** helps AI agents track their autonomous work
+- **Task-based isolation** prevents agent conflicts
