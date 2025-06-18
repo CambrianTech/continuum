@@ -114,14 +114,14 @@ class ContinuumClient:
                     data = json.loads(message)
                     
                     # Route to JavaScript executor if it's a js_executed response
-                    if data.get('type') == 'js_executed' and self.js:
+                    if isinstance(data, dict) and data.get('type') == 'js_executed' and self.js:
                         self.js.handle_ws_message(data)
                     
                     # Route command responses to pending promises (elegant pattern)
                     # Handle bus_command_execution, command_response and response types
                     if hasattr(self, 'pending_commands') and self.pending_commands:
                         # Handle BusCommand results (the actual command execution results)
-                        if data.get('type') == 'bus_command_execution' and data.get('role') == 'BusCommand':
+                        if isinstance(data, dict) and data.get('type') == 'bus_command_execution' and data.get('role') == 'BusCommand':
                             # Get most recent pending command for bus command results
                             recent_command_id = max(self.pending_commands.keys()) if self.pending_commands else None
                             if recent_command_id:
@@ -135,7 +135,7 @@ class ContinuumClient:
                                         future.set_result(result)
                         
                         # Handle traditional command responses with commandId
-                        elif data.get('type') == 'command_response':
+                        elif isinstance(data, dict) and data.get('type') == 'command_response':
                             command_id = data.get('commandId')
                             if command_id and command_id in self.pending_commands:
                                 future = self.pending_commands[command_id]
@@ -143,7 +143,7 @@ class ContinuumClient:
                                     future.set_result(data.get('result', data))
                         
                         # Ignore regular AI responses (type: 'response') unless they're the only thing pending
-                        elif data.get('type') == 'response' and data.get('agent') != 'BusCommand':
+                        elif isinstance(data, dict) and data.get('type') == 'response' and data.get('agent') != 'BusCommand':
                             # Only catch AI responses if we have no other command pending for more than 15 seconds
                             oldest_command_time = min(float(cmd_id.split('_')[-1]) for cmd_id in self.pending_commands.keys()) if self.pending_commands else 0
                             current_time = asyncio.get_event_loop().time()
