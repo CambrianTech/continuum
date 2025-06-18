@@ -1,0 +1,198 @@
+const BaseCommand = require('../../BaseCommand.cjs');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+
+const execAsync = promisify(exec);
+
+/**
+ * Move Command - Controls mouse cursor movement with natural animation
+ * Supports Bezier curve movement for natural mouse behavior
+ */
+class MoveCommand extends BaseCommand {
+  static getDefinition() {
+    return {
+      name: 'MOVE',
+      category: 'Mouse Control',
+      icon: '🎯',
+      description: 'Move mouse cursor to specified coordinates with natural animation',
+      params: '{"x": number, "y": number, "duration": number, "easing": string}',
+      examples: [
+        '{"x": 100, "y": 200}',
+        '{"x": 500, "y": 300, "duration": 1000}',
+        '{"x": 250, "y": 150, "easing": "bezier"}'
+      ],
+      usage: 'Moves mouse cursor with natural animation and optional easing'
+    };
+  }
+
+  constructor() {
+    super();
+    this.name = 'move';
+    this.description = 'Move mouse cursor to specified coordinates with natural animation';
+    this.icon = '🎯';
+    this.category = 'Mouse Control';
+    this.parameters = {
+      x: {
+        type: 'number',
+        required: true,
+        description: 'X coordinate for cursor position'
+      },
+      y: {
+        type: 'number', 
+        required: true,
+        description: 'Y coordinate for cursor position'
+      },
+      animation: {
+        type: 'string',
+        required: false,
+        default: 'natural',
+        description: 'Animation type: natural (Bezier), smooth, instant'
+      }
+    };
+  }
+
+  async execute(params, context) {
+    try {
+      const { x, y, animation = 'natural' } = this.parseParams(params);
+
+      // Validate coordinates
+      if (typeof x !== 'number' || typeof y !== 'number') {
+        return this.createErrorResult('Invalid coordinates provided');
+      }
+
+      if (x < 0 || y < 0) {
+        return this.createErrorResult('Coordinates must be positive');
+      }
+
+      // Get current cursor position first
+      let currentPos = { x: 0, y: 0 };
+      try {
+        const { stdout } = await execAsync('cliclick p');
+        const coords = stdout.trim().split(',');
+        currentPos.x = parseInt(coords[0]) || 0;
+        currentPos.y = parseInt(coords[1]) || 0;
+      } catch (error) {
+        try { try { console.log('⚠️ Could not get current cursor position, using (0,0)'); } catch(e) {}
+      }
+
+      try { try { console.log(`🎯 Moving cursor from (${currentPos.x}, ${currentPos.y}) to (${x}, ${y}) with ${animation} animation`); } catch(e) {}
+
+      // Execute movement based on animation type
+      let moveCommand;
+      switch (animation) {
+        case 'instant':
+          moveCommand = `cliclick m:${x},${y}`;
+          break;
+        case 'smooth':
+          moveCommand = `cliclick m:${x},${y}`;
+          break;
+        case 'natural':
+        default:
+          // Use natural Bezier curve movement
+          moveCommand = await this.createNaturalMovement(currentPos, { x, y });
+          break;
+      }
+
+      // Execute the movement
+      const { stdout, stderr } = await execAsync(moveCommand);
+      
+      if (stderr) {
+        try { console.log(`⚠️ Move command warning: ${stderr}`);
+      }
+
+      // Verify final position
+      try {
+        const { stdout: finalPos } = await execAsync('cliclick p');
+        const finalCoords = finalPos.trim().split(',');
+        const finalX = parseInt(finalCoords[0]);
+        const finalY = parseInt(finalCoords[1]);
+        
+        try { console.log(`✅ Cursor moved to (${finalX}, ${finalY})`);
+        
+        return this.createSuccessResult({
+          moved: true,
+          from: currentPos,
+          to: { x: finalX, y: finalY },
+          animation,
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        return this.createSuccessResult({
+          moved: true,
+          to: { x, y },
+          animation,
+          timestamp: new Date().toISOString(),
+          note: 'Position verification failed but movement executed'
+        });
+      }
+
+    } catch (error) {
+      try { console.error('❌ Move command failed:', error);
+      return this.createErrorResult(`Failed to move cursor: ${error.message}`);
+    }
+  }
+
+  async createNaturalMovement(from, to) {
+    // Create natural Bezier curve movement using multiple steps
+    const steps = 8;
+    const commands = [];
+    
+    // Calculate control points for Bezier curve
+    const deltaX = to.x - from.x;
+    const deltaY = to.y - from.y;
+    
+    // Add slight curve to make movement more natural
+    const controlX1 = from.x + deltaX * 0.3 + (Math.random() - 0.5) * 50;
+    const controlY1 = from.y + deltaY * 0.2 + (Math.random() - 0.5) * 30;
+    const controlX2 = from.x + deltaX * 0.7 + (Math.random() - 0.5) * 50;
+    const controlY2 = from.y + deltaY * 0.8 + (Math.random() - 0.5) * 30;
+
+    // Generate intermediate points along Bezier curve
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const x = Math.round(this.calculateBezierPoint(t, from.x, controlX1, controlX2, to.x));
+      const y = Math.round(this.calculateBezierPoint(t, from.y, controlY1, controlY2, to.y));
+      commands.push(`cliclick m:${x},${y}`);
+    }
+
+    // Combine all movement commands with slight delays
+    return commands.join(' && sleep 0.05 && ');
+  }
+
+  calculateBezierPoint(t, p0, p1, p2, p3) {
+    // Cubic Bezier curve calculation
+    const u = 1 - t;
+    const tt = t * t;
+    const uu = u * u;
+    const uuu = uu * u;
+    const ttt = tt * t;
+
+    return uuu * p0 + 3 * uu * t * p1 + 3 * u * tt * p2 + ttt * p3;
+  }
+
+  getDefinition() {
+    return {
+      name: this.name,
+      description: this.description,
+      icon: this.icon,
+      category: this.category,
+      parameters: this.parameters,
+      examples: [
+        {
+          description: 'Move cursor to center with natural animation',
+          usage: 'move 640 360 natural'
+        },
+        {
+          description: 'Move cursor instantly to top-left',
+          usage: 'move 100 100 instant'
+        },
+        {
+          description: 'Smooth movement to bottom-right',
+          usage: 'move 1200 800 smooth'
+        }
+      ]
+    };
+  }
+}
+
+module.exports = MoveCommand;

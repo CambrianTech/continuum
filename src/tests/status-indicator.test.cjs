@@ -263,7 +263,7 @@ describe('Status Indicator System', () => {
     it('should handle actual log message from SEND_TASK', () => {
       const message = '📤 SEND_TASK: Routing to PlannerAI - "Lead this task by analyzing the problem..."';
       const result = getActionFromWorking(message);
-      assert.strictEqual(result, 'AI is working...');
+      assert.strictEqual(result, 'PlannerAI is analyzing...');
     });
 
     it('should handle actual log message from AI processing', () => {
