@@ -188,29 +188,116 @@ tree -I 'node_modules|.git|__pycache__|\*.pyc|\.DS_Store|\.pytest_cache|htmlcov|
     if [[ "$line" =~ [├└─│\ ]*(.+)$ ]]; then
         filename="${BASH_REMATCH[1]}"
         
-        # Quick status check for inline emoji
+        # Get full status emoji for every file
         status_emoji=""
+        
+        # Check connection status first
+        status="connected"
         case "$filename" in
             # Clutter detection
+            *.log) status="clutter" ;;
+            .DS_Store|Thumbs.db) status="clutter" ;;
+            *.tmp|*-temp.*) status="clutter" ;;
+            coverage|htmlcov) status="clutter" ;;
+            debug-*.html|temp-*.html) status="clutter" ;;
+            # Archived detection  
+            archived|archive) status="archived" ;;
+            # Suspicious (outside loop) detection
+            *.ts) status="suspicious" ;;
+        esac
+        
+        # Apply emoji based on file type and status
+        case "$filename" in
+            *.md) 
+                case "$status" in
+                    "archived") status_emoji=" 📦" ;;
+                    "suspicious") status_emoji=" 🤔" ;;
+                    "clutter") status_emoji=" 🧹" ;;
+                    *) status_emoji=" 📖" ;;
+                esac ;;
+            *.js|*.cjs) 
+                case "$status" in
+                    "archived") status_emoji=" 🗄️" ;;
+                    "suspicious") status_emoji=" 🌀" ;;
+                    "clutter") status_emoji=" 🧽" ;;
+                    *) 
+                        # Special cases for key JS files
+                        case "$filename" in
+                            *Command.cjs) status_emoji=" 🎯" ;;
+                            continuum.cjs) status_emoji=" 🌟" ;;
+                            *) status_emoji=" ⚡" ;;
+                        esac ;;
+                esac ;;
+            *.py) 
+                case "$status" in
+                    "clutter") status_emoji=" 🧹" ;;
+                    *) 
+                        case "$filename" in
+                            ai-portal.py) status_emoji=" 🤖" ;;
+                            *) status_emoji=" 🐍" ;;
+                        esac ;;
+                esac ;;
+            *.json) 
+                case "$filename" in
+                    package.json|package-lock.json) status_emoji=" 📦" ;;
+                    *) status_emoji=" 📋" ;;
+                esac ;;
+            *.sh) status_emoji=" 🔧" ;;
+            *.yml|*.yaml) status_emoji=" ⚙️" ;;
+            *.gitignore) status_emoji=" 🚫" ;;
+            requirements*.txt) status_emoji=" 📦" ;;
+            *.test.js|*.test.py|*test*.js|*test*.py) status_emoji=" 🧪" ;;
+            *.ts) status_emoji=" 🔗" ;;
+            *.html)
+                case "$status" in
+                    "archived") status_emoji=" 🗃️" ;;
+                    "clutter") status_emoji=" 🧼" ;;
+                    *) status_emoji=" 🌐" ;;
+                esac ;;
             *.log) status_emoji=" 🗑️" ;;
             .DS_Store|Thumbs.db) status_emoji=" 💩" ;;
             *.tmp|*-temp.*) status_emoji=" 🚮" ;;
-            # Archived detection  
-            archived|archive) status_emoji=" 📦" ;;
-            # Suspicious (outside loop) detection
-            *.ts) status_emoji=" 🔗" ;;
-            coverage) status_emoji=" 🧽" ;;
-            debug-*.html|temp-*.html) status_emoji=" 🧼" ;;
-            # Connected components (key files)
-            *Command.cjs) status_emoji=" 🎯" ;;
-            continuum.cjs) status_emoji=" 🌟" ;;
-            ai-portal.py) status_emoji=" 🤖" ;;
-            package.json|package-lock.json) status_emoji=" 📦" ;;
-            README.md) status_emoji=" 📖" ;;
-            *.test.js|*.test.py) status_emoji=" 🧪" ;;
+            *.css) status_emoji=" 🎨" ;;
+            *.txt) status_emoji=" 📄" ;;
+            # Directory handling
+            *) 
+                if [[ -d "$filename" ]]; then
+                    case "$status" in
+                        "archived") status_emoji=" 📦" ;;
+                        "clutter") status_emoji=" 🗂️" ;;
+                        *) status_emoji=" 📁" ;;
+                    esac
+                else
+                    case "$status" in
+                        "archived") status_emoji=" 🗂️" ;;
+                        "clutter") status_emoji=" 🧤" ;;
+                        *) status_emoji=" 📄" ;;
+                    esac
+                fi ;;
         esac
         
-        echo "${line}${status_emoji}"
+        # Calculate padding to align emojis
+        line_length=${#line}
+        # Target column for emoji alignment (adjust as needed)
+        target_column=80
+        if [[ $line_length -lt $target_column ]]; then
+            padding_needed=$((target_column - line_length))
+            padding=$(printf "%*s" $padding_needed "")
+        else
+            padding=" "
+        fi
+        
+        # Create markdown link to detailed section if it's a file
+        if [[ ! -d "$filename" && "$filename" != "." && "$filename" != "" ]]; then
+            # Create anchor for linking (same format as detailed sections)
+            anchor=$(echo "$filename" | sed 's|/|-|g' | sed 's/[^a-zA-Z0-9._-]/-/g' | tr '[:upper:]' '[:lower:]')
+            # Use precise regex to only replace the filename at the end of the line
+            # This preserves the tree structure characters
+            linked_line=$(echo "$line" | sed "s/\([├└─│ ]*\)\($filename\)$/\1[\2](#$anchor)/")
+            echo "${linked_line}${padding}${status_emoji}"
+        else
+            echo "${line}${padding}${status_emoji}"
+        fi
     else
         echo "$line"
     fi
