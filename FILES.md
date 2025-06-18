@@ -14,106 +14,106 @@
 ```
 **File structure overview (detailed analysis in sections below)**
 
-.
-├── __tests__
-│   ├── comprehensive
-│   │   └── system-integration
-│   │       ├── complete_system_test.py
-│   │       ├── current_system_test.py
-│   │       └── FullSystemIntegration.test.cjs
-│   ├── config
-│   │   ├── jest.config.cjs
-│   │   ├── jest.global-setup.js
-│   │   ├── jest.global-teardown.js
-│   │   ├── pytest.ini
-│   │   └── test-runner.cjs
-│   ├── critical
-│   │   └── core-functionality
-│   │       └── ActualScreenshotCreation.test.cjs
-│   ├── fixtures
-│   │   ├── configs
-│   │   ├── data
-│   │   └── mocks
-│   ├── functional
-│   │   ├── user-scenarios
-│   │   │   └── WidgetIterationTests.test.js 🧪
-│   │   ├── visual
-│   │   │   └── VisualControlModule.test.js 🧪
-│   │   └── workflows
-│   │       └── CommandIntegrationTests.test.js 🧪
-│   ├── integration
-│   │   ├── ai
-│   │   │   └── AICapabilities.test.js 🧪
-│   │   ├── api
-│   │   │   ├── AcademyPersistentStorage.test.cjs
-│   │   │   ├── conftest.py
-│   │   │   ├── test_browser_api_direct.py
-│   │   │   ├── test_crash_recovery.py
-│   │   │   ├── test_elegant_api.py
-│   │   │   ├── test_elegant_browser_api.py
-│   │   │   ├── test_fred_registration.py
-│   │   │   ├── test_full_flow.py
-│   │   │   ├── test_html_parsing.py
-│   │   │   ├── test_js_promise_errors.py
-│   │   │   ├── test_promise_flow.py
-│   │   │   └── test_ui_updates.py
-│   │   ├── commands
-│   │   │   ├── ModularCommandSystem.test.cjs
-│   │   │   ├── test_modular_commands.py
-│   │   │   └── test_validate_code_command.py
-│   │   ├── screenshot
-│   │   │   ├── full-screen-capture.test.py 🧪
-│   │   │   ├── screenshot-pipeline.test.py 🧪
-│   │   │   ├── ScreenshotIntegration.test.cjs
-│   │   │   ├── test_screenshot_bytes_mode.py
-│   │   │   ├── test_screenshot_simple.py
-│   │   │   ├── test_screenshot.py
-│   │   │   ├── whole-screen-capture.test.py 🧪
-│   │   │   └── widget-capture.test.py 🧪
-│   │   ├── ui
-│   │   │   ├── GroupChat.test.js 🧪
-│   │   │   ├── test_ignoreelements_fix.py
-│   │   │   ├── test_permanent_fix.py
-│   │   │   ├── test_users_widget.py
-│   │   │   ├── test_validation_fix.py
-│   │   │   └── UIComponents.test.js 🧪
-│   │   ├── websocket
-│   │   │   └── test_connection.py
-│   │   └── widgets
-│   │       └── WebSocketSync.test.js 🧪
-│   ├── python
-│   │   └── screenshot-client.py
-│   ├── unit
-│   │   ├── js
-│   │   │   ├── commands
-│   │   │   ├── components
-│   │   │   ├── core
-│   │   │   └── utils
-│   │   └── python
-│   │       ├── client
-│   │       ├── core
-│   │       └── utils
-│   ├── command-dependency-sort.cjs
-│   ├── dependency-aware-test-runner.cjs
-│   ├── README.md
-│   ├── run-python-tests.cjs
-│   ├── scan-command-dependencies.cjs
-│   ├── setup.js
-│   ├── simple-test-runner.cjs
-│   ├── test-dependency-sorting.cjs
-│   └── test-strategy.md
-├── agent-scripts
-│   ├── bin
-│   │   ├── heal
-│   │   ├── health-monitor
-│   │   ├── js-send
-│   │   ├── probe
-│   │   ├── run-with-venv.py
-│   │   └── smart-heal
-│   ├── docs
-│   │   ├── ARCHITECTURE.md
-│   │   ├── CONTRIBUTING.md
-│   │   ├── EXAMPLES.md
+.                                                                                📁
+├── __tests__                                                                    📁
+│[   ├── comprehensive](#-------comprehensive)                                                            📄
+│[   │   └── system-integration](#-----------system-integration)                                                   📄
+│[   │       ├── complete_system_test.py](#---------------complete_system_test.py)                                          🐍
+│[   │       ├── current_system_test.py](#---------------current_system_test.py)                                           🐍
+│[   │       └── FullSystemIntegration.test.cjs](#---------------fullsystemintegration.test.cjs)                                   ⚡
+│[   ├── config](#-------config)                                                                   📄
+│[   │   ├── jest.config.cjs](#-----------jest.config.cjs)                                                      ⚡
+│[   │   ├── jest.global-setup.js](#-----------jest.global-setup.js)                                                 ⚡
+│[   │   ├── jest.global-teardown.js](#-----------jest.global-teardown.js)                                              ⚡
+│[   │   ├── pytest.ini](#-----------pytest.ini)                                                           📄
+│[   │   └── test-runner.cjs](#-----------test-runner.cjs)                                                      ⚡
+│[   ├── critical](#-------critical)                                                                 📄
+│[   │   └── core-functionality](#-----------core-functionality)                                                   📄
+│[   │       └── ActualScreenshotCreation.test.cjs](#---------------actualscreenshotcreation.test.cjs)                                ⚡
+│[   ├── fixtures](#-------fixtures)                                                                 📄
+│[   │   ├── configs](#-----------configs)                                                              📄
+│[   │   ├── data](#-----------data)                                                                 📄
+│[   │   └── mocks](#-----------mocks)                                                                📄
+│[   ├── functional](#-------functional)                                                               📄
+│[   │   ├── user-scenarios](#-----------user-scenarios)                                                       📄
+│[   │   │   └── WidgetIterationTests.test.js](#---------------widgetiterationtests.test.js)                                     ⚡
+│[   │   ├── visual](#-----------visual)                                                               📄
+│[   │   │   └── VisualControlModule.test.js](#---------------visualcontrolmodule.test.js)                                      ⚡
+│[   │   └── workflows](#-----------workflows)                                                            📄
+│[   │       └── CommandIntegrationTests.test.js](#---------------commandintegrationtests.test.js)                                  ⚡
+│[   ├── integration](#-------integration)                                                              📄
+│[   │   ├── ai](#-----------ai)                                                                   📄
+│[   │   │   └── AICapabilities.test.js](#---------------aicapabilities.test.js)                                           ⚡
+│[   │   ├── api](#-----------api)                                                                  📄
+│[   │   │   ├── AcademyPersistentStorage.test.cjs](#---------------academypersistentstorage.test.cjs)                                ⚡
+│[   │   │   ├── conftest.py](#---------------conftest.py)                                                      🐍
+│[   │   │   ├── test_browser_api_direct.py](#---------------test_browser_api_direct.py)                                       🐍
+│[   │   │   ├── test_crash_recovery.py](#---------------test_crash_recovery.py)                                           🐍
+│[   │   │   ├── test_elegant_api.py](#---------------test_elegant_api.py)                                              🐍
+│[   │   │   ├── test_elegant_browser_api.py](#---------------test_elegant_browser_api.py)                                      🐍
+│[   │   │   ├── test_fred_registration.py](#---------------test_fred_registration.py)                                        🐍
+│[   │   │   ├── test_full_flow.py](#---------------test_full_flow.py)                                                🐍
+│[   │   │   ├── test_html_parsing.py](#---------------test_html_parsing.py)                                             🐍
+│[   │   │   ├── test_js_promise_errors.py](#---------------test_js_promise_errors.py)                                        🐍
+│[   │   │   ├── test_promise_flow.py](#---------------test_promise_flow.py)                                             🐍
+│[   │   │   └── test_ui_updates.py](#---------------test_ui_updates.py)                                               🐍
+│[   │   ├── commands](#-----------commands)                                                             📄
+│[   │   │   ├── ModularCommandSystem.test.cjs](#---------------modularcommandsystem.test.cjs)                                    ⚡
+│[   │   │   ├── test_modular_commands.py](#---------------test_modular_commands.py)                                         🐍
+│[   │   │   └── test_validate_code_command.py](#---------------test_validate_code_command.py)                                    🐍
+│[   │   ├── screenshot](#-----------screenshot)                                                           📄
+│[   │   │   ├── full-screen-capture.test.py](#---------------full-screen-capture.test.py)                                      🐍
+│[   │   │   ├── screenshot-pipeline.test.py](#---------------screenshot-pipeline.test.py)                                      🐍
+│[   │   │   ├── ScreenshotIntegration.test.cjs](#---------------screenshotintegration.test.cjs)                                   ⚡
+│[   │   │   ├── test_screenshot_bytes_mode.py](#---------------test_screenshot_bytes_mode.py)                                    🐍
+│[   │   │   ├── test_screenshot_simple.py](#---------------test_screenshot_simple.py)                                        🐍
+│[   │   │   ├── test_screenshot.py](#---------------test_screenshot.py)                                               🐍
+│[   │   │   ├── whole-screen-capture.test.py](#---------------whole-screen-capture.test.py)                                     🐍
+│[   │   │   └── widget-capture.test.py](#---------------widget-capture.test.py)                                           🐍
+│[   │   ├── ui](#-----------ui)                                                                   📄
+│[   │   │   ├── GroupChat.test.js](#---------------groupchat.test.js)                                                ⚡
+│[   │   │   ├── test_ignoreelements_fix.py](#---------------test_ignoreelements_fix.py)                                       🐍
+│[   │   │   ├── test_permanent_fix.py](#---------------test_permanent_fix.py)                                            🐍
+│[   │   │   ├── test_users_widget.py](#---------------test_users_widget.py)                                             🐍
+│[   │   │   ├── test_validation_fix.py](#---------------test_validation_fix.py)                                           🐍
+│[   │   │   └── UIComponents.test.js](#---------------uicomponents.test.js)                                             ⚡
+│[   │   ├── websocket](#-----------websocket)                                                            📄
+│[   │   │   └── test_connection.py](#---------------test_connection.py)                                               🐍
+│[   │   └── widgets](#-----------widgets)                                                              📄
+│[   │       └── WebSocketSync.test.js](#---------------websocketsync.test.js)                                            ⚡
+│[   ├── python](#-------python)                                                                   📄
+│[   │   └── screenshot-client.py](#-----------screenshot-client.py)                                                 🐍
+│[   ├── unit](#-------unit)                                                                     📄
+│[   │   ├── js](#-----------js)                                                                   📄
+│[   │   │   ├── commands](#---------------commands)                                                         📄
+│[   │   │   ├── components](#---------------components)                                                       📄
+│[   │   │   ├── core](#---------------core)                                                             📄
+│[   │   │   └── utils](#---------------utils)                                                            📄
+│[   │   └── python](#-----------python)                                                               📄
+│[   │       ├── client](#---------------client)                                                           📄
+│[   │       ├── core](#---------------core)                                                             📄
+│[   │       └── utils](#---------------utils)                                                            📄
+│[   ├── command-dependency-sort.cjs](#-------command-dependency-sort.cjs)                                              ⚡
+│[   ├── dependency-aware-test-runner.cjs](#-------dependency-aware-test-runner.cjs)                                         ⚡
+│[   ├── README.md](#-------readme.md)                                                                📖
+│[   ├── run-python-tests.cjs](#-------run-python-tests.cjs)                                                     ⚡
+│[   ├── scan-command-dependencies.cjs](#-------scan-command-dependencies.cjs)                                            ⚡
+│[   ├── setup.js](#-------setup.js)                                                                 ⚡
+│[   ├── simple-test-runner.cjs](#-------simple-test-runner.cjs)                                                   ⚡
+│[   ├── test-dependency-sorting.cjs](#-------test-dependency-sorting.cjs)                                              ⚡
+│[   └── test-strategy.md](#-------test-strategy.md)                                                         📖
+├── agent-scripts                                                                📁
+│[   ├── bin](#-------bin)                                                                      📄
+│[   │   ├── heal](#-----------heal)                                                                 📄
+│[   │   ├── health-monitor](#-----------health-monitor)                                                       📄
+│[   │   ├── js-send](#-----------js-send)                                                              📄
+│[   │   ├── probe](#-----------probe)                                                                📄
+│[   │   ├── run-with-venv.py](#-----------run-with-venv.py)                                                     🐍
+│[   │   └── smart-heal](#-----------smart-heal)                                                           📄
+│[   ├── docs](#-------docs)                                                                     📄
+│[   │   ├── ARCHITECTURE.md](#-----------architecture.md)                                                      📖
+│[   │   ├── CONTRIBUTING.md](#-----------contributing.md)                                                      📖
+│[   │   ├── EXAMPLES.md](#-----------examples.md)                                                          📖
 
 
 ## 📝 Detailed File Analysis
