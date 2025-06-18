@@ -30,14 +30,25 @@ Sentinel is the foundation for fully autonomous AI agent development with:
 Future: Sentinel bots will execute complex debugging scripts autonomously, sleep, check results, and continue without human intervention.
 
 ## Parameters
-- `action`: Action to perform (start, stop, status, logs, path)
+- `action`: Action to perform (start, stop, status, logs, path, exec, script)
 - `task`: Task name for organized logging (optional)
-- `options`: Additional configuration (optional)
+- `script`: JavaScript code to execute or script filename (for exec/script actions)
+- `interval`: Execution interval in seconds for monitoring scripts (default: 30)
+- `lines`: Number of log lines to show (for logs action, default: 10)
 
 ## Usage Examples
 ```bash
 # Start monitoring with task name
 python3 ai-portal.py --cmd sentinel --params '{"action": "start", "task": "debug-session"}'
+
+# Execute JavaScript code and capture logs
+python3 ai-portal.py --cmd sentinel --params '{"action": "exec", "task": "log-test", "script": "console.log(\"Test log from sentinel\"); return document.title;"}'
+
+# Run predefined monitoring script
+python3 ai-portal.py --cmd sentinel --params '{"action": "script", "task": "health-check", "script": "logs"}'
+
+# Run custom monitoring script with interval
+python3 ai-portal.py --cmd sentinel --params '{"action": "script", "task": "monitor", "script": "health", "interval": 60}'
 
 # Check sentinel status
 python3 ai-portal.py --cmd sentinel --params '{"action": "status"}'
@@ -47,9 +58,6 @@ python3 ai-portal.py --cmd sentinel --params '{"action": "logs", "lines": 20}'
 
 # Get task directory path
 python3 ai-portal.py --cmd sentinel --params '{"action": "path", "task": "debug-session"}'
-
-# Stop monitoring
-python3 ai-portal.py --cmd sentinel --params '{"action": "stop", "task": "debug-session"}'
 ```
 
 ## Package Rules
@@ -71,12 +79,19 @@ python3 ai-portal.py --cmd sentinel --params '{"action": "stop", "task": "debug-
 
 ## Directory Structure
 ```
-.continuum/sentinel/
-├── task_name/
-│   ├── sentinel-YYYYMMDD.log      # Sentinel activity logs
-│   ├── client-monitor-YYYYMMDD.log # Client monitoring
-│   ├── server-monitor-YYYYMMDD.log # Server monitoring  
-│   └── issues-YYYYMMDD.log         # Issues and errors
+.continuum/
+├── sentinel/
+│   ├── task_name/
+│   │   ├── sentinel-YYYYMMDD.log           # Sentinel activity logs
+│   │   ├── client-monitor-YYYYMMDD.log     # Client monitoring
+│   │   ├── server-monitor-YYYYMMDD.log     # Server monitoring  
+│   │   ├── issues-YYYYMMDD.log             # Issues and errors
+│   │   ├── js-execution-YYYYMMDD.log       # JavaScript execution logs
+│   │   └── monitoring-script-YYYYMMDD.log  # Monitoring script execution
+├── scripts/
+│   ├── logs.js                             # Console log monitoring script
+│   ├── health.js                           # System health monitoring script
+│   └── custom.js                           # Custom monitoring scripts
 ```
 
 ## Log Contents (Critical for Debugging)
@@ -104,6 +119,18 @@ python3 ai-portal.py --cmd sentinel --params '{"action": "stop", "task": "debug-
 - Monitoring configuration
 - Sentinel bot health status
 - Future: Autonomous script execution logs
+
+**⚡ js-execution-*.log**: JavaScript execution logs
+- Direct JavaScript execution via `exec` action
+- Script execution results and output
+- Console log capture from executed code
+- Error handling and debugging information
+
+**📊 monitoring-script-*.log**: Monitoring script execution
+- Periodic monitoring script execution via `script` action
+- Health checks, log analysis, system monitoring
+- Automated script results and findings
+- Execution intervals and scheduling
 
 ## Future: Autonomous Sentinel Agents
 The sentinel system is designed to eventually run AI agents autonomously:

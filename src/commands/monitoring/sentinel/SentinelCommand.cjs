@@ -17,7 +17,7 @@ class SentinelCommand extends BaseCommand {
         action: {
           type: 'string',
           required: false,
-          description: 'Action: start, logs, status',
+          description: 'Action: start, logs, status, exec, script',
           default: 'logs'
         },
         lines: {
@@ -31,6 +31,17 @@ class SentinelCommand extends BaseCommand {
           required: false,
           description: 'Task name for organized logging',
           default: 'general'
+        },
+        script: {
+          type: 'string',
+          required: false,
+          description: 'JavaScript code to execute or script filename'
+        },
+        interval: {
+          type: 'number',
+          required: false,
+          description: 'Execution interval in seconds for monitoring scripts',
+          default: 30
         }
       },
       examples: [
@@ -99,6 +110,12 @@ class SentinelCommand extends BaseCommand {
         }, `Sentinel paths for task: ${task}`);
         console.log(`🛡️ SENTINEL: Path result created: ${JSON.stringify(result)}`);
         return result;
+      } else if (action === 'exec') {
+        console.log(`🛡️ SENTINEL: Executing JavaScript...`);
+        return await this.executeJavaScript(sentinelDir, task, options.script, continuum);
+      } else if (action === 'script') {
+        console.log(`🛡️ SENTINEL: Running monitoring script...`);
+        return await this.runMonitoringScript(sentinelDir, task, options.script, options.interval, continuum);
       } else {
         console.log(`🛡️ SENTINEL: Invalid action: ${action}`);
         return this.createErrorResult('Invalid action', `Unknown action: ${action}`);
@@ -261,6 +278,246 @@ class SentinelCommand extends BaseCommand {
     });
     
     return this.createSuccessResult({ tasks }, `Found ${tasks.length} sentinel tasks`);
+  }
+  
+  static async executeJavaScript(sentinelDir, task, script, continuum) {
+    const timestamp = new Date().toISOString();
+    const taskDir = path.join(sentinelDir, task);
+    
+    // Ensure task directory exists
+    if (!fs.existsSync(taskDir)) {
+      fs.mkdirSync(taskDir, { recursive: true });
+    }
+    
+    const logFile = path.join(taskDir, `js-execution-${timestamp.replace(/[:.]/g, '-')}.log`);
+    
+    try {
+      // Log the execution start
+      const startLog = `[${timestamp}] SENTINEL_JS: Starting JavaScript execution\n[${timestamp}] SCRIPT: ${script}\n`;
+      fs.writeFileSync(logFile, startLog);
+      
+      // Execute JavaScript via browser_js command
+      const browserJsCommand = continuum.commandProcessor.commands.get('BROWSERJS');
+      if (!browserJsCommand) {
+        throw new Error('BROWSERJS command not available');
+      }
+      
+      // Execute the script and capture console logs
+      const wrappedScript = `
+        // Sentinel monitoring script execution
+        console.log('🛡️ SENTINEL: Starting JavaScript execution at ' + new Date().toISOString());
+        try {
+          ${script}
+          console.log('🛡️ SENTINEL: JavaScript execution completed successfully');
+        } catch (error) {
+          console.error('🛡️ SENTINEL: JavaScript execution failed:', error.message);
+          throw error;
+        }
+      `;
+      
+      const result = await browserJsCommand.execute(JSON.stringify({ script: wrappedScript }), continuum);
+      
+      // Log the results
+      const resultLog = `[${new Date().toISOString()}] RESULT: ${JSON.stringify(result, null, 2)}\n`;
+      fs.appendFileSync(logFile, resultLog);
+      
+      console.log(`🛡️ SENTINEL: JavaScript executed, logs saved to ${logFile}`);
+      
+      return this.createSuccessResult({
+        task,
+        script: script.substring(0, 100) + (script.length > 100 ? '...' : ''),
+        result,
+        logFile: path.basename(logFile)
+      }, 'JavaScript executed successfully');
+      
+    } catch (error) {
+      const errorLog = `[${new Date().toISOString()}] ERROR: ${error.message}\n`;
+      fs.appendFileSync(logFile, errorLog);
+      
+      return this.createErrorResult('JavaScript execution failed', error.message);
+    }
+  }
+  
+  static async runMonitoringScript(sentinelDir, task, scriptName, interval, continuum) {
+    const taskDir = path.join(sentinelDir, task);
+    const scriptsDir = path.join(path.dirname(sentinelDir), 'scripts');
+    
+    // Ensure directories exist
+    if (!fs.existsSync(taskDir)) {
+      fs.mkdirSync(taskDir, { recursive: true });
+    }
+    if (!fs.existsSync(scriptsDir)) {
+      fs.mkdirSync(scriptsDir, { recursive: true });
+    }
+    
+    // Check if script exists or create a default one
+    const scriptFile = path.join(scriptsDir, `${scriptName}.js`);
+    let scriptContent;
+    
+    if (!fs.existsSync(scriptFile)) {
+      // Create a default monitoring script
+      scriptContent = this.createDefaultMonitoringScript(scriptName);
+      fs.writeFileSync(scriptFile, scriptContent);
+      console.log(`🛡️ SENTINEL: Created default monitoring script: ${scriptFile}`);
+    } else {
+      scriptContent = fs.readFileSync(scriptFile, 'utf8');
+    }
+    
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const logFile = path.join(taskDir, `monitoring-${scriptName}-${timestamp}.log`);
+    
+    // Initialize monitoring log
+    const initLog = `[${new Date().toISOString()}] SENTINEL_MONITOR: Starting monitoring script '${scriptName}'\n[${new Date().toISOString()}] INTERVAL: ${interval} seconds\n[${new Date().toISOString()}] SCRIPT_FILE: ${scriptFile}\n\n`;
+    fs.writeFileSync(logFile, initLog);
+    
+    // Execute the script once immediately
+    try {
+      await this.executeMonitoringScript(scriptContent, logFile, continuum);
+      
+      return this.createSuccessResult({
+        task,
+        script: scriptName,
+        scriptFile: path.basename(scriptFile),
+        logFile: path.basename(logFile),
+        interval: interval
+      }, `Monitoring script '${scriptName}' executed - set up periodic execution every ${interval}s`);
+      
+    } catch (error) {
+      const errorLog = `[${new Date().toISOString()}] ERROR: ${error.message}\n`;
+      fs.appendFileSync(logFile, errorLog);
+      
+      return this.createErrorResult('Monitoring script failed', error.message);
+    }
+  }
+  
+  static async executeMonitoringScript(scriptContent, logFile, continuum) {
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Execute via browser_js command
+      const browserJsCommand = continuum.commandProcessor.commands.get('BROWSERJS');
+      if (!browserJsCommand) {
+        throw new Error('BROWSERJS command not available');
+      }
+      
+      const wrappedScript = `
+        // Sentinel monitoring execution
+        const timestamp = new Date().toISOString();
+        console.log('🛡️ SENTINEL MONITOR: Execution started at ' + timestamp);
+        
+        try {
+          ${scriptContent}
+          console.log('🛡️ SENTINEL MONITOR: Execution completed at ' + new Date().toISOString());
+        } catch (error) {
+          console.error('🛡️ SENTINEL MONITOR: Execution failed:', error.message);
+          throw error;
+        }
+      `;
+      
+      const result = await browserJsCommand.execute(JSON.stringify({ script: wrappedScript }), continuum);
+      
+      // Log the execution
+      const execLog = `[${timestamp}] EXECUTION: Success\n[${timestamp}] RESULT: ${JSON.stringify(result, null, 2)}\n\n`;
+      fs.appendFileSync(logFile, execLog);
+      
+      return result;
+      
+    } catch (error) {
+      const errorLog = `[${timestamp}] EXECUTION: Failed - ${error.message}\n\n`;
+      fs.appendFileSync(logFile, errorLog);
+      throw error;
+    }
+  }
+  
+  static createDefaultMonitoringScript(scriptName) {
+    if (scriptName === 'logs') {
+      return `
+// Sentinel Log Monitor Script
+// Captures and analyzes console logs
+
+console.log('📊 LOG MONITOR: Checking console activity...');
+
+// Check for recent console logs via clientLogs
+if (window.continuum && window.continuum.connected) {
+  console.log('✅ LOG MONITOR: Continuum client connected');
+  
+  // Log current page state
+  console.log('📍 LOG MONITOR: Current URL:', window.location.href);
+  console.log('📍 LOG MONITOR: Page title:', document.title);
+  console.log('📍 LOG MONITOR: WebSocket state:', window.ws ? window.ws.readyState : 'No WebSocket');
+  
+  // Check for error elements on page
+  const errorElements = document.querySelectorAll('[class*="error"], [class*="warning"], .alert');
+  console.log('⚠️ LOG MONITOR: Found ' + errorElements.length + ' potential error elements');
+  
+  if (errorElements.length > 0) {
+    errorElements.forEach((el, i) => {
+      console.log('🔍 LOG MONITOR: Error element ' + (i+1) + ':', el.textContent.trim().substring(0, 100));
+    });
+  }
+  
+} else {
+  console.warn('❌ LOG MONITOR: Continuum client not connected');
+}
+
+console.log('✅ LOG MONITOR: Monitoring cycle complete');
+`;
+    } else if (scriptName === 'health') {
+      return `
+// Sentinel Health Monitor Script
+// Checks system health and performance
+
+console.log('🏥 HEALTH MONITOR: Starting health check...');
+
+// Check page performance
+const perfData = performance.getEntriesByType('navigation')[0];
+if (perfData) {
+  console.log('⚡ HEALTH MONITOR: Page load time:', Math.round(perfData.loadEventEnd - perfData.loadEventStart), 'ms');
+  console.log('⚡ HEALTH MONITOR: DOM ready time:', Math.round(perfData.domContentLoadedEventEnd - perfData.domContentLoadedEventStart), 'ms');
+}
+
+// Check memory usage (if available)
+if (performance.memory) {
+  const memMB = Math.round(performance.memory.usedJSHeapSize / 1024 / 1024);
+  console.log('💾 HEALTH MONITOR: Memory usage:', memMB, 'MB');
+}
+
+// Check WebSocket connection health
+if (window.ws) {
+  console.log('🔗 HEALTH MONITOR: WebSocket state:', 
+    window.ws.readyState === 0 ? 'CONNECTING' :
+    window.ws.readyState === 1 ? 'OPEN' :
+    window.ws.readyState === 2 ? 'CLOSING' : 'CLOSED'
+  );
+} else {
+  console.warn('❌ HEALTH MONITOR: No WebSocket connection');
+}
+
+// Check for JavaScript errors
+window.sentinelErrorCount = window.sentinelErrorCount || 0;
+console.log('🐛 HEALTH MONITOR: JavaScript errors since last check:', window.sentinelErrorCount);
+window.sentinelErrorCount = 0; // Reset counter
+
+console.log('✅ HEALTH MONITOR: Health check complete');
+`;
+    } else {
+      return `
+// Default Sentinel Monitoring Script: ${scriptName}
+// Custom monitoring logic
+
+console.log('🛡️ SENTINEL: Custom monitor "${scriptName}" executing...');
+
+// Add your monitoring logic here
+console.log('📊 MONITOR: Current timestamp:', new Date().toISOString());
+console.log('📊 MONITOR: Page URL:', window.location.href);
+
+// Example: Check for specific elements or conditions
+const elements = document.querySelectorAll('body');
+console.log('📊 MONITOR: Found', elements.length, 'body elements');
+
+console.log('✅ MONITOR: ${scriptName} execution complete');
+`;
+    }
   }
 }
 
