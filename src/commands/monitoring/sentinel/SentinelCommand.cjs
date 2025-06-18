@@ -42,6 +42,42 @@ class SentinelCommand extends BaseCommand {
           required: false,
           description: 'Execution interval in seconds for monitoring scripts',
           default: 30
+        },
+        source: {
+          type: 'string',
+          required: false,
+          description: 'Log source: client, server, both, or sentinel',
+          default: 'sentinel'
+        },
+        live: {
+          type: 'boolean',
+          required: false,
+          description: 'Enable live log streaming',
+          default: false
+        },
+        stream: {
+          type: 'boolean',
+          required: false,
+          description: 'Enable real-time log streaming subscription',
+          default: false
+        },
+        event: {
+          type: 'string',
+          required: false,
+          description: 'Event type to subscribe to: logs, errors, commands, connections',
+          default: 'logs'
+        },
+        filter: {
+          type: 'string',
+          required: false,
+          description: 'Event filter: client, server, both, or specific pattern',
+          default: 'both'
+        },
+        callback: {
+          type: 'boolean',
+          required: false,
+          description: 'Enable callback mode for subscriptions',
+          default: false
         }
       },
       examples: [
@@ -62,7 +98,6 @@ class SentinelCommand extends BaseCommand {
     const task = options.task || 'general';
     
     console.log(`🛡️ SENTINEL: Parsed options - action: ${action}, lines: ${lines}, task: ${task}`);
-    console.log(`🛡️ SENTINEL: Continuum object available: ${!!continuum}`);
     
     try {
       console.log(`🛡️ SENTINEL: Starting directory setup...`);
@@ -93,7 +128,14 @@ class SentinelCommand extends BaseCommand {
       
       if (action === 'logs') {
         console.log(`🛡️ SENTINEL: Calling showLogs...`);
-        return await this.showLogs(sentinelDir, lines, task);
+        const source = options.source || 'sentinel';
+        const live = options.live || false;
+        
+        if (live && (source === 'client' || source === 'server' || source === 'both')) {
+          return await this.showLiveLogs(continuum, source, lines);
+        } else {
+          return await this.showLogs(sentinelDir, lines, task);
+        }
       } else if (action === 'start') {
         console.log(`🛡️ SENTINEL: Calling startSentinel...`);
         return await this.startSentinel(sentinelDir, task);
@@ -116,6 +158,12 @@ class SentinelCommand extends BaseCommand {
       } else if (action === 'script') {
         console.log(`🛡️ SENTINEL: Running monitoring script...`);
         return await this.runMonitoringScript(sentinelDir, task, options.script, options.interval, continuum);
+      } else if (action === 'subscribe') {
+        console.log(`🛡️ SENTINEL: Setting up event subscription...`);
+        return await this.subscribeToEvents(continuum, options.event, options.filter);
+      } else if (action === 'unsubscribe') {
+        console.log(`🛡️ SENTINEL: Removing event subscription...`);
+        return await this.unsubscribeFromEvents(continuum, options.event, options.filter);
       } else {
         console.log(`🛡️ SENTINEL: Invalid action: ${action}`);
         return this.createErrorResult('Invalid action', `Unknown action: ${action}`);
@@ -127,6 +175,43 @@ class SentinelCommand extends BaseCommand {
     }
   }
   
+  static async showLiveLogs(continuum, source, lines) {
+    const fs = require('fs');
+    const path = require('path');
+    
+    try {
+      const logs = {};
+      
+      if (source === 'server' || source === 'both') {
+        // Read from live server log file
+        const serverLogPath = path.join(process.cwd(), 'server.log');
+        if (fs.existsSync(serverLogPath)) {
+          const serverContent = fs.readFileSync(serverLogPath, 'utf8');
+          const serverLines = serverContent.split('\n').filter(line => line.trim());
+          logs.server = serverLines.slice(-lines);
+        } else {
+          logs.server = ['Server log file not found'];
+        }
+      }
+      
+      if (source === 'client' || source === 'both') {
+        // Get client logs from WebSocket server's clientLogs buffer
+        if (continuum.webSocketServer && continuum.webSocketServer.clientLogs) {
+          const clientLogs = continuum.webSocketServer.clientLogs.slice(-lines);
+          logs.client = clientLogs.map(log => 
+            `[${new Date(log.timestamp).toISOString()}] ${log.level.toUpperCase()}: ${log.message}`
+          );
+        } else {
+          logs.client = ['No client logs available'];
+        }
+      }
+      
+      return this.createSuccessResult(logs, `Live logs retrieved: ${source}`);
+    } catch (error) {
+      return this.createErrorResult('Failed to get live logs', error.message);
+    }
+  }
+
   static async showLogs(sentinelDir, lines, task) {
     const taskDir = path.join(sentinelDir, task);
     

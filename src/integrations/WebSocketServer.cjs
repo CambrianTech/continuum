@@ -68,7 +68,32 @@ class WebSocketServer extends EventEmitter {
     const commands = {};
     const examples = {};
     
+    // Add commands from new CommandRegistry system (preferred)
+    if (this.continuum.commandProcessor.commandRegistry) {
+      const registryDefinitions = this.continuum.commandProcessor.commandRegistry.getAllDefinitions();
+      for (const definition of registryDefinitions) {
+        const commandName = definition.name.toUpperCase();
+        commands[commandName] = {
+          description: definition.description,
+          usage: `{"type": "task", "role": "system", "task": "${commandName} ${definition.params || ''}"}`,
+          params: definition.params,
+          category: definition.category,
+          icon: definition.icon,
+          source: 'CommandRegistry'
+        };
+        
+        // Use first example if available
+        if (definition.examples && definition.examples.length > 0) {
+          examples[`${commandName} example`] = `{"type": "task", "role": "system", "task": "${commandName} ${definition.examples[0]}"}`;
+        }
+      }
+    }
+    
+    // Add legacy commands (fallback for commands not in registry)
     for (const [commandName, commandClass] of this.continuum.commandProcessor.commands.entries()) {
+      // Skip if already added from registry
+      if (commands[commandName]) continue;
+      
       try {
         const definition = commandClass.getDefinition();
         commands[commandName] = {
@@ -76,7 +101,8 @@ class WebSocketServer extends EventEmitter {
           usage: `{"type": "task", "role": "system", "task": "[CMD:${commandName}] ${definition.params}"}`,
           params: definition.params,
           category: definition.category,
-          icon: definition.icon
+          icon: definition.icon,
+          source: 'Legacy'
         };
         
         // Use first example if available
@@ -87,7 +113,8 @@ class WebSocketServer extends EventEmitter {
         // Fallback for commands without proper getDefinition
         commands[commandName] = {
           description: 'Available command',
-          usage: `{"type": "task", "role": "system", "task": "[CMD:${commandName}] <params>"}`
+          usage: `{"type": "task", "role": "system", "task": "[CMD:${commandName}] <params>"}`,
+          source: 'Legacy'
         };
       }
     }
@@ -566,6 +593,11 @@ class WebSocketServer extends EventEmitter {
             this.clientLogs = this.clientLogs.slice(-100);
             console.log('🔍 SERVER: Trimmed clientLogs to 100 entries');
           }
+          
+          // Publish to EventBus if it exists
+          if (this.continuum && this.continuum.eventBus) {
+            this.continuum.eventBus.processMessage('client_console_log', data, sessionId);
+          }
         } catch (error) {
           console.error('🚨 SERVER ERROR handling client console log:', error);
         }
@@ -685,7 +717,9 @@ class WebSocketServer extends EventEmitter {
       } else if (data.type === 'task') {
         // Handle task commands from Python client
         try {
-          console.log('🎯 TASK COMMAND RECEIVED:', data.task);
+          console.log('🔍 WS_DEBUG: Raw task received:', data.task);
+          console.log('🔍 WS_DEBUG: Task type:', typeof data.task);
+          console.log('🔍 WS_DEBUG: Full data object:', JSON.stringify(data, null, 2));
           console.log('🎯 Command ID:', data.commandId);
           console.log('🎯 Role:', data.role);
           
@@ -693,6 +727,16 @@ class WebSocketServer extends EventEmitter {
           const taskParts = data.task.split(' ');
           const command = taskParts[0].toUpperCase();
           const params = taskParts.slice(1).join(' ') || '{}';
+          
+          // Publish command execution event to EventBus
+          if (this.continuum && this.continuum.eventBus) {
+            this.continuum.eventBus.processMessage('command_execution', {
+              command: command,
+              params: params,
+              task: data.task,
+              role: data.role
+            }, sessionId);
+          }
           
           console.log('🎯 Parsed command:', command);
           console.log('🎯 Parsed params:', params);
@@ -951,12 +995,12 @@ class WebSocketServer extends EventEmitter {
                     "SERVER_VALIDATION_COMPLETE";
                   `;
                   
-                  // Send via BROWSER_JS command
+                  // Send via browserjs command (new direct format)
                   const encoded = Buffer.from(validationScript).toString('base64');
                   const command = {
                     type: 'task',
                     role: 'system',
-                    task: `[CMD:BROWSER_JS] ${encoded}`
+                    task: `browserjs {"script": "${encoded}"}`
                   };
                   
                   ws.send(JSON.stringify(command));
