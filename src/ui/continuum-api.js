@@ -22,21 +22,28 @@ function setupConsoleForwarding() {
     
     // Helper to send console messages to server
     function forwardToServer(level, args) {
-        if (window.ws && window.ws.readyState === WebSocket.OPEN) {
-            const message = {
-                type: 'client_console_log',
-                level: level,
-                message: args.map(arg => 
-                    typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
-                ).join(' '),
-                timestamp: Date.now(),
-                url: window.location.href
-            };
-            
+        const message = {
+            type: 'client_console_log',
+            level: level,
+            message: args.map(arg => 
+                typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+            ).join(' '),
+            timestamp: Date.now(),
+            url: window.location.href,
+            wsState: window.ws ? window.ws.readyState : 'NO_WS'
+        };
+        
+        // Log EVERYTHING about WebSocket state
+        if (!window.ws) {
+            originalConsole.error('🚨 CONSOLE FORWARD FAIL: No window.ws exists!');
+        } else if (window.ws.readyState !== WebSocket.OPEN) {
+            originalConsole.error('🚨 CONSOLE FORWARD FAIL: WebSocket not open, state:', window.ws.readyState);
+        } else {
             try {
                 window.ws.send(JSON.stringify(message));
+                originalConsole.log('📤 CONSOLE FORWARDED:', level, message.message);
             } catch (e) {
-                // Silent fail - don't break console if WebSocket fails
+                originalConsole.error('🚨 CONSOLE FORWARD ERROR:', e);
             }
         }
     }
@@ -128,9 +135,21 @@ function setupConsoleForwarding() {
     
     start: function() {
         console.log('🚀 window.continuum.start() called');
+        console.log('🔍 WEBSOCKET STATE CHECK:');
+        console.log('  window.ws exists:', !!window.ws);
+        if (window.ws) {
+            console.log('  window.ws.readyState:', window.ws.readyState);
+            console.log('  WebSocket.OPEN:', WebSocket.OPEN);
+            console.log('  WebSocket.CONNECTING:', WebSocket.CONNECTING);
+            console.log('  WebSocket.CLOSING:', WebSocket.CLOSING);
+            console.log('  WebSocket.CLOSED:', WebSocket.CLOSED);
+            console.log('  window.ws.url:', window.ws.url);
+        }
         
         return new Promise((resolve, reject) => {
+            console.log('🎯 CONTINUUM START: Checking WebSocket readiness...');
             if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                console.log('✅ CONTINUUM START: WebSocket is ready!');
                 // Send client initialization to create server-side BrowserClientConnection
                 const initMessage = {
                     type: 'client_initialize',
