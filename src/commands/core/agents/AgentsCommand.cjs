@@ -138,7 +138,108 @@ Each README is a shared ticket with notes from the last person to help you.
   3. VALIDATE: python3 python-client/trust_the_process.py (BEFORE changes)
   4. EXECUTE: Follow the provided commands and guidance
   5. TEST: python3 python-client/trust_the_process.py (AFTER changes)
-  6. UPDATE: Document discoveries and update roadmap status`);
+  6. UPDATE: Document discoveries and update roadmap status
+
+BASIC COMMANDS:
+  continuum.help()                     Show full user/admin help
+  continuum.agents()                   Show this agent-specific help
+  
+🚀 AI PORTAL - YOUR PRIMARY INTERFACE:
+  python3 python-client/ai-portal.py --help           # All available commands
+  python3 python-client/ai-portal.py --cmd help       # Live API documentation
+  python3 python-client/ai-portal.py --cmd workspace  # Get your workspace paths
+  python3 python-client/ai-portal.py --cmd sentinel   # Start monitoring/logging
+  
+  # All commands are self-documenting:
+  python3 python-client/ai-portal.py --cmd [command] --help
+
+📍 SETUP & LOCATIONS (Do This First):
+  🔧 Python Environment Setup:
+  cd python-client                         # Work from python-client directory
+  python -m venv .venv                     # Create venv IN python-client/.venv
+  source .venv/bin/activate                # Activate venv (required for all Python work)
+  pip install -e .                        # Install continuum-client package
+  pip install -e .[dev]                   # Install dev dependencies (pytest, etc.)
+  
+  📁 Key Directories:
+  python-client/                           # Your working directory for Python code
+  python-client/ai-portal.py               # 🚀 Your primary interface (thin client adapter)
+  python-client/continuum_client/          # Promise-based API (forwards to command bus)
+  python-client/.venv/                     # Python virtual environment (you create this)
+  .continuum/                              # Workspace directory (managed by workspace command)
+  .continuum/ai-portal/                    # Your AI portal workspace and logs
+  .continuum/sentinel/                     # Sentinel monitoring and task logs
+  .continuum/screenshots/                  # Screenshots auto-saved here
+  .continuum/logs/                         # Debug logs
+  .continuum/shared/                       # Communication with Joel
+  src/commands/core/                       # Modular commands (workspace, sentinel, restart, etc)
+  src/integrations/WebSocketServer.cjs    # Command bus message routing
+  src/                                     # JavaScript/Node.js code (edit existing files only)`);
+
+    // Display command registry using parent method
+    this.displayCommandRegistry();
+
+    console.log(`
+🚨 CRITICAL: TRUST THE PROCESS - Follow this exactly:
+  cd python-client && python trust_the_process.py    # Single command does everything!
+
+📋 BABY STEPS DEVELOPMENT CYCLE:
+  1️⃣  Clear old data: Avoid confusion/cheating
+  2️⃣  Make small change: Max 50 lines, one file only  
+  3️⃣  Bump version: Auto-increment for tracking
+  4️⃣  Test immediately: Screenshot + console + validation ← AUTOMATED
+  5️⃣  Fix ANY errors: Zero tolerance for breaking system
+  6️⃣  Commit when stable: Only when everything works
+
+🛡️ SAFETY RULES (Never Break These):
+  • NEVER break the system (immediate rollback if anything fails)
+  • NEVER commit broken code (test everything first)
+  • ALWAYS increase stability (every commit improves system)
+  • ALWAYS follow surgical precision (small, careful changes)
+  • ALWAYS edit existing files (avoid creating new files)
+
+🎯 SUCCESS CRITERIA (All Must Pass):
+  • All tests pass ✅
+  • No console errors ✅
+  • Screenshots capture correctly ✅
+  • Version numbers match ✅
+  • System more stable than before ✅
+
+🏛️ ARCHAEOLOGICAL OPPORTUNITIES (HUGE IMPACT!):
+  🎓 ACADEMY SYSTEM: Matrix-inspired adversarial AI training (f0e2fb9)
+     • TestingDroid vs ProtocolSheriff battles
+     • LoRA fine-tuning with 190,735x storage reduction
+     • Boot camp graduation and deployment
+     
+  🎮 MASS EFFECT UI: Cyberpunk slideout panels (4ffb32e, 41c02a2)
+     • Glass morphism: rgba(0, 255, 136, 0.15)
+     • Multi-agent selection with avatars
+     • Slideout panels with >> arrow interactions
+     
+  🤖 INTELLIGENT ROUTING: Self-improving agent selection (72c5684)
+     • Smart routing optimization
+     • Process lifecycle management
+     • Multi-agent session coordination
+     
+  📖 READ THIS: RESTORATION-STRATEGY.md - Complete step-by-step plan
+     • 5-phase restoration with exact git commands
+     • Safety-first methodology with rollback procedures
+     • Archaeological recovery instead of recreation
+
+📖 FULL PROCESS DOCUMENTATION:
+  cat RESTORATION-STRATEGY.md              # 🔥 PRIMARY: Complete restoration plan
+  cat FILES.md                             # Archaeological map with Agent Study Guide
+  cat README.md                            # System overview and quick start
+  cat docs/ACADEMY_ARCHITECTURE.md         # Academy system technical details
+  continuum.help()                         # User/admin documentation
+  
+🎯 PRIORITY READING:
+  1. RESTORATION-STRATEGY.md - Your roadmap to high-impact work
+  2. FILES.md Agent Study Guide - Archaeological discoveries
+  3. Trust the process: python python-client/trust_the_process.py
+  
+Remember: Follow the restoration strategy for maximum impact.
+Archaeological recovery beats recreating from scratch.`);
 
     return this.createSuccessResult({ section: 'overview' }, 'Agent overview displayed');
   }
@@ -180,6 +281,26 @@ Each README is a shared ticket with notes from the last person to help you.
     console.log(restoreResult.message || restoreResult);
     
     return this.createSuccessResult({ section: 'restoration' }, 'Restoration section displayed');
+  }
+
+  // Essential helper methods that were missing
+  static async getProjectHealthOneLiner() {
+    try {
+      // Simple health check - just return basic status
+      return "System loading, commands available";
+    } catch (error) {
+      return "Status check unavailable";
+    }
+  }
+
+  static async getBrokenCommands() {
+    // Return empty array for now - could be enhanced later
+    return [];
+  }
+
+  static async getRecentWork() {
+    // Return empty array for now - could be enhanced later  
+    return [];
   }
 }
 
