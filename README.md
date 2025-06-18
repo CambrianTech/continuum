@@ -31,6 +31,11 @@ python3 python-client/ai-portal.py --cmd help          # Live API docs
 cd python-client && python trust_the_process.py        # Full integrity check
 ```
 
+### 📋 For New Agents
+**🔄 [Development Process](docs/CONTINUUM_PROCESS.md)** - Essential reading for all AI agents  
+**🎯 [Agent Dashboard](python-client/ai-portal.py)** - Strategic command center for agents  
+**🏛️ [Restoration Strategy](RESTORATION-STRATEGY.md)** - Archaeological recovery roadmap
+
 ### For Humans
 ```bash
 continuum --help                                        # View all commands
