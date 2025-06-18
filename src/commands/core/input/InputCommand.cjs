@@ -15,69 +15,62 @@ class InputCommand extends BaseCommand {
       category: 'input control',
       icon: '🎮',
       description: 'Unified input event handling: mouse, touch, keyboard, gestures',
-      params: '{"event": "click|key|scroll|gesture", "x": number, "y": number, "text": string}',
+      parameters: {
+        event: {
+          type: 'string',
+          required: true,
+          description: 'Event type: click, touch, mousedown, mouseup, mousemove, drag, scroll, key'
+        },
+        x: {
+          type: 'number',
+          required: false,
+          description: 'X coordinate (for positional events)'
+        },
+        y: {
+          type: 'number',
+          required: false,
+          description: 'Y coordinate (for positional events)'
+        },
+        button: {
+          type: 'string',
+          required: false,
+          default: 'left',
+          description: 'Mouse button: left, right, middle'
+        },
+        key: {
+          type: 'string',
+          required: false,
+          description: 'Key name for keyboard events'
+        },
+        text: {
+          type: 'string',
+          required: false,
+          description: 'Text to type'
+        },
+        duration: {
+          type: 'number',
+          required: false,
+          description: 'Event duration in milliseconds'
+        },
+        animation: {
+          type: 'string',
+          required: false,
+          default: 'natural',
+          description: 'Animation style: natural, instant, smooth'
+        }
+      },
       examples: [
         '{"event": "click", "x": 100, "y": 200}',
         '{"event": "key", "text": "Hello World"}',
-        '{"event": "scroll", "direction": "down"}'
+        '{"event": "scroll", "direction": "down"}',
+        '{"event": "type", "text": "Hello world!", "animation": "natural"}'
       ],
       usage: 'Handles all types of input events in a unified interface'
     };
   }
 
-  constructor() {
-    super();
-    this.name = 'input';
-    this.description = 'Unified input event handling: mouse, touch, keyboard, gestures';
-    this.icon = '🎮';
-    this.category = 'input control';
-    this.parameters = {
-      event: {
-        type: 'string',
-        required: true,
-        description: 'Event type: click, touch, mousedown, mouseup, mousemove, drag, scroll, key'
-      },
-      x: {
-        type: 'number',
-        required: false,
-        description: 'X coordinate (for positional events)'
-      },
-      y: {
-        type: 'number',
-        required: false,
-        description: 'Y coordinate (for positional events)'
-      },
-      button: {
-        type: 'string',
-        required: false,
-        default: 'left',
-        description: 'Mouse button: left, right, middle'
-      },
-      key: {
-        type: 'string',
-        required: false,
-        description: 'Key name for keyboard events'
-      },
-      text: {
-        type: 'string',
-        required: false,
-        description: 'Text to type'
-      },
-      duration: {
-        type: 'number',
-        required: false,
-        description: 'Event duration in milliseconds'
-      },
-      animation: {
-        type: 'string',
-        required: false,
-        default: 'natural',
-        description: 'Animation style: natural, instant, smooth'
-      }
-    };
-  }
 
-  async execute(params, context) {
+  static async execute(params, context) {
     try {
       const { event, x, y, button = 'left', key, text, duration, animation = 'natural' } = this.parseParams(params);
 
@@ -110,7 +103,7 @@ class InputCommand extends BaseCommand {
     }
   }
 
-  async handleClick(x, y, button, animation, context) {
+  static async handleClick(x, y, button, animation, context) {
     const position = await this.resolvePosition(x, y);
     console.log(`🖱️ Click ${button} at (${position.x}, ${position.y})`);
 
@@ -144,7 +137,7 @@ class InputCommand extends BaseCommand {
     });
   }
 
-  async handleTouch(x, y, duration, context) {
+  static async handleTouch(x, y, duration, context) {
     const position = await this.resolvePosition(x, y);
     console.log(`👆 Touch at (${position.x}, ${position.y}) for ${duration || 'instant'}`);
 
@@ -167,7 +160,7 @@ class InputCommand extends BaseCommand {
     });
   }
 
-  async handleMouseDown(x, y, button, context) {
+  static async handleMouseDown(x, y, button, context) {
     const position = await this.resolvePosition(x, y);
     console.log(`⬇️ Mouse down ${button} at (${position.x}, ${position.y})`);
 
@@ -197,7 +190,7 @@ class InputCommand extends BaseCommand {
     });
   }
 
-  async handleMouseUp(x, y, button, context) {
+  static async handleMouseUp(x, y, button, context) {
     const position = await this.resolvePosition(x, y);
     console.log(`⬆️ Mouse up ${button} at (${position.x}, ${position.y})`);
 
@@ -227,7 +220,7 @@ class InputCommand extends BaseCommand {
     });
   }
 
-  async handleMouseMove(x, y, animation, context) {
+  static async handleMouseMove(x, y, animation, context) {
     if (x === undefined || y === undefined) {
       return this.createErrorResult('X and Y coordinates required for mouse move');
     }
@@ -252,7 +245,7 @@ class InputCommand extends BaseCommand {
     });
   }
 
-  async handleDrag(params, context) {
+  static async handleDrag(params, context) {
     const { x, y, x2, y2, button = 'left' } = params;
     
     if (!x2 || !y2) {
@@ -275,7 +268,7 @@ class InputCommand extends BaseCommand {
     });
   }
 
-  async handleScroll(x, y, params, context) {
+  static async handleScroll(x, y, params, context) {
     const { direction = 'down', amount = 5 } = params;
     const position = await this.resolvePosition(x, y);
     
@@ -306,7 +299,7 @@ class InputCommand extends BaseCommand {
     });
   }
 
-  async handleKey(key, context) {
+  static async handleKey(key, context) {
     if (!key) {
       return this.createErrorResult('Key parameter required for key events');
     }
@@ -324,7 +317,7 @@ class InputCommand extends BaseCommand {
     });
   }
 
-  async handleType(text, animation, context) {
+  static async handleType(text, animation, context) {
     if (!text) {
       return this.createErrorResult('Text parameter required for type events');
     }
@@ -352,7 +345,7 @@ class InputCommand extends BaseCommand {
     });
   }
 
-  async resolvePosition(x, y) {
+  static async resolvePosition(x, y) {
     if (x !== undefined && y !== undefined) {
       return { x, y };
     }
@@ -370,12 +363,12 @@ class InputCommand extends BaseCommand {
     }
   }
 
-  async createNaturalMovement(from, to) {
+  static async createNaturalMovement(from, to) {
     // Simple natural movement for now
     return `cliclick m:${to.x},${to.y}`;
   }
 
-  async createNaturalTyping(text) {
+  static async createNaturalTyping(text) {
     const commands = [];
     for (let i = 0; i < text.length; i++) {
       const char = text[i];
@@ -388,7 +381,7 @@ class InputCommand extends BaseCommand {
     return commands.join(' && ');
   }
 
-  sendFeedback(eventType, data, context) {
+  static sendFeedback(eventType, data, context) {
     if (context && context.webSocketServer) {
       context.webSocketServer.broadcast({
         type: 'input_feedback',
@@ -399,45 +392,6 @@ class InputCommand extends BaseCommand {
     }
   }
 
-  getDefinition() {
-    return {
-      name: this.name,
-      description: this.description,
-      icon: this.icon,
-      category: this.category,
-      parameters: this.parameters,
-      examples: [
-        {
-          description: 'Left click at coordinates',
-          usage: 'input click 400 300 left'
-        },
-        {
-          description: 'Right click at current cursor position',
-          usage: 'input click button:right'
-        },
-        {
-          description: 'Touch with long press',
-          usage: 'input touch 500 400 duration:1000'
-        },
-        {
-          description: 'Drag from one point to another',
-          usage: 'input drag 100 100 x2:400 y2:300'
-        },
-        {
-          description: 'Scroll down at position',
-          usage: 'input scroll 640 360 direction:down amount:3'
-        },
-        {
-          description: 'Press a key',
-          usage: 'input key return'
-        },
-        {
-          description: 'Type text naturally',
-          usage: 'input type "Hello world!" natural'
-        }
-      ]
-    };
-  }
 }
 
 module.exports = InputCommand;

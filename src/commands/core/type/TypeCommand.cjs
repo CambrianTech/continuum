@@ -15,43 +15,36 @@ class TypeCommand extends BaseCommand {
       category: 'keyboard control',
       icon: '⌨️',
       description: 'Type text with natural human-like timing and rhythm',
-      params: '{"text": string, "speed": number, "delay": number}',
+      parameters: {
+        text: {
+          type: 'string',
+          required: true,
+          description: 'Text to type'
+        },
+        speed: {
+          type: 'string',
+          required: false,
+          default: 'natural',
+          description: 'Typing speed: fast, natural, slow, instant'
+        },
+        pause: {
+          type: 'number',
+          required: false,
+          description: 'Pause in milliseconds before typing'
+        }
+      },
       examples: [
         '{"text": "Hello World"}',
-        '{"text": "Slow typing", "speed": 200}',
-        '{"text": "With delay", "delay": 500}'
+        '{"text": "Slow typing", "speed": "slow"}',
+        '{"text": "With delay", "pause": 500}',
+        '{"text": "Fast typing", "speed": "fast"}'
       ],
       usage: 'Simulates natural keyboard typing with configurable speed and timing'
     };
   }
 
-  constructor() {
-    super();
-    this.name = 'type';
-    this.description = 'Type text with natural human-like timing and rhythm';
-    this.icon = '⌨️';
-    this.category = 'keyboard control';
-    this.parameters = {
-      text: {
-        type: 'string',
-        required: true,
-        description: 'Text to type'
-      },
-      speed: {
-        type: 'string',
-        required: false,
-        default: 'natural',
-        description: 'Typing speed: fast, natural, slow, instant'
-      },
-      pause: {
-        type: 'number',
-        required: false,
-        description: 'Pause in milliseconds before typing'
-      }
-    };
-  }
 
-  async execute(params, context) {
+  static async execute(params, context) {
     try {
       const { text, speed = 'natural', pause } = this.parseParams(params);
 
@@ -103,7 +96,7 @@ class TypeCommand extends BaseCommand {
     }
   }
 
-  async createTypingCommand(text, speed) {
+  static async createTypingCommand(text, speed) {
     // Escape special characters for shell
     const escapedText = text.replace(/'/g, "'\"'\"'");
 
@@ -126,7 +119,7 @@ class TypeCommand extends BaseCommand {
     }
   }
 
-  createCharacterByCharacterCommand(text, baseDelay) {
+  static createCharacterByCharacterCommand(text, baseDelay) {
     const commands = [];
     
     for (let i = 0; i < text.length; i++) {
@@ -151,7 +144,7 @@ class TypeCommand extends BaseCommand {
     return commands.join(' && ');
   }
 
-  createNaturalTypingCommand(text) {
+  static createNaturalTypingCommand(text) {
     const commands = [];
     let i = 0;
     
@@ -199,37 +192,10 @@ class TypeCommand extends BaseCommand {
     return commands.join(' && ');
   }
 
-  wait(ms) {
+  static wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  getDefinition() {
-    return {
-      name: this.name,
-      description: this.description,
-      icon: this.icon,
-      category: this.category,
-      parameters: this.parameters,
-      examples: [
-        {
-          description: 'Type text with natural human-like timing',
-          usage: 'type "Hello, world!" natural'
-        },
-        {
-          description: 'Type text instantly without delays',
-          usage: 'type "Quick message" instant'
-        },
-        {
-          description: 'Type slowly with deliberate timing',
-          usage: 'type "Careful typing" slow'
-        },
-        {
-          description: 'Type with pause before starting',
-          usage: 'type "Delayed message" natural 2000'
-        }
-      ]
-    };
-  }
 }
 
 module.exports = TypeCommand;
