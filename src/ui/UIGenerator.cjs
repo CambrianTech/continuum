@@ -2608,23 +2608,23 @@ class UIGenerator {
                 return;
             }
             
-            // Handle commands from server (screenshot, etc.)
+            // Handle commands from server
             if (data.type === 'command') {
+                console.log('🔥🔥🔥 CLAUDE DEBUG: Command handler triggered!!!');
                 console.log('📋 CLIENT: Command received:', data.command, data.params);
                 
-                if (data.command === 'screenshot') {
-                    console.log('📸 CLIENT: Routing screenshot command to ScreenshotCommandClient');
-                    if (typeof window.ScreenshotCommandClient !== 'undefined') {
-                        window.ScreenshotCommandClient.handleCommand(data.params || {}).then(() => {
-                            console.log('✅ Screenshot command executed successfully');
-                        }).catch(error => {
-                            console.error('❌ Screenshot command execution failed:', error);
-                        });
-                    } else {
-                        console.error('❌ ScreenshotCommandClient not available');
-                    }
+                // Only screenshot has a client handler currently
+                if (data.command === 'screenshot' && typeof window.ScreenshotCommandClient !== 'undefined') {
+                    console.log('🔥🔥🔥 CLAUDE DEBUG: About to execute screenshot!!!');
+                    console.log('📸 CLIENT: Executing screenshot command');
+                    window.ScreenshotCommandClient.handleCommand(data.params || {}).then(() => {
+                        console.log('✅ Screenshot executed successfully');
+                    }).catch(error => {
+                        console.error('❌ Screenshot execution failed:', error);
+                    });
                 } else {
-                    console.log('⚠️ CLIENT: Unknown command:', data.command);
+                    console.log('🔥🔥🔥 CLAUDE DEBUG: No screenshot handler or wrong command');
+                    console.log(`⚠️ CLIENT: No handler for command: ${data.command}`);
                 }
                 return;
             }

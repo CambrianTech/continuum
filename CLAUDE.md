@@ -61,8 +61,25 @@ python python-client/ai-portal.py --logs 5
 3. **HIGH**: Connect `trust_the_process.py` automation to UI buttons (DEPLOY/RETRAIN/SHARE)
 4. **MEDIUM**: Restore slideout panels and multi-agent selection (all git recoverable)
 
+## 🚨 CRITICAL REQUIREMENT - LOG MONITORING
+
+**MUST SEE LOGS FROM CLIENT BROWSER AND SERVER TO PROCEED WITH DEVELOPMENT. IF BROKEN DIAGNOSE AND FIX. NO OTHER CODING CAN HAPPEN TILL THIS IS RESOLVED.**
+
+### Log Monitoring Status Check
+```bash
+python python-client/ai-portal.py --logs 3    # MUST show client and server activity
+python python-client/ai-portal.py --connect   # MUST establish connection monitoring
+```
+
+If logs are broken or show "No WebSocket connections":
+1. **STOP ALL OTHER WORK**
+2. **FIX LOG MONITORING FIRST** 
+3. **DIAGNOSE SERVER/CLIENT CONNECTION**
+4. **NO CODING UNTIL LOGS WORK**
+
 ## Key Reminder
 - This is a **sophisticated AI platform**, not a simple tool
 - All advanced capabilities are **git recoverable** with exact commands in `ROADMAP.md`
 - **USE THE PORTAL SYSTEM** - don't reinvent with manual log monitoring
+- **LOG MONITORING IS PREREQUISITE FOR ALL DEVELOPMENT**
 - The automation foundation works - integration gaps need fixing
