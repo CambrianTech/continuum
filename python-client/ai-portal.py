@@ -174,7 +174,7 @@ async def auto_heal_connection():
     print("🔌 Auto-healing: Server running, checking connection...")
     return False
 
-async def run_command(cmd: str, params: str = "{}"):
+async def run_command(cmd: str, params: str = "{}", verbose: bool = False):
     """Execute any continuum command with JSON params"""
     max_retries = 2
     
@@ -198,7 +198,18 @@ async def run_command(cmd: str, params: str = "{}"):
                     params_dict = json.loads(params) if params != "{}" else {}
                     result = await client.send_command(cmd, params_dict)
                 
-                print(f"✅ Result: {result}")
+                # Clean output by default, verbose if requested
+                if verbose:
+                    print(f"✅ Result: {result}")
+                else:
+                    if result.get('result', {}).get('success', True):
+                        print(f"✅ {result.get('result', {}).get('message', 'Command completed')}")
+                    else:
+                        error_msg = result.get('result', {}).get('error', 'Unknown error')
+                        print(f"❌ {result.get('result', {}).get('message', 'Command failed')}")
+                        if isinstance(error_msg, str) and error_msg != 'Unknown error':
+                            print(f"   {error_msg}")
+                
                 write_log(f"COMMAND: {cmd} {params} -> {result}")
                 return result
                 
@@ -554,9 +565,10 @@ def tokenize_command(cmd, args):
 @click.option('--save-script', help='Save program as script: --save-script debug --program "..."')
 @click.option('--list-scripts', is_flag=True, help='List available scripts')
 @click.option('--help-cmd', help='Show help for specific command')
+@click.option('--debug', is_flag=True, help='Show full debug output including stack traces')
 def main(ctx, buffer, logs, clear, cmd, params, action, task, workspace, selector, filename, 
          verbose, sync, output, run, script_args, timeout, return_result, exec, shell_timeout,
-         program, script, save_script, list_scripts, help_cmd):
+         program, script, save_script, list_scripts, help_cmd, debug):
     """AI Portal - Your Robot Agent for Continuum development workflow"""
     
     async def run_cli():
@@ -572,11 +584,11 @@ def main(ctx, buffer, logs, clear, cmd, params, action, task, workspace, selecto
             # Get extra arguments from click context
             remaining_args = ctx.args if ctx.args else []
             
-            # Use CS 200 tokenization for simple commands
-            if remaining_args or cmd.lower() in get_command_tokenizer():
+            # Use CS 200 tokenization for commands in the tokenizer
+            if cmd.lower() in get_command_tokenizer():
                 print(f"🎯 Tokenizing: {cmd} {' '.join(remaining_args)}")
                 tokenized = tokenize_command(cmd, remaining_args)
-                await run_command(tokenized['command'], json.dumps(tokenized['params']))
+                await run_command(tokenized['command'], json.dumps(tokenized['params']), verbose=debug)
             else:
                 # Fall back to smart parameter parsing for complex commands
                 parsed_params = smart_parse_params(params, 
@@ -586,7 +598,7 @@ def main(ctx, buffer, logs, clear, cmd, params, action, task, workspace, selecto
                 
                 # Convert back to JSON string for run_command
                 params_json = json.dumps(parsed_params) if parsed_params else '{}'
-                await run_command(cmd, params_json)
+                await run_command(cmd, params_json, verbose=debug)
         elif clear is not None:
             clear_logs(clear if clear else None)
         elif list_scripts:

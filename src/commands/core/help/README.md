@@ -49,8 +49,8 @@ python3 ai-portal.py --cmd help --params '{"sync": true, "status_table": false}'
 }
 ```
 
-## Architecture: README-Driven System
-The Help command implements the revolutionary README-driven documentation system:
+## Architecture: README-Driven System with Test Integration
+The Help command implements the revolutionary README-driven documentation system with integrated unit test reporting:
 
 ### Single Source of Truth
 - **README.md files** contain all command documentation
@@ -64,10 +64,19 @@ The Help command implements the revolutionary README-driven documentation system
 3. **Builds hierarchical docs** with cross-references
 4. **Generates master README** from live system
 
-### Self-Documenting Flow
+### Self-Documenting Flow with Test Integration
 ```
 README.md → getDefinition() → help output → sync → master README.md
+    ↑                                                      ↓
+Unit Tests → Trace Logs → Dashboard → Agent View → Work Planning
 ```
+
+### Test-Driven Dashboard Updates
+- **Unit tests write to trace logs** in `.continuum/test-results/`
+- **Test results populate README status** automatically
+- **Dashboard shows live test status** with pass/fail counts
+- **Agents can query test results** for work prioritization
+- **Dependency graphs include test coverage** information
 
 ## Implementation Pattern
 ```javascript

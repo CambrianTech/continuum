@@ -6,24 +6,35 @@ const InfoCommand = require('../info/InfoCommand.cjs');
 
 class AgentsCommand extends InfoCommand {
   static getDefinition() {
-    return {
-      name: 'agents',
-      description: 'Show agent-specific development help and guidance',
-      icon: '🤖',
-      parameters: {
-        section: {
-          type: 'string',
-          required: false,
-          description: 'Agent help section: setup, workflow, debugging, commands',
-          default: 'overview'
-        }
-      },
-      examples: [
-        'agents',
-        'agents --section setup',
-        'agents --section debugging'
-      ]
-    };
+    // README-driven: Read definition from README.md
+    const fs = require('fs');
+    const path = require('path');
+    
+    try {
+      const readmePath = path.join(__dirname, 'README.md');
+      const readme = fs.readFileSync(readmePath, 'utf8');
+      return this.parseReadmeDefinition(readme);
+    } catch (error) {
+      // Fallback definition if README.md not found
+      return {
+        name: 'agents',
+        description: 'Show agent-specific development help and guidance',
+        icon: '🤖',
+        parameters: {
+          section: {
+            type: 'string',
+            required: false,
+            description: 'Agent help section: setup, workflow, debugging, commands',
+            default: 'overview'
+          }
+        },
+        examples: [
+          'agents',
+          'agents --section setup',
+          'agents --section debugging'
+        ]
+      };
+    }
   }
 
   static async execute(params, continuum) {
@@ -31,9 +42,52 @@ class AgentsCommand extends InfoCommand {
     
     this.displayHeader('🤖 Continuum Agent Help', 'AI Agent Development Guide');
     
-    console.log(`
+    // Show current project status and accountability info
+    const healthStatus = await this.getProjectHealthOneLiner();
+    const brokenCommands = await this.getBrokenCommands();
+    const recentWork = await this.getRecentWork();
+    
+    console.log(`📊 CURRENT PROJECT STATUS: ${healthStatus}\n`);
+    
+    if (brokenCommands.length > 0) {
+      console.log(`🚨 WHAT'S BROKEN RIGHT NOW (${brokenCommands.length} issues):`);
+      brokenCommands.forEach(cmd => {
+        console.log(`   🔴 ${cmd.name} - ${cmd.issue}`);
+      });
+      console.log('');
+    }
+    
+    if (recentWork.length > 0) {
+      console.log(`📝 WHAT THE LAST AGENT WORKED ON:`);
+      recentWork.forEach(work => {
+        console.log(`   • ${work.command} - ${work.action} (${work.date})`);
+      });
+      console.log('');
+    }
+    
+    console.log(`🎉 WELCOME TO THE COLLABORATIVE TEAM!
 
-QUICK START FOR FRESH AGENTS:
+You've joined a team where everyone leaves the codebase better than they found it.
+Each README is a shared ticket with notes from the last person to help you.
+
+🚀 YOUR DASHBOARD (Check this first!):
+  python3 python-client/ai-portal.py --cmd status    # See all tickets with status
+  python3 python-client/ai-portal.py --cmd docs      # Generate updated docs
+
+📋 QUICK TICKET GUIDE:
+  🔴 Red = Broken (high impact fixes!)
+  🟡 Yellow = In progress 
+  🟠 Orange = No docs yet (great for exploration)
+  🟢 Green = Stable and working
+
+💡 PICK YOUR FIRST TICKET:
+  1. Run: python3 python-client/ai-portal.py --cmd status
+  2. Look for 🔴 or 🟠 tickets that interest you
+  3. Test: python3 python-client/ai-portal.py --cmd [command-name]
+  4. Update the README with what you learn (even if you don't fix it!)
+  5. Sync: python3 python-client/ai-portal.py --cmd docs
+
+BASIC COMMANDS:
   continuum.help()                     Show full user/admin help
   continuum.agents()                   Show this agent-specific help
   
@@ -160,6 +214,87 @@ Any agent can follow this exactly and be productive immediately.
 `);
 
     return this.createSuccessResult({ version: this.getVersion() }, 'Agent help displayed');
+  }
+  
+  static async getBrokenCommands() {
+    const fs = require('fs');
+    const path = require('path');
+    const broken = [];
+    
+    try {
+      const commandDirs = fs.readdirSync('./src/commands/core');
+      
+      for (const dir of commandDirs) {
+        const dirPath = path.join('./src/commands/core', dir);
+        if (fs.statSync(dirPath).isDirectory()) {
+          const readmePath = path.join(dirPath, 'README.md');
+          
+          if (fs.existsSync(readmePath)) {
+            const readme = fs.readFileSync(readmePath, 'utf8');
+            const statusMatch = readme.match(/\*\*Status\*\*:\s*([^\n]+)/);
+            
+            if (statusMatch && statusMatch[1].includes('🔴')) {
+              const status = statusMatch[1].trim();
+              const issue = status.split(' - ')[1] || 'Needs investigation';
+              broken.push({ name: dir, issue: issue });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      // Silently handle errors
+    }
+    
+    return broken.slice(0, 5); // Show top 5 broken items
+  }
+  
+  static async getRecentWork() {
+    const fs = require('fs');
+    const path = require('path');
+    const recent = [];
+    
+    try {
+      const commandDirs = fs.readdirSync('./src/commands/core');
+      const workItems = [];
+      
+      for (const dir of commandDirs) {
+        const dirPath = path.join('./src/commands/core', dir);
+        if (fs.statSync(dirPath).isDirectory()) {
+          const readmePath = path.join(dirPath, 'README.md');
+          
+          if (fs.existsSync(readmePath)) {
+            const readme = fs.readFileSync(readmePath, 'utf8');
+            const statusMatch = readme.match(/\*\*Status\*\*:\s*([^\n]+)/);
+            
+            if (statusMatch) {
+              const status = statusMatch[1];
+              const dateMatch = status.match(/(\d{4}-\d{2}-\d{2})/);
+              
+              if (dateMatch) {
+                const date = dateMatch[1];
+                let action = 'Updated status';
+                
+                if (status.includes('🟢')) action = 'Fixed and marked stable';
+                else if (status.includes('🔴')) action = 'Identified as broken';
+                else if (status.includes('🟡')) action = 'Started work on';
+                else if (status.includes('🟠')) action = 'Added documentation for';
+                
+                workItems.push({ command: dir, action, date, status });
+              }
+            }
+          }
+        }
+      }
+      
+      // Sort by date (most recent first) and take top 3
+      workItems.sort((a, b) => new Date(b.date) - new Date(a.date));
+      recent = workItems.slice(0, 3);
+      
+    } catch (error) {
+      // Silently handle errors
+    }
+    
+    return recent;
   }
 }
 
