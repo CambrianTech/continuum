@@ -86,6 +86,11 @@ class DocsCommand extends BaseCommand {
       
       if (sync) {
         result.fileStructureSynced = true;
+        console.log('📚 Key Documentation Files:');
+        console.log('   🏛️ RESTORATION-STRATEGY.md - Complete restoration plan');
+        console.log('   📖 FILES.md - Archaeological map with Agent Study Guide');  
+        console.log('   🚀 README.md - System overview and quick start');
+        console.log('   🎓 docs/ACADEMY_ARCHITECTURE.md - Academy system details');
       }
       
       return this.createSuccessResult(result, `Documentation generated: ${outputPath}`);

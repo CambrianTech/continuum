@@ -186,6 +186,9 @@
 ### README.md {#readme.md}
   # 📖 Documentation
 
+### RESTORATION-STRATEGY.md {#restoration-strategy.md}
+  # 📖 Documentation
+
 ### ROADMAP.md {#roadmap.md}
   # 📖 Documentation
 

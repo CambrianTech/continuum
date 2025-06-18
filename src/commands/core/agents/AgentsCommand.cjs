@@ -75,18 +75,32 @@ Each README is a shared ticket with notes from the last person to help you.
   python3 python-client/ai-portal.py --broken        # Just broken commands  
   python3 python-client/ai-portal.py --cmd docs      # Generate updated docs
 
-📋 QUICK TICKET GUIDE:
+🏛️ RESTORATION OPPORTUNITIES (High Impact!):
+  cat RESTORATION-STRATEGY.md                        # 🔥 CRITICAL: Complete restoration plan
+  cat FILES.md | grep -A 20 "Archaeological"         # Lost treasures map
+  cat README.md | grep -A 10 "Recovery Commands"     # Quick recovery commands
+  cat docs/ACADEMY_ARCHITECTURE.md                   # Academy system details
+
+📋 DEVELOPMENT PATHS:
   🔴 Red = Broken (high impact fixes!)
   🟡 Yellow = In progress 
   🟠 Orange = No docs yet (great for exploration)
   🟢 Green = Stable and working
+  🏛️ Archaeological = Sophisticated capabilities ready for restoration
 
-💡 PICK YOUR FIRST TICKET:
+💡 CHOOSE YOUR ADVENTURE:
+  🔧 QUICK FIXES: Look for 🔴 or 🟠 tickets in dashboard
+  🏛️ RESTORATION: Follow RESTORATION-STRATEGY.md for high-impact work
+  🎓 ACADEMY: Restore Matrix-inspired AI training (git show f0e2fb9:path)
+  🎮 UI: Restore Mass Effect-style interface (git show 4ffb32e:path)
+  
+🎯 STEP-BY-STEP PROCESS:
   1. Run: python3 python-client/ai-portal.py --dashboard
-  2. Look for 🔴 or 🟠 tickets that interest you
-  3. Test: python3 python-client/ai-portal.py --cmd [command-name]
-  4. Update the README with what you learn (even if you don't fix it!)
-  5. Sync: python3 python-client/ai-portal.py --cmd docs
+  2. Choose: Quick fix OR restoration opportunity
+  3. Read: RESTORATION-STRATEGY.md for archaeological work
+  4. Test: python3 python-client/ai-portal.py --cmd [command-name]
+  5. Update: README with what you learn
+  6. Sync: python3 python-client/ai-portal.py --cmd docs
 
 BASIC COMMANDS:
   continuum.help()                     Show full user/admin help
@@ -200,6 +214,27 @@ BASIC COMMANDS:
   • Update .continuum/shared/ with findings
   • Use .continuum/shared/claude-thoughts.md for persistent chat with Joel
   • Continue conversation threads across agent sessions
+
+🏛️ ARCHAEOLOGICAL OPPORTUNITIES (HUGE IMPACT!):
+  🎓 ACADEMY SYSTEM: Matrix-inspired adversarial AI training (f0e2fb9)
+     • TestingDroid vs ProtocolSheriff battles
+     • LoRA fine-tuning with 190,735x storage reduction
+     • Boot camp graduation and deployment
+     
+  🎮 MASS EFFECT UI: Cyberpunk slideout panels (4ffb32e, 41c02a2)
+     • Glass morphism: rgba(0, 255, 136, 0.15)
+     • Multi-agent selection with avatars
+     • Slideout panels with >> arrow interactions
+     
+  🤖 INTELLIGENT ROUTING: Self-improving agent selection (72c5684)
+     • Smart routing optimization
+     • Process lifecycle management
+     • Multi-agent session coordination
+     
+  📖 READ THIS: RESTORATION-STRATEGY.md - Complete step-by-step plan
+     • 5-phase restoration with exact git commands
+     • Safety-first methodology with rollback procedures
+     • Archaeological recovery instead of recreation
 `);
 
     // Display command registry using parent method
@@ -207,11 +242,19 @@ BASIC COMMANDS:
 
     console.log(`
 📖 FULL PROCESS DOCUMENTATION:
-  cat process.md                           # Complete methodology guide
+  cat RESTORATION-STRATEGY.md              # 🔥 PRIMARY: Complete restoration plan
+  cat FILES.md                             # Archaeological map with Agent Study Guide
+  cat README.md                            # System overview and quick start
+  cat docs/ACADEMY_ARCHITECTURE.md         # Academy system technical details
   continuum.help()                         # User/admin documentation
   
-Remember: This process ensures system stability and bootstraps future agents.
-Any agent can follow this exactly and be productive immediately.
+🎯 PRIORITY READING:
+  1. RESTORATION-STRATEGY.md - Your roadmap to high-impact work
+  2. FILES.md Agent Study Guide - Archaeological discoveries
+  3. Trust the process: python python-client/trust_the_process.py
+  
+Remember: Follow the restoration strategy for maximum impact.
+Archaeological recovery beats recreating from scratch.
 `);
 
     return this.createSuccessResult({ version: this.getVersion() }, 'Agent help displayed');
