@@ -4,10 +4,12 @@ module.exports = {
   // Root directory
   rootDir: path.resolve(__dirname, '../..'),
   
-  // Test directories
+  // Test directories - includes both centralized and co-located modular tests
   testMatch: [
     '<rootDir>/__tests__/**/*.test.{js,ts,cjs}',
-    '<rootDir>/__tests__/**/*.spec.{js,ts,cjs}'
+    '<rootDir>/__tests__/**/*.spec.{js,ts,cjs}',
+    '<rootDir>/src/**/*.test.{js,ts,cjs}',
+    '<rootDir>/src/**/*.spec.{js,ts,cjs}'
   ],
   
   // Module resolution
