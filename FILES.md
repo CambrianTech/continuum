@@ -9599,87 +9599,162 @@ The Matrix-inspired training facility where TestingDroid vs ProtocolSheriff adve
 <details>
 <summary>🪦 <code>src/ui/components/SimpleAgentSelector.js</code> - <strong>Mass Effect slideout panels</strong> <em>(DELETED)</em></summary>
 
-**Last seen:** Git commit `41c02a2` (June 16, 2025)  
-**Core functionality:** Dynamic agent information panels with `>>` arrow interactions
+**Last seen:** Git commit `41c02a2` ("test cleanup" - June 16, 2025)  
+**Recovered from:** `git show 41c02a2~1:src/ui/components/SimpleAgentSelector.js`
 
-**What it provided:**
-- Mass Effect-inspired slideout animation system
-- `>>` arrow buttons integrated with Users & Agents widget
-- Dynamic panel content based on agent selection and status
-- Responsive layout management for panel overlays
-- Position calculation for optimal slideout placement
+**🔍 ARCHAEOLOGICAL ANALYSIS - What I found when examining the actual code:**
 
-**UI Components:**
+**Core Class Structure:**
 ```javascript
-// Key methods that were working:
-showGlassMenu(agent, x, y)          // Slideout panel trigger
-positionSlideoutPanel(rect)         // Smart positioning 
-toggleAgentDetails(agentId)         // Agent info expansion
-handleArrowClick(event, agent)      // >> button interaction
+class SimpleAgentSelector extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+    
+    // React-like state management
+    this.state = {
+      agents: [
+        { id: 'claude', name: 'Claude Code', type: 'ai', avatar: '🤖', status: 'online' },
+        { id: 'joel', name: 'joel', type: 'user', avatar: '👤', status: 'online' },
+        { id: 'auto', name: 'Auto Route', type: 'system', avatar: '🧠', status: 'online' },
+        // ... more agents
+      ],
+      selected: 'auto',
+      searchQuery: ''
+    };
+  }
+}
 ```
 
-**Integration points:**
-- Connected to SavedPersonas widget for persona details
-- WebSocket integration for real-time agent status
-- CSS-in-JS styling system for animations
-- Event handling for mouse/touch interactions
+**Mass Effect-Style UI Elements Found:**
+- **Dark cyberpunk theme** with `rgba(255, 255, 255, 0.05)` backgrounds
+- **Glass-like panels** with border radius and transparency effects
+- **Gradient status indicators** for online/offline states
+- **Smooth animations** for panel transitions
+- **Agent avatars and status dots** matching the interface we see in screenshots
+
+**Key Methods Discovered:**
+```javascript
+setState(newState)              // React-like state management
+render()                        // Dynamic UI rendering
+updateAgentList()              // Real-time agent status updates
+handleAgentSelection()         // Click handling for agent selection
+```
+
+**Integration Evidence:**
+- **WebSocket integration**: Code shows real-time agent status updates
+- **Event handling**: Mouse/touch interactions for mobile-responsive design
+- **Modular architecture**: Clean component isolation following system patterns
+- **Avatar system**: Emoji-based agent representation matching screenshots
+
+**Why it was deleted:** Found in "test cleanup" commit - likely removed to reduce complexity during testing phase, but this removed critical UI functionality
 
 **Restoration strategy:**
-1. Recover from git: `git show 41c02a2:src/ui/components/SimpleAgentSelector.js`
-2. Reconnect to existing SavedPersonas widget structure  
-3. Wire to working DEPLOY/RETRAIN/SHARE button automation
-4. Test slideout responsiveness and positioning logic
-5. Connect to WebSocket state management system
+1. **EXACT RECOVERY**: `git show 41c02a2~1:src/ui/components/SimpleAgentSelector.js > src/ui/components/SimpleAgentSelector.js`
+2. **Integration test**: Verify WebSocket message handling still works
+3. **UI testing**: Check glass panel animations and responsiveness
+4. **Connect to automation**: Wire to trust_the_process.py for agent deployment
 
-**Dependencies:** 
-- Users & Agents widget (working)
-- SavedPersonas widget (working)
-- WebSocket real-time updates (working)
-- CSS animation system (needs verification)
+**Dependencies verified:** 
+- Uses standard Web Components API (browser native)
+- Shadow DOM isolation (no external dependencies)
+- Event system compatible with existing WebSocket integration
+- CSS-in-JS approach matches system architecture
+
+**CRITICAL INSIGHT**: This wasn't just UI chrome - it was a sophisticated agent management interface that provided the visual layer for the working multi-agent system we see in screenshots.
 
 </details>
 
 <details>
-<summary>🪦 <code>src/ui/components/AgentSelector.js</code> - <strong>Multi-agent chat coordination</strong> <em>(DELETED)</em></summary>
+<summary>🪦 <code>src/modules/ui/AgentSelector.js</code> - <strong>Multi-agent chat coordination</strong> <em>(DELETED)</em></summary>
 
-**Last seen:** Git commit `41c02a2` (June 16, 2025)  
-**Core functionality:** Multi-agent selection and group chat coordination
+**Last seen:** Git commit `41c02a2` ("test cleanup" - June 16, 2025)  
+**Recovered from:** `git show 41c02a2~1:src/modules/ui/AgentSelector.js`
 
-**What it provided:**
-- Multi-select interface for choosing multiple AI agents from list
-- Group chat window management and shared workspace coordination
-- Agent message routing and conversation state management
-- "Start Group Chat" button and multi-agent session controls
-- Cross-agent collaboration and task delegation interface
+**🔍 ARCHAEOLOGICAL ANALYSIS - What I found when examining the actual code:**
 
-**Key Components:**
+**Core Class Structure:**
 ```javascript
-// Essential functionality that was working:
-selectedAgents: new Set()           // Multi-agent selection state
-toggleGroupChat()                   // Enable/disable group mode
-selectMultipleAgents(agentIds)      // Batch agent selection
-startGroupConversation()            // Launch coordinated chat
-handleAgentSelection(agent)         // Individual selection logic
+class AgentSelector {
+  constructor(options = {}) {
+    this.agents = options.agents || this.getDefaultAgents();
+    this.selectedAgent = options.defaultAgent || 'auto';
+    this.selectedAgents = new Set();           // MULTI-SELECTION CAPABILITY
+    this.isGroupChat = false;                  // GROUP CHAT MODE TOGGLE
+    this.onSelectionChange = options.onSelectionChange || (() => {});
+    this.onGroupChatToggle = options.onGroupChatToggle || (() => {});
+  }
+}
 ```
 
-**Integration points:**
-- Connected to working multi-agent chat system (proven functional)
-- Shared with existing chat interface and conversation management
-- WebSocket message routing for group coordination
-- Agent status synchronization across multiple instances
+**Multi-Agent Coordination Features Found:**
+```javascript
+getDefaultAgents() {
+  return [
+    {
+      id: 'auto', name: 'Auto Route', role: 'Smart agent selection',
+      avatar: '🧠', gradient: 'linear-gradient(135deg, #4FC3F7, #29B6F6)', status: 'online'
+    },
+    {
+      id: 'PlannerAI', name: 'PlannerAI', role: 'Strategy & web commands',
+      avatar: '📋', gradient: 'linear-gradient(135deg, #9C27B0, #673AB7)', status: 'online'
+    },
+    {
+      id: 'CodeAI', name: 'CodeAI', role: 'Code analysis & debugging',
+      avatar: '💻', gradient: 'linear-gradient(135deg, #FF5722, #F44336)', status: 'online'
+    },
+    // ... more sophisticated agent definitions with gradients and roles
+  ];
+}
+```
+
+**CRITICAL DISCOVERY - Group Chat Functionality:**
+```javascript
+toggleGroupChat() {
+  this.isGroupChat = !this.isGroupChat;
+  if (this.isGroupChat) {
+    // Enable multi-selection mode
+    this.selectedAgents.clear();
+  } else {
+    // Back to single agent mode
+    this.selectedAgents.clear();
+  }
+  this.onGroupChatToggle(this.isGroupChat);
+}
+
+selectMultipleAgents(agentIds) {
+  agentIds.forEach(id => this.selectedAgents.add(id));
+  this.onSelectionChange(Array.from(this.selectedAgents));
+}
+```
+
+**UI Evidence Matching Screenshots:**
+- **Agent gradients and avatars** exactly match what we see in the working interface
+- **Role definitions** match the specialized agents (PlannerAI, CodeAI) visible in screenshots
+- **Multi-selection Set()** explains how multiple agents could be coordinated
+- **Group chat toggle** explains the multi-agent conversations we see working
+
+**Integration Architecture Found:**
+- **Event-driven design**: `onSelectionChange` and `onGroupChatToggle` callbacks
+- **State management**: Clean separation between selection state and UI rendering
+- **Flexible agent definition**: Supports custom agents with roles, gradients, status
+- **Discord-style UI**: Comments in code reference "Discord-style agent selection"
+
+**Why it was deleted:** Part of "test cleanup" but this removed the **core coordination interface** that enabled the multi-agent conversations we see working in screenshots
 
 **Restoration strategy:**
-1. Recover from git: `git show 41c02a2:src/ui/components/AgentSelector.js`
-2. Reconnect to working multi-agent chat infrastructure
-3. Wire to proven WebSocket message routing system
-4. Test group selection and coordination workflows
-5. Verify integration with existing chat interface
+1. **EXACT RECOVERY**: `git show 41c02a2~1:src/modules/ui/AgentSelector.js > src/modules/ui/AgentSelector.js`
+2. **Reconnect to chat system**: Wire group selection to working multi-agent chat
+3. **Test coordination**: Verify multiple agent selection triggers group conversations
+4. **UI integration**: Connect to existing agent list widget in sidebar
 
-**Dependencies:**
-- Multi-agent chat system (working - seen in screenshots)
-- WebSocket message routing (working)
-- Chat interface state management (working)
-- Agent status tracking (working)
+**Dependencies verified:**
+- **Zero external dependencies**: Pure JavaScript class with callback pattern
+- **Event system**: Compatible with existing WebSocket message routing
+- **Agent definitions**: Match the working agents visible in interface screenshots
+- **State management**: Clean, predictable state updates
+
+**CRITICAL INSIGHT**: This was the **missing link** that enabled the multi-agent coordination we see working in screenshots. The code proves the system was designed for sophisticated group conversations between specialized AI agents.
 
 </details>
 
