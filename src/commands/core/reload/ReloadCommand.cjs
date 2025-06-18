@@ -19,7 +19,7 @@ class ReloadCommand {
     };
   }
 
-  static async execute(params = '', continuum = null, encoding = 'utf-8') {
+  static async execute(params = '', continuum = null, encoding = 'base64') {
     try {
       console.log('🔄 API Reload command triggered');
       

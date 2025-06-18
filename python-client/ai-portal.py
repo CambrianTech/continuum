@@ -118,20 +118,56 @@ async def start_buffer():
         print("\n👋 Buffer stopped")
 
 def show_logs(lines: int = 10):
-    """Show recent log lines"""
+    """Show recent log lines from both client and server"""
+    print(f"📋 CLIENT LOGS (Last {lines} entries):")
     buffer_file = get_logs_dir() / 'buffer.log'
     
-    if not buffer_file.exists():
-        print("📝 No logs found")
-        return
+    if buffer_file.exists():
+        with open(buffer_file) as f:
+            all_lines = f.readlines()
+            recent = all_lines[-lines:] if len(all_lines) >= lines else all_lines
+            
+        for line in recent:
+            print(f"  📱 {line.strip()}")
+    else:
+        print("  📝 No client logs found")
+    
+    print(f"\n📋 SERVER LOGS (Last {lines} entries):")
+    # Try multiple server log locations
+    server_logs = [
+        Path.cwd() / 'server.log',
+        Path.cwd() / 'continuum.log', 
+        Path('.continuum') / 'continuum.log'
+    ]
+    
+    server_log_found = False
+    for log_file in server_logs:
+        if log_file.exists():
+            server_log_found = True
+            with open(log_file) as f:
+                all_lines = f.readlines()
+                recent = all_lines[-lines:] if len(all_lines) >= lines else all_lines
+                
+            for line in recent:
+                print(f"  🖥️  {line.strip()}")
+            break
+    
+    if not server_log_found:
+        print("  📝 No server logs found")
         
-    with open(buffer_file) as f:
-        all_lines = f.readlines()
-        recent = all_lines[-lines:] if len(all_lines) >= lines else all_lines
-        
-    print(f"📋 Last {len(recent)} log entries:")
-    for line in recent:
-        print(f"  {line.strip()}")
+    # Also check for recent WebSocket activity
+    print(f"\n📋 WEBSOCKET ACTIVITY:")
+    try:
+        import subprocess
+        result = subprocess.run(['netstat', '-an'], capture_output=True, text=True)
+        ws_lines = [line for line in result.stdout.split('\n') if ':9000' in line]
+        if ws_lines:
+            for line in ws_lines:
+                print(f"  🔌 {line.strip()}")
+        else:
+            print("  📝 No WebSocket connections on port 9000")
+    except Exception:
+        print("  ⚠️ Could not check WebSocket status")
 
 def clear_logs(label: str = None):
     """Clear buffer log with optional label"""
