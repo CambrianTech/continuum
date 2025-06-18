@@ -542,7 +542,7 @@ def get_command_tokenizer():
         },
         'test': lambda args: {
             'command': 'exec',
-            'params': {'command': f'npm test {" ".join(args)}' if args else 'npm test'}
+            'params': {'command': f'npm test {" ".join(args)}' if args else 'npm test', 'timeout': 60.0}
         },
         
         # Workspace commands (natural language)
