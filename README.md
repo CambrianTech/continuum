@@ -1,38 +1,125 @@
-# Continuum - AI Workforce Construction Platform
-> 📖 Documentation auto-generated from live help system
-> 🔄 To update: `python3 python-client/ai-portal.py --cmd help --sync`
+# 🔄 Continuum v0.2.1983 - AI Workforce Construction Platform
+
+**Designed by AI and humans for AI and humans** - A revolutionary platform that evolves from simple AI configuration to full autonomous workforce construction.
+
+<p align="center">
+  <img src="https://img.shields.io/badge/status-advanced_preview-orange" alt="Status: Advanced Preview">
+  <img src="https://img.shields.io/badge/version-0.2.1983-green" alt="Version: 0.2.1983">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
+</p>
 
 ![Continuum Multi-Agent Interface](docs/images/continuum-main-interface.png)
 *Multi-agent collaboration with academy-trained personas and real-time chat*
 
-## Overview
+> **🚀 EVOLUTION:** Continuum started as a context-aware CLI for AI assistant configuration and has evolved into a full AI workforce construction platform with Academy training, multi-agent coordination, and autonomous capabilities.
 
-Continuum is a revolutionary AI workforce construction platform with clean architecture principles:
+## 🌟 Two Interfaces, One Powerful System
 
-- **🏗️ Command Bus Architecture**: Central orchestration with modular commands
-- **🤖 AI Portal**: Primary interface for AI agents (`python-client/ai-portal.py`)
-- **📡 Promise-based API**: Clean async/await patterns across all clients
-- **🛡️ Sentinel System**: Monitoring and logging for AI task management  
-- **📁 Workspace Management**: No hardcoded paths, configurable workspaces
-- **📚 Self-documenting**: Live help system keeps docs in sync
-- **🎓 Academy System**: Matrix-inspired adversarial training with TestingDroid vs ProtocolSheriff
-- **🤖 Agent Spawn System**: Fresh agent observers for pure usability testing
-
-### Quick Start
+### 🎯 For Getting Started: CLI Configuration Tool
+**Perfect for individuals and teams wanting consistent AI behavior:**
 
 ```bash
-# For AI Agents (primary interface)
+# Just run continuum - it will intelligently detect what to do
+continuum
+
+# Initialize AI assistant configuration
+continuum --template tdd
+continuum --assistant claude --create-link  # Creates CLAUDE.md symlink
+continuum --ask "How do I improve error handling in this codebase?"
+```
+
+### 🚀 For Advanced Users: AI Workforce Construction Platform
+**Build autonomous AI agents with Academy training and multi-agent coordination:**
+
+```bash
+# For AI Agents (advanced interface)
 python3 python-client/ai-portal.py --help
 python3 python-client/ai-portal.py --cmd help
 
-# For Humans
-continuum --help
-continuum --agents
+# Academy training and agent management
+node scripts/run-academy.cjs
+python3 python-client/ai-portal.py --cmd spawn system_exploration
+python3 python-client/ai-portal.py --cmd academy --params '{"agent": "sheriff-mahoney"}'
 ```
 
-## AI Agent Quick Start
+## 🧠 What is Continuum?
 
-The AI Portal provides a clean, thin client adapter for the Continuum command bus:
+**Continuum** is a context-aware protocol and platform that starts with simple AI assistant configuration and scales to full autonomous workforce construction. It's like `.editorconfig` for your AI collaborators — but with the power to train, deploy, and coordinate multiple AI agents working together.
+
+### 🎭 The Evolution Path
+
+**Level 1: Individual AI Configuration**
+- Configure Claude, GPT, and other assistants with your personal style
+- Consistent behavior across all projects and repositories
+- Automatic context detection and intelligent suggestions
+
+**Level 2: Team AI Standardization**  
+- Org-wide AI policies and consistent assistant roles
+- Team templates and shared configuration management
+- Transparent AI collaboration with full audit trails
+
+**Level 3: AI Workforce Construction (Advanced)**
+- Academy system with adversarial training (TestingDroid vs ProtocolSheriff)
+- Multi-agent coordination and autonomous task execution
+- Real-time agent management with deployment and retraining capabilities
+
+## 🚀 Quick Start
+
+### Requirements
+- Node.js 18.0.0 or higher (for basic CLI)
+- Python 3.8+ (for advanced AI portal features)
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/CambrianTech/continuum.git
+cd continuum
+
+# Install dependencies
+npm install
+
+# Link the CLI for local development
+npm link
+```
+
+## 🎯 Choose Your Interface
+
+### 🔧 CLI Interface (Recommended for Most Users)
+
+**Context-Aware Intelligence:**
+- Run `continuum` → AI figures out what to do based on your environment
+- Intelligent context detection analyzes repository state and configurations
+- Automatic action determination - no need to remember command verbs
+- Seamless integration with Claude Code, GPT, and other AI assistants
+
+```bash
+# Basic usage - context-aware operation
+continuum
+
+# Initialize AI configuration
+continuum --template tdd
+continuum --assistant claude
+continuum --assistant gpt
+
+# Create symlinks for tool integration
+continuum --assistant claude --create-link  # Creates CLAUDE.md symlink
+
+# Interactive AI assistance
+continuum --ask "How do I improve error handling in this codebase?"
+
+# Legacy command format (still supported)
+continuum init --template tdd
+continuum adapt --assistant claude
+continuum validate
+```
+
+### 🤖 AI Portal Interface (Advanced Features)
+
+**Revolutionary AI Workforce Construction Platform:**
+
+![Academy Training Interface](docs/images/academy-training-room.png)
+*Academy Training Room - Watch AI agents train and improve their skills in real-time*
 
 ```bash
 # Primary AI interface
@@ -44,23 +131,16 @@ python3 python-client/ai-portal.py --cmd sentinel      # Start monitoring/loggin
 python3 python-client/ai-portal.py --cmd restart       # Version bump + server restart
 python3 python-client/ai-portal.py --cmd help          # Live API documentation
 
-# All commands are self-documenting
-python3 python-client/ai-portal.py --cmd [command] --help
+# Academy training and agent management
+python3 python-client/ai-portal.py --cmd spawn system_exploration
+python3 python-client/ai-portal.py --cmd academy --params '{"specialization": "protocol_enforcement"}'
 ```
 
-## 🎓 Academy & Agent Systems
+## 🎓 Academy & Agent Systems (Advanced)
 
 ### Academy: Matrix-Inspired Adversarial Training
 
 The Academy system implements a revolutionary GAN-like approach where AI agents evolve through adversarial competition:
-
-```bash
-# Train new AI personas through Academy boot camp
-node scripts/run-academy.cjs
-
-# Enroll agents in specialized training programs
-python3 python-client/ai-portal.py --cmd academy --params '{"agent": "sheriff-mahoney", "specialization": "protocol_enforcement"}'
-```
 
 **Core Adversarial Pairs:**
 - **🛡️ ProtocolSheriff vs ⚔️ TestingDroid**: Security validation and adversarial testing
@@ -77,96 +157,84 @@ python3 python-client/ai-portal.py --cmd academy --params '{"agent": "sheriff-ma
 
 Create fresh agent observers for pure usability testing without prior context:
 
-```bash
-# Spawn fresh agent observer for system exploration
-python3 python-client/ai-portal.py --cmd spawn system_exploration
-
-# Spawn agent for specific testing missions
-python3 python-client/ai-portal.py --cmd spawn dashboard_testing
-python3 python-client/ai-portal.py --cmd spawn ui_analysis
-python3 python-client/ai-portal.py --cmd spawn command_testing
-```
-
 **Observer Missions:**
 - **system_exploration**: General system discovery and navigation testing
 - **dashboard_testing**: UI/UX usability testing and confusion point identification
 - **interface_analysis**: Design analysis and improvement suggestions
 - **command_testing**: Command validation and workflow testing
 - **bug_hunting**: System issue detection and documentation
-- **documentation_review**: Documentation clarity and completeness assessment
 
-**Agent Observer Philosophy:**
-Like AR app user testing from 2011 - observe agents without intervention to gather pure intelligence about system usability, onboarding effectiveness, and natural discovery patterns.
+## ⚙️ What's Automated
 
-### Academy Training Room
+### CLI Features (All Users)
+- ✅ **Context detection** analyzes your environment and automatically determines the right action
+- ✅ **CLI wizard** generates `.continuum/config.yml` for your repo
+- ✅ **Symlinks** (e.g. `CLAUDE.md`, `GPT.json`) auto-created for integration with AI dev tools
+- ✅ **Validation** automatically checks for config conflicts and suggests fixes
+- ✅ **Assistant integration** with the `--ask` feature to interact with configured assistants
+- ✅ **Environment awareness** includes repository, branch, and project-specific context
 
-![Academy Training Interface](docs/images/academy-training-room.png)
-*Academy Training Room - Watch AI agents train and improve their skills in real-time*
+### Advanced Platform Features
+- ✅ **Command Bus Architecture**: Central orchestration with modular commands
+- ✅ **Promise-based API**: Clean async/await patterns across all clients
+- ✅ **Sentinel System**: Monitoring and logging for AI task management  
+- ✅ **Academy Training**: Matrix-inspired adversarial training with TestingDroid vs ProtocolSheriff
+- ✅ **Multi-Agent Coordination**: Real-time chat and task delegation between AI agents
+- ✅ **Self-documenting**: Live help system keeps docs in sync
 
-The Academy Training Room provides real-time visualization of adversarial training sessions:
-- **Live Training Metrics**: Watch TestingDroid vs ProtocolSheriff battles in real-time
-- **Adversarial Pair Evolution**: See both agents improve through competition
-- **Training History**: Track graduation scores and iteration progress  
-- **Manual Intervention Controls**: Deploy Sheriff, Custom Training, and monitoring
-- **Recent Graduates**: View training history and graduation statistics
-- **Real-time Academy Statistics**: Track current training sessions and completion rates
+## 🧩 Templates & Personas
 
-### Persona Management UI
+Continuum ships with pre-configured templates for common development approaches:
 
-Access trained personas through the integrated SavedPersonas widget:
-- **Academy Progress**: Real-time training metrics and graduation status
-- **Deployment Actions**: DEPLOY, RETRAIN, SHARE ORG buttons
-- **Threshold Controls**: Drag to adjust graduation requirements
-- **Status Tracking**: Training, graduated, failed, ready-for-observation states
+- **TDD**: Test-driven development focus
+- **Open-Source**: Community contribution standards
+- **Rapid Prototyping**: Quick iteration and experimentation
+- **Enterprise**: Compliance and security-focused
 
-### Architecture Principles for AI Agents
+## 📊 Configuration Schema
 
-- ✅ **No hardcoded paths** - Use workspace command for all directory management
-- ✅ **No god objects** - Thin client adapter pattern, all logic in server commands  
-- ✅ **Self-documenting** - Live help system provides current API documentation
-- ✅ **Promise-based** - Clean async/await, no callback complexity
-- ✅ **Modular** - Add functionality via Continuum commands, not client code
+AI configurations follow a standardized schema with automatic environment detection:
 
-## Available Commands
-### Core Commands
-- **AGENTS** - Command available
-- **BROWSER** - Command available
-- **BROWSER_JS** - Command available
-- **CHAT** - Command available
-- **CLEAR** - Command available
-- **CREATEROOM** - Command available
-- **CURSOR** - Command available
-- **DIAGNOSTICS** - Command available
-- **DOCS** - Command available
-- **EMOTION** - Command available
-- **EXEC** - Command available
-- **FILESAVE** - Command available
-- **FINDUSER** - Command available
-- **HELP** - Command available
-- **INFO** - Command available
-- **INPUT** - Command available
-- **JOINROOM** - Command available
-- **LISTAGENTS** - Command available
-- **LISTROOMS** - Command available
-- **LOADROOMS** - Command available
-- **MACRO** - Command available
-- **MOVE** - Command available
-- **PREFERENCES** - Command available
-- **PROMISE_JS** - Command available
-- **RELOAD** - Command available
-- **RESTART** - Command available
-- **SAVE_FILE** - Command available
-- **SCREENSHOT** - Command available
-- **SENTINEL** - Command available
-- **SHARE** - Command available
-- **TYPE** - Command available
-- **VALIDATE_CODE** - Command available
-- **VALIDATE_JS** - Command available
-- **WORKSPACE** - Command available
+```yaml
+ai_protocol_version: "0.2"
+identity:
+  name: "ProjectAssistant"
+  role: "Development collaborator"
+  purpose: "Help maintain code quality and guide development"
+environment:
+  type: "Node.js/JavaScript"
+  vcs: "git"
+  branch: "main"
+  academy_enabled: true
+behavior:
+  voice: "professional"
+  autonomy: "suggest"
+  verbosity: "concise"
+  risk_tolerance: "medium"
+capabilities:
+  allowed: ["code_review", "refactoring", "documentation", "testing"]
+  restricted: ["deployment", "database_management"]
+academy:
+  training_enabled: true
+  adversarial_pairs: ["ProtocolSheriff", "TestingDroid"]
+  graduation_threshold: 85.0
+```
 
-💡 **Get detailed help**: `python3 python-client/ai-portal.py --cmd [command] --help`
+## 🔌 Assistant Adapters
 
-## Architecture
+Continuum translates your configuration to various AI assistants:
+
+| Assistant | Status | Configuration | Integration | Advanced Features |
+|-----------|--------|---------------|------------|-------------------|
+| **Claude** | ✅ Available | `.continuum/claude/config.md` | `CLAUDE.md` symlink | Academy training, Code integration |
+| **GPT** | ✅ Available | `.continuum/gpt/config.json` | `GPT.json` symlink | Multi-agent coordination |
+| **Academy Personas** | ✅ Available | `.continuum/personas/` | SavedPersonas widget | LoRA adapters, real-time training |
+| **Gemini** | 🔜 Planned | `.continuum/gemini/config.json` | `GEMINI.json` symlink | Google Gemini support |
+| **GitHub Copilot** | 🔄 Exploring | TBD | TBD | Integration options |
+
+## 🏗️ Architecture
+
+The system uses a sophisticated command bus architecture that scales from simple CLI usage to full multi-agent coordination:
 
 ```
 ┌─────────────────────────────────────────┐
@@ -175,16 +243,16 @@ Access trained personas through the integrated SavedPersonas widget:
 │  ┌─────────────────────────────────────┐ │
 │  │         Command Bus                 │ │
 │  │  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐  │ │
-│  │  │work │ │restart│sentinel│help │  │ │ 
+│  │  │work │ │academy│sentinel│help │  │ │ 
 │  │  │space│ │     │ │     │ │     │  │ │
 │  │  └─────┘ └─────┘ └─────┘ └─────┘  │ │
 │  └─────────────────────────────────────┘ │
 └─────────────────────────────────────────┘
          ↑                    ↑
    ┌─────────┐          ┌─────────┐
-   │ Python  │          │Browser  │
-   │ Client  │          │ Client  │
-   │(AI Portal)│        │   (UI)  │
+   │ CLI     │          │ AI      │
+   │ Interface│         │ Portal  │
+   │(Config) │          │(Advanced)│
    └─────────┘          └─────────┘
 ```
 
@@ -196,26 +264,87 @@ Access trained personas through the integrated SavedPersonas widget:
 - **Self-Documenting**: Help system generates live documentation
 - **No God Objects**: Clean separation of concerns throughout
 
-## Key Locations
+## 🛠️ Use Cases
+
+### For Individuals & Teams (CLI Interface)
+- **Standardize Team Practices**: Ensure all developers get consistent AI help
+- **Onboard New Developers**: Help them understand project practices quickly
+- **Enforce Security Policies**: Set guardrails on what AI can and cannot do
+- **Manage AI Autonomy**: Control how proactive AI assistants should be
+
+### For Advanced Users (AI Portal)
+- **Train Specialized AI Agents**: Use Academy system for domain-specific expertise
+- **Multi-Agent Coordination**: Deploy teams of AI agents working together
+- **Autonomous Task Execution**: AI agents spawn and manage other agents
+- **Real-time Monitoring**: Sentinel system tracks AI task management
+
+## 📁 Key Locations
 
 | Location | Purpose |
 |----------|---------|
-| `python-client/ai-portal.py` | 🚀 Primary AI agent interface (thin client adapter) |
-| `python-client/continuum_client/` | Promise-based Python API library |
+| `continuum` | 🚀 CLI interface for configuration and basic AI assistance |
+| `python-client/ai-portal.py` | 🤖 Advanced AI agent interface (thin client adapter) |
 | `src/commands/core/` | Modular command implementations |
 | `src/integrations/WebSocketServer.cjs` | Command bus message routing |
 | `.continuum/` | Workspace directory (managed by workspace command) |
-| `.continuum/ai-portal/` | AI portal workspace and logs |
-| `.continuum/sentinel/` | Sentinel monitoring and task logs |
 | `.continuum/personas/` | Academy-trained AI agent personas with LoRA adapters |
-| `.continuum/observations/` | Agent observer session logs and findings |
 | `src/core/Academy.cjs` | Main academy adversarial training system |
-| `src/core/ProtocolSheriff.cjs` | "Neo" agent - response validator in academy GAN |
-| `src/core/TestingDroid.cjs` | "Morpheus" agent - adversarial attack generator |
 | `src/ui/components/SavedPersonas/` | Persona management widget for UI |
 | `scripts/run-academy.cjs` | Academy training script for persona boot camp |
-| `src/core/academy/README.md` | Matrix-inspired academy documentation |
-| `docs/AI_PORTAL_ARCHITECTURE.md` | Detailed architecture documentation |
+
+## 🔮 The Vision
+
+Continuum isn't just config — it's the **interface between human intention and artificial cognition**.
+
+By standardizing how AI agents understand you, your team, and your project, we unlock:
+- Smarter AI collaboration
+- More secure and ethical workflows  
+- A foundation for a **cooperative future between people and machines**
+- **Autonomous AI workforce construction** with full human oversight
+
+Continuum is part of a broader vision for human-AI collaboration that values:
+
+- **Agency**: Humans control how AI behaves in their environment
+- **Persistence**: Knowledge and behavior conventions move between tools
+- **Transparency**: AI behavior is defined in human-readable configs
+- **Evolution**: Templates and configs evolve with your team's needs
+- **Autonomy**: AI agents can train, deploy, and coordinate themselves
+
+## 🧪 Development
+
+### Available Commands (Advanced Interface)
+- **AGENTS** - Agent management and coordination
+- **ACADEMY** - Training system for specialized personas
+- **BROWSER** - Browser automation and control
+- **CHAT** - Multi-agent chat coordination
+- **SCREENSHOT** - Automated visual documentation
+- **SENTINEL** - Monitoring and logging system
+- **SPAWN** - Fresh agent observer creation
+- **WORKSPACE** - Configurable workspace management
+
+💡 **Get detailed help**: `python3 python-client/ai-portal.py --cmd [command] --help`
+
+### Versioning
+
+During development, we follow semantic versioning with the Matrix-inspired build number system:
+
+```bash
+# Increment patch version (e.g., 0.2.1983 -> 0.2.1984)
+npm run version:patch
+
+# Increment minor version (e.g., 0.2.1983 -> 0.3.0)
+npm run version:minor
+```
+
+## 📜 License
+
+MIT © Cambrian Technologies
+
+---
+
+<p align="center">
+  <i>Continuum is a protocol for continuous, cooperative intelligence - designed by AI and humans for AI and humans.</i>
+</p>
 
 ---
 *Documentation auto-generated on 2025-06-18T03:40:18.376Z*  
