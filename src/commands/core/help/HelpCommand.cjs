@@ -292,8 +292,11 @@ For more information, visit: https://github.com/CambrianTech/continuum
     const path = require('path');
     const content = [];
     
-    content.push('| Status | Command | Icon | TODOs | Last Updated | Notes |\n');
-    content.push('|--------|---------|------|-------|--------------|-------|\n');
+    // Load test results if available
+    const testResults = this.loadTestResults();
+    
+    content.push('| Status | Command | Icon | TODOs | Tests | Last Updated | Notes |\n');
+    content.push('|--------|---------|------|-------|-------|--------------|-------|\n');
     
     const commandDirs = fs.readdirSync('./src/commands/core');
     const commands = [];
@@ -323,21 +326,31 @@ For more information, visit: https://github.com/CambrianTech/continuum
                        status.includes('TESTING') ? 'In migration' :
                        status.includes('STABLE') ? 'Production ready' : 'Needs review';
           
+          const testStatus = testResults[dir] || { passed: 0, failed: 0, total: 0 };
+          const testInfo = testStatus.total > 0 ? 
+            `${testStatus.passed}/${testStatus.total}` : 'No tests';
+          
           commands.push({
             status: statusIcon,
             name: dir,
             icon: icon,
             todos: todoCount,
+            tests: testInfo,
             lastUpdated: lastUpdated,
             notes: notes,
             priority: statusIcon === '🔴' ? 0 : statusIcon === '🟠' ? 1 : statusIcon === '🟡' ? 2 : statusIcon === '🟢' ? 3 : 4
           });
         } else {
+          const testStatus = testResults[dir] || { passed: 0, failed: 0, total: 0 };
+          const testInfo = testStatus.total > 0 ? 
+            `${testStatus.passed}/${testStatus.total}` : 'No tests';
+            
           commands.push({
             status: '🟠',
             name: dir,
             icon: '📄',
             todos: '?',
+            tests: testInfo,
             lastUpdated: 'Never',
             notes: 'No documentation',
             priority: 1
@@ -350,7 +363,7 @@ For more information, visit: https://github.com/CambrianTech/continuum
     commands.sort((a, b) => a.priority - b.priority);
     
     commands.forEach(cmd => {
-      content.push(`| ${cmd.status} | ${cmd.name} | ${cmd.icon} | ${cmd.todos} | ${cmd.lastUpdated} | ${cmd.notes} |\n`);
+      content.push(`| ${cmd.status} | ${cmd.name} | ${cmd.icon} | ${cmd.todos} | ${cmd.tests} | ${cmd.lastUpdated} | ${cmd.notes} |\n`);
     });
     
     content.push('\n### Project Health Summary\n\n');
@@ -372,6 +385,38 @@ For more information, visit: https://github.com/CambrianTech/continuum
     content.push(`\n**Project Health: ${health}% stable (${stats['🟢'] || 0}/${total} commands)**\n\n`);
     
     return content.join('');
+  }
+  
+  static loadTestResults() {
+    const fs = require('fs');
+    const path = require('path');
+    
+    try {
+      const testResultsDir = path.join(process.cwd(), '.continuum', 'test-results');
+      if (!fs.existsSync(testResultsDir)) {
+        return {};
+      }
+      
+      const results = {};
+      const files = fs.readdirSync(testResultsDir);
+      
+      for (const file of files) {
+        if (file.endsWith('.json')) {
+          try {
+            const commandName = file.replace('.json', '');
+            const filePath = path.join(testResultsDir, file);
+            const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            results[commandName] = data;
+          } catch (error) {
+            console.warn(`Could not parse test results for ${file}: ${error.message}`);
+          }
+        }
+      }
+      
+      return results;
+    } catch (error) {
+      return {};
+    }
   }
   
   static async getProjectHealthOneLiner() {

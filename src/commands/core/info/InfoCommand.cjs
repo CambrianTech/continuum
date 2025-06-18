@@ -9,13 +9,165 @@ class InfoCommand extends BaseCommand {
   // Common helper methods for info commands
   
   static getDefinition() {
-    return {
-      name: 'info',
-      description: 'Base information command (override in subclasses)',
-      icon: 'ℹ️',
-      category: 'system',
-      parameters: {}
-    };
+    // README-driven: Read definition from README.md
+    const fs = require('fs');
+    const path = require('path');
+    
+    try {
+      const readmePath = path.join(__dirname, 'README.md');
+      const readme = fs.readFileSync(readmePath, 'utf8');
+      return this.parseReadmeDefinition(readme);
+    } catch (error) {
+      // Fallback definition if README.md not found
+      return {
+        name: 'info',
+        description: 'Display system information and server status',
+        icon: 'ℹ️',
+        category: 'system',
+        parameters: {
+          section: { type: 'string', required: false, description: 'Information section to display' }
+        }
+      };
+    }
+  }
+  
+  static parseReadmeDefinition(readme) {
+    // Parse README.md for command definition (shared with HelpCommand)
+    const lines = readme.split('\n');
+    const definition = { parameters: {} };
+    
+    let inDefinition = false;
+    let inParams = false;
+    let inTodos = false;
+    const todos = [];
+    
+    for (const line of lines) {
+      if (line.includes('## Definition')) {
+        inDefinition = true;
+        continue;
+      }
+      if (inDefinition && line.startsWith('##')) {
+        inDefinition = false;
+      }
+      if (line.includes('## Parameters')) {
+        inParams = true;
+        continue;
+      }
+      if (inParams && line.startsWith('##')) {
+        inParams = false;
+      }
+      if (line.includes('## TODO:')) {
+        inTodos = true;
+        continue;
+      }
+      if (inTodos && line.startsWith('##')) {
+        inTodos = false;
+      }
+      
+      if (inDefinition) {
+        if (line.includes('**Name**:')) {
+          definition.name = line.split('**Name**:')[1].trim();
+        } else if (line.includes('**Description**:')) {
+          definition.description = line.split('**Description**:')[1].trim();
+        } else if (line.includes('**Icon**:')) {
+          definition.icon = line.split('**Icon**:')[1].trim();
+        } else if (line.includes('**Category**:')) {
+          definition.category = line.split('**Category**:')[1].trim();
+        } else if (line.includes('**Status**:')) {
+          definition.status = line.split('**Status**:')[1].trim();
+        }
+      }
+      
+      if (inParams && line.includes('`') && line.includes(':')) {
+        const param = line.match(/`([^`]+)`:\s*(.+)/);
+        if (param) {
+          definition.parameters[param[1]] = {
+            type: 'string',
+            description: param[2]
+          };
+        }
+      }
+      
+      if (inTodos && line.includes('TODO:')) {
+        todos.push(line.trim());
+      }
+    }
+    
+    // Add TODOs to definition
+    if (todos.length > 0) {
+      definition.todos = todos;
+      definition.description += ` (⚠️ ${todos.length} TODOs pending)`;
+    }
+    
+    return definition;
+  }
+  
+  static async execute(params, continuum) {
+    const options = this.parseParams(params);
+    
+    this.displayHeader('💻 System Information', 'Continuum Server Status');
+    
+    // System information
+    const systemInfo = this.getSystemInfo();
+    const serverInfo = this.getServerInfo(continuum);
+    
+    if (!options.section || options.section === 'overview') {
+      this.displaySection('🖥️ SYSTEM', systemInfo);
+      this.displaySection('🚀 SERVER', serverInfo);
+    } else if (options.section === 'system') {
+      this.displaySection('🖥️ SYSTEM', systemInfo);
+    } else if (options.section === 'server') {
+      this.displaySection('🚀 SERVER', serverInfo);
+    } else if (options.section === 'memory') {
+      const memoryInfo = this.getMemoryInfo();
+      this.displaySection('💾 MEMORY', memoryInfo);
+    } else if (options.section === 'connections') {
+      const connectionInfo = this.getConnectionInfo(continuum);
+      this.displaySection('🔗 CONNECTIONS', connectionInfo);
+    }
+    
+    return this.createSuccessResult({ 
+      system: systemInfo,
+      server: serverInfo,
+      version: this.getVersion() 
+    }, 'System information displayed');
+  }
+  
+  static getSystemInfo() {
+    const os = require('os');
+    return `  Platform: ${os.platform()} ${os.arch()}
+  Node.js: ${process.version}
+  OS: ${os.type()} ${os.release()}
+  CPU: ${os.cpus()[0].model} (${os.cpus().length} cores)
+  Uptime: ${Math.floor(os.uptime() / 3600)}h ${Math.floor((os.uptime() % 3600) / 60)}m`;
+  }
+  
+  static getServerInfo(continuum) {
+    const uptime = process.uptime();
+    const uptimeFormatted = `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`;
+    
+    return `  Version: ${this.getVersion()}
+  Uptime: ${uptimeFormatted}
+  PID: ${process.pid}
+  Working Directory: ${process.cwd()}
+  Node Args: ${process.argv.slice(2).join(' ') || 'none'}`;
+  }
+  
+  static getMemoryInfo() {
+    const memUsage = process.memoryUsage();
+    const formatBytes = (bytes) => (bytes / 1024 / 1024).toFixed(2) + ' MB';
+    
+    return `  RSS: ${formatBytes(memUsage.rss)}
+  Heap Used: ${formatBytes(memUsage.heapUsed)}
+  Heap Total: ${formatBytes(memUsage.heapTotal)}
+  External: ${formatBytes(memUsage.external)}`;
+  }
+  
+  static getConnectionInfo(continuum) {
+    return `  WebSocket Server: Active
+  Port: 9000 (default)
+  Active Connections: ${continuum?.webSocketServer?.clients?.size || 0}
+  Command Bus: Ready`;
   }
   
   static getVersion() {
