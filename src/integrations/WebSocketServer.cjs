@@ -538,16 +538,19 @@ class WebSocketServer extends EventEmitter {
         
       } else if (data.type === 'client_console_log') {
         // Handle console forwarding from browser
+        console.log('🔍 SERVER: Received client_console_log message:', JSON.stringify(data, null, 2));
         try {
           const { level, message, timestamp, url } = data;
           const sessionId = this.getSessionId(ws);
           
           // Log to server console with clear client prefix
           console.log(`📱 CLIENT [${level.toUpperCase()}]:`, message);
+          console.log(`🔍 SERVER: Session ${sessionId}, URL: ${url}, Time: ${new Date(timestamp).toISOString()}`);
           
           // Store in client logs for portal access
           if (!this.clientLogs) {
             this.clientLogs = [];
+            console.log('🔍 SERVER: Initialized clientLogs array');
           }
           this.clientLogs.push({
             timestamp: new Date(timestamp).toISOString(),
@@ -556,13 +559,15 @@ class WebSocketServer extends EventEmitter {
             url: url,
             sessionId: sessionId
           });
+          console.log(`🔍 SERVER: Stored log entry, total entries: ${this.clientLogs.length}`);
           
           // Keep only last 100 client log entries
           if (this.clientLogs.length > 100) {
             this.clientLogs = this.clientLogs.slice(-100);
+            console.log('🔍 SERVER: Trimmed clientLogs to 100 entries');
           }
         } catch (error) {
-          console.error('Error handling client console log:', error);
+          console.error('🚨 SERVER ERROR handling client console log:', error);
         }
         
       } else if (data.type === 'console_log') {

@@ -86,9 +86,10 @@ def write_log(message: str):
         f.write(f"[{timestamp}] {message}\n")
 
 async def handle_message(message):
-    """Simple message logger"""
+    """Complete message logger - capture everything"""
     msg_type = message.get('type', 'unknown')
-    write_log(f"{msg_type}: {json.dumps(message)}")
+    # Log the full message, not truncated
+    write_log(f"WS_RECV: {json.dumps(message, indent=2)}")
 
 async def start_buffer():
     """Start buffering WebSocket messages"""

@@ -41,7 +41,7 @@ function setupConsoleForwarding() {
         } else {
             try {
                 window.ws.send(JSON.stringify(message));
-                originalConsole.log('📤 CONSOLE FORWARDED:', level, message.message);
+                // Don't log successful forwards to prevent feedback loop
             } catch (e) {
                 originalConsole.error('🚨 CONSOLE FORWARD ERROR:', e);
             }
