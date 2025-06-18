@@ -26,13 +26,18 @@ class BaseCommand {
       
       // If string, parse as JSON
       if (typeof params === 'string') {
+        // Handle empty string
+        if (params.trim() === '') {
+          return {};
+        }
         return JSON.parse(params);
       }
       
-      throw new Error(`Invalid parameter type: ${typeof params}. Expected object or JSON string.`);
+      console.warn(`⚠️ Invalid parameter type: ${typeof params}. Expected object or JSON string.`);
+      return {};
     } catch (error) {
-      console.error(`❌ Parameter parsing failed:`, error.message);
-      throw new Error(`Invalid parameters: ${error.message}`);
+      console.warn(`⚠️ Parameter parsing failed: ${error.message}. Returning empty object.`);
+      return {};
     }
   }
 
