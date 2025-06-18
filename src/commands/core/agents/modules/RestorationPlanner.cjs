@@ -9,6 +9,23 @@ class RestorationPlanner {
   }
 
   /**
+   * Command system compatibility - not meant to be called as command
+   */
+  static getDefinition() {
+    return {
+      name: 'RESTORATION_PLANNER',
+      description: 'Internal utility - not a user command',
+      category: 'internal',
+      parameters: [],
+      examples: []
+    };
+  }
+
+  static async execute(params, continuum) {
+    return 'This is an internal utility module, not a user command';
+  }
+
+  /**
    * Get all restoration phases with metadata
    */
   getRestorationPhases() {
