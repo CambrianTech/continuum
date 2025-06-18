@@ -12,6 +12,23 @@ class RoadmapParser {
   }
 
   /**
+   * Command system compatibility - not meant to be called as command
+   */
+  static getDefinition() {
+    return {
+      name: 'ROADMAP_PARSER',
+      description: 'Internal utility - not a user command',
+      category: 'internal',
+      parameters: [],
+      examples: []
+    };
+  }
+
+  static async execute(params, continuum) {
+    return 'This is an internal utility module, not a user command';
+  }
+
+  /**
    * Parse ROADMAP.md and extract actionable items
    */
   async parseRoadmap() {
