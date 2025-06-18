@@ -320,7 +320,7 @@ async def run_command(cmd: str, params: str = "{}", verbose: bool = False):
                     params_dict = json.loads(params) if params != "{}" else {}
                     result = await client.send_command(cmd, params_dict)
                 
-                # Handle both string and dict responses
+                # Handle both string and dict responses safely
                 if verbose:
                     print(f"✅ Result: {result}")
                 else:
@@ -329,13 +329,26 @@ async def run_command(cmd: str, params: str = "{}", verbose: bool = False):
                         print(f"✅ {result}")
                     # Handle dict responses
                     elif isinstance(result, dict):
-                        if result.get('result', {}).get('success', True):
-                            print(f"✅ {result.get('result', {}).get('message', 'Command completed')}")
+                        # Safely check nested dict structure
+                        inner_result = result.get('result', {})
+                        if isinstance(inner_result, dict):
+                            if inner_result.get('success', True):
+                                print(f"✅ {inner_result.get('message', 'Command completed')}")
+                            else:
+                                error_msg = inner_result.get('error', 'Unknown error')
+                                print(f"❌ {inner_result.get('message', 'Command failed')}")
+                                if isinstance(error_msg, str) and error_msg != 'Unknown error':
+                                    print(f"   {error_msg}")
                         else:
-                            error_msg = result.get('result', {}).get('error', 'Unknown error')
-                            print(f"❌ {result.get('result', {}).get('message', 'Command failed')}")
-                            if isinstance(error_msg, str) and error_msg != 'Unknown error':
-                                print(f"   {error_msg}")
+                            # Handle flat dict or other dict structures
+                            success = result.get('success', True)
+                            if success:
+                                print(f"✅ {result.get('message', 'Command completed')}")
+                            else:
+                                print(f"❌ {result.get('message', 'Command failed')}")
+                                error_msg = result.get('error', '')
+                                if error_msg:
+                                    print(f"   {error_msg}")
                     else:
                         print(f"✅ Command completed: {result}")
                 
