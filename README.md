@@ -134,6 +134,6 @@ python3 python-client/ai-portal.py --cmd [command] --help
 | `docs/AI_PORTAL_ARCHITECTURE.md` | Detailed architecture documentation |
 
 ---
-*Documentation auto-generated on 2025-06-18T03:10:25.803Z*  
+*Documentation auto-generated on 2025-06-18T03:29:27.276Z*  
 *Source: Live help system via `help --sync` command*  
 *Architecture: Command bus with thin client adapters*

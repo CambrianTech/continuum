@@ -18,16 +18,24 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import dashboard functions
 try:
-    from ai_agent import (
-        get_command_dependencies, 
-        topological_sort, 
-        get_command_tickets,
-        show_dashboard,
-        show_broken,
-        run_command
-    )
-except ImportError:
-    pytest.skip("ai-agent.py not available", allow_module_level=True)
+    import importlib.util
+    import sys
+    # Simple approach: ai-agent.py is in the current working directory when pytest runs
+    ai_agent_path = Path("ai-agent.py")
+    spec = importlib.util.spec_from_file_location("ai_agent", ai_agent_path)
+    ai_agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ai_agent)
+    
+    # Import the functions we need
+    get_command_dependencies = ai_agent.get_command_dependencies
+    topological_sort = ai_agent.topological_sort
+    get_command_tickets = ai_agent.get_command_tickets
+    show_dashboard = ai_agent.show_dashboard
+    show_broken = ai_agent.show_broken
+    run_command = ai_agent.run_command
+    
+except ImportError as e:
+    pytest.skip(f"ai-agent.py not available: {e}", allow_module_level=True)
 
 
 class TestDependencySystem:
@@ -97,8 +105,10 @@ class TestTicketSystem:
         mock_exists.return_value = True
         
         # Create mock command directory
-        mock_cmd_dir = Path('/fake/src/commands/core/testcmd')
+        from unittest.mock import MagicMock
+        mock_cmd_dir = MagicMock()
         mock_cmd_dir.name = 'testcmd'
+        mock_cmd_dir.is_dir.return_value = True
         mock_iterdir.return_value = [mock_cmd_dir]
         
         # Mock README content
@@ -139,6 +149,7 @@ class TestDashboardViews:
     
     @patch('ai_agent.get_command_tickets')
     @patch('builtins.print')
+    @pytest.mark.asyncio
     async def test_show_broken(self, mock_print, mock_tickets):
         """Test broken commands view"""
         
