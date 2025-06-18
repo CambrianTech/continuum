@@ -194,12 +194,12 @@ class CommandProcessor {
         chatMessage = trimmed.replace('[CHAT]', '').trim();
       }
       
-      // Parse commands
-      else if (trimmed.startsWith('[CMD:')) {
-        const match = trimmed.match(/\[CMD:(\w+)\]\s*(.+)/);
+      // Parse commands with clean CLI syntax (with or without params)
+      else if (trimmed.match(/^\w+(\s*\{.*\})?$/)) {
+        const match = trimmed.match(/^(\w+)\s*(.*)$/);
         if (match) {
           const [, command, params] = match;
-          commands.push({ command, params: params.trim() });
+          commands.push({ command: command.toUpperCase(), params: params.trim() || '{}' });
           console.log(`📤 Protocol Command ${commands.length}: ${command} - ${params.substring(0, 50)}${params.length > 50 ? '...' : ''}`);
         }
       }

@@ -9,7 +9,7 @@ const path = require('path');
 class SaveFileCommand {
   static getDefinition() {
     return {
-      name: 'SAVE_FILE',
+      name: 'saveFile',
       category: 'Core',
       icon: '💾',
       description: 'Save file from base64 data to filesystem',
