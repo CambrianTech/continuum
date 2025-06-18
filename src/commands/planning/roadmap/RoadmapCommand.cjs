@@ -274,4 +274,4 @@ class RoadmapCommand extends BaseCommand {
   }
 }
 
-module.exports = RoadmapParser;
+module.exports = RoadmapCommand;

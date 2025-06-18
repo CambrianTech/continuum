@@ -2,7 +2,7 @@
  * AgentsCommand - Show agent-specific development help and guidance
  */
 
-const InfoCommand = require('../info/InfoCommand.cjs');
+const InfoCommand = require('../../core/info/InfoCommand.cjs');
 
 class AgentsCommand extends InfoCommand {
   static getDefinition() {
