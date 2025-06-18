@@ -256,22 +256,24 @@ class WebSocketServer extends EventEmitter {
         }
         
       } else if (data.type === 'task') {
-        const { role, task } = data;
+        const { role, task, commandId } = data;
         
         console.log(`🎯 WEBSOCKET_TASK: ${role} -> ${task}`);
         console.log(`🎯 WEBSOCKET_TASK: Full task string: "${task}"`);
+        console.log(`🎯 WEBSOCKET_TASK: CommandId: ${commandId}`);
         console.log(`🎯 WEBSOCKET_TASK: Task contains [CMD:? ${task.includes('[CMD:')}`);
         
         // Send working status immediately (not queued)
         ws.send(JSON.stringify({
           type: 'working',
-          data: `🤖 ${role} processing: ${task.substring(0, 50)}...`
+          data: `🤖 ${role} processing: ${task.substring(0, 50)}...`,
+          commandId: commandId
         }));
         
         console.log(`🎯 WEBSOCKET_TASK: Calling messageQueue.queueTaskResult`);
         
         // Queue the task result - this should call intelligentRoute
-        this.messageQueue.queueTaskResult(ws, task, role, this.continuum);
+        this.messageQueue.queueTaskResult(ws, task, role, this.continuum, commandId);
         
       } else if (data.type === 'message') {
         // Handle general chat messages with auto-routing and Sheriff validation

@@ -56,13 +56,12 @@ class MessageQueue {
       if (!continuum.modelRegistry || continuum.modelRegistry.getAvailableModels().length === 0) {
         console.log('⚠️ No AI models available, sending static greeting');
         return {
-          type: 'result',
-          data: {
-            role: 'System',
-            task: 'user_connection_greeting',
-            result: "👋 Welcome to Continuum! I'm ready to help coordinate your tasks. Please note that AI features require API keys to be configured. You can add them in your .continuum/config.env file.",
-            costs: continuum.costs
-          }
+          type: 'response',
+          message: "👋 Welcome to Continuum! I'm ready to help coordinate your tasks. Please note that AI features require API keys to be configured. You can add them in your .continuum/config.env file.",
+          agent: 'System',
+          room: 'general',
+          sheriff_status: 'VALID',
+          costs: continuum.costs
         };
       }
 
@@ -91,32 +90,31 @@ class MessageQueue {
         }
         
         return {
-          type: 'result',
-          data: {
-            role: 'GeneralAI',
-            task: 'user_connection_greeting',
-            result: finalGreeting,
-            costs: continuum.costs
-          }
+          type: 'response',
+          message: finalGreeting,
+          agent: 'GeneralAI',
+          room: 'general',
+          sheriff_status: 'VALID',
+          costs: continuum.costs
         };
       } catch (error) {
         console.error('AI greeting failed:', error);
         return {
-          type: 'result',
-          data: {
-            role: 'System',
-            task: 'user_connection_greeting',
-            result: "👋 Welcome to Continuum! I'm a coordination system for managing AI agents and tasks. How can I help you today?",
-            costs: continuum.costs
-          }
+          type: 'response',
+          message: "👋 Welcome to Continuum! I'm a coordination system for managing AI agents and tasks. How can I help you today?",
+          agent: 'System',
+          room: 'general',
+          sheriff_status: 'VALID',
+          costs: continuum.costs
         };
       }
     });
   }
 
-  queueTaskResult(ws, task, role, continuum) {
+  queueTaskResult(ws, task, role, continuum, commandId = null) {
     console.log(`📋 MESSAGE_QUEUE: queueTaskResult called with task: "${task}"`);
     console.log(`📋 MESSAGE_QUEUE: Role: "${role}"`);
+    console.log(`📋 MESSAGE_QUEUE: CommandId: "${commandId}"`);
     console.log(`📋 MESSAGE_QUEUE: About to call continuum.intelligentRoute`);
     
     this.queueMessage(ws, async () => {
@@ -136,8 +134,13 @@ class MessageQueue {
           ? validation.correctedResponse 
           : result.result;
         
-        return {
-          type: 'result',
+        const response = {
+          type: 'response',
+          message: finalResult,
+          agent: result.role || role,
+          room: 'general',
+          sheriff_status: 'VALID',
+          costs: continuum.costs,
           data: {
             role: result.role || role,
             task: task,
@@ -145,12 +148,37 @@ class MessageQueue {
             costs: continuum.costs
           }
         };
+        
+        // Include commandId if available for command matching
+        if (commandId) {
+          response.commandId = commandId;
+          response.type = 'command_response';
+          // For command_response type, Python client expects 'result' field
+          response.result = response.data;
+        }
+        
+        return response;
       } catch (taskError) {
         console.error('Task error:', taskError);
-        return {
-          type: 'error',
-          data: `Task failed: ${taskError.message}`
+        const errorResponse = {
+          type: 'response',
+          message: `Task failed: ${taskError.message}`,
+          agent: 'System',
+          room: 'general',
+          sheriff_status: 'ERROR',
+          success: false,
+          error: taskError.message
         };
+        
+        // Include commandId if available for command matching
+        if (commandId) {
+          errorResponse.commandId = commandId;
+          errorResponse.type = 'command_response';
+          // For command_response type, Python client expects 'result' field
+          errorResponse.result = errorResponse;
+        }
+        
+        return errorResponse;
       }
     });
   }

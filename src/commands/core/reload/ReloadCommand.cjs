@@ -31,6 +31,15 @@ class ReloadCommand {
         console.log('🔄 Graceful reload requested');
       }
 
+      // Bump version first (like RestartCommand does)
+      console.log('📈 Bumping version before reload...');
+      const newVersion = await this.bumpVersion();
+      if (newVersion) {
+        console.log(`✅ Version bumped to: ${newVersion}`);
+      } else {
+        console.log('⚠️ Version bump failed, continuing with reload...');
+      }
+
       // Schedule the reload to happen after response is sent
       setTimeout(async () => {
         try {
@@ -42,11 +51,11 @@ class ReloadCommand {
           
           // Get the current working directory and script path
           const scriptPath = path.join(process.cwd(), 'continuum.cjs');
-          const args = ['--restart'];
+          const args = [];
           
-          console.log('🚀 Spawning new Continuum process...');
+          console.log('🚀 Spawning new Continuum process with tab logic...');
           
-          // Spawn new process with restart flag
+          // Spawn new process (no --restart flag, let it handle browser normally)
           const newProcess = spawn('node', [scriptPath, ...args], {
             detached: true,
             stdio: 'ignore',
@@ -80,6 +89,38 @@ class ReloadCommand {
         error: error.message,
         timestamp: new Date().toISOString()
       };
+    }
+  }
+
+  static async bumpVersion() {
+    try {
+      return new Promise((resolve) => {
+        const { spawn } = require('child_process');
+        const versionProcess = spawn('npm', ['version', 'patch', '--no-git-tag-version'], {
+          stdio: 'pipe',
+          cwd: process.cwd()
+        });
+        
+        let output = '';
+        versionProcess.stdout.on('data', (data) => {
+          output += data.toString();
+        });
+        
+        versionProcess.on('close', (code) => {
+          if (code === 0) {
+            const newVersion = output.trim().replace(/^v/, '');
+            resolve(newVersion);
+          } else {
+            resolve(null);
+          }
+        });
+        
+        versionProcess.on('error', () => {
+          resolve(null);
+        });
+      });
+    } catch (error) {
+      return null;
     }
   }
 }
