@@ -176,7 +176,7 @@ class SavedPersonas extends SidebarWidget {
 
 
   renderPersonaList() {
-    console.log('🎭 SavedPersonas: Rendering personas:', this.personas);
+    // Debug: Rendering personas (reduced verbosity)
     
     if (this.isLoading) {
       return `<div class="loading">${this.loadingMessage || 'Loading personas...'}</div>`;
@@ -306,7 +306,7 @@ class SavedPersonas extends SidebarWidget {
   renderAcademyProgress(persona) {
     const isInAcademy = ['training', 'in_academy', 'learning'].includes(persona.status);
     
-    console.log('Persona status:', persona.status, 'isInAcademy:', isInAcademy);
+    // Debug: Persona status check (reduced verbosity)
     
     if (isInAcademy) {
       return this.renderActiveAcademyProgress(persona);
@@ -643,16 +643,16 @@ class SavedPersonas extends SidebarWidget {
   }
 
   async onRefresh() {
-    console.log('🔄 SavedPersonas: Refreshing...');
+    // Debug: Refreshing personas (reduced verbosity)
     try {
       const apiPersonas = await this.apiCall('/api/personas');
-      console.log('📡 SavedPersonas: Got API personas:', apiPersonas);
+      // Debug: Got API personas (reduced verbosity)
       
       // Add fake training persona to test controls
       const fakePersonas = this.getMockPersonas();
       this.personas = [...fakePersonas, ...apiPersonas];
       
-      console.log('🎭 SavedPersonas: Combined personas (fake + real):', this.personas.length);
+      // Debug: Combined personas count (reduced verbosity)
       this.updatePersonaList();
     } catch (error) {
       console.log('❌ SavedPersonas: API failed, using mock data only:', error.message);
