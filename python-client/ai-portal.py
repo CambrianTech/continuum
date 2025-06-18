@@ -4,6 +4,9 @@ AI Portal - Continuum Command Interface
 =======================================
 THE primary thin client for Continuum's command bus architecture.
 
+📖 ARCHITECTURE DOCS: docs/AI_PORTAL_ARCHITECTURE.md
+📦 COMMAND PACKAGES: src/commands/README.md
+
 CONSOLIDATION APPROACH:
 🎯 This is THE client interface - consolidates all Python access to Continuum
 🔧 Auto-healing: Automatically starts server if connection fails
@@ -286,6 +289,64 @@ async def run_program(steps: list):
         
         await asyncio.sleep(1)  # Small delay between steps
 
+async def run_javascript_file(filename, script_args=None, timeout=None, return_result=False):
+    """Run a JavaScript file in the browser"""
+    import os
+    
+    if not os.path.exists(filename):
+        print(f"❌ Script file not found: {filename}")
+        return
+    
+    print(f"🚀 Running JavaScript file: {filename}")
+    
+    # Read the script file
+    with open(filename, 'r') as f:
+        script_content = f.read()
+    
+    # Parse script arguments
+    args = {}
+    if script_args:
+        args = smart_parse_params(script_args)
+    
+    # Wrap script with argument injection if needed
+    if args:
+        script_wrapper = f"""
+        // Script arguments injected by AI Portal
+        const scriptArgs = {json.dumps(args)};
+        
+        // Original script content
+        {script_content}
+        """
+    else:
+        script_wrapper = script_content
+    
+    # Execute via BROWSER_JS command
+    js_params = {
+        'script': script_wrapper,
+        'timeout': timeout or 10.0,
+        'returnResult': return_result
+    }
+    
+    result = await run_command('browser_js', json.dumps(js_params))
+    
+    if return_result and result:
+        print(f"📊 Script result: {result}")
+
+async def run_shell_command(command, timeout=30.0):
+    """Execute shell command on server"""
+    print(f"⚡ Executing shell command: {command}")
+    
+    # Execute via EXEC command  
+    exec_params = {
+        'command': command,
+        'timeout': timeout
+    }
+    
+    result = await run_command('exec', json.dumps(exec_params))
+    
+    if result:
+        print(f"📊 Command output: {result}")
+
 async def show_help(command=None):
     """Show help using Continuum's built-in help command"""
     if command:
@@ -298,27 +359,234 @@ async def show_help(command=None):
         print("📡 Getting help for all commands")
         await run_command('help', '{}')
 
-@click.command()
+def smart_parse_params(params_str, **kwargs):
+    """Smart parameter parser: detects JSON vs natural arguments"""
+    
+    # If it looks like JSON (starts with { or [), parse as JSON
+    if params_str.strip().startswith(('{', '[')):
+        try:
+            return json.loads(params_str)
+        except json.JSONDecodeError:
+            print(f"⚠️ Invalid JSON: {params_str}")
+            return {}
+    
+    # Otherwise, build JSON from natural arguments
+    result = {}
+    
+    # Add any click options passed as kwargs
+    for key, value in kwargs.items():
+        if value is not None:
+            result[key] = value
+    
+    # Parse natural key=value pairs from params_str
+    if params_str and params_str != '{}':
+        for pair in params_str.split(','):
+            if '=' in pair:
+                key, value = pair.split('=', 1)
+                key = key.strip()
+                value = value.strip()
+                
+                # Smart type conversion
+                if value.lower() in ('true', 'false'):
+                    result[key] = value.lower() == 'true'
+                elif value.isdigit():
+                    result[key] = int(value)
+                elif value.replace('.', '').isdigit():
+                    result[key] = float(value)
+                else:
+                    # Remove quotes if present
+                    if value.startswith('"') and value.endswith('"'):
+                        value = value[1:-1]
+                    result[key] = value
+    
+    return result
+
+def get_command_tokenizer():
+    """CS 200 level command tokenization - simple lookup table"""
+    
+    return {
+        # Browser commands (CLI → Browser JS)
+        'alert': lambda args: {
+            'command': 'browser_js',
+            'params': {'script': f'alert("{" ".join(args)}");', 'encoding': 'base64'}
+        },
+        'log': lambda args: {
+            'command': 'browser_js', 
+            'params': {'script': f'console.log("📝 CLI:", "{" ".join(args)}");', 'encoding': 'base64'}
+        },
+        'eval': lambda args: {
+            'command': 'browser_js',
+            'params': {'script': f'console.log("🔍 Result:", {" ".join(args)}); {" ".join(args)};', 'encoding': 'base64', 'returnResult': True}
+        },
+        'reload': lambda args: {
+            'command': 'browser_js',
+            'params': {'script': 'location.reload();', 'encoding': 'base64'}
+        },
+        
+        # System commands (CLI → Server exec)
+        'shell': lambda args: {
+            'command': 'exec',
+            'params': {'command': ' '.join(args)}
+        },
+        'git': lambda args: {
+            'command': 'exec', 
+            'params': {'command': f'git {" ".join(args)}'}
+        },
+        'npm': lambda args: {
+            'command': 'exec',
+            'params': {'command': f'npm {" ".join(args)}'}
+        },
+        'test': lambda args: {
+            'command': 'exec',
+            'params': {'command': f'npm test {" ".join(args)}' if args else 'npm test'}
+        },
+        
+        # Workspace commands (natural language)
+        'workspace': lambda args: {
+            'command': 'workspace',
+            'params': {'action': args[0] if args else 'path'}
+        },
+        'ws': lambda args: {  # shorthand
+            'command': 'workspace', 
+            'params': {'action': args[0] if args else 'path'}
+        },
+        
+        # Sentinel commands 
+        'sentinel': lambda args: {
+            'command': 'sentinel',
+            'params': {'action': args[0] if args else 'status', 'task': args[1] if len(args) > 1 else None}
+        },
+        'watch': lambda args: {  # shorthand for sentinel
+            'command': 'sentinel',
+            'params': {'action': 'start', 'task': args[0] if args else 'watch'}
+        },
+        
+        # Screenshot commands
+        'screenshot': lambda args: {
+            'command': 'screenshot',
+            'params': {'selector': args[0] if args else 'body', 'filename': args[1] if len(args) > 1 else None}
+        },
+        'snap': lambda args: {  # shorthand
+            'command': 'screenshot',
+            'params': {'selector': args[0] if args else 'body'}
+        },
+        
+        # Help commands  
+        'help': lambda args: {
+            'command': 'help',
+            'params': {'command': args[0] if args else None, 'verbose': 'verbose' in args or '-v' in args}
+        },
+        'status': lambda args: {  # project status
+            'command': 'help',
+            'params': {'verbose': True}
+        },
+        'docs': lambda args: {  # generate docs
+            'command': 'help', 
+            'params': {'sync': True, 'output': args[0] if args else 'README.md'}
+        },
+        
+        # Development shortcuts
+        'restart': lambda args: {
+            'command': 'restart',
+            'params': {}
+        },
+        'version': lambda args: {
+            'command': 'exec',
+            'params': {'command': 'node -e "console.log(require(\'./package.json\').version)"'}
+        },
+        'health': lambda args: {  # quick health check
+            'command': 'help',
+            'params': {}
+        }
+    }
+
+def tokenize_command(cmd, args):
+    """CS 200 tokenization: cmd + args → command structure"""
+    tokenizer = get_command_tokenizer()
+    
+    if cmd.lower() in tokenizer:
+        result = tokenizer[cmd.lower()](args)
+        
+        # Handle base64 encoding for browser_js
+        if result['command'] == 'browser_js' and 'encoding' in result['params']:
+            import base64
+            script = result['params']['script']
+            result['params']['script'] = base64.b64encode(script.encode('utf-8')).decode('utf-8')
+        
+        return result
+    else:
+        # Default: treat as direct command
+        return {
+            'command': cmd,
+            'params': {'action': args[0] if args else None} if args else {}
+        }
+
+@click.command(context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
 @click.option('--buffer', is_flag=True, help='Start buffering WebSocket messages')
 @click.option('--logs', type=int, default=10, help='Show N recent logs')
 @click.option('--clear', help='Clear logs with optional label')
 @click.option('--cmd', help='Run any continuum command (e.g. "restart", "screenshot")')
-@click.option('--params', default='{}', help='JSON params for command (default: {})')
+@click.option('--params', default='', help='Command params: JSON {"key":"value"} or natural key=value,key2=value2')
+@click.pass_context
+
+# Command-specific natural argument options
+@click.option('--action', help='Action to perform (for workspace, sentinel, etc.)')
+@click.option('--task', help='Task name (for sentinel)')
+@click.option('--workspace', help='Workspace name (for workspace command)')
+@click.option('--selector', help='CSS selector (for screenshot)')
+@click.option('--filename', help='Output filename')
+@click.option('--verbose', is_flag=True, help='Verbose output (for help command)')
+@click.option('--sync', is_flag=True, help='Sync documentation (for help command)')
+@click.option('--output', help='Output file path')
+
+# Script execution options
+@click.option('--run', help='Run JavaScript file in browser (e.g. --run script.js)')
+@click.option('--script-args', help='Arguments to pass to script (JSON or key=value)')
+@click.option('--timeout', type=float, help='Script execution timeout in seconds')
+@click.option('--return-result', is_flag=True, help='Return script result instead of just success')
+
+# Shell execution options
+@click.option('--exec', help='Execute shell command on server (e.g. --exec "git status")')
+@click.option('--shell-timeout', type=float, default=30.0, help='Shell command timeout')
+
 @click.option('--program', help='Run program: "check_connection,sleep:5,cmd:screenshot"')
 @click.option('--script', help='Run saved script by name')
 @click.option('--save-script', help='Save program as script: --save-script debug --program "..."')
 @click.option('--list-scripts', is_flag=True, help='List available scripts')
 @click.option('--help-cmd', help='Show help for specific command')
-def main(buffer, logs, clear, cmd, params, program, script, save_script, list_scripts, help_cmd):
+def main(ctx, buffer, logs, clear, cmd, params, action, task, workspace, selector, filename, 
+         verbose, sync, output, run, script_args, timeout, return_result, exec, shell_timeout,
+         program, script, save_script, list_scripts, help_cmd):
     """AI Portal - Your Robot Agent for Continuum development workflow"""
     
-    async def run():
+    async def run_cli():
         if help_cmd:
             await show_help(help_cmd)
+        elif run:
+            await run_javascript_file(run, script_args, timeout, return_result)
+        elif exec:
+            await run_shell_command(exec, shell_timeout)
         elif buffer:
             await start_buffer()
         elif cmd:
-            await run_command(cmd, params)
+            # Get extra arguments from click context
+            remaining_args = ctx.args if ctx.args else []
+            
+            # Use CS 200 tokenization for simple commands
+            if remaining_args or cmd.lower() in get_command_tokenizer():
+                print(f"🎯 Tokenizing: {cmd} {' '.join(remaining_args)}")
+                tokenized = tokenize_command(cmd, remaining_args)
+                await run_command(tokenized['command'], json.dumps(tokenized['params']))
+            else:
+                # Fall back to smart parameter parsing for complex commands
+                parsed_params = smart_parse_params(params, 
+                    action=action, task=task, workspace=workspace,
+                    selector=selector, filename=filename, verbose=verbose,
+                    sync=sync, output=output)
+                
+                # Convert back to JSON string for run_command
+                params_json = json.dumps(parsed_params) if parsed_params else '{}'
+                await run_command(cmd, params_json)
         elif clear is not None:
             clear_logs(clear if clear else None)
         elif list_scripts:
@@ -336,7 +604,7 @@ def main(buffer, logs, clear, cmd, params, program, script, save_script, list_sc
         else:
             show_logs(logs)
     
-    asyncio.run(run())
+    asyncio.run(run_cli())
 
 if __name__ == "__main__":
     import sys

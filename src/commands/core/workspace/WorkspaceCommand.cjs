@@ -9,39 +9,75 @@ const path = require('path');
 
 class WorkspaceCommand extends BaseCommand {
   static getDefinition() {
-    return {
-      name: 'workspace',
-      description: 'Manage workspace directories and paths',
-      icon: '📁',
-      parameters: {
-        action: {
-          type: 'string',
-          required: false,
-          description: 'Action: path, create, list, info',
-          default: 'path'
-        },
-        workspace: {
-          type: 'string',
-          required: false,
-          description: 'Workspace name (ai-portal, sentinel, screenshots, etc)',
-          default: 'ai-portal'
-        },
-        subdir: {
-          type: 'string',
-          required: false,
-          description: 'Subdirectory within workspace',
-          default: ''
+    // README-driven: Read definition from README.md
+    const fs = require('fs');
+    const path = require('path');
+    
+    try {
+      const readmePath = path.join(__dirname, 'README.md');
+      const readme = fs.readFileSync(readmePath, 'utf8');
+      return this.parseReadmeDefinition(readme);
+    } catch (error) {
+      // Fallback definition if README.md not found
+      return {
+        name: 'workspace',
+        description: 'Manage workspace directories and paths',
+        icon: '📁',
+        parameters: {
+          action: { type: 'string', required: false, description: 'Action: path, create, list, info' },
+          workspace: { type: 'string', required: false, description: 'Workspace name' },
+          subdir: { type: 'string', required: false, description: 'Subdirectory within workspace' }
         }
-      },
-      examples: [
-        'workspace',
-        'workspace --action path --workspace ai-portal',
-        'workspace --action path --workspace sentinel --subdir debug',
-        'workspace --action create --workspace my-project',
-        'workspace --action list',
-        'workspace --action info'
-      ]
-    };
+      };
+    }
+  }
+  
+  static parseReadmeDefinition(readme) {
+    // Parse README.md for command definition
+    const lines = readme.split('\n');
+    const definition = { parameters: {} };
+    
+    let inDefinition = false;
+    let inParams = false;
+    
+    for (const line of lines) {
+      if (line.includes('## Definition')) {
+        inDefinition = true;
+        continue;
+      }
+      if (inDefinition && line.startsWith('##')) {
+        inDefinition = false;
+      }
+      if (line.includes('## Parameters')) {
+        inParams = true;
+        continue;
+      }
+      if (inParams && line.startsWith('##')) {
+        inParams = false;
+      }
+      
+      if (inDefinition) {
+        if (line.includes('**Name**:')) {
+          definition.name = line.split('**Name**:')[1].trim();
+        } else if (line.includes('**Description**:')) {
+          definition.description = line.split('**Description**:')[1].trim();
+        } else if (line.includes('**Icon**:')) {
+          definition.icon = line.split('**Icon**:')[1].trim();
+        }
+      }
+      
+      if (inParams && line.includes('`') && line.includes(':')) {
+        const param = line.match(/`([^`]+)`:\s*(.+)/);
+        if (param) {
+          definition.parameters[param[1]] = {
+            type: 'string',
+            description: param[2]
+          };
+        }
+      }
+    }
+    
+    return definition;
   }
 
   static async execute(params, continuum) {

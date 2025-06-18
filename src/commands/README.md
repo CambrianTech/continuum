@@ -1,5 +1,8 @@
 # Commands Directory - Self-Contained Command Packages
 
+> 🤖 AI Portal Integration: [AI Portal Architecture](../../docs/AI_PORTAL_ARCHITECTURE.md)
+> 💻 Implementation Example: [AI Portal Code](../../python-client/ai-portal.py)
+
 This directory contains **self-contained command packages** for the Continuum system. Each command is a fully independent package that defines its complete behavioral contract including timeouts, retries, concurrency rules, and dual-side execution patterns.
 
 ## 🚀 How It Works

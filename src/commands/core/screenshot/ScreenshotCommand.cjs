@@ -6,49 +6,98 @@ const BaseCommand = require('../../BaseCommand.cjs');
 
 class ScreenshotCommand extends BaseCommand {
   static getDefinition() {
-    return {
-      name: 'screenshot',
-      category: 'Core', 
-      icon: '📸',
-      description: 'Capture browser screenshot',
-      parameters: {
-        selector: {
-          type: 'string',
-          required: false,
-          description: 'CSS selector for element to capture'
-        },
-        filename: {
-          type: 'string',
-          required: false,
-          description: 'Custom filename for screenshot'
-        },
-        subdirectory: {
-          type: 'string',
-          required: false,
-          description: 'Subdirectory within screenshots folder'
-        },
-        animation: {
-          type: 'string',
-          required: false,
-          default: 'visible',
-          description: 'Animation mode: visible, hidden, animated'
-        },
-        roi: {
-          type: 'boolean',
-          required: false,
-          default: true,
-          description: 'Show region of interest highlighting'
+    // README-driven: Read definition from README.md
+    const fs = require('fs');
+    const path = require('path');
+    
+    try {
+      const readmePath = path.join(__dirname, 'README.md');
+      const readme = fs.readFileSync(readmePath, 'utf8');
+      return this.parseReadmeDefinition(readme);
+    } catch (error) {
+      // Fallback definition if README.md not found
+      return {
+        name: 'screenshot',
+        description: 'Capture browser screenshot with advanced targeting',
+        icon: '📸',
+        parameters: {
+          selector: { type: 'string', required: false, description: 'CSS selector for element to capture' },
+          filename: { type: 'string', required: false, description: 'Custom filename for screenshot' },
+          subdirectory: { type: 'string', required: false, description: 'Subdirectory within screenshots workspace' }
         }
-      },
-      examples: [
-        'screenshot',
-        'screenshot --selector .version-badge',
-        'screenshot --filename test.png --subdirectory tests',
-        'screenshot --animation animated --roi true',
-        'screenshot --selector .chat-area --animation visible',
-        'screenshot --animation hidden --roi false'
-      ]
-    };
+      };
+    }
+  }
+  
+  static parseReadmeDefinition(readme) {
+    // Parse README.md for command definition
+    const lines = readme.split('\n');
+    const definition = { parameters: {} };
+    
+    let inDefinition = false;
+    let inParams = false;
+    let inTodos = false;
+    const todos = [];
+    
+    for (const line of lines) {
+      if (line.includes('## Definition')) {
+        inDefinition = true;
+        continue;
+      }
+      if (inDefinition && line.startsWith('##')) {
+        inDefinition = false;
+      }
+      if (line.includes('## Parameters')) {
+        inParams = true;
+        continue;
+      }
+      if (inParams && line.startsWith('##')) {
+        inParams = false;
+      }
+      if (line.includes('## TODO:')) {
+        inTodos = true;
+        continue;
+      }
+      if (inTodos && line.startsWith('##')) {
+        inTodos = false;
+      }
+      
+      if (inDefinition) {
+        if (line.includes('**Name**:')) {
+          definition.name = line.split('**Name**:')[1].trim();
+        } else if (line.includes('**Description**:')) {
+          definition.description = line.split('**Description**:')[1].trim();
+        } else if (line.includes('**Icon**:')) {
+          definition.icon = line.split('**Icon**:')[1].trim();
+        } else if (line.includes('**Category**:')) {
+          definition.category = line.split('**Category**:')[1].trim();
+        } else if (line.includes('**Status**:')) {
+          definition.status = line.split('**Status**:')[1].trim();
+        }
+      }
+      
+      if (inParams && line.includes('`') && line.includes(':')) {
+        const param = line.match(/`([^`]+)`:\s*(.+)/);
+        if (param) {
+          definition.parameters[param[1]] = {
+            type: 'string',
+            description: param[2]
+          };
+        }
+      }
+      
+      if (inTodos && line.includes('TODO:')) {
+        todos.push(line.trim());
+      }
+    }
+    
+    // Add TODOs to description if present
+    if (todos.length > 0) {
+      definition.todos = todos;
+      definition.description += ' (⚠️ ' + todos.length + ' TODOs pending)';
+    }
+    
+    return definition;
   }
   
   static async execute(params, continuum) {
