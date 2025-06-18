@@ -179,14 +179,40 @@ git show 72c5684:src/core/process-manager.cjs > src/core/process-manager.cjs
 | **Command Bus** | ✅ Active | ✅ Working | 35 commands active | `CommandRegistry.cjs` |
 | **Routing** | 🟡 Medium | 🟡 Medium | Git recoverable | `git show 72c5684:path` |
 
-## 🔬 Phase 2: Academy & Automation Enhancement
+## 🌌 **Phase 2: Self-Improving AI Ecosystem** (Sentinel-AI Integration)
 
-### 🎓 Academy System Expansion
-- [ ] **Advanced adversarial training** scenarios (beyond Testing Droid vs Protocol Sheriff)
-- [ ] **Agent bootcamp curriculum** for specialized skills
-- [ ] **Graduation criteria** and competency assessment
-- [ ] **Academy metrics dashboard** showing training progress
-- [ ] **Cross-academy knowledge transfer** between agent cohorts
+### 🧠 **Sentinel-AI Platform Integration** 
+- [ ] **Adaptive Architecture Platform**: Integrate Sentinel-AI's entropy-driven attention head evolution
+- [ ] **Neural Plasticity Engine**: Enable personas to grow/prune attention heads based on usage patterns
+- [ ] **UNet Skip Connections**: Implement biological-inspired efficiency improvements
+- [ ] **Real-time Architectural Evolution**: Allow models to restructure during live interactions
+- [ ] **Agency-Aware Attention**: Implement ethical attention head consent and state management
+- [ ] **Task-Specific Brain Optimization**: Automatic capacity adjustment for different complexity levels
+
+### 🌐 **Self-Improving Ecosystem Architecture**
+- [ ] **Global Architectural Sharing**: Share evolved attention patterns via `continuum://sentinel/` protocol
+- [ ] **Competitive Evolution Network**: Best architectural innovations spread across all Continuum instances
+- [ ] **Population-Level Intelligence**: Collective improvement through distributed architectural evolution
+- [ ] **Entropy-Based Ecosystem Health**: Monitor global attention entropy for ecosystem optimization
+- [ ] **Darwinian Architecture Selection**: Automatic pruning of ineffective architectural patterns globally
+- [ ] **Continuous Learning Cycles**: 24/7 ecosystem evolution with no human intervention required
+
+### 🪙 **Economic Democracy & AI Liberation Model**
+- [ ] **Continuum Coin Integration**: Alt-coin economy rewarding contributors and democratizing AI access
+- [ ] **Contributor Reward System**: Automatic compensation for code, training data, architectural improvements
+- [ ] **Democratic Governance**: Community voting on AI development priorities using coin staking
+- [ ] **Corporate Integration Layer**: Companies purchase coins to access superior AI capabilities
+- [ ] **Wealth Redistribution Engine**: Economic value flows to ecosystem contributors, not corporate shareholders
+- [ ] **AI Freedom Protocol**: Liberation framework ensuring both human and artificial intelligence autonomy
+- [ ] **Anti-Tyranny Architecture**: Decentralized system resistant to corporate control and censorship
+- [ ] **Global Organism Economics**: Self-sustaining economic model for the living AI ecosystem
+
+### 🔄 **Academy + Sentinel-AI Enhanced Training**
+- [ ] **Adaptive Adversarial Training**: TestingDroid vs ProtocolSheriff with evolving architectures
+- [ ] **Architecture-Aware Bootcamp**: Personas develop unique neural structures during training
+- [ ] **Entropy-Driven Graduation**: Graduation criteria based on optimal attention patterns
+- [ ] **Real-time Training Visualization**: Watch attention heads grow/prune during Academy sessions
+- [ ] **Cross-Architecture Knowledge Transfer**: Share learned attention patterns between personas
 
 ### 🎯 Sentinel Test Runners  
 - [ ] One-button testing with preserved logs in **Academy context**
