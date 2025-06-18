@@ -34,6 +34,10 @@ Continuum is a **cutting-edge AI Workforce Construction Platform** designed to c
 
 ### 🔄 In Progress  
 - [x] **FILES.md Structure Documentation** - Living tree with agent comments for every file
+- [x] **RESTORATION-STRATEGY.md** - Complete 5-phase restoration plan created
+- [ ] **🏛️ PHASE 1: UI Renaissance** - Follow RESTORATION-STRATEGY.md (2-4 hours, low risk)
+- [ ] **🎓 PHASE 2: Academy Resurrection** - Follow RESTORATION-STRATEGY.md (4-8 hours, medium risk)
+- [ ] **🤖 PHASE 3: Routing Revival** - Follow RESTORATION-STRATEGY.md (3-6 hours, medium risk)
 - [ ] **CRITICAL: spawn command broken** - exec command doesn't actually execute, blocks agent observation workflow
 - [ ] **URGENT: Test Organization & Health** - Fix messy test structure, import issues, broken test discovery
 - [ ] **Dashboard Test Health Integration** - Make dashboard track and flag test organization issues  
@@ -48,7 +52,8 @@ Continuum is a **cutting-edge AI Workforce Construction Platform** designed to c
 
 ## 🚨 PHASE 0: ARCHAEOLOGICAL RESTORATION (Current Priority)
 
-> **🏛️ Discovery Complete**: Comprehensive archaeological investigation reveals sophisticated AI platform with **all capabilities recoverable from git history**
+> **🏛️ Discovery Complete**: Comprehensive archaeological investigation reveals sophisticated AI platform with **all capabilities recoverable from git history**  
+> **📋 IMPLEMENTATION PLAN**: See **`RESTORATION-STRATEGY.md`** for complete 5-phase restoration plan with exact commands
 
 ### 🔍 **DISCOVERY SUMMARY**
 - **Working Foundation**: 35 active commands + complete automation via `trust_the_process.py`
@@ -56,6 +61,14 @@ Continuum is a **cutting-edge AI Workforce Construction Platform** designed to c
 - **Lost UI**: Mass Effect-style cyberpunk interface (commits `4ffb32e`, `41c02a2`)  
 - **Lost Routing**: Intelligent agent selection and process management (commit `72c5684`)
 - **Recovery Status**: **All components git recoverable with documented commands**
+
+### 📋 **RESTORATION EXECUTION**
+**🔥 PRIMARY RESOURCE: `RESTORATION-STRATEGY.md`**
+- **5-Phase Plan**: UI → Academy → Routing → Integration → Advanced
+- **Safety-First**: Incremental restoration with rollback procedures
+- **Exact Commands**: Copy-paste git recovery commands for each component  
+- **Validation**: Comprehensive success criteria and testing protocols
+- **Timeline**: 2-3 weeks for complete restoration
 
 ### 🏛️ **Lost Treasures - Ready for Restoration**
 
@@ -449,5 +462,32 @@ The screenshots prove the beautiful UI exists. The academy system works. The com
 **Mission**: Restore the lost AI automation capabilities that made this system revolutionary.
 
 **The Breakthrough**: We found the automation system wasn't broken - it was just disconnected from the UI during cleanup. The sophisticated capabilities exist and are recoverable!
+
+---
+
+## 🚀 **IMMEDIATE NEXT STEPS**
+
+### **START HERE: Choose Your Path**
+
+**🏛️ HIGH-IMPACT RESTORATION** (Recommended):
+1. **Read**: `cat RESTORATION-STRATEGY.md` - Complete step-by-step plan
+2. **Start**: Phase 1 - UI Renaissance (2-4 hours, low risk)
+3. **Execute**: `git show 4ffb32e:src/ui/components/AgentSelector.js > src/ui/components/AgentSelector.js`
+4. **Validate**: `python python-client/trust_the_process.py`
+
+**🔧 QUICK FIXES** (Alternative):
+1. **Run**: `python3 python-client/ai-portal.py --cmd agents` - See dashboard
+2. **Pick**: 🔴 broken command from list
+3. **Fix**: Follow README-driven development
+4. **Test**: `python python-client/trust_the_process.py`
+
+### **Documentation Hierarchy**
+1. **🔥 RESTORATION-STRATEGY.md** - Your primary restoration roadmap
+2. **📖 FILES.md** - Archaeological map with Agent Study Guide  
+3. **🚀 README.md** - System overview and quick start
+4. **🎓 docs/ACADEMY_ARCHITECTURE.md** - Academy system details
+5. **🗺️ ROADMAP.md** - This file - long-term vision
+
+---
 
 *This roadmap is a living document - refine it every time you work on the system!*
