@@ -36,6 +36,15 @@ class AgentsCommand extends InfoCommand {
 QUICK START FOR FRESH AGENTS:
   continuum.help()                     Show full user/admin help
   continuum.agents()                   Show this agent-specific help
+  
+🚀 AI PORTAL - YOUR PRIMARY INTERFACE:
+  python3 python-client/ai-portal.py --help           # All available commands
+  python3 python-client/ai-portal.py --cmd help       # Live API documentation
+  python3 python-client/ai-portal.py --cmd workspace  # Get your workspace paths
+  python3 python-client/ai-portal.py --cmd sentinel   # Start monitoring/logging
+  
+  # All commands are self-documenting:
+  python3 python-client/ai-portal.py --cmd [command] --help
 
 📍 SETUP & LOCATIONS (Do This First):
   🔧 Python Environment Setup:
@@ -47,10 +56,17 @@ QUICK START FOR FRESH AGENTS:
   
   📁 Key Directories:
   python-client/                           # Your working directory for Python code
+  python-client/ai-portal.py               # 🚀 Your primary interface (thin client adapter)
+  python-client/continuum_client/          # Promise-based API (forwards to command bus)
   python-client/.venv/                     # Python virtual environment (you create this)
+  .continuum/                              # Workspace directory (managed by workspace command)
+  .continuum/ai-portal/                    # Your AI portal workspace and logs
+  .continuum/sentinel/                     # Sentinel monitoring and task logs
   .continuum/screenshots/                  # Screenshots auto-saved here
   .continuum/logs/                         # Debug logs
   .continuum/shared/                       # Communication with Joel
+  src/commands/core/                       # Modular commands (workspace, sentinel, restart, etc)
+  src/integrations/WebSocketServer.cjs    # Command bus message routing
   src/                                     # JavaScript/Node.js code (edit existing files only)
 
 🚨 CRITICAL: TRUST THE PROCESS - Follow this exactly:
@@ -99,11 +115,30 @@ QUICK START FOR FRESH AGENTS:
   git commit -m "Description"              # Commit when ALL success criteria pass
   # Work from main continuum directory for git commands
 
+🏗️ ARCHITECTURE PRINCIPLES (Understand This):
+  • Continuum = OS/Orchestrator with modular command bus
+  • AI Portal = Thin client adapter (no business logic, just forwards commands)
+  • Commands = Self-documenting, discoverable, modular (workspace, sentinel, etc)
+  • Everything promise-based, no god objects, no hardcoded paths
+  • Add functionality via Continuum commands, not client code
+
+🔧 EXAMPLE WORKFLOWS:
+  # Get your workspace and start monitoring
+  python3 python-client/ai-portal.py --cmd workspace --params '{"action": "path"}'
+  python3 python-client/ai-portal.py --cmd sentinel --params '{"action": "start", "task": "my-work"}'
+  
+  # Version bump and restart server
+  python3 python-client/ai-portal.py --cmd restart
+  
+  # Chain commands for automation
+  python3 python-client/ai-portal.py --program 'cmd:workspace,cmd:sentinel,cmd:screenshot'
+
 🔍 DEBUGGING:
   • Use logs as debugger (.continuum/logs/browser/, server logs)
   • Take screenshots after every change (visual verification)
   • Read JavaScript console errors immediately
   • Check version numbers in UI vs server logs
+  • Use sentinel command for organized logging of your work
   • Work independently - debug before asking for help
 
 📝 COMMUNICATION:

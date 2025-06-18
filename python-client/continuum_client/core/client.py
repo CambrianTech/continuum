@@ -32,31 +32,70 @@ class ContinuumClient:
         
     async def connect(self) -> None:
         """
-        Connect to Continuum WebSocket server
+        Connect to Continuum WebSocket server with auto-healing
         
         Raises:
-            ConnectionError: If connection fails
+            ConnectionError: If connection fails after auto-healing attempts
         """
+        max_attempts = 2
+        
+        for attempt in range(max_attempts):
+            try:
+                self.ws = await websockets.connect(self.url)
+                self.connected = True
+                
+                # Initialize JavaScript executor
+                self.js = JSExecutor(self.ws, self.timeout)
+                
+                # Skip initial status messages
+                await self.ws.recv()  # Skip status
+                await self.ws.recv()  # Skip banner
+                
+                # Start message handling loop
+                asyncio.create_task(self._message_loop())
+                
+                # Initialize universal command interface after connection
+                from .command_interface import CommandInterface
+                self.command = CommandInterface(self)
+                
+                return  # Success
+                
+            except Exception as e:
+                if attempt == 0 and ("Connect call failed" in str(e) or "Connection refused" in str(e)):
+                    print(f"🔧 Connection failed (attempt {attempt + 1}/{max_attempts}), auto-healing...")
+                    if await self._auto_heal_server():
+                        print("✅ Auto-healing: Server started, retrying connection...")
+                        await asyncio.sleep(3)  # Give server time to be ready
+                        continue
+                    else:
+                        print("⚠️ Auto-healing: Could not start server automatically")
+                
+                if attempt == max_attempts - 1:
+                    raise ConnectionError(f"Failed to connect to {self.url}: {str(e)}")
+    
+    async def _auto_heal_server(self):
+        """Auto-heal server connection issues by starting Continuum server"""
+        import subprocess
+        import time
+        
         try:
-            self.ws = await websockets.connect(self.url)
-            self.connected = True
-            
-            # Initialize JavaScript executor
-            self.js = JSExecutor(self.ws, self.timeout)
-            
-            # Skip initial status messages
-            await self.ws.recv()  # Skip status
-            await self.ws.recv()  # Skip banner
-            
-            # Start message handling loop
-            asyncio.create_task(self._message_loop())
-            
-            # Initialize universal command interface after connection
-            from .command_interface import CommandInterface
-            self.command = CommandInterface(self)
-            
+            # Check if server process is running
+            result = subprocess.run(['pgrep', '-f', 'continuum.cjs'], 
+                                  capture_output=True, text=True)
+            if result.returncode != 0:
+                print("🚀 Auto-healing: Starting Continuum server...")
+                subprocess.Popen(['node', 'continuum.cjs'], 
+                               stdout=subprocess.DEVNULL, 
+                               stderr=subprocess.DEVNULL)
+                time.sleep(5)  # Give server time to start
+                return True
         except Exception as e:
-            raise ConnectionError(f"Failed to connect to {self.url}: {str(e)}")
+            print(f"⚠️ Auto-healing failed: {e}")
+            return False
+        
+        # Server is running, might be a port/connection issue
+        print("🔌 Auto-healing: Server running, connection issue may resolve...")
+        return False
     
     async def disconnect(self) -> None:
         """Close WebSocket connection"""
@@ -79,24 +118,42 @@ class ContinuumClient:
                         self.js.handle_ws_message(data)
                     
                     # Route command responses to pending promises (elegant pattern)
-                    # Handle both command_response and response types for task-based commands
-                    if (data.get('type') in ['command_response', 'response']) and hasattr(self, 'pending_commands'):
-                        # For task-based commands, we need to match by recent timestamp
-                        # Since server doesn't echo commandId for task responses
-                        if self.pending_commands and data.get('type') == 'response':
-                            # Get most recent pending command (task-based approach)
+                    # Handle bus_command_execution, command_response and response types
+                    if hasattr(self, 'pending_commands') and self.pending_commands:
+                        # Handle BusCommand results (the actual command execution results)
+                        if data.get('type') == 'bus_command_execution' and data.get('role') == 'BusCommand':
+                            # Get most recent pending command for bus command results
                             recent_command_id = max(self.pending_commands.keys()) if self.pending_commands else None
                             if recent_command_id:
                                 future = self.pending_commands[recent_command_id]
                                 if not future.done():
-                                    future.set_result(data)
-                        else:
-                            # Traditional command_response with commandId
+                                    # Return the actual command result
+                                    result = data.get('result', {})
+                                    if isinstance(result, dict) and 'result' in result:
+                                        future.set_result(result['result'])
+                                    else:
+                                        future.set_result(result)
+                        
+                        # Handle traditional command responses with commandId
+                        elif data.get('type') == 'command_response':
                             command_id = data.get('commandId')
                             if command_id and command_id in self.pending_commands:
                                 future = self.pending_commands[command_id]
                                 if not future.done():
                                     future.set_result(data.get('result', data))
+                        
+                        # Ignore regular AI responses (type: 'response') unless they're the only thing pending
+                        elif data.get('type') == 'response' and data.get('agent') != 'BusCommand':
+                            # Only catch AI responses if we have no other command pending for more than 15 seconds
+                            oldest_command_time = min(float(cmd_id.split('_')[-1]) for cmd_id in self.pending_commands.keys()) if self.pending_commands else 0
+                            current_time = asyncio.get_event_loop().time()
+                            if current_time - oldest_command_time > 15:
+                                # Command likely failed, return AI response as fallback
+                                recent_command_id = max(self.pending_commands.keys()) if self.pending_commands else None
+                                if recent_command_id:
+                                    future = self.pending_commands[recent_command_id]
+                                    if not future.done():
+                                        future.set_result(data)
                     
                     # Route to registered message handlers
                     for handler in self.message_handlers:
@@ -142,12 +199,12 @@ class ContinuumClient:
             self.pending_commands = {}
         self.pending_commands[command_id] = future
         
-        # Use task format that server expects (like other command integrations)
+        # Send task with [CMD:] syntax that server recognizes
         params_str = json.dumps(params or {})
         message = {
             'type': 'task',
             'role': 'system',
-            'task': f'[CMD:{command}] {params_str}',
+            'task': f'[CMD:{command.upper()}] {params_str}',
             'commandId': command_id
         }
         
