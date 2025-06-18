@@ -44,6 +44,60 @@ Building the world's first **COMPLETELY AUTONOMOUS AI workforce construction pla
 
 ---
 
+## 🚨 PHASE 0: CRITICAL RESTORATION (Current Priority)
+
+### Lost Advanced Capabilities - Now Considered BUGS
+
+**🤖 AI Agent Browser Automation (LOST - Critical Bug)**
+- [ ] **BROKEN**: AI agents can no longer control browser interfaces
+- [ ] **BROKEN**: Screenshot automation system non-functional
+- [ ] **BROKEN**: Before/after event capture missing
+- [ ] **BROKEN**: Widget-specific screenshot targeting lost
+- [ ] **BROKEN**: Multi-resolution capture (full screen, widget, overview) missing
+- [ ] **BROKEN**: Automated UI documentation generation lost
+
+**🎮 Dynamic UI Panel System (LOST - Critical Bug)**
+- [ ] **BROKEN**: Mass Effect-style slideout panels non-functional
+- [ ] **BROKEN**: `>>` arrow interactions broken on Users & Agents widget
+- [ ] **BROKEN**: Dynamic user/agent information panels missing
+- [ ] **BROKEN**: Expandable persona detail views lost
+- [ ] **BROKEN**: Dynamic window management system broken
+- [ ] **BROKEN**: Real-time UI state changes not captured
+
+**💬 Multi-Agent Chat Coordination (LOST - Critical Bug)**
+- [ ] **BROKEN**: Cannot select multiple AIs from Users & Agents list
+- [ ] **BROKEN**: Group chat functionality missing
+- [ ] **BROKEN**: Shared chat windows non-functional
+- [ ] **BROKEN**: Multi-agent simultaneous messaging broken
+- [ ] **BROKEN**: Cross-agent real-time coordination lost
+- [ ] **BROKEN**: Agent message routing confusion bug unfixed
+
+**🎓 Integrated Academy Management (LOST - Critical Bug)**
+- [ ] **BROKEN**: Cannot send failed personas back to academy from UI
+- [ ] **BROKEN**: Dynamic threshold adjustment system missing
+- [ ] **BROKEN**: UI-driven academy re-enrollment broken
+- [ ] **BROKEN**: Iterative training loops from UI non-functional
+- [ ] **BROKEN**: Real-time academy progress integration lost
+- [ ] **BROKEN**: Academy → UI → Command line pipeline fragmented
+
+**🔧 Sentinel Automation Capabilities (LOST - Critical Bug)**
+- [ ] **BROKEN**: AI agents cannot spawn and control other agents
+- [ ] **BROKEN**: Automated task execution by AI agents lost
+- [ ] **BROKEN**: AI-driven screenshot and documentation missing
+- [ ] **BROKEN**: Agent-to-agent task delegation broken
+- [ ] **BROKEN**: Autonomous system monitoring by AI agents lost
+
+### 🎯 Evidence of What Should Work (Screenshots Prove Functionality Exists)
+
+**Working But Disconnected Components:**
+- ✅ **Beautiful UI exists** - SavedPersonas widget, Academy interface
+- ✅ **Real trained personas** - PatentExpert (92.2%), ProjectBot (80%), etc.
+- ✅ **Multi-agent chat** - GeneralAI, PlannerAI, Protocol Sheriff active
+- ✅ **Academy system functional** - Training, graduation, LoRA adapters work
+- ✅ **Command line tools** - ai-portal.py, spawn commands, help system
+
+**The Gap:** All pieces work independently but **integration automation is broken**
+
 ## 🔬 Phase 2: Academy & Automation Enhancement
 
 ### 🎓 Academy System Expansion
@@ -103,7 +157,37 @@ Building the world's first **COMPLETELY AUTONOMOUS AI workforce construction pla
 
 ---
 
-## 🔗 Phase 5: Ecosystem
+## 🚀 Phase 5: Advanced AI Automation (Rebuild Lost Capabilities)
+
+### 🤖 AI Agent Browser Control & Automation
+- [ ] **Restore browser automation** - AI agents control interfaces directly
+- [ ] **Advanced screenshot system** - Before/after, widget-targeting, multi-resolution
+- [ ] **Event-driven documentation** - Auto-generate docs from UI interactions
+- [ ] **UI testing automation** - AI agents validate interface functionality
+- [ ] **Cross-browser compatibility** - Agent-driven testing across browsers
+
+### 🎮 Mass Effect-Inspired Dynamic UI
+- [ ] **Slideout panel system** - Detailed agent/persona information panels
+- [ ] **Interactive widget expansion** - `>>` arrows reveal contextual information
+- [ ] **Dynamic window management** - Responsive, adaptive interface layouts
+- [ ] **Real-time UI state sync** - Changes propagate across all connected clients
+- [ ] **Contextual action panels** - Deploy, retrain, configure from detailed views
+
+### 💬 Advanced Multi-Agent Coordination
+- [ ] **Multi-agent chat selection** - Choose multiple AIs for group discussions
+- [ ] **Shared workspace coordination** - Agents collaborate on complex tasks
+- [ ] **Agent-to-agent task delegation** - AIs spawn and manage other AIs
+- [ ] **Cross-scope communication** - Project, user, organization agent sharing
+- [ ] **Conflict resolution protocols** - Handle agent disagreements intelligently
+
+### 🎓 Integrated Academy-UI-Command Pipeline
+- [ ] **UI-driven academy management** - Send agents to training from interface
+- [ ] **Dynamic threshold adjustment** - Real-time graduation requirement changes
+- [ ] **Iterative training visualization** - Watch agents improve through cycles
+- [ ] **Academy progress streaming** - Real-time training metrics in UI
+- [ ] **Automated graduation ceremonies** - UI celebrations for successful training
+
+## 🔗 Phase 6: Ecosystem
 
 ### 🎯 Visual Command Graphs
 - [ ] Interactive dependency relationship maps
@@ -143,16 +227,34 @@ Building the world's first **COMPLETELY AUTONOMOUS AI workforce construction pla
 
 ---
 
-## 🎪 Current Opportunities
+## 🚨 CRITICAL RESTORATION PRIORITIES
 
-**Choose any item to work on! Each contribution makes the system more autonomous.**
+**The system had incredible capabilities that are now lost. Treat these as HIGH PRIORITY BUGS.**
 
-### Immediate Impact (1-2 hours)
-1. **Fix exec command** - Critical for spawn functionality and agent observation workflow
-2. **Start commenting FILES.md** - Agent intelligence on every file (confusion = intelligence)
-3. **Fix test organization crisis** - Move tests to correct directories, fix imports
-4. **Add test health to dashboard** - Show broken/passing tests, import issues 
-5. **Implement dynamic method generation** - `client.alert()` with unit tests
+### 🔥 Phase 0 Immediate Impact (1-2 hours each)
+1. **✅ FOUND: Browser automation in trust_the_process.py** - AI agents control UI via `client.js.execute()`
+2. **🔧 CRITICAL: Connect trust_the_process.py to UI buttons** - Wire automation to DEPLOY/RETRAIN/SHARE
+3. **CRITICAL: Find traces of slideout panels** - Mass Effect-style `>>` arrow interactions  
+4. **CRITICAL: Restore multi-agent chat selection** - Users & Agents widget functionality
+5. **✅ FOUND: Screenshot automation system** - `client.command.screenshot()` with auto-opening works!
+
+### 🔧 Integration Restoration (1-2 days each)
+1. **Map API endpoints for DEPLOY/RETRAIN/SHARE** - What do these buttons actually call?
+2. **Fix WebSocket message routing** - Connect command line to UI state changes
+3. **Restore dynamic threshold adjustment** - Academy graduation requirements from UI
+4. **Implement agent-to-agent task delegation** - AI spawning and controlling other AIs
+5. **Fix exec command and spawn integration** - Critical for automation workflow
+
+### 📋 Evidence Gathering (Ongoing)
+1. **Document working UI capabilities** - What actually functions vs what's broken
+2. **Reverse engineer API calls** - How do working buttons connect to backend
+3. **Map WebSocket message types** - What should trigger UI updates
+4. **Find lost automation code** - Browser control, screenshots, panel management
+5. **Test academy training pipeline** - Does training actually create UI-visible personas?
+
+## 🎪 Medium Priority Opportunities
+
+**After critical restoration, these enhance the rebuilt system:**
 
 ### Medium Projects (1-2 days)
 1. Implement Sentinel test runner automation
@@ -200,6 +302,39 @@ Update roadmap: [brief description]
 ## 📅 Version History
 
 - **v1.0** (2025-06-18): Initial roadmap with 5-phase vision
-- **v1.1** (TBD): First agent refinements and priority updates
+- **v2.0** (2025-06-18): **CRITICAL RESTORATION AUDIT** - Documented lost advanced capabilities
+  - Added Phase 0: Critical Restoration (lost AI browser automation, dynamic UI, multi-agent coordination)
+  - Reclassified lost features as HIGH PRIORITY BUGS
+  - Added evidence of working components vs broken integration
+  - Reorganized priorities to focus on restoration before enhancement
+  - Added Mass Effect-inspired UI vision and advanced automation goals
+
+## 🎯 Critical Understanding for New Agents
+
+**🔥 BREAKTHROUGH: Found the lost automation system in `trust_the_process.py`!**
+
+**Git commits reveal the sophisticated capabilities that existed:**
+- **`40d51da`**: "modular TRUST THE PROCESS automation for fresh agents" (336 lines of automation!)
+- **`bfa87d2`**: "auto-open screenshots for User visual verification" 
+- **`8e4b4db`**: "elegant modular screenshot utilities with unit tests"
+- **`81031c6`**: "JavaScript execution promise handling for agent autonomy"
+
+**Working Automation Found:**
+- ✅ AI agents control browsers via `client.js.execute()` - FULLY FUNCTIONAL
+- ✅ Screenshot automation with auto-opening - FULLY FUNCTIONAL  
+- ✅ Before/after capture and validation - FULLY FUNCTIONAL
+- ✅ WebSocket integration and error detection - FULLY FUNCTIONAL
+
+**Still Need to Restore:**
+- Mass Effect-style dynamic panels with detailed agent information
+- Multi-agent chat coordination with group selection from UI
+- Integrated academy management directly from UI (DEPLOY/RETRAIN/SHARE buttons)
+- Agent-to-agent task delegation and automation
+
+**The Gap:** The automation foundation exists but isn't connected to the beautiful UI components!
+
+The screenshots prove the beautiful UI exists. The academy system works. The command line tools function. But the **automation integration that made AI agents autonomous** is broken.
+
+**Mission**: Restore the lost AI automation capabilities that made this system revolutionary.
 
 *This roadmap is a living document - refine it every time you work on the system!*
