@@ -62,20 +62,15 @@ class AgentsCommand extends InfoCommand {
     const filter = options.filter || 'all';
     const sort = options.sort || 'dependency';
     
-    // Create instances for this execution
-    const roadmapParser = new RoadmapParser();
-    const strategicAnalyzer = new StrategicAnalyzer();
-    const restorationPlanner = new RestorationPlanner();
-    
     this.displayHeader('🤖 Continuum Agent Help', 'AI Agent Development Guide');
     
-    // Route to specific sections
+    // Route to specific sections using new planning commands
     if (section === 'roadmap') {
-      return await this.displayRoadmapSection(filter, sort, continuum, roadmapParser, strategicAnalyzer);
+      return await this.displayRoadmapSection(filter, sort, continuum);
     } else if (section === 'broken') {
-      return await this.displayBrokenSection(continuum, strategicAnalyzer);
+      return await this.displayBrokenSection(continuum);
     } else if (section === 'restoration') {
-      return await this.displayRestorationSection(continuum, restorationPlanner);
+      return await this.displayRestorationSection(continuum);
     }
     
     // Default overview section
@@ -148,247 +143,43 @@ Each README is a shared ticket with notes from the last person to help you.
     return this.createSuccessResult({ section: 'overview' }, 'Agent overview displayed');
   }
 
-  static async displayRoadmapSection(filter, sort, continuum, roadmapParser, strategicAnalyzer) {
+  static async displayRoadmapSection(filter, sort, continuum) {
     console.log(`🗺️ STRATEGIC ROADMAP - Filtered by: ${filter}, Sorted by: ${sort}\n`);
     
-    const roadmapItems = await roadmapParser.parseRoadmap();
-    const filteredItems = strategicAnalyzer.filterItems(roadmapItems, filter);
-    const sortedItems = strategicAnalyzer.sortItems(filteredItems, sort);
+    // Use the new roadmap command
+    const RoadmapCommand = require('../../planning/roadmap/RoadmapCommand.cjs');
+    const roadmapResult = await RoadmapCommand.execute(`--action list --filter ${filter} --format table`, continuum);
     
-    console.log(`📊 Showing ${sortedItems.length} roadmap items (${roadmapItems.length} total)\n`);
+    // Use the new analyze command for strategic analysis
+    const AnalyzeCommand = require('../../planning/analyze/AnalyzeCommand.cjs');
+    const analysisResult = await AnalyzeCommand.execute(`--target roadmap --filter ${filter} --format summary`, continuum);
     
-    // Display strategic guidance
-    this.displayStrategicGuidance();
+    console.log(roadmapResult.message || roadmapResult);
+    console.log(analysisResult.message || analysisResult);
     
-    // Display roadmap items by category
-    const categories = strategicAnalyzer.groupByCategory(sortedItems);
-    
-    for (const [category, items] of Object.entries(categories)) {
-      console.log(`\n🎯 ${category.toUpperCase()}:`);
-      items.forEach(item => {
-        const riskColor = this.getRiskColor(item.risk);
-        const complexity = this.getComplexityIcon(item.complexity);
-        const impact = this.getImpactIcon(item.impact);
-        
-        console.log(`   ${riskColor} ${item.title}`);
-        console.log(`     ${complexity} Complexity: ${item.complexity} | ${impact} Impact: ${item.impact} | ⏱️ ${item.timeline}`);
-        
-        if (item.dependencies && item.dependencies.length > 0) {
-          console.log(`     🔗 Requires: ${item.dependencies.join(', ')}`);
-        }
-        
-        if (item.commands && item.commands.length > 0) {
-          console.log(`     💻 Commands: ${item.commands.join(', ')}`);
-        }
-        
-        console.log(`     📋 ${item.description}`);
-        console.log('');
-      });
-    }
-    
-    // Show next recommended action
-    const recommended = strategicAnalyzer.getRecommendedAction(sortedItems);
-    if (recommended) {
-      console.log(`🚀 RECOMMENDED NEXT ACTION:\n`);
-      console.log(`📋 ${recommended.title}`);
-      console.log(`🎯 Strategic Score: ${recommended.score} (higher is better)`);
-      console.log(`🎯 Why: ${recommended.justification || 'Highest priority based on current filters'}`);
-      
-      if (recommended.commands && recommended.commands.length > 0) {
-        console.log(`💻 Start with: ${recommended.commands[0]}`);
-      }
-      console.log('');
-    }
-    
-    // Show strategic insights
-    const insights = strategicAnalyzer.getStrategicInsights(sortedItems);
-    console.log(`📊 STRATEGIC INSIGHTS:`);
-    console.log(`   🎯 Quick Wins (Low Risk + High Impact): ${insights.quickWins}`);
-    console.log(`   🟢 Low Risk Items: ${insights.lowRiskCount}/${insights.totalItems}`);
-    console.log(`   🚀 No Dependencies: ${insights.noDependencies}/${insights.totalItems}`);
-    console.log(`   🔥 Critical Items: ${insights.criticalItems}`);
-    
-    return this.createSuccessResult({ 
-      section: 'roadmap', 
-      filter, 
-      sort, 
-      itemsShown: sortedItems.length,
-      totalItems: roadmapItems.length,
-      insights
-    }, 'Roadmap displayed successfully');
+    return this.createSuccessResult({ section: 'roadmap', filter, sort }, 'Roadmap section displayed');
   }
 
-  static async displayBrokenSection(continuum, strategicAnalyzer) {
+  static async displayBrokenSection(continuum) {
     console.log(`🚨 BROKEN COMMANDS - Strategic Fix Order\n`);
     
-    const brokenCommands = await this.getBrokenCommands();
-    const sortedByPriority = strategicAnalyzer.sortByDependencyImpact(brokenCommands);
+    // Use the new analyze command for broken analysis
+    const AnalyzeCommand = require('../../planning/analyze/AnalyzeCommand.cjs');
+    const analysisResult = await AnalyzeCommand.execute('--target codebase --format summary', continuum);
+    console.log(analysisResult.message || analysisResult);
     
-    console.log(`📊 ${brokenCommands.length} broken commands found\n`);
-    
-    if (brokenCommands.length === 0) {
-      console.log(`🎉 No broken commands found! System is healthy.`);
-      return this.createSuccessResult({ section: 'broken', brokenCount: 0 }, 'No broken commands');
-    }
-    
-    console.log(`🎯 RECOMMENDED FIX ORDER (by dependency impact):\n`);
-    
-    sortedByPriority.forEach((cmd, index) => {
-      const urgency = this.getUrgencyLevel(cmd);
-      console.log(`${index + 1}. ${urgency} ${cmd.name}`);
-      console.log(`   📋 Issue: ${cmd.issue}`);
-      console.log(`   🔗 Blocks: ${cmd.blockedCommands ? cmd.blockedCommands.join(', ') : 'none'}`);
-      console.log(`   💻 Test: python3 python-client/ai-portal.py --cmd ${cmd.name}`);
-      console.log('');
-    });
-    
-    // Show debugging strategy
-    console.log(`🔧 DEBUGGING STRATEGY:\n`);
-    console.log(`1. Start with highest dependency impact (${sortedByPriority[0]?.name || 'none'})`);
-    console.log(`2. Use: python3 python-client/trust_the_process.py --debug`);
-    console.log(`3. Check logs: .continuum/logs/`);
-    console.log(`4. Validate: Run dashboard after each fix`);
-    
-    return this.createSuccessResult({ 
-      section: 'broken', 
-      brokenCount: brokenCommands.length 
-    }, 'Broken commands analysis complete');
+    return this.createSuccessResult({ section: 'broken' }, 'Broken commands analysis complete');
   }
 
-  static async displayRestorationSection(continuum, restorationPlanner) {
+  static async displayRestorationSection(continuum) {
     console.log(`🏛️ ARCHAEOLOGICAL RESTORATION - Safe Recovery Strategy\n`);
     
-    console.log(`📋 RESTORATION STRATEGY:\n`);
-    console.log(`🔥 PRIMARY RESOURCE: RESTORATION-STRATEGY.md`);
-    console.log(`   cat RESTORATION-STRATEGY.md | grep -A 5 "Phase 1"`);
-    console.log(`   cat RESTORATION-STRATEGY.md | grep -A 10 "Safety-First"`);
-    console.log('');
+    // Use the new restore command
+    const RestoreCommand = require('../../planning/restore/RestoreCommand.cjs');
+    const restoreResult = await RestoreCommand.execute('--action list --format table', continuum);
+    console.log(restoreResult.message || restoreResult);
     
-    // Phase-by-phase breakdown with risk assessment
-    const restorationPhases = restorationPlanner.getRestorationPhases();
-    
-    restorationPhases.forEach(phase => {
-      const riskColor = this.getRiskColor(phase.risk);
-      console.log(`${riskColor} ${phase.name} (${phase.timeline}, ${phase.risk} risk)`);
-      console.log(`   📋 ${phase.description}`);
-      console.log(`   💻 ${phase.startCommand}`);
-      console.log(`   ✅ Validation: ${phase.validation}`);
-      if (phase.prerequisites && phase.prerequisites.length > 0) {
-        console.log(`   🔗 Requires: ${phase.prerequisites.join(', ')}`);
-      }
-      console.log('');
-    });
-    
-    // Show safety protocols
-    const protocols = restorationPlanner.getSafetyProtocols();
-    console.log(`🛡️ SAFETY PROTOCOLS:\n`);
-    protocols.forEach((protocol, index) => {
-      const criticalIcon = protocol.critical ? '🚨' : 'ℹ️';
-      console.log(`${index + 1}. ${criticalIcon} ${protocol.step}`);
-      console.log(`   📋 ${protocol.description}`);
-      if (protocol.command) {
-        console.log(`   💻 ${protocol.command}`);
-      }
-      console.log('');
-    });
-    
-    // Show archaeological discoveries
-    const status = restorationPlanner.getArchaeologicalStatus();
-    console.log(`🏆 ARCHAEOLOGICAL DISCOVERIES:\n`);
-    
-    console.log(`✅ FUNCTIONAL COMPONENTS:`);
-    status.functional.forEach(component => {
-      console.log(`   ✅ ${component.name} - ${component.status}`);
-      console.log(`      📋 ${component.description}`);
-      console.log(`      📁 ${component.location}`);
-      console.log('');
-    });
-    
-    console.log(`🔄 RECOVERABLE COMPONENTS:`);
-    status.recoverable.forEach(component => {
-      console.log(`   🔄 ${component.name} - ${component.status}`);
-      console.log(`      📋 ${component.description}`);
-      console.log(`      🔗 Commits: ${component.commits.join(', ')}`);
-      console.log(`      🎯 Phase: ${component.phase}`);
-      console.log('');
-    });
-    
-    // Show timeline estimate
-    const timeline = restorationPlanner.calculateTotalTimeline();
-    console.log(`⏱️ ESTIMATED TIMELINE: ${timeline.timeline}`);
-    
-    // Show recommendations
-    const recommendations = restorationPlanner.getRecommendations(null, 'novice');
-    console.log(`\n💡 RECOMMENDATIONS:\n`);
-    recommendations.forEach(rec => {
-      const priorityIcon = rec.priority === 'critical' ? '🚨' : rec.priority === 'high' ? '🔥' : 'ℹ️';
-      console.log(`   ${priorityIcon} ${rec.message}`);
-    });
-    
-    return this.createSuccessResult({ 
-      section: 'restoration',
-      totalPhases: restorationPhases.length,
-      estimatedHours: timeline.totalHours
-    }, 'Restoration strategy displayed');
-  }
-
-  static displayStrategicGuidance() {
-    console.log(`🎯 STRATEGIC GUIDANCE:\n`);
-    console.log(`🟢 SAFE BETS: Start with low-risk, high-impact items`);
-    console.log(`🟡 BUILD UP: Complete dependencies before dependent items`);
-    console.log(`🔴 HIGH RISK: Save for when you have more context`);
-    console.log(`🛡️ VALIDATION: Always run trust_the_process.py after changes`);
-    console.log('');
-  }
-
-  // Visual indicators and helpers (static methods for easy testing)
-  static getRiskColor(risk) {
-    switch (risk) {
-      case 'Low': return '🟢';
-      case 'Medium': return '🟡';
-      case 'High': return '🔴';
-      default: return '⚪';
-    }
-  }
-
-  static getComplexityIcon(complexity) {
-    switch (complexity) {
-      case 'Low': return '🚀';
-      case 'Medium': return '⚙️';
-      case 'High': return '🧩';
-      default: return '❓';
-    }
-  }
-
-  static getImpactIcon(impact) {
-    switch (impact) {
-      case 'Low': return '📝';
-      case 'Medium': return '⚡';
-      case 'High': return '💥';
-      default: return '❓';
-    }
-  }
-
-  static getUrgencyLevel(cmd) {
-    if (cmd.blockedCommands && cmd.blockedCommands.length > 3) return '🚨';
-    if (cmd.blockedCommands && cmd.blockedCommands.length > 1) return '⚠️';
-    return '🔴';
-  }
-
-  // Inherited methods from InfoCommand
-  static async getProjectHealthOneLiner() {
-    // Implementation from parent class
-    return super.getProjectHealthOneLiner ? super.getProjectHealthOneLiner() : 'System operational';
-  }
-
-  static async getBrokenCommands() {
-    // Implementation from parent class or simple fallback
-    return [];
-  }
-
-  static async getRecentWork() {
-    // Implementation from parent class or simple fallback
-    return [];
+    return this.createSuccessResult({ section: 'restoration' }, 'Restoration section displayed');
   }
 }
 
