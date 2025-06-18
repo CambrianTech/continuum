@@ -846,7 +846,18 @@ def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick
             # Use CS 200 tokenization for commands in the tokenizer
             if cmd.lower() in get_command_tokenizer():
                 print(f"🎯 Tokenizing: {cmd} {' '.join(remaining_args)}")
-                tokenized = tokenize_command(cmd, remaining_args)
+                
+                # For screenshot command, merge click options with tokenizer params
+                if cmd.lower() == 'screenshot':
+                    tokenized = tokenize_command(cmd, remaining_args)
+                    # Override with click options if provided
+                    if selector:
+                        tokenized['params']['selector'] = selector
+                    if filename:
+                        tokenized['params']['filename'] = filename
+                else:
+                    tokenized = tokenize_command(cmd, remaining_args)
+                    
                 await run_command(tokenized['command'], json.dumps(tokenized['params']), verbose=debug)
             else:
                 # Fall back to smart parameter parsing for complex commands
