@@ -119,7 +119,7 @@ describe('WebSocket Streaming Client', () => {
       // Verify base64 encoding
       const decoded = Buffer.from(encodedParams, 'base64').toString('utf8');
       expect(decoded).toContain('slideout-panel');
-      expect(decoded).toContain('z-index');
+      expect(decoded).toContain('zIndex');
     });
 
     test('should handle multiple commands in sequence', () => {

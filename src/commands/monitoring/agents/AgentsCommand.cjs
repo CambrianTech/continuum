@@ -3,7 +3,7 @@
  * Refactored to use focused, testable modules
  */
 
-const InfoCommand = require('../info/InfoCommand.cjs');
+const InfoCommand = require('../../core/info/InfoCommand.cjs');
 
 class AgentsCommand extends InfoCommand {
   constructor() {
