@@ -31,12 +31,20 @@ class DocsCommand extends BaseCommand {
           required: false,
           description: 'What to include: all, commands, help, agents',
           default: 'all'
+        },
+        sync: {
+          type: 'boolean',
+          required: false,
+          description: 'Sync FILES.md with current file structure first',
+          default: false
         }
       },
       examples: [
         'docs',
+        'docs --sync',
         'docs --format markdown --output API.md',
         'docs --include commands --output COMMANDS.md',
+        'docs --sync --output README.md',
         'docs --format json --output api.json'
       ]
     };
@@ -47,9 +55,16 @@ class DocsCommand extends BaseCommand {
     const format = options.format || 'markdown';
     const outputPath = options.output || 'README.md';
     const include = options.include || 'all';
+    const sync = options.sync || false;
     
     try {
       console.log(`📖 Generating ${format} documentation...`);
+      
+      // If sync is requested, update FILES.md first
+      if (sync) {
+        console.log('📁 Syncing FILES.md with current file structure...');
+        await this.syncFileStructure();
+      }
       
       const content = await this.generateDocs(continuum, format, include);
       
@@ -61,17 +76,50 @@ class DocsCommand extends BaseCommand {
       
       console.log(`✅ Documentation written to: ${outputPath}`);
       
-      return this.createSuccessResult({
+      const result = {
         format,
         outputPath,
         include,
         size: content.length,
         lines: content.split('\n').length
-      }, `Documentation generated: ${outputPath}`);
+      };
+      
+      if (sync) {
+        result.fileStructureSynced = true;
+      }
+      
+      return this.createSuccessResult(result, `Documentation generated: ${outputPath}`);
       
     } catch (error) {
       return this.createErrorResult('Documentation generation failed', error.message);
     }
+  }
+  
+  static async syncFileStructure() {
+    const { spawn } = require('child_process');
+    const path = require('path');
+    
+    return new Promise((resolve, reject) => {
+      const scriptPath = path.join(process.cwd(), 'scripts', 'generate-files-tree.sh');
+      
+      const child = spawn('bash', [scriptPath], {
+        cwd: process.cwd(),
+        stdio: 'inherit'
+      });
+      
+      child.on('close', (code) => {
+        if (code === 0) {
+          console.log('✅ File structure synced successfully');
+          resolve();
+        } else {
+          reject(new Error(`File structure sync failed with code ${code}`));
+        }
+      });
+      
+      child.on('error', (error) => {
+        reject(new Error(`Failed to run file structure sync: ${error.message}`));
+      });
+    });
   }
   
   static async generateDocs(continuum, format, include) {
