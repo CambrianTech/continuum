@@ -1,15 +1,71 @@
-# Commands Directory - Self-Contained Command Packages
+# Commands Directory - Categorical Command Innovation
 
 > 🤖 AI Portal Integration: [AI Portal Architecture](../../docs/AI_PORTAL_ARCHITECTURE.md)
 > 💻 Implementation Example: [AI Portal Code](../../python-client/ai-portal.py)
 
+## 🚀 Categorical Command Organization
+
+This directory implements **categorical command organization** - a breakthrough modular architecture where commands are organized into logical categories with inheritance patterns, dynamic discovery, and clean CLI syntax.
+
+### Key Innovations:
+- **11 Categorical Modules**: Commands organized into `browser/`, `communication/`, `input/`, `file/`, `ui/`, `development/`, `monitoring/`, `docs/`, `planning/`, `core/`
+- **Dynamic Module Discovery**: Auto-discovery system that iterates directories instead of hardcoded command lists
+- **Clean CLI Syntax**: Simplified from `[CMD:SCREENSHOT]` to `screenshot` with camelCase naming
+- **Inheritance Ready**: Base classes per categorical module enable shared functionality
+- **38+ Commands Loaded**: All commands successfully migrated with proper import paths
+
 This directory contains **self-contained command packages** for the Continuum system. Each command is a fully independent package that defines its complete behavioral contract including timeouts, retries, concurrency rules, and dual-side execution patterns.
 
-## 🚀 How It Works
+## 🚀 How Categorical Organization Works
 
-1. **Drop command file** into any subdirectory here
+### Dynamic Module Discovery
+The CommandRegistry automatically discovers and loads commands from all categorical directories:
+
+```javascript
+// CommandRegistry.cjs - Dynamic module discovery
+loadCommands() {
+  console.log('📚 Loading command definitions...');
+  
+  // Load commands from all module directories
+  const commandsDir = __dirname;
+  const moduleDirectories = fs.readdirSync(commandsDir, { withFileTypes: true })
+    .filter(dirent => dirent.isDirectory())
+    .map(dirent => dirent.name)
+    .filter(name => !name.startsWith('.') && !name.includes('test'));
+  
+  moduleDirectories.forEach(moduleName => {
+    this.loadCommandsFromDirectory(path.join(__dirname, moduleName));
+  });
+}
+```
+
+### Clean CLI Syntax
+Commands use simplified camelCase syntax instead of the old `[CMD:UPPERCASE]` format:
+
+**Old Syntax:**
+```bash
+[CMD:SCREENSHOT] {"selector": "body"}
+[CMD:BROWSER_JS] console.log("test");
+```
+
+**New Syntax:**
+```bash
+screenshot {"selector": "body"}
+browserJs console.log("test");
+```
+
+### Inheritance-Ready Structure
+Each categorical module can define base classes for shared functionality:
+- `browser/` → BrowserBaseCommand.cjs
+- `communication/` → CommunicationBaseCommand.cjs  
+- `input/` → InputBaseCommand.cjs
+- etc.
+
+### How It Works
+
+1. **Drop command file** into appropriate categorical directory
 2. **Implements the standard interface** (see below)
-3. **Automatically discovered** by CommandProcessor
+3. **Automatically discovered** by dynamic module discovery
 4. **Shows up everywhere instantly:**
    - WebSocket connection banner
    - `continuum --help` output
@@ -73,31 +129,58 @@ src/commands/core/[command]/
 └── test/                        # Command-specific tests
 ```
 
-### Example Command Packages
+### Categorical Command Structure
 ```
 src/commands/
-├── README.md                    # This file
-├── core/                        # Core system commands
-│   ├── restart/                 # Server restart package
-│   │   ├── RestartCommand.cjs
-│   │   ├── index.server.js
-│   │   └── package.json         # timeout: 70s client, 30s server
-│   ├── screenshot/              # Screenshot capture package  
-│   │   ├── ScreenshotCommand.cjs
-│   │   ├── ScreenshotCommand.client.js
-│   │   ├── index.server.js
-│   │   └── package.json         # timeout: 30s client, 15s server
-│   ├── workspace/               # Workspace management package
-│   │   ├── WorkspaceCommand.cjs
-│   │   ├── index.server.js
-│   │   └── package.json         # timeout: 5s, concurrent: true
-│   └── sentinel/                # AI monitoring package
-│       ├── SentinelCommand.cjs
-│       ├── index.server.js
-│       └── package.json         # timeout: 45s, persistent: true
-├── browser/                     # Browser-specific packages
-├── automation/                  # Automation packages
-└── gaming/                      # Gaming-related packages
+├── README.md                    # This file (documents categorical innovation)
+├── browser/                     # Browser automation and control
+│   ├── browserjs/               # JavaScript execution in browser
+│   ├── promisejs/               # Promise-based JS execution
+│   ├── screenshot/              # Screenshot capture
+│   └── browser/                 # Browser state management
+├── communication/               # Multi-user communication
+│   ├── chat/                    # Chat messaging
+│   ├── createroom/              # Room creation
+│   ├── joinroom/                # Room joining
+│   ├── listrooms/               # Room listing
+│   ├── loadrooms/               # Room loading
+│   ├── share/                   # Content sharing
+│   └── findUser/                # User discovery
+├── input/                       # Input automation
+│   ├── move/                    # Mouse movement
+│   ├── cursor/                  # Cursor control
+│   ├── type/                    # Text input
+│   ├── input/                   # General input
+│   └── clear/                   # Clear operations
+├── file/                        # File system operations
+│   ├── fileSave/                # File saving
+│   ├── savefile/                # Alternative file save
+│   └── exec/                    # Command execution
+├── ui/                          # User interface
+│   └── emotion/                 # Emotion display
+├── development/                 # Development tools
+│   ├── validatecode/            # Code validation
+│   ├── validatejs/              # JavaScript validation
+│   ├── macro/                   # Macro operations
+│   ├── spawn/                   # Process spawning
+│   └── test/                    # Testing utilities
+├── monitoring/                  # System monitoring
+│   ├── agents/                  # Agent dashboard
+│   ├── diagnostics/             # System diagnostics
+│   ├── sentinel/                # AI monitoring
+│   └── listagents/              # Agent listing
+├── docs/                        # Documentation
+│   └── docs/                    # Documentation viewer
+├── planning/                    # Project planning
+│   ├── roadmap/                 # Roadmap management
+│   ├── analyze/                 # Analysis tools
+│   └── restore/                 # Restoration planning
+└── core/                        # Core system commands
+    ├── restart/                 # Server restart
+    ├── workspace/               # Workspace management
+    ├── help/                    # Help system
+    ├── info/                    # System information
+    └── preferences/             # System preferences
 ```
 
 ## 🎯 Package-Defined Execution Rules
