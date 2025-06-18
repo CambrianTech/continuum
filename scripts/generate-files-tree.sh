@@ -14,10 +14,16 @@ add_comment() {
     local file="$1"
     local indent="$2"
     
-    # Check if we have existing comments for this file
+    # Check if we have existing comments for this file - look for various patterns
     local existing_comment=""
     if [[ -f "$OUTPUT_FILE" ]]; then
-        existing_comment=$(grep -A1 "^$indent$file" "$OUTPUT_FILE" 2>/dev/null | tail -n1 | grep "^$indent  # " | sed "s/^$indent  # //" || echo "")
+        # Try to find existing comment from detailed section
+        existing_comment=$(grep -A3 "^### ${file}.*{#.*}" "$OUTPUT_FILE" 2>/dev/null | grep "^  # " | sed "s/^  # //" | head -1 || echo "")
+        
+        # If no detailed comment, try tree section
+        if [[ -z "$existing_comment" ]]; then
+            existing_comment=$(grep "\\[${file}\\].*# " "$OUTPUT_FILE" 2>/dev/null | sed 's/.*# //' || echo "")
+        fi
     fi
     
     # Add comment based on file type and existing knowledge
@@ -35,6 +41,8 @@ add_comment() {
         Dockerfile) comment="🐳 Docker container" ;;
         *test*.py|*test*.js) comment="🧪 Test file" ;;
         *Command.cjs) comment="🎯 Continuum command implementation" ;;
+        continuum.cjs) comment="AGENT CONFUSION (2025-06-18): Main server entry point but unclear from name alone" ;;
+        ai-agent.py) comment="AGENT CONFUSION (2025-06-18): Main dashboard but hyphen in name breaks Python imports" ;;
         *) 
             if [[ -d "$file" ]]; then
                 comment="📁 Directory"
@@ -50,6 +58,24 @@ add_comment() {
     fi
     
     echo "$indent  # $comment"
+}
+
+# Function to add tombstone for deleted files
+add_tombstone() {
+    local deleted_file="$1"
+    local indent="$2"
+    
+    # Get git info about when file was deleted
+    local git_info=""
+    if git log --oneline --follow -- "$deleted_file" 2>/dev/null | head -1 | grep -q .; then
+        local last_commit=$(git log --oneline --follow -- "$deleted_file" 2>/dev/null | head -1 | cut -d' ' -f1)
+        local commit_date=$(git show -s --format=%ci "$last_commit" 2>/dev/null | cut -d' ' -f1)
+        git_info=" (last seen: $commit_date, commit: $last_commit)"
+    fi
+    
+    echo "${indent}### 🪦 ${deleted_file} {#tombstone-$(echo "$deleted_file" | sed 's|/|-|g' | tr '[:upper:]' '[:lower:]')}"
+    echo "${indent}  # 🪦 DELETED FILE - Removed $(date +%Y-%m-%d)${git_info}"
+    echo ""
 }
 
 # Generate header
@@ -70,11 +96,51 @@ cat > "$TEMP_FILE" << 'EOF'
 ```
 EOF
 
-# Generate tree structure with filtering
-tree -a -I 'node_modules|.git|__pycache__|\*.pyc|\.DS_Store|\.pytest_cache|htmlcov|\*.egg-info|dist|build' \
-    --dirsfirst >> "$TEMP_FILE"
+# Generate tree structure with filtering and markdown links
+echo "🔗 **Click any file below to jump to detailed comments**" >> "$TEMP_FILE"
+echo "" >> "$TEMP_FILE"
 
-echo '```' >> "$TEMP_FILE"
+# Generate tree with links and one-liner comments
+tree -a -I 'node_modules|.git|__pycache__|\*.pyc|\.DS_Store|\.pytest_cache|htmlcov|\*.egg-info|dist|build' \
+    --dirsfirst | while IFS= read -r line; do
+    # Extract just the filename from tree structure
+    filename=$(echo "$line" | sed -E 's/^[│├└─ ]+//')
+    
+    if [[ -f "$filename" && "$filename" != "." ]]; then
+        # Convert filename to markdown anchor
+        anchor=$(echo "$filename" | sed 's|/|-|g' | sed 's/[^a-zA-Z0-9._-]/-/g' | tr '[:upper:]' '[:lower:]')
+        # Get existing comment if available
+        existing_comment=""
+        if [[ -f "$OUTPUT_FILE" ]]; then
+            existing_comment=$(grep -A1 "^### ${filename}" "$OUTPUT_FILE" 2>/dev/null | tail -n1 | grep "^  # " | sed "s/^  # //" || echo "")
+        fi
+        
+        # Add comment based on file type
+        comment=""
+        case "$filename" in
+            *.md) comment="📖 Documentation" ;;
+            *.js|*.cjs) comment="⚡ JavaScript/Node.js" ;;
+            *.py) comment="🐍 Python" ;;
+            *.json) comment="📋 Configuration/Data" ;;
+            *.sh) comment="🔧 Shell Script" ;;
+            *) comment="📄 File" ;;
+        esac
+        
+        # Use existing comment if available
+        if [[ -n "$existing_comment" ]]; then
+            comment="$existing_comment"
+        fi
+        
+        # Replace filename in line with markdown link and add comment
+        prefix=$(echo "$line" | sed -E 's/[^│├└─ ].*//')
+        echo "${prefix}[${filename}](#${anchor}) # ${comment}"
+    else
+        # Keep directory structure as-is
+        echo "$line"
+    fi
+done >> "$TEMP_FILE"
+
+echo "" >> "$TEMP_FILE"
 
 # Add detailed file-by-file breakdown with comments
 echo "" >> "$TEMP_FILE"
@@ -91,8 +157,11 @@ process_directory() {
     # Process files in this directory
     find "$dir" -maxdepth 1 -type f ! -name '.*' | sort | while read -r file; do
         filename=$(basename "$file")
-        echo "${indent}  - $filename" >> "$TEMP_FILE"
+        # Create markdown anchor for linking
+        anchor=$(echo "$file" | sed 's|/|-|g' | sed 's/[^a-zA-Z0-9._-]/-/g' | tr '[:upper:]' '[:lower:]')
+        echo "${indent}### ${filename} {#${anchor}}" >> "$TEMP_FILE"
         add_comment "$filename" "$indent" >> "$TEMP_FILE"
+        echo "" >> "$TEMP_FILE"
     done
     
     # Process subdirectories
@@ -108,11 +177,14 @@ process_directory() {
 echo "### Root Directory" >> "$TEMP_FILE"
 echo "" >> "$TEMP_FILE"
 
-# Process top-level files
+# Process top-level files  
 find . -maxdepth 1 -type f ! -name '.*' | sort | while read -r file; do
     filename=$(basename "$file")
-    echo "- $filename" >> "$TEMP_FILE"
+    # Create markdown anchor for linking
+    anchor=$(echo "$filename" | sed 's|/|-|g' | sed 's/[^a-zA-Z0-9._-]/-/g' | tr '[:upper:]' '[:lower:]')
+    echo "### ${filename} {#${anchor}}" >> "$TEMP_FILE"
     add_comment "$filename" "" >> "$TEMP_FILE"
+    echo "" >> "$TEMP_FILE"
 done
 
 echo "" >> "$TEMP_FILE"
@@ -125,6 +197,21 @@ find . -maxdepth 1 -type d ! -name '.*' ! -path '.' | sort | while read -r dir; 
         echo "" >> "$TEMP_FILE"
     fi
 done
+
+# Check for deleted files and add tombstones
+if [[ -f "$OUTPUT_FILE" ]]; then
+    echo "" >> "$TEMP_FILE"
+    echo "## 🪦 Deleted Files (Tombstones)" >> "$TEMP_FILE"
+    echo "" >> "$TEMP_FILE"
+    
+    # Extract file paths from previous FILES.md detailed sections
+    grep "^### .*{#.*}$" "$OUTPUT_FILE" | sed 's/^### \(.*\) {#.*}$/\1/' | while read -r old_file; do
+        # Skip tombstone entries and check if file still exists
+        if [[ ! "$old_file" =~ ^🪦 ]] && [[ ! -f "$old_file" ]] && [[ ! -d "$old_file" ]]; then
+            add_tombstone "$old_file" "" >> "$TEMP_FILE"
+        fi
+    done
+fi
 
 # Add footer with commands
 cat >> "$TEMP_FILE" << 'EOF'

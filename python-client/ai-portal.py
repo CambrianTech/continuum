@@ -152,6 +152,88 @@ def clear_logs(label: str = None):
     write_log("SYSTEM: Logs cleared")
     print("🧹 Logs cleared")
 
+def run_fresh_agent_test(args):
+    """Create fresh agent observer session for natural discovery testing"""
+    agent_type = args[0] if args else "claude"
+    
+    print(f"🤖 Creating fresh {agent_type.upper()} agent observer session...")
+    print("📖 This agent will receive the README and explore naturally")
+    print("⚠️  NO INTERVENTION - Pure observation mode")
+    print()
+    
+    # Create observation session
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    session_id = f"fresh-{agent_type}-{timestamp}"
+    
+    # Create observations directory
+    obs_dir = Path('.continuum/observations')
+    obs_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Load current README for agent context
+    readme_path = Path('README.md')
+    if not readme_path.exists():
+        print("❌ README.md not found - agent needs context!")
+        return
+    
+    readme_content = readme_path.read_text()
+    
+    # Create fresh agent prompt
+    agent_prompt = f"""# 🤖 Fresh Agent Observer Session: {session_id}
+
+## Mission Brief
+You are a fresh AI agent who has just discovered this codebase. Your mission is to explore the system and document your natural discovery process WITHOUT any human intervention.
+
+## Context Provided
+You have been given the project README below. Based ONLY on this information, explore the system and document:
+
+1. **First Impressions**: What you think you should try first and why
+2. **Natural Priorities**: What seems most important/urgent to fix or explore  
+3. **Confusion Points**: Where you get stuck or need clarification
+4. **Discovery Process**: What commands/workflows you naturally develop
+5. **Effectiveness Rating**: Rate yourself 1-10 and identify biggest barriers
+
+## Available System README:
+
+{readme_content}
+
+## Your Discovery Log
+*Document your exploration below. Try commands, explore files, test functionality - whatever feels natural:*
+
+**First Instinct**: 
+*What's your immediate reaction? What do you want to try first?*
+
+**Command Sequence**: 
+*Document each command you try and what happens*
+
+**Observations**:
+*What works? What's broken? What's confusing?*
+
+**Recommendations**:
+*What would help future agents onboard faster?*
+
+---
+*Session started: {datetime.now().isoformat()}*
+*Agent type: {agent_type}*
+*Mode: Pure observation (no intervention)*
+"""
+
+    # Save agent session file
+    session_file = obs_dir / f"{session_id}_session.md"
+    session_file.write_text(agent_prompt)
+    
+    print(f"📋 Agent session created: {session_file}")
+    print()
+    print("🎯 NEXT STEPS:")
+    print(f"1. Copy the content from: {session_file}")
+    print(f"2. Start fresh {agent_type} session (Claude Code, ChatGPT, etc.)")
+    print("3. Paste the prompt and let agent explore naturally")
+    print("4. Document everything they try in the session file")
+    print("5. Analyze patterns vs other agent sessions")
+    print()
+    print("🔬 This simulates AR app user testing - pure observation of natural behavior!")
+    
+    return session_file
+
 async def auto_heal_connection():
     """Auto-heal server connection issues"""
     import subprocess
@@ -513,10 +595,11 @@ def get_command_tokenizer():
             'command': 'help',
             'params': {}
         },
-        'spawn': lambda args: {  # spawn fresh agent observer in tmux
-            'command': 'exec',
-            'params': {'command': f'tmux new-session -d -s agent-observer-{int(time.time())} -c {os.getcwd()} && echo "🤖 Fresh agent session created! Attach with: tmux attach -t $(tmux list-sessions | grep agent-observer | cut -d: -f1 | tail -1)"'}
-        }
+        'spawn': lambda args: {  # spawn fresh agent observer using academy system
+            'command': 'spawn',
+            'params': f'observer-agent-{int(time.time())} {args[0] if args else "system_exploration"}'
+        },
+        'test-agent': lambda args: run_fresh_agent_test(args)
     }
 
 def tokenize_command(cmd, args):
