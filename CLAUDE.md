@@ -61,6 +61,24 @@ python python-client/ai-portal.py --logs 5
 3. **HIGH**: Connect `trust_the_process.py` automation to UI buttons (DEPLOY/RETRAIN/SHARE)
 4. **MEDIUM**: Restore slideout panels and multi-agent selection (all git recoverable)
 
+## 🚨 ABSOLUTELY NO MANUAL INTERVENTIONS
+
+**STOP ALL MANUAL INTERVENTIONS COMPLETELY:**
+- ❌ NO manual file edits
+- ❌ NO manual version changes  
+- ❌ NO manual node commands
+- ❌ NO manual package.json edits
+- ✅ Use ONLY the portal system
+- ✅ Let auto-healing work
+- ✅ Let the system manage itself
+
+**MANUAL INTERVENTION DETECTED = PROCESS FAILURE**
+
+### Code Editing Rules:
+- ✅ **ALLOWED**: Edit code to fix bugs, syntax errors, add missing handlers
+- ❌ **NOT ALLOWED**: Edit code to circumvent the automated process
+- **The distinction**: **Fix the system** vs **Work around the system**
+
 ## 🚨 CRITICAL REQUIREMENT - LOG MONITORING
 
 **MUST SEE LOGS FROM CLIENT BROWSER AND SERVER TO PROCEED WITH DEVELOPMENT. IF BROKEN DIAGNOSE AND FIX. NO OTHER CODING CAN HAPPEN TILL THIS IS RESOLVED.**

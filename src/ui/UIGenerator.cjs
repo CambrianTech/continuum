@@ -2624,7 +2624,7 @@ class UIGenerator {
                     });
                 } else {
                     console.log('🔥🔥🔥 CLAUDE DEBUG: No screenshot handler or wrong command');
-                    console.log(`⚠️ CLIENT: No handler for command: ${data.command}`);
+                    console.log('No handler for command: ' + data.command);
                 }
                 return;
             }
