@@ -101,6 +101,7 @@ class ScreenshotCommand extends BaseCommand {
   }
   
   static async execute(params, continuum) {
+    console.log(`🔬 PROBE: ScreenshotCommand.execute called`);
     console.log('🔥 SCREENSHOT_COMMAND: Execute called with params:', params);
     console.log('🔥 SCREENSHOT_COMMAND: Continuum object keys:', Object.keys(continuum || {}));
     const options = this.parseParams(params);

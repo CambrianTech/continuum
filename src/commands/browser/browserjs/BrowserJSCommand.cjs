@@ -25,8 +25,25 @@ class BrowserJSCommand {
     console.log('💻 Encoding:', encoding);
     
     try {
+      let jsCode;
+      let actualEncoding = encoding;
+      
+      // Handle JSON parameters (new format)
+      if (typeof params === 'string' && params.startsWith('{')) {
+        try {
+          const paramObj = JSON.parse(params);
+          if (paramObj.script && paramObj.encoding) {
+            params = paramObj.script;
+            actualEncoding = paramObj.encoding;
+            console.log('💻 Using JSON params - script:', params, 'encoding:', actualEncoding);
+          }
+        } catch (e) {
+          // Not JSON, treat as raw params
+        }
+      }
+      
       // Enforce base64-only encoding for deep space probe safety
-      if (encoding !== 'base64') {
+      if (actualEncoding !== 'base64') {
         return {
           executed: false,
           error: 'Only base64 encoding is supported. Use base64 to avoid breaking probe communication.',
@@ -34,7 +51,6 @@ class BrowserJSCommand {
         };
       }
       
-      let jsCode;
       try {
         jsCode = Buffer.from(params, 'base64').toString('utf8');
         console.log('💻 Decoded base64 JavaScript:', jsCode);

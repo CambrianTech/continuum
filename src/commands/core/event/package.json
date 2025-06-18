@@ -1,0 +1,11 @@
+{
+  "name": "@continuum/event-command",
+  "version": "1.0.0",
+  "description": "Real-time event subscription system",
+  "main": "EventCommand.cjs",
+  "keywords": ["event", "subscription", "real-time", "logs"],
+  "continuum": {
+    "command": "event",
+    "category": "Core"
+  }
+}

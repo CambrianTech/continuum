@@ -475,8 +475,14 @@ async def run_javascript_file(filename, script_args=None, timeout=None, return_r
         script_wrapper = script_content
     
     # Execute via BROWSER_JS command
+    import base64
+    
+    # Base64 encode the script for BrowserJSCommand requirement
+    script_b64 = base64.b64encode(script_wrapper.encode('utf-8')).decode('utf-8')
+    
     js_params = {
-        'script': script_wrapper,
+        'script': script_b64,
+        'encoding': 'base64',
         'timeout': timeout or 10.0,
         'returnResult': return_result
     }
@@ -485,6 +491,7 @@ async def run_javascript_file(filename, script_args=None, timeout=None, return_r
     
     if return_result and result:
         print(f"📊 Script result: {result}")
+
 
 async def run_shell_command(command, timeout=30.0):
     """Execute shell command on server"""
@@ -625,6 +632,66 @@ def get_command_tokenizer():
             'params': {'selector': args[0] if args else 'body'}
         },
         
+        # Log commands - direct live access
+        'logs': lambda args: {
+            'command': 'sentinel',
+            'params': {
+                'action': 'logs', 
+                'source': next((arg for arg in args if arg in ['client', 'server', 'both']), 'both'),
+                'lines': next((int(arg) for arg in args if arg.isdigit()), 10),
+                'live': True,
+                'stream': '--watch' in args or '--stream' in args or '-w' in args
+            }
+        },
+        'client-logs': lambda args: {
+            'command': 'sentinel', 
+            'params': {
+                'action': 'logs', 
+                'source': 'client', 
+                'lines': next((int(arg) for arg in args if arg.isdigit()), 10),
+                'live': True,
+                'stream': '--watch' in args or '--stream' in args or '-w' in args
+            }
+        },
+        'server-logs': lambda args: {
+            'command': 'sentinel',
+            'params': {
+                'action': 'logs', 
+                'source': 'server', 
+                'lines': next((int(arg) for arg in args if arg.isdigit()), 10),
+                'live': True,
+                'stream': '--watch' in args or '--stream' in args or '-w' in args
+            }
+        },
+        
+        # Event subscription commands
+        'subscribe': lambda args: {
+            'command': 'event',
+            'params': {
+                'action': 'subscribe',
+                'event': args[0] if args else 'logs',
+                'filter': args[1] if len(args) > 1 else 'both',
+                'sessionId': f'portal-{int(time.time())}'
+            }
+        },
+        'unsubscribe': lambda args: {
+            'command': 'event',
+            'params': {
+                'action': 'unsubscribe',
+                'event': args[0] if args else 'logs',
+                'filter': args[1] if len(args) > 1 else 'both',
+                'sessionId': f'portal-{int(time.time())}'
+            }
+        },
+        'events': lambda args: {
+            'command': 'event',
+            'params': {'action': 'list'}
+        },
+        'ws-status': lambda args: {
+            'command': 'agents',
+            'params': {'live': True}
+        },
+        
         # Help commands  
         'help': lambda args: {
             'command': 'help',
@@ -691,6 +758,8 @@ def tokenize_command(cmd, args):
 @click.option('--recent', is_flag=True, help='Show recent work')
 @click.option('--quick', is_flag=True, help='Show quick status')
 @click.option('--test', is_flag=True, help='Run Continuum test suite')
+@click.option('--connect', is_flag=True, help='Start persistent event monitoring connection')
+@click.option('--disconnect', is_flag=True, help='Stop persistent event monitoring connection')
 @click.option('--roadmap', is_flag=True, help='Show development roadmap and vision')
 @click.option('--files', is_flag=True, help='Show codebase structure and reduction mission')
 @click.pass_context
@@ -721,12 +790,18 @@ def tokenize_command(cmd, args):
 @click.option('--list-scripts', is_flag=True, help='List available scripts')
 @click.option('--help-cmd', help='Show help for specific command')
 @click.option('--debug', is_flag=True, help='Show full debug output including stack traces')
-def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick, test, roadmap, files, action, task, workspace, selector, filename, 
+def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick, test, connect, disconnect, roadmap, files, action, task, workspace, selector, filename, 
          verbose, sync, output, run, script_args, timeout, return_result, exec, shell_timeout,
          program, script, save_script, list_scripts, help_cmd, debug):
     """AI Portal - Your Robot Agent for Continuum development workflow"""
     
     async def run_cli():
+        # Handle connect/disconnect first
+        if connect:
+            return await start_monitoring_connection()
+        if disconnect:
+            return await stop_monitoring_connection()
+            
         # Handle dashboard options first
         if dashboard or broken or recent or quick or test or roadmap or files:
             try:
@@ -801,6 +876,152 @@ def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick
             show_logs(logs)
     
     asyncio.run(run_cli())
+
+async def start_monitoring_connection():
+    """Start persistent event monitoring connection as background process"""
+    import subprocess
+    import sys
+    import os
+    
+    # Check if already running
+    pid_file = Path('.continuum/ai-portal/monitor.pid')
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)  # Check if process exists
+            print(f"📡 Monitor already running (PID: {pid})")
+            return
+        except (OSError, ValueError):
+            pid_file.unlink()  # Remove stale PID file
+    
+    print("📡 Starting persistent event monitoring in background...")
+    
+    # Create workspace
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Create monitor script
+    monitor_script = pid_file.parent / 'monitor.py'
+    monitor_script.write_text('''#!/usr/bin/env python3
+import asyncio
+import signal
+import sys
+import os
+from pathlib import Path
+
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from continuum_client import ContinuumClient
+
+async def run_monitor():
+    pid_file = Path('.continuum/ai-portal/monitor.pid')
+    
+    # Save PID
+    pid_file.write_text(str(os.getpid()))
+    
+    # Setup signal handlers
+    def signal_handler(signum, frame):
+        print("\\n📡 Stopping event monitor...")
+        pid_file.unlink(missing_ok=True)
+        exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        client = ContinuumClient()
+        await client.connect()
+        
+        # Subscribe to all events
+        session_id = f'monitor-{int(__import__("time").time())}'
+        
+        await client.send_command('event', {
+            'action': 'subscribe',
+            'event': 'logs',
+            'filter': 'both',
+            'sessionId': session_id
+        })
+        
+        await client.send_command('event', {
+            'action': 'subscribe', 
+            'event': 'commands',
+            'filter': 'both',
+            'sessionId': session_id
+        })
+        
+        print(f"📡 Event monitor running (PID: {os.getpid()})")
+        print("📡 Subscribed to logs and commands events")
+        
+        # Create log files
+        log_dir = Path('.continuum/ai-portal/monitor-logs')
+        log_dir.mkdir(exist_ok=True)
+        
+        events_log = log_dir / f'events-{int(__import__("time").time())}.log'
+        
+        # Add message handler to capture events
+        def handle_event(message):
+            if message.get('type') == 'event_stream':
+                timestamp = message.get('timestamp', __import__('datetime').datetime.now().isoformat())
+                event_type = message.get('eventType', 'unknown')
+                source = message.get('source', 'unknown')
+                data = message.get('data', {})
+                
+                log_entry = f"[{timestamp}] {event_type}:{source} - {data}\\n"
+                with open(events_log, 'a') as f:
+                    f.write(log_entry)
+                print(f"📡 Event captured: {event_type}:{source}")
+        
+        client.add_message_handler(handle_event)
+        
+        print(f"📡 Logging events to: {events_log}")
+        
+        # Keep running and receive events
+        while True:
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        print(f"📡 Monitor error: {e}")
+    finally:
+        pid_file.unlink(missing_ok=True)
+
+if __name__ == "__main__":
+    asyncio.run(run_monitor())
+''')
+    
+    # Start background process
+    process = subprocess.Popen([
+        sys.executable, str(monitor_script)
+    ], 
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    stdin=subprocess.DEVNULL
+    )
+    
+    # Wait a moment and check if it started
+    await asyncio.sleep(1)
+    if pid_file.exists():
+        pid = int(pid_file.read_text().strip())
+        print(f"📡 Event monitor started in background (PID: {pid})")
+        print("📡 Use 'python3 ai-portal.py --disconnect' to stop")
+    else:
+        print("❌ Failed to start event monitor")
+
+async def stop_monitoring_connection():
+    """Stop persistent event monitoring connection"""
+    pid_file = Path('.continuum/ai-portal/monitor.pid')
+    
+    if not pid_file.exists():
+        print("📡 No monitor running")
+        return
+        
+    try:
+        pid = int(pid_file.read_text().strip())
+        import os
+        os.kill(pid, 15)  # SIGTERM
+        pid_file.unlink()
+        print(f"📡 Stopped monitor (PID: {pid})")
+    except (OSError, ValueError) as e:
+        print(f"📡 Failed to stop monitor: {e}")
+        pid_file.unlink(missing_ok=True)
 
 if __name__ == "__main__":
     import sys

@@ -90,6 +90,11 @@ class ContinuumCore {
     this.activeConnections = new Map();
     this.registeredProjects = new Map(); // Track all registered projects
     
+    // Initialize EventBus for real-time event publishing
+    const EventBus = require('../integrations/EventBus.cjs');
+    this.eventBus = new EventBus(this);
+    console.log('📡 EventBus initialized on startup');
+    
     // AI clients (only initialize if API keys are available)
     if (process.env.ANTHROPIC_API_KEY) {
       try {
@@ -658,7 +663,83 @@ class ContinuumCore {
         console.log(`❌ BUS_COMMAND_PARSE_FAILED: No commands found in parsed result`);
       }
     } else {
-      console.log(`🧠 INTELLIGENCE_ROUTE: No [CMD: detected, proceeding with AI routing`);
+      console.log(`🧠 INTELLIGENCE_ROUTE: No [CMD: detected, checking for direct command names`);
+      
+      // NEW: Check if task starts with a direct command name (without [CMD: prefix)
+      const taskTrimmed = task.trim();
+      const firstWord = taskTrimmed.split(/\s+/)[0].toUpperCase();
+      
+      // Check if first word matches a registered command (with name variations)
+      const normalizedName = this.normalizeCommandName(firstWord);
+      const resolvedName = this.resolveCommandName(firstWord);
+      
+      const isDirectCommand = this.commandProcessor.commandRegistry.getCommand(firstWord) || 
+                             this.commandProcessor.commands.has(firstWord) ||
+                             this.commandProcessor.commandRegistry.getCommand(normalizedName) ||
+                             this.commandProcessor.commandRegistry.getCommand(resolvedName) ||
+                             this.commandProcessor.commands.has(normalizedName) ||
+                             this.commandProcessor.commands.has(resolvedName);
+      
+      console.log(`🔍 COMMAND_CHECK: "${firstWord}" -> normalized: "${normalizedName}", resolved: "${resolvedName}"`);
+      console.log(`🔍 COMMAND_CHECK: Registry has "${firstWord}": ${!!this.commandProcessor.commandRegistry.getCommand(firstWord)}`);
+      console.log(`🔍 COMMAND_CHECK: Registry has "${normalizedName}": ${!!this.commandProcessor.commandRegistry.getCommand(normalizedName)}`);
+      console.log(`🔍 COMMAND_CHECK: Registry has "${resolvedName}": ${!!this.commandProcessor.commandRegistry.getCommand(resolvedName)}`);
+      console.log(`🔍 COMMAND_CHECK: Legacy has "${firstWord}": ${this.commandProcessor.commands.has(firstWord)}`);
+      console.log(`🔍 COMMAND_CHECK: isDirectCommand result: ${isDirectCommand}`);
+      
+      if (isDirectCommand) {
+        console.log(`🚀 DIRECT_COMMAND_DETECTED: "${firstWord}" is a registered command`);
+        console.log(`🚀 DIRECT_COMMAND_DETECTED: Executing directly instead of AI routing`);
+        
+        // Extract params (everything after the command name)
+        const params = taskTrimmed.split(/\s+/).slice(1).join(' ') || '{}';
+        
+        // Resolve the actual command name (handle variations like browser_js -> browserJs)
+        const actualCommandName = this.resolveCommandName(firstWord);
+        console.log(`🎯 DIRECT_COMMAND_EXECUTE: Command: ${firstWord} -> ${actualCommandName}, Params: ${params}`);
+        
+        // Publish command execution event to EventBus
+        if (this.eventBus) {
+          console.log(`📡 ContinuumCore: Publishing command event: ${actualCommandName}`);
+          this.eventBus.processMessage('command_execution', {
+            command: actualCommandName,
+            params: params,
+            timestamp: new Date().toISOString()
+          }, 'continuum-core');
+        } else {
+          console.log(`📡 ContinuumCore: No EventBus found`);
+        }
+        
+        try {
+          const commandResult = await this.commandProcessor.executeCommand(actualCommandName, params);
+          console.log(`✅ DIRECT_COMMAND_SUCCESS: Command ${actualCommandName} result:`, commandResult);
+          
+          return {
+            result: {
+              command: firstWord,
+              params: params,
+              result: commandResult
+            },
+            role: 'BusCommand',
+            type: 'direct_command_execution'
+          };
+        } catch (error) {
+          console.error(`❌ DIRECT_COMMAND_ERROR: Command ${actualCommandName} failed:`, error.message);
+          console.error(`❌ DIRECT_COMMAND_ERROR: Stack:`, error.stack);
+          
+          return {
+            result: {
+              command: actualCommandName,
+              params: params,
+              error: error.message
+            },
+            role: 'BusCommand',
+            type: 'direct_command_error'
+          };
+        }
+      } else {
+        console.log(`🧠 INTELLIGENCE_ROUTE: "${firstWord}" not a direct command, proceeding with AI routing`);
+      }
     }
     
     // Check if we have any AI models available for non-command tasks
@@ -867,6 +948,82 @@ Use [STATUS] for progress updates and [CHAT] for final responses.`;
       total: this.costTracker.getTotal(),
       requests: this.costTracker.getRequests()
     };
+  }
+
+  /**
+   * Normalize command names to handle different naming conventions
+   * e.g., browser_js -> browserJs, sentinel -> SENTINEL
+   */
+  normalizeCommandName(name) {
+    const upperName = name.toUpperCase();
+    
+    // Handle snake_case to camelCase conversion for common commands
+    const conversions = {
+      'BROWSER_JS': 'BROWSERJS',
+      'PROMISE_JS': 'PROMISEJS', 
+      'FILE_SAVE': 'FILESAVE',
+      'FILE_READ': 'FILEREAD',
+      'FILE_WRITE': 'FILEWRITE',
+      'WEB_FETCH': 'WEBFETCH',
+      // Also handle the reverse mappings
+      'BROWSERJS': 'BROWSERJS',
+      'PROMISEJS': 'PROMISEJS'
+    };
+    
+    return conversions[upperName] || upperName;
+  }
+
+  /**
+   * Resolve the actual command name from various naming conventions
+   */
+  resolveCommandName(inputName) {
+    const upperName = inputName.toUpperCase();
+    
+    // First try exact match
+    if (this.commandProcessor.commandRegistry.getCommand(upperName) || 
+        this.commandProcessor.commands.has(upperName)) {
+      return upperName;
+    }
+    
+    // Try normalized name
+    const normalizedName = this.normalizeCommandName(upperName);
+    if (this.commandProcessor.commandRegistry.getCommand(normalizedName) || 
+        this.commandProcessor.commands.has(normalizedName)) {
+      return normalizedName;
+    }
+    
+    // Check for common variations
+    const variations = [
+      upperName.replace(/_/g, ''),  // Remove underscores: BROWSER_JS -> BROWSERJS
+      upperName.replace(/_/g, '').toUpperCase(), // Ensure uppercase: browser_js -> BROWSERJS
+      this.snakeToCamel(upperName).toUpperCase(), // Convert to camelCase then uppercase: browser_js -> BROWSERJS
+      this.camelToSnake(upperName).toUpperCase()  // Convert to snake_case then uppercase: browserJs -> BROWSER_JS
+    ];
+    
+    for (const variation of variations) {
+      const upperVariation = variation.toUpperCase();
+      if (this.commandProcessor.commandRegistry.getCommand(upperVariation) || 
+          this.commandProcessor.commands.has(upperVariation)) {
+        return upperVariation;
+      }
+    }
+    
+    // If no match found, return original
+    return upperName;
+  }
+
+  /**
+   * Convert snake_case to camelCase
+   */
+  snakeToCamel(str) {
+    return str.toLowerCase().replace(/_([a-z])/g, (match, letter) => letter.toUpperCase());
+  }
+
+  /**
+   * Convert camelCase to snake_case
+   */
+  camelToSnake(str) {
+    return str.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
   }
 }
 

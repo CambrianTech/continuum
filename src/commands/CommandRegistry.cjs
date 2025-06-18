@@ -165,6 +165,20 @@ class CommandRegistry {
   }
   
   executeCommand(commandName, params, continuum, encoding = 'utf-8') {
+    console.log(`🎯 CommandRegistry: executing ${commandName}`);
+    console.log(`🔬 PROBE: CommandRegistry.executeCommand called for ${commandName}`);
+    
+    // Publish command execution event to EventBus
+    if (continuum && continuum.eventBus) {
+      console.log(`📡 CommandRegistry: EventBus found, publishing event`);
+      continuum.eventBus.processMessage('command_execution', {
+        command: commandName,
+        params: params,
+        timestamp: new Date().toISOString()
+      }, 'command-registry');
+    } else {
+      console.log(`📡 CommandRegistry: No EventBus (continuum: ${!!continuum}, eventBus: ${!!continuum?.eventBus})`);
+    }
     const command = this.getCommand(commandName);
     
     if (!command) {

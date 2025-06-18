@@ -135,7 +135,7 @@ class CommandProcessor {
     this.commands.set('WEBFETCH', this.webFetch.bind(this));
     this.commands.set('PYTHON', this.executePython.bind(this));
     // Route SCREENSHOT to proper ScreenshotCommand instead of legacy implementation
-    this.commands.set('SCREENSHOT', this.routeToScreenshotCommand.bind(this));
+    // REMOVED: Hardcoded SCREENSHOT command - should use command modules only
     
     // AI Cursor & Control Commands
     this.commands.set('ACTIVATE_CURSOR', this.activateAICursor.bind(this));
@@ -250,6 +250,19 @@ class CommandProcessor {
 
   async executeCommand(command, params, encoding = 'utf-8') {
     console.log(`🔧 EXECUTING COMMAND: ${command} with params: ${params.substring(0, 50)}${params.length > 50 ? '...' : ''}`);
+    console.log(`🔬 PROBE: CommandProcessor.executeCommand called for ${command}`);
+    
+    // Publish command execution event to EventBus
+    if (this.continuum && this.continuum.eventBus) {
+      console.log(`📡 EventBus: Publishing command execution: ${command}`);
+      this.continuum.eventBus.processMessage('command_execution', {
+        command: command,
+        params: params,
+        timestamp: new Date().toISOString()
+      }, 'command-bus');
+    } else {
+      console.log(`📡 EventBus: Not available (continuum: ${!!this.continuum}, eventBus: ${!!this.continuum?.eventBus})`);
+    }
     
     // Phase Omega: Validate Pattern of Care before execution
     if (this.carePatternValidation) {
@@ -270,6 +283,18 @@ class CommandProcessor {
     }
     
     console.log(`🔧 COMMAND_EXECUTION: Using encoding: ${encoding}`);
+    
+    // Publish to EventBus before execution
+    if (this.continuum && this.continuum.eventBus) {
+      console.log(`📡 CommandProcessor: Publishing ${command} to EventBus`);
+      this.continuum.eventBus.processMessage('command_execution', {
+        command: command,
+        params: params,
+        timestamp: new Date().toISOString()
+      }, 'command-processor');
+    } else {
+      console.log(`📡 CommandProcessor: No EventBus available for ${command}`);
+    }
     
     // First try modular commands from CommandRegistry
     const modularCommand = this.commandRegistry.getCommand(command);
@@ -431,7 +456,7 @@ class CommandProcessor {
     
     try {
       // Import and use the proper ScreenshotCommand
-      const ScreenshotCommand = require('../commands/core/screenshot/ScreenshotCommand.cjs');
+      // REMOVED: Hardcoded screenshot - should use command module
       const result = await ScreenshotCommand.execute(params, this);
       
       console.log('📸 COMMAND_PROCESSOR: ScreenshotCommand result:', result.success ? 'SUCCESS' : 'FAILED');
@@ -446,7 +471,9 @@ class CommandProcessor {
     }
   }
 
-  async takeScreenshot(params = '') {
+  // REMOVED: takeScreenshot - hardcoded command implementation
+  // All commands should go through command modules only
+  async takeScreenshot_REMOVED(params = '') {
     console.log('📸 COMMAND_PROCESSOR: takeScreenshot called with params:', params);
     try {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
