@@ -78,6 +78,19 @@ add_tombstone() {
     echo ""
 }
 
+# Extract content after tree section to preserve
+PRESERVE_CONTENT=""
+if [[ -f "$OUTPUT_FILE" ]]; then
+    # Extract everything after the first occurrence of "## 📝 Detailed File Analysis" or similar
+    PRESERVE_CONTENT=$(sed -n '/^## 🎯 Agent Study Guide/,$p' "$OUTPUT_FILE" 2>/dev/null || echo "")
+    if [[ -z "$PRESERVE_CONTENT" ]]; then
+        PRESERVE_CONTENT=$(sed -n '/^## 📸 UI VISUAL DOCUMENTATION/,$p' "$OUTPUT_FILE" 2>/dev/null || echo "")
+    fi
+    if [[ -z "$PRESERVE_CONTENT" ]]; then
+        PRESERVE_CONTENT=$(sed -n '/^## ⚰️ TOMBSTONES/,$p' "$OUTPUT_FILE" 2>/dev/null || echo "")
+    fi
+fi
+
 # Generate header
 cat > "$TEMP_FILE" << 'EOF'
 # 📁 Continuum Codebase Structure
@@ -214,7 +227,15 @@ if [[ -f "$OUTPUT_FILE" ]]; then
 fi
 
 # Add footer with commands
-cat >> "$TEMP_FILE" << 'EOF'
+# Append preserved content if it exists
+if [[ -n "$PRESERVE_CONTENT" ]]; then
+    echo "" >> "$TEMP_FILE"
+    echo "---" >> "$TEMP_FILE"
+    echo "" >> "$TEMP_FILE"
+    echo "$PRESERVE_CONTENT" >> "$TEMP_FILE"
+else
+    # Add standard footer only if no preserved content
+    cat >> "$TEMP_FILE" << 'EOF'
 
 ## 🔧 Maintenance Commands
 
@@ -243,6 +264,7 @@ find . -name "*.py" -o -name "*.js" | xargs grep -l "TODO.*remove\|FIXME.*delete
 *Generated: $(date)*  
 *Script: `./scripts/generate-files-tree.sh`*
 EOF
+fi
 
 # Move temp file to final location
 mv "$TEMP_FILE" "$OUTPUT_FILE"
