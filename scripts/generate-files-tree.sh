@@ -13,6 +13,7 @@ echo "🌳 Generating codebase tree with comments..."
 add_comment() {
     local file="$1"
     local indent="$2"
+    local full_path="$3"  # Optional full path for orphan detection
     
     # Check if we have existing comments for this file - look for various patterns
     local existing_comment=""
@@ -26,12 +27,53 @@ add_comment() {
         fi
     fi
     
-    # Add comment based on file type and existing knowledge
+    # Add comment based on file type and connection status
     local comment=""
+    # Use full_path if provided, otherwise use file for orphan detection
+    local path_for_check="${full_path:-$file}"
+    
+    # Check for obviously disconnected components (conservative detection)
+    local status="connected"  # connected, suspicious, archived, clutter
+    case "$path_for_check" in
+        # Obviously archived/legacy (actual archive directories)
+        archived/*|archive/*) status="archived" ;;
+        # TypeScript files (not compiled in this JS-based system)
+        *.ts) status="suspicious" ;;
+        # Debug/temp files (clearly temporary)
+        debug-*.html|temp-*.html|*-temp.*|*.tmp) status="clutter" ;;
+        # Coverage reports (generated files that shouldn't be committed)
+        coverage/*|htmlcov/*|*.coverage|lcov.info) status="clutter" ;;
+        # Node modules and build artifacts (should be gitignored)
+        node_modules/*|dist/*|build/*) status="clutter" ;;
+        # Log files and OS artifacts
+        *.log|.DS_Store|Thumbs.db) status="clutter" ;;
+        # IDE and editor files
+        .vscode/*|.idea/*|*.swp|*.swo|*~) status="clutter" ;;
+        # Python cache and build artifacts
+        __pycache__/*|*.pyc|*.pyo|*.egg-info/*) status="clutter" ;;
+    esac
+    
+    # Generate comment based on file type and connection status
     case "$file" in
-        *.md) comment="📖 Documentation" ;;
-        *.js|*.cjs) comment="⚡ JavaScript/Node.js" ;;
-        *.py) comment="🐍 Python" ;;
+        *.md) 
+            case "$status" in
+                "archived") comment="📦 Archived documentation" ;;
+                "suspicious") comment="🤔 Documentation (investigate connection)" ;;
+                "clutter") comment="🧹 Documentation clutter (should be cleaned?)" ;;
+                *) comment="📖 Documentation" ;;
+            esac ;;
+        *.js|*.cjs) 
+            case "$status" in
+                "archived") comment="🗄️ Archived JavaScript (filed away)" ;;
+                "suspicious") comment="🌀 JavaScript (outside the loop?)" ;;
+                "clutter") comment="🧽 JavaScript debris (cleanup needed?)" ;;
+                *) comment="⚡ JavaScript/Node.js" ;;
+            esac ;;
+        *.py) 
+            case "$status" in
+                "clutter") comment="🧹 Python debris (should be gitignored?)" ;;
+                *) comment="🐍 Python" ;;
+            esac ;;
         *.json) comment="📋 Configuration/Data" ;;
         *.sh) comment="🔧 Shell Script" ;;
         *.yml|*.yaml) comment="⚙️ YAML Config" ;;
@@ -41,13 +83,38 @@ add_comment() {
         Dockerfile) comment="🐳 Docker container" ;;
         *test*.py|*test*.js) comment="🧪 Test file" ;;
         *Command.cjs) comment="🎯 Continuum command implementation" ;;
-        continuum.cjs) comment="AGENT CONFUSION (2025-06-18): Main server entry point but unclear from name alone" ;;
-        ai-agent.py) comment="AGENT CONFUSION (2025-06-18): Main dashboard but hyphen in name breaks Python imports" ;;
+        continuum.cjs) comment="🌟 Main server entry point" ;;
+        ai-portal.py) comment="🤖 AI agent interface" ;;
+        *.ts)
+            comment="🔗 TypeScript (missing from JS loop?)" ;;
+        *.html)
+            case "$status" in
+                "archived") comment="🗃️ Archived HTML (stored away)" ;;
+                "suspicious") comment="🌊 HTML (adrift from main flow?)" ;;
+                "clutter") comment="🧼 HTML scraps (temp/debug files?)" ;;
+                *) comment="🌐 HTML file" ;;
+            esac ;;
+        *.log)
+            comment="🗑️ Log file (should be gitignored!)" ;;
+        .DS_Store|Thumbs.db)
+            comment="💩 OS junk (delete immediately!)" ;;
+        *.tmp|*-temp.*)
+            comment="🚮 Temp file (forgot to clean up?)" ;;
         *) 
             if [[ -d "$file" ]]; then
-                comment="📁 Directory"
+                case "$status" in
+                    "archived") comment="📦 Archive directory (isolated)" ;;
+                    "suspicious") comment="🏝️ Directory (island - connected?)" ;;
+                    "clutter") comment="🗂️ Messy directory (needs cleaning?)" ;;
+                    *) comment="📁 Directory" ;;
+                esac
             else
-                comment="📄 File"
+                case "$status" in
+                    "archived") comment="🗂️ Archived file (shelved)" ;;
+                    "suspicious") comment="🎭 File (backstage - not in show?)" ;;
+                    "clutter") comment="🧤 File debris (spring cleaning time?)" ;;
+                    *) comment="📄 File" ;;
+                esac
             fi
             ;;
     esac
@@ -113,9 +180,41 @@ EOF
 echo "**File structure overview (detailed analysis in sections below)**" >> "$TEMP_FILE"
 echo "" >> "$TEMP_FILE"
 
-# Generate clean tree structure - comments are in detailed sections below
+# Generate tree with inline status emojis
 tree -I 'node_modules|.git|__pycache__|\*.pyc|\.DS_Store|\.pytest_cache|htmlcov|\*.egg-info|dist|build|.*|venv|env' \
-    --dirsfirst -L 4 | head -100 >> "$TEMP_FILE"
+    --dirsfirst -L 4 | head -100 | while IFS= read -r line; do
+    
+    # Extract filename from tree line
+    if [[ "$line" =~ [├└─│\ ]*(.+)$ ]]; then
+        filename="${BASH_REMATCH[1]}"
+        
+        # Quick status check for inline emoji
+        status_emoji=""
+        case "$filename" in
+            # Clutter detection
+            *.log) status_emoji=" 🗑️" ;;
+            .DS_Store|Thumbs.db) status_emoji=" 💩" ;;
+            *.tmp|*-temp.*) status_emoji=" 🚮" ;;
+            # Archived detection  
+            archived|archive) status_emoji=" 📦" ;;
+            # Suspicious (outside loop) detection
+            *.ts) status_emoji=" 🔗" ;;
+            coverage) status_emoji=" 🧽" ;;
+            debug-*.html|temp-*.html) status_emoji=" 🧼" ;;
+            # Connected components (key files)
+            *Command.cjs) status_emoji=" 🎯" ;;
+            continuum.cjs) status_emoji=" 🌟" ;;
+            ai-portal.py) status_emoji=" 🤖" ;;
+            package.json|package-lock.json) status_emoji=" 📦" ;;
+            README.md) status_emoji=" 📖" ;;
+            *.test.js|*.test.py) status_emoji=" 🧪" ;;
+        esac
+        
+        echo "${line}${status_emoji}"
+    else
+        echo "$line"
+    fi
+done >> "$TEMP_FILE"
 
 echo "" >> "$TEMP_FILE"
 
@@ -137,7 +236,7 @@ process_directory() {
         # Create markdown anchor for linking
         anchor=$(echo "$file" | sed 's|/|-|g' | sed 's/[^a-zA-Z0-9._-]/-/g' | tr '[:upper:]' '[:lower:]')
         echo "${indent}### ${filename} {#${anchor}}" >> "$TEMP_FILE"
-        add_comment "$filename" "$indent" >> "$TEMP_FILE"
+        add_comment "$filename" "$indent" "$file" >> "$TEMP_FILE"
         echo "" >> "$TEMP_FILE"
     done
     
@@ -160,7 +259,7 @@ find . -maxdepth 1 -type f ! -name '.*' | sort | while read -r file; do
     # Create markdown anchor for linking
     anchor=$(echo "$filename" | sed 's|/|-|g' | sed 's/[^a-zA-Z0-9._-]/-/g' | tr '[:upper:]' '[:lower:]')
     echo "### ${filename} {#${anchor}}" >> "$TEMP_FILE"
-    add_comment "$filename" "" >> "$TEMP_FILE"
+    add_comment "$filename" "" "$file" >> "$TEMP_FILE"
     echo "" >> "$TEMP_FILE"
 done
 
