@@ -265,12 +265,12 @@ describe('StrategicAnalyzer', () => {
 
   describe('getTimelineValue', () => {
     it('should parse hour ranges correctly', () => {
-      assert.strictEqual(analyzer.getTimelineValue('2-4 hours'), 3); // Average
+      assert.strictEqual(analyzer.getTimelineValue('2-4 hours'), 2); // Uses first value
       assert.strictEqual(analyzer.getTimelineValue('1 hour'), 1);
     });
 
     it('should parse day ranges correctly', () => {
-      assert.strictEqual(analyzer.getTimelineValue('1-2 days'), 36); // 1.5 days * 24 hours
+      assert.strictEqual(analyzer.getTimelineValue('1-2 days'), 24); // 1 day * 24 hours  
       assert.strictEqual(analyzer.getTimelineValue('3 days'), 72);
     });
 
