@@ -2,6 +2,9 @@
 > 📖 Documentation auto-generated from live help system
 > 🔄 To update: `python3 python-client/ai-portal.py --cmd help --sync`
 
+![Continuum Multi-Agent Interface](docs/images/continuum-main-interface.png)
+*Multi-agent collaboration with academy-trained personas and real-time chat*
+
 ## Overview
 
 Continuum is a revolutionary AI workforce construction platform with clean architecture principles:
@@ -97,12 +100,16 @@ Like AR app user testing from 2011 - observe agents without intervention to gath
 
 ### Academy Training Room
 
+![Academy Training Interface](docs/images/academy-training-room.png)
+*Academy Training Room - Watch AI agents train and improve their skills in real-time*
+
 The Academy Training Room provides real-time visualization of adversarial training sessions:
 - **Live Training Metrics**: Watch TestingDroid vs ProtocolSheriff battles in real-time
 - **Adversarial Pair Evolution**: See both agents improve through competition
 - **Training History**: Track graduation scores and iteration progress  
-- **Manual Intervention Controls**: Pause, adjust parameters, or guide training
-- **Graduation Ceremonies**: Real-time notifications when agents complete boot camp
+- **Manual Intervention Controls**: Deploy Sheriff, Custom Training, and monitoring
+- **Recent Graduates**: View training history and graduation statistics
+- **Real-time Academy Statistics**: Track current training sessions and completion rates
 
 ### Persona Management UI
 
