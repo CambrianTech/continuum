@@ -536,8 +536,37 @@ class WebSocketServer extends EventEmitter {
           }
         }
         
+      } else if (data.type === 'client_console_log') {
+        // Handle console forwarding from browser
+        try {
+          const { level, message, timestamp, url } = data;
+          const sessionId = this.getSessionId(ws);
+          
+          // Log to server console with clear client prefix
+          console.log(`📱 CLIENT [${level.toUpperCase()}]:`, message);
+          
+          // Store in client logs for portal access
+          if (!this.clientLogs) {
+            this.clientLogs = [];
+          }
+          this.clientLogs.push({
+            timestamp: new Date(timestamp).toISOString(),
+            level: level,
+            message: message,
+            url: url,
+            sessionId: sessionId
+          });
+          
+          // Keep only last 100 client log entries
+          if (this.clientLogs.length > 100) {
+            this.clientLogs = this.clientLogs.slice(-100);
+          }
+        } catch (error) {
+          console.error('Error handling client console log:', error);
+        }
+        
       } else if (data.type === 'console_log') {
-        // Handle console.log messages from browser
+        // Handle console.log messages from browser (legacy)
         try {
           const { level, message, timestamp } = data;
           const sessionId = this.getSessionId(ws);
@@ -645,6 +674,49 @@ class WebSocketServer extends EventEmitter {
             message: `❌ Version check failed: ${error.message}`,
             agent: 'Version Manager',
             room: 'system'
+          }));
+        }
+        
+      } else if (data.type === 'task') {
+        // Handle task commands from Python client
+        try {
+          console.log('🎯 TASK COMMAND RECEIVED:', data.task);
+          console.log('🎯 Command ID:', data.commandId);
+          console.log('🎯 Role:', data.role);
+          
+          // Parse the task to extract command and params
+          const taskParts = data.task.split(' ');
+          const command = taskParts[0].toUpperCase();
+          const params = taskParts.slice(1).join(' ') || '{}';
+          
+          console.log('🎯 Parsed command:', command);
+          console.log('🎯 Parsed params:', params);
+          
+          // Route to command processor
+          if (this.continuum.commandProcessor) {
+            const result = await this.continuum.commandProcessor.executeCommand(command, params);
+            
+            // Send response back with commandId
+            ws.send(JSON.stringify({
+              type: 'bus_command_execution',
+              role: 'BusCommand',
+              commandId: data.commandId,
+              result: result
+            }));
+          } else {
+            console.error('❌ No command processor available');
+            ws.send(JSON.stringify({
+              type: 'command_response',
+              commandId: data.commandId,
+              result: { success: false, error: 'Command processor not available' }
+            }));
+          }
+        } catch (error) {
+          console.error('❌ Task command failed:', error);
+          ws.send(JSON.stringify({
+            type: 'command_response', 
+            commandId: data.commandId,
+            result: { success: false, error: error.message }
           }));
         }
         
