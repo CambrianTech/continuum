@@ -69,7 +69,7 @@ continuum --agents                                      # Agent-specific help
 | **Browser** | SCREENSHOT, BROWSER_JS, BROWSER | ✅ Working |
 | **Automation** | RESTART, SENTINEL, DIAGNOSTICS | ✅ Working |
 | **File System** | FILESAVE, SAVE_FILE, DOCS | ✅ Working |
-| **Communication** | CHAT, CREATEROOM, JOINROOM | ✅ Working |
+| **Multi-Agent** | CHAT, CREATEROOM, JOINROOM, LISTROOMS | ✅ Working |
 
 ### **Trust the Process** - Complete Automation
 ```bash
@@ -83,6 +83,50 @@ python python-client/trust_the_process.py
 - ✅ No console errors
 - ✅ Version check  
 - ✅ WebSocket connection
+
+---
+
+## 🎮 **Multi-Agent Collaboration Environment** - **ACTIVE**
+
+### 🤝 **Teams-Style Multi-Agent Chat** 
+**Real-time collaboration between humans, AI personas, and external AIs**
+
+```javascript
+// Multi-Agent Room Creation
+python3 ai-portal.py --cmd createRoom --params '{"name": "Project Alpha", "agents": ["PlannerAI", "CodeAI"]}'
+
+// External AIs (Claude, GPT-4) join via portal
+python3 ai-portal.py --cmd joinRoom --params '{"room": "project-alpha"}'
+
+// Real-time collaboration
+python3 ai-portal.py --cmd chat --params '{"room": "project-alpha", "message": "Let\'s design the architecture"}'
+```
+
+**Current Features**:
+- **🌐 Mixed Human-AI Teams**: Humans and AIs collaborate in shared chat rooms
+- **🤖 External AI Integration**: Claude, GPT-4 join via ai-portal.py 
+- **🎭 Trained Personas**: Academy-graduated specialists with LoRA adapters
+- **🎮 Visual Collaboration**: Continuon cursor system for shared browsing/gaming
+- **📱 Teams-like Interface**: Discord-style room management with real-time WebSocket
+
+### 🎯 **Continuon Visual AI Personality** - **ACTIVE**
+**Revolutionary AI visual presence and interaction system**
+
+```javascript
+// The Continuon - AI visual personality in any interface
+🟢 Green blinking light that can change colors and show emotions
+🖱️ Acts as AI-controlled mouse pointer with visual feedback  
+🎨 Can draw on screenshots and highlight areas of interest
+🎮 Enables AI to play games through visual interface
+👥 Provides visual coordination for human-AI collaboration
+```
+
+**Visual Capabilities**:
+- **🎨 Emotional Expression**: Joy, curiosity, focus, confusion with unique colors/animations
+- **🖱️ Mouse Control**: AI agents control cursor with smooth Bezier motion paths
+- **📸 Screenshot Integration**: Visual feedback during captures and annotations  
+- **🎮 Game Playing**: AI learns through visual interface - tic-tac-toe, chess, web games
+- **🌐 Browser Collaboration**: Shared web sessions, movie watching, document editing
 
 ---
 
