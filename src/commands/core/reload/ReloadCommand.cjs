@@ -6,7 +6,7 @@
 class ReloadCommand {
   static getDefinition() {
     return {
-      name: 'RELOAD',
+      name: 'reload',
       category: 'Core',
       description: 'Reload the Continuum system (restart server)',
       icon: '🔄',
