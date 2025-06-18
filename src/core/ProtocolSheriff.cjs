@@ -46,6 +46,12 @@ class ProtocolSheriff {
       const model = this.modelCaliber.getModelForCaliber('fast', this.modelRegistry);
       const apiClient = this.modelRegistry.getAPIClient(model.provider);
       
+      // If no API client available, fail open
+      if (!apiClient || !apiClient.messages) {
+        console.warn('⚠️ Protocol Sheriff: No API client available, failing open');
+        return { isValid: true, violations: ['no_api_client'] };
+      }
+      
       const validation = await apiClient.messages.create({
         model: model.name,
         max_tokens: 500,
@@ -55,7 +61,20 @@ class ProtocolSheriff {
         }]
       });
 
-      const result = this.parseValidationResponse(validation.content[0].text);
+      // Handle different response structures
+      let validationText;
+      if (validation.content && validation.content[0] && validation.content[0].text) {
+        validationText = validation.content[0].text;
+      } else if (validation.text) {
+        validationText = validation.text;
+      } else if (typeof validation === 'string') {
+        validationText = validation;
+      } else {
+        console.warn('❌ Unexpected validation response structure:', validation);
+        return { isValid: true, violations: ['unexpected_response_structure'] };
+      }
+      
+      const result = this.parseValidationResponse(validationText);
       
       // Cache the result
       this.validationCache.set(cacheKey, result);

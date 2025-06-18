@@ -1,0 +1,7 @@
+System Information:
+Darwin MacBookPro.attlocal.net 24.4.0 Darwin Kernel Version 24.4.0: Fri Apr 11 18:33:47 PDT 2025; root:xnu-11417.101.15~117/RELEASE_ARM64_T6000 arm64
+ProductName:		macOS
+ProductVersion:		15.4.1
+BuildVersion:		24E263
+
+Platform: darwin
