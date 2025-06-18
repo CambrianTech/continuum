@@ -2608,6 +2608,27 @@ class UIGenerator {
                 return;
             }
             
+            // Handle commands from server (screenshot, etc.)
+            if (data.type === 'command') {
+                console.log('📋 CLIENT: Command received:', data.command, data.params);
+                
+                if (data.command === 'screenshot') {
+                    console.log('📸 CLIENT: Routing screenshot command to ScreenshotCommandClient');
+                    if (typeof window.ScreenshotCommandClient !== 'undefined') {
+                        window.ScreenshotCommandClient.handleCommand(data.params || {}).then(() => {
+                            console.log('✅ Screenshot command executed successfully');
+                        }).catch(error => {
+                            console.error('❌ Screenshot command execution failed:', error);
+                        });
+                    } else {
+                        console.error('❌ ScreenshotCommandClient not available');
+                    }
+                } else {
+                    console.log('⚠️ CLIENT: Unknown command:', data.command);
+                }
+                return;
+            }
+            
             // Handle JavaScript execution from server (both legacy and promise modes)
             if (data.type === 'execute_js' || data.type === 'execute_js_promise') {
                 console.log('🔥 CLIENT v${packageInfo.version}: EXECUTE_JS received!', data);
