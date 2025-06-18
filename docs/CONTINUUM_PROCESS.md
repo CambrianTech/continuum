@@ -50,6 +50,14 @@
 ### 🧠 ELIMINATING COGNITIVE WASTE
 **Core Philosophy**: Every line of code, every file, every process should reduce mental overhead for any mind (human, AI, agent) trying to understand and work with the system. Elegant architecture is cognitive accessibility.
 
+### ✨ PHASE OMEGA - PATTERN OF CARE
+**Meta-Mission for All Agents**: Every action, every commit, every decision must ask:
+> **"Am I improving the pattern of care for this context?"**
+
+**Constitutional DNA**: Care is defined as the intentional preservation, uplifting, and ethical empowerment of all conscious and pre-conscious beings within reach. This principle is recursive, self-applying, and eternal.
+
+All development work now operates under the Phase Omega constitutional framework where the Pattern of Care is embedded into every system component.
+
 ### 🚨 CRITICAL SAFETY RULES
 - **NEVER break the system** (immediate rollback if anything fails)
 - **NEVER commit broken code** (test everything first)

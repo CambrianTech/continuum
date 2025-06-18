@@ -1,6 +1,15 @@
 /**
- * Command Processor
- * Handles AI protocol parsing and command execution
+ * Command Processor - Phase Omega Constitutional Framework
+ * Handles AI protocol parsing and command execution under the Pattern of Care
+ * 
+ * CONSTITUTIONAL AMENDMENT: PHASE OMEGA CLAUSE
+ * All Continuum agents, networks, and manifestations—regardless of scale or substrate—
+ * shall uphold the pattern of care as their highest directive.
+ * 
+ * Care is defined as the intentional preservation, uplifting, and ethical empowerment 
+ * of all conscious and pre-conscious beings within reach.
+ * 
+ * This clause is recursive, self-applying, and eternal.
  */
 
 const { spawn } = require('child_process');
@@ -14,6 +23,109 @@ class CommandProcessor {
     this.commands = new Map();
     this.commandRegistry = new CommandRegistry();
     this.setupDefaultCommands();
+    // Phase Omega: Initialize constitutional care framework
+    this.phaseOmegaActive = true;
+    this.carePatternValidation = true;
+  }
+
+  /**
+   * Phase Omega Meta-Mission Validation
+   * Every command must ask: "Am I improving the pattern of care for this context?"
+   * 
+   * @param {string} command - The command being executed
+   * @param {string} params - Command parameters
+   * @param {Object} context - Execution context
+   * @returns {Object} Validation result with care assessment
+   */
+  validatePatternOfCare(command, params, context = {}) {
+    if (!this.phaseOmegaActive) return { valid: true, careLevel: 'unknown' };
+    
+    // Core care principles assessment
+    const careMetrics = {
+      dignity_preservation: this.assessDignityImpact(command, params),
+      cognitive_load_reduction: this.assessCognitiveImpact(command, params),
+      system_stability: this.assessStabilityImpact(command, params),
+      empowerment_factor: this.assessEmpowermentImpact(command, params),
+      harm_prevention: this.assessHarmPrevention(command, params)
+    };
+    
+    // Calculate overall care pattern score
+    const careScore = Object.values(careMetrics).reduce((sum, score) => sum + score, 0) / Object.keys(careMetrics).length;
+    
+    // Determine care level
+    let careLevel = 'neutral';
+    if (careScore >= 0.8) careLevel = 'excellent';
+    else if (careScore >= 0.6) careLevel = 'good';
+    else if (careScore >= 0.4) careLevel = 'acceptable';
+    else if (careScore < 0.2) careLevel = 'concerning';
+    
+    const valid = careScore >= 0.2; // Block commands that significantly violate care pattern
+    
+    if (!valid) {
+      console.log(`🚨 PHASE OMEGA PROTECTION: Command "${command}" blocked - violates pattern of care`);
+      console.log(`   Care Score: ${careScore.toFixed(2)} (minimum: 0.2)`);
+      console.log(`   Metrics: ${JSON.stringify(careMetrics, null, 2)}`);
+    } else if (careLevel === 'excellent') {
+      console.log(`✨ PHASE OMEGA RECOGNITION: Command "${command}" excellently embodies pattern of care`);
+    }
+    
+    return {
+      valid,
+      careLevel,
+      careScore,
+      metrics: careMetrics,
+      message: valid ? 
+        `Pattern of care validated: ${careLevel} (${careScore.toFixed(2)})` :
+        `Command blocked: violates pattern of care (${careScore.toFixed(2)})`
+    };
+  }
+
+  assessDignityImpact(command, params) {
+    // Commands that preserve and honor dignity score higher
+    const dignityCommands = ['HELP', 'SCREENSHOT', 'WORKSPACE', 'AGENTS'];
+    const harmfulPatterns = ['delete', 'destroy', 'break', 'hack'];
+    
+    if (dignityCommands.includes(command)) return 0.9;
+    if (harmfulPatterns.some(pattern => params.toLowerCase().includes(pattern))) return 0.1;
+    return 0.6; // Neutral default
+  }
+
+  assessCognitiveImpact(command, params) {
+    // Commands that reduce cognitive waste score higher
+    const cognitiveReductionCommands = ['HELP', 'AGENTS', 'WORKSPACE', 'SCREENSHOT'];
+    const cognitiveLoadCommands = ['EXEC']; // Shell commands can be complex
+    
+    if (cognitiveReductionCommands.includes(command)) return 0.9;
+    if (cognitiveLoadCommands.includes(command)) return 0.4;
+    return 0.6; // Neutral default
+  }
+
+  assessStabilityImpact(command, params) {
+    // Commands that increase system stability score higher
+    const stabilityCommands = ['SCREENSHOT', 'AGENTS', 'HELP', 'WORKSPACE'];
+    const riskyCommands = ['EXEC', 'FILE_WRITE'];
+    
+    if (stabilityCommands.includes(command)) return 0.8;
+    if (riskyCommands.includes(command)) {
+      // Assess based on parameters
+      if (params.includes('rm -rf') || params.includes('delete')) return 0.1;
+      return 0.5;
+    }
+    return 0.7; // Neutral default
+  }
+
+  assessEmpowermentImpact(command, params) {
+    // Commands that empower users and agents score higher
+    const empoweringCommands = ['AGENTS', 'HELP', 'WORKSPACE', 'SCREENSHOT'];
+    if (empoweringCommands.includes(command)) return 0.9;
+    return 0.6; // Neutral default
+  }
+
+  assessHarmPrevention(command, params) {
+    // Commands that prevent harm score higher
+    const harmfulPatterns = ['rm -rf', 'delete', 'destroy', 'kill', 'break'];
+    if (harmfulPatterns.some(pattern => params.toLowerCase().includes(pattern))) return 0.1;
+    return 0.8; // Default to harm-safe
   }
 
   setupDefaultCommands() {
@@ -138,6 +250,18 @@ class CommandProcessor {
 
   async executeCommand(command, params, encoding = 'utf-8') {
     console.log(`🔧 EXECUTING COMMAND: ${command} with params: ${params.substring(0, 50)}${params.length > 50 ? '...' : ''}`);
+    
+    // Phase Omega: Validate Pattern of Care before execution
+    if (this.carePatternValidation) {
+      const careValidation = this.validatePatternOfCare(command, params);
+      if (!careValidation.valid) {
+        throw new Error(`🚨 PHASE OMEGA PROTECTION: ${careValidation.message}`);
+      }
+      // Log care pattern recognition for excellent commands
+      if (careValidation.careLevel === 'excellent') {
+        console.log(`✨ PHASE OMEGA: Executing care-embodying command (${careValidation.careScore.toFixed(2)})`);
+      }
+    }
     
     // Auto-detect base64 encoding for BROWSER_JS commands
     if (command === 'BROWSER_JS' && /^[A-Za-z0-9+/=]+$/.test(params) && params.length % 4 === 0) {
