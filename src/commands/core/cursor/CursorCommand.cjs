@@ -11,60 +11,53 @@ class CursorCommand extends BaseCommand {
       category: 'continuon control',
       icon: '🟢',
       description: 'Control continuon (AI cursor) activation, deactivation, and positioning',
-      params: '{"action": "activate|deactivate|position|status", "x": number, "y": number}',
+      parameters: {
+        action: {
+          type: 'string',
+          required: true,
+          description: 'Action: activate, deactivate, position, status'
+        },
+        x: {
+          type: 'number',
+          required: false,
+          description: 'X coordinate for positioning (optional)'
+        },
+        y: {
+          type: 'number',
+          required: false,
+          description: 'Y coordinate for positioning (optional)'
+        },
+        state: {
+          type: 'string',
+          required: false,
+          default: 'normal',
+          description: 'System state: normal, error, warning, processing, success'
+        },
+        speed: {
+          type: 'string',
+          required: false,
+          default: 'natural',
+          description: 'Movement speed: slow, natural, fast, instant'
+        },
+        curve: {
+          type: 'string',
+          required: false,
+          default: 'bezier',
+          description: 'Movement curve: linear, bezier, arc, bounce'
+        }
+      },
       examples: [
         '{"action": "activate"}',
         '{"action": "position", "x": 100, "y": 200}',
-        '{"action": "status"}'
+        '{"action": "status"}',
+        '{"action": "position", "x": 400, "y": 300, "speed": "slow", "curve": "bounce"}'
       ],
       usage: 'Controls the visual AI cursor representation'
     };
   }
 
-  constructor() {
-    super();
-    this.name = 'cursor';
-    this.description = 'Control continuon (AI cursor) activation, deactivation, and positioning';
-    this.icon = '🟢';
-    this.category = 'continuon control';
-    this.parameters = {
-      action: {
-        type: 'string',
-        required: true,
-        description: 'Action: activate, deactivate, position, status'
-      },
-      x: {
-        type: 'number',
-        required: false,
-        description: 'X coordinate for positioning (optional)'
-      },
-      y: {
-        type: 'number',
-        required: false,
-        description: 'Y coordinate for positioning (optional)'
-      },
-      state: {
-        type: 'string',
-        required: false,
-        default: 'normal',
-        description: 'System state: normal, error, warning, processing, success'
-      },
-      speed: {
-        type: 'string',
-        required: false,
-        default: 'natural',
-        description: 'Movement speed: slow, natural, fast, instant'
-      },
-      curve: {
-        type: 'string',
-        required: false,
-        default: 'bezier',
-        description: 'Movement curve: linear, bezier, arc, bounce'
-      }
-    };
-  }
 
-  async execute(params, context) {
+  static async execute(params, context) {
     try {
       const { action, x, y, state = 'normal', speed = 'natural', curve = 'bezier' } = this.parseParams(params);
 
@@ -87,7 +80,7 @@ class CursorCommand extends BaseCommand {
     }
   }
 
-  async activateCursor(context) {
+  static async activateCursor(context) {
     console.log('🟢 Activating continuon cursor...');
 
     if (context && context.webSocketServer) {
@@ -110,7 +103,7 @@ class CursorCommand extends BaseCommand {
     }
   }
 
-  async deactivateCursor(context) {
+  static async deactivateCursor(context) {
     console.log('🟢 Deactivating continuon cursor...');
 
     if (context && context.webSocketServer) {
@@ -133,7 +126,7 @@ class CursorCommand extends BaseCommand {
     }
   }
 
-  async positionCursor(x, y, options, context) {
+  static async positionCursor(x, y, options, context) {
     if (x === undefined || y === undefined) {
       return this.createErrorResult('X and Y coordinates required for positioning');
     }
@@ -178,7 +171,7 @@ class CursorCommand extends BaseCommand {
   /**
    * Get Bezier curve parameters for different movement types
    */
-  getBezierCurve(curveType) {
+  static getBezierCurve(curveType) {
     const curves = {
       linear: [0, 0, 1, 1],
       bezier: [0.25, 0.46, 0.45, 0.94],  // Natural ease-in-out
@@ -193,7 +186,7 @@ class CursorCommand extends BaseCommand {
   /**
    * Get movement duration based on speed setting
    */
-  getMovementDuration(speed) {
+  static getMovementDuration(speed) {
     const durations = {
       slow: 2000,     // 2 seconds
       natural: 1200,  // 1.2 seconds  
@@ -203,7 +196,7 @@ class CursorCommand extends BaseCommand {
     return durations[speed] || durations.natural;
   }
 
-  async getCursorStatus(context) {
+  static async getCursorStatus(context) {
     if (context && context.webSocketServer) {
       // Request status from browser
       context.webSocketServer.broadcast({
@@ -223,41 +216,6 @@ class CursorCommand extends BaseCommand {
     }
   }
 
-  getDefinition() {
-    return {
-      name: this.name,
-      description: this.description,
-      icon: this.icon,
-      category: this.category,
-      parameters: this.parameters,
-      examples: [
-        {
-          description: 'Activate the continuon cursor',
-          usage: 'cursor activate'
-        },
-        {
-          description: 'Deactivate the continuon cursor',
-          usage: 'cursor deactivate'
-        },
-        {
-          description: 'Position continuon cursor at specific coordinates',
-          usage: 'cursor position 400 300'
-        },
-        {
-          description: 'Position cursor with red color for error indication',
-          usage: 'cursor position 400 300 --color #ff0000 --speed slow'
-        },
-        {
-          description: 'Move cursor with bouncy animation',
-          usage: 'cursor position 600 400 --curve bounce --speed natural'
-        },
-        {
-          description: 'Get current cursor status',
-          usage: 'cursor status'
-        }
-      ]
-    };
-  }
 }
 
 module.exports = CursorCommand;
