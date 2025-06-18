@@ -6,37 +6,100 @@ const InfoCommand = require('../info/InfoCommand.cjs');
 
 class HelpCommand extends InfoCommand {
   static getDefinition() {
-    return {
-      name: 'help',
-      description: 'Show help information for users and admins',
-      icon: '📚',
-      parameters: {
-        section: {
-          type: 'string',
-          required: false,
-          description: 'Help section: overview, commands, debugging, setup',
-          default: 'overview'
-        },
-        sync: {
-          type: 'boolean',
-          required: false,
-          description: 'Sync documentation (generate README.md from live help)',
-          default: false
-        },
-        output: {
-          type: 'string',
-          required: false,
-          description: 'Output file for sync (default: README.md)',
-          default: 'README.md'
+    // README-driven: Read definition from README.md
+    const fs = require('fs');
+    const path = require('path');
+    
+    try {
+      const readmePath = path.join(__dirname, 'README.md');
+      const readme = fs.readFileSync(readmePath, 'utf8');
+      return this.parseReadmeDefinition(readme);
+    } catch (error) {
+      // Fallback definition if README.md not found
+      return {
+        name: 'help',
+        description: 'Show help information and sync documentation',
+        icon: '📚',
+        parameters: {
+          section: { type: 'string', required: false, description: 'Help section' },
+          sync: { type: 'boolean', required: false, description: 'Sync documentation' },
+          output: { type: 'string', required: false, description: 'Output file' },
+          status_table: { type: 'boolean', required: false, description: 'Include status table' },
+          verbose: { type: 'boolean', required: false, description: 'Show complete dashboard' }
         }
-      },
-      examples: [
-        'help',
-        'help --section commands',
-        'help --sync',
-        'help --sync --output API.md'
-      ]
-    };
+      };
+    }
+  }
+  
+  static parseReadmeDefinition(readme) {
+    // Parse README.md for command definition
+    const lines = readme.split('\n');
+    const definition = { parameters: {} };
+    
+    let inDefinition = false;
+    let inParams = false;
+    let inTodos = false;
+    const todos = [];
+    
+    for (const line of lines) {
+      if (line.includes('## Definition')) {
+        inDefinition = true;
+        continue;
+      }
+      if (inDefinition && line.startsWith('##')) {
+        inDefinition = false;
+      }
+      if (line.includes('## Parameters')) {
+        inParams = true;
+        continue;
+      }
+      if (inParams && line.startsWith('##')) {
+        inParams = false;
+      }
+      if (line.includes('## TODO:')) {
+        inTodos = true;
+        continue;
+      }
+      if (inTodos && line.startsWith('##')) {
+        inTodos = false;
+      }
+      
+      if (inDefinition) {
+        if (line.includes('**Name**:')) {
+          definition.name = line.split('**Name**:')[1].trim();
+        } else if (line.includes('**Description**:')) {
+          definition.description = line.split('**Description**:')[1].trim();
+        } else if (line.includes('**Icon**:')) {
+          definition.icon = line.split('**Icon**:')[1].trim();
+        } else if (line.includes('**Category**:')) {
+          definition.category = line.split('**Category**:')[1].trim();
+        } else if (line.includes('**Status**:')) {
+          definition.status = line.split('**Status**:')[1].trim();
+        }
+      }
+      
+      if (inParams && line.includes('`') && line.includes(':')) {
+        const param = line.match(/`([^`]+)`:\s*(.+)/);
+        if (param) {
+          definition.parameters[param[1]] = {
+            type: 'string',
+            description: param[2]
+          };
+        }
+      }
+      
+      if (inTodos && line.includes('TODO:')) {
+        todos.push(line.trim());
+      }
+    }
+    
+    // Add TODOs to definition
+    if (todos.length > 0) {
+      definition.todos = todos;
+      definition.description += ` (⚠️ ${todos.length} TODOs pending)`;
+    }
+    
+    return definition;
   }
 
   static async execute(params, continuum) {
@@ -47,7 +110,16 @@ class HelpCommand extends InfoCommand {
       return await this.syncDocumentation(options, continuum);
     }
     
+    // Handle verbose mode - show complete dashboard
+    if (options.verbose) {
+      return await this.showVerboseDashboard(continuum);
+    }
+    
     this.displayHeader('🔄 Continuum Academy', 'Revolutionary AI Workforce Construction');
+    
+    // Show one-liner project health status
+    const healthStatus = await this.getProjectHealthOneLiner();
+    console.log(`📊 ${healthStatus}\n`);
     
     console.log(`
 
@@ -140,7 +212,9 @@ For more information, visit: https://github.com/CambrianTech/continuum
     try {
       console.log('📖 Syncing documentation from live help system...');
       
-      const content = await this.generateMarkdownDocs(continuum);
+      // For sync, default to including status table unless explicitly disabled
+      const includeStatusTable = options.status_table !== false;
+      const content = await this.generateMarkdownDocs(continuum, includeStatusTable);
       
       // Write to output file
       const projectRoot = process.cwd();
@@ -151,11 +225,15 @@ For more information, visit: https://github.com/CambrianTech/continuum
       
       console.log(`✅ Documentation synced to: ${outputPath}`);
       console.log(`📄 ${content.split('\n').length} lines generated from live help system`);
+      if (includeStatusTable) {
+        console.log('📊 Status dashboard included for project management');
+      }
       
       return this.createSuccessResult({
         outputPath,
         size: content.length,
         lines: content.split('\n').length,
+        statusTable: includeStatusTable,
         timestamp: new Date().toISOString()
       }, `Documentation synced to ${outputPath}`);
       
@@ -165,7 +243,7 @@ For more information, visit: https://github.com/CambrianTech/continuum
     }
   }
   
-  static async generateMarkdownDocs(continuum) {
+  static async generateMarkdownDocs(continuum, includeStatusTable = true) {
     const content = [];
     
     // Header
@@ -185,6 +263,13 @@ For more information, visit: https://github.com/CambrianTech/continuum
     content.push('## Available Commands\n');
     content.push(await this.getCommandsList(continuum));
     
+    // Command Status Table (if requested)
+    if (includeStatusTable) {
+      content.push('## Command Status Dashboard\n');
+      content.push('> 📊 Built-in project management - tracks command health and TODOs\n\n');
+      content.push(await this.generateCommandStatusTable());
+    }
+    
     // Architecture
     content.push('## Architecture\n');
     content.push(this.getArchitectureContent());
@@ -200,6 +285,181 @@ For more information, visit: https://github.com/CambrianTech/continuum
     content.push('*Architecture: Command bus with thin client adapters*\n');
     
     return content.join('');
+  }
+  
+  static async generateCommandStatusTable() {
+    const fs = require('fs');
+    const path = require('path');
+    const content = [];
+    
+    content.push('| Status | Command | Icon | TODOs | Last Updated | Notes |\n');
+    content.push('|--------|---------|------|-------|--------------|-------|\n');
+    
+    const commandDirs = fs.readdirSync('./src/commands/core');
+    const commands = [];
+    
+    for (const dir of commandDirs) {
+      const dirPath = path.join('./src/commands/core', dir);
+      if (fs.statSync(dirPath).isDirectory()) {
+        const readmePath = path.join(dirPath, 'README.md');
+        const hasReadme = fs.existsSync(readmePath);
+        
+        if (hasReadme) {
+          const readme = fs.readFileSync(readmePath, 'utf8');
+          const statusMatch = readme.match(/\*\*Status\*\*:\s*([^\n]+)/);
+          const iconMatch = readme.match(/\*\*Icon\*\*:\s*([^\n]+)/);
+          const status = statusMatch ? statusMatch[1].trim() : '⚪ No status';
+          const icon = iconMatch ? iconMatch[1].trim() : '📄';
+          const todoCount = (readme.match(/TODO:/g) || []).length;
+          
+          const statusIcon = status.includes('🟢') ? '🟢' : 
+                            status.includes('🟡') ? '🟡' : 
+                            status.includes('🔴') ? '🔴' : '⚪';
+          
+          const dateMatch = status.match(/(\d{4}-\d{2}-\d{2})/);
+          const lastUpdated = dateMatch ? dateMatch[1] : 'Unknown';
+          
+          const notes = status.includes('BROKEN') ? 'CRITICAL ISSUES' :
+                       status.includes('TESTING') ? 'In migration' :
+                       status.includes('STABLE') ? 'Production ready' : 'Needs review';
+          
+          commands.push({
+            status: statusIcon,
+            name: dir,
+            icon: icon,
+            todos: todoCount,
+            lastUpdated: lastUpdated,
+            notes: notes,
+            priority: statusIcon === '🔴' ? 0 : statusIcon === '🟠' ? 1 : statusIcon === '🟡' ? 2 : statusIcon === '🟢' ? 3 : 4
+          });
+        } else {
+          commands.push({
+            status: '🟠',
+            name: dir,
+            icon: '📄',
+            todos: '?',
+            lastUpdated: 'Never',
+            notes: 'No documentation',
+            priority: 1
+          });
+        }
+      }
+    }
+    
+    // Sort by priority (broken first, then untested, etc.)
+    commands.sort((a, b) => a.priority - b.priority);
+    
+    commands.forEach(cmd => {
+      content.push(`| ${cmd.status} | ${cmd.name} | ${cmd.icon} | ${cmd.todos} | ${cmd.lastUpdated} | ${cmd.notes} |\n`);
+    });
+    
+    content.push('\n### Project Health Summary\n\n');
+    const stats = commands.reduce((acc, cmd) => {
+      acc[cmd.status] = (acc[cmd.status] || 0) + 1;
+      return acc;
+    }, {});
+    
+    content.push('| Status | Count | Description |\n');
+    content.push('|--------|-------|-------------|\n');
+    content.push(`| 🔴 | ${stats['🔴'] || 0} | Broken - Do not use |\n`);
+    content.push(`| 🟠 | ${stats['🟠'] || 0} | Untested - Needs documentation |\n`);
+    content.push(`| 🟡 | ${stats['🟡'] || 0} | Testing - In progress |\n`);
+    content.push(`| 🟢 | ${stats['🟢'] || 0} | Stable - Production ready |\n`);
+    content.push(`| ⚪ | ${stats['⚪'] || 0} | Unknown - Needs assessment |\n`);
+    
+    const total = commands.length;
+    const health = Math.round(((stats['🟢'] || 0) / total) * 100);
+    content.push(`\n**Project Health: ${health}% stable (${stats['🟢'] || 0}/${total} commands)**\n\n`);
+    
+    return content.join('');
+  }
+  
+  static async getProjectHealthOneLiner() {
+    const fs = require('fs');
+    const path = require('path');
+    
+    const commandDirs = fs.readdirSync('./src/commands/core');
+    const stats = { '🔴': 0, '🟠': 0, '🟡': 0, '🟢': 0, '⚪': 0 };
+    let total = 0;
+    
+    for (const dir of commandDirs) {
+      const dirPath = path.join('./src/commands/core', dir);
+      if (fs.statSync(dirPath).isDirectory()) {
+        total++;
+        const readmePath = path.join(dirPath, 'README.md');
+        
+        if (fs.existsSync(readmePath)) {
+          const readme = fs.readFileSync(readmePath, 'utf8');
+          const statusMatch = readme.match(/\*\*Status\*\*:\s*([^\n]+)/);
+          const status = statusMatch ? statusMatch[1].trim() : '⚪ No status';
+          
+          if (status.includes('🟢')) stats['🟢']++;
+          else if (status.includes('🟡')) stats['🟡']++;
+          else if (status.includes('🔴')) stats['🔴']++;
+          else stats['⚪']++;
+        } else {
+          stats['🟠']++;
+        }
+      }
+    }
+    
+    const health = Math.round((stats['🟢'] / total) * 100);
+    const issues = stats['🔴'] + stats['🟠'];
+    
+    if (issues === 0) {
+      return `Project Health: ${health}% stable (${stats['🟢']}/${total} commands)`;
+    } else {
+      return `Project Health: ${health}% stable (${stats['🟢']}/${total}) - ${issues} need attention`;
+    }
+  }
+  
+  static async showVerboseDashboard(continuum) {
+    console.log('📊 CONTINUUM PROJECT MANAGEMENT DASHBOARD\n');
+    console.log('=' .repeat(60));
+    
+    // Project health summary
+    const healthStatus = await this.getProjectHealthOneLiner();
+    console.log(`\n🏥 ${healthStatus}\n`);
+    
+    // Command status table
+    console.log('📋 COMMAND STATUS TABLE\n');
+    const table = await this.generateCommandStatusTable();
+    
+    // Convert markdown table to terminal-friendly format
+    const lines = table.split('\n');
+    for (const line of lines) {
+      if (line.trim()) {
+        if (line.includes('|')) {
+          // Format table rows for terminal
+          const cols = line.split('|').map(col => col.trim()).filter(col => col);
+          if (cols.length >= 6) {
+            const [status, command, icon, todos, updated, notes] = cols;
+            console.log(`${status} ${command.padEnd(12)} ${icon} TODOs:${todos.padEnd(3)} Updated:${updated.padEnd(10)} ${notes}`);
+          }
+        } else {
+          // Headers and other content
+          console.log(line);
+        }
+      }
+    }
+    
+    console.log('\n' + '=' .repeat(60));
+    
+    // Quick action suggestions
+    console.log('\n🚀 QUICK ACTIONS:');
+    console.log('   • Fix broken commands: See 🔴 items above');
+    console.log('   • Document untested: Add README.md to 🟠 commands');
+    console.log('   • Complete testing: Finish 🟡 commands in progress');
+    console.log('   • Update docs: python3 ai-portal.py --cmd help --sync');
+    console.log('   • Run tests: npm test');
+    
+    console.log('\n💡 TIP: Use "help --sync" to update the main README.md with this dashboard');
+    
+    return this.createSuccessResult({
+      verbose: true,
+      health: await this.getProjectHealthOneLiner(),
+      timestamp: new Date().toISOString()
+    }, 'Verbose dashboard displayed');
   }
   
   static getOverviewContent() {
@@ -257,30 +517,96 @@ python3 python-client/ai-portal.py --cmd [command] --help
 `;
   }
   
+  static async collectAllReadmes(baseDir) {
+    const fs = require('fs');
+    const path = require('path');
+    const readmes = new Map();
+    
+    async function walkDirectory(dir) {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          
+          if (entry.isDirectory()) {
+            // Recursively walk subdirectories
+            await walkDirectory(fullPath);
+          } else if (entry.name === 'README.md') {
+            // Found a README.md file
+            try {
+              const content = fs.readFileSync(fullPath, 'utf8');
+              const relativePath = path.relative(baseDir, fullPath);
+              readmes.set(relativePath, {
+                path: fullPath,
+                content: content,
+                commandDir: path.dirname(fullPath)
+              });
+            } catch (error) {
+              console.warn(`Could not read README.md at ${fullPath}: ${error.message}`);
+            }
+          }
+        }
+      } catch (error) {
+        console.warn(`Could not read directory ${dir}: ${error.message}`);
+      }
+    }
+    
+    await walkDirectory(baseDir);
+    return readmes;
+  }
+
   static async getCommandsList(continuum) {
     const content = [];
     
     try {
-      // Get live command registry
-      const registry = continuum.commandProcessor?.commandRegistry;
-      if (registry && registry.commands) {
-        const commands = Array.from(registry.commands.entries())
-          .map(([name, command]) => {
-            if (command.getDefinition) {
-              const def = command.getDefinition();
-              return `- **${def.name}** ${def.icon} - ${def.description}`;
-            }
-            return `- **${name}** - Command available`;
-          })
-          .sort()
-          .join('\n');
-        
+      // README-driven: Collect command info from README files
+      const commandsDir = path.join(__dirname, '../..');
+      const readmes = await this.collectAllReadmes(commandsDir);
+      
+      const commands = [];
+      for (const [relativePath, readmeData] of readmes) {
+        try {
+          const definition = this.parseReadmeDefinition(readmeData.content);
+          if (definition.name) {
+            commands.push(`- **${definition.name}** ${definition.icon || ''} - ${definition.description || 'Command available'}`);
+          }
+        } catch (error) {
+          console.warn(`Could not parse definition from ${relativePath}: ${error.message}`);
+        }
+      }
+      
+      if (commands.length > 0) {
         content.push('### Core Commands\n');
-        content.push(commands);
+        content.push(commands.sort().join('\n'));
         content.push('\n\n');
         content.push('💡 **Get detailed help**: `python3 python-client/ai-portal.py --cmd [command] --help`\n\n');
       }
+      
+      // Fallback to live command registry if no READMEs found
+      if (commands.length === 0) {
+        const registry = continuum.commandProcessor?.commandRegistry;
+        if (registry && registry.commands) {
+          const liveCommands = Array.from(registry.commands.entries())
+            .map(([name, command]) => {
+              if (command.getDefinition) {
+                const def = command.getDefinition();
+                return `- **${def.name}** ${def.icon || ''} - ${def.description}`;
+              }
+              return `- **${name}** - Command available`;
+            })
+            .sort()
+            .join('\n');
+          
+          content.push('### Core Commands\n');
+          content.push(liveCommands);
+          content.push('\n\n');
+          content.push('💡 **Get detailed help**: `python3 python-client/ai-portal.py --cmd [command] --help`\n\n');
+        }
+      }
+      
     } catch (error) {
+      // Final fallback
       content.push('### Core Commands\n');
       content.push('- **help** 📚 - Show help information and sync documentation\n');
       content.push('- **workspace** 📁 - Manage workspace directories and paths\n');
