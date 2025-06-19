@@ -58,31 +58,14 @@ def show_progress():
     return thread
 
 def open_progress_widget():
-    """Open the progress widget as floating desktop window"""
+    """Open the progress widget in browser"""
     try:
         widget_path = Path('verification/progress-widget.html').absolute()
         if widget_path.exists():
-            # Use Chrome/Safari in app mode for minimal floating window
-            subprocess.run([
-                'open', '-a', 'Google Chrome', '--args',
-                '--app=' + str(widget_path.as_uri()),
-                '--window-size=400,300',
-                '--window-position=100,100',
-                '--disable-web-security',
-                '--allow-running-insecure-content',
-                '--disable-features=VizDisplayCompositor',
-                '--always-on-top'
-            ], check=False)
+            subprocess.run(['open', str(widget_path)], check=False)
             return True
     except:
-        # Fallback to Safari app mode
-        try:
-            subprocess.run([
-                'open', '-a', 'Safari', str(widget_path)
-            ], check=False)
-            return True
-        except:
-            pass
+        pass
     return False
 
 def main():
