@@ -16,6 +16,7 @@ const ModelCaliber = require('./ModelCaliber.cjs');
 const VersionManager = require('./VersionManager.cjs');
 const { BrowserAdapter } = require('../adapters/BrowserAdapter.cjs');
 const ScreenshotService = require('../services/ScreenshotService.cjs');
+const ContinuonStatus = require('./ContinuonStatus.cjs');
 const { Anthropic } = require('@anthropic-ai/sdk');
 const { OpenAI } = require('openai');
 const fs = require('fs');
@@ -79,6 +80,9 @@ class ContinuumCore {
     this.modelCaliber = new ModelCaliber();
     this.commandProcessor = new CommandProcessor();
     this.commandProcessor.continuum = this;
+    
+    // Initialize continuon (AI entity) status management
+    this.continuonStatus = new ContinuonStatus(this);
     this.uiGenerator = new UIGenerator(this);
     this.protocolSheriff = new ProtocolSheriff(this.modelRegistry, this.modelCaliber);
     this.versionManager = new VersionManager(this);
@@ -414,6 +418,19 @@ class ContinuumCore {
     const httpServer = new HttpServer(this);
     this.server = httpServer.createServer();
     this.webSocketServer = new WebSocketServer(this, this.server);
+    
+    // Wire WebSocket events to continuon status
+    this.webSocketServer.on('connection', () => {
+      this.continuonStatus.updateStatus('connected');
+    });
+    
+    this.webSocketServer.on('disconnect', () => {
+      // Check if any clients still connected
+      const clientCount = this.webSocketServer.wss.clients.size;
+      if (clientCount === 0) {
+        this.continuonStatus.updateStatus('disconnected');
+      }
+    });
 
     // Use a Promise to handle async server startup with proper error handling
     return new Promise((resolve, reject) => {
