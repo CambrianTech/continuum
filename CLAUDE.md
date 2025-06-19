@@ -79,20 +79,47 @@ python python-client/ai-portal.py --logs 5
 - ❌ **NOT ALLOWED**: Edit code to circumvent the automated process
 - **The distinction**: **Fix the system** vs **Work around the system**
 
-## 🚨 CRITICAL REQUIREMENT - LOG MONITORING
+## 🚨 SEPARATION OF LANGUAGES
+
+**Keep scripting languages in separate files:**
+- ❌ NO embedding JavaScript in Python files
+- ❌ NO embedding Python in JavaScript files  
+- ❌ NO embedding CSS in JavaScript files
+- ❌ NO embedding HTML in script files
+- ✅ **Create separate files** for each language
+- ✅ **Load external files** when needed in multiple places
+- ✅ **Follow the Personas pattern** - CSS lives in its own file, not embedded
+
+**One language per file. Reuse through imports/includes.**
+
+## ✅ MILESTONE ACHIEVED - LOG MONITORING RESTORED
+
+**🎉 CONSOLE FORWARDING FIX SUCCESSFUL** - Browser console logs now visible in portal!
+
+### Fixed Issue: Browser Console Forwarding 
+- **Problem**: `setupConsoleForwarding()` called before WebSocket connection established
+- **Solution**: Moved console forwarding setup to AFTER WebSocket connection (continuum-api.js:390)
+- **Result**: Portal now shows both client and server logs in real-time
+
+### Log Monitoring Status: ✅ WORKING
+```bash
+python python-client/ai-portal.py --logs 3    # Shows client and server activity
+python python-client/ai-portal.py --connect   # Establishes connection monitoring
+```
+
+**Evidence of Working Console Forwarding:**
+- Browser console.log messages appear in portal logs
+- JavaScript execution errors visible with stack traces
+- Real-time debugging capability fully restored
+
+### 🚨 CRITICAL REQUIREMENT - LOG MONITORING
 
 **MUST SEE LOGS FROM CLIENT BROWSER AND SERVER TO PROCEED WITH DEVELOPMENT. IF BROKEN DIAGNOSE AND FIX. NO OTHER CODING CAN HAPPEN TILL THIS IS RESOLVED.**
 
-### Log Monitoring Status Check
-```bash
-python python-client/ai-portal.py --logs 3    # MUST show client and server activity
-python python-client/ai-portal.py --connect   # MUST establish connection monitoring
-```
-
-If logs are broken or show "No WebSocket connections":
+If logs break again:
 1. **STOP ALL OTHER WORK**
-2. **FIX LOG MONITORING FIRST** 
-3. **DIAGNOSE SERVER/CLIENT CONNECTION**
+2. **CHECK WEBSOCKET CONNECTION TIMING** 
+3. **VERIFY setupConsoleForwarding() called after WebSocket ready**
 4. **NO CODING UNTIL LOGS WORK**
 
 ## Key Reminder

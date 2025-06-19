@@ -706,10 +706,10 @@ class SavedPersonas extends SidebarWidget {
   }
 
   initializeWidget() {
-    // Start auto-refresh every 30 seconds
-    this.startAutoRefresh(30000);
+    // Use event-driven updates instead of polling to prevent scroll jumping
+    // Auto-refresh via WebSocket events: personas_updated, persona_added, persona_deleted
     
-    // Initial load
+    // Initial load only
     this.refresh();
   }
 }

@@ -3,10 +3,6 @@
  * Client-side interface for browser connections to Continuum server
  */
 
-// Wait for DOM and other scripts to be ready before initializing
-function initializeContinuum() {
-    console.warn('🚀 CRITICAL: initializeContinuum() called - browser API starting...');
-
 // Console forwarding to server for complete logging
 function setupConsoleForwarding() {
     if (window.consoleForwardingSetup) return; // Avoid duplicate setup
@@ -72,6 +68,11 @@ function setupConsoleForwarding() {
     // Store originals for potential restoration
     window.originalConsole = originalConsole;
 }
+
+// Wait for DOM and other scripts to be ready before initializing
+function initializeContinuum() {
+    console.warn('🚀 CRITICAL: initializeContinuum() called - browser API starting...');
+
     window.continuum = {
     version: '0.2.1987', // Will be updated dynamically
     fileVersions: {
@@ -228,9 +229,7 @@ function setupConsoleForwarding() {
     }
     };
 
-    // Set up console forwarding to server
-    setupConsoleForwarding();
-    
+    // Console forwarding will be set up AFTER WebSocket connection
     console.warn('✅ CRITICAL: window.continuum initialization completed successfully!');
 }
 
@@ -386,6 +385,10 @@ document.addEventListener('continuum-ready', async function() {
         const result = await continuum.start();
         console.log('📤 continuum.start() completed:', result);
         console.log('🎯 Browser client fully connected and validated!');
+        
+        // NOW set up console forwarding since WebSocket is ready
+        setupConsoleForwarding();
+        console.log('📡 Console forwarding enabled');
         
     } catch (error) {
         console.error('❌ Failed to wait for dependencies:', error.message);

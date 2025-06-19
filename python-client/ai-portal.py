@@ -673,8 +673,8 @@ def get_command_tokenizer():
             'params': {'script': f'console.log("🔍 Result:", {" ".join(args)}); {" ".join(args)};', 'encoding': 'base64', 'returnResult': True}
         },
         'reload': lambda args: {
-            'command': 'browser_js',
-            'params': {'script': 'location.reload();', 'encoding': 'base64'}
+            'command': 'reload',
+            'params': {'force': 'force' in args}
         },
         
         # System commands (CLI → Server exec)
@@ -946,7 +946,17 @@ def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick
                 # For screenshot command, merge click options with tokenizer params
                 if cmd.lower() == 'screenshot':
                     tokenized = tokenize_command(cmd, remaining_args)
-                    # Override with click options if provided
+                    
+                    # Parse JSON params if provided
+                    if params:
+                        try:
+                            json_params = json.loads(params)
+                            # Merge JSON params into tokenized params
+                            tokenized['params'].update(json_params)
+                        except json.JSONDecodeError:
+                            print(f"⚠️ Invalid JSON in params: {params}")
+                    
+                    # Override with click options if provided (highest priority)
                     if selector:
                         tokenized['params']['selector'] = selector
                     if filename:
@@ -989,8 +999,35 @@ async def start_monitoring_connection():
     import subprocess
     import sys
     import os
+    import json
     
-    # Check if already running
+    # Step 1: Increment version and restart server
+    print("📦 Incrementing version and restarting server...")
+    package_path = "../package.json"
+    if not os.path.exists(package_path):
+        package_path = "package.json"
+    
+    try:
+        with open(package_path, 'r') as f:
+            package_data = json.load(f)
+        current_version = package_data['version']
+        version_parts = current_version.split('.')
+        version_parts[-1] = str(int(version_parts[-1]) + 1)
+        new_version = '.'.join(version_parts)
+        package_data['version'] = new_version
+        
+        with open(package_path, 'w') as f:
+            json.dump(package_data, f, indent=2)
+        print(f"✅ Version incremented: {current_version} → {new_version}")
+        
+        # Restart server
+        await run_command('restart', '{}')
+        print("✅ Server restarted")
+        
+    except Exception as e:
+        print(f"⚠️ Version increment failed: {e}, continuing with monitoring...")
+    
+    # Check if monitor already running
     pid_file = Path('.continuum/ai-portal/monitor.pid')
     if pid_file.exists():
         try:
