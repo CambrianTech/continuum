@@ -9,6 +9,29 @@ import sys
 import time
 from pathlib import Path
 
+def create_thumbnail(screenshot_path, size="320x240"):
+    """Create a low-quality VGA-size thumbnail for commit messages"""
+    try:
+        thumbnail_dir = Path('.continuum/thumbnails/')
+        thumbnail_dir.mkdir(exist_ok=True)
+        
+        timestamp = int(time.time())
+        thumbnail_path = thumbnail_dir / f"commit_thumb_{timestamp}.jpg"
+        
+        # Use sips (macOS) to create small, low-quality thumbnail
+        result = subprocess.run([
+            'sips', '-Z', '320', '-s', 'formatOptions', '30', 
+            str(screenshot_path), '--out', str(thumbnail_path)
+        ], capture_output=True)
+        
+        if result.returncode == 0 and thumbnail_path.exists():
+            return str(thumbnail_path)
+        else:
+            return str(screenshot_path)  # Fallback to original
+            
+    except Exception:
+        return str(screenshot_path)  # Fallback to original
+
 def main():
     print("🚨 COMMIT VERIFICATION - FAST MODE")
     print("=" * 40)
@@ -30,8 +53,13 @@ def main():
                 # Check for screenshots
                 screenshots = list(Path('.continuum/screenshots/').glob('agent_feedback_*.png'))
                 if len(screenshots) > 0:
+                    # Create thumbnail of latest screenshot
+                    latest_screenshot = max(screenshots, key=lambda p: p.stat().st_mtime)
+                    thumbnail_path = create_thumbnail(latest_screenshot)
+                    
                     print("✅ PASSED - All systems operational")
                     print("📊 UUID tracking: ✅ | Screenshots: ✅ | Logs: ✅")
+                    print(f"📸 Thumbnail: {thumbnail_path}")
                     sys.exit(0)
         
         print("❌ FAILED - System health compromised")
