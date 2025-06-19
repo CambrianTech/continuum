@@ -1191,6 +1191,7 @@ def tokenize_command(cmd, args):
 @click.option('--devtools', is_flag=True, help='Start persistent DevTools browser console monitoring')
 @click.option('--live', is_flag=True, help='Start intelligent live log monitoring system')
 @click.option('--failsafe', is_flag=True, help='Emergency DevTools failsafe recovery for logs')
+@click.option('--recovery', is_flag=True, help='Full system recovery using complete DevTools emergency system')
 @click.option('--daemons', is_flag=True, help='List all running daemons')
 @click.option('--daemon-logs', help='Show logs for specific daemon ID')
 @click.option('--daemon-status', help='Show status for specific daemon ID')
@@ -1229,7 +1230,7 @@ def tokenize_command(cmd, args):
 @click.option('--notify', help='Send notify command to test browser log capture (e.g. --notify "Test message")')
 def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick, test, connect, disconnect, roadmap, files, action, task, workspace, selector, filename, 
          verbose, sync, output, run, script_args, timeout, return_result, exec, shell_timeout,
-         program, script, save_script, list_scripts, help_cmd, debug, version_test, devtools, live, failsafe, daemons, daemon_logs, daemon_status, notify):
+         program, script, save_script, list_scripts, help_cmd, debug, version_test, devtools, live, failsafe, recovery, daemons, daemon_logs, daemon_status, notify):
     """AI Portal - Your Robot Agent for Continuum development workflow"""
     
     async def run_cli():
@@ -1244,6 +1245,8 @@ def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick
             return await start_live_monitor()
         if failsafe:
             return await emergency_failsafe_recovery()
+        if recovery:
+            return await full_system_recovery()
         if daemons:
             return show_daemon_list()
         if daemon_logs:
@@ -1632,6 +1635,73 @@ async def emergency_failsafe_recovery():
     except Exception as e:
         print(f"🚨 FAILSAFE RECOVERY ERROR: {e}")
         print("🚨 CRITICAL: Manual intervention required")
+
+async def full_system_recovery():
+    """Full system recovery using complete DevTools emergency system"""
+    print("🚨 FULL SYSTEM RECOVERY")
+    print("=" * 60)
+    print("🎯 Launching complete DevTools recovery system...")
+    print("🛡️ This system works no matter what's broken")
+    print()
+    
+    try:
+        # Get the path to our recovery script
+        script_dir = Path(__file__).parent.parent
+        recovery_script = script_dir / "devtools_full_demo.py"
+        
+        if not recovery_script.exists():
+            print("❌ Recovery script not found at:", recovery_script)
+            print("💡 Expected location: devtools_full_demo.py in project root")
+            return
+        
+        print(f"🚀 Executing recovery system: {recovery_script}")
+        print("📋 Recovery system provides these capabilities:")
+        print("   1. 🔍 DIAGNOSE system state (what's working/broken)")
+        print("   2. 🚀 AUTO-LAUNCH Opera in debug mode")
+        print("   3. 📸 CAPTURE SCREENSHOTS via DevTools Protocol")
+        print("      └─ Screenshots saved to: .continuum/screenshots/")
+        print("      └─ Screenshots will be OPENED automatically for inspection")
+        print("   4. 📋 CAPTURE LOGS from browser console in real-time")
+        print("      └─ Portal logs: python ai-portal.py --logs 10")
+        print("      └─ Recovery logs: .continuum/recovery_logs/")
+        print("   5. 🔌 EXECUTE JAVASCRIPT with unique timestamps")
+        print("      └─ Proves fresh console output (not cached)")
+        print("   6. 👁️ VERIFY console output appears in BOTH client and server logs")
+        print("      └─ Shows exact log entries with timestamps")
+        print("   7. 🛡️ SELF-HEAL and auto-recover from failures")
+        print("   8. 📄 GENERATE comprehensive recovery report")
+        print("   9. 🎯 PROVE complete agent feedback loop is operational")
+        print()
+        print("🔍 WHAT TO EXPECT:")
+        print("   • Browser opens to Continuum interface with debug mode")
+        print("   • Red indicator box appears in top-right corner")
+        print("   • Screenshot opens automatically with visual proof")
+        print("   • Console logs show unique timestamp markers")
+        print("   • Pass/fail status for each capability")
+        print()
+        print("⌨️ Press Ctrl+C to exit recovery mode")
+        print("-" * 60)
+        
+        # Execute the recovery system with self-healing enabled
+        import subprocess
+        process = subprocess.run([
+            sys.executable, str(recovery_script), "--self-heal"
+        ], cwd=str(script_dir))
+        
+        if process.returncode == 0:
+            print("\n✅ FULL SYSTEM RECOVERY COMPLETED SUCCESSFULLY")
+            print("🎯 System should now be operational with emergency capabilities")
+            print("📸 Screenshots and logs available in .continuum/ directories")
+        else:
+            print(f"\n⚠️ Recovery system exited with code: {process.returncode}")
+            print("💡 Check recovery logs for details")
+        
+    except KeyboardInterrupt:
+        print("\n🛑 Recovery interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Recovery system error: {e}")
+        print("🚨 Falling back to basic failsafe...")
+        await emergency_failsafe_recovery()
 
 def show_daemon_list():
     """List all running daemons"""
