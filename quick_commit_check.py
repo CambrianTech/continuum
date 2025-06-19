@@ -9,23 +9,25 @@ import sys
 import time
 from pathlib import Path
 
-def create_thumbnail(screenshot_path, size="320x240"):
-    """Create a low-quality VGA-size thumbnail for commit messages"""
+def create_screenshot_proof(screenshot_path):
+    """Create git-trackable UI capture proof"""
     try:
-        thumbnail_dir = Path('.continuum/thumbnails/')
-        thumbnail_dir.mkdir(exist_ok=True)
+        # Create git-tracked directory
+        proof_dir = Path('verification/ui-captures/')
+        proof_dir.mkdir(parents=True, exist_ok=True)
         
-        timestamp = int(time.time())
-        thumbnail_path = thumbnail_dir / f"commit_thumb_{timestamp}.jpg"
+        # Generate datetime-based filename
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        proof_path = proof_dir / f"ui-capture-{timestamp}.jpg"
         
-        # Use sips (macOS) to create small, low-quality thumbnail
+        # Use sips (macOS) to create compressed JPEG
         result = subprocess.run([
-            'sips', '-Z', '320', '-s', 'formatOptions', '30', 
-            str(screenshot_path), '--out', str(thumbnail_path)
+            'sips', '-Z', '640', '-s', 'formatOptions', '50',  # 640px max, 50% quality
+            str(screenshot_path), '--out', str(proof_path)
         ], capture_output=True)
         
-        if result.returncode == 0 and thumbnail_path.exists():
-            return str(thumbnail_path)
+        if result.returncode == 0 and proof_path.exists():
+            return str(proof_path)
         else:
             return str(screenshot_path)  # Fallback to original
             
@@ -53,13 +55,13 @@ def main():
                 # Check for screenshots
                 screenshots = list(Path('.continuum/screenshots/').glob('agent_feedback_*.png'))
                 if len(screenshots) > 0:
-                    # Create thumbnail of latest screenshot
+                    # Create git-trackable screenshot proof
                     latest_screenshot = max(screenshots, key=lambda p: p.stat().st_mtime)
-                    thumbnail_path = create_thumbnail(latest_screenshot)
+                    proof_path = create_screenshot_proof(latest_screenshot)
                     
                     print("✅ PASSED - All systems operational")
                     print("📊 UUID tracking: ✅ | Screenshots: ✅ | Logs: ✅")
-                    print(f"📸 Thumbnail: {thumbnail_path}")
+                    print(f"📸 Screenshot-proof: {proof_path}")
                     sys.exit(0)
         
         print("❌ FAILED - System health compromised")
