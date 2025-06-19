@@ -1,0 +1,1 @@
+Testing GitHub clickable links in commit messages
