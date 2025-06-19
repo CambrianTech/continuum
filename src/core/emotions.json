@@ -1,0 +1,83 @@
+{
+  "emotionMap": {
+    "excited": "🚀",
+    "thinking": "🤔",
+    "happy": "😊",
+    "working": "⚡",
+    "processing": "🧠",
+    "sleeping": "😴",
+    "alert": "👀",
+    "focused": "🎯",
+    "wink": "😉",
+    "smile": "😊",
+    "laugh": "😄",
+    "cool": "😎",
+    "love": "😍",
+    "surprised": "😲",
+    "confused": "😕",
+    "celebration": "🎉",
+    "party": "🥳",
+    "rocket": "🚀",
+    "fire": "🔥",
+    "star": "⭐",
+    "heart": "❤️",
+    "thumbsup": "👍",
+    "success": "✅",
+    "warning": "⚠️",
+    "error": "❌",
+    "kiss": "😘",
+    "blowkiss": "💋"
+  },
+  "statusMap": {
+    "connected": "🟢",
+    "connecting": "🟡", 
+    "disconnected": "🔴",
+    "error": "🔴"
+  },
+  "priority": {
+    "description": "Status priority: RED (critical) > YELLOW (warning) > GREEN (healthy) > EMOTION",
+    "levels": [
+      { "level": 1, "type": "critical", "statuses": ["error", "disconnected"] },
+      { "level": 2, "type": "warning", "statuses": ["connecting"] },
+      { "level": 3, "type": "healthy", "statuses": ["connected"] },
+      { "level": 4, "type": "emotion", "note": "Only shown when status is healthy" }
+    ]
+  },
+  "colors": {
+    "excited": "#ff6b35",
+    "thinking": "#4ecdc4", 
+    "happy": "#ffe66d",
+    "working": "#a8e6cf",
+    "processing": "#c7ceea",
+    "sleeping": "#d4a574",
+    "alert": "#ff8b94",
+    "focused": "#ffd93d",
+    "wink": "#ffaaa5",
+    "smile": "#ffe66d",
+    "laugh": "#ffd93d",
+    "cool": "#88d8b0",
+    "love": "#ff8a80",
+    "surprised": "#f8bbd9",
+    "confused": "#ddbea9",
+    "celebration": "#ffd700",
+    "party": "#ff69b4",
+    "rocket": "#ff6b35",
+    "fire": "#ff4757",
+    "star": "#ffd93d",
+    "heart": "#ff6b6b",
+    "thumbsup": "#a8e6cf",
+    "success": "#2ed573",
+    "warning": "#ffa502",
+    "error": "#ff3838",
+    "kiss": "#ff8a80",
+    "blowkiss": "#ff69b4"
+  },
+  "config": {
+    "defaultEmotion": "🟢",
+    "defaultColor": "#00d4ff",
+    "defaultDuration": 3000,
+    "maxDuration": 300000,
+    "allowPermanentEmotions": true,
+    "displayMode": "auto"
+  }
+}
