@@ -53,18 +53,28 @@ class BaseDaemon(ABC):
 
 Object-oriented DevTools monitoring daemon that provides:
 
-- **Browser Console Monitoring**: Real-time console log capture
-- **Connection Management**: Auto-reconnection and health checks
-- **Screenshot Capability**: DevTools Protocol screenshot capture
+- **Browser Console Monitoring**: Real-time console log capture with millisecond latency
+- **Connection Management**: Auto-reconnection and health checks with port healing
+- **Screenshot Capability**: DevTools Protocol screenshot capture with intelligent path routing
 - **Structured Logging**: Detailed connection and activity logs
+- **Path Intelligence**: Automatically uses screenshot directories from Continuum API settings
 
 ### Example Usage
 
 ```python
 from continuum_client.devtools.devtools_daemon import start_devtools_daemon
 
-# Start a DevTools daemon
+# Start a DevTools daemon with default Continuum screenshot routing
 daemon_id = await start_devtools_daemon("localhost:9000", [9222, 9223])
+
+# Start with custom screenshot directory
+daemon_id = await start_devtools_daemon("localhost:9000", [9222, 9223], 
+                                       screenshot_dir="/custom/screenshots")
+
+# Capture screenshots with intelligent path routing
+daemon = daemon_manager.active_daemons[daemon_id]
+screenshot_path = await daemon.capture_screenshot("my_screenshot.png")
+# Automatically saved to Continuum's configured screenshot directory
 ```
 
 ## DaemonManager
@@ -175,22 +185,68 @@ $ python3 ai-portal.py --daemon-status devtools-143045
 - **HEALTH_CHECK**: Periodic health status
 - **SHUTDOWN**: Graceful shutdown
 
+## Screenshot Path Routing
+
+The DevTools daemon implements intelligent screenshot path routing that respects Continuum's configuration:
+
+### Path Resolution Priority
+
+1. **Custom Directory**: If explicitly provided, use the custom path
+2. **Continuum API Settings**: Use screenshot directory from Continuum's API configuration  
+3. **Continuum Default**: Use `.continuum/screenshots` if it exists
+4. **Daemon Fallback**: Use `.continuum/daemons/devtools/screenshots` as last resort
+
+### Example Directory Structures
+
+```bash
+# Continuum configured screenshots (preferred)
+.continuum/screenshots/
+├── continuum_screenshot_20250619_015842.png
+├── test_default_routing.png
+└── my_custom_screenshot.jpeg
+
+# Custom directory routing
+/custom/path/screenshots/
+├── project_screenshot_001.png
+└── test_custom_routing.png
+
+# Daemon fallback directory
+.continuum/daemons/devtools/screenshots/
+└── fallback_screenshot.png
+```
+
+### API Integration
+
+```python
+# Portal automatically passes Continuum's screenshot directory
+daemon_id = await start_devtools_daemon(
+    target_url=continuum_api.target_url,
+    screenshot_dir=continuum_api.screenshot_dir  # From Continuum settings
+)
+
+# Screenshot saved to Continuum's configured path
+screenshot_path = await daemon.capture_screenshot("api_screenshot.png")
+```
+
 ## Benefits
 
 ### For Development
 - **Debugging**: Detailed logs for troubleshooting
 - **Monitoring**: Real-time status of all background services
 - **Recovery**: Easy identification and restart of failed services
+- **Path Intelligence**: Screenshots automatically saved to correct directories
 
 ### For Operations
 - **Reliability**: Auto-reconnection and health monitoring
 - **Visibility**: Complete audit trail of daemon activity
 - **Scalability**: Easy addition of new daemon types
+- **Configuration Respect**: Honors Continuum API screenshot settings
 
 ### For AI Agents
 - **State Awareness**: Always know what daemons are running
 - **Log Inspection**: Examine any system's recent activity
 - **Process Recovery**: Failsafe mechanisms for critical services
+- **Automatic Organization**: Screenshots organized per Continuum's preferences
 
 ## Extending the System
 
