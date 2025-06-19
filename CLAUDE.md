@@ -21,6 +21,20 @@ This is NOT just a simple screenshot tool. Continuum is a **revolutionary AI tra
   python python-client/ai-portal.py --connect  # Start persistent monitoring
   ```
 
+**Failsafe Logging Architecture:**
+- **Primary**: Real-time browser console + server logs via WebSocket forwarding
+- **Failsafe**: Daemon system provides backup when WebSocket connections break
+- **Emergency**: Direct daemon log file access when all else fails
+
+```bash
+# When primary logging breaks, use daemon failsafe:
+python python-client/ai-portal.py --daemons           # See what's still running
+python python-client/ai-portal.py --daemon-logs ID    # Read logs from disk
+python python-client/ai-portal.py --failsafe          # Emergency recovery mode
+```
+
+This ensures you can **always accomplish debugging** even when browser connections fail.
+
 ### Essential Commands
 ```bash
 # Status and monitoring
