@@ -12,6 +12,7 @@ class ContinuonStatus {
     this.currentStatus = 'disconnected';
     this.currentEmotion = null;
     this.statusEmoji = '🔴';
+    this.emotionTimeout = null; // For temporary emotions
     
     console.log('🎯 ContinuonStatus: Initialized unified status system');
   }
@@ -32,15 +33,32 @@ class ContinuonStatus {
    * Update AI emotion (lower priority - only shown when healthy)
    * @param {string} emotion - 'excited', 'thinking', 'happy', etc.
    * @param {string} emoji - Custom emoji override
+   * @param {number} duration - Duration in milliseconds (0 = permanent until manually changed)
    */
-  updateEmotion(emotion, emoji = null) {
+  updateEmotion(emotion, emoji = null, duration = 0) {
+    // Clear any existing emotion timeout
+    if (this.emotionTimeout) {
+      clearTimeout(this.emotionTimeout);
+      this.emotionTimeout = null;
+    }
+    
     this.currentEmotion = emotion;
     
-    // Only show emotion if system is healthy
+    // Only show emotion if system is healthy (connected)
     if (this.currentStatus === 'connected') {
       this.statusEmoji = emoji || this.getEmotionEmoji(emotion);
-      console.log(`🎯 ContinuonStatus: Emotion updated to ${emotion} (${this.statusEmoji})`);
+      console.log(`🎯 ContinuonStatus: Emotion updated to ${emotion} (${this.statusEmoji})${duration > 0 ? ` for ${duration}ms` : ' permanently'}`);
       this.broadcastUpdate();
+      
+      // Set timeout to revert to status color if duration specified
+      if (duration > 0) {
+        this.emotionTimeout = setTimeout(() => {
+          console.log(`🎯 ContinuonStatus: Emotion ${emotion} duration expired, reverting to status`);
+          this.currentEmotion = null;
+          this.statusEmoji = this.getStatusEmoji(this.currentStatus);
+          this.broadcastUpdate();
+        }, duration);
+      }
     } else {
       console.log(`🎯 ContinuonStatus: Emotion ${emotion} cached (status priority: ${this.currentStatus})`);
     }
@@ -72,7 +90,15 @@ class ContinuonStatus {
       'processing': '🧠',
       'sleeping': '😴',
       'alert': '👀',
-      'focused': '🎯'
+      'focused': '🎯',
+      'wink': '😉',
+      'smile': '😊',
+      'laugh': '😄',
+      'cool': '😎',
+      'love': '😍',
+      'surprised': '😲',
+      'confused': '😕',
+      'celebration': '🎉'
     };
     return emotionMap[emotion] || '🟢';
   }

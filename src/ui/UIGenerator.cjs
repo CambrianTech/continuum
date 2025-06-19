@@ -1507,6 +1507,16 @@ class UIGenerator {
                             transform: translate(-50%, -50%);
                             z-index: 10;
                         "></span>
+                        <span id="continuon-emotion" style="
+                            position: absolute;
+                            left: 50%;
+                            top: 50%;
+                            transform: translate(-50%, -50%);
+                            z-index: 15;
+                            font-size: 10px;
+                            display: none;
+                            pointer-events: none;
+                        "></span>
                     </div>
                     <div class="logo-text" style="color: #00d4ff; text-shadow: 0 0 8px rgba(0, 212, 255, 0.4);">
                         continuum
@@ -1934,6 +1944,30 @@ class UIGenerator {
                              status === 'connecting' ? '🟡' : // yellow dot  
                              '🔴'; // red dot
                 favicon.href = \`data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>\${emoji}</text></svg>\`;
+            }
+        }
+        
+        // Update continuon emotion display (ring + favicon)
+        function updateContinuonEmotion(emoji, status, emotion) {
+            console.log(\`🎭 Updating continuon display: \${emoji} (status: \${status}, emotion: \${emotion})\`);
+            
+            // Update favicon
+            const favicon = document.getElementById('favicon');
+            if (favicon) {
+                favicon.href = \`data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>\${emoji}</text></svg>\`;
+            }
+            
+            // Update ring emotion overlay
+            const emotionElement = document.getElementById('continuon-emotion');
+            if (emotionElement) {
+                if (emotion && status === 'connected') {
+                    // Show emotion in ring
+                    emotionElement.textContent = emoji;
+                    emotionElement.style.display = 'block';
+                } else {
+                    // Hide emotion overlay, show regular status dot
+                    emotionElement.style.display = 'none';
+                }
             }
         }
 
@@ -2614,6 +2648,13 @@ class UIGenerator {
                     console.log('   ws exists:', !!window.ws);
                     console.log('   ws.readyState:', window.ws ? window.ws.readyState : 'undefined');
                 }
+                return;
+            }
+            
+            // Handle continuon status/emotion updates
+            if (data.type === 'continuon_status_update') {
+                console.log('🎭 Continuon status update:', data);
+                updateContinuonEmotion(data.emoji, data.status, data.emotion);
                 return;
             }
             
