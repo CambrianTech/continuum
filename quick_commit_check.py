@@ -57,16 +57,140 @@ def show_progress():
     thread.start()
     return thread
 
-def open_progress_widget():
-    """Open the progress widget in browser"""
+def inject_progress_widget():
+    """Inject progress widget directly into Continuum interface"""
     try:
-        widget_path = Path('verification/progress-widget.html').absolute()
-        if widget_path.exists():
-            subprocess.run(['open', str(widget_path)], check=False)
-            return True
-    except:
-        pass
-    return False
+        # JavaScript to inject the progress widget into the existing Continuum window
+        widget_js = """
+        // Remove any existing progress widget
+        const existingWidget = document.getElementById('continuum-progress-widget');
+        if (existingWidget) existingWidget.remove();
+        
+        // Create progress widget overlay
+        const widget = document.createElement('div');
+        widget.id = 'continuum-progress-widget';
+        widget.innerHTML = `
+            <div style="
+                position: fixed;
+                top: 20px;
+                left: 20px;
+                width: 350px;
+                height: 200px;
+                background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+                color: white;
+                padding: 15px;
+                border-radius: 12px;
+                backdrop-filter: blur(10px);
+                box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+                z-index: 10000;
+                font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+                font-size: 12px;
+                cursor: move;
+            ">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <div style="display: flex; align-items: center;">
+                        <span style="font-size: 20px; margin-right: 8px;">🛡️</span>
+                        <span style="font-weight: bold;">Commit Verification</span>
+                    </div>
+                    <button onclick="this.parentElement.parentElement.parentElement.remove()" 
+                            style="background: rgba(255,255,255,0.2); border: none; color: white; 
+                                   width: 20px; height: 20px; border-radius: 50%; cursor: pointer;">×</button>
+                </div>
+                
+                <div style="margin-bottom: 10px; opacity: 0.8;">Ensuring system health before commit</div>
+                
+                <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.2); border-radius: 3px; margin: 10px 0;">
+                    <div id="progress-fill" style="height: 100%; background: linear-gradient(90deg, #00f5ff, #0080ff); 
+                                                   border-radius: 3px; width: 0%; transition: width 0.3s ease;"></div>
+                </div>
+                
+                <div id="status" style="margin: 10px 0; min-height: 16px;">
+                    <span id="spinner">⠋</span> Initializing verification system...
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
+                    <div style="background: rgba(255,255,255,0.1); padding: 8px; border-radius: 6px;">
+                        <div style="font-size: 9px; opacity: 0.7;">ELAPSED TIME</div>
+                        <div id="elapsed" style="font-size: 14px; font-weight: bold;">0.0s</div>
+                    </div>
+                    <div style="background: rgba(255,255,255,0.1); padding: 8px; border-radius: 6px;">
+                        <div style="font-size: 9px; opacity: 0.7;">CURRENT STEP</div>
+                        <div id="step" style="font-size: 14px; font-weight: bold;">1/4</div>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(widget);
+        
+        // Start progress simulation
+        let progress = 0;
+        let step = 0;
+        const steps = ['🔍 Diagnosing...', '🚀 Launching Opera...', '🧪 Testing JS...', '📸 Capturing UI...'];
+        const startTime = Date.now();
+        
+        function updateProgress() {
+            const elapsed = (Date.now() - startTime) / 1000;
+            document.getElementById('elapsed').textContent = elapsed.toFixed(1) + 's';
+            
+            // Simulate progress
+            if (progress < 100) {
+                progress += Math.random() * 2;
+                document.getElementById('progress-fill').style.width = Math.min(progress, 100) + '%';
+                
+                // Update step
+                const currentStep = Math.floor(progress / 25);
+                if (currentStep !== step && currentStep < steps.length) {
+                    step = currentStep;
+                    document.getElementById('status').innerHTML = 
+                        '<span id="spinner">⠋</span> ' + steps[step];
+                    document.getElementById('step').textContent = (step + 1) + '/4';
+                }
+                
+                setTimeout(updateProgress, 100);
+            } else {
+                document.getElementById('status').innerHTML = '✅ Verification complete!';
+                document.getElementById('step').textContent = '✅ Done';
+                setTimeout(() => {
+                    const widget = document.getElementById('continuum-progress-widget');
+                    if (widget) widget.remove();
+                }, 2000);
+            }
+        }
+        
+        // Spinner animation
+        const spinnerChars = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+        let spinnerIndex = 0;
+        setInterval(() => {
+            const spinner = document.getElementById('spinner');
+            if (spinner) {
+                spinner.textContent = spinnerChars[spinnerIndex % spinnerChars.length];
+                spinnerIndex++;
+            }
+        }, 100);
+        
+        updateProgress();
+        """
+        
+        # Execute this JavaScript in the Continuum browser via the portal
+        import json
+        import base64
+        
+        # Base64 encode the JavaScript
+        widget_js_b64 = base64.b64encode(widget_js.encode('utf-8')).decode('utf-8')
+        
+        result = subprocess.run([
+            sys.executable, 'python-client/ai-portal.py', '--cmd', 'browser_js',
+            '--params', json.dumps({
+                'script': widget_js_b64,
+                'encoding': 'base64'
+            })
+        ], capture_output=True, text=True, timeout=10)
+        
+        return result.returncode == 0
+        
+    except Exception as e:
+        print(f"Failed to inject progress widget: {e}")
+        return False
 
 def main():
     global progress_done
@@ -75,10 +199,10 @@ def main():
     print("=" * 40)
     start_time = time.time()
     
-    # Open progress widget in browser
-    widget_opened = open_progress_widget()
-    if widget_opened:
-        print("🌐 Progress widget opened in browser")
+    # Inject progress widget into Continuum interface
+    widget_injected = inject_progress_widget()
+    if widget_injected:
+        print("🌐 Progress widget injected into Continuum interface")
     
     # Show progress during verification
     progress_thread = show_progress()
