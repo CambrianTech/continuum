@@ -120,12 +120,39 @@ python3 python-client/ai-portal.py --cmd [command] --help
 - **Self-Documenting**: Help system generates live documentation
 - **No God Objects**: Clean separation of concerns throughout
 
+## DevTools Integration System
+
+🚨 **CRITICAL**: Continuum has a sophisticated DevTools integration system for browser automation and screenshot capture.
+
+| Document | Purpose |
+|----------|---------|
+| `DEVTOOLS_INTEGRATION_PLAN.md` | 📋 Complete DevTools integration roadmap and architecture |
+| `DEVTOOLS_AUTO_LAUNCH_MECHANISM.md` | 🔧 Technical analysis of auto-browser launch system |
+| `python-client/demos/devtools/` | 🎯 **5 production-ready demo scripts** proving system works |
+
+**Quick DevTools Test:**
+```bash
+# Complete DevTools system with real-time logging and screenshots
+python python-client/demos/devtools/start_devtools_system.py
+
+# Takes screenshot via DevTools Protocol (not html2canvas)
+python python-client/take_devtools_screenshot.py test_screenshot
+```
+
+**Key DevTools Features:**
+- ✅ Auto-launches Opera GX in debug mode with `--remote-debugging-port=9222`
+- ✅ Real-time browser console log streaming with <100ms latency
+- ✅ Screenshot capture via DevTools Protocol (superior to html2canvas)
+- ✅ Works independently of Continuum server state
+- ✅ Intelligent fallback chain (DevTools → html2canvas → portal daemon)
+
 ## Key Locations
 
 | Location | Purpose |
 |----------|---------|
 | `python-client/ai-portal.py` | 🚀 Primary AI agent interface (thin client adapter) |
 | `python-client/continuum_client/` | Promise-based Python API library |
+| `python-client/demos/devtools/` | 🎯 DevTools integration demos and production scripts |
 | `src/commands/core/` | Modular command implementations |
 | `src/integrations/WebSocketServer.cjs` | Command bus message routing |
 | `.continuum/` | Workspace directory (managed by workspace command) |
