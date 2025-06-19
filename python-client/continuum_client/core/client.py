@@ -30,6 +30,9 @@ class ContinuumClient:
         # Universal command interface - initialized after connection
         self.command = None
         
+        # DevTools integration - lazy loaded
+        self._devtools = None
+        
     async def connect(self) -> None:
         """
         Connect to Continuum WebSocket server with auto-healing
@@ -102,6 +105,21 @@ class ContinuumClient:
         if self.ws:
             await self.ws.close()
             self.connected = False
+            
+    @property
+    def devtools(self):
+        """
+        Lazy-loaded DevTools client for browser automation
+        
+        Usage:
+            client = ContinuumClient()
+            client.devtools.take_screenshot("test.png")
+            client.devtools.execute_script("console.log('Hello')")
+        """
+        if self._devtools is None:
+            from ..devtools import DevToolsClient
+            self._devtools = DevToolsClient()
+        return self._devtools
     
     async def _message_loop(self):
         """

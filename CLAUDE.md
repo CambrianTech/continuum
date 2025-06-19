@@ -29,6 +29,12 @@ python python-client/ai-portal.py --roadmap     # Complete restoration strategy
 python python-client/ai-portal.py --broken      # See broken commands
 python python-client/ai-portal.py --cmd tests   # Run unit tests
 
+# DevTools daemon management
+python python-client/ai-portal.py --devtools    # Start DevTools daemon
+python python-client/ai-portal.py --daemons     # List running daemons
+python python-client/ai-portal.py --daemon-logs ID  # Get daemon logs
+python python-client/ai-portal.py --failsafe    # Emergency recovery
+
 # Working automation (CRITICAL DISCOVERY)
 python python-client/trust_the_process.py       # 336 lines of working browser automation!
 

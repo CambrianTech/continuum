@@ -40,6 +40,11 @@ class WebSocketServer extends EventEmitter {
       // Emit connection event for ContinuonStatus
       this.emit('connection', sessionId);
       
+      // Track client browser for intelligent DevTools connection
+      if (this.continuum.clientManager) {
+        this.continuum.clientManager.addClient(sessionId, ws);
+      }
+      
       // Update Continuon status indicator
       if (this.continuum.systemTray) {
         this.continuum.systemTray.onUserConnected();
@@ -63,6 +68,7 @@ class WebSocketServer extends EventEmitter {
   getSessionId(ws) {
     return ws.sessionId;
   }
+
 
   sendConnectionBanner(ws, sessionId) {
     const packageInfo = require('../../package.json');
@@ -187,8 +193,11 @@ class WebSocketServer extends EventEmitter {
   async handleMessage(ws, message) {
     try {
       const messageStr = message.toString();
+      console.log('🔍 SERVER-DIAGNOSTIC: handleMessage called');
+      console.log('🔍 SERVER-DIAGNOSTIC: message length:', messageStr.length);
       console.log('📨 RAW MESSAGE RECEIVED:', messageStr.length > 200 ? messageStr.substring(0, 200) + '...' : messageStr);
       const data = JSON.parse(message);
+      console.log('🔍 SERVER-DIAGNOSTIC: parsed data type:', data.type);
       console.log('📋 PARSED MESSAGE TYPE:', data.type);
       
       // SPECIAL DEBUG: Track screenshot_data messages
@@ -1283,6 +1292,11 @@ class WebSocketServer extends EventEmitter {
     
     // Emit disconnect event for ContinuonStatus
     this.emit('disconnect', sessionId);
+    
+    // Clean up client tracking
+    if (this.continuum.clientManager) {
+      this.continuum.clientManager.removeClient(sessionId);
+    }
     
     // Clean up ClientConnections
     if (this.activeBrowserConnections) {

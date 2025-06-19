@@ -51,6 +51,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from continuum_client import ContinuumClient
 from continuum_client.utils import load_continuum_config
+from continuum_client.devtools import DevToolsLogMonitor, LiveDevToolsMonitor
+from continuum_client.core.daemon_manager import daemon_manager
 
 def get_portal_dir():
     """Get .continuum/ai-portal directory"""
@@ -78,12 +80,24 @@ def get_scripts_dir():
 
 def write_log(message: str):
     """Write to buffer log"""
+    print(f"🔍 CLIENT-DIAGNOSTIC: write_log called with: {message[:100]}...")
+    
     logs_dir = get_logs_dir()
+    print(f"🔍 CLIENT-DIAGNOSTIC: logs_dir = {logs_dir}")
+    
     buffer_file = logs_dir / 'buffer.log'
+    print(f"🔍 CLIENT-DIAGNOSTIC: buffer_file path: {buffer_file}")
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(buffer_file, 'a') as f:
-        f.write(f"[{timestamp}] {message}\n")
+    log_entry = f"[{timestamp}] {message}\n"
+    print(f"🔍 CLIENT-DIAGNOSTIC: log_entry: {log_entry[:100]}...")
+    
+    try:
+        with open(buffer_file, 'a') as f:
+            f.write(log_entry)
+        print(f"🔍 CLIENT-DIAGNOSTIC: Successfully wrote to buffer.log")
+    except Exception as e:
+        print(f"🔍 CLIENT-DIAGNOSTIC: Error writing to buffer.log: {e}")
 
 async def handle_message(message):
     """Complete message logger - capture everything"""
@@ -91,12 +105,165 @@ async def handle_message(message):
     # Log the full message, not truncated
     write_log(f"WS_RECV: {json.dumps(message, indent=2)}")
 
+# Global DevTools monitor instance and background task
+devtools_monitor = None
+_devtools_background_task = None
+
+async def handle_browser_log(log_entry):
+    """Handle browser console log from DevTools"""
+    timestamp = log_entry['timestamp']
+    level = log_entry['level'].upper()
+    text = log_entry['text']
+    browser = log_entry.get('browser', 'browser')
+    
+    # Write to our buffer log system
+    write_log(f"BROWSER_LOG [{browser}] [{level}]: {text}")
+    
+    # Also print for immediate feedback
+    print(f"🌐 [{timestamp}] {level}: {text}")
+
+async def keep_devtools_alive():
+    """Background task to keep DevTools connection alive"""
+    global devtools_monitor
+    
+    while True:
+        try:
+            await asyncio.sleep(10)  # Check every 10 seconds
+            
+            if devtools_monitor and not devtools_monitor.connected:
+                print("🔌 DevTools connection lost, reconnecting...")
+                await start_devtools_monitoring()
+                
+        except Exception as e:
+            print(f"🔌 DevTools keepalive error: {e}")
+            await asyncio.sleep(30)  # Wait longer on error
+
+async def start_devtools_monitoring():
+    """Start DevTools browser console monitoring with persistent connection"""
+    global devtools_monitor, _devtools_background_task
+    
+    if devtools_monitor and devtools_monitor.connected:
+        print("🔌 DevTools monitor already running")
+        return devtools_monitor
+    
+    print("🔌 Starting DevTools browser console monitoring...")
+    
+    # Try Chrome/Opera first (most common)
+    for browser_port in [9222, 9223]:  # Chrome/Opera and Edge
+        try:
+            devtools_monitor = DevToolsLogMonitor(
+                chrome_port=browser_port,
+                target_url="localhost:9000",
+                log_callback=handle_browser_log
+            )
+            
+            success = await devtools_monitor.connect()
+            if success:
+                print(f"🔌 DevTools connected on port {browser_port}")
+                write_log(f"SYSTEM: DevTools monitoring started on port {browser_port}")
+                
+                # Start background keepalive task
+                if not _devtools_background_task or _devtools_background_task.done():
+                    _devtools_background_task = asyncio.create_task(keep_devtools_alive())
+                    print("🔌 DevTools keepalive task started")
+                
+                return devtools_monitor
+            
+        except Exception as e:
+            print(f"🔌 DevTools port {browser_port} failed: {e}")
+    
+    print("🔌 DevTools: No browser found with remote debugging enabled")
+    print("🔌 Start Chrome/Opera with: chrome --remote-debugging-port=9222")
+    return None
+
+async def stop_devtools_monitoring():
+    """Stop DevTools monitoring"""
+    global devtools_monitor, _devtools_background_task
+    
+    # Cancel background task
+    if _devtools_background_task and not _devtools_background_task.done():
+        _devtools_background_task.cancel()
+        _devtools_background_task = None
+        print("🔌 DevTools keepalive task stopped")
+    
+    if devtools_monitor:
+        await devtools_monitor.disconnect()
+        devtools_monitor = None
+        write_log("SYSTEM: DevTools monitoring stopped")
+        print("🔌 DevTools monitoring stopped")
+
+async def handle_devtools_action(action: str, params: dict):
+    """Handle DevTools actions directly in Portal"""
+    global devtools_monitor
+    
+    if action == 'start_devtools_monitoring':
+        browser = params.get('browser', 'auto')
+        print(f"🔌 Starting DevTools monitoring for {browser}...")
+        
+        monitor = await start_devtools_monitoring()
+        if monitor:
+            return {'success': True, 'message': f'DevTools monitoring started for {browser}'}
+        else:
+            return {'success': False, 'message': 'Failed to start DevTools monitoring'}
+    
+    elif action == 'show_browser_logs':
+        lines = params.get('lines', 10)
+        
+        if devtools_monitor and devtools_monitor.connected:
+            logs = devtools_monitor.get_recent_logs(lines)
+            print(f"🌐 Recent Browser Logs ({len(logs)} entries):")
+            for log in logs:
+                print(f"  [{log['timestamp']}] {log['level'].upper()}: {log['text']}")
+            return {'success': True, 'logs': logs}
+        else:
+            print("🔌 DevTools not connected")
+            return {'success': False, 'message': 'DevTools not connected'}
+    
+    elif action == 'browser_status':
+        if devtools_monitor:
+            status = devtools_monitor.get_connection_status()
+            print(f"🔌 Browser Status: {'Connected' if status['connected'] else 'Disconnected'}")
+            print(f"   Port: {status['chrome_port']}, Logs: {status['stored_logs']}")
+            return {'success': True, 'status': status}
+        else:
+            print("🔌 DevTools monitor not initialized")
+            return {'success': False, 'message': 'DevTools monitor not initialized'}
+    
+    elif action == 'launch_opera_devtools':
+        print("🚀 Launching Opera with DevTools...")
+        import subprocess
+        try:
+            subprocess.Popen([
+                '/Applications/Opera GX.app/Contents/MacOS/Opera',
+                '--remote-debugging-port=9222',
+                'http://localhost:9000'
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # Wait and try to connect
+            await asyncio.sleep(3)
+            monitor = await start_devtools_monitoring()
+            
+            if monitor:
+                return {'success': True, 'message': 'Opera launched and DevTools connected'}
+            else:
+                return {'success': True, 'message': 'Opera launched, but DevTools connection pending'}
+        except Exception as e:
+            return {'success': False, 'message': f'Failed to launch Opera: {e}'}
+    
+    else:
+        return {'success': False, 'message': f'Unknown DevTools action: {action}'}
+
 async def start_buffer():
-    """Start buffering WebSocket messages"""
-    print("🚀 Starting buffer...")
+    """Start buffering WebSocket messages with DevTools integration"""
+    print("🚀 Starting comprehensive log monitoring...")
     
     try:
         load_continuum_config()
+        
+        # Start DevTools monitoring first
+        devtools = await start_devtools_monitoring()
+        if devtools:
+            print("🔌 Browser console monitoring enabled")
         
         async with ContinuumClient() as client:
             await client.register_agent({
@@ -106,32 +273,76 @@ async def start_buffer():
             })
             
             client.add_message_handler(handle_message)
-            write_log("SYSTEM: Buffer started")
+            write_log("SYSTEM: Comprehensive monitoring started")
             
-            print(f"📁 Logging to: {get_logs_dir()}/buffer.log")
-            print("🔄 Buffering (Ctrl+C to stop)")
+            print(f"📁 WebSocket logs: {get_logs_dir()}/buffer.log")
+            if devtools:
+                print(f"🌐 Browser logs: Real-time console monitoring")
+            print("🔄 Monitoring both WebSocket and browser (Ctrl+C to stop)")
             
             while True:
                 await asyncio.sleep(1)
                 
     except KeyboardInterrupt:
-        write_log("SYSTEM: Buffer stopped")
-        print("\n👋 Buffer stopped")
+        write_log("SYSTEM: Monitoring stopped")
+        await stop_devtools_monitoring()
+        print("\n👋 Monitoring stopped")
 
 def show_logs(lines: int = 10):
-    """Show recent log lines from both client and server"""
+    """Show recent log lines from client, server, and browser with failsafe recovery"""
+    global devtools_monitor
+    
     print(f"📋 CLIENT LOGS (Last {lines} entries):")
     buffer_file = get_logs_dir() / 'buffer.log'
     
+    # FAILSAFE: Check if DevTools monitoring is working as backup
+    devtools_status = "❌ Not connected"
+    if devtools_monitor and devtools_monitor.connected:
+        devtools_status = "✅ Live monitoring active (FAILSAFE)"
+    elif devtools_monitor:
+        devtools_status = "⚠️ Connected but inactive"
+    
+    print(f"🔌 DevTools Failsafe Status: {devtools_status}")
+    
     if buffer_file.exists():
-        with open(buffer_file) as f:
-            all_lines = f.readlines()
-            recent = all_lines[-lines:] if len(all_lines) >= lines else all_lines
-            
-        for line in recent:
-            print(f"  📱 {line.strip()}")
+        try:
+            with open(buffer_file) as f:
+                all_lines = f.readlines()
+                recent = all_lines[-lines:] if len(all_lines) >= lines else all_lines
+                
+            for line in recent:
+                line_clean = line.strip()
+                if "BROWSER_LOG" in line_clean:
+                    print(f"  🌐 {line_clean}")
+                elif "WS_RECV" in line_clean:
+                    print(f"  📡 {line_clean}")
+                else:
+                    print(f"  📱 {line_clean}")
+        except Exception as e:
+            print(f"🔍 Error reading buffer file: {e}")
     else:
         print("  📝 No client logs found")
+    
+    # Show live browser logs if DevTools is connected
+    if devtools_monitor and devtools_monitor.connected:
+        print(f"\n🌐 BROWSER LOGS (Last {lines} from DevTools):")
+        recent_browser_logs = devtools_monitor.get_recent_logs(lines)
+        
+        if recent_browser_logs:
+            for log_entry in recent_browser_logs:
+                timestamp = log_entry['timestamp']
+                level = log_entry['level'].upper()
+                text = log_entry['text']
+                print(f"  🔗 [{timestamp}] {level}: {text}")
+        else:
+            print("  📝 No recent browser logs")
+            
+        # Show connection status
+        status = devtools_monitor.get_connection_status()
+        print(f"  📊 Status: {status['stored_logs']} logs stored, port {status['chrome_port']}")
+    else:
+        print(f"\n🌐 BROWSER LOGS: DevTools not connected")
+        print("  💡 Use 'python ai-portal.py --buffer' to start browser monitoring")
     
     print(f"\n📋 SERVER LOGS (Last {lines} entries):")
     # Try multiple server log locations
@@ -141,16 +352,29 @@ def show_logs(lines: int = 10):
         Path('.continuum') / 'continuum.log'
     ]
     
+    print(f"🔍 DIAGNOSTIC: Checking {len(server_logs)} server log locations...")
+    for i, log_file in enumerate(server_logs):
+        print(f"🔍 DIAGNOSTIC: Location {i+1}: {log_file} - exists: {log_file.exists()}")
+    
     server_log_found = False
     for log_file in server_logs:
         if log_file.exists():
             server_log_found = True
-            with open(log_file) as f:
-                all_lines = f.readlines()
-                recent = all_lines[-lines:] if len(all_lines) >= lines else all_lines
+            print(f"🔍 DIAGNOSTIC: Using server log: {log_file}")
+            try:
+                stat = log_file.stat()
+                print(f"🔍 DIAGNOSTIC: Server log size: {stat.st_size} bytes")
+                print(f"🔍 DIAGNOSTIC: Server log modified: {datetime.fromtimestamp(stat.st_mtime)}")
                 
-            for line in recent:
-                print(f"  🖥️  {line.strip()}")
+                with open(log_file) as f:
+                    all_lines = f.readlines()
+                    print(f"🔍 DIAGNOSTIC: Read {len(all_lines)} total server log lines")
+                    recent = all_lines[-lines:] if len(all_lines) >= lines else all_lines
+                    
+                for line in recent:
+                    print(f"  🖥️  {line.strip()}")
+            except Exception as e:
+                print(f"🔍 DIAGNOSTIC: Error reading server log: {e}")
             break
     
     if not server_log_found:
@@ -316,10 +540,15 @@ async def run_command(cmd: str, params: str = "{}", verbose: bool = False):
                     # Direct client method call via eval
                     result = await eval(f"{cmd}")
                 else:
-                    # Continuum command via send_command
+                    # Handle DevTools actions directly in Portal
                     import json
                     params_dict = json.loads(params) if params != "{}" else {}
-                    result = await client.send_command(cmd, params_dict)
+                    
+                    if cmd == 'devtools_action' and isinstance(params_dict, dict) and params_dict.get('action'):
+                        result = await handle_devtools_action(params_dict['action'], params_dict)
+                    else:
+                        # Regular Continuum command via send_command
+                        result = await client.send_command(cmd, params_dict)
                 
                 # Handle both string and dict responses safely
                 if verbose:
@@ -353,7 +582,9 @@ async def run_command(cmd: str, params: str = "{}", verbose: bool = False):
                     else:
                         print(f"✅ Command completed: {result}")
                 
+                print(f"🔍 CLIENT-DIAGNOSTIC: About to write_log for command: {cmd}")
                 write_log(f"COMMAND: {cmd} {params} -> {result}")
+                print(f"🔍 CLIENT-DIAGNOSTIC: write_log completed for command: {cmd}")
                 return result
                 
         except Exception as e:
@@ -785,6 +1016,30 @@ def get_command_tokenizer():
             'params': {'live': True}
         },
         
+        # DevTools commands - direct Portal integration
+        'devtools': lambda args: {
+            'command': 'devtools_action',
+            'params': {
+                'action': 'start_devtools_monitoring',
+                'browser': args[0] if args else 'auto'
+            }
+        },
+        'browser-logs': lambda args: {
+            'command': 'devtools_action',
+            'params': {
+                'action': 'show_browser_logs',
+                'lines': int(args[0]) if args and args[0].isdigit() else 10
+            }
+        },
+        'browser-status': lambda args: {
+            'command': 'devtools_action',
+            'params': {'action': 'browser_status'}
+        },
+        'launch-opera': lambda args: {
+            'command': 'devtools_action',
+            'params': {'action': 'launch_opera_devtools'}
+        },
+        
         # Help commands  
         'help': lambda args: {
             'command': 'help',
@@ -853,6 +1108,12 @@ def tokenize_command(cmd, args):
 @click.option('--test', is_flag=True, help='Run Continuum test suite')
 @click.option('--connect', is_flag=True, help='Start persistent event monitoring connection')
 @click.option('--disconnect', is_flag=True, help='Stop persistent event monitoring connection')
+@click.option('--devtools', is_flag=True, help='Start persistent DevTools browser console monitoring')
+@click.option('--live', is_flag=True, help='Start intelligent live log monitoring system')
+@click.option('--failsafe', is_flag=True, help='Emergency DevTools failsafe recovery for logs')
+@click.option('--daemons', is_flag=True, help='List all running daemons')
+@click.option('--daemon-logs', help='Show logs for specific daemon ID')
+@click.option('--daemon-status', help='Show status for specific daemon ID')
 @click.option('--roadmap', is_flag=True, help='Show development roadmap and vision')
 @click.option('--files', is_flag=True, help='Show codebase structure and reduction mission')
 @click.pass_context
@@ -884,9 +1145,11 @@ def tokenize_command(cmd, args):
 @click.option('--help-cmd', help='Show help for specific command')
 @click.option('--debug', is_flag=True, help='Show full debug output including stack traces')
 @click.option('--version-test', is_flag=True, help='Test version increment and deployment pipeline')
+@click.option('--devtools', is_flag=True, help='Start DevTools browser console monitoring only')
+@click.option('--notify', help='Send notify command to test browser log capture (e.g. --notify "Test message")')
 def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick, test, connect, disconnect, roadmap, files, action, task, workspace, selector, filename, 
          verbose, sync, output, run, script_args, timeout, return_result, exec, shell_timeout,
-         program, script, save_script, list_scripts, help_cmd, debug, version_test):
+         program, script, save_script, list_scripts, help_cmd, debug, version_test, devtools, live, failsafe, daemons, daemon_logs, daemon_status, notify):
     """AI Portal - Your Robot Agent for Continuum development workflow"""
     
     async def run_cli():
@@ -895,6 +1158,24 @@ def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick
             return await start_monitoring_connection()
         if disconnect:
             return await stop_monitoring_connection()
+        if devtools:
+            return await start_devtools_daemon()
+        if live:
+            return await start_live_monitor()
+        if failsafe:
+            return await emergency_failsafe_recovery()
+        if daemons:
+            return show_daemon_list()
+        if daemon_logs:
+            return show_daemon_logs(daemon_logs)
+        if daemon_status:
+            return show_daemon_status(daemon_status)
+        
+        # Handle notify test command
+        if notify:
+            print(f"🔔 Sending notify command: {notify}")
+            await run_command('notify', json.dumps({"message": notify, "source": "ai-portal-test"}))
+            return
             
         # Handle dashboard options first
         if dashboard or broken or recent or quick or test or roadmap or files:
@@ -1166,6 +1447,190 @@ async def stop_monitoring_connection():
     except (OSError, ValueError) as e:
         print(f"📡 Failed to stop monitor: {e}")
         pid_file.unlink(missing_ok=True)
+
+async def start_devtools_daemon():
+    """Start DevTools monitoring using modular platform"""
+    print("🔌 Starting DevTools browser console monitoring...")
+    
+    try:
+        # Use the modular DevToolsLogMonitor
+        monitor = await start_devtools_monitoring()
+        if monitor:
+            print("🔌 DevTools monitoring active - press Ctrl+C to stop")
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except KeyboardInterrupt:
+                await stop_devtools_monitoring()
+                print("\n🔌 DevTools monitoring stopped")
+        else:
+            print("❌ Failed to start DevTools monitoring")
+    except Exception as e:
+        print(f"❌ DevTools monitoring error: {e}")
+
+async def start_live_monitor():
+    """Start intelligent live monitoring using modular platform"""
+    print("📡 Starting intelligent live DevTools monitoring...")
+    
+    try:
+        # Use the modular LiveDevToolsMonitor
+        monitor = LiveDevToolsMonitor()
+        
+        # Add Portal buffer logging
+        def portal_log_callback(log_entry):
+            write_log(f"BROWSER_LOG [{log_entry.get('source', 'browser')}] [{log_entry.get('level', 'INFO').upper()}]: {log_entry.get('text', '')}")
+        
+        monitor.add_live_callback(portal_log_callback)
+        
+        print("📡 Intelligent real-time system with screenshot support")
+        print("📡 Memory-based responsiveness - press Ctrl+C to stop")
+        
+        # Run the live monitor
+        await monitor.run()
+        
+    except KeyboardInterrupt:
+        print("\n📡 Live monitoring stopped")
+    except Exception as e:
+        print(f"❌ Live monitoring error: {e}")
+
+async def emergency_failsafe_recovery():
+    """Emergency failsafe recovery for critical log monitoring"""
+    print("🚨 EMERGENCY FAILSAFE RECOVERY - Critical log monitoring")
+    print("🚨 This is our most critical feedback mechanism for codebase state")
+    
+    try:
+        # Check current state
+        print("\n📊 CURRENT STATE ASSESSMENT:")
+        
+        # Check if Continuum server is running
+        try:
+            await run_command("info", "{}")
+            print("✅ Continuum server: RESPONDING")
+        except Exception as e:
+            print(f"❌ Continuum server: FAILED - {e}")
+            print("🔧 Attempting server recovery...")
+            try:
+                await run_command("restart", "{}")
+                print("✅ Server restart initiated")
+            except:
+                print("❌ Server restart failed - manual intervention may be needed")
+        
+        # Check DevTools connection
+        global devtools_monitor
+        if devtools_monitor and devtools_monitor.connected:
+            print("✅ DevTools failsafe: ACTIVE")
+        else:
+            print("❌ DevTools failsafe: INACTIVE")
+            print("🔧 Starting emergency DevTools monitoring...")
+            
+            monitor = await start_devtools_monitoring()
+            if monitor:
+                print("✅ Emergency DevTools monitoring: ACTIVATED")
+            else:
+                print("❌ Emergency DevTools monitoring: FAILED")
+                print("💡 Try: Opera with --remote-debugging-port=9222")
+        
+        # Check log files
+        buffer_file = get_logs_dir() / 'buffer.log'
+        if buffer_file.exists():
+            size = buffer_file.stat().st_size
+            print(f"✅ Log buffer: {size} bytes")
+        else:
+            print("❌ Log buffer: MISSING")
+            print("🔧 Creating log buffer...")
+            write_log("SYSTEM: Emergency failsafe recovery initiated")
+            print("✅ Log buffer: CREATED")
+        
+        # Show recent activity for state assessment
+        print("\n📋 RECENT ACTIVITY (for state assessment):")
+        show_logs(5)
+        
+        print("\n🚨 FAILSAFE RECOVERY COMPLETE")
+        print("🔍 Use 'python3 ai-portal.py --logs' to monitor state")
+        print("🔌 Use 'python3 ai-portal.py --connect' for persistent monitoring")
+        
+    except Exception as e:
+        print(f"🚨 FAILSAFE RECOVERY ERROR: {e}")
+        print("🚨 CRITICAL: Manual intervention required")
+
+def show_daemon_list():
+    """List all running daemons"""
+    print("🤖 RUNNING DAEMONS:")
+    
+    daemons = daemon_manager.list_daemons()
+    
+    if not daemons:
+        print("  📝 No daemons currently running")
+        return
+    
+    for daemon_info in daemons:
+        daemon_id = daemon_info['daemon_id']
+        daemon_type = daemon_info['daemon_type']
+        uptime = daemon_info['uptime_seconds']
+        running = "🟢 Running" if daemon_info['running'] else "🔴 Stopped"
+        
+        print(f"  🤖 {daemon_id}")
+        print(f"     Type: {daemon_type}")
+        print(f"     Status: {running}")
+        print(f"     Uptime: {uptime:.1f}s")
+        print(f"     Logs: {daemon_info['memory_logs_count']} entries")
+        print()
+
+def show_daemon_logs(daemon_id: str):
+    """Show logs for specific daemon"""
+    print(f"📋 DAEMON LOGS: {daemon_id}")
+    
+    logs = daemon_manager.get_daemon_logs(daemon_id, lines=20)
+    
+    if not logs:
+        print(f"  ❌ No logs found for daemon: {daemon_id}")
+        return
+    
+    for log_entry in logs:
+        if isinstance(log_entry, dict):
+            timestamp = log_entry.get('timestamp', 'unknown')
+            level = log_entry.get('level', 'INFO')
+            message = log_entry.get('message', '')
+            
+            # Format timestamp for readability
+            try:
+                dt = datetime.fromisoformat(timestamp)
+                time_str = dt.strftime("%H:%M:%S")
+            except:
+                time_str = timestamp
+            
+            print(f"  [{time_str}] {level}: {message}")
+            
+            # Show additional data if present
+            if 'data' in log_entry and log_entry['data']:
+                for key, value in log_entry['data'].items():
+                    print(f"    {key}: {value}")
+        else:
+            print(f"  {log_entry}")
+
+def show_daemon_status(daemon_id: str):
+    """Show detailed status for specific daemon"""
+    print(f"📊 DAEMON STATUS: {daemon_id}")
+    
+    status = daemon_manager.get_daemon_status(daemon_id)
+    
+    if not status:
+        print(f"  ❌ Daemon not found: {daemon_id}")
+        return
+    
+    print(f"  🤖 Daemon ID: {status['daemon_id']}")
+    print(f"  📋 Type: {status['daemon_type']}")
+    print(f"  🔄 Running: {status['running']}")
+    print(f"  ⏱️  Uptime: {status['uptime_seconds']:.1f}s")
+    print(f"  📝 Log File: {status['log_file']}")
+    print(f"  💾 Memory Logs: {status['memory_logs_count']}")
+    print(f"  🚀 Start Time: {status['start_time']}")
+    
+    # Show type-specific status if available
+    if 'browser_connected' in status:
+        print(f"  🌐 Browser Connected: {status['browser_connected']}")
+        print(f"  📊 Logs Captured: {status.get('logs_captured', 0)}")
+        print(f"  🔗 Target URL: {status.get('target_url', 'unknown')}")
 
 if __name__ == "__main__":
     import sys
