@@ -49,6 +49,10 @@ python python-client/ai-portal.py --daemons     # List running daemons
 python python-client/ai-portal.py --daemon-logs ID  # Get daemon logs
 python python-client/ai-portal.py --failsafe    # Emergency recovery
 
+# Screenshot capture with intelligent path routing
+python python-client/ai-portal.py --cmd screenshot --filename myshot.png  # Uses Continuum's configured paths
+# Daemon automatically uses screenshot dir from Continuum API settings
+
 # Working automation (CRITICAL DISCOVERY)
 python python-client/trust_the_process.py       # 336 lines of working browser automation!
 

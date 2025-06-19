@@ -61,20 +61,30 @@ class DevToolsLogMonitor:
             
             print(f"🔌 DevTools: Connecting to: {target.get('title', 'Unknown')}")
             
-            # Connect to WebSocket
-            self.ws = await websockets.connect(target['webSocketDebuggerUrl'])
+            # Connect to WebSocket with timeout
+            print(f"🔌 DevTools: Connecting to WebSocket: {target['webSocketDebuggerUrl']}")
+            self.ws = await asyncio.wait_for(
+                websockets.connect(target['webSocketDebuggerUrl']), 
+                timeout=10.0
+            )
             self.connected = True
+            print("🔌 DevTools: WebSocket connected")
             
-            # Enable required domains for logging
-            await self._send_command("Log.enable")
-            await self._send_command("Runtime.enable") 
-            await self._send_command("Network.enable")
-            
-            print("🔌 DevTools: Connected and monitoring console logs")
-            
-            # Start message handling loop
+            # Start message handling loop first
             asyncio.create_task(self._message_loop())
             
+            # Enable required domains for logging and screenshots
+            print("🔌 DevTools: Enabling domains...")
+            try:
+                await asyncio.wait_for(self._send_command("Log.enable"), timeout=5.0)
+                await asyncio.wait_for(self._send_command("Runtime.enable"), timeout=5.0)
+                await asyncio.wait_for(self._send_command("Network.enable"), timeout=5.0)
+                await asyncio.wait_for(self._send_command("Page.enable"), timeout=5.0)
+                print("🔌 DevTools: All domains enabled")
+            except asyncio.TimeoutError:
+                print("🔌 DevTools: Warning - Domain enabling timed out, but connection established")
+            
+            print("🔌 DevTools: Connected and monitoring console logs")
             return True
             
         except Exception as e:
@@ -82,19 +92,35 @@ class DevToolsLogMonitor:
             return False
     
     async def _send_command(self, method: str, params: Dict = None) -> Dict:
-        """Send command to Chrome DevTools"""
+        """Send command to Chrome DevTools and wait for response"""
         if not self.connected or not self.ws:
             raise Exception("Not connected to DevTools")
         
+        command_id = self.message_id
         message = {
-            "id": self.message_id,
+            "id": command_id,
             "method": method,
             "params": params or {}
         }
         self.message_id += 1
         
+        # Store pending command for response matching
+        future = asyncio.get_event_loop().create_future()
+        if not hasattr(self, 'pending_commands'):
+            self.pending_commands = {}
+        self.pending_commands[command_id] = future
+        
         await self.ws.send(json.dumps(message))
-        return message
+        
+        try:
+            # Wait for response (30 second timeout)
+            response = await asyncio.wait_for(future, timeout=30.0)
+            return response
+        except asyncio.TimeoutError:
+            self.pending_commands.pop(command_id, None)
+            raise Exception(f"Command {method} timed out")
+        finally:
+            self.pending_commands.pop(command_id, None)
     
     async def _message_loop(self):
         """Handle incoming messages from Chrome DevTools"""
@@ -116,6 +142,19 @@ class DevToolsLogMonitor:
     
     async def _handle_message(self, data: Dict):
         """Process DevTools protocol messages"""
+        # Handle command responses first
+        if 'id' in data and hasattr(self, 'pending_commands'):
+            command_id = data['id']
+            if command_id in self.pending_commands:
+                future = self.pending_commands[command_id]
+                if not future.done():
+                    if 'error' in data:
+                        future.set_exception(Exception(f"DevTools error: {data['error']}"))
+                    else:
+                        future.set_result(data)
+                return
+        
+        # Handle event messages
         method = data.get('method')
         params = data.get('params', {})
         

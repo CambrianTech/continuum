@@ -21,12 +21,15 @@ class BaseDaemon(ABC):
         self.daemon_type = daemon_type
         self.daemon_id = daemon_id or f"{daemon_type}-{datetime.now().strftime('%H%M%S')}"
         self.running = True
-        self.log_file = self.setup_logging()
         self.memory_logs = deque(maxlen=100)
         self.start_time = datetime.now()
         
-    def setup_logging(self) -> Path:
-        """Setup daemon-specific logging directory and file"""
+        # Setup logging (initialize log_file first, then write startup log)
+        self.log_file = self._init_log_file()
+        self.write_log("DAEMON_START", f"Started {self.daemon_type} daemon {self.daemon_id}")
+        
+    def _init_log_file(self) -> Path:
+        """Initialize daemon-specific logging directory and file"""
         # Find .continuum directory
         base_dir = Path.cwd()
         while base_dir != base_dir.parent:
@@ -39,11 +42,11 @@ class BaseDaemon(ABC):
         daemon_logs_dir.mkdir(parents=True, exist_ok=True)
         
         log_file = daemon_logs_dir / f"{self.daemon_id}.log"
-        
-        # Write startup log
-        self.write_log("DAEMON_START", f"Started {self.daemon_type} daemon {self.daemon_id}")
-        
         return log_file
+    
+    def setup_logging(self) -> Path:
+        """Deprecated - use _init_log_file instead"""
+        return self._init_log_file()
     
     def write_log(self, level: str, message: str, data: Optional[Dict] = None):
         """Write structured log entry"""
