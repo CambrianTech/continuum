@@ -288,6 +288,74 @@ async def start_buffer():
         await stop_devtools_monitoring()
         print("\n👋 Monitoring stopped")
 
+async def handle_screenshot_services_action(params: dict):
+    """Handle screenshot services listing and management"""
+    action = params.get('action', 'list')
+    
+    if action == 'list':
+        # List available screenshot services from daemons
+        services = daemon_manager.find_screenshot_services()
+        
+        print(f"📸 AVAILABLE SCREENSHOT SERVICES:")
+        if services:
+            for service in services:
+                print(f"  🤖 {service['daemon_id']}")
+                print(f"     Type: {service['daemon_type']}")
+                print(f"     Status: {service['status']}")
+                print(f"     Screenshot Dir: {service['screenshot_dir']}")
+                print()
+        else:
+            print("  ❌ No screenshot services available")
+            print("  💡 Start a DevTools daemon: python3 ai-portal.py --devtools")
+        
+        return {
+            'success': True,
+            'services': services,
+            'count': len(services)
+        }
+    
+    else:
+        return {
+            'success': False,
+            'error': f'Unknown action: {action}'
+        }
+
+async def handle_daemon_screenshot_action(params: dict):
+    """Handle screenshot capture via daemon services"""
+    filename = params.get('filename')
+    daemon_id = params.get('daemon_id')
+    format_type = params.get('format', 'png')
+    quality = params.get('quality', 90)
+    
+    # If no daemon specified, use first available screenshot service
+    if not daemon_id:
+        services = daemon_manager.find_screenshot_services()
+        if services:
+            daemon_id = services[0]['daemon_id']
+            print(f"📸 Using first available daemon: {daemon_id}")
+        else:
+            return {
+                'success': False,
+                'error': 'No screenshot services available. Start a DevTools daemon first.'
+            }
+    
+    # Route screenshot request to daemon
+    request_data = {
+        'filename': filename,
+        'format': format_type,
+        'quality': quality
+    }
+    
+    result = await daemon_manager.handle_screenshot_request(daemon_id, request_data)
+    
+    if result.get('success'):
+        print(f"✅ Screenshot captured: {result['screenshot_path']}")
+        print(f"📊 Format: {result['format']}, Daemon: {result['daemon_id']}")
+    else:
+        print(f"❌ Screenshot failed: {result.get('error', 'Unknown error')}")
+    
+    return result
+
 def show_logs(lines: int = 10):
     """Show recent log lines from client, server, and browser with failsafe recovery"""
     global devtools_monitor
@@ -546,6 +614,10 @@ async def run_command(cmd: str, params: str = "{}", verbose: bool = False):
                     
                     if cmd == 'devtools_action' and isinstance(params_dict, dict) and params_dict.get('action'):
                         result = await handle_devtools_action(params_dict['action'], params_dict)
+                    elif cmd == 'screenshot_services':
+                        result = await handle_screenshot_services_action(params_dict)
+                    elif cmd == 'daemon_screenshot':
+                        result = await handle_daemon_screenshot_action(params_dict)
                     else:
                         # Regular Continuum command via send_command
                         result = await client.send_command(cmd, params_dict)
@@ -946,7 +1018,7 @@ def get_command_tokenizer():
             'params': {'action': 'start', 'task': args[0] if args else 'watch'}
         },
         
-        # Screenshot commands
+        # Screenshot commands  
         'screenshot': lambda args: {
             'command': 'screenshot',
             'params': {'selector': args[0] if args else 'body', 'filename': args[1] if len(args) > 1 else None}
@@ -954,6 +1026,14 @@ def get_command_tokenizer():
         'snap': lambda args: {  # shorthand
             'command': 'screenshot',
             'params': {'selector': args[0] if args else 'body'}
+        },
+        'screenshot_services': lambda args: {
+            'command': 'screenshot_services',
+            'params': {'action': 'list'}
+        },
+        'daemon_screenshot': lambda args: {
+            'command': 'daemon_screenshot', 
+            'params': {'filename': args[0] if args else None, 'daemon_id': args[1] if len(args) > 1 else None}
         },
         
         # Log commands - direct live access

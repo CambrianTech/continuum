@@ -205,6 +205,38 @@ class DaemonManager:
             daemon_id for daemon_id, daemon in self.active_daemons.items()
             if daemon.daemon_type == daemon_type
         ]
+    
+    def find_screenshot_services(self) -> List[Dict[str, Any]]:
+        """Find all daemons that provide screenshot services"""
+        screenshot_services = []
+        for daemon_id, daemon in self.active_daemons.items():
+            if (hasattr(daemon, 'handle_screenshot_request') and 
+                hasattr(daemon, 'browser_connected') and 
+                daemon.browser_connected):
+                screenshot_services.append({
+                    'daemon_id': daemon_id,
+                    'daemon_type': daemon.daemon_type,
+                    'screenshot_dir': str(getattr(daemon, 'screenshot_dir', 'unknown')),
+                    'status': 'available'
+                })
+        return screenshot_services
+    
+    async def handle_screenshot_request(self, daemon_id: str, request_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Route screenshot request to specific daemon"""
+        if daemon_id in self.active_daemons:
+            daemon = self.active_daemons[daemon_id]
+            if hasattr(daemon, 'handle_screenshot_request'):
+                return await daemon.handle_screenshot_request(request_data)
+            else:
+                return {
+                    'success': False,
+                    'error': f'Daemon {daemon_id} does not support screenshot requests'
+                }
+        else:
+            return {
+                'success': False,
+                'error': f'Daemon {daemon_id} not found'
+            }
 
 
 # Global daemon manager instance

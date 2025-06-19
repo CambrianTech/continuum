@@ -6,6 +6,7 @@ Inherits from BaseDaemon for proper OOP structure
 import asyncio
 from typing import Dict, Any, Optional
 from pathlib import Path
+from datetime import datetime
 from ..core.daemon_manager import BaseDaemon
 from .log_monitor import DevToolsLogMonitor
 
@@ -174,6 +175,105 @@ class DevToolsDaemon(BaseDaemon):
         except Exception as e:
             self.write_log("HEALING_FAILED", f"Port healing failed: {e}")
     
+    async def _register_screenshot_service(self):
+        """Register daemon as screenshot service with Continuum"""
+        try:
+            # Import here to avoid circular imports
+            from ..client import ContinuumClient
+            
+            # Create client instance
+            client = ContinuumClient()
+            
+            # Register screenshot service capability
+            service_info = {
+                "service_type": "screenshot",
+                "daemon_id": self.daemon_id,
+                "capabilities": {
+                    "formats": ["png", "jpeg"],
+                    "max_quality": 100,
+                    "supports_custom_filename": True,
+                    "path_routing": "intelligent",
+                    "screenshot_dir": str(self.screenshot_dir)
+                },
+                "status": "available",
+                "connection_info": {
+                    "devtools_connected": self.browser_connected,
+                    "target_url": self.target_url
+                }
+            }
+            
+            # Send registration to Continuum
+            response = await client.send_command("register_service", service_info)
+            
+            if response.get("success"):
+                self.write_log("SERVICE_REGISTERED", "Registered as screenshot service with Continuum", {
+                    "service_id": response.get("service_id"),
+                    "screenshot_dir": str(self.screenshot_dir)
+                })
+            else:
+                self.write_log("SERVICE_REGISTRATION_FAILED", f"Failed to register service: {response}")
+                
+        except Exception as e:
+            self.write_log("SERVICE_REGISTRATION_ERROR", f"Error registering screenshot service: {e}")
+    
+    async def _unregister_screenshot_service(self):
+        """Unregister daemon from Continuum screenshot services"""
+        try:
+            from ..client import ContinuumClient
+            
+            client = ContinuumClient()
+            response = await client.send_command("unregister_service", {
+                "service_type": "screenshot",
+                "daemon_id": self.daemon_id
+            })
+            
+            if response.get("success"):
+                self.write_log("SERVICE_UNREGISTERED", "Unregistered screenshot service from Continuum")
+            else:
+                self.write_log("SERVICE_UNREGISTRATION_FAILED", f"Failed to unregister service: {response}")
+                
+        except Exception as e:
+            self.write_log("SERVICE_UNREGISTRATION_ERROR", f"Error unregistering screenshot service: {e}")
+    
+    async def handle_screenshot_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle screenshot request from Continuum screenshot command"""
+        try:
+            filename = request_data.get("filename")
+            format_type = request_data.get("format", "png")
+            quality = request_data.get("quality", 90)
+            
+            self.write_log("SCREENSHOT_REQUEST", f"Handling screenshot request from Continuum", {
+                "filename": filename,
+                "format": format_type,
+                "quality": quality
+            })
+            
+            # Capture screenshot using configured directory and filename
+            screenshot_path = await self.capture_screenshot(filename, format_type, quality)
+            
+            if screenshot_path:
+                return {
+                    "success": True,
+                    "screenshot_path": screenshot_path,
+                    "daemon_id": self.daemon_id,
+                    "format": format_type,
+                    "timestamp": datetime.now().isoformat()
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "Screenshot capture failed",
+                    "daemon_id": self.daemon_id
+                }
+                
+        except Exception as e:
+            self.write_log("SCREENSHOT_REQUEST_ERROR", f"Error handling screenshot request: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "daemon_id": self.daemon_id
+            }
+    
     async def monitor_connection(self):
         """Monitor and maintain DevTools connection"""
         while self.running:
@@ -281,6 +381,10 @@ class DevToolsDaemon(BaseDaemon):
         if self.devtools_monitor:
             await self.devtools_monitor.disconnect()
             self.write_log("CLEANUP", "DevTools monitor disconnected")
+        
+        # Unregister screenshot service
+        if self.browser_connected:
+            await self._unregister_screenshot_service()
 
 
 # Convenience function for Portal integration
