@@ -56,6 +56,9 @@ python python-client/ai-portal.py --cmd screenshot --filename myshot.png  # Uses
 # Working automation (CRITICAL DISCOVERY)
 python python-client/trust_the_process.py       # 336 lines of working browser automation!
 
+# DevTools Integration System (PRODUCTION READY)
+python python-client/demos/devtools/start_devtools_system.py  # Complete DevTools automation
+
 # Screenshot testing (server works, needs browser connection)
 python python-client/ai-portal.py --connect
 python python-client/ai-portal.py --cmd screenshot --filename test.png

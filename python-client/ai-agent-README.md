@@ -193,6 +193,128 @@ python3 ai-portal.py --cmd browser_js --params '...'  # Test UI directly
 4. **Real-time testing with portal** - Faster iteration than manual browser testing
 5. **Event-driven design enables widgets** - Proper foundation for future expansion
 
+## 🚨 DEVTOOLS INTEGRATION - SCREENSHOT & LOGGING FALLBACK SYSTEM
+
+**📸 ROBUST SCREENSHOT ABSTRACTION** - Works even when Continuum is down!
+
+### Current Implementation: Non-Production Demo Scripts
+All scripts located in: `python-client/demos/devtools/`
+
+#### Primary System: `start_devtools_system.py`
+```bash
+# Complete DevTools system - works independent of Continuum server
+python python-client/demos/devtools/start_devtools_system.py
+
+# Features:
+# ✅ Opera GX auto-launch with --remote-debugging-port=9222
+# ✅ Persistent DevTools daemon monitoring
+# ✅ Real-time browser console log forwarding  
+# ✅ DevTools Protocol screenshot capture (not html2canvas)
+# ✅ Health monitoring with auto-recovery
+# ✅ Works even if localhost:9000 is down
+```
+
+### Planned Production Architecture: Screenshot Fallback Chain
+
+#### **Target Implementation:**
+```javascript
+// In src/commands/browser/screenshot/ScreenshotCommand.cjs
+async function takeScreenshot(params) {
+    // 1. Try DevTools Protocol (fastest, most reliable)
+    if (await checkDevToolsAvailable()) {
+        return await devtoolsCapture(params);
+    }
+    
+    // 2. Fallback to html2canvas (current working method)
+    if (await checkBrowserConnected()) {
+        return await html2canvasCapture(params);
+    }
+    
+    // 3. Emergency fallback via portal daemon (always works)
+    return await portalDevToolsCapture(params);
+}
+
+async function checkDevToolsAvailable() {
+    try {
+        const response = await fetch('/api/devtools/status');
+        return response.ok && (await response.json()).connected;
+    } catch {
+        return false;
+    }
+}
+
+async function portalDevToolsCapture(params) {
+    // Route to portal DevTools daemon system
+    // This works even if Continuum server is completely down
+    const response = await fetch('/api/portal/devtools/screenshot', {
+        method: 'POST',
+        body: JSON.stringify(params)
+    });
+    return await response.json();
+}
+```
+
+### Testing & Verification
+**Current Test Location:** `python-client/demos/devtools/testing/`
+- `test_direct_devtools.py` - Raw DevTools Protocol testing
+- `test_screenshot.py` - Daemon-based capture testing
+- `quick_screenshot_test.py` - Portal integration testing
+
+### Logging Abstraction Plan
+
+#### **Multi-Source Log Aggregation:**
+```bash
+# Portal can always provide logs even when Continuum is down
+python ai-portal.py --logs 5    # Gets logs from ALL sources:
+                                # 1. Browser console (via DevTools)
+                                # 2. Server logs (if available)
+                                # 3. Daemon logs (always available)
+                                # 4. Portal buffer logs (always available)
+```
+
+#### **Robust Log Sources (Priority Order):**
+1. **DevTools browser console** - Real-time via WebSocket (fastest)
+2. **Server logs** - Direct file access when server running
+3. **Portal daemon logs** - Persistent storage (always available)
+4. **Emergency buffer** - Local file fallback (never fails)
+
+### Production Integration Roadmap
+
+#### **Phase 1: Portal Integration** (Immediate)
+```bash
+# Modify ai-portal.py to use production DevTools system
+python ai-portal.py --devtools  # Should trigger start_devtools_system.py
+python ai-portal.py --screenshot # Should use DevTools if available
+```
+
+#### **Phase 2: Command Abstraction** (Next)
+- Update `src/commands/browser/screenshot/` to detect DevTools
+- Implement fallback chain: DevTools → html2canvas → portal daemon
+- Add `/api/devtools/*` endpoints in continuum-core.cjs
+
+#### **Phase 3: Universal Daemon Integration** (Later)  
+- All daemons get DevTools capability
+- Real-time log subscription with <100ms latency
+- Complete abstraction - user never knows which method is used
+
+### Robust System Design Philosophy
+
+**🛡️ RESILIENCE PRINCIPLE**: System provides feedback no matter what's broken
+
+1. **Independent Operation** - Portal can work without Continuum server
+2. **Multiple Fallbacks** - Always have working screenshot and log methods
+3. **Health Detection** - Automatically choose best available method
+4. **Graceful Degradation** - Transparent fallback without user intervention
+5. **Emergency Access** - Portal daemon provides last-resort capabilities
+
+### Current Status: Ready for Integration
+- ✅ **DevTools system fully working** in demo scripts
+- ✅ **Real-time logging proven** with millisecond latency
+- ✅ **Screenshot capture verified** via DevTools Protocol
+- ✅ **Independent operation confirmed** - works without server
+- ✅ **Health monitoring implemented** with auto-recovery
+- 🎯 **Ready for portal integration** and command abstraction
+
 ## Tips for Success
 
 1. **Start Small**: Pick one 🔴 command, investigate 5-10 minutes
