@@ -17,6 +17,8 @@ const VersionManager = require('./VersionManager.cjs');
 const { BrowserAdapter } = require('../adapters/BrowserAdapter.cjs');
 const ScreenshotService = require('../services/ScreenshotService.cjs');
 const ContinuonStatus = require('./ContinuonStatus.cjs');
+// const DevToolsServer = require('../integrations/devtools/DevToolsServer.cjs');
+// const ChromeDevToolsAdapter = require('../integrations/devtools/adapters/ChromeDevToolsAdapter.cjs');
 const { Anthropic } = require('@anthropic-ai/sdk');
 const { OpenAI } = require('openai');
 const fs = require('fs');
@@ -89,10 +91,19 @@ class ContinuumCore {
     this.browserAdapter = new BrowserAdapter();
     this.screenshotService = new ScreenshotService(this);
     
+    // Initialize DevTools integration (disabled for now - requires express)
+    // this.devToolsServer = new DevToolsServer({ enabled: true });
+    // this.setupDevTools();
+    
     // WebSocket management
     this.conversationThreads = new Map();
     this.activeConnections = new Map();
     this.registeredProjects = new Map(); // Track all registered projects
+    
+    // Client browser tracking for DevTools integration
+    this.connectedClients = new Map(); // sessionId -> client info
+    const SimpleClientManager = require('../services/SimpleClientManager.cjs');
+    this.clientManager = new SimpleClientManager(this);
     
     // Initialize EventBus for real-time event publishing
     const EventBus = require('../integrations/EventBus.cjs');
@@ -447,6 +458,9 @@ class ContinuumCore {
         
         // Start version monitoring
         this.versionManager.startVersionChecking();
+        
+        // Start DevTools server
+        await this.startDevToolsServer();
         
         // Initialize simple menu bar integration - click to open web portal
         this.systemTray = new SimpleMenuBar(this);
@@ -1041,6 +1055,42 @@ Use [STATUS] for progress updates and [CHAT] for final responses.`;
    */
   camelToSnake(str) {
     return str.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
+  }
+
+  /**
+   * Setup DevTools integration
+   */
+  setupDevTools() {
+    if (!this.devToolsServer) return;
+    
+    // Register Chrome DevTools adapter
+    const chromeAdapter = new ChromeDevToolsAdapter();
+    this.devToolsServer.devtools.registerAdapter('chrome-devtools', chromeAdapter);
+    
+    console.log('🔌 DevTools: Integration initialized');
+  }
+
+  /**
+   * Start DevTools server if enabled
+   */
+  async startDevToolsServer() {
+    if (this.devToolsServer && this.devToolsServer.enabled) {
+      try {
+        await this.devToolsServer.start();
+        console.log('🔌 DevTools: Server started on port 9001');
+      } catch (error) {
+        console.warn('🔌 DevTools: Failed to start server:', error.message);
+      }
+    }
+  }
+
+  /**
+   * Stop DevTools server
+   */
+  async stopDevToolsServer() {
+    if (this.devToolsServer) {
+      await this.devToolsServer.stop();
+    }
   }
 }
 
