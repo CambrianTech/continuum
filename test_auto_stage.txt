@@ -1,1 +1,0 @@
-Testing automatic staging of UI captures
