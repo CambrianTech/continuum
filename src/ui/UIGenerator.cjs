@@ -25,8 +25,8 @@ class UIGenerator {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Continuum Academy - Modular Widgets v${packageInfo.version}</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎓</text></svg>">
+    <title>continuum</title>
+    <link rel="icon" id="favicon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔴</text></svg>">
     <style>
         * {
             margin: 0;
@@ -1925,6 +1925,15 @@ class UIGenerator {
                                  status === 'connecting' ? '• Connecting...' : 
                                  '• Reconnecting...';
                 subtitle.textContent = baseText + ' ' + statusText;
+            }
+            
+            // Update favicon with connection status emoji (title stays as "continuum")
+            const favicon = document.getElementById('favicon');
+            if (favicon) {
+                const emoji = status === 'connected' ? '🟢' : // green dot
+                             status === 'connecting' ? '🟡' : // yellow dot  
+                             '🔴'; // red dot
+                favicon.href = \`data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>\${emoji}</text></svg>\`;
             }
         }
 

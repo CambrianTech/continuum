@@ -128,6 +128,9 @@ async function executeCommands(commands, options) {
 
 // Start main Continuum interface
 async function startMainInterface(options) {
+  // Set process title to lowercase "continuum"
+  process.title = 'continuum';
+  
   const Continuum = require('./src/core/continuum-core.cjs');
   
   // Add idle timeout support - default 30 minutes for foreground, 60 for background
