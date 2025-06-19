@@ -1,1 +1,0 @@
-This file tests the commit verification system with thumbnails.

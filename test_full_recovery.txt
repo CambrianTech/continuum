@@ -1,8 +1,0 @@
-Testing full end-to-end recovery system
-
-This tests if the system can:
-1. Recreate verification/ui-captures/ from scratch
-2. Generate new UI capture automatically  
-3. Stage it for git automatically
-4. Append complete stats to this commit message
-5. Include everything in the commit
