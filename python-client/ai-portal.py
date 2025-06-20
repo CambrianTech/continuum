@@ -54,6 +54,76 @@ from continuum_client.utils import load_continuum_config
 from continuum_client.devtools import DevToolsLogMonitor, LiveDevToolsMonitor
 from continuum_client.core.daemon_manager import daemon_manager
 
+async def launch_continuum_browser(debug_mode=False):
+    """Single unified function to launch Opera with localhost:9000 - normal or debug mode"""
+    import subprocess
+    import asyncio
+    
+    if debug_mode:
+        print("🚀 Launching Opera in debug mode...")
+        opera_cmd = [
+            '/Applications/Opera GX.app/Contents/MacOS/Opera',
+            '--remote-debugging-port=9222',
+            '--disable-web-security',
+            '--disable-features=TranslateUI',
+            '--disable-component-update',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--no-first-run',
+            '--no-default-browser-check',
+            '--disable-default-apps',
+            '--disable-extensions',
+            '--user-data-dir=/tmp/opera-devtools-portal',
+            'http://localhost:9000'
+        ]
+    else:
+        print("🌐 Launching Opera in normal mode...")
+        opera_cmd = [
+            '/Applications/Opera GX.app/Contents/MacOS/Opera',
+            'http://localhost:9000'
+        ]
+    
+    try:
+        subprocess.Popen(opera_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        if debug_mode:
+            print("🌐 Opera launched with remote debugging on port 9222")
+            print("📍 Browser URL: http://localhost:9000")
+            
+            # Wait for Opera to start up and verify DevTools
+            await asyncio.sleep(6)
+            
+            for attempt in range(10):
+                try:
+                    result = subprocess.run(['curl', '-s', 'http://localhost:9222/json'], 
+                                          capture_output=True, timeout=2)
+                    if result.returncode == 0 and b'devtoolsFrontendUrl' in result.stdout:
+                        print("✅ DevTools port 9222 is responding")
+                        return {'success': True, 'message': 'Opera launched successfully with DevTools'}
+                    await asyncio.sleep(1)
+                except:
+                    await asyncio.sleep(1)
+            
+            print("⚠️ DevTools port not responding, but Opera should be running")
+            return {'success': True, 'message': 'Opera launched, DevTools connection pending'}
+        else:
+            print("✅ Opera launched successfully")
+            return {'success': True, 'message': 'Opera launched successfully'}
+        
+    except Exception as e:
+        print(f"❌ Failed to launch Opera: {e}")
+        return {'success': False, 'message': f'Failed to launch Opera: {e}'}
+
+# Convenience functions
+async def launch_opera_debug_mode():
+    """Launch Opera in debug mode"""
+    return await launch_continuum_browser(debug_mode=True)
+
+async def launch_opera_normal_mode():
+    """Launch Opera in normal mode"""
+    return await launch_continuum_browser(debug_mode=False)
+
 def get_portal_dir():
     """Get .continuum/ai-portal directory"""
     continuum_dir = Path.cwd()
@@ -231,24 +301,7 @@ async def handle_devtools_action(action: str, params: dict):
     
     elif action == 'launch_opera_devtools':
         print("🚀 Launching Opera with DevTools...")
-        import subprocess
-        try:
-            subprocess.Popen([
-                '/Applications/Opera GX.app/Contents/MacOS/Opera',
-                '--remote-debugging-port=9222',
-                'http://localhost:9000'
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-            # Wait and try to connect
-            await asyncio.sleep(3)
-            monitor = await start_devtools_monitoring()
-            
-            if monitor:
-                return {'success': True, 'message': 'Opera launched and DevTools connected'}
-            else:
-                return {'success': True, 'message': 'Opera launched, but DevTools connection pending'}
-        except Exception as e:
-            return {'success': False, 'message': f'Failed to launch Opera: {e}'}
+        return await launch_opera_debug_mode()
     
     else:
         return {'success': False, 'message': f'Unknown DevTools action: {action}'}
@@ -1532,22 +1585,29 @@ async def stop_monitoring_connection():
         pid_file.unlink(missing_ok=True)
 
 async def start_devtools_daemon():
-    """Start DevTools monitoring using modular platform"""
+    """Start DevTools monitoring with Opera launch"""
     print("🔌 Starting DevTools browser console monitoring...")
     
     try:
-        # Use the modular DevToolsLogMonitor
-        monitor = await start_devtools_monitoring()
-        if monitor:
-            print("🔌 DevTools monitoring active - press Ctrl+C to stop")
-            try:
-                while True:
-                    await asyncio.sleep(1)
-            except KeyboardInterrupt:
-                await stop_devtools_monitoring()
-                print("\n🔌 DevTools monitoring stopped")
+        # Launch Opera in debug mode first
+        launch_result = await launch_continuum_browser(debug_mode=True)
+        
+        if launch_result['success']:
+            # Now start monitoring
+            monitor = await start_devtools_monitoring()
+            
+            if monitor:
+                print("🔌 DevTools monitoring active - press Ctrl+C to stop")
+                try:
+                    while True:
+                        await asyncio.sleep(1)
+                except KeyboardInterrupt:
+                    await stop_devtools_monitoring()
+                    print("\n🔌 DevTools monitoring stopped")
+            else:
+                print("❌ Failed to start DevTools monitoring")
         else:
-            print("❌ Failed to start DevTools monitoring")
+            print("❌ Failed to launch Opera in debug mode")
     except Exception as e:
         print(f"❌ DevTools monitoring error: {e}")
 
