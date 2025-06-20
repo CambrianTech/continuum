@@ -19,6 +19,7 @@ examples/CLAUDE.md
 logs
 !verification/logs/
 *.log
+!verification/logs/*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
