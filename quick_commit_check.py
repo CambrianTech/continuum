@@ -58,14 +58,46 @@ def run_verification():
     
     return result
 
-def stage_verification_files(proof_path):
-    """Stage only the verification screenshot"""
+def save_and_stage_verification_logs(timestamp):
+    """Save and stage verification logs"""
+    try:
+        logs_dir = Path('verification/logs/')
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save client logs
+        client_log_path = logs_dir / f"client-{timestamp}.log"
+        result = subprocess.run([
+            sys.executable, 'python-client/ai-portal.py', '--logs', '20'
+        ], capture_output=True, text=True, timeout=10)
+        
+        if result.returncode == 0:
+            with open(client_log_path, 'w') as f:
+                f.write(f"=== CLIENT LOGS CAPTURED DURING VERIFICATION ===\n")
+                f.write(f"Timestamp: {timestamp}\n\n")
+                f.write(result.stdout)
+            
+            # Stage the log file
+            subprocess.run(['git', 'add', str(client_log_path)], check=True)
+            print(f"✅ Added client log: {client_log_path.name}")
+            return [str(client_log_path)]
+        
+        return []
+    except Exception as e:
+        print(f"⚠️ Could not save logs: {e}")
+        return []
+
+def stage_verification_files(proof_path, log_files):
+    """Stage verification screenshot and logs"""
     try:
         subprocess.run(['git', 'add', proof_path], check=True)
         print(f"✅ Added verification screenshot: {Path(proof_path).name}")
+        
+        for log_file in log_files:
+            print(f"✅ Added log file: {Path(log_file).name}")
+        
         return True
     except Exception as e:
-        print(f"⚠️ Could not stage screenshot: {e}")
+        print(f"⚠️ Could not stage files: {e}")
         return False
 
 def main():
@@ -102,11 +134,18 @@ def main():
                     latest_screenshot = max(screenshots, key=lambda p: p.stat().st_mtime)
                     proof_path = create_screenshot_proof(latest_screenshot)
                     
+                    # Generate timestamp for logs
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    
+                    # Save and stage logs
+                    print("📝 Saving verification logs...")
+                    log_files = save_and_stage_verification_logs(timestamp)
+                    
                     print("✅ PASSED - All systems operational")
                     print(f"📸 Screenshot-proof: {proof_path}")
                     
-                    # Stage the verification screenshot
-                    if stage_verification_files(proof_path):
+                    # Stage the verification files
+                    if stage_verification_files(proof_path, log_files):
                         sys.exit(0)
         
         print("❌ FAILED - System health compromised")
