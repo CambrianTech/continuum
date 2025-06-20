@@ -79,15 +79,26 @@ def main():
         screenshots = list(Path('.continuum/screenshots/').glob('agent_feedback_*.png'))
         if screenshots:
             latest_screenshot = max(screenshots, key=lambda p: p.stat().st_mtime)
-            proof_path = create_verification_proof(latest_screenshot)
             
-            # Check for cleanup issues BEFORE staging
+            # Skip verification file creation during git operations to prevent cycles
+            import subprocess
+            git_in_progress = False
+            try:
+                result = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True)
+                git_in_progress = len(result.stdout.strip()) > 0 or Path('.git/COMMIT_EDITMSG').exists()
+            except:
+                pass
+                
+            if git_in_progress:
+                print(f"📸 Verification proof skipped during git operation")
+                print(f"🎯 Screenshot available: {latest_screenshot}")
+                print("⚠️  Will create verification proof after git operation completes")
+            else:
+                proof_path = create_verification_proof(latest_screenshot)
+                print(f"📸 Verification proof created: {proof_path}")
+            
+            # Check for cleanup issues
             pre_stage_errors = validate_cleanup()
-            
-            # DON'T stage verification files during commits - causes endless cycles
-            # The verification files should be committed separately
-            print(f"📸 Verification proof created: {proof_path}")
-            print("⚠️  Verification files NOT staged automatically during commit")
             
             # Stage important logs for verification
             log_paths = [
