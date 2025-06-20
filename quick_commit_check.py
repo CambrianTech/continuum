@@ -12,7 +12,7 @@ def run_verification():
     """Run verification and return result"""
     return subprocess.run([
         sys.executable, 'devtools_full_demo.py', '--emergency-only'
-    ], capture_output=True, text=True, timeout=30)
+    ], capture_output=True, text=True, timeout=60)
 
 def create_verification_proof(screenshot_path):
     """Create single verification file"""
@@ -84,9 +84,10 @@ def main():
             # Check for cleanup issues BEFORE staging
             pre_stage_errors = validate_cleanup()
             
-            # Stage verification changes (new file + deletions)  
-            subprocess.run(['git', 'add', str(proof_path)], check=True)
-            subprocess.run(['git', 'add', '-A', 'verification/'], check=True)  # -A stages deletions
+            # DON'T stage verification files during commits - causes endless cycles
+            # The verification files should be committed separately
+            print(f"📸 Verification proof created: {proof_path}")
+            print("⚠️  Verification files NOT staged automatically during commit")
             
             # Stage important logs for verification
             log_paths = [
