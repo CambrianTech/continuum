@@ -238,13 +238,13 @@ def main():
                     print("📊 UUID tracking: ✅ | Screenshots: ✅ | Logs: ✅")
                     print(f"📸 Screenshot-proof: {proof_path}")
                     
-                    # Clean up verification screenshot immediately
+                    # Add verification screenshot to git staging
                     try:
-                        if Path(proof_path).exists():
-                            Path(proof_path).unlink()
-                            print(f"🧹 Cleaned up verification screenshot: {Path(proof_path).name}")
+                        import subprocess
+                        subprocess.run(['git', 'add', proof_path], check=True)
+                        print(f"✅ Added verification screenshot to commit: {Path(proof_path).name}")
                     except Exception as e:
-                        print(f"⚠️ Could not clean up screenshot: {e}")
+                        print(f"⚠️ Could not stage verification screenshot: {e}")
                     
                     sys.exit(0)
         
