@@ -240,7 +240,6 @@ def main():
                     
                     # Add verification screenshot to git staging
                     try:
-                        import subprocess
                         subprocess.run(['git', 'add', proof_path], check=True)
                         print(f"✅ Added verification screenshot to commit: {Path(proof_path).name}")
                     except Exception as e:
