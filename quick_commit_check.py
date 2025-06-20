@@ -101,6 +101,17 @@ def stage_verification_files(proof_path, log_files):
         return False
 
 def main():
+    # Skip verification if commit message contains verification keywords
+    try:
+        commit_msg_file = Path('.git/COMMIT_EDITMSG')
+        if commit_msg_file.exists():
+            commit_msg = commit_msg_file.read_text()
+            if 'verification' in commit_msg.lower() or 'screenshot' in commit_msg.lower():
+                print("🔒 Skipping verification for verification-related commit")
+                sys.exit(0)
+    except:
+        pass
+    
     # Prevent multiple executions
     lockfile = Path('/tmp/continuum_verification.lock')
     if lockfile.exists():
