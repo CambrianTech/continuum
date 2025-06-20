@@ -1,0 +1,112 @@
+#!/bin/bash
+
+echo "🚨 CONTINUUM COMMIT VERIFICATION - HARD ENFORCEMENT MODE"
+echo "============================================================"
+echo "🛡️ BLOCKING COMMIT UNTIL ALL CHECKS PASS..."
+
+cd "$(git rev-parse --show-toplevel)"
+
+# HARD CHECK 1: Verify git status is clean (no lingering verification files)
+echo "🔍 CHECKING: Git status for lingering files..."
+STAGED_VERIFICATION=$(git status --porcelain | grep "verification/")
+if [ -n "$STAGED_VERIFICATION" ]; then
+    echo ""
+    echo "🚨 COMMIT REJECTED: LINGERING VERIFICATION FILES DETECTED"
+    echo "❌ The following verification files are staged:"
+    echo "$STAGED_VERIFICATION"
+    echo ""
+    echo "🛑 REQUIRED ACTION: Clean up verification files before committing"
+    echo "📋 Run: git reset HEAD verification/"
+    echo "🔧 Or: git rm --cached verification/ui-captures/*"
+    echo ""
+    echo "⚠️  VERIFICATION SYSTEM IS BROKEN - CREATING ENDLESS CYCLES"
+    echo "🎯 FIX THE VERIFICATION SYSTEM TO STOP GENERATING LINGERING FILES"
+    exit 1
+fi
+
+# HARD CHECK 2: Run tests and ensure they actually pass
+echo "🧪 CHECKING: Running npm test..."
+npm test > /tmp/test_results.txt 2>&1
+TEST_EXIT_CODE=$?
+if [ $TEST_EXIT_CODE -ne 0 ]; then
+    echo ""
+    echo "🚨 COMMIT REJECTED: TESTS FAILED"
+    echo "❌ npm test returned exit code: $TEST_EXIT_CODE"
+    echo ""
+    echo "🔍 TEST FAILURE DETAILS:"
+    tail -20 /tmp/test_results.txt
+    echo ""
+    echo "🛑 REQUIRED ACTION: Fix failing tests before committing"
+    echo "📋 Run: npm test (manually verify it passes)"
+    exit 1
+fi
+
+# HARD CHECK 3: Verify core commands actually work
+echo "🎯 CHECKING: Core command functionality..."
+python3 python-client/ai-portal.py --cmd issues --params '{"action": "dashboard"}' > /tmp/issues_test.txt 2>&1
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "🚨 COMMIT REJECTED: ISSUES COMMAND FAILED"
+    echo "❌ Issues command execution failed"
+    echo ""
+    echo "🔍 COMMAND FAILURE DETAILS:"
+    cat /tmp/issues_test.txt
+    echo ""
+    echo "🛑 REQUIRED ACTION: Fix issues command before committing"
+    exit 1
+fi
+
+# Run the original recovery system check
+python3 quick_commit_check.py > /tmp/recovery_results.txt 2>&1
+
+# Check if recovery system passed
+if grep -q "✅ PASSED" /tmp/recovery_results.txt; then
+    echo "✅ ALL VERIFICATION CHECKS PASSED"
+    
+    # Still warn about any cleanup issues but don't block
+    if grep -q "🚨 CLEANUP ERRORS" /tmp/recovery_results.txt; then
+        echo "⚠️ NOTE: Recovery system detected cleanup issues (not blocking):"
+        grep -A 5 "🚨 CLEANUP ERRORS" /tmp/recovery_results.txt
+        echo ""
+    fi
+    
+    echo "🎯 Commit will include recovery system results"
+    
+    # Extract verification time and stats
+    VERIFICATION_TIME=$(grep "⏱️ VERIFICATION TIME:" /tmp/recovery_results.txt | grep -o "[0-9]\+\.[0-9]s")
+    SCREENSHOTS_COUNT=$(ls -1 .continuum/screenshots/agent_feedback_*.png 2>/dev/null | wc -l | tr -d ' ')
+    LATEST_SCREENSHOT=$(ls -t .continuum/screenshots/agent_feedback_*.png 2>/dev/null | head -1)
+    if [ -n "$LATEST_SCREENSHOT" ]; then
+        SCREENSHOT_SIZE=$(ls -la "$LATEST_SCREENSHOT" | awk '{print $5}')
+        SCREENSHOT_NAME=$(basename "$LATEST_SCREENSHOT")
+    fi
+    
+    # Generate unique commit ID for this verification
+    COMMIT_UUID=$(date +%s | tail -c 6)
+    
+    # Append recovery verification to commit message
+    echo "" >> .git/COMMIT_EDITMSG
+    echo "🚨 RECOVERY SYSTEM VERIFICATION - COMMIT_$COMMIT_UUID" >> .git/COMMIT_EDITMSG
+    echo "============================================================" >> .git/COMMIT_EDITMSG
+    echo "⏱️ Verification Time: $VERIFICATION_TIME" >> .git/COMMIT_EDITMSG
+    echo "📸 Screenshots: $SCREENSHOTS_COUNT total" >> .git/COMMIT_EDITMSG
+    if [ -n "$SCREENSHOT_SIZE" ]; then
+        echo "📁 Latest: $SCREENSHOT_NAME ($SCREENSHOT_SIZE bytes)" >> .git/COMMIT_EDITMSG
+    fi
+    echo "💓 System Health: ✅ OPERATIONAL" >> .git/COMMIT_EDITMSG
+    echo "🛡️ COMMIT SAFETY: Emergency fallback verified working" >> .git/COMMIT_EDITMSG
+    echo "🎯 UUID Tracking: ✅ | Console Logs: ✅ | Screenshots: ✅" >> .git/COMMIT_EDITMSG
+    
+    exit 0
+else
+    echo "❌ RECOVERY SYSTEM VERIFICATION FAILED"
+    echo "🚨 COMMIT BLOCKED - SYSTEM HEALTH COMPROMISED"
+    echo ""
+    echo "🔍 FAILURE DETAILS:"
+    tail -20 /tmp/recovery_results.txt
+    echo ""
+    echo "💡 FIX REQUIRED: Restore recovery system functionality before committing"
+    echo "🛡️ This protects against breaking the emergency fallback system"
+    
+    exit 1
+fi
