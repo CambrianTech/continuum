@@ -34,6 +34,28 @@ def create_verification_proof(screenshot_path):
     
     return proof_path
 
+def validate_cleanup():
+    """Validate that verification system cleaned up properly"""
+    errors = []
+    
+    # Check for unstaged verification files
+    result = subprocess.run(['git', 'status', '--porcelain'], 
+                          capture_output=True, text=True)
+    
+    for line in result.stdout.splitlines():
+        if 'verification/' in line:
+            status = line[:2]
+            filename = line[3:]
+            if status.strip() in ['D', 'M']:  # Deleted or modified but not staged
+                errors.append(f"❌ UNSTAGED: {filename} ({status.strip()})")
+    
+    # Check for verification log files that should be cleaned
+    verification_logs = list(Path('.continuum/screenshots/').glob('agent_feedback_*.png'))
+    if len(verification_logs) > 1:  # Keep only the latest
+        errors.append(f"❌ LOG CLEANUP: {len(verification_logs)} screenshot files remain")
+    
+    return errors
+
 def main():
     # Skip verification commits to prevent recursion
     try:
@@ -59,10 +81,28 @@ def main():
             latest_screenshot = max(screenshots, key=lambda p: p.stat().st_mtime)
             proof_path = create_verification_proof(latest_screenshot)
             
-            # Stage single verification file
-            subprocess.run(['git', 'add', str(proof_path)], check=True)
+            # Check for cleanup issues BEFORE staging
+            pre_stage_errors = validate_cleanup()
             
+            # Stage verification changes (new file + deletions)  
+            subprocess.run(['git', 'add', str(proof_path)], check=True)
+            subprocess.run(['git', 'add', '-A', 'verification/'], check=True)  # -A stages deletions
+            
+            # Stage important logs for verification
+            log_paths = [
+                'python-client/.continuum/ai-portal/logs/buffer.log',
+                '.continuum/continuum.log'
+            ]
+            for log_path in log_paths:
+                if Path(log_path).exists():
+                    subprocess.run(['git', 'add', log_path], capture_output=True)
+            
+            # Report results
             print(f"✅ PASSED ({elapsed:.1f}s) - {proof_path.name}")
+            if pre_stage_errors:
+                print("🚨 CLEANUP ERRORS (FIXED):")
+                for error in pre_stage_errors:
+                    print(f"  {error}")
             sys.exit(0)
     
     print(f"❌ FAILED ({elapsed:.1f}s)")
