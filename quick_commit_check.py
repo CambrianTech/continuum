@@ -271,6 +271,20 @@ def main():
     print("=" * 40)
     start_time = time.time()
     
+    # Clean up ALL verification files at the very start
+    print("🧹 Cleaning up old verification files...")
+    verification_dir = Path('verification/ui-captures/')
+    if verification_dir.exists():
+        all_captures = list(verification_dir.glob('ui-capture-*.jpg'))
+        for old_capture in all_captures:
+            try:
+                subprocess.run(['git', 'reset', 'HEAD', str(old_capture)], 
+                             capture_output=True, stderr=subprocess.DEVNULL)
+                old_capture.unlink(missing_ok=True)
+                print(f"🗑️ Removed: {old_capture.name}")
+            except Exception:
+                pass
+    
     # Inject progress widget into Continuum interface
     widget_injected = inject_progress_widget()
     if widget_injected:
@@ -314,30 +328,20 @@ def main():
                     print("📊 UUID tracking: ✅ | Screenshots: ✅ | Logs: ✅")
                     print(f"📸 Screenshot-proof: {proof_path}")
                     
-                    # Clean up ALL old verification files before staging new ones
-                    verification_dir = Path('verification/ui-captures/')
-                    if verification_dir.exists():
-                        # Remove all existing verification screenshots from git and filesystem
-                        all_captures = list(verification_dir.glob('ui-capture-*.jpg'))
-                        for old_capture in all_captures:
-                            try:
-                                # Remove from git staging if present
-                                subprocess.run(['git', 'reset', 'HEAD', str(old_capture)], 
-                                             capture_output=True, stderr=subprocess.DEVNULL)
-                                # Remove from filesystem
-                                old_capture.unlink(missing_ok=True)
-                                print(f"🗑️ Cleaned old capture: {old_capture.name}")
-                            except Exception:
-                                pass
+                    # Add ONLY the new verification screenshot to git staging
+                    try:
+                        subprocess.run(['git', 'add', proof_path], check=True)
+                        print(f"✅ Added verification screenshot: {Path(proof_path).name}")
+                    except Exception as e:
+                        print(f"⚠️ Could not stage screenshot: {e}")
                     
-                    # Add only the new verification files to git staging
-                    verification_files = [proof_path] + log_files
-                    for file_path in verification_files:
+                    # Add log files separately
+                    for log_file in log_files:
                         try:
-                            subprocess.run(['git', 'add', file_path], check=True)
-                            print(f"✅ Added to commit: {Path(file_path).name}")
+                            subprocess.run(['git', 'add', log_file], check=True)
+                            print(f"✅ Added log file: {Path(log_file).name}")
                         except Exception as e:
-                            print(f"⚠️ Could not stage {file_path}: {e}")
+                            print(f"⚠️ Could not stage log: {e}")
                     
                     sys.exit(0)
         
