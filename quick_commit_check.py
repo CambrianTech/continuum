@@ -35,6 +35,77 @@ def create_screenshot_proof(screenshot_path):
     except Exception:
         return str(screenshot_path)  # Fallback to original
 
+def save_verification_logs(timestamp):
+    """Save client and server logs during verification"""
+    try:
+        # Create verification logs directory
+        logs_dir = Path('verification/logs/')
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save client logs
+        client_log_path = logs_dir / f"client-{timestamp}.log"
+        try:
+            result = subprocess.run([
+                sys.executable, 'python-client/ai-portal.py', '--logs', '20'
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0:
+                with open(client_log_path, 'w') as f:
+                    f.write(f"=== CLIENT LOGS CAPTURED DURING VERIFICATION ===\n")
+                    f.write(f"Timestamp: {timestamp}\n")
+                    f.write(f"Command: python-client/ai-portal.py --logs 20\n\n")
+                    f.write(result.stdout)
+                print(f"📝 Client logs saved: {client_log_path}")
+            else:
+                print(f"⚠️ Could not capture client logs: {result.stderr}")
+        except Exception as e:
+            print(f"⚠️ Client log capture failed: {e}")
+        
+        # Save server logs if available
+        server_log_path = logs_dir / f"server-{timestamp}.log"
+        try:
+            # Check for server log files
+            server_log_files = [
+                Path('.continuum/continuum.log'),
+                Path('continuum.log'),
+                Path('server.log')
+            ]
+            
+            server_content = ""
+            for log_file in server_log_files:
+                if log_file.exists():
+                    with open(log_file, 'r') as f:
+                        lines = f.readlines()
+                        # Get last 50 lines
+                        recent_lines = lines[-50:] if len(lines) > 50 else lines
+                        server_content += f"\n=== {log_file} (last 50 lines) ===\n"
+                        server_content += ''.join(recent_lines)
+            
+            if server_content:
+                with open(server_log_path, 'w') as f:
+                    f.write(f"=== SERVER LOGS CAPTURED DURING VERIFICATION ===\n")
+                    f.write(f"Timestamp: {timestamp}\n")
+                    f.write(server_content)
+                print(f"📝 Server logs saved: {server_log_path}")
+            else:
+                print("⚠️ No server log files found")
+                
+        except Exception as e:
+            print(f"⚠️ Server log capture failed: {e}")
+            
+        # Return log file paths for git staging
+        log_files = []
+        if client_log_path.exists():
+            log_files.append(str(client_log_path))
+        if server_log_path.exists():
+            log_files.append(str(server_log_path))
+            
+        return log_files
+        
+    except Exception as e:
+        print(f"⚠️ Log saving failed: {e}")
+        return []
+
 # Global progress control
 progress_done = False
 
@@ -234,16 +305,23 @@ def main():
                     latest_screenshot = max(screenshots, key=lambda p: p.stat().st_mtime)
                     proof_path = create_screenshot_proof(latest_screenshot)
                     
+                    # Save verification logs
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    print("📝 Saving verification logs...")
+                    log_files = save_verification_logs(timestamp)
+                    
                     print("✅ PASSED - All systems operational")
                     print("📊 UUID tracking: ✅ | Screenshots: ✅ | Logs: ✅")
                     print(f"📸 Screenshot-proof: {proof_path}")
                     
-                    # Add verification screenshot to git staging
-                    try:
-                        subprocess.run(['git', 'add', proof_path], check=True)
-                        print(f"✅ Added verification screenshot to commit: {Path(proof_path).name}")
-                    except Exception as e:
-                        print(f"⚠️ Could not stage verification screenshot: {e}")
+                    # Add verification files to git staging
+                    verification_files = [proof_path] + log_files
+                    for file_path in verification_files:
+                        try:
+                            subprocess.run(['git', 'add', file_path], check=True)
+                            print(f"✅ Added to commit: {Path(file_path).name}")
+                        except Exception as e:
+                            print(f"⚠️ Could not stage {file_path}: {e}")
                     
                     sys.exit(0)
         
