@@ -15,7 +15,7 @@ The Screenshot command provides powerful browser screenshot capabilities with CS
 - `selector`: CSS selector for element to capture (default: 'body' for full page)
 - `filename`: Custom filename for screenshot (optional)
 - `subdirectory`: Subdirectory within screenshots workspace (optional)
-- `scale`: Scale factor for capture (default: 1.0)
+- `scale`: Scale factor for capture (default: 2.0)
 - `format`: Image format (png, jpg, webp - default: png)
 - `quality`: Image quality for lossy formats (0-100, default: 90)
 
