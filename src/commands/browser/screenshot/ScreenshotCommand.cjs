@@ -112,7 +112,7 @@ class ScreenshotCommand extends BaseCommand {
       filename,
       subdirectory,
       name_prefix = 'screenshot',
-      scale = 1.0,
+      scale = 2.0,
       manual = false,
       source = 'unknown',
       format = 'png',
