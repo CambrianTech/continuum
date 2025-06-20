@@ -49,9 +49,9 @@ describe('JoinRoomCommand', () => {
       const definition = JoinRoomCommand.getDefinition();
       
       expect(definition).toBeDefined();
-      expect(definition.name).toBe('JOIN_ROOM');
-      expect(definition.category).toBe('Core');
-      expect(definition.description).toContain('Join Discord-style room');
+      expect(definition.name).toBe('joinRoom');
+      expect(definition.category).toBe('communication');
+      expect(definition.description).toContain('Join and subscribe to chat rooms');
       expect(definition.icon).toBe('🚪');
     });
 
@@ -59,9 +59,9 @@ describe('JoinRoomCommand', () => {
       const definition = JoinRoomCommand.getDefinition();
       
       expect(definition.parameters).toBeDefined();
-      expect(definition.parameters.roomId).toBeDefined();
-      expect(definition.parameters.roomId.required).toBe(true);
-      expect(definition.parameters.roomId.type).toBe('string');
+      expect(definition.parameters.room).toBeDefined();
+      expect(definition.parameters.room.required).toBe(true);
+      expect(definition.parameters.room.type).toBe('string');
     });
   });
 
@@ -77,14 +77,14 @@ describe('JoinRoomCommand', () => {
       const result = await JoinRoomCommand.execute('invalid-json', mockContinuum);
       
       expect(result.success).toBe(false);
-      expect(result.message).toContain('Invalid parameters');
+      expect(result.message).toContain('Room name is required');
     });
 
     test('should validate room ID format', async () => {
       const result = await JoinRoomCommand.execute('{"roomId": ""}', mockContinuum);
       
       expect(result.success).toBe(false);
-      expect(result.message).toContain('Room ID cannot be empty');
+      expect(result.message).toContain('Room name is required');
     });
   });
 
@@ -93,7 +93,7 @@ describe('JoinRoomCommand', () => {
       // Switch to different user
       const joinUser = { ...mockContinuum, userId: 'join-user', username: 'JoinUser' };
       
-      const params = { roomId: 'test-room' };
+      const params = { room: 'test-room' };
       const result = await JoinRoomCommand.execute(JSON.stringify(params), joinUser);
       
       expect(result.success).toBe(true);
@@ -104,7 +104,7 @@ describe('JoinRoomCommand', () => {
 
     test('should update subscriptions file', async () => {
       const joinUser = { ...mockContinuum, userId: 'join-user', username: 'JoinUser' };
-      const params = { roomId: 'test-room' };
+      const params = { room: 'test-room' };
       
       await JoinRoomCommand.execute(JSON.stringify(params), joinUser);
       
@@ -119,7 +119,7 @@ describe('JoinRoomCommand', () => {
 
     test('should handle user already in room', async () => {
       // Original creator tries to join their own room
-      const params = { roomId: 'test-room' };
+      const params = { room: 'test-room' };
       const result = await JoinRoomCommand.execute(JSON.stringify(params), mockContinuum);
       
       expect(result.success).toBe(true);
@@ -175,7 +175,7 @@ describe('JoinRoomCommand', () => {
   describe('Join Message', () => {
     test('should add join message to room', async () => {
       const joinUser = { ...mockContinuum, userId: 'join-user', username: 'JoinUser' };
-      const params = { roomId: 'test-room' };
+      const params = { room: 'test-room' };
       
       await JoinRoomCommand.execute(JSON.stringify(params), joinUser);
       
@@ -191,7 +191,7 @@ describe('JoinRoomCommand', () => {
 
     test('should not duplicate join messages', async () => {
       const joinUser = { ...mockContinuum, userId: 'join-user', username: 'JoinUser' };
-      const params = { roomId: 'test-room' };
+      const params = { room: 'test-room' };
       
       // Join twice
       await JoinRoomCommand.execute(JSON.stringify(params), joinUser);
@@ -248,7 +248,7 @@ describe('JoinRoomCommand', () => {
       fs.chmodSync(roomDir, 0o444);
       
       const joinUser = { ...mockContinuum, userId: 'join-user', username: 'JoinUser' };
-      const params = { roomId: 'test-room' };
+      const params = { room: 'test-room' };
       const result = await JoinRoomCommand.execute(JSON.stringify(params), joinUser);
       
       expect(result.success).toBe(false);
@@ -264,7 +264,7 @@ describe('JoinRoomCommand', () => {
       fs.writeFileSync(subscriptionsPath, 'invalid-json');
       
       const joinUser = { ...mockContinuum, userId: 'join-user', username: 'JoinUser' };
-      const params = { roomId: 'test-room' };
+      const params = { room: 'test-room' };
       const result = await JoinRoomCommand.execute(JSON.stringify(params), joinUser);
       
       expect(result.success).toBe(false);
@@ -272,7 +272,7 @@ describe('JoinRoomCommand', () => {
     });
 
     test('should handle missing continuum context', async () => {
-      const params = { roomId: 'test-room' };
+      const params = { room: 'test-room' };
       const result = await JoinRoomCommand.execute(JSON.stringify(params), null);
       
       expect(result.success).toBe(false);
@@ -288,7 +288,7 @@ describe('JoinRoomCommand', () => {
 
     test('should use BaseCommand helper methods', async () => {
       const joinUser = { ...mockContinuum, userId: 'join-user', username: 'JoinUser' };
-      const params = { roomId: 'test-room' };
+      const params = { room: 'test-room' };
       const result = await JoinRoomCommand.execute(JSON.stringify(params), joinUser);
       
       expect(result).toHaveProperty('success');

@@ -3,12 +3,19 @@
  * Validates AI-driven issue management functionality
  */
 
-const test = require('node:test');
-const assert = require('node:assert');
-const path = require('path');
-const fs = require('fs');
+import test from 'node:test';
+import assert from 'node:assert';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 
-// Import the command under test
+// ES module path handling
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Import the command under test (CommonJS module)
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
 const IssuesCommand = require('../IssuesCommand.cjs');
 
 test.describe('IssuesCommand Module Tests', () => {
@@ -86,7 +93,7 @@ More content
   });
 
   test('should execute dashboard action', async () => {
-    const params = { action: 'dashboard' };
+    const params = { action: 'dashboard', agent: 'auto' };
     const mockContinuum = { connection: { agent: 'TestAgent' } };
     
     const result = await IssuesCommand.execute(JSON.stringify(params), mockContinuum);
@@ -97,15 +104,22 @@ More content
   });
 
   test('should execute sync action', async () => {
-    const params = { action: 'sync' };
+    const params = { action: 'sync', agent: 'auto' };
     const mockContinuum = { connection: { agent: 'TestAgent' } };
     
     // Mock FILES.md existence check
     const originalExistsSync = fs.existsSync;
     const originalReadFileSync = fs.readFileSync;
     
-    fs.existsSync = () => true;
-    fs.readFileSync = () => '🧹 test content\n🔥 another issue';
+    fs.existsSync = (filepath) => {
+      if (filepath.includes('FILES.md')) return true;
+      return originalExistsSync(filepath);
+    };
+    
+    fs.readFileSync = (filepath, encoding) => {
+      if (filepath.includes('FILES.md')) return '🧹 test content\n🔥 another issue';
+      return originalReadFileSync(filepath, encoding);
+    };
     
     try {
       const result = await IssuesCommand.execute(JSON.stringify(params), mockContinuum);

@@ -54,8 +54,8 @@ describe('ChatCommand', () => {
     const claudeUser = { ...mockContinuum, userId: 'claude', username: 'Claude' };
     const gptUser = { ...mockContinuum, userId: 'gpt-4', username: 'GPT-4' };
     
-    await JoinRoomCommand.execute(JSON.stringify({ roomId: 'test-chat-room' }), claudeUser);
-    await JoinRoomCommand.execute(JSON.stringify({ roomId: 'test-chat-room' }), gptUser);
+    await JoinRoomCommand.execute(JSON.stringify({ room: 'test-chat-room' }), claudeUser);
+    await JoinRoomCommand.execute(JSON.stringify({ room: 'test-chat-room' }), gptUser);
   });
 
   afterEach(() => {

@@ -53,42 +53,44 @@ python3 python-client/ai-portal.py --cmd [command] --help
 
 ## Available Commands
 ### Core Commands
-- **AGENTS** - Command available
-- **BROWSER** - Command available
-- **BROWSER_JS** - Command available
-- **CHAT** - Command available
-- **CLEAR** - Command available
-- **CREATEROOM** - Command available
-- **CURSOR** - Command available
-- **DIAGNOSTICS** - Command available
-- **DOCS** - Command available
-- **EMOTION** - Command available
-- **EXEC** - Command available
-- **FILESAVE** - Command available
-- **FINDUSER** - Command available
-- **HELP** - Command available
-- **INFO** - Command available
-- **INPUT** - Command available
-- **JOINROOM** - Command available
-- **LISTAGENTS** - Command available
-- **LISTROOMS** - Command available
-- **LOADROOMS** - Command available
-- **MACRO** - Command available
-- **MOVE** - Command available
-- **PREFERENCES** - Command available
-- **PROMISE_JS** - Command available
-- **RELOAD** - Command available
-- **RESTART** - Command available
-- **SAVE_FILE** - Command available
-- **SCREENSHOT** - Command available
-- **SENTINEL** - Command available
-- **SHARE** - Command available
-- **TYPE** - Command available
-- **VALIDATE_CODE** - Command available
-- **VALIDATE_JS** - Command available
-- **WORKSPACE** - Command available
+- **help** 📚 - Show help information and sync documentation
+- **workspace** 📁 - Manage workspace directories and paths
+- **sentinel** 🛡️ - AI guardian for logging and task management
+- **restart** 🔄 - Restart server with version bump
+- **info** ℹ️ - System information and status
 
-💡 **Get detailed help**: `python3 python-client/ai-portal.py --cmd [command] --help`
+💡 **Get live commands**: `python3 python-client/ai-portal.py --cmd help`
+
+## Command Status Dashboard
+> 📊 Built-in project management - tracks command health and TODOs
+
+| Status | Command | Icon | TODOs | Tests | Last Updated | Notes |
+|--------|---------|------|-------|-------|--------------|-------|
+| 🔴 | reload | 🔄 | 4 | No tests | 2025-06-18 | CRITICAL ISSUES |
+| 🟠 | continuon_status | 📄 | ? | No tests | Never | No documentation |
+| 🟠 | emotion | 📄 | ? | No tests | Never | No documentation |
+| 🟠 | event | 📄 | ? | No tests | Never | No documentation |
+| 🟠 | markread | 📄 | ? | No tests | Never | No documentation |
+| 🟠 | notify | 📄 | ? | No tests | Never | No documentation |
+| 🟠 | preferences | 📄 | ? | No tests | Never | No documentation |
+| 🟠 | status_text | 📄 | ? | No tests | Never | No documentation |
+| 🟠 | transfer | 📄 | ? | No tests | Never | No documentation |
+| 🟡 | info | ℹ️ | 5 | No tests | 2025-06-18 | In migration |
+| ⚪ | help | 📚 | 0 | No tests | Unknown | Needs review |
+| ⚪ | restart | 🔄 | 0 | No tests | Unknown | Needs review |
+| ⚪ | workspace | 📁 | 0 | No tests | Unknown | Needs review |
+
+### Project Health Summary
+
+| Status | Count | Description |
+|--------|-------|-------------|
+| 🔴 | 1 | Broken - Do not use |
+| 🟠 | 8 | Untested - Needs documentation |
+| 🟡 | 1 | Testing - In progress |
+| 🟢 | 0 | Stable - Production ready |
+| ⚪ | 3 | Unknown - Needs assessment |
+
+**Project Health: 0% stable (0/13 commands)**
 
 ## Architecture
 
@@ -120,39 +122,12 @@ python3 python-client/ai-portal.py --cmd [command] --help
 - **Self-Documenting**: Help system generates live documentation
 - **No God Objects**: Clean separation of concerns throughout
 
-## DevTools Integration System
-
-🚨 **CRITICAL**: Continuum has a sophisticated DevTools integration system for browser automation and screenshot capture.
-
-| Document | Purpose |
-|----------|---------|
-| `DEVTOOLS_INTEGRATION_PLAN.md` | 📋 Complete DevTools integration roadmap and architecture |
-| `DEVTOOLS_AUTO_LAUNCH_MECHANISM.md` | 🔧 Technical analysis of auto-browser launch system |
-| `python-client/demos/devtools/` | 🎯 **5 production-ready demo scripts** proving system works |
-
-**Quick DevTools Test:**
-```bash
-# Complete DevTools system with real-time logging and screenshots
-python python-client/demos/devtools/start_devtools_system.py
-
-# Takes screenshot via DevTools Protocol (not html2canvas)
-python python-client/take_devtools_screenshot.py test_screenshot
-```
-
-**Key DevTools Features:**
-- ✅ Auto-launches Opera GX in debug mode with `--remote-debugging-port=9222`
-- ✅ Real-time browser console log streaming with <100ms latency
-- ✅ Screenshot capture via DevTools Protocol (superior to html2canvas)
-- ✅ Works independently of Continuum server state
-- ✅ Intelligent fallback chain (DevTools → html2canvas → portal daemon)
-
 ## Key Locations
 
 | Location | Purpose |
 |----------|---------|
 | `python-client/ai-portal.py` | 🚀 Primary AI agent interface (thin client adapter) |
 | `python-client/continuum_client/` | Promise-based Python API library |
-| `python-client/demos/devtools/` | 🎯 DevTools integration demos and production scripts |
 | `src/commands/core/` | Modular command implementations |
 | `src/integrations/WebSocketServer.cjs` | Command bus message routing |
 | `.continuum/` | Workspace directory (managed by workspace command) |
@@ -161,6 +136,6 @@ python python-client/take_devtools_screenshot.py test_screenshot
 | `docs/AI_PORTAL_ARCHITECTURE.md` | Detailed architecture documentation |
 
 ---
-*Documentation auto-generated on 2025-06-18T09:02:37.497Z*  
+*Documentation auto-generated on 2025-06-20T19:39:38.265Z*  
 *Source: Live help system via `help --sync` command*  
 *Architecture: Command bus with thin client adapters*

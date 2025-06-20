@@ -1,42 +1,7 @@
 # 📁 Continuum Codebase Structure
 
-> **🏛️ Archaeological Discovery**: Advanced AI platform with hierarchical LoRA specialization system  
-> **📋 Mission**: Document all capabilities and restore lost treasures from git history
-
-## 🔍 **Agent Study Guide - Archaeological Discoveries**
-
-### 🎓 **DISCOVERY: Global Competitive AI Ecosystem** 
-**Found in**: `src/adapters/HierarchicalAdapter.cjs`, `src/commands/core/share/ShareCommand.cjs`, Academy scoring system
-
-**🏅 Global AI Competition Network**:
-- **Every Continuum is connected** - Share button publishes to global network
-- **AI Gyms & Leaderboards** - Specialists compete globally with Academy Scores
-- **Piecemeal benchmarking** - Load competing specialists for head-to-head testing
-- **Evolutionary pressure** - Best performers spread, weak ones fade away
-
-**🧠 Composable Expertise Architecture**:
-- **Base → Science → Physics → Biology** layered specialization
-- **190,735x storage reduction** (29MB adapters vs 175GB base models)
-- **Torrent-style sharing** of expertise layers between organizations
-- **Dynamic assembly** of AI specialists (legal → patent → uspto → biotech)
-
-**💡 Real Examples Found**:
-```
-Legal Stack: base → legal(12MB) → patent(8MB) → uspto(5MB) → biotech(4MB) = 29MB total
-Medical Stack: base → medical(15MB) → cardiology(10MB) → pediatric(6MB) = 31MB total  
-Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB total
-```
-
-**🚀 Revolutionary Capabilities**:
-- **Instant specialization swapping** - Change expertise in seconds, not hours
-- **Decentralized expertise mesh** - Organizations share tiny adaptation layers
-- **Privacy-preserving** - Base models stay private, only improvements shared
-- **Academy-trained layers** - TestingDroid vs ProtocolSheriff creates specialists
-
-### 🏗️ **System Architecture Overview**
-**Working Foundation**: 35 modular commands + complete automation + Academy system
-**Lost Treasures**: Mass Effect UI, intelligent routing, browser automation integration
-**Recovery Status**: All components recoverable from git history with exact commands
+> **Mission: Reduce complexity and improve organization**  
+> Comment on every file - what it does, why it exists, and how to simplify.
 
 ## 🎯 Structure Goals
 - **Minimize depth** - Flatten nested directories where possible
@@ -167,11 +132,23 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
 ### CHECKIN_SUMMARY.md {#checkin_summary.md}
   # 📖 Documentation
 
+### CLAUDE.md {#claude.md}
+  # 📖 Documentation
+
+### continuum-output.log {#continuum-output.log}
+  # 🗑️ Log file (should be gitignored!)
+
 ### continuum.cjs {#continuum.cjs}
   # ⚡ JavaScript/Node.js
 
-### continuum.log {#continuum.log}
-  # 📄 File
+### DEVTOOLS_AUTO_LAUNCH_MECHANISM.md {#devtools_auto_launch_mechanism.md}
+  # 📖 Documentation
+
+### devtools_full_demo.py {#devtools_full_demo.py}
+  # 🐍 Python
+
+### DEVTOOLS_INTEGRATION_PLAN.md {#devtools_integration_plan.md}
+  # 📖 Documentation
 
 ### eslint.config.js {#eslint.config.js}
   # ⚡ JavaScript/Node.js
@@ -212,6 +189,9 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
 ### process.md {#process.md}
   # 📖 Documentation
 
+### quick_commit_check.py {#quick_commit_check.py}
+  # 🐍 Python
+
 ### README-CLEAN.md {#readme-clean.md}
   # 📖 Documentation
 
@@ -230,7 +210,13 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
 ### SCREENSHOT_REFERENCE.md {#screenshot_reference.md}
   # 📖 Documentation
 
-### server.log {#server.log}
+### test_cleanup.md {#test_cleanup.md}
+  # 📖 Documentation
+
+### test_file.txt {#test_file.txt}
+  # 📄 File
+
+### test_widget_open.txt {#test_widget_open.txt}
   # 📄 File
 
 ### tsconfig.json {#tsconfig.json}
@@ -2616,9 +2602,6 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
       # 🗄️ Archived JavaScript (filed away)
 
       📁 **archived/python-client/test-scripts/test_screenshots/**
-      ### bytes_mode_version.png {#archived-python-client-test-scripts-test_screenshots-bytes_mode_version.png}
-        # 🗂️ Archived file (shelved)
-
   📁 **archived/root-level/**
     📁 **archived/root-level/temp-files/**
     ### continuon.markdown {#archived-root-level-temp-files-continuon.markdown}
@@ -2895,11 +2878,8 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
       ### academy-fine-tuning.test.cjs {#archived-root-level-test-files-tests-directory-academy-fine-tuning.test.cjs}
         # 🗄️ Archived JavaScript (filed away)
 
-      ### adapter-sharing.test.cjs {#archived-root-level-test-files-tests-directory-adapter-sharing.test.cjs} 🌐 **TREASURE**
-        # 🗄️ Archived JavaScript (filed away) - **360 lines of torrent-style sharing system**
-        # 🔥 PROOF: Complete adapter sharing workflow with registry, export/import, installation
-        # 🚀 FEATURES: Publish adapters, search by tags, cross-system sharing, 190,735x efficiency
-        # 💎 DEMONSTRATES: "Share specialized fine-tuning in KB, not GB"
+      ### adapter-sharing.test.cjs {#archived-root-level-test-files-tests-directory-adapter-sharing.test.cjs}
+        # 🗄️ Archived JavaScript (filed away)
 
       ### adversarial-protocol.test.cjs {#archived-root-level-test-files-tests-directory-adversarial-protocol.test.cjs}
         # 🗄️ Archived JavaScript (filed away)
@@ -2925,12 +2905,8 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
       ### cyberpunk-theme.test.cjs {#archived-root-level-test-files-tests-directory-cyberpunk-theme.test.cjs}
         # 🗄️ Archived JavaScript (filed away)
 
-      ### hierarchical-specialization.test.cjs {#archived-root-level-test-files-tests-directory-hierarchical-specialization.test.cjs} 🏆 **CROWN JEWEL**
-        # 🗄️ Archived JavaScript (filed away) - **371 lines of hierarchical specialization proof**
-        # 🧠 CORE SYSTEM: Demonstrates base → legal → patent → uspto → biotech stacking  
-        # 🎯 REAL EXAMPLES: Legal(29MB), Medical(31MB), Engineering(27MB) complete stacks
-        # 🔬 IMPLEMENTATION: Creates, loads, stacks, and applies hierarchical adapters
-        # 💡 BREAKTHROUGH: "Perfect Architecture for Professional Specialization!"
+      ### hierarchical-specialization.test.cjs {#archived-root-level-test-files-tests-directory-hierarchical-specialization.test.cjs}
+        # 🗄️ Archived JavaScript (filed away)
 
       ### integration-full-system.test.ts {#archived-root-level-test-files-tests-directory-integration-full-system.test.ts}
         # 🔗 TypeScript (missing from JS loop?)
@@ -2938,10 +2914,8 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
       ### integration.test.cjs {#archived-root-level-test-files-tests-directory-integration.test.cjs}
         # 🗄️ Archived JavaScript (filed away)
 
-      ### lora-fine-tuning.test.cjs {#archived-root-level-test-files-tests-directory-lora-fine-tuning.test.cjs} 🎓 **ACADEMY PROOF**
-        # 🗄️ Archived JavaScript (filed away) - **LoRA fine-tuning system implementation**
-        # 🔬 FOUNDATION: Ultra-efficient fine-tuning for Academy adversarial training
-        # 💾 EFFICIENCY: 190,735x parameter reduction enabling hierarchical stacking
+      ### lora-fine-tuning.test.cjs {#archived-root-level-test-files-tests-directory-lora-fine-tuning.test.cjs}
+        # 🗄️ Archived JavaScript (filed away)
 
       ### master-test-runner.cjs {#archived-root-level-test-files-tests-directory-master-test-runner.cjs}
         # 🗄️ Archived JavaScript (filed away)
@@ -3185,6 +3159,171 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
 
       ### index.html {#coverage-lcov-report-src-commands-index.html}
         # 🧼 HTML scraps (temp/debug files?)
+
+        📁 **coverage/lcov-report/src/commands/browser/**
+          📁 **coverage/lcov-report/src/commands/browser/browser/**
+          ### BrowserCommand.cjs.html {#coverage-lcov-report-src-commands-browser-browser-browsercommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-browser-browser-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-browser-browser-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/browser/browserjs/**
+          ### BrowserJSCommand.cjs.html {#coverage-lcov-report-src-commands-browser-browserjs-browserjscommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-browser-browserjs-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-browser-browserjs-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/browser/promisejs/**
+          ### index.html {#coverage-lcov-report-src-commands-browser-promisejs-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-browser-promisejs-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### PromiseJSCommand.cjs.html {#coverage-lcov-report-src-commands-browser-promisejs-promisejscommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/browser/screenshot/**
+          ### ContinuonAnimator.js.html {#coverage-lcov-report-src-commands-browser-screenshot-continuonanimator.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.cjs.html {#coverage-lcov-report-src-commands-browser-screenshot-index.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.client.js.html {#coverage-lcov-report-src-commands-browser-screenshot-index.client.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-browser-screenshot-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-browser-screenshot-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### ScreenshotCommand.cjs.html {#coverage-lcov-report-src-commands-browser-screenshot-screenshotcommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### ScreenshotCommand.client.js.html {#coverage-lcov-report-src-commands-browser-screenshot-screenshotcommand.client.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### ScreenshotUtils.js.html {#coverage-lcov-report-src-commands-browser-screenshot-screenshotutils.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+            📁 **coverage/lcov-report/src/commands/browser/screenshot/test/**
+              📁 **coverage/lcov-report/src/commands/browser/screenshot/test/browser-scripts/**
+              ### check_command_execution.js.html {#coverage-lcov-report-src-commands-browser-screenshot-test-browser-scripts-check_command_execution.js.html}
+                # 🧼 HTML scraps (temp/debug files?)
+
+              ### check_console_warnings.js.html {#coverage-lcov-report-src-commands-browser-screenshot-test-browser-scripts-check_console_warnings.js.html}
+                # 🧼 HTML scraps (temp/debug files?)
+
+              ### check_server_logs.js.html {#coverage-lcov-report-src-commands-browser-screenshot-test-browser-scripts-check_server_logs.js.html}
+                # 🧼 HTML scraps (temp/debug files?)
+
+              ### check_server_reboot_handling.js.html {#coverage-lcov-report-src-commands-browser-screenshot-test-browser-scripts-check_server_reboot_handling.js.html}
+                # 🧼 HTML scraps (temp/debug files?)
+
+              ### enhance_websocket_handler.js.html {#coverage-lcov-report-src-commands-browser-screenshot-test-browser-scripts-enhance_websocket_handler.js.html}
+                # 🧼 HTML scraps (temp/debug files?)
+
+              ### generic_file_saver.js.html {#coverage-lcov-report-src-commands-browser-screenshot-test-browser-scripts-generic_file_saver.js.html}
+                # 🧼 HTML scraps (temp/debug files?)
+
+              ### index.html {#coverage-lcov-report-src-commands-browser-screenshot-test-browser-scripts-index.html}
+                # 🧼 HTML scraps (temp/debug files?)
+
+              ### list_available_commands.js.html {#coverage-lcov-report-src-commands-browser-screenshot-test-browser-scripts-list_available_commands.js.html}
+                # 🧼 HTML scraps (temp/debug files?)
+
+              ### test_bus_file_command.js.html {#coverage-lcov-report-src-commands-browser-screenshot-test-browser-scripts-test_bus_file_command.js.html}
+                # 🧼 HTML scraps (temp/debug files?)
+
+              ### test_scale_settings.js.html {#coverage-lcov-report-src-commands-browser-screenshot-test-browser-scripts-test_scale_settings.js.html}
+                # 🧼 HTML scraps (temp/debug files?)
+
+              ### version_check.js.html {#coverage-lcov-report-src-commands-browser-screenshot-test-browser-scripts-version_check.js.html}
+                # 🧼 HTML scraps (temp/debug files?)
+
+        📁 **coverage/lcov-report/src/commands/communication/**
+          📁 **coverage/lcov-report/src/commands/communication/chat/**
+          ### ChatCommand.cjs.html {#coverage-lcov-report-src-commands-communication-chat-chatcommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-communication-chat-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-communication-chat-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/communication/createroom/**
+          ### CreateRoomCommand.cjs.html {#coverage-lcov-report-src-commands-communication-createroom-createroomcommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-communication-createroom-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-communication-createroom-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/communication/findUser/**
+          ### FindUserCommand.cjs.html {#coverage-lcov-report-src-commands-communication-finduser-findusercommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.cjs.html {#coverage-lcov-report-src-commands-communication-finduser-index.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-communication-finduser-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-communication-finduser-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/communication/joinroom/**
+          ### index.html {#coverage-lcov-report-src-commands-communication-joinroom-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-communication-joinroom-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### JoinRoomCommand.cjs.html {#coverage-lcov-report-src-commands-communication-joinroom-joinroomcommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/communication/listrooms/**
+          ### index.html {#coverage-lcov-report-src-commands-communication-listrooms-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### ListRoomsCommand.cjs.html {#coverage-lcov-report-src-commands-communication-listrooms-listroomscommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/communication/loadrooms/**
+          ### index.html {#coverage-lcov-report-src-commands-communication-loadrooms-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-communication-loadrooms-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### LoadRoomsCommand.cjs.html {#coverage-lcov-report-src-commands-communication-loadrooms-loadroomscommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/communication/share/**
+          ### index.cjs.html {#coverage-lcov-report-src-commands-communication-share-index.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-communication-share-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-communication-share-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### ShareCommand.cjs.html {#coverage-lcov-report-src-commands-communication-share-sharecommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
 
         📁 **coverage/lcov-report/src/commands/core/**
         ### index.html {#coverage-lcov-report-src-commands-core-index.html}
@@ -3559,6 +3698,253 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
           ### ValidateJSCommand.cjs.html {#coverage-lcov-report-src-commands-core-validatejs-validatejscommand.cjs.html}
             # 🧼 HTML scraps (temp/debug files?)
 
+          📁 **coverage/lcov-report/src/commands/core/workspace/**
+          ### index.html {#coverage-lcov-report-src-commands-core-workspace-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-core-workspace-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### WorkspaceCommand.cjs.html {#coverage-lcov-report-src-commands-core-workspace-workspacecommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+        📁 **coverage/lcov-report/src/commands/development/**
+          📁 **coverage/lcov-report/src/commands/development/macro/**
+          ### index.html {#coverage-lcov-report-src-commands-development-macro-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-development-macro-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### MacroCommand.cjs.html {#coverage-lcov-report-src-commands-development-macro-macrocommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/development/spawn/**
+          ### index.html {#coverage-lcov-report-src-commands-development-spawn-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### SpawnCommand.cjs.html {#coverage-lcov-report-src-commands-development-spawn-spawncommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/development/test/**
+          ### index.cjs.html {#coverage-lcov-report-src-commands-development-test-index.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-development-test-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-development-test-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### TestCommand.cjs.html {#coverage-lcov-report-src-commands-development-test-testcommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/development/validatecode/**
+          ### index.html {#coverage-lcov-report-src-commands-development-validatecode-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-development-validatecode-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### ValidateCodeCommand.cjs.html {#coverage-lcov-report-src-commands-development-validatecode-validatecodecommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/development/validatejs/**
+          ### index.html {#coverage-lcov-report-src-commands-development-validatejs-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-development-validatejs-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### ValidateJSCommand.cjs.html {#coverage-lcov-report-src-commands-development-validatejs-validatejscommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+        📁 **coverage/lcov-report/src/commands/docs/**
+          📁 **coverage/lcov-report/src/commands/docs/docs/**
+          ### DocsCommand.cjs.html {#coverage-lcov-report-src-commands-docs-docs-docscommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-docs-docs-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-docs-docs-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+        📁 **coverage/lcov-report/src/commands/file/**
+          📁 **coverage/lcov-report/src/commands/file/exec/**
+          ### ExecCommand.cjs.html {#coverage-lcov-report-src-commands-file-exec-execcommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-file-exec-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-file-exec-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/file/fileSave/**
+          ### FileSaveCommand.cjs.html {#coverage-lcov-report-src-commands-file-filesave-filesavecommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-file-filesave-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-file-filesave-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/file/savefile/**
+          ### index.html {#coverage-lcov-report-src-commands-file-savefile-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-file-savefile-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### SaveFileCommand.cjs.html {#coverage-lcov-report-src-commands-file-savefile-savefilecommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+        📁 **coverage/lcov-report/src/commands/input/**
+          📁 **coverage/lcov-report/src/commands/input/clear/**
+          ### ClearCommand.cjs.html {#coverage-lcov-report-src-commands-input-clear-clearcommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-input-clear-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-input-clear-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/input/cursor/**
+          ### CursorCommand.cjs.html {#coverage-lcov-report-src-commands-input-cursor-cursorcommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-input-cursor-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-input-cursor-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+            📁 **coverage/lcov-report/src/commands/input/cursor/graphics/**
+            ### GraphicsRenderer.js.html {#coverage-lcov-report-src-commands-input-cursor-graphics-graphicsrenderer.js.html}
+              # 🧼 HTML scraps (temp/debug files?)
+
+            ### index.html {#coverage-lcov-report-src-commands-input-cursor-graphics-index.html}
+              # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/input/input/**
+          ### index.html {#coverage-lcov-report-src-commands-input-input-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-input-input-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### InputCommand.cjs.html {#coverage-lcov-report-src-commands-input-input-inputcommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/input/move/**
+          ### index.html {#coverage-lcov-report-src-commands-input-move-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-input-move-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### MoveCommand.cjs.html {#coverage-lcov-report-src-commands-input-move-movecommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/input/type/**
+          ### index.html {#coverage-lcov-report-src-commands-input-type-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-input-type-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### TypeCommand.cjs.html {#coverage-lcov-report-src-commands-input-type-typecommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+        📁 **coverage/lcov-report/src/commands/monitoring/**
+          📁 **coverage/lcov-report/src/commands/monitoring/agents/**
+          ### AgentsCommand.cjs.html {#coverage-lcov-report-src-commands-monitoring-agents-agentscommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-monitoring-agents-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-monitoring-agents-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/monitoring/diagnostics/**
+          ### DiagnosticsCommand.cjs.html {#coverage-lcov-report-src-commands-monitoring-diagnostics-diagnosticscommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.cjs.html {#coverage-lcov-report-src-commands-monitoring-diagnostics-index.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-monitoring-diagnostics-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-monitoring-diagnostics-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/monitoring/listagents/**
+          ### index.html {#coverage-lcov-report-src-commands-monitoring-listagents-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-monitoring-listagents-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### ListAgentsCommand.cjs.html {#coverage-lcov-report-src-commands-monitoring-listagents-listagentscommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/monitoring/sentinel/**
+          ### index.html {#coverage-lcov-report-src-commands-monitoring-sentinel-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-monitoring-sentinel-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### SentinelCommand.cjs.html {#coverage-lcov-report-src-commands-monitoring-sentinel-sentinelcommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+        📁 **coverage/lcov-report/src/commands/planning/**
+          📁 **coverage/lcov-report/src/commands/planning/analyze/**
+          ### AnalyzeCommand.cjs.html {#coverage-lcov-report-src-commands-planning-analyze-analyzecommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-planning-analyze-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/planning/restore/**
+          ### index.html {#coverage-lcov-report-src-commands-planning-restore-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### RestoreCommand.cjs.html {#coverage-lcov-report-src-commands-planning-restore-restorecommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/commands/planning/roadmap/**
+          ### index.html {#coverage-lcov-report-src-commands-planning-roadmap-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### RoadmapCommand.cjs.html {#coverage-lcov-report-src-commands-planning-roadmap-roadmapcommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+        📁 **coverage/lcov-report/src/commands/ui/**
+          📁 **coverage/lcov-report/src/commands/ui/emotion/**
+          ### EmotionCommand.cjs.html {#coverage-lcov-report-src-commands-ui-emotion-emotioncommand.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### emotionConfigs.cjs.html {#coverage-lcov-report-src-commands-ui-emotion-emotionconfigs.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### emotionConfigs.js.html {#coverage-lcov-report-src-commands-ui-emotion-emotionconfigs.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### emotionDefinition.cjs.html {#coverage-lcov-report-src-commands-ui-emotion-emotiondefinition.cjs.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-commands-ui-emotion-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.server.js.html {#coverage-lcov-report-src-commands-ui-emotion-index.server.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
       📁 **coverage/lcov-report/src/core/**
       ### Academy.cjs.html {#coverage-lcov-report-src-core-academy.cjs.html}
         # 🧼 HTML scraps (temp/debug files?)
@@ -3907,6 +4293,49 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
         ### UserDrawer.js.html {#coverage-lcov-report-src-ui-components-userdrawer.js.html}
           # 🧼 HTML scraps (temp/debug files?)
 
+          📁 **coverage/lcov-report/src/ui/components/ActiveProjects/**
+          ### ActiveProjects.js.html {#coverage-lcov-report-src-ui-components-activeprojects-activeprojects.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-ui-components-activeprojects-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.js.html {#coverage-lcov-report-src-ui-components-activeprojects-index.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/ui/components/SavedPersonas/**
+          ### index.html {#coverage-lcov-report-src-ui-components-savedpersonas-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.js.html {#coverage-lcov-report-src-ui-components-savedpersonas-index.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### SavedPersonas.js.html {#coverage-lcov-report-src-ui-components-savedpersonas-savedpersonas.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/ui/components/shared/**
+          ### BaseWidget.js.html {#coverage-lcov-report-src-ui-components-shared-basewidget.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.html {#coverage-lcov-report-src-ui-components-shared-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### SidebarWidget.js.html {#coverage-lcov-report-src-ui-components-shared-sidebarwidget.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          📁 **coverage/lcov-report/src/ui/components/UserSelector/**
+          ### index.html {#coverage-lcov-report-src-ui-components-userselector-index.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### index.js.html {#coverage-lcov-report-src-ui-components-userselector-index.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### UserSelector.js.html {#coverage-lcov-report-src-ui-components-userselector-userselector.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
+          ### UserSelectorUtils.js.html {#coverage-lcov-report-src-ui-components-userselector-userselectorutils.js.html}
+            # 🧼 HTML scraps (temp/debug files?)
+
         📁 **coverage/lcov-report/src/ui/utils/**
         ### AgentSelectorUtils.js.html {#coverage-lcov-report-src-ui-utils-agentselectorutils.js.html}
           # 🧼 HTML scraps (temp/debug files?)
@@ -3938,10 +4367,31 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
 ### AGENT_DEVELOPMENT_GUIDE.md {#docs-agent_development_guide.md}
   # 📖 Documentation
 
+### AGENT_QUICKREF.md {#docs-agent_quickref.md}
+  # 📖 Documentation
+
 ### AI_PORTAL_ARCHITECTURE.md {#docs-ai_portal_architecture.md}
   # 📖 Documentation
 
+### AI_PORTAL_PRIORITY.md {#docs-ai_portal_priority.md}
+  # 📖 Documentation
+
+### ARCHITECTURAL_ELEGANCE_AI_FORCE_MULTIPLIER.md {#docs-architectural_elegance_ai_force_multiplier.md}
+  # 📖 Documentation
+
+### CONTINUON.md {#docs-continuon.md}
+  # 📖 Documentation
+
+### CONTINUUM_PROCESS.md {#docs-continuum_process.md}
+  # 📖 Documentation
+
 ### DEBUGGING_UTILITIES.md {#docs-debugging_utilities.md}
+  # 📖 Documentation
+
+### DEVTOOLS_INTEGRATION.md {#docs-devtools_integration.md}
+  # 📖 Documentation
+
+### PHASE_OMEGA.md {#docs-phase_omega.md}
   # 📖 Documentation
 
 ### UNIVERSAL_COMMAND_ARCHITECTURE.md {#docs-universal_command_architecture.md}
@@ -4136,6 +4586,9 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
 ### ai-portal.py {#python-client-ai-portal.py}
   # 🐍 Python
 
+### continuum-output.log {#python-client-continuum-output.log}
+  # 🗑️ Log file (should be gitignored!)
+
 ### git-dashboard-integration.py {#python-client-git-dashboard-integration.py}
   # 🐍 Python
 
@@ -4157,7 +4610,10 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
 ### simple_continuum_client.py {#python-client-simple_continuum_client.py}
   # 🐍 Python
 
-### trust_the_process.py {#python-client-trust_the_process.py}
+### take_devtools_screenshot.py {#python-client-take_devtools_screenshot.py}
+  # 🐍 Python
+
+### test_screenshot_routing.py {#python-client-test_screenshot_routing.py}
   # 🐍 Python
 
   📁 **python-client/claude_debugger/**
@@ -4202,7 +4658,29 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
     ### command_interface.py {#python-client-continuum_client-core-command_interface.py}
       # 🐍 Python
 
+    ### daemon_manager.py {#python-client-continuum_client-core-daemon_manager.py}
+      # 🐍 Python
+
     ### js_executor.py {#python-client-continuum_client-core-js_executor.py}
+      # 🐍 Python
+
+    📁 **python-client/continuum_client/devtools/**
+    ### __init__.py {#python-client-continuum_client-devtools-__init__.py}
+      # 🐍 Python
+
+    ### browser_adapters.py {#python-client-continuum_client-devtools-browser_adapters.py}
+      # 🐍 Python
+
+    ### client.py {#python-client-continuum_client-devtools-client.py}
+      # 🐍 Python
+
+    ### devtools_daemon.py {#python-client-continuum_client-devtools-devtools_daemon.py}
+      # 🐍 Python
+
+    ### live_monitor.py {#python-client-continuum_client-devtools-live_monitor.py}
+      # 🐍 Python
+
+    ### log_monitor.py {#python-client-continuum_client-devtools-log_monitor.py}
       # 🐍 Python
 
     📁 **python-client/continuum_client/diagnostics/**
@@ -4228,6 +4706,50 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
 
     ### server_manager.py {#python-client-continuum_client-utils-server_manager.py}
       # 🐍 Python
+
+  📁 **python-client/custom_screenshots/**
+  📁 **python-client/demos/**
+  ### README.md {#python-client-demos-readme.md}
+    # 📖 Documentation
+
+    📁 **python-client/demos/devtools/**
+    ### continuous_devtools_demo.py {#python-client-demos-devtools-continuous_devtools_demo.py}
+      # 🐍 Python
+
+    ### demo_devtools.py {#python-client-demos-devtools-demo_devtools.py}
+      # 🐍 Python
+
+    ### README.md {#python-client-demos-devtools-readme.md}
+      # 📖 Documentation
+
+    ### realtime_devtools_demo.py {#python-client-demos-devtools-realtime_devtools_demo.py}
+      # 🐍 Python
+
+    ### start_devtools_system.py {#python-client-demos-devtools-start_devtools_system.py}
+      # 🐍 Python
+
+    ### trust_the_process.py {#python-client-demos-devtools-trust_the_process.py}
+      # 🐍 Python
+
+      📁 **python-client/demos/devtools/testing/**
+      ### quick_screenshot_test.py {#python-client-demos-devtools-testing-quick_screenshot_test.py}
+        # 🐍 Python
+
+      ### README.md {#python-client-demos-devtools-testing-readme.md}
+        # 📖 Documentation
+
+      ### test_direct_devtools.py {#python-client-demos-devtools-testing-test_direct_devtools.py}
+        # 🐍 Python
+
+      ### test_screenshot.py {#python-client-demos-devtools-testing-test_screenshot.py}
+        # 🐍 Python
+
+  📁 **python-client/docs/**
+  ### AI_PORTAL_SCREENSHOT_INTEGRATION.md {#python-client-docs-ai_portal_screenshot_integration.md}
+    # 📖 Documentation
+
+  ### DAEMON_MANAGEMENT_SYSTEM.md {#python-client-docs-daemon_management_system.md}
+    # 📖 Documentation
 
   📁 **python-client/examples/**
   ### component_css_fixer.py {#python-client-examples-component_css_fixer.py}
@@ -4267,6 +4789,11 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
     # 🐍 Python
 
     📁 **python-client/examples/screenshots/**
+  📁 **python-client/src/**
+    📁 **python-client/src/commands/**
+      📁 **python-client/src/commands/core/**
+        📁 **python-client/src/commands/core/agents/**
+          📁 **python-client/src/commands/core/agents/utils/**
   📁 **python-client/tests/**
   ### README.md {#python-client-tests-readme.md}
     # 📖 Documentation
@@ -4376,32 +4903,21 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
 ### working-web-interface.cjs {#src-working-web-interface.cjs}
   # ⚡ JavaScript/Node.js
 
-  📁 **src/adapters/** 🎓 **CRITICAL ARCHAEOLOGICAL DISCOVERY**
+  📁 **src/adapters/**
   ### AdapterRegistry.cjs {#src-adapters-adapterregistry.cjs}
-    # ⚡ JavaScript/Node.js - **Torrent-style adapter sharing system**
-    # 🔥 FOUND: publishAdapter(), searchAdapters(), exportAdapter() methods
-    # 💡 Enables decentralized expertise mesh between organizations
+    # ⚡ JavaScript/Node.js
 
   ### BrowserAdapter.cjs {#src-adapters-browseradapter.cjs}
     # ⚡ JavaScript/Node.js
 
-  ### HierarchicalAdapter.cjs {#src-adapters-hierarchicaladapter.cjs} 🏆 **TREASURE**
-    # ⚡ JavaScript/Node.js - **331 lines of hierarchical specialization architecture**
-    # 🧠 CORE SYSTEM: Composable expertise stacking (base → science → physics → biology)
-    # 🚀 CAPABILITIES: 190,735x storage reduction, instant specialization swapping
-    # 💎 EXAMPLES: Legal(29MB), Medical(31MB), Engineering(27MB) complete stacks
-    # 🔗 INTEGRATION: Academy-trained layers, torrent-style sharing, privacy-preserving
+  ### HierarchicalAdapter.cjs {#src-adapters-hierarchicaladapter.cjs}
+    # ⚡ JavaScript/Node.js
 
-  ### LoRAAdapter.cjs {#src-adapters-loraadapter.cjs} 🎓 **ACADEMY COMPONENT**
-    # ⚡ JavaScript/Node.js - **Ultra-efficient fine-tuning system** 
-    # 🔬 CORE: LoRA (Low-Rank Adaptation) for 190,735x parameter reduction
-    # 🏋️ TRAINING: Base for Academy adversarial training system
-    # 💾 EFFICIENCY: Tiny specialized layers instead of full model retraining
+  ### LoRAAdapter.cjs {#src-adapters-loraadapter.cjs}
+    # ⚡ JavaScript/Node.js
 
   ### ModelAdapter.cjs {#src-adapters-modeladapter.cjs}
-    # ⚡ JavaScript/Node.js - **Multi-provider model integration**
-    # 🤖 FACTORY: Creates model instances for different providers
-    # 🔗 INTEGRATION: Works with LoRA and hierarchical adapters
+    # ⚡ JavaScript/Node.js
 
   📁 **src/agents/**
   ### Agent.ts {#src-agents-agent.ts}
@@ -4433,6 +4949,229 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
     # 📖 Documentation
 
     📁 **src/commands/automation/**
+    📁 **src/commands/browser/**
+      📁 **src/commands/browser/browser/**
+      ### BrowserCommand.cjs {#src-commands-browser-browser-browsercommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-browser-browser-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-browser-browser-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-browser-browser-readme.md}
+        # 📖 Documentation
+
+      📁 **src/commands/browser/browserjs/**
+      ### BrowserJSCommand.cjs {#src-commands-browser-browserjs-browserjscommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-browser-browserjs-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-browser-browserjs-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-browser-browserjs-readme.md}
+        # 📖 Documentation
+
+      📁 **src/commands/browser/promisejs/**
+      ### index.server.js {#src-commands-browser-promisejs-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-browser-promisejs-package.json}
+        # 📋 Configuration/Data
+
+      ### PromiseJSCommand.cjs {#src-commands-browser-promisejs-promisejscommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/browser/screenshot/**
+      ### ContinuonAnimations.css {#src-commands-browser-screenshot-continuonanimations.css}
+        # 📄 File
+
+      ### ContinuonAnimator.js {#src-commands-browser-screenshot-continuonanimator.js}
+        # ⚡ JavaScript/Node.js
+
+      ### index.cjs {#src-commands-browser-screenshot-index.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.client.js {#src-commands-browser-screenshot-index.client.js}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-browser-screenshot-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-browser-screenshot-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-browser-screenshot-readme.md}
+        # 📖 Documentation
+
+      ### ScreenshotCommand.cjs {#src-commands-browser-screenshot-screenshotcommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### ScreenshotCommand.client.js {#src-commands-browser-screenshot-screenshotcommand.client.js}
+        # ⚡ JavaScript/Node.js
+
+      ### ScreenshotUtils.js {#src-commands-browser-screenshot-screenshotutils.js}
+        # ⚡ JavaScript/Node.js
+
+        📁 **src/commands/browser/screenshot/test/**
+        ### Dependencies.test.js {#src-commands-browser-screenshot-test-dependencies.test.js}
+          # ⚡ JavaScript/Node.js
+
+        ### IntegrationTests.test.js {#src-commands-browser-screenshot-test-integrationtests.test.js}
+          # ⚡ JavaScript/Node.js
+
+        ### PromiseBasedAPI.test.js {#src-commands-browser-screenshot-test-promisebasedapi.test.js}
+          # ⚡ JavaScript/Node.js
+
+        ### ServerCommand.test.js {#src-commands-browser-screenshot-test-servercommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+        ### ServerIntegration.test.js {#src-commands-browser-screenshot-test-serverintegration.test.js}
+          # ⚡ JavaScript/Node.js
+
+        ### ValidationTests.test.js {#src-commands-browser-screenshot-test-validationtests.test.js}
+          # ⚡ JavaScript/Node.js
+
+          📁 **src/commands/browser/screenshot/test/browser-scripts/**
+          ### bus_file_save.js {#src-commands-browser-screenshot-test-browser-scripts-bus_file_save.js}
+            # ⚡ JavaScript/Node.js
+
+          ### check_command_execution.js {#src-commands-browser-screenshot-test-browser-scripts-check_command_execution.js}
+            # ⚡ JavaScript/Node.js
+
+          ### check_console_warnings.js {#src-commands-browser-screenshot-test-browser-scripts-check_console_warnings.js}
+            # ⚡ JavaScript/Node.js
+
+          ### check_server_logs.js {#src-commands-browser-screenshot-test-browser-scripts-check_server_logs.js}
+            # ⚡ JavaScript/Node.js
+
+          ### check_server_reboot_handling.js {#src-commands-browser-screenshot-test-browser-scripts-check_server_reboot_handling.js}
+            # ⚡ JavaScript/Node.js
+
+          ### complete_version_capture.js {#src-commands-browser-screenshot-test-browser-scripts-complete_version_capture.js}
+            # ⚡ JavaScript/Node.js
+
+          ### enhance_websocket_handler.js {#src-commands-browser-screenshot-test-browser-scripts-enhance_websocket_handler.js}
+            # ⚡ JavaScript/Node.js
+
+          ### execute_script.py {#src-commands-browser-screenshot-test-browser-scripts-execute_script.py}
+            # 🐍 Python
+
+          ### generic_file_saver.js {#src-commands-browser-screenshot-test-browser-scripts-generic_file_saver.js}
+            # ⚡ JavaScript/Node.js
+
+          ### list_available_commands.js {#src-commands-browser-screenshot-test-browser-scripts-list_available_commands.js}
+            # ⚡ JavaScript/Node.js
+
+          ### test_bus_file_command.js {#src-commands-browser-screenshot-test-browser-scripts-test_bus_file_command.js}
+            # ⚡ JavaScript/Node.js
+
+          ### test_scale_settings.js {#src-commands-browser-screenshot-test-browser-scripts-test_scale_settings.js}
+            # ⚡ JavaScript/Node.js
+
+          ### trigger_server_file_save.js {#src-commands-browser-screenshot-test-browser-scripts-trigger_server_file_save.js}
+            # ⚡ JavaScript/Node.js
+
+          ### version_check.js {#src-commands-browser-screenshot-test-browser-scripts-version_check.js}
+            # ⚡ JavaScript/Node.js
+
+          ### version_monitor.js {#src-commands-browser-screenshot-test-browser-scripts-version_monitor.js}
+            # ⚡ JavaScript/Node.js
+
+    📁 **src/commands/communication/**
+      📁 **src/commands/communication/chat/**
+      ### ChatCommand.cjs {#src-commands-communication-chat-chatcommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-communication-chat-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-communication-chat-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-communication-chat-readme.md}
+        # 📖 Documentation
+
+        📁 **src/commands/communication/chat/test/**
+        ### ChatCommand.test.js {#src-commands-communication-chat-test-chatcommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/communication/createroom/**
+      ### CreateRoomCommand.cjs {#src-commands-communication-createroom-createroomcommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-communication-createroom-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-communication-createroom-package.json}
+        # 📋 Configuration/Data
+
+        📁 **src/commands/communication/createroom/test/**
+        ### CreateRoomCommand.test.js {#src-commands-communication-createroom-test-createroomcommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/communication/findUser/**
+      ### FindUserCommand.cjs {#src-commands-communication-finduser-findusercommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.cjs {#src-commands-communication-finduser-index.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-communication-finduser-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-communication-finduser-package.json}
+        # 📋 Configuration/Data
+
+      📁 **src/commands/communication/joinroom/**
+      ### index.server.js {#src-commands-communication-joinroom-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### JoinRoomCommand.cjs {#src-commands-communication-joinroom-joinroomcommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-communication-joinroom-package.json}
+        # 📋 Configuration/Data
+
+        📁 **src/commands/communication/joinroom/test/**
+        ### JoinRoomCommand.test.js {#src-commands-communication-joinroom-test-joinroomcommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/communication/listrooms/**
+      ### ListRoomsCommand.cjs {#src-commands-communication-listrooms-listroomscommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/communication/loadrooms/**
+      ### index.server.js {#src-commands-communication-loadrooms-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### LoadRoomsCommand.cjs {#src-commands-communication-loadrooms-loadroomscommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-communication-loadrooms-package.json}
+        # 📋 Configuration/Data
+
+        📁 **src/commands/communication/loadrooms/test/**
+        ### LoadRoomsCommand.test.js {#src-commands-communication-loadrooms-test-loadroomscommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/communication/share/**
+      ### index.cjs {#src-commands-communication-share-index.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-communication-share-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-communication-share-package.json}
+        # 📋 Configuration/Data
+
+      ### ShareCommand.cjs {#src-commands-communication-share-sharecommand.cjs}
+        # ⚡ JavaScript/Node.js
+
     📁 **src/commands/core/**
     ### test-runner.cjs {#src-commands-core-test-runner.cjs}
       # ⚡ JavaScript/Node.js
@@ -4440,210 +5179,22 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
     ### validation-test.cjs {#src-commands-core-validation-test.cjs}
       # ⚡ JavaScript/Node.js
 
-      📁 **src/commands/core/agents/**
-      ### agents.md {#src-commands-core-agents-agents.md}
-        # 📖 Documentation
-
-      ### AgentsCommand.cjs {#src-commands-core-agents-agentscommand.cjs}
+      📁 **src/commands/core/continuon_status/**
+      ### ContinuonStatusCommand.cjs {#src-commands-core-continuon_status-continuonstatuscommand.cjs}
         # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-agents-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-agents-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-agents-readme.md}
-        # 📖 Documentation
-
-      📁 **src/commands/core/browser/**
-      ### BrowserCommand.cjs {#src-commands-core-browser-browsercommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-browser-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-browser-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-browser-readme.md}
-        # 📖 Documentation
-
-      📁 **src/commands/core/browserjs/**
-      ### BrowserJSCommand.cjs {#src-commands-core-browserjs-browserjscommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-browserjs-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-browserjs-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-browserjs-readme.md}
-        # 📖 Documentation
-
-      📁 **src/commands/core/chat/**
-      ### ChatCommand.cjs {#src-commands-core-chat-chatcommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-chat-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-chat-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-chat-readme.md}
-        # 📖 Documentation
-
-        📁 **src/commands/core/chat/test/**
-        ### ChatCommand.test.js {#src-commands-core-chat-test-chatcommand.test.js}
-          # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/clear/**
-      ### ClearCommand.cjs {#src-commands-core-clear-clearcommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-clear-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-clear-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-clear-readme.md}
-        # 📖 Documentation
-
-      📁 **src/commands/core/createroom/**
-      ### CreateRoomCommand.cjs {#src-commands-core-createroom-createroomcommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-createroom-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-createroom-package.json}
-        # 📋 Configuration/Data
-
-        📁 **src/commands/core/createroom/test/**
-        ### CreateRoomCommand.test.js {#src-commands-core-createroom-test-createroomcommand.test.js}
-          # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/cursor/**
-      ### CursorCommand.cjs {#src-commands-core-cursor-cursorcommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-cursor-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-cursor-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-cursor-readme.md}
-        # 📖 Documentation
-
-        📁 **src/commands/core/cursor/graphics/**
-        ### GraphicsRenderer.js {#src-commands-core-cursor-graphics-graphicsrenderer.js}
-          # ⚡ JavaScript/Node.js
-
-        📁 **src/commands/core/cursor/test/**
-        ### ContinuonPositioning.test.js {#src-commands-core-cursor-test-continuonpositioning.test.js}
-          # ⚡ JavaScript/Node.js
-
-        ### CursorCommand.test.js {#src-commands-core-cursor-test-cursorcommand.test.js}
-          # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/diagnostics/**
-      ### DiagnosticsCommand.cjs {#src-commands-core-diagnostics-diagnosticscommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.cjs {#src-commands-core-diagnostics-index.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-diagnostics-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-diagnostics-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-diagnostics-readme.md}
-        # 📖 Documentation
-
-      📁 **src/commands/core/docs/**
-      ### DocsCommand.cjs {#src-commands-core-docs-docscommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-docs-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### README.md {#src-commands-core-docs-readme.md}
-        # 📖 Documentation
 
       📁 **src/commands/core/emotion/**
       ### EmotionCommand.cjs {#src-commands-core-emotion-emotioncommand.cjs}
         # ⚡ JavaScript/Node.js
 
-      ### emotionConfigs.cjs {#src-commands-core-emotion-emotionconfigs.cjs}
+      📁 **src/commands/core/event/**
+      ### EventCommand.cjs {#src-commands-core-event-eventcommand.cjs}
         # ⚡ JavaScript/Node.js
 
-      ### emotionConfigs.js {#src-commands-core-emotion-emotionconfigs.js}
+      ### index.server.js {#src-commands-core-event-index.server.js}
         # ⚡ JavaScript/Node.js
 
-      ### emotionDefinition.cjs {#src-commands-core-emotion-emotiondefinition.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-emotion-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-emotion-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-emotion-readme.md}
-        # 📖 Documentation
-
-        📁 **src/commands/core/emotion/test/**
-        ### EmotionAnimationTests.test.js {#src-commands-core-emotion-test-emotionanimationtests.test.js}
-          # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/exec/**
-      ### ExecCommand.cjs {#src-commands-core-exec-execcommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-exec-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-exec-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-exec-readme.md}
-        # 📖 Documentation
-
-        📁 **src/commands/core/exec/test/**
-        ### ExecCommand.test.js {#src-commands-core-exec-test-execcommand.test.js}
-          # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/fileSave/**
-      ### FileSaveCommand.cjs {#src-commands-core-filesave-filesavecommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-filesave-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-filesave-package.json}
-        # 📋 Configuration/Data
-
-        📁 **src/commands/core/fileSave/test/**
-        ### FileSaveCommand.test.js {#src-commands-core-filesave-test-filesavecommand.test.js}
-          # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/findUser/**
-      ### FindUserCommand.cjs {#src-commands-core-finduser-findusercommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.cjs {#src-commands-core-finduser-index.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-finduser-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-finduser-package.json}
+      ### package.json {#src-commands-core-event-package.json}
         # 📋 Configuration/Data
 
       📁 **src/commands/core/help/**
@@ -4678,92 +5229,10 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
       ### README.md {#src-commands-core-info-readme.md}
         # 📖 Documentation
 
-      📁 **src/commands/core/input/**
-      ### index.server.js {#src-commands-core-input-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### InputCommand.cjs {#src-commands-core-input-inputcommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-input-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-input-readme.md}
-        # 📖 Documentation
-
-        📁 **src/commands/core/input/test/**
-        ### InputCommand.test.js {#src-commands-core-input-test-inputcommand.test.js}
-          # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/joinroom/**
-      ### index.server.js {#src-commands-core-joinroom-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### JoinRoomCommand.cjs {#src-commands-core-joinroom-joinroomcommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-joinroom-package.json}
-        # 📋 Configuration/Data
-
-        📁 **src/commands/core/joinroom/test/**
-        ### JoinRoomCommand.test.js {#src-commands-core-joinroom-test-joinroomcommand.test.js}
-          # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/listagents/**
-      ### index.server.js {#src-commands-core-listagents-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### ListAgentsCommand.cjs {#src-commands-core-listagents-listagentscommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-listagents-package.json}
-        # 📋 Configuration/Data
-
-        📁 **src/commands/core/listagents/test/**
-        ### ListAgentsCommand.test.js {#src-commands-core-listagents-test-listagentscommand.test.js}
-          # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/listrooms/**
-      ### ListRoomsCommand.cjs {#src-commands-core-listrooms-listroomscommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/loadrooms/**
-      ### index.server.js {#src-commands-core-loadrooms-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### LoadRoomsCommand.cjs {#src-commands-core-loadrooms-loadroomscommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-loadrooms-package.json}
-        # 📋 Configuration/Data
-
-        📁 **src/commands/core/loadrooms/test/**
-        ### LoadRoomsCommand.test.js {#src-commands-core-loadrooms-test-loadroomscommand.test.js}
-          # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/macro/**
-      ### index.server.js {#src-commands-core-macro-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### MacroCommand.cjs {#src-commands-core-macro-macrocommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-macro-package.json}
-        # 📋 Configuration/Data
-
       📁 **src/commands/core/markread/**
-      📁 **src/commands/core/move/**
-      ### index.server.js {#src-commands-core-move-index.server.js}
+      📁 **src/commands/core/notify/**
+      ### NotifyCommand.cjs {#src-commands-core-notify-notifycommand.cjs}
         # ⚡ JavaScript/Node.js
-
-      ### MoveCommand.cjs {#src-commands-core-move-movecommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-move-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-move-readme.md}
-        # 📖 Documentation
 
       📁 **src/commands/core/preferences/**
       ### index.server.js {#src-commands-core-preferences-index.server.js}
@@ -4773,16 +5242,6 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
         # 📋 Configuration/Data
 
       ### PreferencesCommand.cjs {#src-commands-core-preferences-preferencescommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/promisejs/**
-      ### index.server.js {#src-commands-core-promisejs-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-promisejs-package.json}
-        # 📋 Configuration/Data
-
-      ### PromiseJSCommand.cjs {#src-commands-core-promisejs-promisejscommand.cjs}
         # ⚡ JavaScript/Node.js
 
       📁 **src/commands/core/reload/**
@@ -4808,204 +5267,13 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
       ### RestartCommand.cjs {#src-commands-core-restart-restartcommand.cjs}
         # ⚡ JavaScript/Node.js
 
-      📁 **src/commands/core/savefile/**
-      ### index.server.js {#src-commands-core-savefile-index.server.js}
+      📁 **src/commands/core/status_text/**
+      ### StatusTextCommand.cjs {#src-commands-core-status_text-statustextcommand.cjs}
         # ⚡ JavaScript/Node.js
 
-      ### package.json {#src-commands-core-savefile-package.json}
-        # 📋 Configuration/Data
-
-      ### SaveFileCommand.cjs {#src-commands-core-savefile-savefilecommand.cjs}
+      📁 **src/commands/core/transfer/**
+      ### WSTransferCommand.cjs {#src-commands-core-transfer-wstransfercommand.cjs}
         # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/screenshot/**
-      ### ContinuonAnimations.css {#src-commands-core-screenshot-continuonanimations.css}
-        # 📄 File
-
-      ### ContinuonAnimator.js {#src-commands-core-screenshot-continuonanimator.js}
-        # ⚡ JavaScript/Node.js
-
-      ### index.cjs {#src-commands-core-screenshot-index.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.client.js {#src-commands-core-screenshot-index.client.js}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-screenshot-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-screenshot-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-screenshot-readme.md}
-        # 📖 Documentation
-
-      ### ScreenshotCommand.cjs {#src-commands-core-screenshot-screenshotcommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### ScreenshotCommand.client.js {#src-commands-core-screenshot-screenshotcommand.client.js}
-        # ⚡ JavaScript/Node.js
-
-      ### ScreenshotUtils.js {#src-commands-core-screenshot-screenshotutils.js}
-        # ⚡ JavaScript/Node.js
-
-        📁 **src/commands/core/screenshot/test/**
-        ### Dependencies.test.js {#src-commands-core-screenshot-test-dependencies.test.js}
-          # ⚡ JavaScript/Node.js
-
-        ### IntegrationTests.test.js {#src-commands-core-screenshot-test-integrationtests.test.js}
-          # ⚡ JavaScript/Node.js
-
-        ### PromiseBasedAPI.test.js {#src-commands-core-screenshot-test-promisebasedapi.test.js}
-          # ⚡ JavaScript/Node.js
-
-        ### ServerCommand.test.js {#src-commands-core-screenshot-test-servercommand.test.js}
-          # ⚡ JavaScript/Node.js
-
-        ### ServerIntegration.test.js {#src-commands-core-screenshot-test-serverintegration.test.js}
-          # ⚡ JavaScript/Node.js
-
-        ### ValidationTests.test.js {#src-commands-core-screenshot-test-validationtests.test.js}
-          # ⚡ JavaScript/Node.js
-
-          📁 **src/commands/core/screenshot/test/browser-scripts/**
-          ### bus_file_save.js {#src-commands-core-screenshot-test-browser-scripts-bus_file_save.js}
-            # ⚡ JavaScript/Node.js
-
-          ### check_command_execution.js {#src-commands-core-screenshot-test-browser-scripts-check_command_execution.js}
-            # ⚡ JavaScript/Node.js
-
-          ### check_console_warnings.js {#src-commands-core-screenshot-test-browser-scripts-check_console_warnings.js}
-            # ⚡ JavaScript/Node.js
-
-          ### check_server_logs.js {#src-commands-core-screenshot-test-browser-scripts-check_server_logs.js}
-            # ⚡ JavaScript/Node.js
-
-          ### check_server_reboot_handling.js {#src-commands-core-screenshot-test-browser-scripts-check_server_reboot_handling.js}
-            # ⚡ JavaScript/Node.js
-
-          ### complete_version_capture.js {#src-commands-core-screenshot-test-browser-scripts-complete_version_capture.js}
-            # ⚡ JavaScript/Node.js
-
-          ### enhance_websocket_handler.js {#src-commands-core-screenshot-test-browser-scripts-enhance_websocket_handler.js}
-            # ⚡ JavaScript/Node.js
-
-          ### execute_script.py {#src-commands-core-screenshot-test-browser-scripts-execute_script.py}
-            # 🐍 Python
-
-          ### generic_file_saver.js {#src-commands-core-screenshot-test-browser-scripts-generic_file_saver.js}
-            # ⚡ JavaScript/Node.js
-
-          ### list_available_commands.js {#src-commands-core-screenshot-test-browser-scripts-list_available_commands.js}
-            # ⚡ JavaScript/Node.js
-
-          ### test_bus_file_command.js {#src-commands-core-screenshot-test-browser-scripts-test_bus_file_command.js}
-            # ⚡ JavaScript/Node.js
-
-          ### test_scale_settings.js {#src-commands-core-screenshot-test-browser-scripts-test_scale_settings.js}
-            # ⚡ JavaScript/Node.js
-
-          ### trigger_server_file_save.js {#src-commands-core-screenshot-test-browser-scripts-trigger_server_file_save.js}
-            # ⚡ JavaScript/Node.js
-
-          ### version_check.js {#src-commands-core-screenshot-test-browser-scripts-version_check.js}
-            # ⚡ JavaScript/Node.js
-
-          ### version_monitor.js {#src-commands-core-screenshot-test-browser-scripts-version_monitor.js}
-            # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/sentinel/**
-      ### index.server.js {#src-commands-core-sentinel-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### README.md {#src-commands-core-sentinel-readme.md}
-        # 📖 Documentation
-
-      ### SentinelCommand.cjs {#src-commands-core-sentinel-sentinelcommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/share/**
-      ### index.cjs {#src-commands-core-share-index.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-share-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-share-package.json}
-        # 📋 Configuration/Data
-
-      ### ShareCommand.cjs {#src-commands-core-share-sharecommand.cjs} 🌐 **GLOBAL NETWORK**
-        # ⚡ JavaScript/Node.js - **Universal sharing across continuum ecosystem**
-        # 🔗 FOUND: Global sharing infrastructure with intelligent routing
-        # 🏅 ENABLES: Global AI competition network via `continuum://adapter/` URLs
-        # 🚀 FEATURES: Share with user, agent, AI systems, UI - ecosystem diversity
-
-      📁 **src/commands/core/spawn/**
-      ### SpawnCommand.cjs {#src-commands-core-spawn-spawncommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/test/**
-      ### index.cjs {#src-commands-core-test-index.cjs}
-        # ⚡ JavaScript/Node.js
-
-      ### index.server.js {#src-commands-core-test-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-test-package.json}
-        # 📋 Configuration/Data
-
-      ### TestCommand.cjs {#src-commands-core-test-testcommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-        📁 **src/commands/core/test/test/**
-        ### ModularCommandTests.test.js {#src-commands-core-test-test-modularcommandtests.test.js}
-          # ⚡ JavaScript/Node.js
-
-        ### TestCommand.test.js {#src-commands-core-test-test-testcommand.test.js}
-          # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/type/**
-      ### index.server.js {#src-commands-core-type-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-type-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-type-readme.md}
-        # 📖 Documentation
-
-      ### TypeCommand.cjs {#src-commands-core-type-typecommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/validatecode/**
-      ### index.server.js {#src-commands-core-validatecode-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-validatecode-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-validatecode-readme.md}
-        # 📖 Documentation
-
-      ### ValidateCodeCommand.cjs {#src-commands-core-validatecode-validatecodecommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-      📁 **src/commands/core/validatejs/**
-      ### index.server.js {#src-commands-core-validatejs-index.server.js}
-        # ⚡ JavaScript/Node.js
-
-      ### package.json {#src-commands-core-validatejs-package.json}
-        # 📋 Configuration/Data
-
-      ### README.md {#src-commands-core-validatejs-readme.md}
-        # 📖 Documentation
-
-      ### ValidateJSCommand.cjs {#src-commands-core-validatejs-validatejscommand.cjs}
-        # ⚡ JavaScript/Node.js
-
-        📁 **src/commands/core/validatejs/test/**
-        ### ValidateJSCommand.test.cjs {#src-commands-core-validatejs-test-validatejscommand.test.cjs}
-          # ⚡ JavaScript/Node.js
 
       📁 **src/commands/core/workspace/**
       ### index.server.js {#src-commands-core-workspace-index.server.js}
@@ -5017,9 +5285,374 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
       ### WorkspaceCommand.cjs {#src-commands-core-workspace-workspacecommand.cjs}
         # ⚡ JavaScript/Node.js
 
+    📁 **src/commands/development/**
+      📁 **src/commands/development/ci/**
+      ### CICommand.cjs {#src-commands-development-ci-cicommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-development-ci-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-development-ci-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-development-ci-readme.md}
+        # 📖 Documentation
+
+        📁 **src/commands/development/ci/config/**
+        ### ci_flows.json {#src-commands-development-ci-config-ci_flows.json}
+          # 📋 Configuration/Data
+
+        📁 **src/commands/development/ci/test/**
+        ### CICommand.test.js {#src-commands-development-ci-test-cicommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+        📁 **src/commands/development/ci/workflows/**
+        ### test-and-issues.yml {#src-commands-development-ci-workflows-test-and-issues.yml}
+          # ⚙️ YAML Config
+
+      📁 **src/commands/development/issues/**
+      ### index.server.js {#src-commands-development-issues-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### IssuesCommand.cjs {#src-commands-development-issues-issuescommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-development-issues-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-development-issues-readme.md}
+        # 📖 Documentation
+
+        📁 **src/commands/development/issues/config/**
+        ### github_api.json {#src-commands-development-issues-config-github_api.json}
+          # 📋 Configuration/Data
+
+        ### messages.json {#src-commands-development-issues-config-messages.json}
+          # 📋 Configuration/Data
+
+        📁 **src/commands/development/issues/templates/**
+        ### dashboard.html {#src-commands-development-issues-templates-dashboard.html}
+          # 🌐 HTML file
+
+        ### issue_body.md {#src-commands-development-issues-templates-issue_body.md}
+          # 📖 Documentation
+
+        📁 **src/commands/development/issues/test/**
+        ### IssuesCommand.test.js {#src-commands-development-issues-test-issuescommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/development/macro/**
+      ### index.server.js {#src-commands-development-macro-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### MacroCommand.cjs {#src-commands-development-macro-macrocommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-development-macro-package.json}
+        # 📋 Configuration/Data
+
+      📁 **src/commands/development/spawn/**
+      ### SpawnCommand.cjs {#src-commands-development-spawn-spawncommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/development/test/**
+      ### index.cjs {#src-commands-development-test-index.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-development-test-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-development-test-package.json}
+        # 📋 Configuration/Data
+
+      ### TestCommand.cjs {#src-commands-development-test-testcommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+        📁 **src/commands/development/test/test/**
+        ### ModularCommandTests.test.js {#src-commands-development-test-test-modularcommandtests.test.js}
+          # ⚡ JavaScript/Node.js
+
+        ### TestCommand.test.js {#src-commands-development-test-test-testcommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/development/validatecode/**
+      ### index.server.js {#src-commands-development-validatecode-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-development-validatecode-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-development-validatecode-readme.md}
+        # 📖 Documentation
+
+      ### ValidateCodeCommand.cjs {#src-commands-development-validatecode-validatecodecommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/development/validatejs/**
+      ### index.server.js {#src-commands-development-validatejs-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-development-validatejs-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-development-validatejs-readme.md}
+        # 📖 Documentation
+
+      ### ValidateJSCommand.cjs {#src-commands-development-validatejs-validatejscommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+        📁 **src/commands/development/validatejs/test/**
+        ### ValidateJSCommand.test.cjs {#src-commands-development-validatejs-test-validatejscommand.test.cjs}
+          # ⚡ JavaScript/Node.js
+
+    📁 **src/commands/devtools/**
+    ### DevToolsCommand.cjs {#src-commands-devtools-devtoolscommand.cjs}
+      # ⚡ JavaScript/Node.js
+
+    📁 **src/commands/docs/**
+      📁 **src/commands/docs/docs/**
+      ### DocsCommand.cjs {#src-commands-docs-docs-docscommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-docs-docs-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### README.md {#src-commands-docs-docs-readme.md}
+        # 📖 Documentation
+
+    📁 **src/commands/file/**
+      📁 **src/commands/file/exec/**
+      ### ExecCommand.cjs {#src-commands-file-exec-execcommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-file-exec-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-file-exec-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-file-exec-readme.md}
+        # 📖 Documentation
+
+        📁 **src/commands/file/exec/test/**
+        ### ExecCommand.test.js {#src-commands-file-exec-test-execcommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/file/fileSave/**
+      ### FileSaveCommand.cjs {#src-commands-file-filesave-filesavecommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-file-filesave-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-file-filesave-package.json}
+        # 📋 Configuration/Data
+
+        📁 **src/commands/file/fileSave/test/**
+        ### FileSaveCommand.test.js {#src-commands-file-filesave-test-filesavecommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/file/savefile/**
+      ### index.server.js {#src-commands-file-savefile-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-file-savefile-package.json}
+        # 📋 Configuration/Data
+
+      ### SaveFileCommand.cjs {#src-commands-file-savefile-savefilecommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+    📁 **src/commands/input/**
+      📁 **src/commands/input/clear/**
+      ### ClearCommand.cjs {#src-commands-input-clear-clearcommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-input-clear-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-input-clear-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-input-clear-readme.md}
+        # 📖 Documentation
+
+      📁 **src/commands/input/cursor/**
+      ### CursorCommand.cjs {#src-commands-input-cursor-cursorcommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-input-cursor-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-input-cursor-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-input-cursor-readme.md}
+        # 📖 Documentation
+
+        📁 **src/commands/input/cursor/graphics/**
+        ### GraphicsRenderer.js {#src-commands-input-cursor-graphics-graphicsrenderer.js}
+          # ⚡ JavaScript/Node.js
+
+        📁 **src/commands/input/cursor/test/**
+        ### ContinuonPositioning.test.js {#src-commands-input-cursor-test-continuonpositioning.test.js}
+          # ⚡ JavaScript/Node.js
+
+        ### CursorCommand.test.js {#src-commands-input-cursor-test-cursorcommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/input/input/**
+      ### index.server.js {#src-commands-input-input-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### InputCommand.cjs {#src-commands-input-input-inputcommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-input-input-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-input-input-readme.md}
+        # 📖 Documentation
+
+        📁 **src/commands/input/input/test/**
+        ### InputCommand.test.js {#src-commands-input-input-test-inputcommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/input/move/**
+      ### index.server.js {#src-commands-input-move-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### MoveCommand.cjs {#src-commands-input-move-movecommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-input-move-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-input-move-readme.md}
+        # 📖 Documentation
+
+      📁 **src/commands/input/type/**
+      ### index.server.js {#src-commands-input-type-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-input-type-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-input-type-readme.md}
+        # 📖 Documentation
+
+      ### TypeCommand.cjs {#src-commands-input-type-typecommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+    📁 **src/commands/monitoring/**
+      📁 **src/commands/monitoring/agents/**
+      ### agents.md {#src-commands-monitoring-agents-agents.md}
+        # 📖 Documentation
+
+      ### AgentsCommand.cjs {#src-commands-monitoring-agents-agentscommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-monitoring-agents-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-monitoring-agents-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-monitoring-agents-readme.md}
+        # 📖 Documentation
+
+      📁 **src/commands/monitoring/diagnostics/**
+      ### DiagnosticsCommand.cjs {#src-commands-monitoring-diagnostics-diagnosticscommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.cjs {#src-commands-monitoring-diagnostics-index.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-monitoring-diagnostics-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-monitoring-diagnostics-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-monitoring-diagnostics-readme.md}
+        # 📖 Documentation
+
+      📁 **src/commands/monitoring/listagents/**
+      ### index.server.js {#src-commands-monitoring-listagents-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### ListAgentsCommand.cjs {#src-commands-monitoring-listagents-listagentscommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-monitoring-listagents-package.json}
+        # 📋 Configuration/Data
+
+        📁 **src/commands/monitoring/listagents/test/**
+        ### ListAgentsCommand.test.js {#src-commands-monitoring-listagents-test-listagentscommand.test.js}
+          # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/monitoring/sentinel/**
+      ### index.server.js {#src-commands-monitoring-sentinel-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### README.md {#src-commands-monitoring-sentinel-readme.md}
+        # 📖 Documentation
+
+      ### SentinelCommand.cjs {#src-commands-monitoring-sentinel-sentinelcommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+    📁 **src/commands/planning/**
+      📁 **src/commands/planning/analyze/**
+      ### AnalyzeCommand.cjs {#src-commands-planning-analyze-analyzecommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### README.md {#src-commands-planning-analyze-readme.md}
+        # 📖 Documentation
+
+      📁 **src/commands/planning/restore/**
+      ### README.md {#src-commands-planning-restore-readme.md}
+        # 📖 Documentation
+
+      ### RestoreCommand.cjs {#src-commands-planning-restore-restorecommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      📁 **src/commands/planning/roadmap/**
+      ### README.md {#src-commands-planning-roadmap-readme.md}
+        # 📖 Documentation
+
+      ### RoadmapCommand.cjs {#src-commands-planning-roadmap-roadmapcommand.cjs}
+        # ⚡ JavaScript/Node.js
+
     📁 **src/commands/test/**
     ### BaseCommand.test.cjs {#src-commands-test-basecommand.test.cjs}
       # ⚡ JavaScript/Node.js
+
+    📁 **src/commands/ui/**
+      📁 **src/commands/ui/emotion/**
+      ### EmotionCommand.cjs {#src-commands-ui-emotion-emotioncommand.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### emotionConfigs.cjs {#src-commands-ui-emotion-emotionconfigs.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### emotionConfigs.js {#src-commands-ui-emotion-emotionconfigs.js}
+        # ⚡ JavaScript/Node.js
+
+      ### emotionDefinition.cjs {#src-commands-ui-emotion-emotiondefinition.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### index.server.js {#src-commands-ui-emotion-index.server.js}
+        # ⚡ JavaScript/Node.js
+
+      ### package.json {#src-commands-ui-emotion-package.json}
+        # 📋 Configuration/Data
+
+      ### README.md {#src-commands-ui-emotion-readme.md}
+        # 📖 Documentation
+
+        📁 **src/commands/ui/emotion/test/**
+        ### EmotionAnimationTests.test.js {#src-commands-ui-emotion-test-emotionanimationtests.test.js}
+          # ⚡ JavaScript/Node.js
 
   📁 **src/core/**
   ### Academy.cjs {#src-core-academy.cjs}
@@ -5046,11 +5679,17 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
   ### CommandTeacher.cjs {#src-core-commandteacher.cjs}
     # ⚡ JavaScript/Node.js
 
+  ### ContinuonStatus.cjs {#src-core-continuonstatus.cjs}
+    # ⚡ JavaScript/Node.js
+
   ### continuum-core.cjs {#src-core-continuum-core.cjs}
     # ⚡ JavaScript/Node.js
 
   ### CostTracker.cjs {#src-core-costtracker.cjs}
     # ⚡ JavaScript/Node.js
+
+  ### emotions.json {#src-core-emotions.json}
+    # 📋 Configuration/Data
 
   ### FineTuningDataGenerator.cjs {#src-core-finetuningdatagenerator.cjs}
     # ⚡ JavaScript/Node.js
@@ -5121,6 +5760,12 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
   ### ContinuonTray.cjs {#src-integrations-continuontray.cjs}
     # ⚡ JavaScript/Node.js
 
+  ### DevToolsIntegration.cjs {#src-integrations-devtoolsintegration.cjs}
+    # ⚡ JavaScript/Node.js
+
+  ### EventBus.cjs {#src-integrations-eventbus.cjs}
+    # ⚡ JavaScript/Node.js
+
   ### github-ci.cjs {#src-integrations-github-ci.cjs}
     # ⚡ JavaScript/Node.js
 
@@ -5144,6 +5789,23 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
 
   ### WebSocketServer.cjs {#src-integrations-websocketserver.cjs}
     # ⚡ JavaScript/Node.js
+
+    📁 **src/integrations/devtools/**
+    ### DevToolsCore.cjs {#src-integrations-devtools-devtoolscore.cjs}
+      # ⚡ JavaScript/Node.js
+
+    ### DevToolsServer.cjs {#src-integrations-devtools-devtoolsserver.cjs}
+      # ⚡ JavaScript/Node.js
+
+      📁 **src/integrations/devtools/adapters/**
+      ### BaseAdapter.cjs {#src-integrations-devtools-adapters-baseadapter.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### ChromeDevToolsAdapter.cjs {#src-integrations-devtools-adapters-chromedevtoolsadapter.cjs}
+        # ⚡ JavaScript/Node.js
+
+      ### WebKitAdapter.cjs {#src-integrations-devtools-adapters-webkitadapter.cjs}
+        # ⚡ JavaScript/Node.js
 
   📁 **src/interfaces/**
   ### agent-interface.js {#src-interfaces-agent-interface.js}
@@ -5174,7 +5836,19 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
 
     📁 **src/modules/validation/**
   📁 **src/services/**
+  ### BrowserDetector.cjs {#src-services-browserdetector.cjs}
+    # ⚡ JavaScript/Node.js
+
+  ### BrowserDevToolsManager.cjs {#src-services-browserdevtoolsmanager.cjs}
+    # ⚡ JavaScript/Node.js
+
+  ### ClientManager.cjs {#src-services-clientmanager.cjs}
+    # ⚡ JavaScript/Node.js
+
   ### CommandDiscoveryService.cjs {#src-services-commanddiscoveryservice.cjs}
+    # ⚡ JavaScript/Node.js
+
+  ### DevToolsConnector.cjs {#src-services-devtoolsconnector.cjs}
     # ⚡ JavaScript/Node.js
 
   ### GameManager.cjs {#src-services-gamemanager.cjs}
@@ -5186,10 +5860,16 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
   ### ModelDiscoveryService.ts {#src-services-modeldiscoveryservice.ts}
     # 🔗 TypeScript (missing from JS loop?)
 
+  ### OperaLauncher.cjs {#src-services-operalauncher.cjs}
+    # ⚡ JavaScript/Node.js
+
   ### RemoteAgentManager.cjs {#src-services-remoteagentmanager.cjs}
     # ⚡ JavaScript/Node.js
 
   ### ScreenshotService.cjs {#src-services-screenshotservice.cjs}
+    # ⚡ JavaScript/Node.js
+
+  ### SimpleClientManager.cjs {#src-services-simpleclientmanager.cjs}
     # ⚡ JavaScript/Node.js
 
   ### TabManager.cjs {#src-services-tabmanager.cjs}
@@ -5530,8 +6210,23 @@ Engineering: base → engineering(11MB) → software(9MB) → ai(7MB) = 27MB tot
     # 📖 Documentation
 
 
+📁 **verification/**
+  📁 **verification/ui-captures/**
+  ### ui-capture-20250620_140714.jpg {#verification-ui-captures-ui-capture-20250620_140714.jpg}
+    # 📄 File
+
+
 
 ---
+
+## 🎯 Agent Study Guide - Archaeological Discoveries
+
+### 📋 Current Action Items
+🧹 Clean up old test files in __tests__ directory - remove deprecated test infrastructure  
+🌀 Investigate slow React Native enrollment process - network latency concerns  
+🔥 Fix remaining toLowerCase() parameter validation errors in communication commands  
+📦 Refactor command test infrastructure to support ES modules properly  
+🎯 Add test result integration to issues dashboard for complete visibility
 
 ## 🎯 Agent Study Guide - Archaeological Discoveries
 

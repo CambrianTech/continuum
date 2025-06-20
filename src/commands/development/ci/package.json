@@ -1,0 +1,26 @@
+{
+  "name": "ci",
+  "version": "1.0.0",
+  "description": "Continuum CI Command Module - GitHub Actions integration with issue tracking",
+  "type": "module",
+  "main": "index.server.js",
+  "files": [
+    "CICommand.cjs",
+    "README.md",
+    "workflows/",
+    "config/"
+  ],
+  "keywords": ["ci", "github-actions", "automated-testing", "issue-tracking", "continuum"],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "continuum": {
+    "commandName": "ci", 
+    "serverFiles": ["CICommand.cjs"],
+    "capabilities": ["github-actions", "issue-tracking", "automated-testing", "commit-analysis"],
+    "hasTests": true,
+    "testDir": "./test",
+    "configDir": "./config",
+    "workflowsDir": "./workflows"
+  }
+}
