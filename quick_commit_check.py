@@ -314,18 +314,21 @@ def main():
                     print("📊 UUID tracking: ✅ | Screenshots: ✅ | Logs: ✅")
                     print(f"📸 Screenshot-proof: {proof_path}")
                     
-                    # Clean up old verification files before staging new ones
+                    # Clean up ALL old verification files before staging new ones
                     verification_dir = Path('verification/ui-captures/')
                     if verification_dir.exists():
-                        all_captures = sorted(verification_dir.glob('ui-capture-*.jpg'), key=lambda p: p.stat().st_mtime)
-                        if len(all_captures) > 1:  # Keep only the newest one
-                            for old_capture in all_captures[:-1]:
-                                try:
-                                    subprocess.run(['git', 'rm', '--cached', str(old_capture)], capture_output=True)
-                                    old_capture.unlink(missing_ok=True)
-                                    print(f"🗑️ Removed old capture: {old_capture.name}")
-                                except Exception:
-                                    pass
+                        # Remove all existing verification screenshots from git and filesystem
+                        all_captures = list(verification_dir.glob('ui-capture-*.jpg'))
+                        for old_capture in all_captures:
+                            try:
+                                # Remove from git staging if present
+                                subprocess.run(['git', 'reset', 'HEAD', str(old_capture)], 
+                                             capture_output=True, stderr=subprocess.DEVNULL)
+                                # Remove from filesystem
+                                old_capture.unlink(missing_ok=True)
+                                print(f"🗑️ Cleaned old capture: {old_capture.name}")
+                            except Exception:
+                                pass
                     
                     # Add only the new verification files to git staging
                     verification_files = [proof_path] + log_files
