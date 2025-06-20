@@ -109,4 +109,35 @@ def main():
     sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--check-status":
+            # Just check git status for verification files
+            result = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True)
+            print("🔍 GIT STATUS FOR VERIFICATION FILES:")
+            for line in result.stdout.splitlines():
+                if 'verification/' in line:
+                    status = line[:2]
+                    filename = line[3:]
+                    print(f"  {status} {filename}")
+        elif sys.argv[1] == "--check-cleanup":
+            # Run just the cleanup validation
+            errors = validate_cleanup()
+            if errors:
+                print("🚨 CLEANUP ERRORS DETECTED:")
+                for error in errors:
+                    print(f"  {error}")
+            else:
+                print("✅ NO CLEANUP ERRORS")
+        elif sys.argv[1] == "--files-exist":
+            # Check what files actually exist vs git thinks
+            print("📁 ACTUAL FILES:")
+            proof_dir = Path('verification/ui-captures/')
+            if proof_dir.exists():
+                for f in proof_dir.glob('*.jpg'):
+                    print(f"  EXISTS: {f.name}")
+            else:
+                print("  No verification directory")
+        else:
+            main()
+    else:
+        main()

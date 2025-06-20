@@ -259,6 +259,66 @@ The system acts like a **post office** where:
 - Responses are delivered back to the original sender
 - Errors are handled as promise rejections
 
+## 🎯 Python Client Development Principles
+
+**Reduce complexity always, reduce fragility. Harden, optimize, modularize.**
+
+**Write unit tests for everything, and always run them.**
+
+### 🔬 Validation & Testing Methodology
+
+**Use logs and screenshots as your validation tools. The Python client provides complete stimulus-response testing capabilities.**
+
+**Development Flow:**
+- ✅ **Portal-first**: Use ai-portal.py commands and existing client methods
+- ✅ **API over filesystem**: Use .continuum directory organization via client configuration
+- ✅ **Validation feedback**: Use logs and screenshots as test verification
+- ✅ **JavaScript execution**: Can execute any JS through client, but keep it in separate .js files
+- ✅ **Incremental testing**: Baby steps with methodical validation
+
+### 🏗️ Python Client Architecture Guidelines
+
+**The Python client follows thin client architecture - delegate to APIs, keep client logic minimal.**
+
+**Client Hierarchy:**
+- 🎯 **Continuum Core API** (browser JavaScript) - Core functionality  
+- 🐍 **Python Client** (this package) - Thin wrapper, mirrors browser API
+- 📱 **Portal Commands** (ai-portal.py) - Minimal logic, delegates to client
+- 🔧 **User Scripts** - Your code using the client
+
+**Script Separation Rules:**
+- ❌ **NEVER embed JavaScript in Python strings** - Load from .js files
+- ❌ **NEVER mix languages** - Keep CSS in .css files, JS in .js files  
+- ✅ **Use client.js.execute() with external files** - Load scripts from organized directories
+- ✅ **Follow .continuum directory structure** - Use client configuration getters for organization
+
+**Example of Proper Script Separation:**
+```python
+# ❌ DON'T: Embed JavaScript in Python
+js_code = """
+    document.querySelector('#button').click();
+    return document.title;
+"""
+result = await client.js.execute(js_code)
+
+# ✅ DO: Load JavaScript from files
+with open('.continuum/scripts/click_button.js', 'r') as f:
+    js_code = f.read()
+result = await client.js.execute(js_code)
+
+# ✅ BETTER: Use client utilities for script management
+result = await client.js.execute_file('.continuum/scripts/click_button.js')
+```
+
+### 📋 Complete Development Process
+
+**📖 For the complete JTAG unit methodology and baby steps process, see:**
+- **[../docs/CONTINUUM_PROCESS.md](../docs/CONTINUUM_PROCESS.md)** - Complete baby steps methodology with trust_the_process.py
+- **[../docs/AGENT_DEVELOPMENT_GUIDE.md](../docs/AGENT_DEVELOPMENT_GUIDE.md)** - Agent-specific workflow examples
+- **[../CLAUDE.md](../CLAUDE.md)** - Core development principles and architecture hierarchy
+
+**🔄 Process Synchronization:** These documents share the core principles outlined above but focus on different implementation aspects.
+
 ## 🚨 DevTools Integration System - Screenshot & Logging Fallback
 
 **📸 ROBUST SCREENSHOT ABSTRACTION** - Works even when Continuum is down!

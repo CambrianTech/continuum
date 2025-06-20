@@ -1,0 +1,35 @@
+{
+  "endpoints": {
+    "list_issues": "GET /repos/{owner}/{repo}/issues",
+    "create_issue": "POST /repos/{owner}/{repo}/issues",
+    "update_issue": "PATCH /repos/{owner}/{repo}/issues/{issue_number}",
+    "assign_issue": "POST /repos/{owner}/{repo}/issues/{issue_number}/assignees",
+    "add_labels": "POST /repos/{owner}/{repo}/issues/{issue_number}/labels",
+    "get_issue": "GET /repos/{owner}/{repo}/issues/{issue_number}"
+  },
+  "headers": {
+    "Accept": "application/vnd.github.v3+json",
+    "User-Agent": "Continuum-Issues-Command/1.0",
+    "Authorization": "token {github_token}"
+  },
+  "rate_limits": {
+    "requests_per_hour": 5000,
+    "core_limit": 60,
+    "search_limit": 30
+  },
+  "timeouts": {
+    "connection": 10,
+    "read": 30
+  },
+  "retry_policy": {
+    "max_retries": 3,
+    "backoff_factor": 2,
+    "retry_status_codes": [502, 503, 504]
+  },
+  "issue_defaults": {
+    "state": "open",
+    "labels": ["ai-generated"],
+    "assignees": [],
+    "milestone": null
+  }
+}
