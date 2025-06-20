@@ -65,6 +65,10 @@ def main():
     except:
         pass
     
+    # Clean up any previously staged verification files FIRST
+    print("🧹 Cleaning up previously staged verification files...")
+    subprocess.run(['git', 'reset', 'HEAD', 'verification/'], capture_output=True)
+    
     print("🚨 COMMIT VERIFICATION")
     start_time = time.time()
     
@@ -79,26 +83,15 @@ def main():
         screenshots = list(Path('.continuum/screenshots/').glob('agent_feedback_*.png'))
         if screenshots:
             latest_screenshot = max(screenshots, key=lambda p: p.stat().st_mtime)
+            proof_path = create_verification_proof(latest_screenshot)
             
-            # Skip verification file creation during git operations to prevent cycles
-            import subprocess
-            git_in_progress = False
-            try:
-                result = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True)
-                git_in_progress = len(result.stdout.strip()) > 0 or Path('.git/COMMIT_EDITMSG').exists()
-            except:
-                pass
-                
-            if git_in_progress:
-                print(f"📸 Verification proof skipped during git operation")
-                print(f"🎯 Screenshot available: {latest_screenshot}")
-                print("⚠️  Will create verification proof after git operation completes")
-            else:
-                proof_path = create_verification_proof(latest_screenshot)
-                print(f"📸 Verification proof created: {proof_path}")
-            
-            # Check for cleanup issues
+            # Check for cleanup issues BEFORE staging
             pre_stage_errors = validate_cleanup()
+            
+            # Stage verification changes (new file + deletions) - REQUIRED for commit validation
+            subprocess.run(['git', 'add', str(proof_path)], check=True)
+            subprocess.run(['git', 'add', '-A', 'verification/'], check=True)  # -A stages deletions
+            print(f"📸 Verification proof created and staged: {proof_path}")
             
             # Stage important logs for verification
             log_paths = [
