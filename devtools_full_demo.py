@@ -879,29 +879,12 @@ class ContinuumDevToolsRecoverySystem:
             self.log_event("INFO", "-" * 60)
             
             try:
-                # Open the screenshot automatically
-                subprocess.run(['open', str(screenshot_path)], check=True)
-                capabilities_status['screenshot_verification'] = '✅ SUCCESS'
-                
-                self.log_event("INFO", f"✅ STEP 4 PASSED: Screenshot opened successfully")
-                self.log_event("INFO", "")
-                self.log_event("INFO", "🔍 🔍 🔍 AGENT INSPECTION REQUIRED 🔍 🔍 🔍")
-                self.log_event("INFO", "=" * 80)
-                self.log_event("INFO", f"📷 SCREENSHOT FILE: {screenshot_path}")
-                self.log_event("INFO", f"📷 Screenshot should now be OPEN on your screen")
-                self.log_event("INFO", "")
-                self.log_event("INFO", "🎯 WHAT TO LOOK FOR IN THE SCREENSHOT:")
-                self.log_event("INFO", "   1. 🟦 Page background should be DARK BLUE (#001122)")
-                self.log_event("INFO", "   2. 🔴 Red box in TOP-RIGHT corner with agent feedback info")
-                self.log_event("INFO", "   3. 📝 Browser tab title should show: '{feedback_marker} - Agent Feedback Test'")
-                self.log_event("INFO", "   4. 🖥️ Continuum interface should be visible and working")
-                self.log_event("INFO", "   5. ⏰ Red box should show CURRENT time (proof it's fresh)")
-                self.log_event("INFO", "")
-                self.log_event("INFO", "✅ If you see ALL of these elements, the feedback loop is WORKING")
-                self.log_event("INFO", "❌ If ANY element is missing, the feedback loop is BROKEN")
-                self.log_event("INFO", "")
-                self.log_event("INFO", f"🔍 Agent ID in red box should be: {feedback_marker}")
-                self.log_event("INFO", "=" * 80)
+                # Verify screenshot exists and is valid (no automatic opening)
+                if screenshot_path.exists() and screenshot_path.stat().st_size > 0:
+                    capabilities_status['screenshot_verification'] = '✅ SUCCESS'
+                    self.log_event("INFO", f"✅ STEP 4 PASSED: Screenshot verified successfully")
+                self.log_event("INFO", f"📷 Screenshot saved: {screenshot_path}")
+                self.log_event("INFO", f"🔍 Verification marker: {feedback_marker}")
                 
                 # Verify it's a valid PNG
                 with open(screenshot_path, 'rb') as f:
@@ -909,13 +892,10 @@ class ContinuumDevToolsRecoverySystem:
                     if png_header != b'\\x89PNG\\r\\n\\x1a\\n':
                         self.log_event("ERROR", f"⚠️ WARNING: Screenshot may have invalid PNG format")
                         
-            except subprocess.CalledProcessError:
-                capabilities_status['screenshot_verification'] = '❌ FAILED'
-                self.log_event("ERROR", f"❌ STEP 4 FAILED: Could not open screenshot")
-                self.log_event("ERROR", f"📁 Manual inspection required: {screenshot_path}")
             except Exception as e:
-                capabilities_status['screenshot_verification'] = '❌ ERROR'
-                self.log_event("ERROR", f"❌ STEP 4 ERROR: Could not verify screenshot: {e}")
+                capabilities_status['screenshot_verification'] = '❌ FAILED'
+                self.log_event("ERROR", f"❌ STEP 4 FAILED: Screenshot verification error: {e}")
+                self.log_event("ERROR", f"📁 Screenshot path: {screenshot_path}")
                 
         else:
             capabilities_status['screenshot_capture'] = '❌ FAILED'
