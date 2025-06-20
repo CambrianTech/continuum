@@ -2,6 +2,7 @@
 """
 Quick commit verification script for git hooks
 Fast PASS/FAIL verification in under 15 seconds
+Fixed: Immediate cleanup of verification screenshots
 """
 
 import subprocess
@@ -236,6 +237,15 @@ def main():
                     print("✅ PASSED - All systems operational")
                     print("📊 UUID tracking: ✅ | Screenshots: ✅ | Logs: ✅")
                     print(f"📸 Screenshot-proof: {proof_path}")
+                    
+                    # Clean up verification screenshot immediately
+                    try:
+                        if Path(proof_path).exists():
+                            Path(proof_path).unlink()
+                            print(f"🧹 Cleaned up verification screenshot: {Path(proof_path).name}")
+                    except Exception as e:
+                        print(f"⚠️ Could not clean up screenshot: {e}")
+                    
                     sys.exit(0)
         
         print("❌ FAILED - System health compromised")
