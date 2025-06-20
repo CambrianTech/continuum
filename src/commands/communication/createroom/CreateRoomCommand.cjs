@@ -173,6 +173,9 @@ class CreateRoomCommand extends BaseCommand {
   }
 
   static normalizeRoomName(name) {
+    if (!name || typeof name !== 'string') {
+      throw new Error('Room name is required and must be a string');
+    }
     return name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-') // Replace non-alphanumeric with dashes

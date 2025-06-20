@@ -1,7 +1,7 @@
 {
   "dashboard": {
-    "header": "🎯 AI ISSUES DASHBOARD",
-    "separator": "=" * 50,
+    "header": "🎯 AI ISSUES DASHBOARD", 
+    "separator": "==================================================",
     "no_issues": "🎉 No issues found for current filter",
     "loading": "📡 Loading issues from GitHub...",
     "sync_complete": "✅ Sync with FILES.md completed",
