@@ -16,6 +16,9 @@ Continuum is a revolutionary AI workforce construction platform with clean archi
 ### Quick Start
 
 ```bash
+# FIRST: Install git hooks (required for all developers)
+bash scripts/install-git-hooks.sh
+
 # For AI Agents (primary interface)
 python3 python-client/ai-portal.py --help
 python3 python-client/ai-portal.py --cmd help
