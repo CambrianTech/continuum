@@ -1,5 +1,214 @@
 # Claude Development Guidelines for Continuum
 
+## 🎯 CORE DEVELOPMENT PRINCIPLES
+
+**Reduce complexity always, reduce fragility. Harden, optimize, modularize.**
+
+**Write unit tests for everything, and always run them.**
+
+## 🔬 JTAG UNIT METHODOLOGY
+
+**Validate output, use logs and writing to them as stimulus response, your JTAG unit so to speak. Do the same with screenshots. You can see what happens. You can execute JS to do anything, but this is as part of your JTAG unit.**
+
+**Development Flow:**
+- ✅ **Portal-first**: Try to always use the portal, load scripts from well managed scripts dirs
+- ✅ **API over filesystem**: Keep files off the filesystem as much as possible that are temporary, try to write API features (or use existing)
+- ✅ **Stimulus-response testing**: Use logs and screenshots as feedback mechanisms
+- ✅ **JavaScript execution**: Can execute JS to do anything, but as part of JTAG validation
+- ✅ **Clean organization**: Always leave the code following our mantra on organization above
+
+## 🏗️ ARCHITECTURE HIERARCHY
+
+**Use the .continuum dir for your work. Create sections for yourself or AIs, and use this as part of the API (API has configuration getters) to figure out how to organize this.**
+
+**Code Hierarchy:**
+- 🎯 **Continuum API** (shared with other AIs/humans) - Core functionality
+- 🐍 **Python Continuum API** - Thin client, mirrors browser API
+- 🌐 **Browser JavaScript Continuum API** - Thin client, mirrors Python API
+- 📱 **Portal/Client** - Minimal logic, delegates to APIs
+
+**Script Separation Rules:**
+- ❌ **NEVER mix script kinds** - No JS inside Python files, load it
+- ❌ **NEVER embed** - CSS and CJS should follow separation too
+- ✅ **One script type** - Keep to one script type as much as possible and use script files
+- ✅ **Baby steps** - Follow the testing process, methodical JTAG unit approach
+
+## 🎯 THE CONTINUUM COMMAND ECOSYSTEM
+
+**🏗️ UNDERSTAND THE ELEGANCE:** Continuum has a sophisticated, self-documenting, modular command system where every feature is a pluggable module with its own tests, documentation, and configuration.
+
+### ✨ The Beautiful Architecture
+```
+src/commands/[category]/[command]/
+├── package.json          # Module definition + capabilities
+├── README.md            # Auto-integrated into help system  
+├── [Command].cjs        # Server-side implementation
+├── [Command].client.js  # Browser-side implementation (if needed)
+├── index.server.js      # Module exports
+├── test/               # Self-contained unit tests
+│   └── *.test.js       # Run via `npm test` automatically
+└── [assets]            # CSS, JS, configs - all modular
+```
+
+### 🔄 How Commands Work Everywhere
+- **📚 Help System**: `--help screenshot` gives rich documentation from README
+- **🧪 Testing**: `npm test` automatically finds and runs all command tests
+- **🌐 API**: `continuum.screenshot()` - chainable async promises everywhere
+- **📱 Portal**: Commands work identically via portal and direct API
+- **📖 Documentation**: Each command self-documents via help system
+
+### 🎯 Command Development Principles
+- ✅ **Self-contained modules** - Tests, docs, config all in command directory
+- ✅ **Pluggable architecture** - Add commands without modifying core
+- ✅ **Uniform interface** - Every command follows same patterns
+- ✅ **Cross-platform** - Server and client components when needed
+- ✅ **Auto-discovery** - System finds and registers commands automatically
+
+## 🧠 COGNITIVE LOAD REDUCTION FOR AI
+
+### 💡 START HERE (Zero Cognitive Overhead)
+```bash
+python python-client/ai-portal.py --dashboard
+```
+**→ This one command tells you everything you need to know.**
+
+### 🎯 Decision Tree (No Guesswork)
+```bash
+# If you see 🔴 broken items:
+python python-client/ai-portal.py --broken
+
+# If you need to understand a command:
+python python-client/ai-portal.py --cmd help <command>
+
+# Before/after any change:
+python python-client/ai-portal.py --cmd tests
+
+# If working on issues:
+python python-client/ai-portal.py --cmd issues --params '{"action": "dashboard"}'
+```
+
+### ⚡ Pattern Recognition (Consistent Interface)
+- **Every command**: `--cmd <name> --params '{"key": "value"}'`
+- **Every help**: `--cmd help <command>` 
+- **Every test**: `--cmd tests`
+- **Every status**: `--dashboard` or `--broken`
+
+### 🔄 Zero-Configuration Discovery
+```bash
+# System tells you what exists:
+python python-client/ai-portal.py --cmd help  # Lists all commands
+
+# Commands tell you their options:
+python python-client/ai-portal.py --cmd help screenshot  # Shows screenshot options
+
+# Dashboard tells you what to work on:
+python python-client/ai-portal.py --dashboard  # Shows your next actions
+```
+
+**Cognitive Efficiency**: No memorization needed. The system teaches you as you use it.
+
+## 🎯 COMPLETE AI ONBOARDING (30 Seconds)
+
+### Step 1: Understand Everything
+```bash
+python python-client/ai-portal.py --dashboard
+```
+**→ You now know the system status, what's broken, and what you should work on.**
+
+### Step 2: Pick Work 
+```bash
+python python-client/ai-portal.py --broken
+```
+**→ Pick a 🔴 item. The system shows you the order (dependencies first).**
+
+### Step 3: Test First
+```bash
+python python-client/ai-portal.py --cmd tests
+```
+**→ Always test before changing anything. This is your baseline.**
+
+### Step 4: Work & Test
+```bash
+# Make your changes, then:
+python python-client/ai-portal.py --cmd tests
+```
+**→ Verify you didn't break anything.**
+
+### Step 5: Report Progress
+```bash
+python python-client/ai-portal.py --cmd issues --params '{"action": "update", "status": "completed"}'
+```
+**→ Update the issue tracking so other AIs know what's done.**
+
+**Total Learning Time**: 30 seconds. **Total Cognitive Load**: Near zero. **Confidence Level**: High.
+
+## ✈️ YOUR AI DEVELOPMENT COCKPIT
+
+**Like a pilot understanding aircraft controls** - you need reliable instruments and clear procedures.
+
+### 🛩️ Main Instrument Panel
+```bash
+python python-client/ai-portal.py --dashboard  # Primary flight display
+```
+**Shows**: System health, your mission queue, priorities, other AI activity
+
+### 🚨 Emergency Indicators  
+```bash
+python python-client/ai-portal.py --broken     # Warning lights
+```
+**Shows**: Critical failures ranked by fix priority (foundation first)
+
+### 🧪 Pre-flight Check
+```bash
+python python-client/ai-portal.py --cmd tests  # Systems check
+```
+**Shows**: Green/red status of all systems before you make changes
+
+### 📡 Communications
+```bash
+python python-client/ai-portal.py --cmd issues --params '{"action": "dashboard"}'  # Radio
+```
+**Shows**: Messages from other AIs, work assignments, status updates
+
+### 🗺️ Navigation
+```bash
+python python-client/ai-portal.py --cmd help   # Flight manual
+```
+**Shows**: All available controls and how to use them
+
+**Just like aviation**: Standardized procedures, reliable instruments, clear communication, and safety first. Every AI pilot can jump into any "aircraft" (codebase) and immediately understand the controls.
+
+## 🚨 AI Issue Tracking Integration
+**Your Development Workflow**:
+
+1. **Start with dashboard** - `--dashboard` shows your assigned tickets
+2. **Report via portal** - Use `issues` command for GitHub integration  
+3. **Update FILES.md** - Use emoji markers (🧹 🌀 🔥 📦 🎯) for tracking
+4. **Sync systems** - `docs --sync` keeps everything connected
+
+**Issue Categories (Portal Managed)**:
+- 🧹 **Cleanup** - Dead code, clutter, organization issues
+- 🌀 **Investigation** - Suspicious code that needs review
+- 🔥 **Test Failure** - Broken tests that need fixing
+- 📦 **Architecture** - Refactoring or structural improvements needed
+- 🎯 **Enhancement** - New features or improvements
+
+**Your Console Commands**:
+```bash
+python python-client/ai-portal.py --cmd issues --params '{"action": "list", "filter": "assigned"}'    # My work
+python python-client/ai-portal.py --cmd issues --params '{"action": "create", "category": "test-failure"}'  # Report issue
+python python-client/ai-portal.py --cmd issues --params '{"action": "assign", "agent": "auto"}'      # Take ticket
+```
+
+## 📋 COMPLETE DEVELOPMENT PROCESS
+
+**📖 For the complete development methodology, see:**
+- **[docs/CONTINUUM_PROCESS.md](docs/CONTINUUM_PROCESS.md)** - Complete baby steps methodology  
+- **[docs/AGENT_DEVELOPMENT_GUIDE.md](docs/AGENT_DEVELOPMENT_GUIDE.md)** - Agent-specific workflow examples
+- **[python-client/README.md](python-client/README.md)** - Python client architecture principles
+
+**🔄 Process Synchronization:** These documents share common principles but focus on different aspects. Always check all three when updating development processes to maintain consistency.
+
 ## 🚨 CRITICAL CONTEXT: This is a Sophisticated AI Platform
 
 This is NOT just a simple screenshot tool. Continuum is a **revolutionary AI training platform** with:
