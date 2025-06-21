@@ -3,7 +3,7 @@
  * Replaces hardcoded path logic with configurable workspace paths
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../BaseCommand.cjs');
 const fs = require('fs');
 const path = require('path');
 

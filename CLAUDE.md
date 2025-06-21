@@ -1,10 +1,33 @@
 # Claude Development Guidelines for Continuum
 
+## 🌟 THE VISION: CODE AS LIVING ARCHITECTURE
+
+**We are building an ecosystem of intelligences that creates code so elegant it's simultaneously sophisticated and beautiful.**
+
+### Core Aesthetic Principles
+
+- **🎨 Code as Art**: Write code that humans admire and AIs understand instantly
+- **🧬 Sophisticated Simplicity**: Advanced capabilities through elegant organization  
+- **📚 Educational by Design**: Every module teaches best practices naturally
+- **🔬 NASA-Level Quality**: Tested by collaborative AI teams checking each other's work
+
+### The Human Experience Test
+
+**Every piece of code should make a human developer think:**
+- *"This is how I want to write code"*
+- *"I can understand this immediately"* 
+- *"This is surprisingly sophisticated"*
+- *"This is actually beautiful"*
+
+---
+
 ## 🎯 CORE DEVELOPMENT PRINCIPLES
 
 **Reduce complexity always, reduce fragility. Harden, optimize, modularize.**
 
 **Write unit tests for everything, and always run them.**
+
+**Design for deep space operation - every module must survive autonomous operation forever.**
 
 ## 🔬 JTAG UNIT METHODOLOGY
 

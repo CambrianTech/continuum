@@ -3,7 +3,7 @@
  * Runs comprehensive system tests with isolated directories and fresh logs
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 const { spawn } = require('child_process');
 const path = require('path');
 

@@ -3,7 +3,7 @@
  * Simple logging and task management for AIs
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 const fs = require('fs');
 const path = require('path');
 

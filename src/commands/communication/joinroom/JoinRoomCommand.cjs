@@ -3,7 +3,7 @@
  * Join multiple rooms, get notifications from all subscribed rooms
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class JoinRoomCommand extends BaseCommand {
   static getDefinition() {

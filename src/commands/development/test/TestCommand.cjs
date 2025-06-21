@@ -3,7 +3,7 @@
  * Triggers the single comprehensive test location with full coverage
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 const { spawn } = require('child_process');
 const path = require('path');
 

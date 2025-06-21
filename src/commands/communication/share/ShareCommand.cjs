@@ -3,7 +3,7 @@
  * Core continuum daemon handles all sharing destinations
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class ShareCommand extends BaseCommand {
   static getDefinition() {

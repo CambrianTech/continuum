@@ -4,7 +4,7 @@
  * Works seamlessly across all clients - saves time on syntax/security checks
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class ValidateCodeCommand extends BaseCommand {
     constructor() {

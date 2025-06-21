@@ -3,7 +3,7 @@
  * Expose browser DevTools capabilities through Continuum command system
  */
 
-const BaseCommand = require('../base/BaseCommand.cjs');
+const BaseCommand = require('../core/BaseCommand.cjs');
 
 class DevToolsCommand extends BaseCommand {
   constructor() {

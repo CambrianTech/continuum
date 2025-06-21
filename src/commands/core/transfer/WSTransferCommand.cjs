@@ -3,7 +3,7 @@
  * Handles binary data transfer between browser and server with conditional file saving
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../BaseCommand.cjs');
 
 class WSTransferCommand extends BaseCommand {
   static getDefinition() {

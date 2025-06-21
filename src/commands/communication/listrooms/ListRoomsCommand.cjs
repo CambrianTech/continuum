@@ -3,7 +3,7 @@
  * Like Discord's channel list or IRC's /list
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class ListRoomsCommand extends BaseCommand {
   static getDefinition() {

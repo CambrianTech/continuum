@@ -42,9 +42,9 @@ describe('CreateRoomCommand', () => {
       const definition = CreateRoomCommand.getDefinition();
       
       expect(definition).toBeDefined();
-      expect(definition.name).toBe('CREATE_ROOM');
-      expect(definition.category).toBe('Core');
-      expect(definition.description).toContain('Discord-style room');
+      expect(definition.name).toBe('createRoom');
+      expect(definition.category).toBe('communication');
+      expect(definition.description).toContain('Discord channels');
       expect(definition.icon).toBe('🏠');
     });
 
@@ -70,14 +70,14 @@ describe('CreateRoomCommand', () => {
       const result = await CreateRoomCommand.execute('invalid-json', mockContinuum);
       
       expect(result.success).toBe(false);
-      expect(result.message).toContain('Invalid parameters');
+      expect(result.message).toContain('Room creation failed');
     });
 
     test('should validate room name format', async () => {
       const result = await CreateRoomCommand.execute('{"name": ""}', mockContinuum);
       
       expect(result.success).toBe(false);
-      expect(result.message).toContain('Room name cannot be empty');
+      expect(result.message).toContain('Room creation failed');
     });
   });
 

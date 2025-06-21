@@ -3,7 +3,7 @@
  * Enables fluent API like: continuum.screenshot().share(continuum.findUser(...))
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class MacroCommand extends BaseCommand {
   constructor(initialResult = null) {

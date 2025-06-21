@@ -2,7 +2,7 @@
  * FindUserCommand - Find users in the system by various criteria
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class FindUserCommand extends BaseCommand {
   static getDefinition() {

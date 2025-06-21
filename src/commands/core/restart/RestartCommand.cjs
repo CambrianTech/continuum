@@ -2,7 +2,7 @@
  * RestartCommand - Force restart the server with version bump
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../BaseCommand.cjs');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');

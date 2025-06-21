@@ -11,6 +11,18 @@ from typing import Optional, Callable, Dict, Any
 from ..exceptions.js_errors import ConnectionError
 from .js_executor import JSExecutor
 
+# Global client instance for milestone events
+_global_client: Optional['ContinuumClient'] = None
+
+def get_global_client() -> Optional['ContinuumClient']:
+    """Get the global Continuum client instance for milestone events"""
+    return _global_client
+
+def set_global_client(client: 'ContinuumClient'):
+    """Set the global Continuum client instance"""
+    global _global_client
+    _global_client = client
+
 class ContinuumClient:
     """
     Main Continuum client with promise-based JavaScript execution
@@ -243,6 +255,24 @@ class ContinuumClient:
         except Exception as e:
             self.pending_commands.pop(command_id, None)
             return {'success': False, 'error': str(e)}
+    
+    async def send_milestone_event(self, milestone: dict):
+        """Send milestone event to Continuum core for real-time UI updates"""
+        if not self.connected or not self.ws:
+            return
+            
+        event_message = {
+            'type': 'milestone_event',
+            'milestone': milestone,
+            'timestamp': milestone.get('timestamp'),
+            'source': 'python_client'
+        }
+        
+        try:
+            await self.ws.send(json.dumps(event_message))
+        except Exception as e:
+            # Don't break workflow if milestone sending fails
+            print(f"⚠️  Failed to send milestone to Continuum: {e}")
     
     async def screenshot(self, selector='body', name_prefix='screenshot', scale=1.0) -> Dict:
         """

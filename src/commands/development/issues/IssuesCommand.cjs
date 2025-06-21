@@ -3,7 +3,7 @@
  * Self-contained module with external templates and configuration
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 const fs = require('fs');
 const path = require('path');
 

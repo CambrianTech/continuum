@@ -3,7 +3,7 @@
  * Subscribe to multiple rooms, see all activity
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class CreateRoomCommand extends BaseCommand {
   static getDefinition() {

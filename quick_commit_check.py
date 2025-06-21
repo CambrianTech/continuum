@@ -8,11 +8,30 @@ import sys
 import time
 from pathlib import Path
 
+def log_milestone(phase, action, details=""):
+    """Log major process milestone for UI progress tracking"""
+    timestamp = time.strftime("%H:%M:%S")
+    print(f"🎯 MILESTONE [{timestamp}] {phase}: {action}")
+    if details:
+        print(f"   ℹ️  {details}")
+
 def run_verification():
     """Run verification and return result"""
-    return subprocess.run([
+    log_milestone("VERIFICATION_START", "Launching emergency verification system")
+    log_milestone("BROWSER_LAUNCH", "Starting DevTools recovery browser", 
+                 "devtools_full_demo.py --emergency-only")
+    
+    result = subprocess.run([
         sys.executable, 'devtools_full_demo.py', '--emergency-only'
     ], capture_output=True, text=True, timeout=60)
+    
+    if result.returncode == 0:
+        log_milestone("VERIFICATION_COMPLETE", "Emergency verification successful")
+    else:
+        log_milestone("VERIFICATION_FAILED", "Emergency verification failed", 
+                     f"Exit code: {result.returncode}")
+    
+    return result
 
 def create_verification_proof(screenshot_path):
     """Create single verification file"""
@@ -66,10 +85,11 @@ def main():
         pass
     
     # Clean up any previously staged verification files FIRST
-    print("🧹 Cleaning up previously staged verification files...")
+    log_milestone("CLEANUP_START", "Cleaning previously staged verification files")
     subprocess.run(['git', 'reset', 'HEAD', 'verification/'], capture_output=True)
+    log_milestone("CLEANUP_COMPLETE", "Verification staging area cleaned")
     
-    print("🚨 COMMIT VERIFICATION")
+    log_milestone("COMMIT_VERIFICATION_START", "Starting commit verification process")
     start_time = time.time()
     
     # Run verification
@@ -80,18 +100,23 @@ def main():
         'BIDIRECTIONAL FEEDBACK VERIFIED' in result.stdout):
         
         # Find screenshot
+        log_milestone("SCREENSHOT_SEARCH", "Locating verification screenshot")
         screenshots = list(Path('.continuum/screenshots/').glob('agent_feedback_*.png'))
         if screenshots:
             latest_screenshot = max(screenshots, key=lambda p: p.stat().st_mtime)
+            log_milestone("SCREENSHOT_FOUND", f"Located screenshot: {latest_screenshot.name}")
+            
+            log_milestone("PROOF_CREATION", "Creating verification proof")
             proof_path = create_verification_proof(latest_screenshot)
+            log_milestone("PROOF_CREATED", f"Verification proof ready: {proof_path.name}")
             
             # Check for cleanup issues BEFORE staging
             pre_stage_errors = validate_cleanup()
             
             # Stage verification changes (new file + deletions) - REQUIRED for commit validation
+            log_milestone("GIT_STAGING", "Staging verification artifacts")
             subprocess.run(['git', 'add', str(proof_path)], check=True)
             subprocess.run(['git', 'add', '-A', 'verification/'], check=True)  # -A stages deletions
-            print(f"📸 Verification proof created and staged: {proof_path}")
             
             # Stage important logs for verification
             log_paths = [
@@ -102,7 +127,10 @@ def main():
                 if Path(log_path).exists():
                     subprocess.run(['git', 'add', log_path], capture_output=True)
             
+            log_milestone("VERIFICATION_SUCCESS", f"Commit verification complete ({elapsed:.1f}s)")
+            
             # Report results
+            print(f"📸 Verification proof created and staged: {proof_path}")
             print(f"✅ PASSED ({elapsed:.1f}s) - {proof_path.name}")
             if pre_stage_errors:
                 print("🚨 CLEANUP ERRORS (FIXED):")
