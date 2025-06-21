@@ -34,24 +34,99 @@ def run_verification():
     return result
 
 def create_verification_proof(screenshot_path):
-    """Create single verification file"""
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    proof_dir = Path('verification/ui-captures/')
-    proof_dir.mkdir(parents=True, exist_ok=True)
+    """Create verification package in proper structure:
+    verification/
+    ├── history.txt                    # Summary of all verifications
+    └── verification_sha/              # One dir per commit SHA
+        ├── ui-capture.png             # 1280px wide interface screenshot
+        ├── client-logs.txt            # Client logs from verification run
+        └── server-logs.txt            # Server logs from verification run
+    """
     
-    # Clean up any existing verification files
-    for old_file in proof_dir.glob('ui-capture-*.jpg'):
-        old_file.unlink(missing_ok=True)
+    # Get current commit SHA for directory naming
+    try:
+        sha_result = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True)
+        commit_sha = sha_result.stdout.strip()[:12]  # First 12 chars of SHA
+    except:
+        commit_sha = time.strftime("%Y%m%d_%H%M%S")  # Fallback to timestamp
     
-    proof_path = proof_dir / f"ui-capture-{timestamp}.jpg"
+    # Create verification directory structure
+    verification_base = Path('verification')
+    verification_base.mkdir(exist_ok=True)
     
-    # Create high-quality proof (readable version info)
+    verification_sha_dir = verification_base / f"verification_{commit_sha}"
+    verification_sha_dir.mkdir(exist_ok=True)
+    
+    log_milestone("DIR_CREATED", f"Verification directory: verification_{commit_sha}")
+    
+    # Create 1280px wide interface screenshot
+    ui_capture_path = verification_sha_dir / "ui-capture.png"
     subprocess.run([
-        'sips', '-Z', '1200', '-s', 'formatOptions', '80',
-        str(screenshot_path), '--out', str(proof_path)
+        'sips', '-Z', '1280', '-s', 'format', 'png',
+        str(screenshot_path), '--out', str(ui_capture_path)
     ], capture_output=True)
+    log_milestone("SCREENSHOT_SAVED", f"UI capture: {ui_capture_path}")
     
-    return proof_path
+    # Copy client logs from verification run
+    client_log_source = Path('python-client/.continuum/ai-portal/logs/buffer.log')
+    client_log_dest = verification_sha_dir / "client-logs.txt"
+    if client_log_source.exists():
+        import shutil
+        shutil.copy2(client_log_source, client_log_dest)
+        log_milestone("CLIENT_LOGS", f"Client logs saved: {client_log_dest}")
+    else:
+        client_log_dest.write_text("# Client logs not available during verification run\n")
+        log_milestone("CLIENT_LOGS", "Client logs: not available")
+    
+    # Copy server logs from verification run
+    server_log_source = Path('.continuum/continuum.log')
+    server_log_dest = verification_sha_dir / "server-logs.txt"
+    if server_log_source.exists():
+        import shutil
+        shutil.copy2(server_log_source, server_log_dest)
+        log_milestone("SERVER_LOGS", f"Server logs saved: {server_log_dest}")
+    else:
+        server_log_dest.write_text("# Server logs not available during verification run\n")
+        log_milestone("SERVER_LOGS", "Server logs: not available")
+    
+    return ui_capture_path
+
+def update_verification_history(status, elapsed_time, proof_path=None):
+    """Update verification/history.txt with verification results"""
+    
+    # Get commit message and SHA
+    try:
+        # Get the commit message being attempted
+        commit_msg_result = subprocess.run(['git', 'log', '-1', '--pretty=format:%s'], capture_output=True, text=True)
+        commit_message = commit_msg_result.stdout.strip() or "No commit message"
+        
+        # Get current SHA
+        sha_result = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True)
+        commit_sha = sha_result.stdout.strip()[:12]
+    except:
+        commit_message = "Unknown commit"
+        commit_sha = "unknown"
+    
+    # Create history entry
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    verification_dir = f"verification_{commit_sha}" if proof_path else "none"
+    
+    history_entry = f"{timestamp} | {status} | {elapsed_time:.1f}s | {commit_sha} | {commit_message} | {verification_dir}\n"
+    
+    # Append to history.txt
+    history_path = Path('verification/history.txt')
+    
+    # Create header if file doesn't exist
+    if not history_path.exists():
+        header = "# Continuum Verification History\n"
+        header += "# Format: DateTime | Status | Duration | SHA | CommitMessage | VerificationDir\n\n"
+        history_path.write_text(header)
+    
+    # Append new entry
+    with open(history_path, 'a') as f:
+        f.write(history_entry)
+    
+    log_milestone("HISTORY_UPDATED", f"Added {status} entry to verification history")
 
 def validate_cleanup():
     """Validate that verification system cleaned up properly"""
@@ -117,19 +192,12 @@ def main():
             # Check for cleanup issues BEFORE staging
             pre_stage_errors = validate_cleanup()
             
-            # Stage verification changes (new file + deletions) - REQUIRED for commit validation
-            log_milestone("GIT_STAGING", "Staging verification artifacts")
-            subprocess.run(['git', 'add', str(proof_path)], check=True)
-            subprocess.run(['git', 'add', '-A', 'verification/'], check=True)  # -A stages deletions
+            # Stage complete verification package (screenshot + logs + stats)
+            log_milestone("GIT_STAGING", "Staging complete verification package")
+            subprocess.run(['git', 'add', '-A', 'verification/'], check=True)  # -A stages all verification files including deletions
             
-            # Stage important logs for verification
-            log_paths = [
-                'python-client/.continuum/ai-portal/logs/buffer.log',
-                '.continuum/continuum.log'
-            ]
-            for log_path in log_paths:
-                if Path(log_path).exists():
-                    subprocess.run(['git', 'add', log_path], capture_output=True)
+            # Update verification history
+            update_verification_history("PASS", elapsed, proof_path)
             
             log_milestone("VERIFICATION_SUCCESS", f"Commit verification complete ({elapsed:.1f}s)")
             
@@ -141,6 +209,9 @@ def main():
                 for error in pre_stage_errors:
                     print(f"  {error}")
             sys.exit(0)
+    
+    # Update verification history for failure
+    update_verification_history("FAIL", elapsed)
     
     print(f"❌ FAILED ({elapsed:.1f}s)")
     sys.exit(1)
