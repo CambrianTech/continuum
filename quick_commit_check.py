@@ -214,6 +214,10 @@ def main():
             # Update verification history
             update_verification_history("PASS", elapsed, proof_path)
             
+            # Stage the updated history file
+            subprocess.run(['git', 'add', 'verification/history.txt'], check=True)
+            log_milestone("HISTORY_STAGED", "Verification history staged for commit")
+            
             log_milestone("VERIFICATION_SUCCESS", f"Commit verification complete ({elapsed:.1f}s)")
             
             # Report results
@@ -227,6 +231,9 @@ def main():
     
     # Update verification history for failure
     update_verification_history("FAIL", elapsed)
+    
+    # Stage the updated history file even for failures
+    subprocess.run(['git', 'add', 'verification/history.txt'], check=True)
     
     print(f"❌ FAILED ({elapsed:.1f}s)")
     sys.exit(1)
