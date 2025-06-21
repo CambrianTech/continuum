@@ -33,14 +33,14 @@ def run_verification():
     
     return result
 
-def create_verification_proof(screenshot_path):
+def create_verification_proof(screenshot_path, verification_result):
     """Create verification package in proper structure:
     verification/
     ├── history.txt                    # Summary of all verifications
     └── verification_sha/              # One dir per commit SHA
         ├── ui-capture.png             # 1280px wide interface screenshot
-        ├── client-logs.txt            # Client logs from verification run
-        └── server-logs.txt            # Server logs from verification run
+        ├── client-logs.txt            # Client logs from THIS verification session only
+        └── server-logs.txt            # Server logs from THIS verification session only
     """
     
     # Get current commit SHA for directory naming
@@ -67,27 +67,42 @@ def create_verification_proof(screenshot_path):
     ], capture_output=True)
     log_milestone("SCREENSHOT_SAVED", f"UI capture: {ui_capture_path}")
     
-    # Copy client logs from verification run
-    client_log_source = Path('python-client/.continuum/ai-portal/logs/buffer.log')
+    # Save only the logs from THIS verification session
     client_log_dest = verification_sha_dir / "client-logs.txt"
-    if client_log_source.exists():
-        import shutil
-        shutil.copy2(client_log_source, client_log_dest)
-        log_milestone("CLIENT_LOGS", f"Client logs saved: {client_log_dest}")
-    else:
-        client_log_dest.write_text("# Client logs not available during verification run\n")
-        log_milestone("CLIENT_LOGS", "Client logs: not available")
-    
-    # Copy server logs from verification run
-    server_log_source = Path('.continuum/continuum.log')
     server_log_dest = verification_sha_dir / "server-logs.txt"
-    if server_log_source.exists():
-        import shutil
-        shutil.copy2(server_log_source, server_log_dest)
-        log_milestone("SERVER_LOGS", f"Server logs saved: {server_log_dest}")
+    
+    # Extract relevant logs from verification result output
+    if verification_result and verification_result.stdout:
+        # Split verification output into client and server sections
+        verification_output = verification_result.stdout
+        
+        client_logs = "# Client logs from verification session\n"
+        server_logs = "# Server logs from verification session\n"
+        
+        # Parse the verification output to separate client vs server logs
+        lines = verification_output.split('\n')
+        current_section = "general"
+        
+        for line in lines:
+            if any(marker in line for marker in ['CLIENT-SIDE', 'PORTAL', 'BROWSER_LOG', 'WebSocket']):
+                client_logs += line + "\n"
+            elif any(marker in line for marker in ['SERVER-SIDE', 'DevTools', 'MILESTONE', 'INFO:']):
+                server_logs += line + "\n"
+            elif 'UUID_' in line and any(marker in line for marker in ['LOG:', 'ERROR:', 'WARNING:']):
+                client_logs += line + "\n"  # Console logs go to client section
+            else:
+                # General verification logs go to server section
+                server_logs += line + "\n"
     else:
-        server_log_dest.write_text("# Server logs not available during verification run\n")
-        log_milestone("SERVER_LOGS", "Server logs: not available")
+        client_logs = "# No client logs captured during verification session\n"
+        server_logs = "# No server logs captured during verification session\n"
+    
+    # Write the session-specific logs
+    client_log_dest.write_text(client_logs)
+    server_log_dest.write_text(server_logs)
+    
+    log_milestone("CLIENT_LOGS", f"Verification session client logs saved: {client_log_dest}")
+    log_milestone("SERVER_LOGS", f"Verification session server logs saved: {server_log_dest}")
     
     return ui_capture_path
 
@@ -186,7 +201,7 @@ def main():
             log_milestone("SCREENSHOT_FOUND", f"Located screenshot: {latest_screenshot.name}")
             
             log_milestone("PROOF_CREATION", "Creating verification proof")
-            proof_path = create_verification_proof(latest_screenshot)
+            proof_path = create_verification_proof(latest_screenshot, result)
             log_milestone("PROOF_CREATED", f"Verification proof ready: {proof_path.name}")
             
             # Check for cleanup issues BEFORE staging
