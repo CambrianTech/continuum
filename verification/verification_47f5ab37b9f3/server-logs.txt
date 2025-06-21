@@ -1,0 +1,497 @@
+📚 Loading command definitions...
+📚 Loaded command: AGENTS (uncategorized)
+⏩ Skipping non-command file: index.server.js
+📂 Directory agents: 1 loaded, 0 failed
+📚 Loaded command: BROWSER (core)
+⏩ Skipping non-command file: index.server.js
+📂 Directory browser: 1 loaded, 0 failed
+📚 Loaded command: BROWSER_JS (Core)
+⏩ Skipping non-command file: index.server.js
+📂 Directory browserjs: 1 loaded, 0 failed
+📚 Loaded command: CHAT (communication)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory chat: 1 loaded, 0 failed
+📚 Loaded command: CLEAR (Core)
+⏩ Skipping non-command file: index.server.js
+📂 Directory clear: 1 loaded, 0 failed
+📚 Loaded command: CREATEROOM (communication)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory createroom: 1 loaded, 0 failed
+📚 Loaded command: CURSOR (continuon control)
+⏩ Skipping non-command file: GraphicsRenderer.js
+📂 Directory graphics: 0 loaded, 0 failed
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory cursor: 1 loaded, 0 failed
+📚 Loaded command: DIAGNOSTICS (uncategorized)
+⏩ Skipping non-command file: index.cjs
+⏩ Skipping non-command file: index.server.js
+📂 Directory diagnostics: 1 loaded, 0 failed
+📚 Loaded command: EMOTION (continuon expression)
+⏩ Skipping non-command file: emotionConfigs.cjs
+⏩ Skipping non-command file: emotionConfigs.js
+⏩ Skipping non-command file: emotionDefinition.cjs
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory emotion: 1 loaded, 0 failed
+📚 Loaded command: EXEC (Core)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory exec: 1 loaded, 0 failed
+📚 Loaded command: FILESAVE (core)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory fileSave: 1 loaded, 0 failed
+📚 Loaded command: FINDUSER (uncategorized)
+⏩ Skipping non-command file: index.cjs
+⏩ Skipping non-command file: index.server.js
+📂 Directory findUser: 1 loaded, 0 failed
+📚 Loaded command: HELP (uncategorized)
+⏩ Skipping non-command file: index.cjs
+⏩ Skipping non-command file: index.server.js
+📂 Directory help: 1 loaded, 0 failed
+📚 Loaded command: INFO (system)
+⏩ Skipping non-command file: index.server.js
+📂 Directory info: 1 loaded, 0 failed
+📚 Loaded command: INPUT (input control)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory input: 1 loaded, 0 failed
+📚 Loaded command: JOINROOM (communication)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory joinroom: 1 loaded, 0 failed
+📚 Loaded command: LISTAGENTS (communication)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory listagents: 1 loaded, 0 failed
+📚 Loaded command: LISTROOMS (communication)
+📂 Directory listrooms: 1 loaded, 0 failed
+📚 Loaded command: LOADROOMS (communication)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory loadrooms: 1 loaded, 0 failed
+📚 Loaded command: MACRO (uncategorized)
+⏩ Skipping non-command file: index.server.js
+📂 Directory macro: 1 loaded, 0 failed
+📂 Directory markread: 0 loaded, 0 failed
+📚 Loaded command: MOVE (Mouse Control)
+⏩ Skipping non-command file: index.server.js
+📂 Directory move: 1 loaded, 0 failed
+📚 Loaded command: PREFERENCES (uncategorized)
+⏩ Skipping non-command file: index.server.js
+📂 Directory preferences: 1 loaded, 0 failed
+📚 Loaded command: PROMISE_JS (Core)
+⏩ Skipping non-command file: index.server.js
+📂 Directory promisejs: 1 loaded, 0 failed
+📚 Loaded command: RELOAD (Core)
+⏩ Skipping non-command file: index.server.js
+📂 Directory reload: 1 loaded, 0 failed
+📚 Loaded command: RESTART (uncategorized)
+⏩ Skipping non-command file: index.server.js
+📂 Directory restart: 1 loaded, 0 failed
+📚 Loaded command: SAVE_FILE (Core)
+⏩ Skipping non-command file: index.server.js
+📂 Directory savefile: 1 loaded, 0 failed
+📂 Directory .continuum: 0 loaded, 0 failed
+⏩ Skipping non-command file: ContinuonAnimator.js
+📚 Loaded command: SCREENSHOT (Core)
+⏩ Skipping non-command file: ScreenshotCommand.client.js
+⏩ Skipping non-command file: ScreenshotUtils.js
+⏩ Skipping non-command file: index.cjs
+⏩ Skipping non-command file: index.client.js
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory screenshot: 1 loaded, 0 failed
+📚 Loaded command: SHARE (Core)
+⏩ Skipping non-command file: index.cjs
+⏩ Skipping non-command file: index.server.js
+📂 Directory share: 1 loaded, 0 failed
+⏩ Skipping test directory: test
+⏩ Skipping non-command file: test-runner.cjs
+📚 Loaded command: TYPE (keyboard control)
+⏩ Skipping non-command file: index.server.js
+📂 Directory type: 1 loaded, 0 failed
+📚 Loaded command: VALIDATE_CODE (uncategorized)
+⏩ Skipping non-command file: index.server.js
+📂 Directory validatecode: 1 loaded, 0 failed
+📚 Loaded command: VALIDATE_JS (uncategorized)
+⏩ Skipping non-command file: index.server.js
+📂 Directory validatejs: 1 loaded, 0 failed
+⏩ Skipping non-command file: validation-test.cjs
+📂 Directory core: 0 loaded, 0 failed
+📂 Directory automation: 0 loaded, 0 failed
+📂 Directory browser: 0 loaded, 0 failed
+📂 Directory gaming: 0 loaded, 0 failed
+📚 Loaded 31 commands
+📦 Initializing module: Core v1.0.0
+🔍 Auto-discovering command modules...
+📦 Loading ES module: agents v1.0.0
+📦 Agents module (server) v1.0.0 initialized
+📦 Loading ES module: @continuum/browser-command v1.0.0
+📦 Browser module (server) v1.0.0 initialized
+📦 Loading ES module: browserJS v1.0.0
+📦 BrowserJS module (server) v1.0.0 initialized
+📦 Loading ES module: @continuum/chat-command v1.0.0
+📦 Chat module (server) v1.0.0 initialized
+📦 Loading ES module: clear v1.0.0
+📦 Clear module (server) v1.0.0 initialized
+📦 Loading ES module: @continuum/createroom-command v1.0.0
+📦 CreateRoom module (server) v1.0.0 initialized
+📦 Loading ES module: cursor vundefined
+📦 Loading ES module: diagnostics v1.0.0
+📦 Diagnostics module (server) v1.0.0 initialized
+📦 Loading ES module: emotion vundefined
+📦 Loading ES module: exec v1.0.0
+📦 Exec module (server) v1.0.0 initialized
+📦 Loading ES module: @continuum/filesave-command v1.0.0
+📦 FileSave module (server) v1.0.0 initialized
+📦 Loading ES module: findUser v1.0.0
+📦 FindUser module (server) v1.0.0 initialized
+📦 Loading ES module: help v1.0.0
+📦 Help module (server) v1.0.0 initialized
+📦 Loading ES module: info v1.0.0
+📦 Info module (server) v1.0.0 initialized
+📦 Loading ES module: input vundefined
+📦 Loading ES module: @continuum/joinroom-command v1.0.0
+📦 JoinRoom module (server) v1.0.0 initialized
+📦 Loading ES module: @continuum/listagents-command v1.0.0
+📦 ListAgents module (server) v1.0.0 initialized
+📦 Loading ES module: @continuum/loadrooms-command v1.0.0
+📦 LoadRooms module (server) v1.0.0 initialized
+📦 Loading ES module: macro v1.0.0
+📦 Macro module (server) v1.0.0 initialized
+📦 Loading ES module: move vundefined
+📦 Loading ES module: preferences v1.0.0
+📦 Preferences module (server) v1.0.0 initialized
+📦 Loading ES module: promiseJS v1.0.0
+📦 PromiseJS module (server) v1.0.0 initialized
+📦 Loading ES module: reload v1.0.0
+📦 Reload module (server) v1.0.0 initialized
+📦 Loading ES module: saveFile v1.0.0
+📦 SaveFile module (server) v1.0.0 initialized
+📦 Loading ES module: screenshot v1.2.0
+📦 Screenshot module (server) v1.2.0 initialized
+📦 Loading ES module: share v1.0.0
+📦 Share module (server) v1.0.0 initialized
+📦 Loading ES module: test v1.0.0
+📦 Test module (server) v1.0.0 initialized
+📦 Loading ES module: type vundefined
+📦 Loading ES module: validateCode v1.0.0
+📦 ValidateCode module (server) v1.0.0 initialized
+📦 Loading ES module: validateJS v1.0.0
+📦 ValidateJS module (server) v1.0.0 initialized
+✅ Loaded 30 ES modules: agents@1.0.0, @continuum/browser-command@1.0.0, browserJS@1.0.0, @continuum/chat-command@1.0.0, clear@1.0.0, @continuum/createroom-command@1.0.0, cursor@undefined, diagnostics@1.0.0, emotion@undefined, exec@1.0.0, @continuum/filesave-command@1.0.0, findUser@1.0.0, help@1.0.0, info@1.0.0, input@undefined, @continuum/joinroom-command@1.0.0, @continuum/listagents-command@1.0.0, @continuum/loadrooms-command@1.0.0, macro@1.0.0, move@undefined, preferences@1.0.0, promiseJS@1.0.0, reload@1.0.0, saveFile@1.0.0, screenshot@1.2.0, share@1.0.0, test@1.0.0, type@undefined, validateCode@1.0.0, validateJS@1.0.0
+✅ Loaded 0 legacy commands: 
+📋 Total commands registered: 30
+🔗 Creating FluentAPI macros with CommandRegistry...
+🔗 FluentAPI: Creating methods for 31 commands
+🔗 FluentAPI: Creating methods for 31 commands
+✨ Core module loaded with 30 commands and 2 macros
+🚀 Starting Continuum Academy...
+🌐 Web interface: http://localhost:9000
+⏰ Auto-shutdown after 30 minutes of inactivity
+🛰️ Agent portal: Run "js-send" commands while server is active
+💡 Use "continuum --daemon" for background operation
+📚 Need help? Run "continuum.help()"
+
+📚 Loading command definitions...
+📚 Loaded command: AGENTS (uncategorized)
+⏩ Skipping non-command file: index.server.js
+📂 Directory agents: 1 loaded, 0 failed
+📚 Loaded command: BROWSER (core)
+⏩ Skipping non-command file: index.server.js
+📂 Directory browser: 1 loaded, 0 failed
+📚 Loaded command: BROWSER_JS (Core)
+⏩ Skipping non-command file: index.server.js
+📂 Directory browserjs: 1 loaded, 0 failed
+📚 Loaded command: CHAT (communication)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory chat: 1 loaded, 0 failed
+📚 Loaded command: CLEAR (Core)
+⏩ Skipping non-command file: index.server.js
+📂 Directory clear: 1 loaded, 0 failed
+📚 Loaded command: CREATEROOM (communication)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory createroom: 1 loaded, 0 failed
+📚 Loaded command: CURSOR (continuon control)
+⏩ Skipping non-command file: GraphicsRenderer.js
+📂 Directory graphics: 0 loaded, 0 failed
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory cursor: 1 loaded, 0 failed
+📚 Loaded command: DIAGNOSTICS (uncategorized)
+⏩ Skipping non-command file: index.cjs
+⏩ Skipping non-command file: index.server.js
+📂 Directory diagnostics: 1 loaded, 0 failed
+📚 Loaded command: EMOTION (continuon expression)
+⏩ Skipping non-command file: emotionConfigs.cjs
+⏩ Skipping non-command file: emotionConfigs.js
+⏩ Skipping non-command file: emotionDefinition.cjs
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory emotion: 1 loaded, 0 failed
+📚 Loaded command: EXEC (Core)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory exec: 1 loaded, 0 failed
+📚 Loaded command: FILESAVE (core)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory fileSave: 1 loaded, 0 failed
+📚 Loaded command: FINDUSER (uncategorized)
+⏩ Skipping non-command file: index.cjs
+⏩ Skipping non-command file: index.server.js
+📂 Directory findUser: 1 loaded, 0 failed
+📚 Loaded command: HELP (uncategorized)
+⏩ Skipping non-command file: index.cjs
+⏩ Skipping non-command file: index.server.js
+📂 Directory help: 1 loaded, 0 failed
+📚 Loaded command: INFO (system)
+⏩ Skipping non-command file: index.server.js
+📂 Directory info: 1 loaded, 0 failed
+📚 Loaded command: INPUT (input control)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory input: 1 loaded, 0 failed
+📚 Loaded command: JOINROOM (communication)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory joinroom: 1 loaded, 0 failed
+📚 Loaded command: LISTAGENTS (communication)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory listagents: 1 loaded, 0 failed
+📚 Loaded command: LISTROOMS (communication)
+📂 Directory listrooms: 1 loaded, 0 failed
+📚 Loaded command: LOADROOMS (communication)
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory loadrooms: 1 loaded, 0 failed
+📚 Loaded command: MACRO (uncategorized)
+⏩ Skipping non-command file: index.server.js
+📂 Directory macro: 1 loaded, 0 failed
+📂 Directory markread: 0 loaded, 0 failed
+📚 Loaded command: MOVE (Mouse Control)
+⏩ Skipping non-command file: index.server.js
+📂 Directory move: 1 loaded, 0 failed
+📚 Loaded command: PREFERENCES (uncategorized)
+⏩ Skipping non-command file: index.server.js
+📂 Directory preferences: 1 loaded, 0 failed
+📚 Loaded command: PROMISE_JS (Core)
+⏩ Skipping non-command file: index.server.js
+📂 Directory promisejs: 1 loaded, 0 failed
+📚 Loaded command: RELOAD (Core)
+⏩ Skipping non-command file: index.server.js
+📂 Directory reload: 1 loaded, 0 failed
+📚 Loaded command: RESTART (uncategorized)
+⏩ Skipping non-command file: index.server.js
+📂 Directory restart: 1 loaded, 0 failed
+📚 Loaded command: SAVE_FILE (Core)
+⏩ Skipping non-command file: index.server.js
+📂 Directory savefile: 1 loaded, 0 failed
+📂 Directory .continuum: 0 loaded, 0 failed
+⏩ Skipping non-command file: ContinuonAnimator.js
+📚 Loaded command: SCREENSHOT (Core)
+⏩ Skipping non-command file: ScreenshotCommand.client.js
+⏩ Skipping non-command file: ScreenshotUtils.js
+⏩ Skipping non-command file: index.cjs
+⏩ Skipping non-command file: index.client.js
+⏩ Skipping non-command file: index.server.js
+⏩ Skipping test directory: test
+📂 Directory screenshot: 1 loaded, 0 failed
+📚 Loaded command: SHARE (Core)
+⏩ Skipping non-command file: index.cjs
+⏩ Skipping non-command file: index.server.js
+📂 Directory share: 1 loaded, 0 failed
+⏩ Skipping test directory: test
+⏩ Skipping non-command file: test-runner.cjs
+📚 Loaded command: TYPE (keyboard control)
+⏩ Skipping non-command file: index.server.js
+📂 Directory type: 1 loaded, 0 failed
+📚 Loaded command: VALIDATE_CODE (uncategorized)
+⏩ Skipping non-command file: index.server.js
+📂 Directory validatecode: 1 loaded, 0 failed
+📚 Loaded command: VALIDATE_JS (uncategorized)
+⏩ Skipping non-command file: index.server.js
+📂 Directory validatejs: 1 loaded, 0 failed
+⏩ Skipping non-command file: validation-test.cjs
+📂 Directory core: 0 loaded, 0 failed
+📂 Directory automation: 0 loaded, 0 failed
+📂 Directory browser: 0 loaded, 0 failed
+📂 Directory gaming: 0 loaded, 0 failed
+📚 Loaded 31 commands
+📖 Loaded data from academy-sessions.json
+🎓 Restored 5 Academy training sessions
+✅ Anthropic API client initialized
+✅ OpenAI API client initialized
+🔄 Merging all .continuum directories...
+📁 Scanning: /Users/joel/Development/cambrian/continuum/.continuum
+📁 Scanning: /Users/joel/Development/cambrian/continuum/.continuum
+📁 Scanning: /Users/joel/.continuum
+✅ Copied .DS_Store
+✅ Intelligently merged academy-sessions.json
+✅ Copied consolidation_plan.md
+✅ Copied continuum.log
+✅ Copied continuum.pid
+✅ Merged 134 unique entries into conversation-history.jsonl
+✅ Intelligently merged costs.json
+✅ Intelligently merged failure-analysis.json
+✅ Copied investigation_results.md
+✅ Intelligently merged manifest.json
+✅ Copied process.md
+✅ Intelligently merged session-learnings.json
+✅ Merged 3 environment variables into config.env
+✅ Intelligently merged projects.json
+🎯 Merged 14 files from 3 .continuum directories
+📚 Loaded 30 conversation messages for joel
+📝 PID: 59636 (saved to /Users/joel/Development/cambrian/continuum/.continuum/continuum.pid)
+🚀 Starting unified Continuum web console
+🌐 Unified Continuum Console: http://localhost:9000
+💬 Talk to real Claude instances
+📊 Track costs and sessions across all projects
+📁 Master project: /Users/joel/Development/cambrian/continuum
+🔍 Starting version monitoring (checking every 30s)
+🔮 Continuon Ring active
+💡 Web interface: http://localhost:9000
+📱 Browser should open automatically
+🎯 Attempting to focus existing tab...
+📁 Browser logs directory initialized: /Users/joel/Development/cambrian/continuum/.continuum/logs/browser
+🔍 Found running browsers: opera
+📱 Opening new browser tab...
+🌐 Opened with system default browser
+✅ Served JS file: /src/ui/components/AgentSelector.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/AgentSelector.js
+✅ Served JS file: /src/ui/components/SimpleAgentSelector.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/SimpleAgentSelector.js
+✅ Served JS file: /src/ui/components/StatusPill.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/StatusPill.js
+✅ Served JS file: /src/ui/components/GlassMenu.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/GlassMenu.js
+✅ Served JS file: /src/ui/components/ChatHeader.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/ChatHeader.js
+✅ Served JS file: /src/ui/components/AcademySection.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/AcademySection.js
+✅ Served JS file: /src/ui/components/ChatArea.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/ChatArea.js
+✅ Served JS file: /src/ui/continuum-api.js -> /Users/joel/Development/cambrian/continuum/src/ui/continuum-api.js
+✅ Served JS file: /src/ui/utils/ComponentLoader.js -> /Users/joel/Development/cambrian/continuum/src/ui/utils/ComponentLoader.js
+✅ Served JS file: /src/ui/components/RoomTabs.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/RoomTabs.js
+👤 User connected (Session: session_1750085376316_nrkxdhm94)
+🔮 Continuon 🟢 Ring active (1 connections)
+]0;Continuon 🟢 - Port 9000📤 SEND_TASK: Routing to GeneralAI - "A new user just connected. Give them a brief, friendly greeting and ask how you ..."
+🆕 Creating new GeneralAI session...
+🚀 Creating GeneralAI instance...
+✅ GeneralAI ready
+🔄 Calling GeneralAI with task...
+🔄 GeneralAI processing: A new user just connected. Give them a brief, frie...
+⚠️ Failed to load persona: .DS_Store
+👤 Loaded persona: fine-tune-test-1748923195291
+👤 Loaded persona: fine-tune-test-1748923308609
+⚠️ Failed to load persona: legal-advisor
+🔄 LoRA adapters loaded from .continuum/personas/persona_1748929610875/lora_adapters.json
+📊 Parameters: 917,504
+🔬 LoRA adapter weights loaded: 3584KB
+👤 Loaded persona: PatentExpert
+👤 Loaded persona: ProjectBot
+👤 Loaded persona: test-lawyer-1748922346411
+👤 Loaded persona: test-lawyer-1748922377159
+👤 Loaded persona: MultiScopeTest
+📨 RAW MESSAGE RECEIVED: {"type":"tabRegister","tabId":"1750085376385","version":"0.2.2028","url":"http://localhost:9000/","timestamp":"2025-06-16T14:49:36.385Z"}
+📋 PARSED MESSAGE TYPE: tabRegister
+📱 Tab registration: 1750085376385 (v0.2.2028)
+📨 RAW MESSAGE RECEIVED: {"type":"client_initialize","clientType":"browser","capabilities":["screenshot","dom_access","js_execution","validation"],"timestamp":1750085376392}
+📋 PARSED MESSAGE TYPE: client_initialize
+🚀 CLIENT INITIALIZATION: browser
+🌐 Creating BrowserClientConnection for session: session_1750085376316_nrkxdhm94
+✅ BrowserClientConnection created for session: session_1750085376316_nrkxdhm94
+📤 Browser client connection confirmation sent
+✅ Tab registered successfully: 1750085376385
+⚠️ Failed to load persona: .DS_Store
+👤 Loaded persona: fine-tune-test-1748923195291
+👤 Loaded persona: fine-tune-test-1748923308609
+⚠️ Failed to load persona: legal-advisor
+🔄 LoRA adapters loaded from .continuum/personas/persona_1748929610875/lora_adapters.json
+📊 Parameters: 917,504
+🔬 LoRA adapter weights loaded: 3584KB
+👤 Loaded persona: PatentExpert
+👤 Loaded persona: ProjectBot
+👤 Loaded persona: test-lawyer-1748922346411
+👤 Loaded persona: test-lawyer-1748922377159
+👤 Loaded persona: MultiScopeTest
+🔥 Auto-calling BrowserClientConnection.validate()...
+🔥 BrowserClientConnection.validate() starting...
+⏳ Waiting for browser client ready state...
+📤 Sending validation script to browser...
+✅ BrowserClientConnection validation script sent
+📊 Validation result: { success: true, message: 'Browser validation triggered' }
+🔍 Processing AI protocol...
+🎯 Total Commands Found: 0
+🔍 Scanning AI response for legacy tool commands...
+✅ GeneralAI responded: Hi Joel! Nice to meet you. I understand you're pas...
+✅ GeneralAI completed task - response length: 174 chars
+🤖 Protocol Sheriff: Validating response...
+🚨 Protocol Sheriff: VALID
+📁 Registered project: continuum (/Users/joel/Development/cambrian/continuum)
+✅ Served JS file: /src/ui/components/AgentSelector.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/AgentSelector.js
+✅ Served JS file: /src/ui/components/SimpleAgentSelector.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/SimpleAgentSelector.js
+✅ Served JS file: /src/ui/components/GlassMenu.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/GlassMenu.js
+✅ Served JS file: /src/ui/components/StatusPill.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/StatusPill.js
+✅ Served JS file: /src/ui/components/ChatHeader.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/ChatHeader.js
+✅ Served JS file: /src/ui/continuum-api.js -> /Users/joel/Development/cambrian/continuum/src/ui/continuum-api.js
+✅ Served JS file: /src/ui/components/AcademySection.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/AcademySection.js
+✅ Served JS file: /src/ui/utils/ComponentLoader.js -> /Users/joel/Development/cambrian/continuum/src/ui/utils/ComponentLoader.js
+✅ Served JS file: /src/ui/components/ChatArea.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/ChatArea.js
+✅ Served JS file: /src/ui/components/RoomTabs.js -> /Users/joel/Development/cambrian/continuum/src/ui/components/RoomTabs.js
+👤 User connected (Session: session_1750085392783_dp6hg6fpk)
+📤 SEND_TASK: Routing to GeneralAI - "A new user just connected. Give them a brief, friendly greeting and ask how you ..."
+🔄 Calling GeneralAI with task...
+🔄 GeneralAI processing: A new user just connected. Give them a brief, frie...
+⚠️ Failed to load persona: .DS_Store
+👤 Loaded persona: fine-tune-test-1748923195291
+👤 Loaded persona: fine-tune-test-1748923308609
+⚠️ Failed to load persona: legal-advisor
+🔄 LoRA adapters loaded from .continuum/personas/persona_1748929610875/lora_adapters.json
+📊 Parameters: 917,504
+🔬 LoRA adapter weights loaded: 3584KB
+👤 Loaded persona: PatentExpert
+👤 Loaded persona: ProjectBot
+👤 Loaded persona: test-lawyer-1748922346411
+👤 Loaded persona: test-lawyer-1748922377159
+👤 Loaded persona: MultiScopeTest
+📨 RAW MESSAGE RECEIVED: {"type":"tabRegister","tabId":"1750085392853","version":"0.2.2028","url":"http://localhost:9000/","timestamp":"2025-06-16T14:49:52.853Z"}
+📋 PARSED MESSAGE TYPE: tabRegister
+📱 Tab registration: 1750085392853 (v0.2.2028)
+🔄 Duplicate tab detected for http://localhost:9000/
+🎯 Focusing existing tab: 1750085376385
+🎯 Focus command sent to tab: 1750085376385
+📨 RAW MESSAGE RECEIVED: {"type":"client_initialize","clientType":"browser","capabilities":["screenshot","dom_access","js_execution","validation"],"timestamp":1750085392860}
+📋 PARSED MESSAGE TYPE: client_initialize
+🚀 CLIENT INITIALIZATION: browser
+🌐 Creating BrowserClientConnection for session: session_1750085392783_dp6hg6fpk
+✅ BrowserClientConnection created for session: session_1750085392783_dp6hg6fpk
+📤 Browser client connection confirmation sent
+⚠️ Failed to load persona: .DS_Store
+👤 Loaded persona: fine-tune-test-1748923195291
+👤 Loaded persona: fine-tune-test-1748923308609
+⚠️ Failed to load persona: legal-advisor
+🔄 LoRA adapters loaded from .continuum/personas/persona_1748929610875/lora_adapters.json
+📊 Parameters: 917,504
+🔬 LoRA adapter weights loaded: 3584KB
+👤 Loaded persona: PatentExpert
+👤 Loaded persona: ProjectBot
+👤 Loaded persona: test-lawyer-1748922346411
+👤 Loaded persona: test-lawyer-1748922377159
+👤 Loaded persona: MultiScopeTest
+🔥 Auto-calling BrowserClientConnection.validate()...
+🔥 BrowserClientConnection.validate() starting...
+⏳ Waiting for browser client ready state...
+📤 Sending validation script to browser...
+✅ BrowserClientConnection validation script sent
+📊 Validation result: { success: true, message: 'Browser validation triggered' }
+👤 User disconnected (Session: session_1750085392783_dp6hg6fpk)
+🔍 Processing AI protocol...
+🎯 Total Commands Found: 0
+🔍 Scanning AI response for legacy tool commands...
+✅ GeneralAI responded: Hi Joel! Nice to meet you. I hear you're passionat...
+✅ GeneralAI completed task - response length: 113 chars
+🤖 Protocol Sheriff: Validating response...
+🚨 Protocol Sheriff: VALID
+\n🧹 Shutting down Continuum...
