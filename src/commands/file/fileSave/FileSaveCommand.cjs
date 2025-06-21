@@ -3,7 +3,7 @@
  * Completes Screenshot command promises and handles all file operations
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 const fs = require('fs');
 const path = require('path');
 

@@ -3,7 +3,7 @@
  * Orchestrates proper multi-agent chat like Discord
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class ChatCommand extends BaseCommand {
   static getDefinition() {

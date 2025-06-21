@@ -1,4 +1,4 @@
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 /**
  * Cursor Command - Controls the continuon (green AI cursor) activation and positioning

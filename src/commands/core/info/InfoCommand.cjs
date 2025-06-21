@@ -3,7 +3,7 @@
  * Provides common functionality for help, agents, and other info commands
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../BaseCommand.cjs');
 
 class InfoCommand extends BaseCommand {
   // Common helper methods for info commands

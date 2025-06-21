@@ -3,7 +3,7 @@
  * Everyone (humans and AIs) need to know: unread counts, room status, invitations
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class LoadRoomsCommand extends BaseCommand {
   static getDefinition() {

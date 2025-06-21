@@ -3,7 +3,7 @@
  * Self-contained command for systematic feature restoration
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class RestoreCommand extends BaseCommand {
   static getDefinition() {

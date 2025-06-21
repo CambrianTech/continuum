@@ -3,7 +3,7 @@
  * Handles subscribe/unsubscribe for live event streams
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../BaseCommand.cjs');
 
 class EventCommand extends BaseCommand {
   static getDefinition() {

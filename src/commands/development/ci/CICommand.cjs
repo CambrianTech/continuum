@@ -3,7 +3,7 @@
  * Handles CI workflows, test result analysis, and automatic issue updates
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');

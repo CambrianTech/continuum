@@ -3,7 +3,7 @@
  * Like /who or /users in chat systems
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class ListAgentsCommand extends BaseCommand {
   static getDefinition() {

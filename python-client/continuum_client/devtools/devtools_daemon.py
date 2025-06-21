@@ -153,6 +153,19 @@ class DevToolsDaemon(BaseDaemon):
             except:
                 pass
             
+            # Check if localhost:9000 is already accessible before launching new browser
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get('http://localhost:9000', timeout=3) as response:
+                        if response.status == 200:
+                            print("   ✅ EXISTING CONNECTION: localhost:9000 already accessible")
+                            print("   🎯 COORDINATION: Skipping browser launch - using existing connection")
+                            self.write_log("HEALING_SKIP", f"Skipped Opera launch - localhost:9000 already accessible")
+                            return
+            except:
+                print("   ℹ️  No existing localhost:9000 connection found - proceeding with browser healing")
+            
             # Restart Opera with DevTools
             try:
                 opera_cmd = [
@@ -163,6 +176,10 @@ class DevToolsDaemon(BaseDaemon):
                     'http://localhost:9000'
                 ]
                 
+                print("🚨 BROWSER LAUNCH: devtools_daemon.py - subprocess.Popen(opera_cmd)")
+                print(f"   📍 Called from: DevToolsDaemon._heal_devtools_port()")
+                print(f"   🎯 User data dir: /tmp/opera-devtools-{port}")
+                print(f"   🔌 Debug port: {port}")
                 subprocess.Popen(opera_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.write_log("HEALING_RESTART", f"Restarted Opera with DevTools on port {port}")
                 

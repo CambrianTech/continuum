@@ -85,6 +85,13 @@ async def launch_continuum_browser(debug_mode=False):
         ]
     
     try:
+        print("🚨 BROWSER LAUNCH: ai-portal.py - subprocess.Popen(opera_cmd)")
+        print(f"   📍 Called from: launch_continuum_browser(debug_mode={debug_mode})")
+        if debug_mode:
+            print(f"   🎯 User data dir: /tmp/opera-devtools-portal")
+            print(f"   🔌 Debug port: 9222")
+        else:
+            print(f"   🎯 Normal mode (no debug)")
         subprocess.Popen(opera_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
         if debug_mode:

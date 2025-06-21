@@ -2,7 +2,7 @@
  * PreferencesCommand - Access and modify user preferences
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../BaseCommand.cjs');
 
 class PreferencesCommand extends BaseCommand {
   static getDefinition() {

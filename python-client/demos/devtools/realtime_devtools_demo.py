@@ -57,6 +57,9 @@ class RealTimeDevToolsDemo:
         ]
         
         try:
+            print("🚨 BROWSER LAUNCH: realtime_devtools_demo.py - subprocess.Popen(opera_cmd)")
+            print(f"   📍 Called from: RealtimeDevToolsDemo.launch_opera()")
+            print(f"   🎯 User data dir: /tmp/opera-devtools-realtime")
             self.opera_process = subprocess.Popen(
                 opera_cmd, 
                 stdout=subprocess.DEVNULL, 

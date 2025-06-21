@@ -3,7 +3,7 @@
  * Self-contained command for project analysis and prioritization
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class AnalyzeCommand extends BaseCommand {
   static getDefinition() {

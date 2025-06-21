@@ -3,7 +3,7 @@
  * Keeps README and docs in sync with actual command definitions
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 const fs = require('fs');
 const path = require('path');
 

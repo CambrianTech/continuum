@@ -3,7 +3,7 @@
  * Integrates with Academy-trained validation personas
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class ValidateJSCommand extends BaseCommand {
     constructor() {

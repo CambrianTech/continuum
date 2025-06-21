@@ -1,4 +1,4 @@
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 const { 
   emotionConfigs, 
   calculateEmotionProperties, 

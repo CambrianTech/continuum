@@ -180,8 +180,32 @@ class ContinuumDevToolsRecoverySystem:
         except Exception as e:
             self.log_event("WARN", f"Cleanup encountered issue: {e}")
     
+    def log_milestone(self, phase, action, details=""):
+        """Log major process milestone for UI progress tracking"""
+        timestamp = time.strftime("%H:%M:%S")
+        print(f"🎯 MILESTONE [{timestamp}] {phase}: {action}")
+        if details:
+            print(f"   ℹ️  {details}")
+
     def launch_debug_opera(self):
         """Launch Opera in debug mode with comprehensive error handling"""
+        self.log_milestone("BROWSER_LAUNCH_START", "Launching Opera in debug mode", 
+                          "Primary verification browser instance")
+        print("🚨 BROWSER LAUNCH: devtools_full_demo.py - launch_debug_opera()")
+        print(f"   📍 Called from: ContinuumDevToolsRecoverySystem")
+        
+        # Check if localhost:9000 is already accessible in existing browser
+        try:
+            import requests
+            response = requests.get('http://localhost:9000', timeout=3)
+            if response.status_code == 200:
+                print("   ✅ EXISTING CONNECTION: localhost:9000 already accessible")
+                print("   🎯 COORDINATION: Skipping new browser launch - using existing connection")
+                self.log_event("INFO", "✅ BROWSER COORDINATION: Using existing localhost:9000 connection")
+                return True
+        except:
+            print("   ℹ️  No existing localhost:9000 connection found - proceeding with browser launch")
+        
         self.log_event("INFO", "🚀 LAUNCHING OPERA IN DEBUG MODE...")
         
         opera_cmd = [
@@ -211,6 +235,8 @@ class ContinuumDevToolsRecoverySystem:
             self.log_event("INFO", f"✅ Opera launched successfully (PID: {self.opera_process.pid})")
             self.log_event("INFO", "📍 Browser URL: http://localhost:9000")
             self.log_event("INFO", "🔌 DevTools Port: 9222")
+            self.log_milestone("BROWSER_LAUNCH_SUCCESS", f"Opera running (PID: {self.opera_process.pid})", 
+                              "DevTools port 9222")
             
             # Wait for Opera to fully start
             time.sleep(6)
@@ -240,6 +266,8 @@ class ContinuumDevToolsRecoverySystem:
         
         try:
             # Start the realtime demo in background
+            print("🚨 BROWSER LAUNCH: devtools_full_demo.py - starting realtime_devtools_demo.py subprocess")
+            print(f"   📍 Called from: ContinuumDevToolsRecoverySystem.start_monitoring()")
             self.monitor_process = subprocess.Popen([
                 sys.executable, 'python-client/demos/devtools/realtime_devtools_demo.py'
             ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)

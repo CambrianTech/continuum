@@ -3,7 +3,7 @@
  * Orchestrates browser-side operations through WebSocket connections
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class BrowserCommand extends BaseCommand {
   static getDefinition() {

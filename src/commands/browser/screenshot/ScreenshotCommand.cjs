@@ -2,7 +2,7 @@
  * Screenshot Command - Singular, elegant core functionality
  */
 
-const BaseCommand = require('../../BaseCommand.cjs');
+const BaseCommand = require('../../core/BaseCommand.cjs');
 
 class ScreenshotCommand extends BaseCommand {
   static getDefinition() {
