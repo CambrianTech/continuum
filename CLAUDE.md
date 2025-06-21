@@ -491,5 +491,7 @@ IF THE COMMIT FAILS YOU BROKE THE KEY FEEDBACK MECHANSISMS AND MUST EITHER ROLLB
 (git or what you can), OR FROM MEMORY. IF YOU WRITE A LOT OF COMPLEX CODE WITHOUT CHECKING IT, 
 IT'S GONNA FAIL. THIS IS TIED TO A COMMIT HOOK SO YOU CAN CALL THE SAME SCRIPT:  /Users/joel/Development/cambrian/continuum/quick_commit_check.py
 
-Just a test
+
 # Test commit to verify single execution fix
+
+
