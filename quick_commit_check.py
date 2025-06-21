@@ -19,10 +19,10 @@ def run_verification():
     """Run verification and return result"""
     log_milestone("VERIFICATION_START", "Launching emergency verification system")
     log_milestone("BROWSER_LAUNCH", "Starting DevTools recovery browser", 
-                 "devtools_full_demo.py --emergency-only")
+                 "devtools_full_demo.py --commit-check")
     
     result = subprocess.run([
-        sys.executable, 'devtools_full_demo.py', '--emergency-only'
+        sys.executable, 'devtools_full_demo.py', '--commit-check'
     ], capture_output=True, text=True, timeout=60)
     
     if result.returncode == 0:
@@ -45,9 +45,9 @@ def create_verification_proof(screenshot_path):
     
     proof_path = proof_dir / f"ui-capture-{timestamp}.jpg"
     
-    # Create compressed proof
+    # Create high-quality proof (readable version info)
     subprocess.run([
-        'sips', '-Z', '640', '-s', 'formatOptions', '50',
+        'sips', '-Z', '1200', '-s', 'formatOptions', '80',
         str(screenshot_path), '--out', str(proof_path)
     ], capture_output=True)
     
@@ -97,7 +97,11 @@ def main():
     elapsed = time.time() - start_time
     
     if (result.returncode == 0 and 
-        'BIDIRECTIONAL FEEDBACK VERIFIED' in result.stdout):
+        'BIDIRECTIONAL FEEDBACK VERIFIED' in result.stdout and
+        'COMPLETE FEEDBACK LOOP OPERATIONAL' in result.stdout and
+        'Agent CAN execute JavaScript' in result.stdout and
+        'Agent CAN see its own console output' in result.stdout and
+        'Agent CAN capture screenshots' in result.stdout):
         
         # Find screenshot
         log_milestone("SCREENSHOT_SEARCH", "Locating verification screenshot")
