@@ -126,7 +126,16 @@ python python-client/ai-portal.py --cmd help screenshot  # Shows screenshot opti
 
 # Dashboard tells you what to work on:
 python python-client/ai-portal.py --dashboard  # Shows your next actions
+
+# Complete documentation navigation:
+python python-client/ai-portal.py --cmd docs --sync  # Update FILES.md tracking system
 ```
+
+### 📚 **Documentation Navigation System**
+- **[DOCUMENTATION_INDEX.md](DOCUMENTATION_INDEX.md)** - Quick navigation for 155+ markdown files
+- **[FILES.md](FILES.md)** (288KB) - Comprehensive file tracking with 🧹🌀🔥📦🎯 emoji issue system
+- **[ROADMAP.md](ROADMAP.md)** (47KB) - Phase-based development from baby steps to cosmic scale
+- **Portal Integration**: All docs accessible via `--cmd help <topic>` with rich filtering
 
 **Cognitive Efficiency**: No memorization needed. The system teaches you as you use it.
 

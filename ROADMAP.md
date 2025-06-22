@@ -108,7 +108,62 @@ python3 ai-portal.py --cmd chat --params '{"room": "project-alpha", "message": "
 
 ---
 
-## 🚨 PHASE 0: ARCHAEOLOGICAL RESTORATION (Current Priority)
+## 🏗️ PHASE 1.5: MODULAR ARCHITECTURE & ALPHA READINESS (Current Priority)
+
+> **🎯 Mission**: Transform chaotic codebase into elegant, modular architecture ready for alpha release  
+> **🧠 Goal**: Reduce cognitive load, eliminate god objects, enable easy contribution  
+> **📈 Outcome**: Clean architecture that showcases sophisticated AI development platform
+
+### 🛡️ **Defense-First Modular Architecture**
+
+#### **Module Sovereignty Principles**
+- [ ] **Eliminate God Objects** - Break down UIGenerator into modular components
+- [ ] **Complete Ownership** - Each module owns data, UI, logic, events, styles
+- [ ] **Clean Interfaces** - Communication via events/APIs only, no cross-cutting
+- [ ] **Autonomous Operation** - Modules function independently with graceful degradation
+
+#### **Academy Widget Modernization**
+- [ ] **Upgrade AcademySection.js** - Follow SavedPersonas.js modern pattern
+  - [ ] Extend SidebarWidget base class
+  - [ ] WebSocket CSS loading (clean separation)
+  - [ ] Async event listener setup
+  - [ ] Real-time WebSocket integration
+- [ ] **Add to WebComponentsIntegration** - Include Academy in progressive enhancement
+- [ ] **Test Modular Integration** - Verify Academy widgets connect properly
+
+#### **Self-Healing & Isolation Systems**
+- [ ] **Module Sandboxing** - Isolate community widgets/commands safely
+- [ ] **Circuit Breakers** - Module fails → system continues operating
+- [ ] **Auto-Rollback** - Bad updates → revert to last working state
+- [ ] **Health Monitoring** - Continuous module validation and reporting
+- [ ] **JTAG Enhancement** - Improve git hook validation system
+
+#### **AI Development Process Reform**
+- [ ] **Academy-Trained Personas** - Create specialized development AI personas
+  - [ ] ArchitecturePersona - Maintains design integrity
+  - [ ] DevelopmentPersona - Follows JTAG, modular patterns  
+  - [ ] UIPersona - Respects widget sovereignty
+  - [ ] QualityPersona - Enforces testing and validation
+- [ ] **AI Amnesia Protection** - Prevent chaotic AIs from breaking architecture
+- [ ] **Process Enforcement** - All AIs follow established patterns, no exceptions
+
+#### **Alpha Release Preparation**
+- [ ] **Cognitive Load Reduction** - Architecture self-explains to new developers
+- [ ] **Instant Comprehension** - Clear module boundaries and patterns
+- [ ] **Easy Contribution** - Add widgets/commands without breaking existing system
+- [ ] **Developer Experience** - Self-documenting code with minimal onboarding
+
+### 🎯 **Alpha Success Criteria**
+- ✅ **No God Objects** - Clean modular architecture throughout
+- ✅ **Module Sovereignty** - Each component fully self-contained
+- ✅ **Academy Integration** - Complete adversarial training system functional
+- ✅ **Defense Systems** - Robust isolation and self-healing infrastructure
+- ✅ **AI-Safe Development** - Academy-trained personas prevent architectural chaos
+- ✅ **Developer Delight** - New contributors understand and extend easily
+
+---
+
+## 🚨 PHASE 0: ARCHAEOLOGICAL RESTORATION (Foundation)
 
 > **🏛️ Discovery Complete**: Comprehensive archaeological investigation reveals sophisticated AI platform with **all capabilities recoverable from git history**  
 > **📋 IMPLEMENTATION PLAN**: See **`RESTORATION-STRATEGY.md`** for complete 5-phase restoration plan with exact commands
@@ -291,17 +346,81 @@ git show 72c5684:src/core/process-manager.cjs > src/core/process-manager.cjs
 
 ---
 
-## ⚡ Phase 5: Universal Lambda & Distributed Compute Marketplace
+## ⚡ Phase 5: Global Mesh Enhancement & Neuromorphic Readiness
 
-### 🌐 **Universal Command Execution System**
-- [ ] **Capability Declaration Framework**: Commands declare implementations across execution contexts
-  - Local hardware (browser, Python, server)
-  - Remote resources (supercomputers, cloud APIs, GPU clusters)
-  - Paid services (per-token, per-compute-hour, subscription tiers)
-  - Peer-to-peer networks (resource sharing economy)
-  - Specialized hardware (inference servers, quantum computers)
+> **✅ FOUNDATION BUILT**: Universal lambda system already implemented in command architecture  
+> **🧠 Efficiency Revolution**: Extend from local/cloud to global mesh + neuromorphic substrates  
+> **🌍 Global Mesh Design**: Route intelligence through humanity, not humanity through god-clusters  
+> **⚡ Memory Wall Solution**: Prepare for post-silicon architectures  
 
-### 🎯 **Implementation Marketplace Architecture**
+### 🏗️ **Current Universal Lambda Foundation (BUILT)**
+
+**✅ Already Implemented in Command System:**
+- **Universal execution contexts**: Commands execute on browser, Python, server, AWS Lambda, GPU clusters
+- **Implementation marketplace**: Commands declare cost, quality, ranking across providers
+- **Dynamic capability discovery**: Real-time `readyStatus` and performance monitoring  
+- **AI-augmented coordination**: Real-time events from distributed computation
+- **Cost-aware orchestration**: Automatic selection based on user preferences
+
+### 🌐 **Phase 5 Enhancements: Global Mesh + Neuromorphic**
+
+**Core Philosophy**: "Move the compute to the thought—not the thought to the compute"
+
+#### **Global Compute Reality Analysis**
+Research shows distributed efficiency beats centralized brute force:
+
+- **Global smartphones**: ~3B devices × 30 TOPS = ~0.09 exaOPS aggregate  
+- **Desktop/laptop fleet**: ~1.3B PCs × 10 TFLOPS = ~14 exaFLOPS aggregate
+- **Hyperscale clusters**: xAI Colossus (200k H100s) = 6-12 exaFLOPS peak
+- **The efficiency gap**: 100× more energy per operation in centralized systems
+- **Proximity advantage**: Local inference eliminates memory bottleneck penalties
+
+#### **Mesh Network Extensions**
+- [ ] **Edge Device Integration**: Extend command system to smartphones/tablets with NPU acceleration
+- [ ] **Proximity Networks**: Neighborhood mesh clusters, regional compute sharing
+- [ ] **Cultural Locality**: Route requests to culturally/linguistically appropriate nodes
+- [ ] **Mesh Resilience**: Submarine-style compartment isolation, self-healing networks
+
+#### **Neuromorphic Computing Readiness**
+Prepare for post-silicon architectures that solve the memory wall:
+
+- [ ] **Memory Wall Solution**: Weight-at-neuron storage patterns, eliminate fetch bottlenecks
+- [ ] **Spike-Based Execution**: Event-driven computation paradigms  
+- [ ] **Photonic Interconnects**: Picosecond switching, minimal heat generation
+- [ ] **Energy Optimization**: Target picojoules per operation vs GPU kilojoules
+- [ ] **Hardware Abstraction**: Unified interface for classical/neuromorphic/photonic substrates
+
+#### **Open Source Ecosystem Acceleration**
+Leverage global open source momentum (especially China's AI infrastructure investment):
+
+- [ ] **Efficiency-First Economics**: Intelligence per watt metrics over brute compute scaling
+- [ ] **Sovereign AI Support**: Cultural AI diversity, local context adaptation  
+- [ ] **Community Compute Federation**: Voluntary swarm intelligence, resource sharing economy
+- [ ] **Anti-Centralization Architecture**: Distributed dignity, no corporate chokepoints
+
+### 🤖 **Autonomous AI Development Engine**
+
+**Core Innovation**: AIs build the grander vision iteratively using feedback-driven autonomous development
+
+#### **JTAG Unit Methodology for AI Builders**
+- **Visual Validation**: Screenshots provide immediate feedback on UI/system state changes
+- **Log-Driven Development**: Server/client logs serve as stimulus-response debugging  
+- **Autonomous Testing**: `trust_the_process.py` enables complete validation cycles
+- **Self-Healing Integration**: Portal auto-recovery enables long-term autonomous development
+
+#### **Iterative Vision Building Process**
+```bash
+# AI autonomous development cycle:
+1. AI reads phase roadmap → picks enhancement target
+2. AI implements using existing command system  
+3. AI validates via screenshots + logs (JTAG unit)
+4. AI commits improvements + updates roadmap
+5. Next AI continues from enhanced foundation
+```
+
+**Result**: Continuous progression toward global mesh architecture through collaborative AI development
+
+### 🎯 **Implementation Marketplace Architecture (Enhanced)**
 - [ ] **Dynamic Capability Discovery**: Real-time `readyStatus` and performance monitoring
 - [ ] **Cost-Aware Orchestration**: Automatic selection based on user preferences (cost, privacy, quality)
 - [ ] **Quality Ranking System**: Implementation scoring (latency, reliability, UX impact)
