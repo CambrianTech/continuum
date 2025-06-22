@@ -1,0 +1,228 @@
+# Server logs from verification session
+🚨 COMMIT VERIFICATION - FAST MODE
+========================================
+[16:36:55.980] INFO: 🔍 SYSTEM DIAGNOSIS - Checking all components...
+[16:36:56.044] INFO: 📊 DIAGNOSIS COMPLETE
+[16:36:56.044] INFO:    ✅ continuum_server: OK
+[16:36:56.044] INFO:    ❌ opera_debug: FAILED
+[16:36:56.044] INFO:    ❌ devtools_port: FAILED
+[16:36:56.044] INFO:    ✅ portal_available: OK
+[16:36:56.045] INFO:    ✅ screenshots_writable: OK
+[16:36:56.045] INFO:    ✅ logs_writable: OK
+[16:36:56.045] INFO: 🧹 SMART CLEANUP - Targeting only debug Opera instances...
+[16:36:56.096] INFO: ✅ Debug Opera instances terminated (regular browsing preserved)
+🎯 MILESTONE [16:36:58] BROWSER_LAUNCH_START: Launching Opera in debug mode
+   ℹ️  Primary verification browser instance
+🚨 BROWSER LAUNCH: devtools_full_demo.py - launch_debug_opera()
+   📍 Called from: ContinuumDevToolsRecoverySystem
+   🚀 FORCING FRESH BROWSER LAUNCH: Testing working ai-portal.py approach
+   🧹 Will clean up any existing debug browsers first
+   ✅ CLEANUP: Existing debug browsers terminated
+[16:37:00.151] INFO: 🚀 LAUNCHING OPERA IN DEBUG MODE...
+[16:37:00.153] INFO: 🚀 BROWSER COMMAND: /Applications/Opera GX.app/Contents/MacOS/Opera --remote-debugging-port=9222 --disable-web-security --disable-features=TranslateUI --disable-component-update --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --no-first-run --no-default-browser-check --disable-default-apps --disable-extensions --user-data-dir=/tmp/opera-devtools-portal http://localhost:9000
+[16:37:00.153] INFO: 📍 USER DATA DIR: /tmp/opera-devtools-portal
+[16:37:00.154] INFO: 🌐 TARGET URL: http://localhost:9000
+[16:37:00.154] INFO: 🔧 DEBUG PORT: 9222
+[16:37:00.158] INFO: ✅ Opera launched successfully (PID: 71305)
+[16:37:00.159] INFO: 📍 Browser URL: http://localhost:9000
+[16:37:00.159] INFO: 🔌 DevTools Port: 9222
+🎯 MILESTONE [16:37:00] BROWSER_LAUNCH_SUCCESS: Opera running (PID: 71305)
+   ℹ️  DevTools port 9222
+[16:37:00.159] INFO: ⏳ Waiting for Opera to launch and load localhost:9000...
+[16:37:06.186] INFO: ✅ DevTools port 9222 responding (attempt 1)
+[16:37:06.190] INFO: 🔍 BROWSER TABS: Found 7 tabs
+[16:37:06.190] INFO:    📑 Tab 1:  | 
+[16:37:06.191] INFO:    📑 Tab 2: continuum | http://localhost:9000/
+[16:37:06.191] INFO: ✅ CONTINUUM LOADED: Found localhost:9000 tab!
+[16:37:06.191] INFO: 📄 TAB TITLE: continuum
+[16:37:06.191] INFO: 🎯 DEMONSTRATING COMPLETE FEEDBACK LOOP CAPABILITIES
+[16:37:06.191] INFO: ================================================================================
+[16:37:06.191] INFO: 🎯 GOAL: Prove agent can see its own changes in real-time
+[16:37:06.191] INFO: 🎯 This enables full agent debugging even when main system is down
+[16:37:06.191] INFO: ================================================================================
+[16:37:06.192] INFO: 🧪 Starting feedback demonstration with ID: AGENT_FEEDBACK_DEMO_163706191
+[16:37:06.192] INFO: 
+[16:37:06.192] INFO: 🔥 STEP 1: EXECUTE JAVASCRIPT + PROVE WE SEE OUR OWN CONSOLE OUTPUT
+[16:37:06.192] INFO: ------------------------------------------------------------
+[16:37:06.194] INFO: 🆔 GENERATED UNIQUE UUID: 383be240
+[16:37:06.194] INFO: 🕒 EXECUTION TIMESTAMP: 16:37:06.194
+[16:37:06.195] INFO: 🎯 FULL EXECUTION ID: UUID_383be240_TIME_16:37:06.194_163706191
+[16:37:06.195] INFO: 🔍 Generated 9 unique console messages to track
+[16:37:06.195] INFO: 🕒 Execution timestamp: 16:37:06.194
+[16:37:06.195] INFO: 🆔 Unique execution ID: UUID_383be240_TIME_16:37:06.194_163706191
+[16:37:06.195] INFO: 🚀 Executing JavaScript via Continuum portal with marker: AGENT_FEEDBACK_DEMO_163706191
+[16:37:06.195] INFO: 📡 Sending browser_js command through Continuum portal...
+[16:37:09.549] INFO: 📋 Portal command result: return code 0
+[16:37:09.550] INFO: 📋 Portal stdout: ✅ Command completed
+🔍 CLIENT-DIAGNOSTIC: About to write_log for command: browser_js
+🔍 CLIENT-DIAGNOSTIC: write_log called with: COMMAND: browser_js {"script": "CiAgICAgICAgLy8gQlJBTkQgTkVXIEZFRURCQUNL...
+[16:37:09.550] WARN: 📋 Portal stderr: /Users/joel/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'...
+[16:37:09.550] INFO: ✅ STEP 1 PASSED: JavaScript executed via Continuum portal
+[16:37:09.550] INFO: 
+[16:37:09.550] INFO: 🔍 STEP 2: PROVE SERVER + CLIENT FEEDBACK VISIBILITY
+[16:37:09.550] INFO: ------------------------------------------------------------
+[16:37:12.554] INFO: ⏰ JavaScript execution started at: 16:37:12.554
+[16:37:12.760] INFO: 🎯 UUID 383be240 found 28 times in portal logs
+[16:37:12.762] INFO:    📋 Exec: UUID_383be240_TIME_16:37:06.194_163706191...
+[16:37:12.762] INFO: 🎯 PROOF: These are BRAND NEW messages (timestamp >= 16:37:12)
+[16:37:12.762] INFO: 📋 UNIQUE MESSAGE VERIFICATION:
+[16:37:12.762] INFO:    ✅ start_message: 🎯 UUID_383be240_CONSOLE_LOG_STARTING...
+[16:37:12.763] INFO:    ✅ agent_message: 🤖 UUID_383be240_AGENT_MONITORING_OUTPUT...
+[16:37:12.763] INFO:    ✅ visual_message: 🎨 UUID_383be240_BACKGROUND_CHANGED...
+[16:37:12.763] INFO:    ✅ title_message: 📝 UUID_383be240_TITLE_CHANGED...
+[16:37:12.763] INFO:    ✅ indicator_message: 👁️ UUID_383be240_VISUAL_INDICATOR_ADDED...
+[16:37:12.763] INFO:    ✅ error_message: ⚠️ UUID_383be240_INTENTIONAL_ERROR_TEST...
+[16:37:12.764] INFO:    ✅ warning_message: 🟡 UUID_383be240_INTENTIONAL_WARNING_TEST...
+[16:37:12.764] INFO:    ✅ complete_message: ✅ UUID_383be240_JS_EXECUTION_COMPLETE...
+[16:37:12.764] INFO: 
+[16:37:12.764] INFO: 🔍 Checking SERVER-SIDE feedback (daemon logs)...
+[16:37:12.917] WARN: ⚠️ SERVER-SIDE: Limited daemon log activity found
+[16:37:12.918] INFO: 
+[16:37:12.918] INFO: 🔍 Checking SERVER processing evidence...
+[16:37:12.918] INFO: ✅ SERVER-SIDE: DevTools screenshot tool available
+[16:37:12.918] INFO: 
+[16:37:12.918] INFO: 🎯 FEEDBACK LOOP ANALYSIS:
+[16:37:12.919] INFO: ----------------------------------------
+[16:37:12.919] INFO: ✅ BIDIRECTIONAL FEEDBACK VERIFIED
+[16:37:12.919] INFO: ✅ SERVER-SIDE: System processes and forwards console data
+[16:37:12.919] INFO: ✅ CONSOLE CAPTURE: 9 messages captured
+[16:37:12.919] INFO: 🎯 PROOF: Agent has FULL visibility into its JavaScript execution
+[16:37:12.919] INFO: ----------------------------------------
+[16:37:12.919] INFO: 
+[16:37:12.919] INFO: 📸 STEP 3: TAKE SCREENSHOT + VERIFY CAPTURE
+[16:37:12.920] INFO: ------------------------------------------------------------
+[16:37:12.920] INFO: 📸 Taking screenshot: agent_feedback_163706191
+[16:37:16.223] INFO: 📋 Screenshot result: return code 0
+[16:37:16.224] INFO: 📋 Screenshot output: 📸 Taking DevTools screenshot: agent_feedback_163706191
+⚠️  aiohttp not available - using daemon fallback
+🚨 BROWSER LAUNCH: take_devtools_screenshot.py - fallback daemon launch
+   📍 Called from: take_devtools_screenshot.py capture_screenshot_named() - FALLBACK
+   🎯 Ports: [9222, 9223]
+🚀 Started daemon: devtools (devtools-163713)
+🔌 DevTools: Connecting to: AGENT_FEEDBACK_DEMO_163706191 - Agent Feedback Test
+🔌 DevTools: Enabling domains...
+🌐 [2025-06-22T16:37:09.513797] CLEAR: console.clear
+🌐 [2025-06-22T16:37:09.514807] LOG: 🔥 CLIENT: JavaScript executed successfully!
+🌐 [2025-06-22T16:37:09.514845] LOG: 🔥 CLIENT: Captured output: Array(10)
+🌐 [2025-06-22T16:37:09.515009] LOG: 🔥 CLIENT: Sent execution result and output to server
+🔌 DevTools: All domains enabled
+🔌 DevTools: Connected and monitoring console logs
+🔌 DevTools Daemon: Connected on port 9222
+✅ Screenshot saved: /Users/joel/Development/cambrian/continuum/.continuum/screenshots/agent_feedback_163706191.png
+🛑 Stopped daemon: devtools-163713
+
+[16:37:16.224] INFO: ✅ STEP 3 PASSED: Screenshot captured (290625 bytes)
+[16:37:16.224] INFO: 📁 Location: /Users/joel/Development/cambrian/continuum/.continuum/screenshots/agent_feedback_163706191.png
+[16:37:16.224] INFO: 🕒 Created: 16:37:16 (FRESH - just taken)
+[16:37:16.224] INFO: 
+[16:37:16.224] INFO: 👁️ STEP 4: OPENING SCREENSHOT FOR VISUAL INSPECTION
+[16:37:16.225] INFO: ------------------------------------------------------------
+[16:37:16.225] INFO: ✅ STEP 4 PASSED: Screenshot verified successfully
+[16:37:16.225] INFO: 📷 Screenshot saved: /Users/joel/Development/cambrian/continuum/.continuum/screenshots/agent_feedback_163706191.png
+[16:37:16.225] INFO: 🔍 Verification marker: AGENT_FEEDBACK_DEMO_163706191
+[16:37:16.225] ERROR: ⚠️ WARNING: Screenshot may have invalid PNG format
+[16:37:16.226] INFO: 
+[16:37:16.226] INFO: 🎯 FINAL ASSESSMENT: COMPLETE FEEDBACK LOOP
+[16:37:16.226] INFO: ================================================================================
+[16:37:16.226] INFO: 🎉 🎉 🎉 COMPLETE FEEDBACK LOOP OPERATIONAL 🎉 🎉 🎉
+[16:37:16.226] INFO: ✅ Agent CAN execute JavaScript
+[16:37:16.227] INFO: ✅ Agent CAN see its own console output
+[16:37:16.227] INFO: ✅ Agent CAN capture screenshots
+[16:37:16.227] INFO: ✅ Agent HAS full visibility into its own actions
+[16:37:16.227] INFO: 🤖 CONCLUSION: Full agent debugging capabilities CONFIRMED
+[16:37:16.227] INFO: 
+[16:37:16.227] INFO: 📊 DETAILED CAPABILITY STATUS:
+[16:37:16.227] INFO:    ✅ SUCCESS Js Execution
+[16:37:16.228] INFO:    ✅ SUCCESS Console Feedback
+[16:37:16.228] INFO:    ✅ SUCCESS Screenshot Capture
+[16:37:16.228] INFO:    ✅ SUCCESS Screenshot Verification
+[16:37:16.228] INFO:    ✅ SUCCESS Complete Feedback Loop
+[16:37:16.228] INFO: ================================================================================
+[16:37:16.228] INFO: 
+[16:37:16.228] INFO: 📋 EVIDENCE FOR MANUAL VERIFICATION:
+[16:37:16.228] INFO: ============================================================
+[16:37:16.411] INFO:    1.   🖥️  🚨 Protocol Sheriff: VALID
+[16:37:16.412] INFO:    2.   🖥️  \n🧹 Shutting down Continuum...
+[16:37:16.412] INFO:    3. 
+[16:37:16.412] INFO:    4. 📋 WEBSOCKET ACTIVITY:
+[16:37:16.412] INFO: 
+[16:37:16.413] INFO: 📁 WHERE TO FIND EVIDENCE:
+[16:37:16.413] INFO:    📸 Screenshots: /Users/joel/Development/cambrian/continuum/.continuum/screenshots
+[16:37:16.413] INFO:    📋 Recovery logs: /Users/joel/Development/cambrian/continuum/.continuum/recovery_logs
+[16:37:16.413] INFO:    🚨 Emergency data: /Users/joel/Development/cambrian/continuum/.continuum/emergency
+[16:37:16.413] INFO: 
+[16:37:16.413] INFO: 🔍 MANUAL VERIFICATION COMMANDS:
+[16:37:16.413] INFO:    python python-client/ai-portal.py --logs 10
+[16:37:16.413] INFO:    ls -la /Users/joel/Development/cambrian/continuum/.continuum/screenshots
+[16:37:16.413] INFO:    open /Users/joel/Development/cambrian/continuum/.continuum/screenshots
+[16:37:16.413] INFO: ============================================================
+[16:37:16.414] INFO: 🚨 EMERGENCY MODE: Taking final screenshot and exiting...
+[16:37:16.414] INFO: 📸 EMERGENCY SCREENSHOT via Continuum portal: emergency_emergency_mode_163716
+[16:37:19.686] INFO: 📋 Screenshot command result: return code 0
+[16:37:19.686] INFO: 📋 Screenshot stdout: 📸 Taking DevTools screenshot: emergency_emergency_mode_163716
+⚠️  aiohttp not available - using daemon fallback
+🚨 BROWSER LAUNCH: take_devtools_screenshot.py - fallback daemon launch
+   📍 Called from: take_devtools_screenshot.py capture_screenshot_named() - FALLBACK
+   🎯 Ports: [9222, 9223]
+🚀 Started daemon: devtools (devtools-163716)
+🔌 DevTools: Connecting to: AGENT_FEEDBACK_DEMO_163706191 - Agent Feedback Test
+🔌 DevTools: Enabling domains...
+🌐 [2025-06-22T16:37:09.513797] CLEAR: console.clear
+🌐 [2025-06-22T16:37:09.514807] LOG: 🔥 CLIENT: JavaScript executed successfully!
+🌐 [2025-06-22T16:37:09.514845] LOG: 🔥 CLIENT: Captured output: Array(10)
+🌐 [2025-06-22T16:37:09.515009] LOG: 🔥 CLIENT: Sent execution result and output to server
+🔌 DevTools: All domains enabled
+🔌 DevTools: Connected and monitoring console logs
+🔌 DevTools Daemon: Connected on port 9222
+✅ Screenshot saved: /Users/joel/Development/cambrian/continuum/.continuum/screenshots/emergency_emergency_mode_163716.png
+🛑 Stopped daemon: devtools-163716
+
+[16:37:19.686] INFO: 📋 Screenshot stderr: /Users/joel/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+
+[16:37:19.687] INFO: 🔍 SEARCHING FOR SCREENSHOT FILE: emergency_emergency_mode_163716.png
+[16:37:19.687] INFO:    🔍 Checking: /Users/joel/Development/cambrian/continuum/.continuum/screenshots/emergency_emergency_mode_163716.png
+[16:37:19.687] INFO: ✅ SCREENSHOT FOUND: /Users/joel/Development/cambrian/continuum/.continuum/screenshots/emergency_emergency_mode_163716.png
+[16:37:19.687] INFO: 📁 FILE SAVED TO: /Users/joel/Development/cambrian/continuum/.continuum/screenshots/emergency_emergency_mode_163716.png
+[16:37:21.692] INFO: 
+🎯 CONTINUUM DEVTOOLS RECOVERY SYSTEM - FINAL REPORT
+============================================================
+
+⏱️ Session Duration: 26 seconds
+📸 Screenshots Captured: 1
+📋 Log Entries: 0
+💓 System Health: ✅ Healthy
+
+📁 Output Locations:
+   Screenshots: /Users/joel/Development/cambrian/continuum/.continuum/screenshots
+   Recovery Logs: /Users/joel/Development/cambrian/continuum/.continuum/recovery_logs
+   Emergency Data: /Users/joel/Development/cambrian/continuum/.continuum/emergency
+
+🚨 EMERGENCY CAPABILITIES VERIFIED:
+   ✅ Standalone operation (works when Continuum is down)
+   ✅ Smart cleanup (preserves regular browsing)
+   ✅ Auto-browser launch (Opera GX with debug port)
+   ✅ Emergency screenshots (DevTools Protocol)
+   ✅ Real-time logging (browser console forwarding)
+   ✅ Self-diagnosis and recovery
+
+🎯 INTEGRATION READY:
+   Portal can enter this mode automatically when:
+   - System health degrades
+   - Feedback loops break
+   - Manual safe mode requested
+   - Agent needs emergency recovery
+
+This system ensures agents always have screenshots and logs
+for debugging, no matter what breaks in the main system.
+
+[16:37:21.692] INFO: 📄 Final report saved: /Users/joel/Development/cambrian/continuum/.continuum/emergency/final_report_20250622_163721.txt
+[16:37:21.692] INFO: 🧹 CLEANUP - Shutting down gracefully...
+[16:37:21.693] INFO: 🔧 Terminating Opera debug instance...
+[16:37:21.819] INFO: ✅ Cleanup complete
+
+⏱️ VERIFICATION TIME: 25.8s
+✅ PASSED - All systems operational
+📊 Verification markers: 5/5 | Screenshots: 45 | Logs: ✅
+🎯 SUCCESS: DevTools feedback loop verification complete
+

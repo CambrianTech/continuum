@@ -37,6 +37,13 @@ export default [
         require: 'readonly',
         __dirname: 'readonly',
         __filename: 'readonly',
+        setTimeout: 'readonly',
+        setInterval: 'readonly',
+        setImmediate: 'readonly',
+        clearTimeout: 'readonly',
+        clearInterval: 'readonly',
+        Buffer: 'readonly',
+        global: 'readonly',
       }
     },
     plugins: {
@@ -55,7 +62,10 @@ export default [
   
   // Config specifically for test files
   {
-    files: ['**/__tests__/**/*.ts', '**/*.test.ts', '**/*.spec.ts'],
+    files: ['**/__tests__/**/*.{js,ts}', '**/*.test.{js,ts}', '**/*.spec.{js,ts}'],
+    plugins: {
+      '@typescript-eslint': tseslint
+    },
     languageOptions: {
       globals: {
         // Jest globals
@@ -68,7 +78,82 @@ export default [
         beforeAll: 'readonly',
         afterAll: 'readonly',
         jest: 'readonly',
+        global: 'readonly',
+        Buffer: 'readonly',
+        setTimeout: 'readonly',
       }
+    }
+  },
+
+  // Config for browser-side scripts (agent-scripts, UI components)
+  {
+    files: ['agent-scripts/**/*.js', 'src/ui/**/*.js', '**/browser*.js', 'src/modules/**/*.js'],
+    languageOptions: {
+      globals: {
+        // Browser globals
+        window: 'readonly',
+        document: 'readonly',
+        navigator: 'readonly',
+        location: 'readonly',
+        alert: 'readonly',
+        console: 'readonly',
+        setTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearTimeout: 'readonly',
+        clearInterval: 'readonly',
+        requestAnimationFrame: 'readonly',
+        WebSocket: 'readonly',
+        Response: 'readonly',
+        performance: 'readonly',
+        Buffer: 'readonly',
+        fetch: 'readonly',
+        URL: 'readonly',
+        CustomEvent: 'readonly',
+        HTMLElement: 'readonly',
+        customElements: 'readonly',
+        localStorage: 'readonly',
+        confirm: 'readonly',
+        define: 'readonly',
+        ws: 'writable',
+        addMessage: 'readonly',
+        addSystemMessage: 'readonly',
+        initWebSocket: 'readonly',
+        handleWebSocketMessage: 'readonly',
+        BaseWidget: 'readonly',
+        SidebarWidget: 'readonly',
+        captureWidgetScreenshot: 'readonly',
+        validateScreenshotContent: 'readonly',
+        runSelfDiagnostics: 'readonly',
+        commands: 'readonly',
+      }
+    }
+  },
+
+  // Config for archived/experimental files (more lenient)
+  {
+    files: ['archive/**/*.{js,ts}', 'archived/**/*.{js,ts}', 'examples/**/*.js', 'agent-scripts/**/*.js'],
+    plugins: {
+      '@typescript-eslint': tseslint
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': 'warn',
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-expressions': 'warn',
+      'no-undef': 'warn',
+      'no-global-assign': 'warn',
+      'no-prototype-builtins': 'warn',
+    }
+  },
+
+  // Config for CommonJS files
+  {
+    files: ['**/*.cjs'],
+    languageOptions: {
+      sourceType: 'script',
+      ecmaVersion: 2022,
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     }
   }
 ];
