@@ -84,7 +84,6 @@ continuum_restart.log
 generated-*/
 *.md.backup
 *.md.test-backup
-verification/
 
 # Debug and temporary files
 debug-*.cjs

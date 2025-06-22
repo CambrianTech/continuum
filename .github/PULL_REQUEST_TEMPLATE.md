@@ -1,31 +1,46 @@
-## Description
+## Summary
 
-Please include a summary of the changes and which issue is fixed. Please also include relevant motivation and context.
+**Brief description of changes and why they're needed**
 
-Fixes # (issue)
+## Change Type & Scale
+- [ ] 🐛 Bug fix (fixes an issue)
+- [ ] ✨ New feature (adds functionality) 
+- [ ] 📚 Documentation (README, guides, comments)
+- [ ] 🔧 Configuration (ESLint, CI, build tools)
+- [ ] 🧹 Cleanup (refactor, remove dead code)
+- [ ] 💥 Breaking change (existing functionality changes)
 
-## Type of change
+**Scale:**
+- [ ] 📏 Small (<50 files changed)
+- [ ] 📐 Medium (50-200 files changed)
+- [ ] 📊 Large integration (200+ files changed)
 
-Please delete options that are not relevant.
+## Testing & Verification
+- [ ] ✅ Local testing completed
+- [ ] 🧪 `npm run lint` passes 
+- [ ] 🔍 `npm test` passes
+- [ ] 📸 Screenshot/visual verification (if UI changes)
+- [ ] 🤖 Portal commands tested: `python python-client/ai-portal.py --cmd tests`
 
-- [ ] Bug fix (non-breaking change that fixes an issue)
-- [ ] New feature (non-breaking change that adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] This change requires a documentation update
+## AI Development Notes
+- [ ] 🔄 Maintains backward compatibility with existing AI agents
+- [ ] 📋 Updated CLAUDE.md if process changes
+- [ ] 🎯 Follows modular architecture principles
+- [ ] 🚨 Emergency verification system still works
 
-## How Has This Been Tested?
+## Status & Readiness
+- [ ] 🟢 Ready to merge (all checks pass, no known issues)
+- [ ] 🟡 Merge with caution (some issues documented below)
+- [ ] 🔴 Do not merge yet (major issues need resolution)
 
-Please describe the tests that you ran to verify your changes. Provide instructions so we can reproduce.
+**Known Issues:** (if any)
+- 
 
-- [ ] Test A
-- [ ] Test B
+## Files Changed
+**List key files and why they changed**
 
-## Checklist:
+## Related Issues
+Fixes #(issue) or Relates to #(issue)
 
-- [ ] My code follows the style guidelines of this project
-- [ ] I have performed a self-review of my code
-- [ ] I have commented my code, particularly in hard-to-understand areas
-- [ ] I have made corresponding changes to the documentation
-- [ ] My changes generate no new warnings
-- [ ] I have added tests that prove my fix is effective or that my feature works
-- [ ] New and existing unit tests pass locally with my changes
+---
+**For AI Agents**: Use `python python-client/ai-portal.py --dashboard` to verify system health after merging
