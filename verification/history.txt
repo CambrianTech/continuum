@@ -30,3 +30,4 @@
 2025-06-22 18:25:10 | PASS | 26.1s | e9d910d8868f | Fix ESLint configuration and gitignore for PR cleanup | verification_e9d910d8868f
 2025-06-22 18:26:59 | PASS | 26.3s | d3a43cec9407 | Fix babel-jest dependency conflict | verification_d3a43cec9407
 2025-06-22 18:31:07 | PASS | 26.1s | e33aaeddd085 | claude broke the build | verification_e33aaeddd085
+2025-06-22 18:33:18 | PASS | 25.8s | c069bc08e08e | Fix README screenshot paths - show main interface and Academy UI | verification_c069bc08e08e
