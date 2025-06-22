@@ -170,7 +170,7 @@ continuum --agents
 ## 🎨 Beautiful AI-Created Interface
 
 ### **Main Collaboration Interface**
-![Current Continuum Interface](verification/verification_540eb3cf6cae/ui-capture.png)
+![Current Continuum Interface](docs/images/continuum-main-interface.png)
 
 **Features visible:**
 - **🤖 Multi-Agent Chat** - GeneralAI, PlannerAI, CodeAI collaboration
@@ -179,8 +179,8 @@ continuum --agents
 - **🎨 Cyberpunk Design** - Dark theme with perfect contrast
 - **📱 Teams-Style UI** - Professional chat interface
 
-### **Academy Training System (June 4th)**
-![Academy System Working](/.continuum/shared/academy-working.jpeg)
+### **Academy Training System**
+![Academy System Working](docs/images/academy-training-room.png)
 
 **Academy Features:**
 - **🎓 Training Recommendations** - AI suggesting Academy enrollment for PlanerAI
