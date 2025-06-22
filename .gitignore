@@ -63,6 +63,11 @@ packages/cli/bin/debug-*.js
 # AI system generated files and directories
 .continuum/
 .claude-pool/
+.claude-messages/
+.continuum-comm/
+.continuum-safe-backup/
+.continuum-system/
+.interactive-comm/
 *ai*.cjs
 *ai-*.cjs
 SYSTEM_ARCHITECTURE.md
@@ -77,6 +82,9 @@ continuum_restart.log
 # Generated documentation
 *-AI-*.md
 generated-*/
+*.md.backup
+*.md.test-backup
+verification/
 
 # Debug and temporary files
 debug-*.cjs
