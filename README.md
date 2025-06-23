@@ -129,23 +129,23 @@ continuum --agents    # Multi-agent development mode
 
 ### **Modular Command Bus**
 ```
-+---------------------------------------+
-|           Continuum Server            |
-|         (Orchestrator)                |
-|  +-----------------------------------+ |
-|  |         Command Bus               | |
-|  |  +--------+ +---------+ +----+ +----+ |
-|  |  |Academy | |Screenshot| |Chat| |Help| |
-|  |  |        | |         | |    | |    | |
-|  |  +--------+ +---------+ +----+ +----+ |
-|  +-----------------------------------+ |
-+---------------------------------------+
-         ^                    ^
-   +---------+          +---------+
-   |   AI    |          | Browser |
-   | Portal  |          |   UI    |
-   |(Python) |          |(WebApp) |
-   +---------+          +---------+
++------------------------------------------+
+|             Continuum Server             |
+|              (Orchestrator)              |
+| +--------------------------------------+ |
+| |             Command Bus              | |
+| | +-------+ +----------+ +----+ +----+ | |
+| | |Academy| |Screenshot| |Chat| |Help| | |
+| | |       | |          | |    | |    | | |
+| | +-------+ +----------+ +----+ +----+ | |
+| +--------------------------------------+ |
++------------------------------------------+
+       ^                  ^
+   +---------+        +---------+
+   |   AI    |        | Browser |
+   | Portal  |        |   UI    |
+   |(Python) |        |(WebApp) |
+   +---------+        +---------+
 ```
 
 ### **Design Principles**
@@ -154,6 +154,7 @@ continuum --agents    # Multi-agent development mode
 - **📡 Event Driven** - WebSocket communication, real-time updates
 - **🎯 Command Bus** - All business logic in modular server commands
 - **📚 Self-Documenting** - Help system generates live documentation
+- **🌌 API Symmetry** - Same interface for humans, AIs, personas, and sentinels ([Architecture](docs/API_SYMMETRY_ARCHITECTURE.md))
 
 ---
 
