@@ -1,0 +1,15 @@
+{
+  "name": "@continuum/webbrowse-command",
+  "version": "1.0.0",
+  "description": "Browse websites, take screenshots, and interact with web content using DevTools Protocol",
+  "main": "WebBrowseCommand.cjs",
+  "scripts": {
+    "test": "jest"
+  },
+  "keywords": ["browser", "devtools", "automation", "screenshot", "web-browsing"],
+  "timeouts": {"client": 30.0, "server": 25.0},
+  "retries": {"client": 2, "server": 1},
+  "behavior": {"client": "standard", "server": "devtools_browser"},
+  "concurrency": {"client": true, "server": false},
+  "sideEffects": ["launches_browser", "captures_screenshots", "navigates_web"]
+}
