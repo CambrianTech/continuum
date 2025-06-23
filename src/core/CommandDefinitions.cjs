@@ -268,6 +268,20 @@ class CommandDefinitions {
         params: '',
         examples: ['{}'],
         usage: 'Get current browser session status and information.'
+      },
+      
+      WEBBROWSE: {
+        category: 'Browser',
+        icon: '🌐',
+        description: 'Browse websites, take screenshots, and interact with web content using DevTools Protocol',
+        params: '{"action": "navigate|screenshot|extract|click|type|evaluate|wait|status", "url": "string", "options": {}}',
+        examples: [
+          '{"action": "navigate", "url": "https://example.com"}',
+          '{"action": "screenshot", "options": {"filename": "page.png"}}',
+          '{"action": "extract", "options": {"selector": "title", "property": "textContent"}}',
+          '{"action": "navigate", "url": "https://github.com", "options": {"screenshot": true}}'
+        ],
+        usage: 'Comprehensive web browsing with DevTools Protocol. Navigate to websites, take high-quality screenshots, extract content, interact with page elements, and execute JavaScript. Uses isolated browser instance for security.'
       }
     };
   }
