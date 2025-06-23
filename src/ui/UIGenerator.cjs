@@ -1582,16 +1582,19 @@ class UIGenerator {
                 
                 <!-- Academy Room Content -->
                 <div id="academy-room" class="room-content" style="display: none;">
-                    <!-- Academy Training Status -->
-                    <div class="academy-selector">
+                    <!-- Modern Academy Widget -->
+                    <academy-section></academy-section>
+                    
+                    <!-- Legacy Academy Training Status (for compatibility) -->
+                    <div class="academy-selector" style="display: none;">
                         <h3>Training Status</h3>
                         <div id="academy-training-list" class="academy-training-list">
                             <div class="loading">Loading training sessions...</div>
                         </div>
                     </div>
                     
-                    <!-- Academy Actions -->
-                    <div class="academy-actions" style="margin-top: 20px;">
+                    <!-- Legacy Academy Actions (hidden - replaced by academy-section) -->
+                    <div class="academy-actions" style="display: none; margin-top: 20px;">
                         <button class="academy-button" onclick="sendSheriffToAcademy()">
                             🛡️ Deploy Sheriff
                         </button>
