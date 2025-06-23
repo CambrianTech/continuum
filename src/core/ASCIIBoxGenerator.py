@@ -7,20 +7,37 @@ Designed to integrate with Continuum command system.
 """
 
 class ASCIIBoxGenerator:
-    def __init__(self):
-        self.chars = {
-            'horizontal': '─',
-            'vertical': '│', 
-            'top_left': '┌',
-            'top_right': '┐',
-            'bottom_left': '└', 
-            'bottom_right': '┘',
-            'cross': '┼',
-            'tee_top': '┬',
-            'tee_bottom': '┴',
-            'tee_left': '├',
-            'tee_right': '┤'
-        }
+    def __init__(self, ascii_safe=False):
+        if ascii_safe:
+            # ASCII-safe characters for GitHub compatibility
+            self.chars = {
+                'horizontal': '-',
+                'vertical': '|',
+                'top_left': '+',
+                'top_right': '+',
+                'bottom_left': '+',
+                'bottom_right': '+',
+                'cross': '+',
+                'tee_top': '+',
+                'tee_bottom': '+',
+                'tee_left': '+',
+                'tee_right': '+'
+            }
+        else:
+            # Unicode box-drawing characters
+            self.chars = {
+                'horizontal': '─',
+                'vertical': '│', 
+                'top_left': '┌',
+                'top_right': '┐',
+                'bottom_left': '└', 
+                'bottom_right': '┘',
+                'cross': '┼',
+                'tee_top': '┬',
+                'tee_bottom': '┴',
+                'tee_left': '├',
+                'tee_right': '┤'
+            }
     
     def generate_simple_box(self, lines, padding=1):
         """Generate a simple box with content"""
@@ -54,8 +71,8 @@ class ASCIIBoxGenerator:
         for i, step in enumerate(steps):
             lines.append(step)
             if i < len(steps) - 1:
-                lines.append('    │')
-                lines.append('    ▼')
+                lines.append('    |')
+                lines.append('    v')
         
         return self.generate_simple_box(lines, 2)
     
@@ -99,6 +116,31 @@ class ASCIIBoxGenerator:
         bottom = self.chars['bottom_left'] + self.chars['horizontal'] * (total_width + 2) + self.chars['bottom_right']
         
         return [top, header_row, separator] + data_rows + [bottom]
+    
+    def generate_command_bus_architecture_safe(self):
+        """Generate ASCII-safe command bus architecture diagram"""
+        lines = []
+        
+        # Outer container with ASCII-safe characters
+        lines.append('+---------------------------------------+')
+        lines.append('|           Continuum Server            |')
+        lines.append('|         (Orchestrator)                |')
+        lines.append('|  +-----------------------------------+ |')
+        lines.append('|  |         Command Bus               | |')
+        lines.append('|  |  +--------+ +---------+ +----+ +----+ |')
+        lines.append('|  |  |Academy | |Screenshot| |Chat| |Help| |')
+        lines.append('|  |  |        | |         | |    | |    | |')
+        lines.append('|  |  +--------+ +---------+ +----+ +----+ |')
+        lines.append('|  +-----------------------------------+ |')
+        lines.append('+---------------------------------------+')
+        lines.append('         ^                    ^')
+        lines.append('   +---------+          +---------+')
+        lines.append('   |   AI    |          | Browser |')
+        lines.append('   | Portal  |          |   UI    |')
+        lines.append('   |(Python) |          |(WebApp) |')
+        lines.append('   +---------+          +---------+')
+        
+        return lines
     
     def generate_command_bus_architecture(self):
         """Generate the Continuum command bus architecture diagram"""
@@ -146,19 +188,20 @@ class ASCIIBoxGenerator:
         return ['```' + language] + box_lines + ['```']
 
 # Continuum command integration ready
-def generate_ascii_diagram(diagram_type='simple', content=None, **kwargs):
+def generate_ascii_diagram(diagram_type='simple', content=None, ascii_safe=False, **kwargs):
     """
     Main function for Continuum command integration
     
     Args:
         diagram_type: 'simple', 'flow', 'table', 'command-bus'
         content: Content to diagram
+        ascii_safe: Use ASCII-safe characters for GitHub compatibility
         **kwargs: Additional options
     
     Returns:
         List of strings representing the ASCII diagram
     """
-    generator = ASCIIBoxGenerator()
+    generator = ASCIIBoxGenerator(ascii_safe=ascii_safe)
     
     if diagram_type == 'simple':
         return generator.generate_simple_box(content or ['Sample Text'])
@@ -169,7 +212,10 @@ def generate_ascii_diagram(diagram_type='simple', content=None, **kwargs):
         rows = kwargs.get('rows', [['Data']])
         return generator.generate_table(headers, rows)
     elif diagram_type == 'command-bus':
-        return generator.generate_command_bus_architecture()
+        if ascii_safe:
+            return generator.generate_command_bus_architecture_safe()
+        else:
+            return generator.generate_command_bus_architecture()
     else:
         return generator.generate_simple_box([f"Unknown diagram type: {diagram_type}"])
 
@@ -185,6 +231,11 @@ if __name__ == '__main__':
             diagram = generator.generate_command_bus_architecture()
             for line in diagram:
                 print(line)
+        elif command == 'command-bus-safe':
+            generator_safe = ASCIIBoxGenerator(ascii_safe=True)
+            diagram = generator_safe.generate_command_bus_architecture_safe()
+            for line in diagram:
+                print(line)
         elif command == 'simple' and len(sys.argv) > 2:
             text = sys.argv[2]
             box = generator.generate_simple_box([text])
@@ -192,7 +243,7 @@ if __name__ == '__main__':
                 print(line)
         else:
             print("ASCII Box Generator")
-            print("Usage: python ASCIIBoxGenerator.py [command-bus|simple <text>]")
+            print("Usage: python ASCIIBoxGenerator.py [command-bus|command-bus-safe|simple <text>]")
     else:
         # Demo
         demo = generator.generate_simple_box(['ASCII Box Generator', 'Core Infrastructure Tool'])
