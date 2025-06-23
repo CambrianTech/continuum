@@ -106,25 +106,25 @@ Academy.enroll('script_bot', 'diagnostic_procedures');
 **Principle**: All entities advance through the same competency framework.
 
 ### **7. Command Composition Symmetry**
-*Universal building blocks for all entities*
+*Universal building blocks with chainable fluent API*
 
 ```javascript
-// Same modular command pipeline for everyone
-const diagnostic = new CommandPipeline([
-  'screenshot',      // Universal access
-  'browser_js',      // Universal access
-  'ascii_diagram',   // Universal access
-  'file_save'        // Universal access
-]);
+// Same fluent command chaining for all entities
+const diagnostic = continuum
+  .screenshot({filename: 'baseline'})
+  .then(browser_js({script: 'inject_diagnostics.js'}))
+  .then(ascii_diagram({type: 'flow', content: ['Step 1', 'Step 2']}))
+  .then(screenshot({filename: 'after_changes'}))
+  .then(file_save({path: 'diagnostic_report.md'}));
 
-// Pipeline works for any entity type
-human.execute(diagnostic);
-ai.execute(diagnostic);  
-persona.execute(diagnostic);
-sentinel.execute(diagnostic);
+// Fluent pipeline works for any entity type
+await human.execute(diagnostic);
+await ai.execute(diagnostic);  
+await persona.execute(diagnostic);
+await sentinel.execute(diagnostic);
 ```
 
-**Principle**: Complex operations built from the same atomic commands.
+**Principle**: Complex operations built from chainable atomic commands with elegant fluent syntax.
 
 ## 🎼 Musical Harmony Analogy
 
@@ -190,31 +190,31 @@ python3 ai-portal.py --cmd spawn --params '{
 }'
 ```
 
-### **Multi-Level Diagnostic Chain**
+### **Multi-Level Diagnostic Chain with Fluent API**
 ```javascript
-// Human spawns AI coordinator
-const coordinator = await human.spawn({
-  type: 'advanced_ai',
-  task: 'comprehensive_system_diagnostic'
-});
-
-// AI spawns specialist team
-const team = await coordinator.spawnTeam([
-  {persona: 'TestingNinja', task: 'visual_regression'},
-  {persona: 'ArchitectAI', task: 'performance_analysis'},
-  {persona: 'UIDesignBot', task: 'accessibility_audit'}
-]);
-
-// Personas spawn script executors for routine tasks
-const scripts = await Promise.all(team.map(persona => 
-  persona.spawn({
-    type: 'script_executor',
-    script: `${persona.domain}_routine_checks.js`
-  })
-));
-
-// All use same result aggregation
-const results = await coordinator.aggregate([team, scripts]);
+// Human spawns AI coordinator using fluent chaining
+const results = await human
+  .spawn({type: 'advanced_ai', task: 'system_diagnostic'})
+  .then(coordinator => coordinator
+    .spawnTeam([
+      {persona: 'TestingNinja', task: 'visual_regression'},
+      {persona: 'ArchitectAI', task: 'performance_analysis'},
+      {persona: 'UIDesignBot', task: 'accessibility_audit'}
+    ])
+    .then(team => team
+      .parallel([
+        ninja => ninja.screenshot({filename: 'baseline'})
+                     .then(browser_js({script: 'regression_test.js'}))
+                     .then(screenshot({filename: 'after_test'})),
+        
+        architect => architect.diagnostics({type: 'performance'})
+                             .then(ascii_diagram({type: 'metrics_chart'})),
+        
+        designer => designer.accessibility_scan()
+                           .then(file_save({path: 'audit_report.json'}))
+      ])
+    )
+  );
 ```
 
 ## 🎯 Design Philosophy
