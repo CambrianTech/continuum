@@ -3217,6 +3217,21 @@ class UIGenerator {
             // Update Academy sidebar training list
             updateAcademySidebar(activeTraining, completed);
             
+            // Update Academy section component
+            const academySection = document.querySelector('academy-section');
+            if (academySection) {
+                academySection.updateAcademyStatus({
+                    activeTraining,
+                    completed,
+                    stats: {
+                        totalPersonas: activeTraining.length + completed.length,
+                        activeTraining: activeTraining.length,
+                        graduated: completed.filter(c => c.status === 'completed').length,
+                        failed: completed.filter(c => c.status === 'failed').length
+                    }
+                });
+            }
+            
             // Update the main academy content area with cyberpunk interface
             const academyContent = document.getElementById('academy-content');
             if (!academyContent) return;
@@ -5046,12 +5061,31 @@ Example:
             }
         }
 
+        // Initialize Academy section component
+        function initializeAcademySection() {
+            const academySection = document.querySelector('academy-section');
+            if (academySection) {
+                console.log('🎓 Initializing Academy section component');
+                
+                // Connect Academy section to existing functions
+                academySection.setOnSendSheriff(sendSheriffToAcademy);
+                academySection.setOnTrainCustom(trainCustomPersona);
+                
+                console.log('✅ Academy section component initialized');
+            } else {
+                console.warn('⚠️ Academy section element not found');
+            }
+        }
+
         // Initialize component system
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🔧 Component system initialized');
             
             // Initialize UserSelector component with glass submenu
             setTimeout(initializeUserSelector, 100); // Small delay to ensure component is registered
+            
+            // Initialize Academy section component
+            setTimeout(initializeAcademySection, 100);
             
             window.componentSystemReady = true;
             document.dispatchEvent(new CustomEvent('component-system-ready'));
