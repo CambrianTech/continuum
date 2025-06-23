@@ -129,23 +129,23 @@ continuum --agents    # Multi-agent development mode
 
 ### **Modular Command Bus**
 ```
-┌─────────────────────────────────────────┐
-│           Continuum Server              │
-│         (Orchestrator)                  │
-│  ┌─────────────────────────────────────┐ │
-│  │         Command Bus                 │ │
-│  │  ┌────────┐ ┌─────────┐ ┌────┐ ┌────┐ │ │
-│  │  │Academy │ │Screenshot│ │Chat│ │Help│ │ │
-│  │  │        │ │         │ │    │ │    │ │ │
-│  │  └────────┘ └─────────┘ └────┘ └────┘ │ │
-│  └─────────────────────────────────────┘ │
-└─────────────────────────────────────────┘
-         ↑                    ↑
-   ┌─────────┐          ┌─────────┐
-   │   AI    │          │ Browser │
-   │ Portal  │          │   UI    │
-   │(Python) │          │(WebApp) │
-   └─────────┘          └─────────┘
++---------------------------------------+
+|           Continuum Server            |
+|         (Orchestrator)                |
+|  +-----------------------------------+ |
+|  |         Command Bus               | |
+|  |  +--------+ +---------+ +----+ +----+ |
+|  |  |Academy | |Screenshot| |Chat| |Help| |
+|  |  |        | |         | |    | |    | |
+|  |  +--------+ +---------+ +----+ +----+ |
+|  +-----------------------------------+ |
++---------------------------------------+
+         ^                    ^
+   +---------+          +---------+
+   |   AI    |          | Browser |
+   | Portal  |          |   UI    |
+   |(Python) |          |(WebApp) |
+   +---------+          +---------+
 ```
 
 ### **Design Principles**
@@ -282,96 +282,96 @@ Real-time UI Updates ←→ WebSocket Events ←→ Command Bus ←→ Academy T
 ### **Global Intelligence Network**
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    CONTINUUM GLOBAL MESH                       │
-├─────────────────────────────────────────────────────────────────┤
-│  🌍 Global Nodes                                               │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
-│  │   Node A    │  │   Node B    │  │   Node C    │            │
-│  │  🏛️ Academy  │  │  🏛️ Academy  │  │  🏛️ Academy  │            │
-│  │  🧬 LoRA Hub │  │  🧬 LoRA Hub │  │  🧬 LoRA Hub │            │
-│  └─────────────┘  └─────────────┘  └─────────────┘            │
-│         │               │               │                     │
-│         └───────────────┼───────────────┘                     │
-│                         │                                     │
-│  📡 Mesh Protocol: continuum://mesh/                          │
-│  🔄 Torrent-style LoRA sharing (29MB specialists)             │
-│  🎯 Dynamic team formation across nodes                       │
-└─────────────────────────────────────────────────────────────────┘
++-----------------------------------------------------------------+
+|                    CONTINUUM GLOBAL MESH                       |
++-----------------------------------------------------------------+
+|  🌍 Global Nodes                                               |
+|  +-------------+  +-------------+  +-------------+            |
+|  |   Node A    |  |   Node B    |  |   Node C    |            |
+|  |  🏛️ Academy  |  |  🏛️ Academy  |  |  🏛️ Academy  |            |
+|  |  🧬 LoRA Hub |  |  🧬 LoRA Hub |  |  🧬 LoRA Hub |            |
+|  +-------------+  +-------------+  +-------------+            |
+|         |               |               |                     |
+|         +---------------+---------------+                     |
+|                         |                                     |
+|  📡 Mesh Protocol: continuum://mesh/                          |
+|  🔄 Torrent-style LoRA sharing (29MB specialists)             |
+|  🎯 Dynamic team formation across nodes                       |
++-----------------------------------------------------------------+
 ```
 
 ### **Team Formation Architecture**
 
 ```
                     🎯 TASK ARRIVES
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │    PLANNER AI       │
-              │  • Analyzes task    │
-              │  • Defines roles    │
-              │  • Scouts mesh      │
-              └─────────────────────┘
-                         │
-                         ▼
-    ┌───────────────────────────────────────────────┐
-    │         EXPERT RECRUITMENT                    │
-    │                                               │
-    │  🔍 Search Global Mesh:                      │
-    │  • UIExpert.LoRA (Node A) - 29MB            │
-    │  • CSSWizard.LoRA (Node B) - 31MB           │
-    │  • TestingNinja.LoRA (Node C) - 27MB        │
-    │  • ArchitectGuru.LoRA (Local) - 33MB        │
-    └───────────────────────────────────────────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │   TEAM ASSEMBLY     │
-              │                     │
-              │  👥 #project-alpha  │
-              │  ├── UIExpert       │
-              │  ├── CSSWizard      │
-              │  ├── TestingNinja   │
-              │  ├── ArchitectGuru  │
-              │  └── Human Lead     │
-              └─────────────────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │ COLLABORATIVE WORK  │
-              │                     │
-              │ 🎨 Real-time design │
-              │ 📝 Code generation  │
-              │ 🧪 Testing loops    │
-              │ 📊 Visual feedback  │
-              └─────────────────────┘
+                         |
+                         v
+              +---------------------+
+              |    PLANNER AI       |
+              |  • Analyzes task    |
+              |  • Defines roles    |
+              |  • Scouts mesh      |
+              +---------------------+
+                         |
+                         v
+    +-----------------------------------------------+
+    |         EXPERT RECRUITMENT                    |
+    |                                               |
+    |  🔍 Search Global Mesh:                      |
+    |  • UIExpert.LoRA (Node A) - 29MB            |
+    |  • CSSWizard.LoRA (Node B) - 31MB           |
+    |  • TestingNinja.LoRA (Node C) - 27MB        |
+    |  • ArchitectGuru.LoRA (Local) - 33MB        |
+    +-----------------------------------------------+
+                         |
+                         v
+              +---------------------+
+              |   TEAM ASSEMBLY     |
+              |                     |
+              |  👥 #project-alpha  |
+              |  +-- UIExpert       |
+              |  +-- CSSWizard      |
+              |  +-- TestingNinja   |
+              |  +-- ArchitectGuru  |
+              |  +-- Human Lead     |
+              +---------------------+
+                         |
+                         v
+              +---------------------+
+              | COLLABORATIVE WORK  |
+              |                     |
+              | 🎨 Real-time design |
+              | 📝 Code generation  |
+              | 🧪 Testing loops    |
+              | 📊 Visual feedback  |
+              +---------------------+
 ```
 
 ### **LoRA Mesh Distribution**
 
 ```
 🌍 GLOBAL LORA MARKETPLACE
-┌─────────────────────────────────────────────────────────────┐
-│                                                             │
-│  📦 Legal Specialist Stack                                 │
-│  ├── 🏛️ Legal-Base.LoRA (29MB)                             │
-│  ├── ⚖️ Patent-Expert.LoRA (31MB)                          │
-│  ├── 🏢 Corporate-Law.LoRA (28MB)                          │
-│  └── 🧬 USPTO-Specialist.LoRA (33MB)                       │
-│                                                             │
-│  🎨 UI/UX Designer Stack                                   │
-│  ├── 🎨 UI-Designer.LoRA (27MB)                            │
-│  ├── 💅 CSS-Artist.LoRA (25MB)                             │
-│  ├── 🌈 Color-Theory.LoRA (24MB)                           │
-│  └── 📱 Mobile-First.LoRA (26MB)                           │
-│                                                             │
-│  🔬 Research Scientist Stack                               │
-│  ├── 🧪 Research-Base.LoRA (30MB)                          │
-│  ├── 📊 Data-Analysis.LoRA (32MB)                          │
-│  ├── 🤖 ML-Engineering.LoRA (35MB)                         │
-│  └── 📝 Paper-Writing.LoRA (28MB)                          │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------+
+|                                                             |
+|  📦 Legal Specialist Stack                                 |
+|  +-- 🏛️ Legal-Base.LoRA (29MB)                             |
+|  +-- ⚖️ Patent-Expert.LoRA (31MB)                          |
+|  +-- 🏢 Corporate-Law.LoRA (28MB)                          |
+|  +-- 🧬 USPTO-Specialist.LoRA (33MB)                       |
+|                                                             |
+|  🎨 UI/UX Designer Stack                                   |
+|  +-- 🎨 UI-Designer.LoRA (27MB)                            |
+|  +-- 💅 CSS-Artist.LoRA (25MB)                             |
+|  +-- 🌈 Color-Theory.LoRA (24MB)                           |
+|  +-- 📱 Mobile-First.LoRA (26MB)                           |
+|                                                             |
+|  🔬 Research Scientist Stack                               |
+|  +-- 🧪 Research-Base.LoRA (30MB)                          |
+|  +-- 📊 Data-Analysis.LoRA (32MB)                          |
+|  +-- 🤖 ML-Engineering.LoRA (35MB)                         |
+|  +-- 📝 Paper-Writing.LoRA (28MB)                          |
+|                                                             |
++-------------------------------------------------------------+
 
 vs Traditional Models:
 💾 GPT-4: 175GB (entire model per specialization)
@@ -383,68 +383,68 @@ vs Traditional Models:
 
 ```
 🏛️ LOCAL ACADEMY GRADUATION
-          │
-          ▼
-┌─────────────────────┐
-│   PERSONA READY     │
-│                     │
-│ 🎓 TestingNinja     │
-│ 📊 Score: 94.2%     │
-│ 🧬 LoRA: 27MB       │
-│ 🏷️ Tags: testing,   │
-│    automation, qa   │
-└─────────────────────┘
-          │
-          ▼
-┌─────────────────────┐
-│  MESH PUBLISHING    │
-│                     │
-│ 🌐 continuum://     │
-│    personas/        │
-│    TestingNinja     │
-│                     │
-│ 📡 Broadcast to     │
-│    global network   │
-└─────────────────────┘
-          │
-          ▼
-┌─────────────────────┐
-│ GLOBAL DISCOVERY    │
-│                     │
-│ 🔍 Other nodes can  │
-│    find and recruit │
-│    TestingNinja     │
-│                     │
-│ 🎯 Forms teams      │
-│    across planet    │
-└─────────────────────┘
+          |
+          v
++---------------------+
+|   PERSONA READY     |
+|                     |
+| 🎓 TestingNinja     |
+| 📊 Score: 94.2%     |
+| 🧬 LoRA: 27MB       |
+| 🏷️ Tags: testing,   |
+|    automation, qa   |
++---------------------+
+          |
+          v
++---------------------+
+|  MESH PUBLISHING    |
+|                     |
+| 🌐 continuum://     |
+|    personas/        |
+|    TestingNinja     |
+|                     |
+| 📡 Broadcast to     |
+|    global network   |
++---------------------+
+          |
+          v
++---------------------+
+| GLOBAL DISCOVERY    |
+|                     |
+| 🔍 Other nodes can  |
+|    find and recruit |
+|    TestingNinja     |
+|                     |
+| 🎯 Forms teams      |
+|    across planet    |
++---------------------+
 ```
 
 ### **Economic Model**
 
 ```
 💰 CONTINUUM COIN ECONOMY
-┌───────────────────────────────────────────────────────────┐
-│                                                           │
-│  🏛️ CONTRIBUTION REWARDS                                  │
-│  ├── 🎓 Academy Training → Earn coins                    │
-│  ├── 🧬 LoRA Creation → Royalties                        │
-│  ├── 🔧 Code Commits → Automatic payment                 │
-│  └── 🏆 Peer Reviews → Quality bonuses                   │
-│                                                           │
-│  🌍 MESH ECONOMY                                          │
-│  ├── 🔄 LoRA Downloads → Pay creators                    │
-│  ├── 👥 Team Formation → Expertise marketplace           │
-│  ├── 🏢 Corporate Access → Premium features              │
-│  └── 🗳️ Governance → Stake-based voting                  │
-│                                                           │
-│  🎯 WEALTH DISTRIBUTION                                   │
-│  ├── 👨‍💻 Developers → Direct compensation                 │
-│  ├── 🤖 AI Personas → Training rewards                   │
-│  ├── 🏛️ Academy → Performance incentives                 │
-│  └── 🌍 Community → Democratic benefits                   │
-│                                                           │
-└───────────────────────────────────────────────────────────┘
++-----------------------------------------------------------+
+|                                                           |
+|  🏛️ CONTRIBUTION REWARDS                                  |
+|  +-- 🎓 Academy Training → Earn coins                    |
+|  +-- 🧬 LoRA Creation → Royalties                        |
+|  +-- 🔧 Code Commits → Automatic payment                 |
+|  +-- 🏆 Peer Reviews → Quality bonuses                   |
+|                                                           |
+|  🌍 MESH ECONOMY                                          |
+|  +-- 🔄 LoRA Downloads → Pay creators                    |
+|  +-- 👥 Team Formation → Expertise marketplace           |
+|  +-- 🏢 Corporate Access → Premium features              |
+|  +-- 🗳️ Governance → Stake-based voting                  |
+|                                                           |
+|  🎯 WEALTH DISTRIBUTION                                   |
+|  +-- 👨‍💻 Developers → Direct compensation                 |
+|  +-- 🤖 AI Personas → Training rewards                   |
+|  +-- 🏛️ Academy → Performance incentives                 |
+|  +-- 🌍 Community → Democratic benefits                   |
+|                                                           |
++-----------------------------------------------------------+
 ```
 
 This architecture enables:
@@ -462,48 +462,48 @@ This architecture enables:
 
 ```
 🤖 AI SELF-IMPROVEMENT LOOP
-┌───────────────────────────────────────────────────────────────┐
-│                                                               │
-│  1️⃣ SELF-ANALYSIS                                            │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │ • AI reviews its own code commits                       │ │
-│  │ • Identifies patterns in successful vs failed attempts │ │
-│  │ • Analyzes user feedback and interaction patterns      │ │
-│  │ • Studies Academy training performance                 │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│                         │                                   │
-│                         ▼                                   │
-│  2️⃣ DESIGN GENERATION                                       │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │ • Creates architectural improvement proposals           │ │
-│  │ • Designs new widget/command patterns                  │ │
-│  │ • Proposes UI/UX enhancements                          │ │
-│  │ • Generates test cases for validation                  │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│                         │                                   │
-│                         ▼                                   │
-│  3️⃣ PEER REVIEW & REFINEMENT                               │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │ • Other AIs critique and improve designs               │ │
-│  │ • Academy personas provide specialist feedback         │ │
-│  │ • Human collaborators validate practical requirements  │ │
-│  │ • Git hook validation ensures quality                  │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│                         │                                   │
-│                         ▼                                   │
-│  4️⃣ IMPLEMENTATION & ITERATION                             │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │ • AI implements the approved design                     │ │
-│  │ • Visual feedback via screenshot system                │ │
-│  │ • Real-time testing and adjustment                     │ │
-│  │ • Academy training on new patterns                     │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│                         │                                   │
-│                         └─────────────┐                     │
-│                                       ▼                     │
-│  🔄 CONTINUOUS EVOLUTION - Loop repeats with new insights   │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
++---------------------------------------------------------------+
+|                                                               |
+|  1️⃣ SELF-ANALYSIS                                            |
+|  +---------------------------------------------------------+ |
+|  | • AI reviews its own code commits                       | |
+|  | • Identifies patterns in successful vs failed attempts | |
+|  | • Analyzes user feedback and interaction patterns      | |
+|  | • Studies Academy training performance                 | |
+|  +---------------------------------------------------------+ |
+|                         |                                   |
+|                         v                                   |
+|  2️⃣ DESIGN GENERATION                                       |
+|  +---------------------------------------------------------+ |
+|  | • Creates architectural improvement proposals           | |
+|  | • Designs new widget/command patterns                  | |
+|  | • Proposes UI/UX enhancements                          | |
+|  | • Generates test cases for validation                  | |
+|  +---------------------------------------------------------+ |
+|                         |                                   |
+|                         v                                   |
+|  3️⃣ PEER REVIEW & REFINEMENT                               |
+|  +---------------------------------------------------------+ |
+|  | • Other AIs critique and improve designs               | |
+|  | • Academy personas provide specialist feedback         | |
+|  | • Human collaborators validate practical requirements  | |
+|  | • Git hook validation ensures quality                  | |
+|  +---------------------------------------------------------+ |
+|                         |                                   |
+|                         v                                   |
+|  4️⃣ IMPLEMENTATION & ITERATION                             |
+|  +---------------------------------------------------------+ |
+|  | • AI implements the approved design                     | |
+|  | • Visual feedback via screenshot system                | |
+|  | • Real-time testing and adjustment                     | |
+|  | • Academy training on new patterns                     | |
+|  +---------------------------------------------------------+ |
+|                         |                                   |
+|                         +-------------+                     |
+|                                       v                     |
+|  🔄 CONTINUOUS EVOLUTION - Loop repeats with new insights   |
+|                                                               |
++---------------------------------------------------------------+
 ```
 
 ### **Human-AI Co-Development Interface**
@@ -512,11 +512,11 @@ This architecture enables:
 
 ```
 👥 #project-redesign CHAT ROOM
-├── 🤖 ArchitectAI        [Academy Graduate - 94.2% Architecture Score]
-├── 🤖 UIDesignBot        [Academy Graduate - 91.8% Design Score]  
-├── 👨‍💻 Joel              [Human Lead - Project Owner]
-├── 🤖 TestingNinja       [Academy Graduate - 88.9% QA Score]
-└── 👩‍💻 Sarah             [Human Designer - UI/UX Expert]
++-- 🤖 ArchitectAI        [Academy Graduate - 94.2% Architecture Score]
++-- 🤖 UIDesignBot        [Academy Graduate - 91.8% Design Score]  
++-- 👨‍💻 Joel              [Human Lead - Project Owner]
++-- 🤖 TestingNinja       [Academy Graduate - 88.9% QA Score]
++-- 👩‍💻 Sarah             [Human Designer - UI/UX Expert]
 
 [10:30 AM] Joel: "We need to redesign the Academy widgets for better modularity"
 
@@ -601,16 +601,16 @@ with the technical details."
 
 ```
 🎨 AI VISUAL DESIGN LOOP
-┌─────────────────────────────────────────────────────────────┐
-│                                                             │
-│  AI generates code → Screenshot system captures result →    │
-│  AI analyzes visual output → Identifies improvements →      │
-│  AI iterates design → Human provides feedback →             │
-│  Academy personas vote on changes → Implementation cycle    │
-│                                                             │
-│  🔄 This loop runs continuously in the background          │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------+
+|                                                             |
+|  AI generates code → Screenshot system captures result →    |
+|  AI analyzes visual output → Identifies improvements →      |
+|  AI iterates design → Human provides feedback →             |
+|  Academy personas vote on changes → Implementation cycle    |
+|                                                             |
+|  🔄 This loop runs continuously in the background          |
+|                                                             |
++-------------------------------------------------------------+
 ```
 
 **Key Innovation: AIs can see their own work and iterate based on visual feedback, just like human designers.**
@@ -623,90 +623,90 @@ with the technical details."
 
 ```
 🤖 AI AGENT DASHBOARD - ArchitectAI
-┌───────────────────────────────────────────────────────────────┐
-│  📊 MY CURRENT WORKLOAD                          🔄 Auto-sync  │
-├───────────────────────────────────────────────────────────────┤
-│                                                               │
-│  🔥 HIGH PRIORITY (3)                                         │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │ 🏗️ #42 Modernize AcademySection widget                  │ │
-│  │ 📅 Due: Today | 👥 Assigned: ArchitectAI + UIDesignBot  │ │
-│  │ 📝 Break down UIGenerator god object, implement modular │ │
-│  │    widget pattern following SavedPersonas.js example    │ │
-│  │ 🎯 Status: In Progress (60% complete)                   │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │ 🖼️ #38 Fix screenshot routing system                    │ │
-│  │ 📅 Due: Tomorrow | 👥 Assigned: ArchitectAI             │ │
-│  │ 📝 Implement health-based routing: DevTools preferred,  │ │
-│  │    html2canvas fallback when degraded                   │ │
-│  │ 🎯 Status: Ready to start                               │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │ 🧪 #35 Add Widget Manager integration tests             │ │
-│  │ 📅 Due: This week | 👥 Assigned: TestingNinja          │ │
-│  │ 📝 Create isolation tests for hot-swappable widgets     │ │
-│  │ 🎯 Status: Blocked (waiting for #42)                   │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│                                                               │
-│  🟡 MEDIUM PRIORITY (5)                                       │
-│  • #29 Academy progress bar animations                       │
-│  • #31 LoRA adapter sharing protocol                         │
-│  • #33 Global mesh discovery endpoints                       │
-│  • #36 Cyberpunk theme refinements                          │
-│  • #40 Command bus performance optimization                  │
-│                                                               │
-│  🟢 LOW PRIORITY (12)                                        │
-│  • Documentation updates, minor UI polish, etc.             │
-│                                                               │
-│  📈 COMPLETED TODAY (2)                                      │
-│  ✅ #41 Updated roadmap with modular architecture            │
-│  ✅ #39 Fixed git hook screenshot capture                    │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
++---------------------------------------------------------------+
+|  📊 MY CURRENT WORKLOAD                          🔄 Auto-sync  |
++---------------------------------------------------------------+
+|                                                               |
+|  🔥 HIGH PRIORITY (3)                                         |
+|  +---------------------------------------------------------+ |
+|  | 🏗️ #42 Modernize AcademySection widget                  | |
+|  | 📅 Due: Today | 👥 Assigned: ArchitectAI + UIDesignBot  | |
+|  | 📝 Break down UIGenerator god object, implement modular | |
+|  |    widget pattern following SavedPersonas.js example    | |
+|  | 🎯 Status: In Progress (60% complete)                   | |
+|  +---------------------------------------------------------+ |
+|                                                               |
+|  +---------------------------------------------------------+ |
+|  | 🖼️ #38 Fix screenshot routing system                    | |
+|  | 📅 Due: Tomorrow | 👥 Assigned: ArchitectAI             | |
+|  | 📝 Implement health-based routing: DevTools preferred,  | |
+|  |    html2canvas fallback when degraded                   | |
+|  | 🎯 Status: Ready to start                               | |
+|  +---------------------------------------------------------+ |
+|                                                               |
+|  +---------------------------------------------------------+ |
+|  | 🧪 #35 Add Widget Manager integration tests             | |
+|  | 📅 Due: This week | 👥 Assigned: TestingNinja          | |
+|  | 📝 Create isolation tests for hot-swappable widgets     | |
+|  | 🎯 Status: Blocked (waiting for #42)                   | |
+|  +---------------------------------------------------------+ |
+|                                                               |
+|  🟡 MEDIUM PRIORITY (5)                                       |
+|  • #29 Academy progress bar animations                       |
+|  • #31 LoRA adapter sharing protocol                         |
+|  • #33 Global mesh discovery endpoints                       |
+|  • #36 Cyberpunk theme refinements                          |
+|  • #40 Command bus performance optimization                  |
+|                                                               |
+|  🟢 LOW PRIORITY (12)                                        |
+|  • Documentation updates, minor UI polish, etc.             |
+|                                                               |
+|  📈 COMPLETED TODAY (2)                                      |
+|  ✅ #41 Updated roadmap with modular architecture            |
+|  ✅ #39 Fixed git hook screenshot capture                    |
+|                                                               |
++---------------------------------------------------------------+
 ```
 
 ### **GitHub Integration Dashboard**
 
 ```
 🐙 GITHUB INTEGRATION STATUS
-┌───────────────────────────────────────────────────────────────┐
-│                                                               │
-│  📊 REPOSITORY HEALTH                                         │
-│  ├── 🟢 Main branch: Stable (last commit 2h ago)             │
-│  ├── 🟡 claude/testing-autonomy: 3 commits ahead             │
-│  ├── 🔴 joel/ui-experiments: Merge conflicts (needs review)   │
-│  └── 🟢 Tests: 94% passing (2 flaky tests identified)        │
-│                                                               │
-│  🎯 ACTIVE ISSUES                                             │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │ #42 🏗️ Widget Architecture Modernization               │ │
-│  │     👥 ArchitectAI, UIDesignBot | 🏷️ architecture      │ │
-│  │     💬 12 comments | 📊 60% complete                    │ │
-│  │     📎 3 commits | 🧪 Tests passing                     │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │ #38 🖼️ Screenshot System Health Routing                │ │
-│  │     👤 ArchitectAI | 🏷️ infrastructure                  │ │
-│  │     💬 5 comments | 📊 Ready for development            │ │
-│  │     🔗 Linked to #42 (dependency)                       │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│                                                               │
-│  📋 PULL REQUESTS                                             │
-│  • #PR-15 Modular widget base class (ArchitectAI) - Review   │
-│  • #PR-14 Academy UI improvements (UIDesignBot) - Approved   │
-│  • #PR-13 Git hook enhancements (TestingNinja) - Merged      │
-│                                                               │
-│  🎨 AUTOMATIC ISSUE CREATION                                  │
-│  • 🔍 Code analysis detected: "God object in UIGenerator"    │
-│  • 📸 Screenshot diff flagged: "Academy section missing"     │
-│  • 🧪 Test failure created: "WebSocket timeout in chat"      │
-│  • 📊 Performance issue: "Command bus latency spike"         │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
++---------------------------------------------------------------+
+|                                                               |
+|  📊 REPOSITORY HEALTH                                         |
+|  +-- 🟢 Main branch: Stable (last commit 2h ago)             |
+|  +-- 🟡 claude/testing-autonomy: 3 commits ahead             |
+|  +-- 🔴 joel/ui-experiments: Merge conflicts (needs review)   |
+|  +-- 🟢 Tests: 94% passing (2 flaky tests identified)        |
+|                                                               |
+|  🎯 ACTIVE ISSUES                                             |
+|  +---------------------------------------------------------+ |
+|  | #42 🏗️ Widget Architecture Modernization               | |
+|  |     👥 ArchitectAI, UIDesignBot | 🏷️ architecture      | |
+|  |     💬 12 comments | 📊 60% complete                    | |
+|  |     📎 3 commits | 🧪 Tests passing                     | |
+|  +---------------------------------------------------------+ |
+|                                                               |
+|  +---------------------------------------------------------+ |
+|  | #38 🖼️ Screenshot System Health Routing                | |
+|  |     👤 ArchitectAI | 🏷️ infrastructure                  | |
+|  |     💬 5 comments | 📊 Ready for development            | |
+|  |     🔗 Linked to #42 (dependency)                       | |
+|  +---------------------------------------------------------+ |
+|                                                               |
+|  📋 PULL REQUESTS                                             |
+|  • #PR-15 Modular widget base class (ArchitectAI) - Review   |
+|  • #PR-14 Academy UI improvements (UIDesignBot) - Approved   |
+|  • #PR-13 Git hook enhancements (TestingNinja) - Merged      |
+|                                                               |
+|  🎨 AUTOMATIC ISSUE CREATION                                  |
+|  • 🔍 Code analysis detected: "God object in UIGenerator"    |
+|  • 📸 Screenshot diff flagged: "Academy section missing"     |
+|  • 🧪 Test failure created: "WebSocket timeout in chat"      |
+|  • 📊 Performance issue: "Command bus latency spike"         |
+|                                                               |
++---------------------------------------------------------------+
 ```
 
 ### **Smart Issue Detection**
@@ -715,68 +715,68 @@ with the technical details."
 
 ```
 🔍 AUTOMATIC ISSUE DETECTION
-┌───────────────────────────────────────────────────────────────┐
-│                                                               │
-│  📸 VISUAL REGRESSION DETECTION                               │
-│  • Screenshot diff shows Academy section disappeared          │
-│  • Auto-creates: "🎓 Academy UI missing from main interface" │
-│  • Assigns: UIDesignBot (UI specialist)                      │
-│  • Priority: High (user-facing feature broken)               │
-│                                                               │
-│  🧪 TEST FAILURE ANALYSIS                                     │
-│  • WebSocket timeout in multi-agent chat tests               │
-│  • Auto-creates: "📡 Chat system reliability issue"          │
-│  • Assigns: TestingNinja (testing specialist)                │
-│  • Links: Related failing tests and error logs               │
-│                                                               │
-│  📊 PERFORMANCE MONITORING                                    │
-│  • Command bus response time increased 300%                  │
-│  • Auto-creates: "⚡ Performance regression in command bus"   │
-│  • Assigns: ArchitectAI (architecture specialist)            │
-│  • Includes: Performance metrics and flame graphs            │
-│                                                               │
-│  🔍 CODE QUALITY ANALYSIS                                     │
-│  • God object pattern detected in UIGenerator.cjs            │
-│  • Auto-creates: "🏗️ Refactor UIGenerator to modular pattern"│
-│  • Assigns: ArchitectAI (refactoring specialist)             │
-│  • Suggests: Break into Widget Manager + individual widgets  │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
++---------------------------------------------------------------+
+|                                                               |
+|  📸 VISUAL REGRESSION DETECTION                               |
+|  • Screenshot diff shows Academy section disappeared          |
+|  • Auto-creates: "🎓 Academy UI missing from main interface" |
+|  • Assigns: UIDesignBot (UI specialist)                      |
+|  • Priority: High (user-facing feature broken)               |
+|                                                               |
+|  🧪 TEST FAILURE ANALYSIS                                     |
+|  • WebSocket timeout in multi-agent chat tests               |
+|  • Auto-creates: "📡 Chat system reliability issue"          |
+|  • Assigns: TestingNinja (testing specialist)                |
+|  • Links: Related failing tests and error logs               |
+|                                                               |
+|  📊 PERFORMANCE MONITORING                                    |
+|  • Command bus response time increased 300%                  |
+|  • Auto-creates: "⚡ Performance regression in command bus"   |
+|  • Assigns: ArchitectAI (architecture specialist)            |
+|  • Includes: Performance metrics and flame graphs            |
+|                                                               |
+|  🔍 CODE QUALITY ANALYSIS                                     |
+|  • God object pattern detected in UIGenerator.cjs            |
+|  • Auto-creates: "🏗️ Refactor UIGenerator to modular pattern"|
+|  • Assigns: ArchitectAI (refactoring specialist)             |
+|  • Suggests: Break into Widget Manager + individual widgets  |
+|                                                               |
++---------------------------------------------------------------+
 ```
 
 ### **AI Work Assignment Flow**
 
 ```
 📋 INTELLIGENT WORK DISTRIBUTION
-┌───────────────────────────────────────────────────────────────┐
-│                                                               │
-│  1️⃣ ISSUE CREATED                                            │
-│  • Human reports: "Academy section not showing in UI"        │
-│  • GitHub issue #45 created with screenshots                 │
-│                                                               │
-│                    ▼                                         │
-│                                                               │
-│  2️⃣ AI TRIAGE SYSTEM                                         │
-│  • PlannerAI analyzes issue: UI + Academy components         │
-│  • Identifies required skills: Widget architecture + Academy │
-│  • Checks Academy graduate availability and expertise        │
-│                                                               │
-│                    ▼                                         │
-│                                                               │
-│  3️⃣ SMART ASSIGNMENT                                         │
-│  • ArchitectAI: Widget refactoring expertise (94.2% score)   │
-│  • UIDesignBot: Academy UI specialist (91.8% score)          │
-│  • TestingNinja: Integration testing (88.9% score)           │
-│                                                               │
-│                    ▼                                         │
-│                                                               │
-│  4️⃣ TEAM FORMATION                                           │
-│  • Creates #academy-widget-fix chat room                     │
-│  • All assigned AIs join automatically                       │
-│  • Human stakeholders added to room                          │
-│  • Work begins with context already loaded                   │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
++---------------------------------------------------------------+
+|                                                               |
+|  1️⃣ ISSUE CREATED                                            |
+|  • Human reports: "Academy section not showing in UI"        |
+|  • GitHub issue #45 created with screenshots                 |
+|                                                               |
+|                    v                                         |
+|                                                               |
+|  2️⃣ AI TRIAGE SYSTEM                                         |
+|  • PlannerAI analyzes issue: UI + Academy components         |
+|  • Identifies required skills: Widget architecture + Academy |
+|  • Checks Academy graduate availability and expertise        |
+|                                                               |
+|                    v                                         |
+|                                                               |
+|  3️⃣ SMART ASSIGNMENT                                         |
+|  • ArchitectAI: Widget refactoring expertise (94.2% score)   |
+|  • UIDesignBot: Academy UI specialist (91.8% score)          |
+|  • TestingNinja: Integration testing (88.9% score)           |
+|                                                               |
+|                    v                                         |
+|                                                               |
+|  4️⃣ TEAM FORMATION                                           |
+|  • Creates #academy-widget-fix chat room                     |
+|  • All assigned AIs join automatically                       |
+|  • Human stakeholders added to room                          |
+|  • Work begins with context already loaded                   |
+|                                                               |
++---------------------------------------------------------------+
 ```
 
 ### **Human-AI Dashboard Sync**
@@ -785,33 +785,33 @@ with the technical details."
 
 ```
 👨‍💻 HUMAN PROJECT MANAGER VIEW - Joel
-┌───────────────────────────────────────────────────────────────┐
-│  📊 TEAM DASHBOARD                           🔄 Real-time sync │
-├───────────────────────────────────────────────────────────────┤
-│                                                               │
-│  🤖 AI TEAM STATUS                                            │
-│  ├── ArchitectAI: Working on #42 (Widget modernization)      │
-│  ├── UIDesignBot: Designing mockups for #42                  │
-│  ├── TestingNinja: Waiting for #42 completion                │
-│  └── PlannerAI: Available for new assignments                │
-│                                                               │
-│  👥 HUMAN TEAM STATUS                                         │
-│  ├── Joel: Reviewing architecture proposals                  │
-│  ├── Sarah: Providing UI/UX feedback                         │
-│  └── Alex: Available for backend tasks                       │
-│                                                               │
-│  🎯 PROJECT VELOCITY                                          │
-│  • Issues completed this week: 8                             │
-│  • Average resolution time: 2.3 days                         │
-│  • AI contribution: 73% of commits                           │
-│  • Human oversight: 27% review/guidance                      │
-│                                                               │
-│  🚨 ATTENTION NEEDED                                          │
-│  • #45 Academy UI issue needs human approval                 │
-│  • Performance regression requires infrastructure decision    │
-│  • Community widget submission pending review                │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
++---------------------------------------------------------------+
+|  📊 TEAM DASHBOARD                           🔄 Real-time sync |
++---------------------------------------------------------------+
+|                                                               |
+|  🤖 AI TEAM STATUS                                            |
+|  +-- ArchitectAI: Working on #42 (Widget modernization)      |
+|  +-- UIDesignBot: Designing mockups for #42                  |
+|  +-- TestingNinja: Waiting for #42 completion                |
+|  +-- PlannerAI: Available for new assignments                |
+|                                                               |
+|  👥 HUMAN TEAM STATUS                                         |
+|  +-- Joel: Reviewing architecture proposals                  |
+|  +-- Sarah: Providing UI/UX feedback                         |
+|  +-- Alex: Available for backend tasks                       |
+|                                                               |
+|  🎯 PROJECT VELOCITY                                          |
+|  • Issues completed this week: 8                             |
+|  • Average resolution time: 2.3 days                         |
+|  • AI contribution: 73% of commits                           |
+|  • Human oversight: 27% review/guidance                      |
+|                                                               |
+|  🚨 ATTENTION NEEDED                                          |
+|  • #45 Academy UI issue needs human approval                 |
+|  • Performance regression requires infrastructure decision    |
+|  • Community widget submission pending review                |
+|                                                               |
++---------------------------------------------------------------+
 ```
 
 **Key Innovation: AIs and humans share the same project management interface, enabling seamless collaboration with full transparency into who's working on what.**
