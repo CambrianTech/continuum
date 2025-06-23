@@ -1,4 +1,15 @@
-# 🌌 Continuum - AI Workforce Construction Platform
+# 🌌 Continuum - AI Academy Platform
+
+<div align="center">
+
+**🚀 The world's first AI Academy where artificial intelligences train each other**
+
+[![Multi-Agent](https://img.shields.io/badge/Multi--Agent-Chat-blue)](http://localhost:9000)
+[![AI-Built](https://img.shields.io/badge/100%25-AI--Built-green)](docs/AI_PORTAL_ARCHITECTURE.md)
+[![LoRA](https://img.shields.io/badge/LoRA-190%2C735x_Efficient-purple)](docs/ACADEMY_ARCHITECTURE.md)
+[![Academy](https://img.shields.io/badge/Academy-Training-orange)](docs/PHASE_OMEGA.md)
+
+</div>
 
 > 🤖 **100% AI-PROGRAMMED** - This entire platform is coded by AIs to prove AI development capabilities  
 > 🎓 **Academy System**: Where AIs train other AIs through adversarial competition  
@@ -78,26 +89,38 @@
 
 ## 🚀 Quick Start
 
-### For AI Agents (Primary Interface)
+### 🎮 **Try It Live** (60 seconds)
 ```bash
-# Essential AI portal commands
-python3 python-client/ai-portal.py --cmd help
-python3 python-client/ai-portal.py --cmd workspace
-python3 python-client/ai-portal.py --cmd academy --help
+# 1. Start the Academy interface
+node continuum.cjs
+
+# 2. Open browser to http://localhost:9000
+# See multi-agent chat, Academy training, cost tracking
+
+# 3. Test AI portal commands
+python3 python-client/ai-portal.py --dashboard
+```
+
+### 🤖 **For AI Agents** (Primary Interface)
+```bash
+# Essential commands - everything self-documenting
+python3 python-client/ai-portal.py --dashboard    # Your mission control
+python3 python-client/ai-portal.py --cmd help     # All available commands
+python3 python-client/ai-portal.py --cmd academy  # Train new AI personas
 
 # Multi-agent collaboration
 python3 python-client/ai-portal.py --cmd createRoom --params '{"name": "Project"}'
 python3 python-client/ai-portal.py --cmd chat --params '{"message": "Hello team"}'
 ```
 
-### For Developers
+### 👨‍💻 **For Developers**
 ```bash
-# Install git hooks (required)
+# Install JTAG debugging system (required)
 bash scripts/install-git-hooks.sh
 
-# Start the system
-continuum --help
-continuum --agents
+# Start the full system
+continuum --help      # See all options
+continuum --agents    # Multi-agent development mode
 ```
 
 ---
@@ -111,17 +134,17 @@ continuum --agents
 │         (Orchestrator)                  │
 │  ┌─────────────────────────────────────┐ │
 │  │         Command Bus                 │ │
-│  │  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐  │ │
-│  │  │Academy│Screenshot│Chat│Help │  │ │ 
-│  │  │     │ │     │ │   │ │     │  │ │
-│  │  └─────┘ └─────┘ └─────┘ └─────┘  │ │
+│  │  ┌────────┐ ┌─────────┐ ┌────┐ ┌────┐ │ │
+│  │  │Academy │ │Screenshot│ │Chat│ │Help│ │ │
+│  │  │        │ │         │ │    │ │    │ │ │
+│  │  └────────┘ └─────────┘ └────┘ └────┘ │ │
 │  └─────────────────────────────────────┘ │
 └─────────────────────────────────────────┘
          ↑                    ↑
    ┌─────────┐          ┌─────────┐
-   │ AI      │          │Browser  │
+   │   AI    │          │ Browser │
    │ Portal  │          │   UI    │
-   │ (Python)│          │(WebApp) │
+   │(Python) │          │(WebApp) │
    └─────────┘          └─────────┘
 ```
 
@@ -194,6 +217,27 @@ continuum --agents
 - **📊 Academy Scores** - Performance metrics and graduation status
 - **🔄 Training Progress** - Real-time updates on AI training sessions
 - **🎯 Specialization System** - Protocol enforcement, testing, analysis roles
+
+---
+
+## 💡 **See It In Action**
+
+```bash
+# Watch AIs collaborate in real-time
+python3 python-client/ai-portal.py --cmd createRoom --params '{"name": "Demo"}'
+
+# See Academy training recommendations
+python3 python-client/ai-portal.py --cmd academy
+
+# Capture live screenshot of the interface
+python3 python-client/ai-portal.py --cmd screenshot --filename demo.png
+```
+
+**What you'll see:**
+- 🤖 **Multi-agent chat** with cost tracking
+- 🎓 **Academy recommendations** for AI training
+- 📊 **Real-time metrics** and specialization scores
+- 🎨 **Beautiful cyberpunk interface** with smooth animations
 
 ### **Widget Development Showcase**
 
