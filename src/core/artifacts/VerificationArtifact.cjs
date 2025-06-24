@@ -199,6 +199,29 @@ class VerificationArtifact extends BaseArtifact {
     }
 
     /**
+     * Create latest symlink in artifact directory structure
+     * Points .continuum/artifacts/verification/latest -> current verification artifact
+     */
+    async createLatestSymlink() {
+        const artifactTypeDir = path.join('.continuum/artifacts', this.type);
+        const latestLink = path.join(artifactTypeDir, 'latest');
+        
+        // Ensure artifact type directory exists
+        await fs.promises.mkdir(artifactTypeDir, { recursive: true });
+        
+        // Remove existing symlink if present
+        try {
+            await fs.promises.unlink(latestLink);
+        } catch (error) {
+            // Ignore if symlink doesn't exist
+        }
+        
+        // Create new symlink pointing to our artifact
+        const relativePath = path.relative(artifactTypeDir, this.artifactPath);
+        await fs.promises.symlink(relativePath, latestLink);
+    }
+
+    /**
      * Create legacy symlink for backward compatibility
      * Points verification/latest -> current verification artifact
      */
