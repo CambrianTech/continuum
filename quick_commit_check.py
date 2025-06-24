@@ -68,7 +68,8 @@ async function createVerificationArtifact() {{
     // Save basic structure
     await artifact.saveVerificationData();
     
-    // Create legacy compatibility symlink
+    // Create latest symlinks (both modern and legacy)
+    await artifact.createLatestSymlink();
     await artifact.createLegacySymlink();
     
     // Output artifact path for Python to use
