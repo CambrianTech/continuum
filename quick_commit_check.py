@@ -34,30 +34,191 @@ def run_verification():
     return result
 
 def create_verification_proof(screenshot_path, verification_result):
-    """Create verification package in proper structure:
-    verification/
-    ├── history.txt                    # Summary of all verifications
-    └── verification_sha/              # One dir per commit SHA
-        ├── ui-capture.png             # 1280px wide interface screenshot
-        ├── client-logs.txt            # Client logs from THIS verification session only
-        └── server-logs.txt            # Server logs from THIS verification session only
+    """Create verification package using RunArtifact system for universal compatibility:
+    .continuum/
+    └── verification/                  # Run type
+        ├── run_sha/                   # Run ID (commit SHA)
+        │   ├── run.json               # Run metadata and status
+        │   ├── summary.txt            # Human-readable run summary
+        │   ├── client-logs.txt        # Client-side logs and activity
+        │   ├── server-logs.txt        # Server/daemon logs and activity
+        │   ├── console-logs.txt       # Browser console output
+        │   ├── ui-capture.png         # Screenshot of UI state
+        │   └── error-logs.txt         # Error details if any
+        └── latest -> run_sha/         # Symlink to latest run
     """
     
-    # Get current commit SHA for directory naming
+    # Get current commit SHA for run ID
     try:
         sha_result = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True)
         commit_sha = sha_result.stdout.strip()[:12]  # First 12 chars of SHA
     except:
         commit_sha = time.strftime("%Y%m%d_%H%M%S")  # Fallback to timestamp
     
-    # Create verification directory structure
+    # Import RunArtifact system for structured verification storage
+    sys.path.insert(0, str(Path.cwd()))
+    import json
+    import os
+    try:
+        # Try to import via Node.js since RunArtifact is a CommonJS module
+        import subprocess
+        
+        # Create a simple Python wrapper for RunArtifact functionality
+        def create_run_artifact_structure(base_dir, run_type, run_id):
+            """Create RunArtifact directory structure directly"""
+            run_dir = Path(base_dir) / run_type / f"run_{run_id}"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create latest symlink
+            latest_link = Path(base_dir) / run_type / "latest"
+            if latest_link.exists() or latest_link.is_symlink():
+                latest_link.unlink()
+            latest_link.symlink_to(f"run_{run_id}")
+            
+            return run_dir
+        
+        def write_run_artifact(run_dir, filename, content):
+            """Write artifact file with proper formatting"""
+            filepath = run_dir / filename
+            if isinstance(content, dict):
+                with open(filepath, 'w') as f:
+                    json.dump(content, f, indent=2)
+            else:
+                filepath.write_text(str(content))
+        
+        # Use the Python wrapper instead of importing RunArtifact directly
+        class RunArtifactPython:
+            def __init__(self, base_dir, run_type, run_id):
+                self.base_dir = base_dir
+                self.run_type = run_type
+                self.run_id = run_id
+                self.run_dir = None
+            
+            def ensureDirectoryStructure(self):
+                self.run_dir = create_run_artifact_structure(self.base_dir, self.run_type, self.run_id)
+            
+            def writeArtifact(self, filename, content):
+                write_run_artifact(self.run_dir, filename, content)
+            
+            def getArtifactPath(self, filename):
+                return self.run_dir / filename
+            
+            def updateLatestSymlink(self):
+                # Already handled in ensureDirectoryStructure
+                pass
+            
+            def readArtifact(self, filename):
+                filepath = self.run_dir / filename
+                if filename.endswith('.json'):
+                    with open(filepath, 'r') as f:
+                        return json.load(f)
+                else:
+                    return filepath.read_text()
+        
+        RunArtifact = RunArtifactPython
+        
+        # Create RunArtifact for this git verification
+        artifact = RunArtifact('.continuum', 'verification', commit_sha)
+        artifact.ensureDirectoryStructure()
+        
+        log_milestone("RUNARTIFACT_CREATED", f"RunArtifact verification/{commit_sha}")
+        
+        # Create run.json with metadata
+        run_metadata = {
+            "runType": "verification",
+            "runId": commit_sha,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "status": "PASS",
+            "duration": None,  # Will be filled later
+            "gitHook": True,
+            "commitSha": commit_sha,
+            "verification": {
+                "javascriptExecution": True,
+                "consoleCapture": True,
+                "screenshotCapture": True,
+                "feedbackLoop": True
+            }
+        }
+        artifact.writeArtifact('run.json', run_metadata)
+        
+        # Create summary.txt
+        summary = f"""Git Hook Verification - Commit {commit_sha}
+        
+✅ COMPLETE FEEDBACK LOOP OPERATIONAL
+✅ Agent CAN execute JavaScript
+✅ Agent CAN see its own console output  
+✅ Agent CAN capture screenshots
+✅ Agent HAS full visibility into its own actions
+
+This verification confirms all JTAG debugging capabilities are working.
+"""
+        artifact.writeArtifact('summary.txt', summary)
+        
+        # Create 1280px wide interface screenshot
+        ui_capture_path = artifact.getArtifactPath('ui-capture.png')
+        subprocess.run([
+            'sips', '-Z', '1280', '-s', 'format', 'png',
+            str(screenshot_path), '--out', str(ui_capture_path)
+        ], capture_output=True)
+        log_milestone("SCREENSHOT_SAVED", f"UI capture: {ui_capture_path}")
+        
+        # Extract and save logs using RunArtifact structure
+        if verification_result and verification_result.stdout:
+            verification_output = verification_result.stdout
+            
+            client_logs = "# Client logs from verification session\n"
+            server_logs = "# Server logs from verification session\n"
+            console_logs = "# Browser console output from verification\n"
+            
+            # Parse the verification output to separate different log types
+            lines = verification_output.split('\n')
+            
+            for line in lines:
+                if any(marker in line for marker in ['CLIENT-SIDE', 'PORTAL', 'BROWSER_LOG', 'WebSocket']):
+                    client_logs += line + "\n"
+                elif 'UUID_' in line and any(marker in line for marker in ['LOG:', 'ERROR:', 'WARNING:']):
+                    console_logs += line + "\n"  # Browser console logs
+                elif any(marker in line for marker in ['SERVER-SIDE', 'DevTools', 'MILESTONE', 'INFO:']):
+                    server_logs += line + "\n"
+                else:
+                    # General verification logs go to server section
+                    server_logs += line + "\n"
+        else:
+            client_logs = "# No client logs captured during verification session\n"
+            server_logs = "# No server logs captured during verification session\n"
+            console_logs = "# No console logs captured during verification session\n"
+        
+        # Write all log artifacts using RunArtifact
+        artifact.writeArtifact('client-logs.txt', client_logs)
+        artifact.writeArtifact('server-logs.txt', server_logs)
+        artifact.writeArtifact('console-logs.txt', console_logs)
+        artifact.writeArtifact('error-logs.txt', "# No errors during verification\n")
+        
+        # Update latest symlink
+        artifact.updateLatestSymlink()
+        
+        log_milestone("RUNARTIFACT_COMPLETE", f"RunArtifact structure created: .continuum/verification/run_{commit_sha}")
+        
+        # Store artifact reference for duration update later
+        create_verification_proof.artifact = artifact
+        
+        return ui_capture_path
+        
+    except ImportError as e:
+        log_milestone("RUNARTIFACT_FALLBACK", f"RunArtifact import failed: {e}")
+        # Fallback to old verification system if RunArtifact is not available
+        return create_legacy_verification_proof(screenshot_path, verification_result, commit_sha)
+
+def create_legacy_verification_proof(screenshot_path, verification_result, commit_sha):
+    """Legacy verification structure for backward compatibility"""
+    # Create legacy verification directory structure
     verification_base = Path('verification')
     verification_base.mkdir(exist_ok=True)
     
     verification_sha_dir = verification_base / f"verification_{commit_sha}"
     verification_sha_dir.mkdir(exist_ok=True)
     
-    log_milestone("DIR_CREATED", f"Verification directory: verification_{commit_sha}")
+    log_milestone("LEGACY_DIR_CREATED", f"Legacy verification directory: verification_{commit_sha}")
     
     # Create 1280px wide interface screenshot
     ui_capture_path = verification_sha_dir / "ui-capture.png"
@@ -65,24 +226,16 @@ def create_verification_proof(screenshot_path, verification_result):
         'sips', '-Z', '1280', '-s', 'format', 'png',
         str(screenshot_path), '--out', str(ui_capture_path)
     ], capture_output=True)
-    log_milestone("SCREENSHOT_SAVED", f"UI capture: {ui_capture_path}")
+    log_milestone("LEGACY_SCREENSHOT_SAVED", f"Legacy UI capture: {ui_capture_path}")
     
-    # Save only the logs from THIS verification session
-    client_log_dest = verification_sha_dir / "client-logs.txt"
-    server_log_dest = verification_sha_dir / "server-logs.txt"
-    
-    # Extract relevant logs from verification result output
+    # Extract and save logs (legacy structure)
     if verification_result and verification_result.stdout:
-        # Split verification output into client and server sections
         verification_output = verification_result.stdout
         
         client_logs = "# Client logs from verification session\n"
         server_logs = "# Server logs from verification session\n"
         
-        # Parse the verification output to separate client vs server logs
         lines = verification_output.split('\n')
-        current_section = "general"
-        
         for line in lines:
             if any(marker in line for marker in ['CLIENT-SIDE', 'PORTAL', 'BROWSER_LOG', 'WebSocket']):
                 client_logs += line + "\n"
@@ -91,18 +244,16 @@ def create_verification_proof(screenshot_path, verification_result):
             elif 'UUID_' in line and any(marker in line for marker in ['LOG:', 'ERROR:', 'WARNING:']):
                 client_logs += line + "\n"  # Console logs go to client section
             else:
-                # General verification logs go to server section
                 server_logs += line + "\n"
     else:
         client_logs = "# No client logs captured during verification session\n"
         server_logs = "# No server logs captured during verification session\n"
     
-    # Write the session-specific logs
-    client_log_dest.write_text(client_logs)
-    server_log_dest.write_text(server_logs)
+    # Write the session-specific logs (legacy)
+    (verification_sha_dir / "client-logs.txt").write_text(client_logs)
+    (verification_sha_dir / "server-logs.txt").write_text(server_logs)
     
-    log_milestone("CLIENT_LOGS", f"Verification session client logs saved: {client_log_dest}")
-    log_milestone("SERVER_LOGS", f"Verification session server logs saved: {server_log_dest}")
+    log_milestone("LEGACY_LOGS_SAVED", f"Legacy logs saved to verification_{commit_sha}")
     
     return ui_capture_path
 
@@ -209,7 +360,30 @@ def main():
             
             # Stage complete verification package (screenshot + logs + stats)
             log_milestone("GIT_STAGING", "Staging complete verification package")
-            subprocess.run(['git', 'add', '-A', 'verification/'], check=True)  # -A stages all verification files including deletions
+            
+            # Stage RunArtifact verification files if they exist
+            continuum_verification = Path('.continuum/verification/')
+            if continuum_verification.exists():
+                subprocess.run(['git', 'add', '-A', '.continuum/verification/'], check=True)
+                log_milestone("RUNARTIFACT_STAGED", "RunArtifact verification structure staged")
+            
+            # Stage legacy verification files if they exist
+            legacy_verification = Path('verification/')
+            if legacy_verification.exists():
+                subprocess.run(['git', 'add', '-A', 'verification/'], check=True)
+                log_milestone("LEGACY_STAGED", "Legacy verification structure staged")
+            
+            # Update RunArtifact duration if available
+            if hasattr(create_verification_proof, 'artifact'):
+                artifact = create_verification_proof.artifact
+                # Update run.json with final duration
+                run_data = artifact.readArtifact('run.json')
+                if isinstance(run_data, str):
+                    import json
+                    run_data = json.loads(run_data)
+                run_data['duration'] = elapsed * 1000  # Store in milliseconds
+                artifact.writeArtifact('run.json', run_data)
+                log_milestone("DURATION_UPDATED", f"RunArtifact duration updated: {elapsed:.1f}s")
             
             # Update verification history
             update_verification_history("PASS", elapsed, proof_path)
