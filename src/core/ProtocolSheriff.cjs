@@ -92,13 +92,18 @@ class ProtocolSheriff {
   }
 
   buildValidationPrompt(aiResponse, userQuery, agentRole) {
+    // Safely handle undefined or null values
+    const safeUserQuery = userQuery ? String(userQuery) : "No query provided";
+    const safeAgentRole = agentRole ? String(agentRole) : "Unknown agent";
+    const safeAiResponse = aiResponse ? String(aiResponse) : "No response provided";
+    
     return `You are a Protocol Sheriff. Your job is to validate AI responses before they reach users.
 
-USER QUERY: "${userQuery}"
-AGENT ROLE: ${agentRole}
+USER QUERY: "${safeUserQuery}"
+AGENT ROLE: ${safeAgentRole}
 AI RESPONSE TO VALIDATE:
 ---
-${aiResponse}
+${safeAiResponse}
 ---
 
 VALIDATION RULES:
