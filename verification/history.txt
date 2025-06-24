@@ -75,3 +75,8 @@
 06/24 15:37 ✅ 39.3s+ 0.0s= 39.3s misc ef48d284 forgot package
 06/24 15:57 ✅ 26.5s+ 0.0s= 26.5s fix  fb5f6956 Fix session architecture: Use server-managed 
 06/24 16:03 ✅ 27.4s+ 0.0s= 27.4s fix  5bcb5604 Fix critical command validation issues
+06/24 16:09 ❌ 26.6s+ 0.0s= 26.6s add  e6d326ea Add mixed module type support to CommandRegis
+06/24 16:15 ❌ 25.4s+ 0.0s= 25.4s add  e6d326ea Add mixed module type support to CommandRegis
+06/24 16:17 ✅ 26.2s+ 0.0s= 26.2s add  e6d326ea Add mixed module type support to CommandRegis
+06/24 16:28 ❌ 26.4s+ 0.0s= 26.4s add  aa616f28 Add JTAG session integration for organized ar
+06/24 16:29 ✅ 25.8s+ 0.0s= 25.8s add  e6d326ea Add mixed module type support to CommandRegis
