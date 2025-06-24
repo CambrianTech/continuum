@@ -60,8 +60,9 @@ class SessionCommand {
         };
       }
 
-      // Initialize SessionManager
-      const sessionManager = SessionManager.createForContinuum();
+      // Initialize SessionManager using server's base directory
+      const baseDir = continuum.baseDir || process.cwd();
+      const sessionManager = SessionManager.createForContinuum(baseDir);
       
       // Execute session command
       const result = await sessionManager.executeSessionCommand(config.action, config);

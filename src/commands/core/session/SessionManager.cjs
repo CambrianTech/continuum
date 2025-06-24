@@ -22,7 +22,8 @@ const { execSync } = require('child_process');
 class SessionManager {
     constructor(baseDir = '.') {
         this.baseDir = baseDir;
-        this.sessionsDir = path.join(baseDir, 'sessions');
+        this.continuumDir = path.join(baseDir, '.continuum');
+        this.sessionsDir = path.join(this.continuumDir, 'sessions');
     }
 
     /**
