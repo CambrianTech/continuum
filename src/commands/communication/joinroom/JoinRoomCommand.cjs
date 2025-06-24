@@ -63,6 +63,11 @@ class JoinRoomCommand extends BaseCommand {
         historyLimit = 20 
       } = this.parseParams(paramsString);
 
+      // Validate required parameters
+      if (!room || typeof room !== 'string') {
+        throw new Error('Room name is required and must be a string');
+      }
+
       const roomId = this.normalizeRoomName(room);
       const userId = 'user'; // TODO: Get actual user ID from context
 

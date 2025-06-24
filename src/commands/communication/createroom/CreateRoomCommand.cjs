@@ -75,6 +75,11 @@ class CreateRoomCommand extends BaseCommand {
         permissions = {} 
       } = this.parseParams(paramsString);
 
+      // Validate required parameters
+      if (!name || typeof name !== 'string') {
+        throw new Error('Room name is required and must be a string');
+      }
+
       // Normalize room name (like Discord)
       const roomId = this.normalizeRoomName(name);
 
