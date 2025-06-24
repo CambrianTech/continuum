@@ -104,8 +104,11 @@ def create_verification_proof(screenshot_path, verification_result):
                 return self.run_dir / filename
             
             def updateLatestSymlink(self):
-                # Already handled in ensureDirectoryStructure
-                pass
+                # Create/update latest symlink at verification type level
+                latest_link = Path(self.base_dir) / self.run_type / "latest"
+                if latest_link.exists() or latest_link.is_symlink():
+                    latest_link.unlink()
+                latest_link.symlink_to(f"run_{self.run_id}")
             
             def readArtifact(self, filename):
                 filepath = self.run_dir / filename
@@ -198,6 +201,7 @@ This verification confirms all JTAG debugging capabilities are working.
         artifact.updateLatestSymlink()
         
         log_milestone("RUNARTIFACT_COMPLETE", f"RunArtifact structure created: .continuum/verification/run_{commit_sha}")
+        log_milestone("LATEST_SYMLINK", f"Latest symlink: .continuum/verification/latest -> run_{commit_sha}")
         
         # Store artifact reference for duration update later
         create_verification_proof.artifact = artifact
@@ -253,7 +257,14 @@ def create_legacy_verification_proof(screenshot_path, verification_result, commi
     (verification_sha_dir / "client-logs.txt").write_text(client_logs)
     (verification_sha_dir / "server-logs.txt").write_text(server_logs)
     
+    # Create latest symlink for legacy verification too
+    latest_legacy_link = verification_base / "latest"
+    if latest_legacy_link.exists() or latest_legacy_link.is_symlink():
+        latest_legacy_link.unlink()
+    latest_legacy_link.symlink_to(f"verification_{commit_sha}")
+    
     log_milestone("LEGACY_LOGS_SAVED", f"Legacy logs saved to verification_{commit_sha}")
+    log_milestone("LEGACY_LATEST_SYMLINK", f"Legacy latest symlink: verification/latest -> verification_{commit_sha}")
     
     return ui_capture_path
 
