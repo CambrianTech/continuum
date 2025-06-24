@@ -66,12 +66,10 @@ class VerificationArtifact extends BaseArtifact {
         this.changedFiles = changedFiles;
         
         // Update artifact.json with commit context
-        this.updateMetadata({
-            commitSHA,
-            commitMessage,
-            changedFiles: changedFiles.length,
-            gitContext: true
-        });
+        this.metadata.commitSHA = commitSHA;
+        this.metadata.commitMessage = commitMessage;
+        this.metadata.changedFiles = changedFiles.length;
+        this.metadata.gitContext = true;
     }
 
     /**
@@ -105,11 +103,9 @@ class VerificationArtifact extends BaseArtifact {
      */
     setVerificationStatus(status, reason = '') {
         this.verificationStatus = status;
-        this.updateMetadata({
-            verificationStatus: status,
-            verificationReason: reason,
-            completedAt: new Date().toISOString()
-        });
+        this.metadata.verificationStatus = status;
+        this.metadata.verificationReason = reason;
+        this.metadata.completedAt = new Date().toISOString();
     }
 
     /**
@@ -117,7 +113,7 @@ class VerificationArtifact extends BaseArtifact {
      * Creates verification/ subdirectory with specialized files
      */
     async saveVerificationData() {
-        await this.createDirectories();
+        await this.createStructure();
         
         const verificationDir = path.join(this.artifactPath, 'verification');
         
