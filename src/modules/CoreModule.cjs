@@ -139,6 +139,14 @@ class CoreModule extends CommandModule {
     try {
       await super.initialize(continuum);
       
+      // Wait for CommandRegistry to finish loading
+      try {
+        await this.commandRegistry.waitForInitialization();
+        try { console.log('✅ CommandRegistry initialized successfully'); } catch(e) {}
+      } catch (error) {
+        try { console.error(`❌ CommandRegistry initialization failed: ${error.message}`); } catch(e) {}
+      }
+      
       // Dynamic command discovery and wiring - don't let this crash the daemon
       try {
         await this.discoverAndWireCommands(continuum);

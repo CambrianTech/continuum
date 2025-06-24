@@ -3,9 +3,9 @@
  * Tests the new command architecture with existing test patterns
  */
 
-const CoreModule = require('../../src/modules/CoreModule.cjs');
-const FluentAPI = require('../../src/modules/FluentAPI.cjs');
-const BaseCommand = require('../../src/commands/BaseCommand.cjs');
+const CoreModule = require('../../../src/modules/CoreModule.cjs');
+const FluentAPI = require('../../../src/modules/FluentAPI.cjs');
+const BaseCommand = require('../../../src/commands/core/BaseCommand.cjs');
 
 describe('Modular Command System', () => {
   let coreModule;

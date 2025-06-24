@@ -10,10 +10,21 @@ class CommandRegistry {
   constructor() {
     this.commands = new Map();
     this.definitions = new Map();
-    this.loadCommands();
+    this.initialized = false;
+    this.initPromise = this.loadCommands().then(() => {
+      this.initialized = true;
+    }).catch(error => {
+      console.error('❌ Failed to load commands:', error.message);
+      this.initialized = true; // Mark as initialized even on failure
+    });
+  }
+
+  async waitForInitialization() {
+    await this.initPromise;
+    return this.initialized;
   }
   
-  loadCommands() {
+  async loadCommands() {
     console.log('📚 Loading command definitions...');
     
     // Load commands from all module directories
@@ -25,15 +36,15 @@ class CommandRegistry {
     
     console.log(`📁 Found ${moduleDirectories.length} command modules: ${moduleDirectories.join(', ')}`);
     
-    moduleDirectories.forEach(moduleName => {
+    for (const moduleName of moduleDirectories) {
       console.log(`📦 Loading module: ${moduleName}`);
-      this.loadCommandsFromDirectory(path.join(__dirname, moduleName));
-    });
+      await this.loadCommandsFromDirectory(path.join(__dirname, moduleName));
+    }
     
     console.log(`📚 Loaded ${this.commands.size} commands`);
   }
   
-  loadCommandsFromDirectory(dir) {
+  async loadCommandsFromDirectory(dir) {
     if (!fs.existsSync(dir)) {
       console.log(`📂 Directory not found: ${dir}`);
       return;
@@ -55,7 +66,7 @@ class CommandRegistry {
           continue;
         }
         
-        this.loadCommandsFromDirectory(filePath);
+        await this.loadCommandsFromDirectory(filePath);
         continue;
       }
       
@@ -70,12 +81,42 @@ class CommandRegistry {
         continue;
       }
       
-      if (file.endsWith('.cjs') || file.endsWith('.js')) {
+      if (file.endsWith('.cjs') || file.endsWith('.js') || file.endsWith('.ts')) {
         try {
-          // Clear require cache to ensure fresh load
-          delete require.cache[require.resolve(filePath)];
+          let CommandClass;
           
-          const CommandClass = require(filePath);
+          // Handle different module types gracefully
+          if (file.endsWith('.cjs')) {
+            // CommonJS module - use require
+            delete require.cache[require.resolve(filePath)];
+            CommandClass = require(filePath);
+          } else if (file.endsWith('.ts')) {
+            // TypeScript module - compile and require (future)
+            console.log(`🔷 TypeScript command detected: ${file} (compilation not yet implemented)`);
+            continue;
+          } else if (file.endsWith('.js')) {
+            // Could be ES module or CommonJS - try both
+            try {
+              // First try CommonJS (most existing commands)
+              delete require.cache[require.resolve(filePath)];
+              CommandClass = require(filePath);
+            } catch (requireError) {
+              // If require fails with "Cannot use import statement", try ES module import
+              if (requireError.message.includes('Cannot use import statement') || 
+                  requireError.message.includes('Unexpected token')) {
+                try {
+                  console.log(`🔄 Attempting ES module import for: ${file}`);
+                  const moduleUrl = `file://${filePath}`;
+                  const esModule = await import(moduleUrl);
+                  CommandClass = esModule.default || esModule;
+                } catch (importError) {
+                  throw new Error(`Failed both require() and import(): ${requireError.message} | ${importError.message}`);
+                }
+              } else {
+                throw requireError;
+              }
+            }
+          }
           
           // Validate command class structure
           if (!CommandClass) {
