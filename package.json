@@ -14,7 +14,7 @@
     "test": "node __tests__/config/test-runner.cjs",
     "test:unit": "npm run test:unit:js && npm run test:unit:python",
     "test:unit:js": "jest __tests__/unit/js --config __tests__/config/jest.config.cjs",
-    "test:unit:python": "cd __tests__ && python3 -m pytest unit/python -v -c config/pytest.ini",
+    "test:unit:python": "cd __tests__ && python3 -m pytest unit/python -v -c config/pytest.ini && cd verification_system && python3 run_tests.py",
     "test:integration": "npm run test:integration:js && npm run test:integration:python",
     "test:integration:js": "jest __tests__/integration --testPathPattern='\\.(js|cjs|ts)$' --config __tests__/config/jest.config.cjs",
     "test:integration:python": "cd __tests__ && python3 -m pytest integration -v -c config/pytest.ini",
