@@ -1,0 +1,23 @@
+{
+  "name": "session-command",
+  "version": "1.0.0",
+  "description": "Unified session management system for Continuum",
+  "main": "SessionCommand.cjs",
+  "type": "commonjs",
+  "continuum": {
+    "command": "session",
+    "category": "Core",
+    "capabilities": [
+      "session-management", 
+      "artifact-storage",
+      "history-tracking",
+      "symlink-management"
+    ],
+    "dependencies": [],
+    "interfaces": ["command-bus", "file-system"],
+    "permissions": ["read", "write", "create-directories", "create-symlinks"]
+  },
+  "keywords": ["session", "management", "artifacts", "history", "continuum"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}
