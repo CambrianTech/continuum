@@ -91,9 +91,43 @@ class CommandRegistry {
             delete require.cache[require.resolve(filePath)];
             CommandClass = require(filePath);
           } else if (file.endsWith('.ts')) {
-            // TypeScript module - compile and require (future)
-            console.log(`🔷 TypeScript command detected: ${file} (compilation not yet implemented)`);
-            continue;
+            // TypeScript module - load via dynamic import with tsx runtime
+            try {
+              console.log(`🔷 Loading TypeScript command: ${file}`);
+              
+              // Try to require tsx/cjs if available, otherwise skip gracefully
+              let tsModule;
+              try {
+                // Load tsx for TypeScript support
+                require('tsx/esm');
+                
+                // Load TypeScript module using dynamic import
+                const moduleUrl = `file://${filePath}`;
+                tsModule = await import(moduleUrl);
+                
+                // Extract the command class from the module
+                // Look for exports that match command patterns
+                CommandClass = tsModule.default || 
+                             tsModule[path.basename(file, '.ts')] ||
+                             Object.values(tsModule).find(exp => 
+                               exp && typeof exp.getDefinition === 'function' && typeof exp.execute === 'function'
+                             );
+                
+                console.log(`✅ TypeScript command loaded: ${file}`);
+              } catch (tsxError) {
+                if (tsxError.code === 'MODULE_NOT_FOUND' && tsxError.message.includes('tsx')) {
+                  console.log(`⚠️  TypeScript command ${file} skipped: tsx not available (install with: npm install tsx)`);
+                  continue;
+                } else {
+                  throw tsxError;
+                }
+              }
+              
+            } catch (tsError) {
+              console.error(`❌ Failed to load TypeScript command ${file}:`, tsError.message);
+              errorCount++;
+              continue;
+            }
           } else if (file.endsWith('.js')) {
             // Could be ES module or CommonJS - try both
             try {
