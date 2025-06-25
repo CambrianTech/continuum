@@ -17,6 +17,15 @@ const fs = require('fs').promises;
 const path = require('path');
 const { spawn } = require('child_process');
 
+// Import TabCoordinator from compiled TypeScript
+let TabCoordinator = null;
+try {
+    const tabCoordModule = require('../../dist/TabCoordinator.js');
+    TabCoordinator = tabCoordModule.getTabCoordinator;
+} catch (error) {
+    console.warn('⚠️ TabCoordinator not available, using legacy session management');
+}
+
 class DevToolsSessionCoordinator {
     constructor() {
         this.activeSessions = new Map();
@@ -51,14 +60,45 @@ class DevToolsSessionCoordinator {
     async requestSession(purpose, aiPersona = 'system', options = {}) {
         const sessionKey = this.generateSessionKey(purpose, aiPersona);
         
+        // First check TabCoordinator for existing tabs (prevents duplicate browsers)
+        if (TabCoordinator) {
+            try {
+                const coordinator = TabCoordinator();
+                const existingTab = coordinator.findExistingTab(purpose, aiPersona);
+                
+                if (existingTab && existingTab.isReady()) {
+                    console.log(`🔄 TabCoordinator: Reusing existing tab for ${sessionKey}`);
+                    
+                    // Return a session object that represents the existing tab
+                    const existingSession = {
+                        sessionId: existingTab.getSessionId(),
+                        purpose: purpose,
+                        aiPersona: aiPersona,
+                        port: existingTab.getMetadata().port,
+                        created: existingTab.getMetadata().created.toISOString(),
+                        status: 'active',
+                        isSharedTab: true,
+                        tabId: existingTab.getId(),
+                        browserPid: null, // Shared tab doesn't have separate PID
+                        reuseExisting: true
+                    };
+                    
+                    this.activeSessions.set(sessionKey, existingSession);
+                    return existingSession;
+                }
+            } catch (error) {
+                console.warn(`⚠️ TabCoordinator check failed: ${error.message}`);
+            }
+        }
+        
         // Check if session already exists for this purpose/persona combination
         const existingSession = this.activeSessions.get(sessionKey);
         if (existingSession && await this.isSessionActive(existingSession)) {
-            console.log(`🔄 Reusing existing session: ${sessionKey}`);
+            console.log(`🔄 Legacy: Reusing existing session: ${sessionKey}`);
             return existingSession;
         }
 
-        // Create new session
+        // Create new session only if no existing tab/session found
         console.log(`🚀 Creating new DevTools session: ${sessionKey}`);
         const session = await this.createSession(purpose, aiPersona, options);
         
@@ -125,6 +165,31 @@ class DevToolsSessionCoordinator {
                 this.sessionArtifacts.set(sessionId, artifactPath);
             }
 
+            // Register tab with TabCoordinator if available
+            if (TabCoordinator) {
+                try {
+                    const coordinator = TabCoordinator();
+                    
+                    // Get tab information to register with coordinator
+                    const response = await fetch(`http://localhost:${session.port}/json`);
+                    const tabs = await response.json();
+                    const continuumTab = tabs.find(tab => tab.url.includes('localhost:9000'));
+                    
+                    if (continuumTab) {
+                        await coordinator.registerTab(continuumTab, {
+                            purpose: session.purpose,
+                            aiPersona: session.aiPersona,
+                            sessionId: session.sessionId,
+                            port: session.port,
+                            isShared: session.isSharedTab || false
+                        });
+                        console.log(`📝 Registered tab with TabCoordinator: ${continuumTab.id}`);
+                    }
+                } catch (error) {
+                    console.warn(`⚠️ Failed to register tab with TabCoordinator: ${error.message}`);
+                }
+            }
+            
             return session;
 
         } catch (error) {
