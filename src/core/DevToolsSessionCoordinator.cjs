@@ -17,14 +17,83 @@ const fs = require('fs').promises;
 const path = require('path');
 const { spawn } = require('child_process');
 
-// Import TabCoordinator from compiled TypeScript
-let TabCoordinator = null;
-try {
-    const tabCoordModule = require('../../dist/TabCoordinator.js');
-    TabCoordinator = tabCoordModule.getTabCoordinator;
-} catch (error) {
-    console.warn('⚠️ TabCoordinator not available, using legacy session management');
+// Simple in-process tab registry to prevent duplicate tabs
+class SimpleTabRegistry {
+    constructor() {
+        this.tabs = new Map(); // sessionKey -> tabInfo
+    }
+    
+    findExistingTab(purpose, aiPersona) {
+        const sessionKey = `${purpose}_${aiPersona}`;
+        const existingTab = this.tabs.get(sessionKey);
+        
+        if (existingTab && this.isTabStillActive(existingTab)) {
+            console.log(`🔄 SimpleTabRegistry: Found existing tab for ${sessionKey}`);
+            return existingTab;
+        }
+        
+        // Clean up stale tab entry
+        if (existingTab) {
+            this.tabs.delete(sessionKey);
+        }
+        
+        return null;
+    }
+    
+    registerTab(purpose, aiPersona, sessionInfo) {
+        const sessionKey = `${purpose}_${aiPersona}`;
+        const tabInfo = {
+            sessionKey,
+            purpose,
+            aiPersona,
+            sessionId: sessionInfo.sessionId,
+            port: sessionInfo.port,
+            created: new Date(),
+            lastCheck: new Date()
+        };
+        
+        this.tabs.set(sessionKey, tabInfo);
+        console.log(`📝 SimpleTabRegistry: Registered tab for ${sessionKey}`);
+        return tabInfo;
+    }
+    
+    async isTabStillActive(tabInfo) {
+        try {
+            // Quick check if the session is still responsive
+            const response = await fetch(`http://localhost:${tabInfo.port}/json`, {
+                signal: AbortSignal.timeout(2000)
+            });
+            
+            if (response.ok) {
+                const tabs = await response.json();
+                const hasActiveContinuumTab = tabs.some(tab => tab.url.includes('localhost:9000'));
+                
+                if (hasActiveContinuumTab) {
+                    tabInfo.lastCheck = new Date();
+                    return true;
+                }
+            }
+        } catch (error) {
+            // Tab/session no longer active
+        }
+        
+        return false;
+    }
+    
+    cleanup() {
+        // Remove stale entries older than 5 minutes
+        const cutoff = new Date(Date.now() - 5 * 60 * 1000);
+        for (const [key, tabInfo] of this.tabs.entries()) {
+            if (tabInfo.lastCheck < cutoff) {
+                this.tabs.delete(key);
+                console.log(`🧹 SimpleTabRegistry: Cleaned up stale tab ${key}`);
+            }
+        }
+    }
 }
+
+// Use simple in-process registry for immediate tab coordination
+const simpleTabRegistry = new SimpleTabRegistry();
 
 class DevToolsSessionCoordinator {
     constructor() {
@@ -60,35 +129,31 @@ class DevToolsSessionCoordinator {
     async requestSession(purpose, aiPersona = 'system', options = {}) {
         const sessionKey = this.generateSessionKey(purpose, aiPersona);
         
-        // First check TabCoordinator for existing tabs (prevents duplicate browsers)
-        if (TabCoordinator) {
-            try {
-                const coordinator = TabCoordinator();
-                const existingTab = coordinator.findExistingTab(purpose, aiPersona);
+        // First check SimpleTabRegistry for existing tabs (prevents duplicate browsers)
+        try {
+            const existingTab = await simpleTabRegistry.findExistingTab(purpose, aiPersona);
+            
+            if (existingTab) {
+                console.log(`🔄 SimpleTabRegistry: Reusing existing tab for ${sessionKey}`);
                 
-                if (existingTab && existingTab.isReady()) {
-                    console.log(`🔄 TabCoordinator: Reusing existing tab for ${sessionKey}`);
-                    
-                    // Return a session object that represents the existing tab
-                    const existingSession = {
-                        sessionId: existingTab.getSessionId(),
-                        purpose: purpose,
-                        aiPersona: aiPersona,
-                        port: existingTab.getMetadata().port,
-                        created: existingTab.getMetadata().created.toISOString(),
-                        status: 'active',
-                        isSharedTab: true,
-                        tabId: existingTab.getId(),
-                        browserPid: null, // Shared tab doesn't have separate PID
-                        reuseExisting: true
-                    };
-                    
-                    this.activeSessions.set(sessionKey, existingSession);
-                    return existingSession;
-                }
-            } catch (error) {
-                console.warn(`⚠️ TabCoordinator check failed: ${error.message}`);
+                // Return a session object that represents the existing tab
+                const existingSession = {
+                    sessionId: existingTab.sessionId,
+                    purpose: purpose,
+                    aiPersona: aiPersona,
+                    port: existingTab.port,
+                    created: existingTab.created.toISOString(),
+                    status: 'active',
+                    isSharedTab: true,
+                    browserPid: null, // Shared tab doesn't have separate PID
+                    reuseExisting: true
+                };
+                
+                this.activeSessions.set(sessionKey, existingSession);
+                return existingSession;
             }
+        } catch (error) {
+            console.warn(`⚠️ SimpleTabRegistry check failed: ${error.message}`);
         }
         
         // Check if session already exists for this purpose/persona combination
@@ -165,29 +230,12 @@ class DevToolsSessionCoordinator {
                 this.sessionArtifacts.set(sessionId, artifactPath);
             }
 
-            // Register tab with TabCoordinator if available
-            if (TabCoordinator) {
-                try {
-                    const coordinator = TabCoordinator();
-                    
-                    // Get tab information to register with coordinator
-                    const response = await fetch(`http://localhost:${session.port}/json`);
-                    const tabs = await response.json();
-                    const continuumTab = tabs.find(tab => tab.url.includes('localhost:9000'));
-                    
-                    if (continuumTab) {
-                        await coordinator.registerTab(continuumTab, {
-                            purpose: session.purpose,
-                            aiPersona: session.aiPersona,
-                            sessionId: session.sessionId,
-                            port: session.port,
-                            isShared: session.isSharedTab || false
-                        });
-                        console.log(`📝 Registered tab with TabCoordinator: ${continuumTab.id}`);
-                    }
-                } catch (error) {
-                    console.warn(`⚠️ Failed to register tab with TabCoordinator: ${error.message}`);
-                }
+            // Register tab with SimpleTabRegistry
+            try {
+                simpleTabRegistry.registerTab(session.purpose, session.aiPersona, session);
+                console.log(`📝 Registered session with SimpleTabRegistry: ${session.sessionId}`);
+            } catch (error) {
+                console.warn(`⚠️ Failed to register with SimpleTabRegistry: ${error.message}`);
             }
             
             return session;
