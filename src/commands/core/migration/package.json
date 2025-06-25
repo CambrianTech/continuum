@@ -1,0 +1,18 @@
+{
+  "name": "@continuum/migration-command",
+  "version": "1.0.0",
+  "description": "System migration command for gradual legacy to modern architecture transition",
+  "main": "MigrationCommand.cjs",
+  "type": "commonjs",
+  "keywords": ["migration", "architecture", "typescript", "system"],
+  "capabilities": [
+    "system-migration",
+    "traffic-routing",
+    "gradual-cutover",
+    "rollback-protection"
+  ],
+  "dependencies": {},
+  "scripts": {
+    "test": "echo 'Migration command tests not yet implemented'"
+  }
+}
