@@ -793,7 +793,14 @@ class ContinuumCore {
   selectRole(task) {
     const taskLower = task.toLowerCase();
     
-    // Simple routing logic - can be enhanced with ML
+    // FIRST: Check if this is a command that should route to command system
+    const command = this.parseCommand(task);
+    if (command) {
+      console.log(`🎯 COMMAND DETECTED: ${command.name} - routing to BusCommand`);
+      return 'BusCommand';
+    }
+    
+    // SECOND: AI routing logic
     if (taskLower.includes('code') || taskLower.includes('debug') || taskLower.includes('function')) {
       return 'CodeAI';
     } else if (taskLower.includes('plan') || taskLower.includes('strategy') || taskLower.includes('coordinate')) {
@@ -803,12 +810,115 @@ class ContinuumCore {
     }
   }
 
+  parseCommand(task) {
+    const taskTrimmed = task.trim();
+    
+    // Handle direct command format: "migration {...}"
+    const directMatch = taskTrimmed.match(/^(\w+)\s*(.*)/);
+    if (directMatch) {
+      const commandName = directMatch[1].toUpperCase();
+      
+      // Known commands that should route to command system, not AI
+      const knownCommands = [
+        'MIGRATION', 'SCREENSHOT', 'HELP', 'AGENTS', 'WORKSPACE',
+        'BROWSER_JS', 'BROWSERJS', 'EXEC', 'RESTART', 'STATUS',
+        'TESTS', 'DIAGNOSTICS', 'INFO', 'RELOAD', 'SESSION'
+      ];
+      
+      if (knownCommands.includes(commandName)) {
+        return {
+          name: commandName,
+          params: directMatch[2] || '{}',
+          source: 'core-routed'
+        };
+      }
+    }
+    
+    return null;
+  }
+
   getInitialAgent(task) {
     return this.selectRole(task);
   }
 
   async sendTask(role, task) {
     console.log(`📤 SEND_TASK: Routing to ${role} - "${task.substring(0, 80)}${task.length > 80 ? '...' : ''}"`);
+    
+    // Handle BusCommand (actual commands) by using existing bus command system
+    if (role === 'BusCommand') {
+      console.log(`🎯 BUS_COMMAND_ROUTE: Executing command directly via bus system`);
+      const command = this.parseCommand(task);
+      if (command) {
+        // Use the existing command processor system
+        try {
+          // Generate originator ID for this execution
+          const originatorId = `origin_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          
+          // Use EventBus for real-time logging instead of console.log
+          if (this.eventBus) {
+            this.eventBus.processMessage('command_trace', {
+              originatorId,
+              phase: 'START',
+              command: command.name,
+              action: 'BusCommand execution initiated'
+            }, 'server');
+          }
+          
+          // Parse JSON parameters if they're a string
+          let parsedParams = command.params;
+          
+          if (this.eventBus) {
+            this.eventBus.processMessage('command_trace', {
+              originatorId,
+              phase: 'PARAM_PARSE',
+              command: command.name,
+              rawParamsType: typeof command.params,
+              rawParams: command.params
+            }, 'server');
+          }
+          
+          if (typeof command.params === 'string') {
+            try {
+              parsedParams = JSON.parse(command.params);
+              if (this.eventBus) {
+                this.eventBus.processMessage('command_trace', {
+                  originatorId,
+                  phase: 'PARAM_SUCCESS',
+                  command: command.name,
+                  parsedParams: parsedParams
+                }, 'server');
+              }
+            } catch (parseError) {
+              if (this.eventBus) {
+                this.eventBus.processMessage('command_trace', {
+                  originatorId,
+                  phase: 'PARAM_FALLBACK',
+                  command: command.name,
+                  error: parseError.message
+                }, 'server');
+              }
+              parsedParams = command.params;
+            }
+          }
+          
+          const result = await this.commandProcessor.executeCommand(command.name, JSON.stringify(parsedParams));
+          return JSON.stringify({
+            command: command.name,
+            params: parsedParams,
+            result: result
+          });
+        } catch (error) {
+          console.error(`❌ BUS_COMMAND_ERROR: ${error.message}`);
+          return JSON.stringify({
+            command: command.name,
+            params: command.params,
+            error: error.message
+          });
+        }
+      } else {
+        throw new Error('No command found in BusCommand task');
+      }
+    }
     
     if (!this.sessions.has(role)) {
       console.log(`🆕 Creating new ${role} session...`);
@@ -824,6 +934,57 @@ class ContinuumCore {
     
     console.log(`✅ ${role} completed task - response length: ${response.result.length} chars`);
     return response.result;
+  }
+
+  async executeCommand(task) {
+    console.log(`⚡ EXECUTING COMMAND: ${task}`);
+    
+    const command = this.parseCommand(task);
+    if (!command) {
+      throw new Error('No command found in task');
+    }
+
+    try {
+      // Try to get the command from the registry
+      const commandClass = this.commandProcessor.commandRegistry.getCommand(command.name);
+      if (commandClass) {
+        console.log(`🎯 Found command in registry: ${command.name}`);
+        console.log(`🔧 Raw params: "${command.params}"`);
+        
+        let params = {};
+        try {
+          if (command.params && command.params.trim()) {
+            params = JSON.parse(command.params);
+            console.log(`✅ Parsed params:`, params);
+          } else {
+            console.log(`⚠️ No params provided, using empty object`);
+          }
+        } catch (e) {
+          console.log(`❌ JSON parse failed, treating as raw string:`, e.message);
+          params = { params: command.params };
+        }
+        
+        const result = await commandClass.execute(params);
+        console.log(`✅ Command ${command.name} executed successfully`);
+        return JSON.stringify(result);
+      } else {
+        console.log(`⚠️ Command ${command.name} not found in registry, checking command processor`);
+        // Fallback to command processor
+        if (this.commandProcessor && this.commandProcessor.commands.has(command.name)) {
+          const result = await this.commandProcessor.commands.get(command.name).execute(command.params);
+          return JSON.stringify(result);
+        } else {
+          throw new Error(`Command ${command.name} not found`);
+        }
+      }
+    } catch (error) {
+      console.error(`❌ Command execution failed:`, error);
+      return JSON.stringify({
+        success: false,
+        error: error.message,
+        command: command.name
+      });
+    }
   }
 
   async createInstance(role) {
