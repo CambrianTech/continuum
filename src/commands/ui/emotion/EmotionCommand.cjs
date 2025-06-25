@@ -18,7 +18,10 @@ class EmotionCommand extends BaseCommand {
 
   static async execute(params, context) {
     try {
-      const { feeling, intensity = 'medium', duration = 3000, persist = false, target } = this.parseParams(params);
+      const { emotion, feeling, intensity = 'medium', duration = 3000, persist = false, target } = this.parseParams(params);
+      
+      // Support both 'emotion' and 'feeling' parameters for compatibility
+      const actualEmotion = emotion || feeling;
 
       // Validate emotion
       const validEmotions = [
@@ -30,22 +33,27 @@ class EmotionCommand extends BaseCommand {
         'error', 'warning', 'offline', 'connecting', 'processing', 'success'
       ];
 
-      // Determine if emotion should persist based on type and config
-      const shouldPersist = persist || isPersistentEmotion(feeling.toLowerCase());
+      // Validate emotion exists and is a string
+      if (!actualEmotion || typeof actualEmotion !== 'string') {
+        return this.createErrorResult(`Missing or invalid emotion parameter. Available emotions: ${validEmotions.join(', ')}`);
+      }
 
-      if (!validEmotions.includes(feeling.toLowerCase())) {
-        return this.createErrorResult(`Unknown emotion: ${feeling}. Available emotions: ${validEmotions.join(', ')}`);
+      // Determine if emotion should persist based on type and config
+      const shouldPersist = persist || isPersistentEmotion(actualEmotion.toLowerCase());
+
+      if (!validEmotions.includes(actualEmotion.toLowerCase())) {
+        return this.createErrorResult(`Unknown emotion: ${actualEmotion}. Available emotions: ${validEmotions.join(', ')}`);
       }
 
       const emotionType = shouldPersist ? 'persistent' : 'fleeting';
-      console.log(`💚 Continuon expressing ${feeling} emotion (${emotionType}) with ${intensity} intensity`);
+      console.log(`💚 Continuon expressing ${actualEmotion} emotion (${emotionType}) with ${intensity} intensity`);
 
       if (context && context.webSocketServer) {
         // Get emotion animation configuration
-        const emotionConfig = calculateEmotionProperties(feeling, intensity, target);
+        const emotionConfig = calculateEmotionProperties(actualEmotion, intensity, target);
         emotionConfig.target = target;
         emotionConfig.persistent = shouldPersist;
-        emotionConfig.returnToHome = shouldReturnHome(feeling);
+        emotionConfig.returnToHome = shouldReturnHome(actualEmotion);
         emotionConfig.duration = shouldPersist ? 0 : duration;
         
         // Send emotion command to browser

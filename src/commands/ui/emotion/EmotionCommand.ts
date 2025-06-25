@@ -31,13 +31,14 @@ export class EmotionCommand extends BaseCommand {
   static async execute(params: EmotionParams, context?: EmotionContext): Promise<EmotionResult> {
     try {
       // Parse and validate parameters with type safety
+      const parsedParams = this.parseParams(params);
       const {
-        feeling,
+        feeling = parsedParams.emotion, // Backward compatibility with 'emotion' parameter
         intensity = EmotionCommand.DEFAULT_INTENSITY,
         duration = EmotionCommand.DEFAULT_DURATION,
         persist = false,
         target
-      } = this.parseParams(params);
+      } = parsedParams;
 
       // Type-safe emotion validation
       if (!this.isValidEmotion(feeling)) {
@@ -83,9 +84,12 @@ export class EmotionCommand extends BaseCommand {
   }
 
   /**
-   * Type guard for emotion validation
+   * Type guard for emotion validation with null safety
    */
-  private static isValidEmotion(feeling: string): feeling is ValidEmotion {
+  private static isValidEmotion(feeling: string | undefined): feeling is ValidEmotion {
+    if (!feeling || typeof feeling !== 'string') {
+      return false;
+    }
     return VALID_EMOTIONS.includes(feeling.toLowerCase() as ValidEmotion);
   }
 

@@ -9,7 +9,8 @@ const WebSocketServer = require('../integrations/WebSocketServer.cjs');
 const SimpleMenuBar = require('../integrations/SimpleMenuBar.cjs');
 const CostTracker = require('./CostTracker.cjs');
 const { ModelRegistry } = require('./AIModel.cjs');
-const CommandProcessor = require('./CommandProcessor.cjs');
+// MODERN INTEGRATION: Use CommandSystemBridge for TypeScript migration
+const CommandSystemBridge = require('./CommandSystemBridge.cjs');
 const UIGenerator = require('../ui/UIGenerator.cjs');
 const ProtocolSheriff = require('./ProtocolSheriff.cjs');
 const ModelCaliber = require('./ModelCaliber.cjs');
@@ -80,7 +81,8 @@ class ContinuumCore {
     this.costTracker = new CostTracker(path.join(this.userDataDir, 'costs.json'));
     this.modelRegistry = new ModelRegistry();
     this.modelCaliber = new ModelCaliber();
-    this.commandProcessor = new CommandProcessor();
+    // MODERN INTEGRATION: Use bridge for gradual TypeScript migration
+    this.commandProcessor = new CommandSystemBridge();
     this.commandProcessor.continuum = this;
     
     // Initialize continuon (AI entity) status management
