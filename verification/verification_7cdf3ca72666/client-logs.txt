@@ -1,0 +1,8 @@
+# Client logs from verification session
+[02:41:27.558] INFO: 🔍 Checking CLIENT-SIDE feedback (portal log system)...
+[02:41:27.783] INFO: ✅ CLIENT-SIDE: Found 9/9 unique NEW messages
+[02:41:27.783] INFO: 📋 CLIENT-SIDE: Found 1 FRESH log entries with timestamps:
+[02:41:27.784] INFO:    ✅ portal_message: 📋 UUID_7c1617d5_PORTAL_MUST_SEE_THIS...
+[02:41:27.937] INFO: ✅ CLIENT-SIDE: Portal sees browser console output
+[02:41:31.096] INFO: 🔍 RECENT PORTAL LOG ENTRIES (last 5):
+[02:41:31.293] INFO:    5.   📝 No WebSocket connections on port 9000
