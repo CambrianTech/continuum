@@ -432,11 +432,93 @@ def stage_verification_files():
         # Ignore staging errors - verification works without git tracking
         print(f"⚠️ Git staging warning: {e}")
 
+def check_untracked_files():
+    """Check for untracked files and suggest remediation"""
+    try:
+        # Get untracked files  
+        result = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True)
+        if result.returncode != 0:
+            return
+            
+        untracked_files = []
+        for line in result.stdout.strip().split('\n'):
+            if line.startswith('??'):
+                untracked_files.append(line[3:].strip())
+        
+        if not untracked_files:
+            return
+            
+        print(f"\n🚨 WARNING: {len(untracked_files)} untracked files detected")
+        print("=" * 60)
+        
+        # Categorize untracked files
+        categories = {
+            'TypeScript': [f for f in untracked_files if f.endswith('.ts')],
+            'Documentation': [f for f in untracked_files if f.endswith('.md')],
+            'Commands': [f for f in untracked_files if 'commands/' in f],
+            'Core': [f for f in untracked_files if 'core/' in f],
+            'Tests': [f for f in untracked_files if '.test.' in f],
+            'Other': [f for f in untracked_files if not any([
+                f.endswith('.ts'), f.endswith('.md'), 'commands/' in f, 
+                'core/' in f, '.test.' in f
+            ])]
+        }
+        
+        for category, files in categories.items():
+            if files:
+                print(f"\n📂 {category} files ({len(files)}):")
+                for file in files[:5]:  # Show first 5
+                    print(f"   • {file}")
+                if len(files) > 5:
+                    print(f"   ... and {len(files) - 5} more")
+        
+        print("\n🔧 REMEDIATION SUGGESTIONS:")
+        print("=" * 60)
+        
+        if categories['TypeScript']:
+            print("📝 TypeScript files:")
+            print("   • Add to git: git add src/")
+            print("   • These appear to be TypeScript migration work")
+            print("   • Consider committing as a separate TypeScript foundation commit")
+        
+        if categories['Documentation']:
+            print("📚 Documentation files:")
+            print("   • Add to git: git add docs/")
+            print("   • Documentation should be tracked for collaboration")
+        
+        if categories['Commands'] or categories['Core']:
+            print("🛠️  Core system files:")
+            print("   • Add to git: git add src/commands/ src/core/")
+            print("   • These are essential system components")
+        
+        if categories['Tests']:
+            print("🧪 Test files:")
+            print("   • Add to git: git add **/*.test.ts")
+            print("   • Tests should be tracked for continuous integration")
+        
+        print("\n📋 QUICK FIXES:")
+        print("   • Stage all: git add -A")
+        print("   • Stage TypeScript only: git add '*.ts'")
+        print("   • Stage by category: git add docs/ src/commands/ src/core/")
+        print("   • Create .gitignore rules if files should be ignored")
+        
+        print("\n⚠️  IMPACT:")
+        print("   • Untracked files won't be available to other developers")
+        print("   • TypeScript migration work could be lost")
+        print("   • Documentation improvements won't be shared")
+        print("   • Consider adding these files before committing")
+        
+    except Exception as e:
+        print(f"⚠️ Could not check untracked files: {e}")
+
 def main():
     """Main commit verification workflow"""
     cleanup_staged_files()
     
     log_milestone("COMMIT_VERIFICATION_START", "Starting commit verification process")
+    
+    # Check for untracked files and warn
+    check_untracked_files()
     
     # Get git context
     commit_sha, commit_message, changed_files = get_git_context()

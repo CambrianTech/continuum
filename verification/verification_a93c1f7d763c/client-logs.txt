@@ -1,0 +1,34 @@
+# Client logs from verification session
+[02:17:01.903] INFO: 🔍 Checking CLIENT-SIDE feedback (portal log system)...
+[02:17:02.135] INFO: ✅ CLIENT-SIDE: Found 6/9 unique NEW messages
+[02:17:02.135] WARN: ⚠️ CLIENT-SIDE: Found messages but could not verify timestamps
+[02:17:02.136] INFO:    ❌ portal_message: 📋 UUID_1363acae_PORTAL_MUST_SEE_THIS...
+[02:17:02.303] INFO: ✅ CLIENT-SIDE: Portal sees browser console output
+🔌 DevTools: Connecting to WebSocket: ws://localhost:9222/devtools/page/92017268BD6EB344E9FE4B097A16FDC9
+🔌 DevTools: WebSocket connected
+🌐 [2025-06-25T02:16:58.867856] LOG: 🎯 UUID_1363acae_CONSOLE_LOG_STARTING
+🌐 [2025-06-25T02:16:58.867929] LOG: 📋 UUID_1363acae_PORTAL_MUST_SEE_THIS
+🌐 [2025-06-25T02:16:58.868009] LOG: 🤖 UUID_1363acae_AGENT_MONITORING_OUTPUT
+🌐 [2025-06-25T02:16:58.868182] LOG: 🎨 UUID_1363acae_BACKGROUND_CHANGED
+🌐 [2025-06-25T02:16:58.868259] LOG: 📝 UUID_1363acae_TITLE_CHANGED
+🌐 [2025-06-25T02:16:58.868390] LOG: 👁️ UUID_1363acae_VISUAL_INDICATOR_ADDED
+🌐 [2025-06-25T02:16:58.868477] ERROR: ⚠️ UUID_1363acae_INTENTIONAL_ERROR_TEST
+🌐 [2025-06-25T02:16:58.868549] WARNING: 🟡 UUID_1363acae_INTENTIONAL_WARNING_TEST
+🌐 [2025-06-25T02:16:58.868607] LOG: ✅ UUID_1363acae_JS_EXECUTION_COMPLETE
+🌐 [2025-06-25T02:16:58.872997] LOG: 🔥 CLIENT v0.2.2133: Raw WebSocket message received: js_executed Object
+🌐 [2025-06-25T02:16:58.876119] LOG: 🔥 CLIENT v0.2.2133: Raw WebSocket message received: js_executed Object
+[02:17:05.607] INFO: 🔍 RECENT PORTAL LOG ENTRIES (last 5):
+[02:17:05.816] INFO:    5.   📝 No WebSocket connections on port 9000
+🔌 DevTools: Connecting to WebSocket: ws://localhost:9222/devtools/page/92017268BD6EB344E9FE4B097A16FDC9
+🔌 DevTools: WebSocket connected
+🌐 [2025-06-25T02:16:58.867856] LOG: 🎯 UUID_1363acae_CONSOLE_LOG_STARTING
+🌐 [2025-06-25T02:16:58.867929] LOG: 📋 UUID_1363acae_PORTAL_MUST_SEE_THIS
+🌐 [2025-06-25T02:16:58.868009] LOG: 🤖 UUID_1363acae_AGENT_MONITORING_OUTPUT
+🌐 [2025-06-25T02:16:58.868182] LOG: 🎨 UUID_1363acae_BACKGROUND_CHANGED
+🌐 [2025-06-25T02:16:58.868259] LOG: 📝 UUID_1363acae_TITLE_CHANGED
+🌐 [2025-06-25T02:16:58.868390] LOG: 👁️ UUID_1363acae_VISUAL_INDICATOR_ADDED
+🌐 [2025-06-25T02:16:58.868477] ERROR: ⚠️ UUID_1363acae_INTENTIONAL_ERROR_TEST
+🌐 [2025-06-25T02:16:58.868549] WARNING: 🟡 UUID_1363acae_INTENTIONAL_WARNING_TEST
+🌐 [2025-06-25T02:16:58.868607] LOG: ✅ UUID_1363acae_JS_EXECUTION_COMPLETE
+🌐 [2025-06-25T02:16:58.872997] LOG: 🔥 CLIENT v0.2.2133: Raw WebSocket message received: js_executed Object
+🌐 [2025-06-25T02:16:58.876119] LOG: 🔥 CLIENT v0.2.2133: Raw WebSocket message received: js_executed Object
