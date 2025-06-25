@@ -6,7 +6,7 @@
  * while enabling proper multi-AI session support.
  */
 
-const { getDevToolsCoordinator } = require('./src/core/DevToolsSessionCoordinator.cjs');
+const { getDevToolsCoordinator } = require('./src/core/DevToolsSessionCoordinator.new.cjs');
 
 async function testSessionCoordination() {
     console.log('🔧 Testing DevTools Session Coordination\n');

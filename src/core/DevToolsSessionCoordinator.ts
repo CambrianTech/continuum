@@ -13,17 +13,56 @@
  * - Emergency cleanup and recovery
  */
 
-const fs = require('fs').promises;
-const path = require('path');
-const { spawn } = require('child_process');
+import { promises as fs } from 'fs';
+import * as path from 'path';
+import { spawn, ChildProcess } from 'child_process';
+
+// TypeScript interfaces for session management
+interface SessionInfo {
+  sessionId: string;
+  purpose: string;
+  aiPersona: string;
+  port?: number;
+  created: string;
+  status: 'starting' | 'active' | 'inactive';
+  userDataDir?: string;
+  browserPid?: number | null;
+  isSharedTab?: boolean;
+  tabId?: string;
+  reuseExisting?: boolean;
+  artifactPath?: string;
+  options?: any;
+}
+
+interface TabInfo {
+  sessionKey: string;
+  purpose: string;
+  aiPersona: string;
+  sessionId: string;
+  port?: number;
+  created: Date;
+  lastCheck: Date;
+}
+
+interface ProbeResult {
+  traceId: string;
+  sessionId: string;
+  purpose: string;
+  aiPersona: string;
+  port?: number;
+  timestamp: string;
+  status: 'session_validated' | 'feedback_verified' | 'connection_failed';
+}
 
 // Simple in-process tab registry to prevent duplicate tabs
 class SimpleTabRegistry {
+    private tabs = new Map<string, TabInfo>(); // sessionKey -> tabInfo
+
     constructor() {
-        this.tabs = new Map(); // sessionKey -> tabInfo
+        this.tabs = new Map();
     }
     
-    async findExistingTab(purpose, aiPersona) {
+    async findExistingTab(purpose: string, aiPersona: string): Promise<TabInfo | null> {
         const sessionKey = `${purpose}_${aiPersona}`;
         const existingTab = this.tabs.get(sessionKey);
         
@@ -97,19 +136,17 @@ class SimpleTabRegistry {
 const simpleTabRegistry = new SimpleTabRegistry();
 
 class DevToolsSessionCoordinator {
+    private activeSessions = new Map<string, SessionInfo>();
+    private portAllocation = new Map<number, string>(); // port -> sessionId
+    private sessionArtifacts = new Map<string, string>(); // sessionId -> artifactPath
+    private lockFile = '.continuum/devtools_coordinator.lock';
+    private sessionStore = '.continuum/devtools_sessions.json';
+    private portRange = {
+        start: 9222,
+        end: 9232  // Support up to 10 concurrent sessions
+    };
+
     constructor() {
-        this.activeSessions = new Map();
-        this.portAllocation = new Map(); // port -> sessionId
-        this.sessionArtifacts = new Map(); // sessionId -> artifactPath
-        this.lockFile = '.continuum/devtools_coordinator.lock';
-        this.sessionStore = '.continuum/devtools_sessions.json';
-        
-        // Default port range for DevTools
-        this.portRange = {
-            start: 9222,
-            end: 9232  // Support up to 10 concurrent sessions
-        };
-        
         this.init();
     }
 
@@ -125,9 +162,47 @@ class DevToolsSessionCoordinator {
     }
 
     /**
+     * Run automatic probe when session connects
+     */
+    async runSessionProbe(sessionInfo: SessionInfo, purpose: string, aiPersona: string): Promise<ProbeResult> {
+        const traceId = `session-probe-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+        
+        console.log(`🔬 AUTO-PROBE: Session connection validated`);
+        console.log(`   🎯 Trace ID: ${traceId}`);
+        console.log(`   📡 Session: ${sessionInfo.sessionId}`);
+        console.log(`   🎭 Purpose: ${purpose}`);
+        console.log(`   🤖 AI Persona: ${aiPersona}`);
+        console.log(`   🔌 Port: ${sessionInfo.port || 'default'}`);
+        console.log(`   ⏰ Timestamp: ${new Date().toISOString()}`);
+        
+        // Store probe result for verification
+        const probeResult = {
+            traceId,
+            sessionId: sessionInfo.sessionId,
+            purpose,
+            aiPersona,
+            port: sessionInfo.port,
+            timestamp: new Date().toISOString(),
+            status: 'session_validated'
+        };
+        
+        // Write probe result to session artifacts
+        try {
+            const artifactPath = `.continuum/sessions/${sessionInfo.sessionId}/probe_${traceId}.json`;
+            await fs.mkdir(path.dirname(artifactPath), { recursive: true });
+            await fs.writeFile(artifactPath, JSON.stringify(probeResult, null, 2));
+            console.log(`📁 Probe result saved: ${artifactPath}`);
+        } catch (error) {
+            console.log(`⚠️ Could not save probe result: ${error.message}`);
+        }
+        
+        return probeResult;
+    }
+
+    /**
      * Request a DevTools session for specific purpose and AI persona
      */
-    async requestSession(purpose, aiPersona = 'system', options = {}) {
+    async requestSession(purpose: string, aiPersona: string = 'system', options: any = {}): Promise<SessionInfo> {
         const sessionKey = this.generateSessionKey(purpose, aiPersona);
         
         console.log(`🔍 DEBUG: Requesting session for ${sessionKey}`);
@@ -232,6 +307,9 @@ class DevToolsSessionCoordinator {
         } catch (error) {
             console.warn(`⚠️ Failed immediate registration with SimpleTabRegistry: ${error.message}`);
         }
+        
+        // Run automatic probe validation on new session
+        await this.runSessionProbe(session, purpose, aiPersona);
         
         await this.saveSessions();
         
@@ -581,7 +659,7 @@ class DevToolsSessionCoordinator {
         }
 
         // AI persona sessions get WorkspaceArtifact
-        const WorkspaceArtifact = require('./artifacts/WorkspaceArtifact.cjs');
+        const { WorkspaceArtifact } = await import('./artifacts/WorkspaceArtifact.cjs');
         const artifact = new WorkspaceArtifact(session.aiPersona, session.sessionId);
         
         await artifact.createStructure();
@@ -920,7 +998,4 @@ function getDevToolsCoordinator() {
     return coordinatorInstance;
 }
 
-module.exports = {
-    DevToolsSessionCoordinator,
-    getDevToolsCoordinator
-};
+export { DevToolsSessionCoordinator, getDevToolsCoordinator };

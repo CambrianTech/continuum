@@ -5,15 +5,16 @@
 
 const path = require('path');
 
-// Import compiled TypeScript API
+// Import TypeScript session coordinator using tsx
 let TypeScriptAPI = null;
 
 async function loadTypeScriptAPI() {
   if (!TypeScriptAPI) {
     try {
-      TypeScriptAPI = await import(path.resolve(__dirname, '../dist/index.js'));
+      // Use tsx to load the TypeScript file directly
+      TypeScriptAPI = await import('./DevToolsSessionCoordinator.ts');
     } catch (error) {
-      console.warn('⚠️ TypeScript API not available, falling back to legacy system');
+      console.warn('⚠️ TypeScript session coordinator not available, falling back to legacy system');
       throw error;
     }
   }
@@ -46,7 +47,8 @@ class DevToolsSessionCoordinator {
         timeout: options.timeout
       };
       
-      const session = await api.requestSession(purpose, aiPersona, options);
+      const coordinator = api.getDevToolsCoordinator();
+      const session = await coordinator.requestSession(purpose, aiPersona, options);
       
       // Store in legacy map for compatibility
       const sessionKey = `${purpose}_${aiPersona}`;
