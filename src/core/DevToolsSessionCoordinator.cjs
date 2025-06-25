@@ -436,14 +436,25 @@ class DevToolsSessionCoordinator {
     async allocatePort() {
         for (let port = this.portRange.start; port <= this.portRange.end; port++) {
             if (!this.portAllocation.has(port)) {
+                // Immediately mark as allocated to prevent race conditions
+                this.portAllocation.set(port, 'allocating');
+                
                 // Check if port is actually available
                 const isAvailable = await this.isPortAvailable(port);
                 if (isAvailable) {
                     this.portAllocation.set(port, 'allocated');
+                    console.log(`🔌 Allocated port ${port} for new session`);
                     return port;
+                } else {
+                    // Port not available, remove the allocation
+                    this.portAllocation.delete(port);
+                    console.log(`🔌 Port ${port} not available, checking next port`);
                 }
+            } else {
+                console.log(`🔌 Port ${port} already allocated to: ${this.portAllocation.get(port)}`);
             }
         }
+        console.log(`❌ No available ports in range ${this.portRange.start}-${this.portRange.end}`);
         return null;
     }
 
