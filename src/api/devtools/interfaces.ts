@@ -25,6 +25,11 @@ export interface SessionConfig {
   shared?: boolean;
   windowTitle?: string;
   timeout?: number;
+  headless?: boolean;
+  visible?: boolean;
+  minimized?: boolean;
+  position?: { x: number; y: number };
+  size?: { width: number; height: number };
 }
 
 export interface SessionEvents {
@@ -89,6 +94,11 @@ export interface BrowserConfig {
   initialUrl: string;
   windowTitle: string;
   shared: boolean;
+  headless?: boolean;
+  visible?: boolean;
+  minimized?: boolean;
+  position?: { x: number; y: number };
+  size?: { width: number; height: number };
 }
 
 export interface DevToolsResponse<T = any> {
