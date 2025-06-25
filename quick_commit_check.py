@@ -101,9 +101,13 @@ createVerificationArtifact().catch(console.error);
         return None
 
 def run_verification():
-    """Run verification using coordinated DevTools session"""
+    """Run verification using coordinated DevTools session with multiple fallback strategies"""
     log_milestone("VERIFICATION_START", "Launching coordinated verification system")
     log_milestone("SESSION_COORDINATION", "Requesting verification DevTools session")
+    
+    # Track verification attempts and results
+    verification_attempts = []
+    final_result = None
     
     # Request coordinated session to prevent duplicate browsers
     session_request_script = """
@@ -244,31 +248,58 @@ runCoordinatedVerification();
             
             if 'COORDINATED_VERIFICATION_SUCCESS' in result.stdout:
                 log_milestone("VERIFICATION_COMPLETE", "Coordinated verification successful")
+                verification_attempts.append(("coordinated", "SUCCESS", result.stdout))
                 # Create a successful result object
                 class SuccessResult:
                     def __init__(self):
                         self.returncode = 0
                         self.stdout = result.stdout
                         self.stderr = result.stderr
+                        self.verification_method = "coordinated"
+                        self.attempts = verification_attempts
                 return SuccessResult()
             else:
-                log_milestone("VERIFICATION_FAILED", "Coordinated verification failed")
+                log_milestone("VERIFICATION_FAILED", "Coordinated verification failed, trying fallback")
+                verification_attempts.append(("coordinated", "FAILED", result.stdout))
         except Exception as e:
-            log_milestone("VERIFICATION_ERROR", f"Coordinated verification error: {e}")
-    
-    # Fallback to original verification method if coordination fails
-    log_milestone("FALLBACK_VERIFICATION", "Using fallback verification method")
-    result = subprocess.run([
-        sys.executable, 'devtools_full_demo.py', '--commit-check'
-    ], capture_output=True, text=True, timeout=60)
-    
-    if result.returncode == 0:
-        log_milestone("VERIFICATION_COMPLETE", "Fallback verification successful")
+            log_milestone("VERIFICATION_ERROR", f"Coordinated verification error: {e}, trying fallback")
+            verification_attempts.append(("coordinated", "ERROR", str(e)))
     else:
-        log_milestone("VERIFICATION_FAILED", "Fallback verification failed", 
-                     f"Exit code: {result.returncode}")
+        verification_attempts.append(("session_coordination", "FAILED", "No session available"))
     
-    return result
+    # Fallback to original verification method ONLY if coordination fails
+    log_milestone("FALLBACK_VERIFICATION", "Using fallback verification method")
+    try:
+        result = subprocess.run([
+            sys.executable, 'devtools_full_demo.py', '--commit-check'
+        ], capture_output=True, text=True, timeout=60)
+        
+        if result.returncode == 0:
+            log_milestone("VERIFICATION_COMPLETE", "Fallback verification successful")
+            verification_attempts.append(("fallback", "SUCCESS", result.stdout))
+            result.verification_method = "fallback"
+            result.attempts = verification_attempts
+            return result
+        else:
+            log_milestone("VERIFICATION_FAILED", "Fallback verification failed", 
+                         f"Exit code: {result.returncode}")
+            verification_attempts.append(("fallback", "FAILED", f"Exit code: {result.returncode}"))
+    except Exception as e:
+        log_milestone("VERIFICATION_ERROR", f"Fallback verification error: {e}")
+        verification_attempts.append(("fallback", "ERROR", str(e)))
+    
+    # ALL VERIFICATION METHODS FAILED - Create comprehensive failure report
+    log_milestone("VERIFICATION_TOTAL_FAILURE", "ALL verification methods failed")
+    
+    class FailedResult:
+        def __init__(self, attempts):
+            self.returncode = 1
+            self.stdout = "\n".join([f"{method}: {status} - {details}" for method, status, details in attempts])
+            self.stderr = "All verification methods failed"
+            self.verification_method = "none"
+            self.attempts = attempts
+    
+    return FailedResult(verification_attempts)
 
 def update_verification_artifact(artifact_path, verification_result, screenshot_path=None):
     """Update VerificationArtifact with verification results"""
