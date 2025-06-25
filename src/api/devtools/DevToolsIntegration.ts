@@ -29,6 +29,8 @@ import {
     EventType
 } from './types';
 
+import { TabCoordinator, Tab, getTabCoordinator } from './TabCoordinator';
+
 /**
  * Git Hook Integration Service
  * Manages DevTools sessions specifically for git commit verification
@@ -37,10 +39,13 @@ export class GitHookIntegrationService {
     private static instance: GitHookIntegrationService | null = null;
     private devToolsAPI: IDevToolsAPI | null = null;
     private currentSession: IDevToolsSession | null = null;
+    private currentTab: Tab | null = null;
+    private tabCoordinator: TabCoordinator;
     private verificationInProgress: boolean = false;
 
     private constructor() {
         // Singleton pattern for git hook integration
+        this.tabCoordinator = getTabCoordinator();
     }
 
     public static getInstance(): GitHookIntegrationService {
@@ -91,6 +96,62 @@ export class GitHookIntegrationService {
         this.devToolsAPI.on(EventType.SCREENSHOT_CAPTURED, (result: IScreenshotResult) => {
             console.log(`📸 Git Hook: Screenshot captured - ${result.filename}`);
         });
+    }
+
+    /**
+     * Request coordinated tab for git verification (prevents duplicates)
+     */
+    public async requestVerificationTab(): Promise<IResult<Tab>> {
+        try {
+            // First, check if we already have a verification tab
+            const existingTab = this.tabCoordinator.findExistingTab(
+                SessionPurpose.GIT_VERIFICATION,
+                'system'
+            );
+
+            if (existingTab && existingTab.isReady()) {
+                console.log(`🔄 Using existing git verification tab: ${existingTab.getId()}`);
+                this.currentTab = existingTab;
+                return { success: true, data: existingTab };
+            }
+
+            // No existing tab, need to create session first
+            const sessionResult = await this.requestVerificationSession();
+            if (!sessionResult.success) {
+                return { success: false, error: sessionResult.error };
+            }
+
+            // Get tab information from session
+            const tabsResponse = await fetch(`http://localhost:${this.currentSession!.metadata.port}/json`);
+            const tabs = await tabsResponse.json();
+            
+            const continuumTab = tabs.find((tab: any) => tab.url.includes('localhost:9000'));
+            if (!continuumTab) {
+                return {
+                    success: false,
+                    error: new SessionError('No Continuum tab found in session', 'git_verification')
+                };
+            }
+
+            // Register tab with coordinator
+            const coordTab = await this.tabCoordinator.registerTab(continuumTab, {
+                purpose: SessionPurpose.GIT_VERIFICATION,
+                aiPersona: 'system',
+                sessionId: this.currentSession!.metadata.sessionId,
+                port: this.currentSession!.metadata.port,
+                isShared: this.currentSession!.isSharedTab
+            });
+
+            this.currentTab = coordTab;
+            console.log(`✅ Created new coordinated git verification tab: ${coordTab.getId()}`);
+            
+            return { success: true, data: coordTab };
+        } catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error : new SessionError('Tab coordination failed', 'git_verification')
+            };
+        }
     }
 
     /**
@@ -175,32 +236,33 @@ export class GitHookIntegrationService {
     }
 
     /**
-     * Execute verification JavaScript in coordinated session
+     * Execute verification JavaScript in coordinated tab
      */
     public async executeVerificationScript(commitSHA: string, commitMessage: string): Promise<IResult<any>> {
-        if (!this.devToolsAPI || !this.currentSession) {
+        if (!this.currentTab) {
             return {
                 success: false,
-                error: new SessionError('No active verification session', 'git_verification')
+                error: new SessionError('No active verification tab', 'git_verification')
             };
         }
 
         try {
             // Create verification script with proper TypeScript typing
             const verificationScript = `
-                // Git hook verification using coordinated session
-                console.log('🔥 GIT_HOOK_COORDINATED_VERIFICATION_START');
+                // Git hook verification using coordinated tab
+                console.log('🔥 GIT_HOOK_TYPESCRIPT_TAB_VERIFICATION_START');
                 
                 // Execute verification tests with proper error handling
                 const testResults = {
-                    sessionCoordinated: true,
-                    port: ${this.currentSession.metadata.port},
-                    sessionId: '${this.currentSession.metadata.sessionId}',
+                    tabCoordinated: true,
+                    tabId: '${this.currentTab.getId()}',
+                    purpose: '${this.currentTab.getPurpose()}',
+                    aiPersona: '${this.currentTab.getAIPersona()}',
                     commitSHA: '${commitSHA}',
                     commitMessage: '${commitMessage}',
                     timestamp: new Date().toISOString(),
-                    gitHookIntegration: 'WORKING_TYPESCRIPT',
-                    verificationLevel: 'PRODUCTION'
+                    gitHookIntegration: 'WORKING_TYPESCRIPT_TAB_COORDINATOR',
+                    verificationLevel: 'PRODUCTION_TAB_MANAGED'
                 };
                 
                 // Test basic UI functionality
@@ -214,24 +276,21 @@ export class GitHookIntegrationService {
                 }
                 
                 // Test console forwarding
-                console.log('🎯 COORDINATED_SESSION_VERIFICATION:', JSON.stringify(testResults));
-                console.log('✅ GIT_HOOK_COORDINATED_VERIFICATION_COMPLETE');
+                console.log('🎯 TAB_COORDINATED_VERIFICATION:', JSON.stringify(testResults));
+                console.log('✅ GIT_HOOK_TAB_VERIFICATION_COMPLETE');
                 
                 // Return success marker for git hook
                 testResults;
             `;
 
-            // Execute script in session
-            const result = await this.devToolsAPI.executeJavaScript(
-                this.currentSession.metadata.sessionId,
-                verificationScript
-            );
+            // Execute script directly in the coordinated tab
+            const result = await this.currentTab.executeJavaScript(verificationScript);
 
             return { success: true, data: result };
         } catch (error) {
             return {
                 success: false,
-                error: error instanceof Error ? error : new SessionError('Script execution failed', this.currentSession.metadata.sessionId)
+                error: error instanceof Error ? error : new SessionError('Tab script execution failed', this.currentTab.getId())
             };
         }
     }
@@ -399,10 +458,10 @@ export async function runGitHookVerification(
             return { success: false, error: initResult.error };
         }
 
-        // Request verification session
-        const sessionResult = await integration.requestVerificationSession();
-        if (!sessionResult.success) {
-            return { success: false, error: sessionResult.error };
+        // Request verification tab (uses TabCoordinator to prevent duplicates)
+        const tabResult = await integration.requestVerificationTab();
+        if (!tabResult.success) {
+            return { success: false, error: tabResult.error };
         }
 
         // Execute verification script
