@@ -101,9 +101,54 @@ createVerificationArtifact().catch(console.error);
         return None
 
 def run_verification():
-    """Run verification and return result"""
-    log_milestone("VERIFICATION_START", "Launching emergency verification system")
-    log_milestone("BROWSER_LAUNCH", "Starting DevTools recovery browser", 
+    """Run verification using coordinated DevTools session"""
+    log_milestone("VERIFICATION_START", "Launching coordinated verification system")
+    log_milestone("SESSION_COORDINATION", "Requesting verification DevTools session")
+    
+    # First request coordinated session to prevent duplicate browsers
+    session_request_script = """
+const { getDevToolsCoordinator } = require('./src/core/DevToolsSessionCoordinator.cjs');
+
+async function requestVerificationSession() {
+    try {
+        const coordinator = getDevToolsCoordinator();
+        const session = await coordinator.requestSession('git_verification', 'system', {
+            createArtifact: false  // VerificationArtifact handles this
+        });
+        
+        console.log(`SESSION_READY:${session.port}:${session.sessionId}`);
+    } catch (error) {
+        console.log(`SESSION_ERROR:${error.message}`);
+    }
+}
+
+requestVerificationSession();
+"""
+    
+    # Write and execute session request
+    script_path = Path('.continuum/temp_session_request.cjs')
+    script_path.write_text(session_request_script)
+    
+    try:
+        session_result = subprocess.run(['node', str(script_path)], 
+                                      capture_output=True, text=True, timeout=15)
+        script_path.unlink()
+        
+        if session_result.returncode == 0 and 'SESSION_READY:' in session_result.stdout:
+            # Extract session info
+            session_info = session_result.stdout.strip()
+            if session_info.startswith('SESSION_READY:'):
+                _, port, session_id = session_info.split(':')
+                log_milestone("SESSION_READY", f"DevTools session ready on port {port}")
+            else:
+                log_milestone("SESSION_FALLBACK", "Using fallback verification")
+        else:
+            log_milestone("SESSION_FALLBACK", "Session coordination failed, using direct verification")
+    except Exception as e:
+        log_milestone("SESSION_ERROR", f"Session coordination error: {e}")
+    
+    # Run verification with coordinated session
+    log_milestone("BROWSER_VERIFICATION", "Running verification with coordinated session", 
                  "devtools_full_demo.py --commit-check")
     
     result = subprocess.run([
@@ -111,9 +156,9 @@ def run_verification():
     ], capture_output=True, text=True, timeout=60)
     
     if result.returncode == 0:
-        log_milestone("VERIFICATION_COMPLETE", "Emergency verification successful")
+        log_milestone("VERIFICATION_COMPLETE", "Coordinated verification successful")
     else:
-        log_milestone("VERIFICATION_FAILED", "Emergency verification failed", 
+        log_milestone("VERIFICATION_FAILED", "Coordinated verification failed", 
                      f"Exit code: {result.returncode}")
     
     return result
