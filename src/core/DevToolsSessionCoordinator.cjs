@@ -163,7 +163,25 @@ class DevToolsSessionCoordinator {
     async _createSessionWithLock(purpose, aiPersona, options) {
         const sessionKey = this.generateSessionKey(purpose, aiPersona);
         
-        // First check SimpleTabRegistry for existing tabs (prevents duplicate browsers)
+        // First check if ANY Continuum browser is already running (regardless of purpose)
+        const existingContinuumBrowser = await this.findExistingContinuumBrowser();
+        
+        if (existingContinuumBrowser) {
+            console.log(`🔄 Found existing Continuum browser on port ${existingContinuumBrowser.port}`);
+            
+            // Create new tab in existing browser instead of new browser
+            try {
+                const newTabSession = await this.createTabInExistingBrowser(existingContinuumBrowser, purpose, aiPersona, options);
+                console.log(`✅ Created new tab in existing browser: ${newTabSession.sessionId}`);
+                
+                this.activeSessions.set(sessionKey, newTabSession);
+                return newTabSession;
+            } catch (error) {
+                console.warn(`⚠️ Failed to create tab in existing browser: ${error.message}, will create new browser`);
+            }
+        }
+        
+        // Then check SimpleTabRegistry for existing tabs
         try {
             const existingTab = await simpleTabRegistry.findExistingTab(purpose, aiPersona);
             
@@ -671,6 +689,76 @@ class DevToolsSessionCoordinator {
                 status: s.status
             }))
         };
+    }
+
+    /**
+     * Find any existing browser running Continuum (any purpose/persona)
+     */
+    async findExistingContinuumBrowser() {
+        // Check all possible DevTools ports for existing Continuum browsers
+        for (let port = this.portRange.start; port <= this.portRange.end; port++) {
+            try {
+                const response = await fetch(`http://localhost:${port}/json`, {
+                    signal: AbortSignal.timeout(1000)
+                });
+                
+                if (response.ok) {
+                    const tabs = await response.json();
+                    const continuumTab = tabs.find(tab => tab.url.includes('localhost:9000'));
+                    
+                    if (continuumTab) {
+                        console.log(`🔍 Found existing Continuum browser on port ${port} with tab: ${continuumTab.title}`);
+                        return { port, tab: continuumTab };
+                    }
+                }
+            } catch (error) {
+                // Port not available or no DevTools
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Create new tab in existing Continuum browser
+     */
+    async createTabInExistingBrowser(existingBrowser, purpose, aiPersona, options) {
+        const sessionId = `${purpose}_${aiPersona}_${Date.now()}`;
+        const newTabUrl = `http://localhost:9000?session=${sessionId}&purpose=${purpose}&persona=${aiPersona}`;
+        
+        try {
+            // Create new tab using DevTools API
+            const response = await fetch(`http://localhost:${existingBrowser.port}/json/new?${encodeURIComponent(newTabUrl)}`, {
+                method: 'PUT'
+            });
+            
+            if (response.ok) {
+                const newTab = await response.json();
+                console.log(`✅ Created new tab in existing browser: ${newTab.id}`);
+                
+                const session = {
+                    sessionId: sessionId,
+                    purpose: purpose,
+                    aiPersona: aiPersona,
+                    port: existingBrowser.port,
+                    created: new Date().toISOString(),
+                    status: 'active',
+                    isSharedTab: true,
+                    tabId: newTab.id,
+                    browserPid: null, // Shared browser
+                    reuseExisting: true
+                };
+                
+                // Register with SimpleTabRegistry immediately
+                simpleTabRegistry.registerTab(purpose, aiPersona, session);
+                
+                return session;
+            } else {
+                throw new Error(`DevTools API error: ${response.status}`);
+            }
+        } catch (error) {
+            throw new Error(`Failed to create tab: ${error.message}`);
+        }
     }
 
     /**
