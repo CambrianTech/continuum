@@ -109,17 +109,19 @@ def run_verification():
     verification_attempts = []
     final_result = None
     
-    # Request coordinated session to prevent duplicate browsers
+    # Request coordinated session using clean TypeScript API
     session_request_script = """
-const { getDevToolsCoordinator } = require('./src/core/DevToolsSessionCoordinator.cjs');
+const { getDevToolsCoordinator } = require('./src/core/DevToolsSessionCoordinator.new.cjs');
 
 async function requestVerificationSession() {
     try {
         const coordinator = getDevToolsCoordinator();
         const session = await coordinator.requestSession('git_verification', 'system', {
-            createArtifact: false,  // VerificationArtifact handles this
             sharedWindow: true,     // Use shared browser window with tabs
-            windowTitle: 'Continuum DevTools - Git Verification'
+            windowTitle: 'Continuum DevTools - Git Verification',
+            visible: false,         // Run in background - no visible windows!
+            minimized: true,        // Start minimized if visible
+            position: { x: -9999, y: -9999 }  // Move off-screen
         });
         
         console.log(`SESSION_READY:${session.port}:${session.sessionId}:${session.isSharedTab || false}`);

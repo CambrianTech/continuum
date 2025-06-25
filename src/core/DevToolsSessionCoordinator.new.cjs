@@ -31,6 +31,21 @@ class DevToolsSessionCoordinator {
   async requestSession(purpose, aiPersona = 'system', options = {}) {
     try {
       const api = await loadTypeScriptAPI();
+      
+      // Map legacy options to new TypeScript config
+      const config = {
+        purpose: purpose,
+        persona: aiPersona,
+        shared: options.sharedWindow !== false,
+        windowTitle: options.windowTitle,
+        visible: options.visible,
+        headless: options.headless,
+        minimized: options.minimized,
+        position: options.position,
+        size: options.size,
+        timeout: options.timeout
+      };
+      
       const session = await api.requestSession(purpose, aiPersona, options);
       
       // Store in legacy map for compatibility

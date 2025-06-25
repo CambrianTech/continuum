@@ -115,7 +115,12 @@ export class SessionManager implements ISessionManager {
       userDataDir: `/tmp/continuum-session-${sessionId}`,
       initialUrl: sessionUrl,
       windowTitle: config.windowTitle || `Continuum - ${config.purpose}`,
-      shared: config.shared !== false
+      shared: config.shared !== false,
+      headless: config.headless,
+      visible: config.visible,
+      minimized: config.minimized,
+      position: config.position,
+      size: config.size
     };
 
     try {

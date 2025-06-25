@@ -76,6 +76,25 @@ export class BrowserCoordinator implements IBrowserCoordinator {
       `--window-name=${config.windowTitle}`
     ];
 
+    // Add visibility and positioning options
+    if (config.headless) {
+      operaCmd.push('--headless');
+    }
+    
+    if (config.visible === false) {
+      operaCmd.push('--window-position=-9999,-9999'); // Move off-screen
+    } else if (config.position) {
+      operaCmd.push(`--window-position=${config.position.x},${config.position.y}`);
+    }
+    
+    if (config.size) {
+      operaCmd.push(`--window-size=${config.size.width},${config.size.height}`);
+    }
+    
+    if (config.minimized) {
+      operaCmd.push('--start-minimized');
+    }
+
     const browserProcess = spawn(operaCmd[0], operaCmd.slice(1), {
       stdio: ['ignore', 'ignore', 'ignore'],
       detached: false
