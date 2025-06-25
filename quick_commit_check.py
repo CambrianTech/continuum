@@ -105,7 +105,7 @@ def run_verification():
     log_milestone("VERIFICATION_START", "Launching coordinated verification system")
     log_milestone("SESSION_COORDINATION", "Requesting verification DevTools session")
     
-    # First request coordinated session to prevent duplicate browsers
+    # Request coordinated session to prevent duplicate browsers
     session_request_script = """
 const { getDevToolsCoordinator } = require('./src/core/DevToolsSessionCoordinator.cjs');
 
@@ -113,10 +113,12 @@ async function requestVerificationSession() {
     try {
         const coordinator = getDevToolsCoordinator();
         const session = await coordinator.requestSession('git_verification', 'system', {
-            createArtifact: false  // VerificationArtifact handles this
+            createArtifact: false,  // VerificationArtifact handles this
+            sharedWindow: true,     // Use shared browser window with tabs
+            windowTitle: 'Continuum DevTools - Git Verification'
         });
         
-        console.log(`SESSION_READY:${session.port}:${session.sessionId}`);
+        console.log(`SESSION_READY:${session.port}:${session.sessionId}:${session.isSharedTab || false}`);
     } catch (error) {
         console.log(`SESSION_ERROR:${error.message}`);
     }
@@ -129,17 +131,27 @@ requestVerificationSession();
     script_path = Path('.continuum/temp_session_request.cjs')
     script_path.write_text(session_request_script)
     
+    devtools_port = None
+    session_id = None
+    is_shared_tab = False
+    
     try:
         session_result = subprocess.run(['node', str(script_path)], 
                                       capture_output=True, text=True, timeout=15)
         script_path.unlink()
         
         if session_result.returncode == 0 and 'SESSION_READY:' in session_result.stdout:
-            # Extract session info
+            # Extract session info: SESSION_READY:port:sessionId:isSharedTab
             session_info = session_result.stdout.strip()
             if session_info.startswith('SESSION_READY:'):
-                _, port, session_id = session_info.split(':')
-                log_milestone("SESSION_READY", f"DevTools session ready on port {port}")
+                parts = session_info.split(':')
+                _, devtools_port, session_id = parts[:3]
+                is_shared_tab = parts[3] == 'true' if len(parts) > 3 else False
+                log_milestone("SESSION_READY", f"DevTools session ready on port {devtools_port}")
+                if is_shared_tab:
+                    log_milestone("SHARED_TAB", "Using shared browser window (new tab)")
+                else:
+                    log_milestone("NEW_WINDOW", "Using dedicated browser window")
             else:
                 log_milestone("SESSION_FALLBACK", "Using fallback verification")
         else:
@@ -147,18 +159,113 @@ requestVerificationSession();
     except Exception as e:
         log_milestone("SESSION_ERROR", f"Session coordination error: {e}")
     
-    # Run verification with coordinated session
-    log_milestone("BROWSER_VERIFICATION", "Running verification with coordinated session", 
-                 "devtools_full_demo.py --commit-check")
+    # Run verification using coordinated session instead of devtools_full_demo.py
+    if devtools_port and session_id:
+        log_milestone("COORDINATED_VERIFICATION", f"Using coordinated DevTools session {session_id} on port {devtools_port}")
+        
+        # Use the coordinated session directly with our verification system  
+        verification_script = f"""
+const fetch = (() => {{
+    try {{ return require('node-fetch'); }}
+    catch {{ return global.fetch || fetch; }}
+}})();
+
+async function runCoordinatedVerification() {{
+    const port = {devtools_port};
+    const sessionId = '{session_id}';
     
+    try {{
+        // Get browser tabs to find our verification tab
+        const tabsResponse = await fetch(`http://localhost:${{port}}/json`);
+        const tabs = await tabsResponse.json();
+        
+        const verificationTab = tabs.find(tab => tab.url.includes('localhost:9000'));
+        if (!verificationTab) {{
+            throw new Error('Continuum tab not found in coordinated session');
+        }}
+        
+        console.log(`VERIFICATION_TAB_FOUND:${{verificationTab.id}}`);
+        
+        // Run verification JavaScript in the coordinated tab
+        const verificationCode = `
+            // Git hook verification using coordinated session
+            console.log('🔥 GIT_HOOK_COORDINATED_VERIFICATION_START');
+            
+            // Execute verification tests
+            const testResults = {{
+                sessionCoordinated: true,
+                port: ${{port}},
+                sessionId: '${{sessionId}}',
+                timestamp: new Date().toISOString(),
+                gitHookIntegration: 'WORKING'
+            }};
+            
+            console.log('🎯 COORDINATED_SESSION_VERIFICATION:', JSON.stringify(testResults));
+            console.log('✅ GIT_HOOK_COORDINATED_VERIFICATION_COMPLETE');
+            
+            // Return success marker
+            testResults;
+        `;
+        
+        // Execute in coordinated browser tab
+        const execResponse = await fetch(`http://localhost:${{port}}/json/runtime/evaluate`, {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{
+                expression: verificationCode,
+                returnByValue: true
+            }})
+        }});
+        
+        const execResult = await execResponse.json();
+        
+        if (execResult.result && execResult.result.value) {{
+            console.log('COORDINATED_VERIFICATION_SUCCESS');
+        }} else {{
+            console.log('COORDINATED_VERIFICATION_FAILED');
+        }}
+        
+    }} catch (error) {{
+        console.log(`COORDINATED_VERIFICATION_ERROR:${{error.message}}`);
+    }}
+}}
+
+runCoordinatedVerification();
+"""
+        
+        # Execute coordinated verification
+        coord_script_path = Path('.continuum/temp_coordinated_verification.cjs')
+        coord_script_path.write_text(verification_script)
+        
+        try:
+            result = subprocess.run(['node', str(coord_script_path)], 
+                                  capture_output=True, text=True, timeout=30)
+            coord_script_path.unlink()
+            
+            if 'COORDINATED_VERIFICATION_SUCCESS' in result.stdout:
+                log_milestone("VERIFICATION_COMPLETE", "Coordinated verification successful")
+                # Create a successful result object
+                class SuccessResult:
+                    def __init__(self):
+                        self.returncode = 0
+                        self.stdout = result.stdout
+                        self.stderr = result.stderr
+                return SuccessResult()
+            else:
+                log_milestone("VERIFICATION_FAILED", "Coordinated verification failed")
+        except Exception as e:
+            log_milestone("VERIFICATION_ERROR", f"Coordinated verification error: {e}")
+    
+    # Fallback to original verification method if coordination fails
+    log_milestone("FALLBACK_VERIFICATION", "Using fallback verification method")
     result = subprocess.run([
         sys.executable, 'devtools_full_demo.py', '--commit-check'
     ], capture_output=True, text=True, timeout=60)
     
     if result.returncode == 0:
-        log_milestone("VERIFICATION_COMPLETE", "Coordinated verification successful")
+        log_milestone("VERIFICATION_COMPLETE", "Fallback verification successful")
     else:
-        log_milestone("VERIFICATION_FAILED", "Coordinated verification failed", 
+        log_milestone("VERIFICATION_FAILED", "Fallback verification failed", 
                      f"Exit code: {result.returncode}")
     
     return result

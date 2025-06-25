@@ -130,6 +130,27 @@ class DevToolsSessionCoordinator {
      * Launch Opera browser for DevTools session
      */
     async launchBrowser(session) {
+        // Check if we should use shared browser window or new window
+        const sharedWindow = session.options.sharedWindow !== false;
+        const windowTitle = session.options.windowTitle || 'Continuum DevTools';
+        
+        if (sharedWindow) {
+            // Try to reuse existing browser window by using shared user data dir
+            const sharedUserDataDir = '/tmp/opera-devtools-continuum-shared';
+            session.userDataDir = sharedUserDataDir;
+            
+            // Check if browser is already running on primary port
+            const primaryPort = this.portRange.start; // 9222
+            const existingBrowser = await this.isPortAvailable(primaryPort);
+            
+            if (!existingBrowser) {
+                // Browser already running, open new tab in existing window
+                console.log(`🔄 Adding tab to existing Continuum DevTools window on port ${session.port}`);
+                await this.openNewTabInBrowser(session);
+                return { pid: null, isNewTab: true };
+            }
+        }
+
         const operaCmd = [
             '/Applications/Opera GX.app/Contents/MacOS/Opera',
             `--remote-debugging-port=${session.port}`,
@@ -144,10 +165,11 @@ class DevToolsSessionCoordinator {
             '--disable-default-apps',
             '--disable-extensions',
             `--user-data-dir=${session.userDataDir}`,
-            'http://localhost:9000'
+            `--app=http://localhost:9000?session=${session.sessionId}&purpose=${session.purpose}&persona=${session.aiPersona}`,
+            `--window-name=${windowTitle}`
         ];
 
-        console.log(`🌐 Launching Opera for session ${session.sessionId} on port ${session.port}`);
+        console.log(`🌐 Launching ${sharedWindow ? 'shared' : 'dedicated'} Opera window for session ${session.sessionId} on port ${session.port}`);
         const browserProcess = spawn(operaCmd[0], operaCmd.slice(1), {
             stdio: ['ignore', 'ignore', 'ignore'],
             detached: false
@@ -157,6 +179,42 @@ class DevToolsSessionCoordinator {
         await new Promise(resolve => setTimeout(resolve, 2000));
 
         return browserProcess;
+    }
+
+    /**
+     * Open new tab in existing browser window using DevTools Protocol
+     */
+    async openNewTabInBrowser(session) {
+        try {
+            // Find active browser port
+            let activeBrowserPort = null;
+            for (const [sessionKey, existingSession] of this.activeSessions.entries()) {
+                if (await this.isSessionActive(existingSession)) {
+                    activeBrowserPort = existingSession.port;
+                    break;
+                }
+            }
+
+            if (!activeBrowserPort) {
+                throw new Error('No active browser found for new tab');
+            }
+
+            // Create new tab using DevTools API
+            const newTabUrl = `http://localhost:9000?session=${session.sessionId}&purpose=${session.purpose}&persona=${session.aiPersona}`;
+            const response = await fetch(`http://localhost:${activeBrowserPort}/json/new?${newTabUrl}`);
+            
+            if (response.ok) {
+                console.log(`✅ New tab created in existing browser window`);
+                // Update session to use the shared browser port
+                session.port = activeBrowserPort;
+                session.isSharedTab = true;
+            } else {
+                throw new Error('Failed to create new tab');
+            }
+        } catch (error) {
+            console.log(`⚠️ Could not create new tab, launching separate browser: ${error.message}`);
+            throw error; // Will fall back to separate browser launch
+        }
     }
 
     /**
