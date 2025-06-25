@@ -116,11 +116,13 @@ export class SessionManager implements ISessionManager {
       initialUrl: sessionUrl,
       windowTitle: config.windowTitle || `Continuum - ${config.purpose}`,
       shared: config.shared !== false,
+      browserType: config.browser,
       headless: config.headless,
       visible: config.visible,
       minimized: config.minimized,
       position: config.position,
-      size: config.size
+      size: config.size,
+      additionalArgs: config.additionalBrowserArgs
     };
 
     try {
