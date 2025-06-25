@@ -103,11 +103,20 @@ class DevToolsSessionCoordinator {
         try {
             // Launch browser with unique user data directory
             const browserProcess = await this.launchBrowser(session);
-            session.browserPid = browserProcess.pid;
-            session.status = 'active';
             
-            // Wait for DevTools to be ready
-            await this.waitForDevToolsReady(port);
+            if (browserProcess && browserProcess.isNewTab) {
+                // For new tabs, DevTools is already ready on the shared port
+                session.browserPid = null; // No separate process for shared tabs
+                session.status = 'active';
+                console.log(`✅ DevTools session active (shared tab): ${sessionId} on port ${session.port}`);
+            } else {
+                // For new browser windows, wait for DevTools to be ready
+                session.browserPid = browserProcess.pid;
+                session.status = 'active';
+                
+                await this.waitForDevToolsReady(port);
+                console.log(`✅ DevTools session active: ${sessionId} on port ${port}`);
+            }
             
             // Create session artifact if requested
             if (options.createArtifact !== false) {
@@ -116,7 +125,6 @@ class DevToolsSessionCoordinator {
                 this.sessionArtifacts.set(sessionId, artifactPath);
             }
 
-            console.log(`✅ DevTools session active: ${sessionId} on port ${port}`);
             return session;
 
         } catch (error) {
@@ -144,10 +152,18 @@ class DevToolsSessionCoordinator {
             const existingBrowser = await this.isPortAvailable(primaryPort);
             
             if (!existingBrowser) {
-                // Browser already running, open new tab in existing window
-                console.log(`🔄 Adding tab to existing Continuum DevTools window on port ${session.port}`);
-                await this.openNewTabInBrowser(session);
-                return { pid: null, isNewTab: true };
+                // Browser already running, try to open new tab in existing window
+                console.log(`🔄 Adding tab to existing Continuum DevTools window`);
+                const newTabResult = await this.openNewTabInBrowser(session);
+                
+                if (newTabResult) {
+                    // New tab created successfully
+                    return newTabResult;
+                } else {
+                    // New tab creation failed, fall back to separate browser window
+                    console.log(`🔄 New tab creation failed, launching separate browser window`);
+                    // Continue to regular browser launch below
+                }
             }
         }
 
@@ -201,19 +217,31 @@ class DevToolsSessionCoordinator {
 
             // Create new tab using DevTools API
             const newTabUrl = `http://localhost:9000?session=${session.sessionId}&purpose=${session.purpose}&persona=${session.aiPersona}`;
-            const response = await fetch(`http://localhost:${activeBrowserPort}/json/new?${newTabUrl}`);
+            
+            // Use the correct DevTools API endpoint with PUT method
+            const response = await fetch(`http://localhost:${activeBrowserPort}/json/new?${encodeURIComponent(newTabUrl)}`, {
+                method: 'PUT'
+            });
             
             if (response.ok) {
-                console.log(`✅ New tab created in existing browser window`);
-                // Update session to use the shared browser port
+                const tabInfo = await response.json();
+                console.log(`✅ New tab created in existing browser window: ${tabInfo.id}`);
+                
+                // Update session to use the shared browser port and tab info
                 session.port = activeBrowserPort;
                 session.isSharedTab = true;
+                session.tabId = tabInfo.id;
+                session.sharedUserDataDir = true;
+                
+                return { pid: null, isNewTab: true, tabInfo };
             } else {
-                throw new Error('Failed to create new tab');
+                const errorText = await response.text();
+                throw new Error(`DevTools API error: ${response.status} - ${errorText}`);
             }
         } catch (error) {
-            console.log(`⚠️ Could not create new tab, launching separate browser: ${error.message}`);
-            throw error; // Will fall back to separate browser launch
+            // Don't throw, instead let it fall back to separate browser launch
+            console.log(`⚠️ Could not create new tab, will launch separate browser: ${error.message}`);
+            return null; // Signals to caller that new tab creation failed
         }
     }
 
