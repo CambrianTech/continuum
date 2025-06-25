@@ -23,11 +23,11 @@ class SimpleTabRegistry {
         this.tabs = new Map(); // sessionKey -> tabInfo
     }
     
-    findExistingTab(purpose, aiPersona) {
+    async findExistingTab(purpose, aiPersona) {
         const sessionKey = `${purpose}_${aiPersona}`;
         const existingTab = this.tabs.get(sessionKey);
         
-        if (existingTab && this.isTabStillActive(existingTab)) {
+        if (existingTab && await this.isTabStillActive(existingTab)) {
             console.log(`🔄 SimpleTabRegistry: Found existing tab for ${sessionKey}`);
             return existingTab;
         }
@@ -35,6 +35,7 @@ class SimpleTabRegistry {
         // Clean up stale tab entry
         if (existingTab) {
             this.tabs.delete(sessionKey);
+            console.log(`🧹 SimpleTabRegistry: Cleaned up stale tab for ${sessionKey}`);
         }
         
         return null;
@@ -129,12 +130,46 @@ class DevToolsSessionCoordinator {
     async requestSession(purpose, aiPersona = 'system', options = {}) {
         const sessionKey = this.generateSessionKey(purpose, aiPersona);
         
+        console.log(`🔍 DEBUG: Requesting session for ${sessionKey}`);
+        console.log(`🔍 DEBUG: Current registry has ${simpleTabRegistry.tabs.size} entries`);
+        
+        // Use file-based lock to prevent race conditions across multiple processes
+        const lockFile = `.continuum/session_lock_${sessionKey}.lock`;
+        const maxWaitTime = 30000; // 30 seconds
+        const startTime = Date.now();
+        
+        // Wait for any existing lock to clear
+        while (await this.isFileLocked(lockFile)) {
+            if (Date.now() - startTime > maxWaitTime) {
+                console.log(`⚠️ Lock timeout for ${sessionKey}, proceeding anyway`);
+                break;
+            }
+            console.log(`⏳ Waiting for session lock to clear: ${sessionKey}`);
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        // Create file lock
+        await this.createFileLock(lockFile);
+        
+        try {
+            const result = await this._createSessionWithLock(purpose, aiPersona, options);
+            return result;
+        } finally {
+            // Always remove lock
+            await this.removeFileLock(lockFile);
+        }
+    }
+
+    async _createSessionWithLock(purpose, aiPersona, options) {
+        const sessionKey = this.generateSessionKey(purpose, aiPersona);
+        
         // First check SimpleTabRegistry for existing tabs (prevents duplicate browsers)
         try {
             const existingTab = await simpleTabRegistry.findExistingTab(purpose, aiPersona);
             
             if (existingTab) {
                 console.log(`🔄 SimpleTabRegistry: Reusing existing tab for ${sessionKey}`);
+                console.log(`🔍 DEBUG: Found existing tab with port ${existingTab.port}`);
                 
                 // Return a session object that represents the existing tab
                 const existingSession = {
@@ -151,6 +186,8 @@ class DevToolsSessionCoordinator {
                 
                 this.activeSessions.set(sessionKey, existingSession);
                 return existingSession;
+            } else {
+                console.log(`🔍 DEBUG: No existing tab found for ${sessionKey}, will create new`);
             }
         } catch (error) {
             console.warn(`⚠️ SimpleTabRegistry check failed: ${error.message}`);
@@ -167,8 +204,17 @@ class DevToolsSessionCoordinator {
         console.log(`🚀 Creating new DevTools session: ${sessionKey}`);
         const session = await this.createSession(purpose, aiPersona, options);
         
-        // Store session
+        // Store session AND register immediately to prevent race conditions
         this.activeSessions.set(sessionKey, session);
+        
+        // Register with SimpleTabRegistry IMMEDIATELY to prevent duplicate creation
+        try {
+            simpleTabRegistry.registerTab(session.purpose, session.aiPersona, session);
+            console.log(`🏃 IMMEDIATE: Registered session with SimpleTabRegistry: ${session.sessionId}`);
+        } catch (error) {
+            console.warn(`⚠️ Failed immediate registration with SimpleTabRegistry: ${error.message}`);
+        }
+        
         await this.saveSessions();
         
         return session;
@@ -523,11 +569,29 @@ class DevToolsSessionCoordinator {
         
         const staleKeys = [];
         for (const [sessionKey, session] of this.activeSessions.entries()) {
+            // Don't clean up sessions that are less than 30 seconds old
+            const sessionAge = Date.now() - new Date(session.created).getTime();
+            const minSessionAge = 30 * 1000; // 30 seconds
+            
+            if (sessionAge < minSessionAge) {
+                console.log(`⏭️ Skipping cleanup of recent session: ${sessionKey} (${Math.round(sessionAge/1000)}s old)`);
+                continue;
+            }
+            
             const isActive = await this.isSessionActive(session);
             if (!isActive) {
                 console.log(`🔴 Found stale session: ${sessionKey}`);
                 staleKeys.push(sessionKey);
                 await this.cleanupSession(session.sessionId);
+                
+                // Also remove from SimpleTabRegistry when cleaning up sessions
+                const purpose = session.purpose;
+                const aiPersona = session.aiPersona;
+                const tabRegistryKey = `${purpose}_${aiPersona}`;
+                if (simpleTabRegistry.tabs.has(tabRegistryKey)) {
+                    simpleTabRegistry.tabs.delete(tabRegistryKey);
+                    console.log(`🧹 Removed ${tabRegistryKey} from SimpleTabRegistry during cleanup`);
+                }
             }
         }
 
@@ -596,6 +660,36 @@ class DevToolsSessionCoordinator {
                 status: s.status
             }))
         };
+    }
+
+    /**
+     * File-based locking helpers to prevent cross-process race conditions
+     */
+    async isFileLocked(lockFile) {
+        try {
+            await fs.access(lockFile);
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }
+    
+    async createFileLock(lockFile) {
+        try {
+            await fs.writeFile(lockFile, `${process.pid}:${Date.now()}`);
+            console.log(`🔒 Created session lock: ${lockFile}`);
+        } catch (error) {
+            console.warn(`⚠️ Failed to create session lock: ${error.message}`);
+        }
+    }
+    
+    async removeFileLock(lockFile) {
+        try {
+            await fs.unlink(lockFile);
+            console.log(`🔓 Removed session lock: ${lockFile}`);
+        } catch (error) {
+            // Lock file might not exist or already removed
+        }
     }
 
     /**
