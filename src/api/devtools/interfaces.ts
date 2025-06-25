@@ -30,6 +30,17 @@ export interface SessionConfig {
   minimized?: boolean;
   position?: { x: number; y: number };
   size?: { width: number; height: number };
+  browser?: BrowserType | 'auto';
+  additionalBrowserArgs?: string[];
+}
+
+export enum BrowserType {
+  CHROME = 'chrome',
+  FIREFOX = 'firefox',
+  SAFARI = 'safari',
+  OPERA = 'opera',
+  OPERA_GX = 'opera-gx',
+  EDGE = 'edge'
 }
 
 export interface SessionEvents {
@@ -94,11 +105,13 @@ export interface BrowserConfig {
   initialUrl: string;
   windowTitle: string;
   shared: boolean;
+  browserType?: BrowserType | 'auto';
   headless?: boolean;
   visible?: boolean;
   minimized?: boolean;
   position?: { x: number; y: number };
   size?: { width: number; height: number };
+  additionalArgs?: string[];
 }
 
 export interface DevToolsResponse<T = any> {

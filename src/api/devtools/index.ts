@@ -5,7 +5,8 @@
 
 export { 
   SessionPurpose, 
-  SessionStatus, 
+  SessionStatus,
+  BrowserType,
   type ISession, 
   type ISessionManager, 
   type SessionConfig,
@@ -15,6 +16,8 @@ export {
 export { Session } from './Session.js';
 export { BrowserCoordinator } from './BrowserCoordinator.js';
 export { SessionManager, getSessionManager } from './SessionManager.js';
+export { getBrowserRegistry } from './browsers/BrowserRegistry.js';
+export { type IBrowserAdapter } from './browsers/IBrowserAdapter.js';
 
 // Clean API for external use
 export async function requestSession(config: any): Promise<any> {

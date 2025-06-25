@@ -108,3 +108,4 @@
 06/24 20:22 ✅ 25.5s+ 0.0s= 25.5s fix  e9f14b96 Fix port allocation race condition: prevent d
 06/24 20:31 ✅ 24.3s+ 0.0s= 24.3s add  5dc2a953 Implement true tab reuse: detect existing Con
 06/24 20:35 ✅ 23.7s+ 0.0s= 23.7s ref  0ee5add0 Rebuild DevTools session coordinator in clean
+06/24 20:40 ✅ 24.1s+ 0.0s= 24.1s add  1850c9ba Add browser visibility control and integrate 

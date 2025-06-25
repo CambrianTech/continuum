@@ -4,7 +4,9 @@
  */
 
 import { spawn, ChildProcess } from 'child_process';
-import { IBrowserCoordinator, BrowserInfo, TabInfo, BrowserConfig } from './interfaces.js';
+import { IBrowserCoordinator, BrowserInfo, TabInfo, BrowserConfig, BrowserType } from './interfaces.js';
+import { getBrowserRegistry } from './browsers/BrowserRegistry.js';
+import { IBrowserAdapter, BrowserLaunchConfig } from './browsers/IBrowserAdapter.js';
 
 export class BrowserCoordinator implements IBrowserCoordinator {
   private readonly portRange = { start: 9222, end: 9232 };
@@ -52,50 +54,45 @@ export class BrowserCoordinator implements IBrowserCoordinator {
   }
 
   /**
-   * Launch new browser with proper event-driven ready detection
+   * Launch new browser using pluggable adapter system
    */
   async launchBrowser(config: BrowserConfig): Promise<BrowserInfo> {
     // First verify Continuum server is running
     await this.verifyContinuumServer();
     
-    const operaCmd = [
-      '/Applications/Opera GX.app/Contents/MacOS/Opera',
-      `--remote-debugging-port=${config.port}`,
-      '--disable-web-security',
-      '--disable-features=TranslateUI',
-      '--disable-component-update',
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-default-apps',
-      '--disable-extensions',
-      `--user-data-dir=${config.userDataDir}`,
-      `--app=${config.initialUrl}`,
-      `--window-name=${config.windowTitle}`
-    ];
-
-    // Add visibility and positioning options
-    if (config.headless) {
-      operaCmd.push('--headless');
-    }
-    
-    if (config.visible === false) {
-      operaCmd.push('--window-position=-9999,-9999'); // Move off-screen
-    } else if (config.position) {
-      operaCmd.push(`--window-position=${config.position.x},${config.position.y}`);
-    }
-    
-    if (config.size) {
-      operaCmd.push(`--window-size=${config.size.width},${config.size.height}`);
-    }
-    
-    if (config.minimized) {
-      operaCmd.push('--start-minimized');
+    // Get browser adapter (user choice or auto-detect best)
+    const browserAdapter = await this.selectBrowserAdapter(config.browserType);
+    if (!browserAdapter) {
+      throw new Error(`No suitable browser found. Requested: ${config.browserType || 'auto'}`);
     }
 
-    const browserProcess = spawn(operaCmd[0], operaCmd.slice(1), {
+    console.log(`🌐 Launching ${browserAdapter.name} for session`);
+    
+    // Convert to browser launch config
+    const launchConfig: BrowserLaunchConfig = {
+      port: config.port,
+      userDataDir: config.userDataDir,
+      initialUrl: config.initialUrl,
+      windowTitle: config.windowTitle,
+      headless: config.headless,
+      visible: config.visible,
+      minimized: config.minimized,
+      position: config.position,
+      size: config.size,
+      additionalArgs: config.additionalArgs
+    };
+
+    // Get browser-specific launch command
+    const executablePath = browserAdapter.getExecutablePath();
+    if (!executablePath) {
+      throw new Error(`${browserAdapter.name} executable not found`);
+    }
+
+    const args = browserAdapter.buildLaunchArgs(launchConfig);
+    
+    console.log(`🚀 Command: ${executablePath} ${args.join(' ')}`);
+
+    const browserProcess = spawn(executablePath, args, {
       stdio: ['ignore', 'ignore', 'ignore'],
       detached: false
     });
@@ -109,7 +106,7 @@ export class BrowserCoordinator implements IBrowserCoordinator {
 
     // Wait for browser to be ready with Continuum loaded (event-driven)
     try {
-      await this.waitForBrowserReady(browserInfo);
+      await this.waitForBrowserReady(browserInfo, browserAdapter);
       this.activeBrowsers.set(config.port, browserInfo);
       return browserInfo;
     } catch (error) {
@@ -120,6 +117,28 @@ export class BrowserCoordinator implements IBrowserCoordinator {
         // Process might already be dead
       }
       throw new Error(`Browser launch failed: ${error}`);
+    }
+  }
+
+  /**
+   * Select browser adapter based on user preference or auto-detect
+   */
+  private async selectBrowserAdapter(browserType?: BrowserType | 'auto'): Promise<IBrowserAdapter | null> {
+    const registry = getBrowserRegistry();
+    
+    if (!browserType || browserType === 'auto') {
+      // Auto-detect best available browser
+      return await registry.getBestAvailable();
+    } else {
+      // Use specific browser if available
+      const adapter = registry.get(browserType);
+      if (adapter && await adapter.isAvailable()) {
+        return adapter;
+      } else {
+        // Fallback to best available if requested browser not found
+        console.warn(`⚠️ Requested browser ${browserType} not available, using fallback`);
+        return await registry.getBestAvailable();
+      }
     }
   }
 
@@ -166,32 +185,35 @@ export class BrowserCoordinator implements IBrowserCoordinator {
   }
 
   /**
-   * Event-driven browser ready detection - no polling timeouts!
+   * Event-driven browser ready detection using adapter-specific logic
    */
-  private async waitForBrowserReady(browser: BrowserInfo, timeout = 15000): Promise<void> {
+  private async waitForBrowserReady(browser: BrowserInfo, adapter: IBrowserAdapter, timeout = 15000): Promise<void> {
     const startTime = Date.now();
     
     while (Date.now() - startTime < timeout) {
       try {
-        const response = await fetch(`http://localhost:${browser.port}/json`);
-        if (response.ok) {
-          const tabs: TabInfo[] = await response.json();
-          const continuumTab = tabs.find(tab => 
-            tab.url.includes('localhost:9000') || 
-            tab.title.toLowerCase().includes('continuum')
-          );
-          
-          if (continuumTab) {
-            // Verify Continuum is actually loaded by executing test JavaScript
-            const testReady = await this.testContinuumReady(browser.port, continuumTab.id);
-            if (testReady) {
-              browser.tabs = tabs.map(tab => ({
-                id: tab.id,
-                url: tab.url,
-                title: tab.title,
-                ready: tab.id === continuumTab.id
-              }));
-              return;
+        // Use adapter-specific ready detection
+        if (await adapter.isReady(browser.port)) {
+          const response = await fetch(adapter.getDevToolsEndpoint(browser.port));
+          if (response.ok) {
+            const tabs: TabInfo[] = await response.json();
+            const continuumTab = tabs.find(tab => 
+              tab.url.includes('localhost:9000') || 
+              tab.title.toLowerCase().includes('continuum')
+            );
+            
+            if (continuumTab) {
+              // Verify Continuum is actually loaded
+              const testReady = await this.testContinuumReady(browser.port, continuumTab.id);
+              if (testReady) {
+                browser.tabs = tabs.map(tab => ({
+                  id: tab.id,
+                  url: tab.url,
+                  title: tab.title,
+                  ready: tab.id === continuumTab.id
+                }));
+                return;
+              }
             }
           }
         }
