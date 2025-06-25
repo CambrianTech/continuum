@@ -13,6 +13,7 @@ class ContinuonStatus {
     this.currentEmotion = null;
     this.statusEmoji = '🔴';
     this.emotionTimeout = null; // For temporary emotions
+    this.statusText = null; // Current status text message
     
     console.log('🎯 ContinuonStatus: Initialized unified status system');
   }
@@ -142,6 +143,36 @@ class ContinuonStatus {
       emotion: this.currentEmotion,
       emoji: this.statusEmoji
     };
+  }
+
+  /**
+   * Update status text message (for TypeScript StatusTextCommand compatibility)
+   * @param {string} text - Status text to display
+   */
+  updateStatusText(text) {
+    this.statusText = text;
+    console.log(`💬 ContinuonStatus: Status text updated to "${text}"`);
+    this.broadcastUpdate();
+  }
+
+  /**
+   * Get current status text
+   */
+  getStatusText() {
+    return this.statusText || this.getDefaultStatusText();
+  }
+
+  /**
+   * Get default status text based on current status
+   */
+  getDefaultStatusText() {
+    switch (this.currentStatus) {
+      case 'connected': return 'Ready';
+      case 'connecting': return 'Connecting...';
+      case 'disconnected': return 'Disconnected';
+      case 'error': return 'Error';
+      default: return 'Ready';
+    }
   }
 
   /**

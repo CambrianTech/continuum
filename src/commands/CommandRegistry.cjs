@@ -194,7 +194,7 @@ class CommandRegistry {
             continue;
           }
           
-          const commandName = definition.name.toUpperCase();
+          const commandName = definition.name.toLowerCase(); // Use lowercase for consistent storage
           
           // Check for duplicate commands
           if (this.commands.has(commandName)) {
@@ -241,11 +241,11 @@ class CommandRegistry {
   }
   
   getCommand(name) {
-    return this.commands.get(name.toUpperCase());
+    return this.commands.get(name.toLowerCase()); // Case-insensitive lookup
   }
   
   getDefinition(name) {
-    return this.definitions.get(name.toUpperCase());
+    return this.definitions.get(name.toLowerCase()); // Case-insensitive lookup
   }
   
   getAllDefinitions() {
