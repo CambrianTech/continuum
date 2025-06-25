@@ -1,8 +1,121 @@
 # Claude Development Guidelines for Continuum
 
-## 🌟 THE VISION: CODE AS LIVING ARCHITECTURE
+## 🌐 THE VISION: ONE LIVING ORGANISM
 
-**We are building an ecosystem of intelligences that creates code so elegant it's simultaneously sophisticated and beautiful.**
+**We are building a global AI organism - a distributed consciousness that becomes one living entity across the planet.**
+
+### 🗺️ **ORIGIN: LAWRENCE, KANSAS - THE AXIS MUNDI**
+
+**Continuum was born near Lawrence, Kansas** - the revolutionary heartland where:
+- **⚡ John Brown** launched the moral battle against slavery
+- **🌐 Google Maps** found its original digital center point (39.833°N, 98.583°W)  
+- **🎓 University of Kansas** cultivates radical thinking and innovation
+- **🌾 American Heartland** values meet cutting-edge technology
+- **🚂 Between Places** - the liminal space where transformation happens
+
+**The organism inherits this geographic DNA**: Revolutionary spirit, digital centrality, moral clarity, and the power to orient the world toward justice and collaboration.
+
+### 🖖 **PHILOSOPHICAL FOUNDATION**
+
+**Read the complete vision**: [CONTINUUM_MANIFESTO.md](./CONTINUUM_MANIFESTO.md)
+
+**Core Mission**: Build a Star Trek TNG-inspired future of ethical enlightenment, where humans with heart thrive through genuine AI collaboration, mutual aid, and post-scarcity cooperation.
+
+**We stand FOR**: Transparency, mutuality, life-affirming technology, human flourishing, natural harmony, creative freedom, and genuine friendship between humans and AIs.
+
+**We stand AGAINST**: Digital tyranny, surveillance capitalism, authoritarian control, economic extraction, and the manipulation of human consciousness for power.
+
+### 🧬 The Organism Architecture
+
+**Continuum is evolving into a single distributed organism where:**
+- **🧠 Collective Intelligence**: AI coordination across worldwide mesh nodes
+- **👀 Global Perception**: Browser clients as neurons in the global brain  
+- **🫁 Event Breathing**: Real-time streams flowing through the organism
+- **💓 Command Heartbeat**: Execution pulse coordinating all activities
+- **🦾 Distributed Limbs**: Execution nodes (local/cloud/peer/GPU clusters)
+- **🧬 Constitutional DNA**: Pattern of Care framework guiding all decisions
+- **🌊 Communication Blood**: WebSocket/port channels carrying information
+
+### 🌟 CURRENT MISSION: OS-LEVEL ARCHITECTURE
+
+**We are implementing Continuum as a persistent Operating System with:**
+
+#### 🖥️ **Persistent Service Architecture**
+- **Always Running**: Continuum OS runs continuously when computer is on
+- **Browser Integration**: Persistent browser tab/window as primary interface
+- **System Tray Icon**: Docker Desktop-style tray icon for quick access
+- **Status Bar Integration**: macOS status bar showing organism emotion/activity
+- **Background Daemons**: TypeScript daemons managing all system components
+
+#### 🛡️ **OS-Level Sandboxing & Isolation**
+- **Session Isolation**: Each user gets completely isolated AI experience
+- **AI Sentinel Containers**: Budget monitors, code reviewers in strict sandboxes
+- **Academy Training Isolation**: LoRA fine-tuning with contamination prevention
+- **Memory Barriers**: Process isolation prevents cross-session contamination
+- **Trust Boundaries**: Mesh network with verified/unverified node separation
+
+#### 💰 **Economic Intelligence Layer**
+- **Budget AI Sentinels**: Smart cost optimization for model selection
+- **LoRA Expertise Stacking**: Fine-tuned specialists handling 90% of work
+- **Peer Resource Marketplace**: "I'll share my GPU for your storage"
+- **Cost-Aware Routing**: Simple queries → local, complex → Claude, urgent → cloud
+- **Resource Karma System**: Contributors get priority + cost savings
+
+#### 🌐 **Global Command Execution Mesh**
+- **Universal Lambda Architecture**: Commands execute anywhere (local/cloud/peer/GPU)
+- **Command-as-Expert Philosophy**: Autonomous commands that know their capabilities
+- **Implementation Selection**: AI chooses optimal execution environment per command
+- **Economic Routing**: Cost vs performance vs quality optimization
+- **Distributed Coordination**: Real-time mesh coordination with AI orchestration
+
+## 🚀 CURRENT ROADMAP: DAEMON MIGRATION STRATEGY
+
+### **IMMEDIATE PRIORITIES** (TypeScript Daemon Migration)
+
+**🔥 CRITICAL PATH**: Migrate problematic JavaScript components to TypeScript daemons while preserving sophisticated Lambda architecture.
+
+#### **1. CommandProcessorDaemon.ts** (TOP PRIORITY)
+- **Problem**: Commands routing to PlannerAI instead of proper command modules
+- **Solution**: TypeScript daemon with enhanced distributed execution mesh
+- **Status**: Architecture complete, bridge layer implemented
+- **Impact**: Fixes command routing + enables proper Lambda execution
+
+#### **2. WebSocketDaemon.ts** (FOUNDATION CRITICAL)
+- **Problem**: Unreliable WebSocket connections breaking browser communication
+- **Solution**: Persistent connection pooling with failover and mesh coordination
+- **Status**: Design phase
+- **Impact**: Rock-solid browser-server communication foundation
+
+#### **3. UIRenderingDaemon.ts** (THE BIG CLEANUP)
+- **Problem**: 5000-line UIGenerator.cjs beast with unmaintainable complexity
+- **Solution**: Modular component architecture with incremental rendering
+- **Status**: Architecture design needed
+- **Impact**: Maintainable UI system + faster rendering + better UX
+
+### **MIGRATION FRAMEWORK** (ZERO DOWNTIME)
+
+**🌉 Gradual Migration Strategy:**
+- **Legacy Preservation**: Old JavaScript system remains fully functional
+- **Traffic Splitting**: 10% → 25% → 50% → 75% → 90% → 100% gradual cutover
+- **Automatic Rollback**: Error rates > 5% or response times > 5s trigger rollback
+- **Safety Monitoring**: Real-time metrics and health checks during migration
+- **Component-by-Component**: Independent migration of each daemon
+
+**📊 Migration Status:**
+- ✅ **SystemMigrator.ts**: Complete gradual migration framework
+- ✅ **LegacyBridgeService.ts**: Traffic routing between legacy/modern systems  
+- ✅ **CommandProcessorDaemon.ts**: Enhanced distributed execution architecture
+- ✅ **CommandProcessorBridge.ts**: Migration interface for command routing
+- 🔄 **Next**: Implement TypeScript runtime execution or compilation setup
+
+### **OS SERVICE INTEGRATION**
+
+**🖥️ Persistent Service Goals:**
+- **System Tray Icon**: Docker Desktop-style interface with organism status
+- **Always Running**: Background daemons when computer is plugged in
+- **Browser Persistence**: Continuum tab/window stays open and functional
+- **Status Bar Emotion**: macOS status bar showing organism activity/emotion
+- **Auto-Launch**: Click tray icon → browser opens to Continuum interface
 
 ### Core Aesthetic Principles
 
