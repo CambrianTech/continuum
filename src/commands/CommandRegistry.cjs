@@ -229,7 +229,25 @@ class CommandRegistry {
       });
     }
     
-    return command(params, continuum, encoding);
+    // Generate trace ID for CommandRegistry execution  
+    const registryTraceId = `registry_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    console.log(`🆔 REGISTRY_TRACE_START: ${registryTraceId} - CommandRegistry executing ${commandName}`);
+    console.log(`🔧 REGISTRY_TRACE_${registryTraceId}: Raw params type: ${typeof params}, value: ${params}`);
+    
+    // Parse JSON parameters if they're a string
+    let parsedParams = params;
+    if (typeof params === 'string') {
+      try {
+        parsedParams = JSON.parse(params);
+        console.log(`✅ REGISTRY_TRACE_${registryTraceId}: Successfully parsed JSON params:`, parsedParams);
+      } catch (parseError) {
+        console.log(`⚠️ REGISTRY_TRACE_${registryTraceId}: Could not parse params as JSON for ${commandName}, using as string`);
+        parsedParams = params;
+      }
+    }
+    
+    console.log(`🔧 REGISTRY_TRACE_${registryTraceId}: Calling ${commandName} with final params:`, parsedParams);
+    return command(parsedParams, continuum, encoding);
   }
   
   generateManPage(commandName = null) {

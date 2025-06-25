@@ -54,6 +54,23 @@ class EventBus {
       });
     });
     
+    // Command trace events with originator IDs
+    this.registerHandler('command_trace', (data, sessionId) => {
+      this.publishEvent('traces', 'server', {
+        type: 'command_trace',
+        timestamp: new Date().toISOString(),
+        originatorId: data.originatorId,
+        phase: data.phase,
+        command: data.command,
+        action: data.action,
+        rawParamsType: data.rawParamsType,
+        rawParams: data.rawParams,
+        parsedParams: data.parsedParams,
+        error: data.error,
+        sessionId: sessionId
+      });
+    });
+    
     // Connection events
     this.registerHandler('connection_event', (data, sessionId) => {
       this.publishEvent('connections', 'server', {

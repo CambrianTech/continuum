@@ -21,38 +21,62 @@ class BrowserJSCommand {
   }
   
   static async execute(params, continuum, encoding = 'base64') {
-    console.log('💻 JavaScript command executed with params:', params);
+    console.log('💻 JavaScript command executed with params:', typeof params, params);
     console.log('💻 Encoding:', encoding);
     
     try {
       let jsCode;
       let actualEncoding = encoding;
+      let scriptContent = params;
       
-      // Handle JSON parameters (new format)
-      if (typeof params === 'string' && params.startsWith('{')) {
+      // Handle object parameters (from CommandRegistry)
+      if (typeof params === 'object' && params.script) {
+        scriptContent = params.script;
+        actualEncoding = params.encoding || 'auto';
+        console.log('💻 Using object params - script:', scriptContent, 'encoding:', actualEncoding);
+      }
+      // Handle JSON string parameters (legacy)
+      else if (typeof params === 'string' && params.startsWith('{')) {
         try {
           const paramObj = JSON.parse(params);
-          if (paramObj.script && paramObj.encoding) {
-            params = paramObj.script;
-            actualEncoding = paramObj.encoding;
-            console.log('💻 Using JSON params - script:', params, 'encoding:', actualEncoding);
+          if (paramObj.script) {
+            scriptContent = paramObj.script;
+            actualEncoding = paramObj.encoding || 'auto';
+            console.log('💻 Using JSON string params - script:', scriptContent, 'encoding:', actualEncoding);
           }
         } catch (e) {
-          // Not JSON, treat as raw params
+          // Not JSON, treat as raw script
+          scriptContent = params;
+        }
+      }
+      // Handle raw string parameters
+      else if (typeof params === 'string') {
+        scriptContent = params;
+      }
+      
+      // Auto-convert adapter: Plain text → base64 for probe safety
+      if (actualEncoding !== 'base64') {
+        console.log('💻 Auto-converting to base64 for probe safety');
+        // Check if scriptContent is already base64 encoded
+        try {
+          const decoded = Buffer.from(scriptContent, 'base64').toString('utf-8');
+          const reencoded = Buffer.from(decoded).toString('base64');
+          if (reencoded === scriptContent) {
+            console.log('💻 Input appears to be base64 already');
+            actualEncoding = 'base64';
+          } else {
+            throw new Error('Not base64');
+          }
+        } catch (e) {
+          // Not base64, auto-convert plain text
+          console.log('💻 Converting plain JavaScript to base64');
+          scriptContent = Buffer.from(scriptContent).toString('base64');
+          actualEncoding = 'base64';
         }
       }
       
-      // Enforce base64-only encoding for deep space probe safety
-      if (actualEncoding !== 'base64') {
-        return {
-          executed: false,
-          error: 'Only base64 encoding is supported. Use base64 to avoid breaking probe communication.',
-          encoding_required: 'base64'
-        };
-      }
-      
       try {
-        jsCode = Buffer.from(params, 'base64').toString('utf8');
+        jsCode = Buffer.from(scriptContent, 'base64').toString('utf8');
         console.log('💻 Decoded base64 JavaScript:', jsCode);
       } catch (error) {
         return {

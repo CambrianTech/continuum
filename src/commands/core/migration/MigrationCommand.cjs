@@ -16,21 +16,26 @@ class MigrationCommand {
     this.description = 'System migration from legacy to modern architecture';
   }
 
-  async execute(params = {}) {
+  static async execute(params = {}) {
     try {
+      // Generate trace ID for MigrationCommand execution
+      const migrationTraceId = `migration_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      console.log(`🆔 MIGRATION_TRACE_START: ${migrationTraceId} - MigrationCommand.execute called`);
+      console.log(`🔧 MIGRATION_TRACE_${migrationTraceId}: Received params type: ${typeof params}, value:`, params);
+      
       console.log('🔄 Migration Command - Checking TypeScript system availability');
       
       // For now, provide a status-only implementation until TypeScript compilation is set up
       const { action, component } = params;
-      console.log(`📋 Migration Action: ${action}${component ? ` (${component})` : ''}`);
+      console.log(`📋 MIGRATION_TRACE_${migrationTraceId}: Destructured action: ${action}, component: ${component}`);
 
       // Provide migration status and information without executing TypeScript
       switch (action) {
         case 'status':
-          return this.getMigrationStatus();
+          return MigrationCommand.getMigrationStatus();
         
         case 'list':
-          return this.getComponentList();
+          return MigrationCommand.getComponentList();
         
         case 'migrate':
         case 'rollback':
@@ -75,7 +80,7 @@ class MigrationCommand {
     }
   }
 
-  getMigrationStatus() {
+  static getMigrationStatus() {
     return {
       success: true,
       data: {
@@ -112,7 +117,7 @@ class MigrationCommand {
     };
   }
 
-  getComponentList() {
+  static getComponentList() {
     return {
       success: true,
       data: {
@@ -131,10 +136,11 @@ class MigrationCommand {
     };
   }
 
-  async getHelp() {
+  static getDefinition() {
     return {
-      name: this.name,
-      description: this.description,
+      name: 'migration',
+      description: 'System migration from legacy to modern architecture',
+      category: 'core',
       usage: 'migration',
       parameters: {
         action: {
@@ -175,6 +181,10 @@ class MigrationCommand {
         'Each component migrates independently'
       ]
     };
+  }
+
+  static async getHelp() {
+    return MigrationCommand.getDefinition();
   }
 }
 
