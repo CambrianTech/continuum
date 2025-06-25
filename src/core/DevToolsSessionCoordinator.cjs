@@ -315,6 +315,12 @@ class DevToolsSessionCoordinator {
      * Launch Opera browser for DevTools session
      */
     async launchBrowser(session) {
+        // First, verify Continuum server is running
+        const continuumServerRunning = await this.checkContinuumServer();
+        if (!continuumServerRunning) {
+            throw new Error('Continuum server not running on localhost:9000 - browser would show empty page');
+        }
+        
         // Check if we should use shared browser window or new window
         const sharedWindow = session.options.sharedWindow !== false;
         const windowTitle = session.options.windowTitle || 'Continuum DevTools';
@@ -368,10 +374,22 @@ class DevToolsSessionCoordinator {
             detached: false
         });
 
-        // Give browser time to start
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        return browserProcess;
+        // Don't just wait - actually verify the browser loaded Continuum
+        console.log(`⏳ Waiting for browser to load Continuum...`);
+        
+        try {
+            await this.waitForContinuumLoaded(session.port, session.sessionId);
+            console.log(`✅ Browser successfully loaded Continuum`);
+            return browserProcess;
+        } catch (error) {
+            // Kill the browser if Continuum didn't load
+            try {
+                browserProcess.kill();
+            } catch (killError) {
+                // Process might already be dead
+            }
+            throw new Error(`Browser launched but Continuum failed to load: ${error.message}`);
+        }
     }
 
     /**
@@ -420,6 +438,53 @@ class DevToolsSessionCoordinator {
             console.log(`⚠️ Could not create new tab, will launch separate browser: ${error.message}`);
             return null; // Signals to caller that new tab creation failed
         }
+    }
+
+    /**
+     * Wait for Continuum to be fully loaded and responsive (event-driven approach)
+     */
+    async waitForContinuumLoaded(port, sessionId, maxWait = 15000) {
+        const startTime = Date.now();
+        
+        while (Date.now() - startTime < maxWait) {
+            try {
+                // First, check if DevTools is ready
+                const response = await fetch(`http://localhost:${port}/json`);
+                if (response.ok) {
+                    const tabs = await response.json();
+                    const continuumTab = tabs.find(tab => 
+                        tab.url.includes('localhost:9000') || 
+                        tab.title.toLowerCase().includes('continuum')
+                    );
+                    
+                    if (continuumTab) {
+                        // Found Continuum tab, now verify it's actually loaded by executing JS
+                        const testResponse = await fetch(`http://localhost:${port}/json/runtime/evaluate`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                expression: 'typeof window !== "undefined" && document.readyState === "complete" && window.location.hostname === "localhost"',
+                                returnByValue: true
+                            })
+                        });
+                        
+                        if (testResponse.ok) {
+                            const testResult = await testResponse.json();
+                            if (testResult.result && testResult.result.value === true) {
+                                console.log(`✅ Continuum fully loaded in browser tab: ${continuumTab.title}`);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                // Not ready yet, continue waiting
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
+        throw new Error(`Continuum not loaded on port ${port} after ${maxWait}ms`);
     }
 
     /**
@@ -704,10 +769,14 @@ class DevToolsSessionCoordinator {
                 
                 if (response.ok) {
                     const tabs = await response.json();
-                    const continuumTab = tabs.find(tab => tab.url.includes('localhost:9000'));
+                    const continuumTab = tabs.find(tab => 
+                        tab.url.includes('localhost:9000') || 
+                        tab.url.includes('127.0.0.1:9000') ||
+                        tab.title.toLowerCase().includes('continuum')
+                    );
                     
                     if (continuumTab) {
-                        console.log(`🔍 Found existing Continuum browser on port ${port} with tab: ${continuumTab.title}`);
+                        console.log(`🔍 Found existing Continuum browser on port ${port} with tab: ${continuumTab.title} (${continuumTab.url})`);
                         return { port, tab: continuumTab };
                     }
                 }
@@ -758,6 +827,28 @@ class DevToolsSessionCoordinator {
             }
         } catch (error) {
             throw new Error(`Failed to create tab: ${error.message}`);
+        }
+    }
+
+    /**
+     * Check if Continuum server is running and responsive
+     */
+    async checkContinuumServer() {
+        try {
+            const response = await fetch('http://localhost:9000', {
+                signal: AbortSignal.timeout(3000)
+            });
+            
+            if (response.ok) {
+                console.log('✅ Continuum server is running on localhost:9000');
+                return true;
+            } else {
+                console.log(`⚠️ Continuum server returned status: ${response.status}`);
+                return false;
+            }
+        } catch (error) {
+            console.log(`❌ Continuum server not accessible: ${error.message}`);
+            return false;
         }
     }
 
