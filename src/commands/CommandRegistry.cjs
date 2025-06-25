@@ -11,6 +11,7 @@ class CommandRegistry {
     this.commands = new Map();
     this.definitions = new Map();
     this.initialized = false;
+    this.modernBridge = null; // Will be loaded dynamically for TypeScript commands
     this.initPromise = this.loadCommands().then(() => {
       this.initialized = true;
     }).catch(error => {
@@ -113,6 +114,17 @@ class CommandRegistry {
                                exp && typeof exp.getDefinition === 'function' && typeof exp.execute === 'function'
                              );
                 
+                // Import ModernCommandBridge for TypeScript commands
+                if (!this.modernBridge) {
+                  try {
+                    const bridgeModule = await import('./core/ModernCommandBridge.js');
+                    this.modernBridge = bridgeModule.ModernCommandBridge;
+                    console.log(`🌉 ModernCommandBridge loaded for TypeScript commands`);
+                  } catch (bridgeError) {
+                    console.warn(`⚠️  ModernCommandBridge not available, using legacy execution`);
+                  }
+                }
+                
                 console.log(`✅ TypeScript command loaded: ${file}`);
               } catch (tsxError) {
                 if (tsxError.code === 'MODULE_NOT_FOUND' && tsxError.message.includes('tsx')) {
@@ -189,8 +201,18 @@ class CommandRegistry {
             console.warn(`⚠️ Duplicate command: ${commandName} (overriding previous)`);
           }
           
-          // Register command
-          this.commands.set(commandName, CommandClass.execute.bind(CommandClass));
+          // Register command with proper bridge for TypeScript commands
+          if (file.endsWith('.ts') && this.modernBridge) {
+            // TypeScript commands use ModernCommandBridge for proper context
+            this.commands.set(commandName, async (params, continuum, encoding) => {
+              const result = await this.modernBridge.executeCommand(CommandClass, params, continuum);
+              return result;
+            });
+            console.log(`🌉 Registered TypeScript command ${commandName} with ModernCommandBridge`);
+          } else {
+            // CommonJS commands use direct binding
+            this.commands.set(commandName, CommandClass.execute.bind(CommandClass));
+          }
           this.definitions.set(commandName, definition);
           
           console.log(`📚 Loaded command: ${commandName} (${definition.category || 'uncategorized'})`);

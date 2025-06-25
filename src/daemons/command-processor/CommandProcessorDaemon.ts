@@ -3,20 +3,18 @@
  * Strongly typed, modular, and designed for mesh distribution
  */
 
-import { BaseDaemon } from '../../core/daemon/BaseDaemon.js';
+import { BaseDaemon } from '../base/BaseDaemon.js';
 import { 
   DaemonMessage, 
   DaemonResponse, 
-  DaemonConfig,
-  CommandRequest,
-  ExecutionContext
-} from '../../core/types/DaemonTypes.js';
+  DaemonStatus
+} from '../base/DaemonProtocol.js';
 
 // Strongly typed command interfaces
 export interface TypedCommandRequest<T = unknown> {
   readonly command: string;
   readonly parameters: T;
-  readonly context: ExecutionContext;
+  readonly context: Record<string, any>;
   readonly routing?: CommandRouting;
 }
 
@@ -72,7 +70,7 @@ export interface CareValidation {
 export class CommandProcessorDaemon extends BaseDaemon {
   public readonly name = 'command-processor';
   public readonly version = '2.0.0';
-  public readonly config: DaemonConfig = {
+  public readonly config = {
     name: this.name,
     version: this.version,
     port: 9001,

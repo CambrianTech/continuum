@@ -15,6 +15,13 @@ class DaemonManager {
         autoRestart: true,
         critical: true
       },
+      'mesh-coordinator': {
+        path: 'src/daemons/mesh-coordinator/MeshCoordinatorDaemon.ts',
+        runtime: 'tsx',
+        autoRestart: true,
+        critical: false, // Not critical for basic operation
+        dependencies: ['command-processor']
+      },
       'websocket': {
         path: 'src/daemons/websocket/WebSocketDaemon.ts', 
         runtime: 'tsx',
