@@ -3,17 +3,17 @@
  * Clean module interface with everything you need
  */
 
-export { CommandProcessor } from './CommandProcessor';
+export { TypeScriptCommandProcessor as CommandProcessor } from './CommandProcessor';
 export * from './types';
 
 // Singleton instance ready to use
-import { CommandProcessor } from './CommandProcessor';
+import { TypeScriptCommandProcessor } from './CommandProcessor';
 
-export const commandProcessor = new CommandProcessor({
+export const commandProcessor = new TypeScriptCommandProcessor({
   enableCaseInsensitive: true,
   enableTypeScriptOnly: false,
   logLevel: 'info'
 });
 
 // Re-export for convenience
-export default CommandProcessor;
+export default TypeScriptCommandProcessor;

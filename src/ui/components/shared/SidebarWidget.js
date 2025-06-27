@@ -5,7 +5,7 @@
  */
 
 // Import base widget functionality
-import('./BaseWidget.js');
+import { BaseWidget } from './BaseWidget.js';
 
 class SidebarWidget extends BaseWidget {
   constructor() {

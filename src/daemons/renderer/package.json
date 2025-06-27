@@ -1,0 +1,23 @@
+{
+  "name": "@continuum/renderer-daemon",
+  "version": "1.0.0",
+  "description": "Renderer daemon that can switch between legacy and modern UI systems",
+  "main": "index.server.js",
+  "type": "module",
+  "scripts": {
+    "test": "jest",
+    "dev": "tsx watch RendererDaemon.ts",
+    "build": "tsc"
+  },
+  "capabilities": {
+    "legacy-renderer": "1.0.0",
+    "modern-renderer": "0.1.0",
+    "hot-swap": "1.0.0"
+  },
+  "continuum": {
+    "category": "daemons", 
+    "subcategory": "renderer",
+    "critical": false,
+    "swappable": true
+  }
+}

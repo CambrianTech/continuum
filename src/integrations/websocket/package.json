@@ -1,0 +1,66 @@
+{
+  "name": "@continuum/websocket",
+  "version": "1.0.0",
+  "description": "TypeScript WebSocket server with daemon integration and modular architecture",
+  "main": "index.server.js",
+  "type": "module",
+  "scripts": {
+    "test": "jest",
+    "dev": "tsx watch WebSocketServer.ts",
+    "build": "tsc",
+    "lint": "eslint *.ts"
+  },
+  "keywords": [
+    "websocket",
+    "typescript",
+    "daemon",
+    "continuum",
+    "modular"
+  ],
+  "dependencies": {
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.4",
+    "@types/ws": "^8.5.8",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.4.0",
+    "tsx": "^4.6.2",
+    "typescript": "^5.3.3"
+  },
+  "exports": {
+    ".": {
+      "import": "./WebSocketServer.js",
+      "require": "./WebSocketServer.cjs",
+      "types": "./WebSocketServer.d.ts"
+    },
+    "./ConnectionManager": {
+      "import": "./ConnectionManager.js",
+      "require": "./ConnectionManager.cjs",
+      "types": "./ConnectionManager.d.ts"
+    },
+    "./MessageRouter": {
+      "import": "./MessageRouter.js",
+      "require": "./MessageRouter.cjs",
+      "types": "./MessageRouter.d.ts"
+    },
+    "./DaemonConnector": {
+      "import": "./DaemonConnector.js",
+      "require": "./DaemonConnector.cjs",
+      "types": "./DaemonConnector.d.ts"
+    }
+  },
+  "capabilities": {
+    "websocket-server": "1.0.0",
+    "daemon-integration": "1.0.0",
+    "connection-management": "1.0.0",
+    "message-routing": "1.0.0",
+    "typescript-commands": "1.0.0"
+  },
+  "continuum": {
+    "category": "integrations",
+    "subcategory": "websocket",
+    "critical": true,
+    "autoload": true
+  }
+}
