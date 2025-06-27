@@ -22,11 +22,12 @@ class DaemonManager {
         critical: false, // Not critical for basic operation
         dependencies: ['command-processor']
       },
-      'websocket': {
-        path: 'src/daemons/websocket/WebSocketDaemon.ts', 
+      'websocket-server': {
+        path: 'src/integrations/websocket/WebSocketDaemon.ts', 
         runtime: 'tsx',
         autoRestart: true,
-        critical: true
+        critical: true,
+        dependencies: ['command-processor']
       }
     };
   }

@@ -87,17 +87,39 @@
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Installation & Quick Start
 
-### 🎮 **Try It Live** (60 seconds)
+### 📦 **Method 1: Published Package** (Recommended)
 ```bash
-# 1. Start the Academy interface
-node continuum.cjs
+# Install globally from npm (when published)
+npm install -g @cambrian/continuum
 
-# 2. Open browser to http://localhost:9000
+# Start the service - like Docker Desktop for AI
+continuum                 # Starts service + browser interface
+continuum devtools        # Enhanced mode with debugging
+continuum status          # Check if running
+```
+
+### 🛠️ **Method 2: Development from Repo**
+```bash
+# Clone and install from source
+git clone <repo-url>
+cd continuum
+npm install              # Auto-sets up global 'continuum' command
+
+# Now use the same commands
+continuum                # Works globally, points back to repo
+```
+
+### 🎮 **Quick Test** (30 seconds)
+```bash
+# 1. Start Continuum (browser opens automatically)
+continuum
+
+# 2. Browser interface: http://localhost:9000
 # See multi-agent chat, Academy training, cost tracking
 
-# 3. Test AI portal commands
+# 3. Test AI portal integration
 python3 python-client/ai-portal.py --dashboard
 ```
 
@@ -115,12 +137,14 @@ python3 python-client/ai-portal.py --cmd chat --params '{"message": "Hello team"
 
 ### 👨‍💻 **For Developers**
 ```bash
-# Install JTAG debugging system (required)
-bash scripts/install-git-hooks.sh
+# Install from repo (auto-sets up global command)
+npm install
 
 # Start the full system
-continuum --help      # See all options
-continuum --agents    # Multi-agent development mode
+continuum --help      # See all options  
+continuum devtools    # Enhanced mode with debugging
+continuum status      # Check daemon health + browser connections
+continuum stop        # Graceful shutdown
 ```
 
 ---

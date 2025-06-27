@@ -1300,7 +1300,7 @@ def main(ctx, buffer, logs, clear, cmd, params, dashboard, broken, recent, quick
         if disconnect:
             return await stop_monitoring_connection()
         if devtools:
-            return await start_devtools_daemon()
+            return await start_standard_connection_protocol()
         if live:
             return await start_live_monitor()
         if failsafe:
@@ -1592,31 +1592,70 @@ async def stop_monitoring_connection():
         pid_file.unlink(missing_ok=True)
 
 async def start_devtools_daemon():
-    """Start DevTools monitoring with Opera launch"""
-    print("🔌 Starting DevTools browser console monitoring...")
+    """Start integrated Continuum system with DevTools monitoring"""
+    print("🚀 Starting AI Portal mode (continuum devtools)...")
     
     try:
-        # Launch Opera in debug mode first
-        launch_result = await launch_continuum_browser(debug_mode=True)
+        # Use the new clean continuum CLI
+        continuum_path = Path(__file__).parent.parent / "continuum"
         
-        if launch_result['success']:
-            # Now start monitoring
-            monitor = await start_devtools_monitoring()
+        if continuum_path.exists():
+            print("🔗 Using clean Continuum CLI...")
+            import subprocess
             
-            if monitor:
-                print("🔌 DevTools monitoring active - press Ctrl+C to stop")
-                try:
-                    while True:
-                        await asyncio.sleep(1)
-                except KeyboardInterrupt:
-                    await stop_devtools_monitoring()
-                    print("\n🔌 DevTools monitoring stopped")
-            else:
-                print("❌ Failed to start DevTools monitoring")
+            # Start in DevTools mode for AI Portal
+            process = subprocess.Popen([
+                str(continuum_path), 'devtools'
+            ], cwd=continuum_path.parent)
+            
+            print("🔌 AI Portal mode starting...")
+            print("💡 Features enabled:")
+            print("   • TypeScript daemon system")
+            print("   • Browser interface (primary console)")
+            print("   • DevTools monitoring") 
+            print("   • JTAG system for AI debugging")
+            print("   • Real-time log streaming")
+            print("   • Screenshot services")
+            print("   • Self-healing mechanisms")
+            print("\n⏰ Press Ctrl+C to stop")
+            
+            try:
+                process.wait()
+            except KeyboardInterrupt:
+                print("\n🛑 Stopping AI Portal...")
+                process.terminate()
+                process.wait()
+                print("✅ AI Portal stopped")
+                
         else:
-            print("❌ Failed to launch Opera in debug mode")
+            # Fallback to simple DevTools monitoring
+            print("⚠️ Clean CLI not available, using fallback...")
+            await start_simple_devtools_monitoring()
+            
     except Exception as e:
-        print(f"❌ DevTools monitoring error: {e}")
+        print(f"❌ AI Portal startup error: {e}")
+        
+async def start_simple_devtools_monitoring():
+    """Fallback simple DevTools monitoring"""
+    # Launch Opera in debug mode first
+    launch_result = await launch_continuum_browser(debug_mode=True)
+    
+    if launch_result['success']:
+        # Now start monitoring
+        monitor = await start_devtools_monitoring()
+        
+        if monitor:
+            print("🔌 DevTools monitoring active - press Ctrl+C to stop")
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except KeyboardInterrupt:
+                await stop_devtools_monitoring()
+                print("\n🔌 DevTools monitoring stopped")
+        else:
+            print("❌ Failed to start DevTools monitoring")
+    else:
+        print("❌ Failed to launch Opera in debug mode")
 
 async def start_live_monitor():
     """Start intelligent live monitoring using modular platform"""

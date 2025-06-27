@@ -1,17 +1,25 @@
 {
   "name": "continuum",
-  "version": "0.2.2136",
+  "version": "0.2.2186",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
-    "continuum": "./continuum.cjs"
+    "continuum": "./continuum"
   },
   "type": "module",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
+    "install:global": "node scripts/install.js",
+    "postinstall": "lerna run prepare",
+    "build:browser-ts": "esbuild src/ui/continuum-browser.ts --bundle --outfile=src/ui/continuum-browser.js --target=es2020 --format=esm --sourcemap",
+    "build:ui-components": "tsc --project tsconfig.ui.json",
+    "build:ui": "tsc --project tsconfig.ui.json",
+    "dev:browser": "npm run build:browser-ts -- --watch",
+    "dev:ui": "npm run build:ui-components -- --watch",
     "test": "node __tests__/config/test-runner.cjs",
+    "test:daemons": "tsx test-dynamic-routing.ts",
     "test:unit": "npm run test:unit:js && npm run test:unit:python",
     "test:unit:js": "jest __tests__/unit/js --config __tests__/config/jest.config.cjs",
     "test:unit:python": "cd __tests__ && python3 -m pytest unit/python -v -c config/pytest.ini && cd verification_system && python3 run_tests.py",
@@ -30,11 +38,9 @@
     "test:coverage": "npm run test:coverage:js && npm run test:coverage:python",
     "test:coverage:js": "jest --coverage --config __tests__/config/jest.config.cjs",
     "test:coverage:python": "cd __tests__ && python3 -m pytest --cov=../src --cov=../python-client/continuum_client --cov-report=html --cov-report=term -c config/pytest.ini",
-    "build": "npm run version:bump && npm run lint && node check-imports.cjs && npm run test",
-    "build:ui": "tsc --project tsconfig.ui.json",
+    "build": "npm run build:browser-ts && npm run version:bump && npm run lint && node check-imports.cjs && npm run test",
     "lint": "eslint . --ext .ts,.js --config eslint.config.js",
     "format": "prettier --write \"**/*.{js,ts,json,md}\"",
-    "postinstall": "lerna run prepare",
     "ci": "./scripts/test-ci.sh",
     "validate-schema": "node scripts/validate-schema.js",
     "check-deps": "npm audit --production && npm outdated",
@@ -74,7 +80,11 @@
   "license": "MIT",
   "devDependencies": {
     "@babel/core": "^7.27.4",
+    "@babel/plugin-proposal-class-properties": "^7.18.6",
+    "@babel/plugin-proposal-decorators": "^7.27.1",
+    "@babel/plugin-transform-class-properties": "^7.27.1",
     "@babel/preset-env": "^7.27.2",
+    "@babel/preset-typescript": "^7.27.1",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.15.29",
     "@typescript-eslint/eslint-plugin": "^8.29.1",
@@ -87,6 +97,7 @@
     "prettier": "^3.5.3",
     "supertest": "^7.1.1",
     "ts-jest": "^29.3.4",
+    "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   },
   "engines": {
@@ -104,7 +115,6 @@
     "openai": "^5.0.1",
     "punycode": "^2.3.1",
     "systray": "^1.0.5",
-    "tsx": "^4.20.3",
     "ws": "^8.18.2",
     "yaml": "^2.7.1"
   }
