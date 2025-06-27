@@ -6,8 +6,8 @@
  * Part of the Continuum OS TypeScript daemon ecosystem
  */
 
-import { BaseDaemon } from '../base/BaseDaemon.js';
-import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol.js';
+import { BaseDaemon } from '../base/BaseDaemon';
+import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { EventEmitter } from 'events';
 
 // Core mesh interfaces

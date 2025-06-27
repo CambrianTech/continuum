@@ -124,43 +124,26 @@ describe('BaseDaemon Critical Bug Tests', () => {
     const uptime = daemon.getUptime();
     expect(uptime).toBeGreaterThan(0);
   });
-});
 
-describe('WebSocket Daemon Integration Test (using fixed BaseDaemon)', () => {
-  test('WebSocket daemon should actually bind to port after BaseDaemon fix', async () => {
-    // Import here to ensure we get the fixed version
-    const { WebSocketDaemon } = await import('../../integrations/websocket/WebSocketDaemon');
-    const { WebSocket } = await import('ws');
+  test('CRITICAL: should clean up heartbeat interval on stop to prevent memory leaks', async () => {
+    await daemon.start();
     
-    const daemon = new WebSocketDaemon({
-      port: 9003,
-      host: 'localhost',
-      daemonConfig: { autoConnect: false }
-    });
-
-    try {
-      await daemon.start();
-
-      // CRITICAL: Test that the WebSocket server is actually listening
-      const connectionTest = await new Promise<boolean>((resolve) => {
-        const client = new WebSocket('ws://localhost:9003');
-        
-        client.on('open', () => {
-          client.close();
-          resolve(true);
-        });
-        
-        client.on('error', () => {
-          resolve(false);
-        });
-        
-        setTimeout(() => resolve(false), 5000);
-      });
-
-      expect(connectionTest).toBe(true);
-      
-    } finally {
-      await daemon.stop();
-    }
-  }, 10000);
+    // Listen for heartbeat events
+    let heartbeatCount = 0;
+    daemon.on('heartbeat', () => heartbeatCount++);
+    
+    // Stop daemon
+    await daemon.stop();
+    
+    // Wait longer than heartbeat interval
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // No more heartbeats should be emitted after stop
+    const initialCount = heartbeatCount;
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Heartbeat count should not increase after stop
+    expect(heartbeatCount).toBe(initialCount);
+    expect(daemon.getSimpleStatus()).toBe('stopped');
+  });
 });

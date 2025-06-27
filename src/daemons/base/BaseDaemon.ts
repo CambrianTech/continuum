@@ -4,7 +4,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { DaemonMessage, DaemonResponse, DaemonStatus } from './DaemonProtocol.js';
+import { DaemonMessage, DaemonResponse, DaemonStatus } from './DaemonProtocol';
 
 export abstract class BaseDaemon extends EventEmitter {
   public abstract readonly name: string;
@@ -19,6 +19,7 @@ export abstract class BaseDaemon extends EventEmitter {
   private startTime?: Date;
   private lastHeartbeat?: Date;
   private processId: number = process.pid;
+  private heartbeatInterval?: NodeJS.Timeout;
   
   constructor() {
     super();
@@ -165,14 +166,17 @@ export abstract class BaseDaemon extends EventEmitter {
    * Send health check heartbeat
    */
   private startHeartbeat(): void {
-    setInterval(() => {
+    this.heartbeatInterval = setInterval(() => {
       this.lastHeartbeat = new Date();
       this.emit('heartbeat', this.getStatus());
     }, 30000); // Every 30 seconds
   }
 
   private stopHeartbeat(): void {
-    // Implementation would clear the heartbeat interval
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = undefined;
+    }
   }
 
   /**

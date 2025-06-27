@@ -12,8 +12,8 @@
  * - Modular plugin architecture for chat, devtools, screenshot, audio, etc.
  */
 
-import { BaseDaemon, DaemonStatusInfo } from '../base/BaseDaemon.js';
-import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol.js';
+import { BaseDaemon, DaemonStatusInfo } from '../base/BaseDaemon';
+import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { EventEmitter } from 'events';
 
 export interface PersonaConfig {

@@ -3,8 +3,8 @@
  * Verifies message type registration, handling, and integration
  */
 
-import { AcademyDaemon } from './AcademyDaemon.js';
-import { DaemonMessage } from '../base/DaemonProtocol.js';
+import { AcademyDaemon } from './AcademyDaemon';
+import { DaemonMessage } from '../base/DaemonProtocol';
 
 describe('AcademyDaemon', () => {
   let daemon: AcademyDaemon;

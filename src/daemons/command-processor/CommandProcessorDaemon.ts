@@ -3,7 +3,7 @@
  * Strongly typed, modular, and designed for mesh distribution
  */
 
-import { BaseDaemon } from '../base/BaseDaemon.js';
+import { BaseDaemon } from '../base/BaseDaemon';
 import { 
   DaemonMessage, 
   DaemonResponse, 
@@ -84,6 +84,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
   private readonly activeExecutions = new Map<string, CommandExecution>();
   private readonly executionHistory: CommandExecution[] = [];
   private readonly phaseOmegaEnabled = true;
+  private monitoringInterval?: NodeJS.Timeout;
 
   protected async onStart(): Promise<void> {
     await this.registerCoreImplementations();
@@ -92,6 +93,12 @@ export class CommandProcessorDaemon extends BaseDaemon {
   }
 
   protected async onStop(): Promise<void> {
+    // Stop monitoring interval to prevent memory leaks
+    if (this.monitoringInterval) {
+      clearInterval(this.monitoringInterval);
+      this.monitoringInterval = undefined;
+    }
+    
     // Cancel active executions
     for (const execution of this.activeExecutions.values()) {
       if (execution.status === 'running') {
@@ -547,7 +554,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
   }
 
   private startExecutionMonitoring(): void {
-    setInterval(() => {
+    this.monitoringInterval = setInterval(() => {
       if (this.activeExecutions.size > 0) {
         this.log(`📊 Active executions: ${this.activeExecutions.size}`);
       }
