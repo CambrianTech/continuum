@@ -1,0 +1,261 @@
+#!/usr/bin/env node
+/**
+ * Continuum CLI - Clean TypeScript System Launcher
+ * Simple wrapper around the TypeScript daemon system
+ */
+
+import { spawn } from 'child_process';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Parse simple command line arguments
+const args = process.argv.slice(2);
+const command = args[0] || 'start';
+
+// Get package version
+function getVersion() {
+  try {
+    const packagePath = path.join(__dirname, 'package.json');
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+    return packageJson.version;
+  } catch (error) {
+    return 'unknown';
+  }
+}
+
+// Show help
+function showHelp() {
+  console.log(`
+🌐 Continuum v${getVersion()} - Like Docker Desktop for AI Collaboration
+
+USAGE:
+  continuum                    Start service + browser interface
+  continuum start              Start the service (explicit)
+  continuum stop               Stop the running service
+  continuum restart            Restart the service
+  continuum status             Show service status
+  continuum browser            Ensure browser interface is up
+  continuum devtools           Enhanced mode for AI agents
+  continuum --version          Show version
+  continuum --help             Show this help
+
+SERVICE:
+  🐳 Like Docker Desktop - Simple persistent service
+  🌐 Browser Interface - Primary UI at localhost:9000  
+  🔌 WebSocket API - Universal connection point for AIs/humans
+  🛠️ DevTools Ready - Built-in debugging protocol
+
+The browser is your PRIMARY interface - opens automatically.
+AIs connect via WebSocket. Simple and clean.
+`);
+}
+
+// Check system status
+function checkStatus() {
+  const lockFile = path.join(__dirname, '.continuum', 'system.lock');
+  
+  console.log('📊 Continuum System Status');
+  console.log('='.repeat(30));
+  
+  if (fs.existsSync(lockFile)) {
+    try {
+      const lockData = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+      const pid = lockData.pid;
+      
+      try {
+        process.kill(pid, 0);
+        console.log('🟢 Status: RUNNING');
+        console.log(`📍 PID: ${pid}`);
+        console.log(`🕐 Started: ${lockData.startTime}`);
+        console.log(`🌐 Interface: http://localhost:9000`);
+      } catch {
+        console.log('🔴 Status: STOPPED (stale lock)');
+      }
+    } catch {
+      console.log('🟡 Status: UNKNOWN (invalid lock)');
+    }
+  } else {
+    console.log('🔴 Status: STOPPED');
+  }
+}
+
+// Stop system
+function stopSystem() {
+  const lockFile = path.join(__dirname, '.continuum', 'system.lock');
+  
+  console.log('🛑 Stopping Continuum system...');
+  
+  if (fs.existsSync(lockFile)) {
+    try {
+      const lockData = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+      const pid = lockData.pid;
+      
+      console.log(`📍 Found running system (PID: ${pid})`);
+      
+      try {
+        process.kill(pid, 'SIGTERM');
+        console.log('✅ Termination signal sent');
+        
+        setTimeout(() => {
+          try {
+            process.kill(pid, 0);
+            console.log('⚡ Forcing shutdown...');
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            // Already dead
+          }
+        }, 5000);
+        
+      } catch (error) {
+        if (error.code === 'ESRCH') {
+          console.log('💀 Process already stopped');
+        } else {
+          console.error('❌ Error stopping system:', error.message);
+        }
+      }
+      
+      fs.unlinkSync(lockFile);
+      console.log('🧹 Lock file removed');
+      
+    } catch (error) {
+      console.log('⚠️ Error stopping system:', error.message);
+    }
+  } else {
+    console.log('📍 No running system found');
+  }
+}
+
+// Handle dynamic commands by routing to running system
+async function handleDynamicCommand(command, args) {
+  try {
+    // Import fetch for Node.js
+    const fetch = (await import('node-fetch')).default;
+    
+    // Check if Continuum service is running
+    const healthResponse = await fetch('http://localhost:9000/health');
+    if (!healthResponse.ok) {
+      console.log('❌ Continuum service not running');
+      console.log('💡 Start the service first: continuum start');
+      return;
+    }
+    
+    // Route command to the running system
+    console.log(`🔄 Executing command: ${command}`);
+    
+    const commandPayload = {
+      type: command,
+      data: {
+        args: args,
+        timestamp: new Date().toISOString()
+      }
+    };
+    
+    const response = await fetch('http://localhost:9000/api/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(commandPayload)
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      if (result.success) {
+        console.log('✅ Command executed successfully');
+        if (result.data) {
+          console.log(JSON.stringify(result.data, null, 2));
+        }
+      } else {
+        console.log('❌ Command failed:', result.error);
+      }
+    } else {
+      console.log(`❌ Failed to execute command: ${response.status}`);
+    }
+    
+  } catch (error) {
+    console.error('❌ Command execution failed:', error.message);
+    console.log('💡 Make sure Continuum service is running: continuum start');
+  }
+}
+
+// Start TypeScript system - Pure, no Python dependencies
+function startSystem(withDevTools = false) {
+  console.log('🚀 Starting Continuum - Browser-Centric Service');
+  console.log('🌐 Like Docker Desktop, but for AI collaboration');
+  console.log('🔌 Browser interface + WebSocket API + DevTools ready');
+  console.log('');
+  
+  // Use new resilient ContinuumSystem with BrowserManager
+  const systemScript = path.join(__dirname, 'src/core/ContinuumSystem.ts');
+  const process = spawn('npx', ['tsx', systemScript, withDevTools ? '--devtools' : ''], {
+    cwd: __dirname,
+    stdio: 'inherit'
+  });
+  
+  return process;
+}
+
+// Main CLI handler
+async function main() {
+  switch (command) {
+    case 'help':
+    case '--help':
+    case '-h':
+      showHelp();
+      break;
+      
+    case 'version':
+    case '--version':
+    case '-v':
+      console.log(`continuum v${getVersion()}`);
+      break;
+      
+    case 'status':
+      checkStatus();
+      break;
+      
+    case 'stop':
+      stopSystem();
+      break;
+      
+    case 'restart':
+      console.log('🔄 Restarting Continuum system...');
+      stopSystem();
+      setTimeout(() => {
+        startSystem();
+      }, 2000);
+      break;
+      
+    case 'devtools':
+      startSystem(true);
+      break;
+      
+    case 'start':
+    default:
+      // Check if it's a dynamic command for running system
+      if (command !== 'start' && command) {
+        handleDynamicCommand(command, args.slice(1));
+      } else {
+        startSystem();
+      }
+      break;
+  }
+}
+
+// Handle graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\n🛑 Shutting down...');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n🛑 Terminating...');
+  process.exit(0);
+});
+
+main().catch(error => {
+  console.error('❌ CLI error:', error);
+  process.exit(1);
+});
