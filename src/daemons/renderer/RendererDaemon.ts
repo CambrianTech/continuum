@@ -5,6 +5,7 @@
 
 import { BaseDaemon } from '../base/BaseDaemon.js';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol.js';
+import * as http from 'http';
 
 export interface RenderRequest {
   readonly type: 'render_ui' | 'update_component' | 'render_page';
@@ -27,6 +28,8 @@ export class RendererDaemon extends BaseDaemon {
 
   private legacyRenderer: any = null;
   private renderingEngine: 'legacy' | 'modern' = 'legacy';
+  private httpServer: http.Server | null = null;
+  private staticPort: number = 9001;
 
   protected async onStart(): Promise<void> {
     this.log('🎨 Starting Renderer Daemon...');
@@ -44,6 +47,9 @@ export class RendererDaemon extends BaseDaemon {
         await this.loadModernRenderer();
         this.log('✅ Modern renderer loaded successfully');
       }
+      
+      // Start static file server for widget assets
+      await this.startStaticFileServer();
       
       this.log(`✅ Renderer Daemon started with ${this.renderingEngine} engine`);
     } catch (error) {
@@ -356,7 +362,7 @@ export class RendererDaemon extends BaseDaemon {
   }
 
   private getCapabilities(): string[] {
-    const capabilities = ['basic-rendering'];
+    const capabilities = ['basic-rendering', 'static-file-serving'];
     
     if (this.renderingEngine === 'legacy') {
       capabilities.push('legacy-ui', 'cyberpunk-theme');
@@ -365,6 +371,138 @@ export class RendererDaemon extends BaseDaemon {
     }
     
     return capabilities;
+  }
+
+  private async startStaticFileServer(): Promise<void> {
+    this.log(`🗂️ Starting static file server on port ${this.staticPort}...`);
+    
+    this.httpServer = http.createServer(async (req, res) => {
+      await this.handleStaticFileRequest(req, res);
+    });
+
+    return new Promise((resolve, reject) => {
+      this.httpServer!.listen(this.staticPort, () => {
+        this.log(`✅ Static file server listening on http://localhost:${this.staticPort}`);
+        resolve();
+      });
+
+      this.httpServer!.on('error', (error) => {
+        this.log(`❌ Static file server error: ${error.message}`, 'error');
+        reject(error);
+      });
+    });
+  }
+
+  private async handleStaticFileRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const url = new URL(req.url!, `http://localhost:${this.staticPort}`);
+    
+    // Only serve files from /src/ and /dist/ paths
+    if (url.pathname.startsWith('/src/') || url.pathname.startsWith('/dist/')) {
+      await this.serveStaticFile(url.pathname, res, req);
+    } else {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not Found - RendererDaemon only serves /src/ and /dist/ paths');
+    }
+  }
+
+  private async serveStaticFile(pathname: string, res: http.ServerResponse, req?: http.IncomingMessage): Promise<void> {
+    const { readFile, stat } = await import('fs/promises');
+    const { join } = await import('path');
+    const crypto = await import('crypto');
+    
+    try {
+      // Remove leading slash and construct file path
+      const filePath = join(process.cwd(), pathname.substring(1));
+      
+      // Get file stats for Last-Modified and ETag
+      const stats = await stat(filePath);
+      const lastModified = stats.mtime.toUTCString();
+      const etag = `"${crypto.createHash('md5')
+        .update(`${stats.size}-${stats.mtime.getTime()}`)
+        .digest('hex')}"`;
+      
+      // Check if client has cached version
+      if (req) {
+        const ifModifiedSince = req.headers['if-modified-since'];
+        const ifNoneMatch = req.headers['if-none-match'];
+        
+        if ((ifModifiedSince && ifModifiedSince === lastModified) ||
+            (ifNoneMatch && ifNoneMatch === etag)) {
+          res.writeHead(304); // Not Modified
+          res.end();
+          this.log(`📋 Cache hit for ${pathname} (304 Not Modified)`);
+          return;
+        }
+      }
+      
+      // Determine content type
+      const ext = pathname.split('.').pop();
+      const contentType = this.getContentType(ext);
+      
+      // Set caching headers based on file type
+      const cacheHeaders = this.getCacheHeaders(ext);
+      
+      const content = await readFile(filePath);
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Last-Modified': lastModified,
+        'ETag': etag,
+        'Access-Control-Allow-Origin': '*', // Allow CORS for widget loading
+        ...cacheHeaders
+      });
+      res.end(content);
+      
+      this.log(`📋 Served ${pathname} with caching headers (${content.length} bytes)`);
+    } catch (error) {
+      this.log(`Failed to serve static file ${pathname}: ${error.message}`, 'error');
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not Found');
+    }
+  }
+
+  private getContentType(ext: string | undefined): string {
+    const types: Record<string, string> = {
+      'js': 'application/javascript',
+      'ts': 'application/javascript',  // Serve TypeScript as JavaScript for ES modules
+      'css': 'text/css',
+      'html': 'text/html',
+      'json': 'application/json',
+      'png': 'image/png',
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'gif': 'image/gif',
+      'svg': 'image/svg+xml'
+    };
+    return types[ext || ''] || 'text/plain';
+  }
+
+  private getCacheHeaders(ext: string | undefined): Record<string, string> {
+    const cacheSettings: Record<string, Record<string, string>> = {
+      // Long cache for static assets (CSS/JS)
+      'css': {
+        'Cache-Control': 'public, max-age=31536000, immutable', // 1 year
+        'Expires': new Date(Date.now() + 31536000000).toUTCString()
+      },
+      'js': {
+        'Cache-Control': 'public, max-age=31536000, immutable', // 1 year
+        'Expires': new Date(Date.now() + 31536000000).toUTCString()
+      },
+      'ts': {
+        'Cache-Control': 'public, max-age=31536000, immutable', // 1 year
+        'Expires': new Date(Date.now() + 31536000000).toUTCString()
+      },
+      // Medium cache for images
+      'png': { 'Cache-Control': 'public, max-age=2592000' }, // 30 days
+      'jpg': { 'Cache-Control': 'public, max-age=2592000' },
+      'jpeg': { 'Cache-Control': 'public, max-age=2592000' },
+      'gif': { 'Cache-Control': 'public, max-age=2592000' },
+      'svg': { 'Cache-Control': 'public, max-age=2592000' },
+      // Short cache for dynamic content
+      'html': { 'Cache-Control': 'public, max-age=300' }, // 5 minutes
+      'json': { 'Cache-Control': 'public, max-age=300' }
+    };
+    
+    return cacheSettings[ext || ''] || { 'Cache-Control': 'public, max-age=3600' }; // 1 hour default
   }
 }
 
