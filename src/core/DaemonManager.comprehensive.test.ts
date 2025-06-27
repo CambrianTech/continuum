@@ -210,11 +210,13 @@ describe('DaemonManager Integration with Real Components', () => {
     const manager = new DaemonManager();
     const configs = (manager as any).configs;
 
-    // Verify configuration includes both critical daemons
-    expect(configs).toHaveLength(2);
+    // Verify configuration includes all daemons including RendererDaemon
+    expect(configs.length).toBeGreaterThanOrEqual(4);
     
     const commandProcessor = configs.find((c: any) => c.name === 'command-processor');
     const websocketServer = configs.find((c: any) => c.name === 'websocket-server');
+    const renderer = configs.find((c: any) => c.name === 'renderer');
+    const browserManager = configs.find((c: any) => c.name === 'browser-manager');
 
     expect(commandProcessor).toBeDefined();
     expect(commandProcessor.critical).toBe(true);
@@ -223,5 +225,115 @@ describe('DaemonManager Integration with Real Components', () => {
     expect(websocketServer).toBeDefined();
     expect(websocketServer.critical).toBe(true);
     expect(websocketServer.dependencies).toContain('command-processor');
+
+    expect(renderer).toBeDefined();
+    expect(renderer.critical).toBe(false); // Not critical for basic operation
+    expect(renderer.dependencies).toContain('websocket-server');
+
+    expect(browserManager).toBeDefined();
+    expect(browserManager.critical).toBe(false);
+    expect(browserManager.dependencies).toContain('websocket-server');
+  });
+});
+
+describe('Modular Architecture Integration Tests', () => {
+  test('should support daemon route registration pattern', () => {
+    // Test that our daemons follow the modular registration pattern
+    const mockWebSocketDaemon = {
+      registerRouteHandler: jest.fn(),
+      registerApiHandler: jest.fn(),
+      name: 'websocket-server'
+    };
+
+    // Mock RendererDaemon that implements the registration pattern
+    const mockRendererDaemon = {
+      name: 'renderer',
+      registerWithWebSocketDaemon: function(wsD: any) {
+        wsD.registerRouteHandler('/src/*', this, jest.fn());
+        wsD.registerRouteHandler('/dist/*', this, jest.fn());
+        wsD.registerRouteHandler('/', this, jest.fn());
+        wsD.registerApiHandler('/api/agents', this, jest.fn());
+        wsD.registerApiHandler('/api/personas', this, jest.fn());
+      }
+    };
+
+    // Simulate the registration process
+    mockRendererDaemon.registerWithWebSocketDaemon(mockWebSocketDaemon);
+
+    // Verify routes were registered
+    expect(mockWebSocketDaemon.registerRouteHandler).toHaveBeenCalledWith('/src/*', mockRendererDaemon, expect.any(Function));
+    expect(mockWebSocketDaemon.registerRouteHandler).toHaveBeenCalledWith('/dist/*', mockRendererDaemon, expect.any(Function));
+    expect(mockWebSocketDaemon.registerRouteHandler).toHaveBeenCalledWith('/', mockRendererDaemon, expect.any(Function));
+
+    // Verify APIs were registered
+    expect(mockWebSocketDaemon.registerApiHandler).toHaveBeenCalledWith('/api/agents', mockRendererDaemon, expect.any(Function));
+    expect(mockWebSocketDaemon.registerApiHandler).toHaveBeenCalledWith('/api/personas', mockRendererDaemon, expect.any(Function));
+  });
+
+  test('should support any daemon registering routes and APIs', () => {
+    const mockWebSocketDaemon = {
+      routeHandlers: new Map(),
+      apiHandlers: new Map(),
+      registerRouteHandler: function(pattern: string, daemon: any, handler: Function) {
+        this.routeHandlers.set(pattern, { daemon, handler });
+      },
+      registerApiHandler: function(endpoint: string, daemon: any, handler: Function) {
+        this.apiHandlers.set(endpoint, { daemon, handler });
+      }
+    };
+
+    // Test multiple daemons registering different routes
+    const mockDaemon1 = { name: 'renderer' };
+    const mockDaemon2 = { name: 'command-processor' };
+
+    mockWebSocketDaemon.registerRouteHandler('/ui/*', mockDaemon1, jest.fn());
+    mockWebSocketDaemon.registerApiHandler('/api/render', mockDaemon1, jest.fn());
+    
+    mockWebSocketDaemon.registerRouteHandler('/cmd/*', mockDaemon2, jest.fn());
+    mockWebSocketDaemon.registerApiHandler('/api/commands', mockDaemon2, jest.fn());
+
+    // Verify each daemon owns its routes
+    expect(mockWebSocketDaemon.routeHandlers.get('/ui/*').daemon.name).toBe('renderer');
+    expect(mockWebSocketDaemon.routeHandlers.get('/cmd/*').daemon.name).toBe('command-processor');
+    expect(mockWebSocketDaemon.apiHandlers.get('/api/render').daemon.name).toBe('renderer');
+    expect(mockWebSocketDaemon.apiHandlers.get('/api/commands').daemon.name).toBe('command-processor');
+  });
+
+  test('should maintain daemon independence and modularity', () => {
+    // Test that daemons don't need to know about each other's internals
+    const mockWebSocketDaemon = {
+      registeredDaemons: new Map(),
+      registerExternalDaemon: async function(name: string, daemon: any) {
+        this.registeredDaemons.set(name, daemon);
+        
+        // Call registration method if it exists (modular pattern)
+        if (daemon.registerWithWebSocketDaemon && typeof daemon.registerWithWebSocketDaemon === 'function') {
+          daemon.registerWithWebSocketDaemon(this);
+        }
+      }
+    };
+
+    const mockRendererDaemon = {
+      name: 'renderer',
+      registerWithWebSocketDaemon: jest.fn()
+    };
+
+    const mockCommandDaemon = {
+      name: 'command-processor'
+      // No registerWithWebSocketDaemon method - should still work
+    };
+
+    // Both should register successfully
+    expect(async () => {
+      await mockWebSocketDaemon.registerExternalDaemon('renderer', mockRendererDaemon);
+      await mockWebSocketDaemon.registerExternalDaemon('command-processor', mockCommandDaemon);
+    }).not.toThrow();
+
+    // Only renderer should have been asked to register routes
+    expect(mockRendererDaemon.registerWithWebSocketDaemon).toHaveBeenCalled();
+    
+    // Both should be in registered daemons
+    expect(mockWebSocketDaemon.registeredDaemons.has('renderer')).toBe(true);
+    expect(mockWebSocketDaemon.registeredDaemons.has('command-processor')).toBe(true);
   });
 });

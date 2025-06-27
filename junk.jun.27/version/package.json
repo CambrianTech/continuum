@@ -1,0 +1,23 @@
+{
+  "name": "@continuum/version-command",
+  "version": "1.0.0",
+  "description": "System version information command",
+  "main": "index.server.js",
+  "type": "module",
+  "capabilities": [
+    "version-info",
+    "system-status"
+  ],
+  "command": {
+    "name": "version",
+    "description": "Get current system version information",
+    "category": "core",
+    "parameters": {},
+    "examples": [
+      {
+        "description": "Get version info",
+        "command": "continuum.execute('version')"
+      }
+    ]
+  }
+}

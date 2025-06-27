@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { RendererDaemon } from '../RendererDaemon.js';
+import { RendererDaemon } from '../RendererDaemon';
 import * as http from 'http';
 import { promises as fs } from 'fs';
 import { join } from 'path';

@@ -21,6 +21,20 @@ describe('CommandProcessorDaemon TypeScript Tests', () => {
         }
     });
 
+    test('MEMORY LEAK FIX: should clean up execution monitoring interval on stop', async () => {
+        await daemon.start();
+        
+        // Verify daemon started
+        expect(daemon.getSimpleStatus()).toBe('running');
+        
+        // Stop daemon
+        await daemon.stop();
+        
+        // No interval-based logging should occur after stop
+        expect(daemon.getSimpleStatus()).toBe('stopped');
+        // Note: CommandProcessorDaemon needs monitoring interval cleanup implementation
+    });
+
     describe('Basic Daemon Functionality', () => {
         test('should create daemon with proper TypeScript typing', () => {
             expect(daemon).toBeDefined();

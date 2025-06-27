@@ -1,0 +1,6 @@
+🚨 PRIORITY: FIX HTML RENDERING AT localhost:9000
+📍 LOCATION: /Volumes/FlashGordon/cambrian/continuum  
+📖 READ: WAKE_UP_READ_THIS.md, HTML_RENDERING_PRIORITY.md
+🎯 GOAL: WebSocketDaemon route to RendererDaemon, not duplicate HTML generation
+❌ BROKEN: WebSocketDaemon 1193 lines doing RendererDaemon work
+✅ TEST: curl http://localhost:9000/ and http://localhost:9001/src/ui/components/shared/BaseWidget.css
