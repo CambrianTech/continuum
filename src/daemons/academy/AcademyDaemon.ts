@@ -3,8 +3,8 @@
  * Manages persona training, progress tracking, and Academy UI integration
  */
 
-import { BaseDaemon } from '../base/BaseDaemon.js';
-import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol.js';
+import { BaseDaemon } from '../base/BaseDaemon';
+import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 
 export interface AcademyStatus {
   isActive: boolean;

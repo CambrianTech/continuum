@@ -3,13 +3,13 @@
  * Extends BaseDaemon with WebSocket server functionality
  */
 
-import { BaseDaemon } from '../../daemons/base/BaseDaemon.js';
-import { DaemonMessage, DaemonResponse } from '../../daemons/base/DaemonProtocol.js';
+import { BaseDaemon } from '../../daemons/base/BaseDaemon';
+import { DaemonMessage, DaemonResponse } from '../../daemons/base/DaemonProtocol';
 import { WebSocketServer, WebSocket } from 'ws';
 import { ConnectionManager } from './core/ConnectionManager';
 import { DynamicMessageRouter } from './core/DynamicMessageRouter';
 import { DaemonConnector } from './core/DaemonConnector';
-import { BrowserManager } from '../../core/BrowserManager.js';
+import { BrowserManager } from '../../core/BrowserManager';
 import { ServerConfig, WebSocketMessage } from './types';
 import { createServer } from 'http';
 
@@ -24,6 +24,8 @@ export class WebSocketDaemon extends BaseDaemon {
   private daemonConnector: DaemonConnector;
   private browserManager: BrowserManager;
   private registeredDaemons = new Map<string, any>();
+  private routeHandlers = new Map<string, { daemon: any; handler: Function }>();
+  private apiHandlers = new Map<string, { daemon: any; handler: Function }>();
   private config: Required<ServerConfig>;
 
   constructor(config: ServerConfig = {}) {
@@ -272,26 +274,16 @@ export class WebSocketDaemon extends BaseDaemon {
   private async handleHttpRequest(req: any, res: any): Promise<void> {
     const url = new URL(req.url, `http://${this.config.host}:${this.config.port}`);
     
-    // Serve TypeScript UI directly
-    if (req.method === 'GET' && url.pathname === '/') {
-      try {
-        // Serve clean TypeScript UI with web components
-        const { readFile } = await import('fs/promises');
-        const { join } = await import('path');
-        const htmlPath = join(process.cwd(), 'clean-continuum-ui.html');
-        const htmlContent = await readFile(htmlPath, 'utf-8');
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(htmlContent);
-        this.log('✅ Served TypeScript UI successfully');
-      } catch (error) {
-        this.log(`Failed to serve TypeScript UI: ${error.message}`, 'error');
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('Error loading TypeScript UI');
+    // Check for registered route handlers first (including root '/')
+    if (req.method === 'GET') {
+      const routeHandler = this.findRouteHandler(url.pathname);
+      if (routeHandler) {
+        await routeHandler.handler(url.pathname, req, res);
+        return;
       }
-    } else if (req.method === 'GET' && (url.pathname.startsWith('/src/') || url.pathname.startsWith('/dist/'))) {
-      // Serve static files from src directory (CSS, continuum-api.js) and dist directory (compiled JS)
-      await this.serveStaticFile(url.pathname, res, req);
-    } else if (req.method === 'GET' && url.pathname === '/health') {
+    }
+    
+    if (req.method === 'GET' && url.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'healthy', server: this.name, version: this.version }));
     } else if (req.method === 'GET' && url.pathname === '/status') {
@@ -300,112 +292,111 @@ export class WebSocketDaemon extends BaseDaemon {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(statusPage);
     } else if (req.method === 'GET' && url.pathname.startsWith('/api/')) {
-      // Handle API endpoints
-      await this.handleApiRequest(url.pathname, req, res);
+      // Check for registered API handlers first
+      const apiHandler = this.apiHandlers.get(url.pathname);
+      if (apiHandler) {
+        await apiHandler.handler(url.pathname, req, res);
+      } else {
+        // Fallback to built-in API endpoints
+        await this.handleApiRequest(url.pathname, req, res);
+      }
     } else {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Not Found');
     }
   }
 
-  private async serveStaticFile(pathname: string, res: any, req?: any): Promise<void> {
-    const { readFile, stat } = await import('fs/promises');
-    const { join } = await import('path');
-    const crypto = await import('crypto');
+  /**
+   * Generic route registration - any daemon can register route handlers
+   */
+  public registerRouteHandler(pattern: string, daemon: any, handler: Function): void {
+    this.routeHandlers.set(pattern, { daemon, handler });
+    this.log(`🔌 Route registered: ${pattern} → ${daemon.name || 'unknown'}`);
+    this.log(`📊 Total routes now: ${this.routeHandlers.size}`);
+    this.log(`📋 All routes: ${[...this.routeHandlers.keys()].join(', ')}`);
+  }
+
+  /**
+   * Generic API endpoint registration - any daemon can register API handlers
+   */
+  public registerApiHandler(endpoint: string, daemon: any, handler: Function): void {
+    this.apiHandlers.set(endpoint, { daemon, handler });
+    this.log(`🔌 API registered: ${endpoint} → ${daemon.name || 'unknown'}`);
+  }
+
+  /**
+   * Find the best matching route handler for a path
+   */
+  private findRouteHandler(pathname: string): { daemon: any; handler: Function } | null {
+    this.log(`🔍 Finding route for: ${pathname}`);
+    this.log(`📋 Available routes: ${[...this.routeHandlers.keys()].join(', ')}`);
     
-    try {
-      // Remove leading slash and construct file path
-      const filePath = join(process.cwd(), pathname.substring(1));
-      
-      // Get file stats for Last-Modified and ETag
-      const stats = await stat(filePath);
-      const lastModified = stats.mtime.toUTCString();
-      const etag = `"${crypto.createHash('md5')
-        .update(`${stats.size}-${stats.mtime.getTime()}`)
-        .digest('hex')}"`;
-      
-      // Check if client has cached version
-      if (req) {
-        const ifModifiedSince = req.headers['if-modified-since'];
-        const ifNoneMatch = req.headers['if-none-match'];
-        
-        if ((ifModifiedSince && ifModifiedSince === lastModified) ||
-            (ifNoneMatch && ifNoneMatch === etag)) {
-          res.writeHead(304); // Not Modified
-          res.end();
-          this.log(`📋 Cache hit for ${pathname} (304 Not Modified)`);
-          return;
-        }
+    // Exact match first
+    if (this.routeHandlers.has(pathname)) {
+      this.log(`✅ Exact match found: ${pathname}`);
+      return this.routeHandlers.get(pathname)!;
+    }
+    
+    // Pattern match (e.g., /src/* matches /src/anything)
+    for (const [pattern, handler] of this.routeHandlers) {
+      if (pattern.endsWith('*') && pathname.startsWith(pattern.slice(0, -1))) {
+        this.log(`✅ Pattern match: ${pathname} matches ${pattern}`);
+        return handler;
       }
+      if (pattern.includes('*') && this.matchesPattern(pathname, pattern)) {
+        this.log(`✅ Complex pattern match: ${pathname} matches ${pattern}`);
+        return handler;
+      }
+    }
+    
+    this.log(`❌ No route found for: ${pathname}`);
+    return null;
+  }
+
+  private matchesPattern(path: string, pattern: string): boolean {
+    const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+    return regex.test(path);
+  }
+
+  private async proxyToRendererDaemon(pathname: string, req: any, res: any): Promise<void> {
+    try {
+      const http = await import('http');
       
-      // Determine content type
-      const ext = pathname.split('.').pop();
-      const contentType = this.getContentType(ext);
-      
-      // Set caching headers based on file type
-      const cacheHeaders = this.getCacheHeaders(ext);
-      
-      const content = await readFile(filePath);
-      res.writeHead(200, {
-        'Content-Type': contentType,
-        'Last-Modified': lastModified,
-        'ETag': etag,
-        ...cacheHeaders
+      // Forward request to RendererDaemon on port 9001
+      const proxyReq = http.request({
+        hostname: 'localhost',
+        port: 9001,
+        path: pathname,
+        method: req.method,
+        headers: req.headers
+      }, (proxyRes) => {
+        // Forward status and headers from RendererDaemon
+        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+        proxyRes.pipe(res);
+        
+        if (proxyRes.statusCode === 200) {
+          this.log(`📋 Proxied ${pathname} from RendererDaemon (${proxyRes.headers['content-length'] || 'unknown'} bytes)`);
+        } else if (proxyRes.statusCode === 304) {
+          this.log(`📋 Proxied cache hit for ${pathname} (304 Not Modified)`);
+        }
       });
-      res.end(content);
       
-      this.log(`📋 Served ${pathname} with caching headers (${content.length} bytes)`);
+      proxyReq.on('error', (error) => {
+        this.log(`❌ Proxy error for ${pathname}: ${error.message}`, 'error');
+        res.writeHead(503, { 'Content-Type': 'text/plain' });
+        res.end('Service Unavailable - RendererDaemon not responding');
+      });
+      
+      // Forward request body if present
+      req.pipe(proxyReq);
+      
     } catch (error) {
-      this.log(`Failed to serve static file ${pathname}: ${error.message}`, 'error');
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not Found');
+      this.log(`❌ Failed to proxy ${pathname}: ${error.message}`, 'error');
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Internal Server Error');
     }
   }
 
-  private getContentType(ext: string | undefined): string {
-    const types: Record<string, string> = {
-      'js': 'application/javascript',
-      'ts': 'application/javascript',  // Serve TypeScript as JavaScript for ES modules
-      'css': 'text/css',
-      'html': 'text/html',
-      'json': 'application/json',
-      'png': 'image/png',
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-      'gif': 'image/gif',
-      'svg': 'image/svg+xml'
-    };
-    return types[ext || ''] || 'text/plain';
-  }
-
-  private getCacheHeaders(ext: string | undefined): Record<string, string> {
-    const cacheSettings: Record<string, Record<string, string>> = {
-      // Long cache for static assets (CSS/JS)
-      'css': {
-        'Cache-Control': 'public, max-age=31536000, immutable', // 1 year
-        'Expires': new Date(Date.now() + 31536000000).toUTCString()
-      },
-      'js': {
-        'Cache-Control': 'public, max-age=31536000, immutable', // 1 year
-        'Expires': new Date(Date.now() + 31536000000).toUTCString()
-      },
-      'ts': {
-        'Cache-Control': 'public, max-age=31536000, immutable', // 1 year
-        'Expires': new Date(Date.now() + 31536000000).toUTCString()
-      },
-      // Medium cache for images
-      'png': { 'Cache-Control': 'public, max-age=2592000' }, // 30 days
-      'jpg': { 'Cache-Control': 'public, max-age=2592000' },
-      'jpeg': { 'Cache-Control': 'public, max-age=2592000' },
-      'gif': { 'Cache-Control': 'public, max-age=2592000' },
-      'svg': { 'Cache-Control': 'public, max-age=2592000' },
-      // Short cache for dynamic content
-      'html': { 'Cache-Control': 'public, max-age=300' }, // 5 minutes
-      'json': { 'Cache-Control': 'public, max-age=300' }
-    };
-    
-    return cacheSettings[ext || ''] || { 'Cache-Control': 'public, max-age=3600' }; // 1 hour default
-  }
 
   private async handleApiRequest(pathname: string, req: any, res: any): Promise<void> {
     this.log(`🔌 API request: ${pathname}`);
@@ -1103,6 +1094,20 @@ export class WebSocketDaemon extends BaseDaemon {
   async registerExternalDaemon(name: string, daemon: any): Promise<void> {
     await this.messageRouter.registerDaemon(name, daemon);
     this.registeredDaemons.set(name, daemon);
+    
+    // If daemon has route registration method, call it for modular integration
+    this.log(`🔍 Checking if ${name} has registerWithWebSocketDaemon method...`);
+    this.log(`📊 Method exists: ${!!daemon.registerWithWebSocketDaemon}`);
+    this.log(`📊 Method type: ${typeof daemon.registerWithWebSocketDaemon}`);
+    
+    if (daemon.registerWithWebSocketDaemon && typeof daemon.registerWithWebSocketDaemon === 'function') {
+      this.log(`🎯 Calling registerWithWebSocketDaemon for ${name}...`);
+      daemon.registerWithWebSocketDaemon(this);
+      this.log(`🔌 Daemon ${name} registered its routes`);
+    } else {
+      this.log(`⚠️ Daemon ${name} does not have registerWithWebSocketDaemon method`);
+    }
+    
     this.log(`✅ Registered external daemon: ${name}`);
   }
 

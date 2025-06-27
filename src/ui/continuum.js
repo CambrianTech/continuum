@@ -16,6 +16,29 @@
     
     ContinuumAPI.prototype.connect = function() {
         var self = this;
+        
+        // Get version from server first
+        fetch('/api/version')
+            .then(response => response.json())
+            .then(versionData => {
+                var timestamp = new Date().toLocaleTimeString();
+                console.log(`🚀 Continuum Client v${versionData.version} (Build: ${versionData.build || 'unknown'}) - ${timestamp}`);
+                console.log(`📦 Server: ${versionData.server || 'unknown'} | Environment: ${versionData.environment || 'development'}`);
+                
+                // Store version for widgets to access
+                self.version = versionData.version;
+                self.versionData = versionData;
+                
+                // Notify widgets of version update
+                window.dispatchEvent(new CustomEvent('continuum:version-update', {
+                    detail: { version: versionData.version, data: versionData }
+                }));
+            })
+            .catch(error => {
+                console.log('⚠️ Could not fetch version info:', error.message);
+                console.log(`🕐 Client load time: ${new Date().toLocaleTimeString()}`);
+            });
+        
         try {
             this.ws = new WebSocket('ws://localhost:9000');
             

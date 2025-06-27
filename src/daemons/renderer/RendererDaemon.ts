@@ -3,8 +3,8 @@
  * Currently wraps legacy UIGenerator.cjs, can be swapped for modern TypeScript later
  */
 
-import { BaseDaemon } from '../base/BaseDaemon.js';
-import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol.js';
+import { BaseDaemon } from '../base/BaseDaemon';
+import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import * as http from 'http';
 
 export interface RenderRequest {
@@ -30,6 +30,7 @@ export class RendererDaemon extends BaseDaemon {
   private renderingEngine: 'legacy' | 'modern' = 'legacy';
   private httpServer: http.Server | null = null;
   private staticPort: number = 9001;
+  private webSocketDaemon: any = null;
 
   protected async onStart(): Promise<void> {
     this.log('🎨 Starting Renderer Daemon...');
@@ -49,7 +50,8 @@ export class RendererDaemon extends BaseDaemon {
       }
       
       // Start static file server for widget assets
-      await this.startStaticFileServer();
+      // NOTE: No separate HTTP server - all routing through WebSocketDaemon
+      this.log(`🗂️ Static file serving handled via WebSocketDaemon on port 9000`);
       
       this.log(`✅ Renderer Daemon started with ${this.renderingEngine} engine`);
     } catch (error) {
@@ -361,6 +363,199 @@ export class RendererDaemon extends BaseDaemon {
     }
   }
 
+  /**
+   * Register static file routes with WebSocketDaemon
+   * Called when RendererDaemon is registered as an external daemon
+   */
+  public registerWithWebSocketDaemon(webSocketDaemon: any): void {
+    this.webSocketDaemon = webSocketDaemon;
+    
+    // Register route handlers for static files
+    this.webSocketDaemon.registerRouteHandler('/src/*', this, this.handleStaticRoute.bind(this));
+    this.webSocketDaemon.registerRouteHandler('/dist/*', this, this.handleStaticRoute.bind(this));
+    
+    // Register the root UI serving route
+    this.webSocketDaemon.registerRouteHandler('/', this, this.handleUIRoute.bind(this));
+    
+    // Register UI-related API endpoints
+    this.webSocketDaemon.registerApiHandler('/api/agents', this, this.handleAgentsApi.bind(this));
+    this.webSocketDaemon.registerApiHandler('/api/personas', this, this.handlePersonasApi.bind(this));
+    
+    this.log('🔌 Registered routes and APIs with WebSocketDaemon');
+  }
+
+  /**
+   * Handle UI serving route - serve the main application
+   */
+  private async handleUIRoute(pathname: string, req: any, res: any): Promise<void> {
+    try {
+      // Use our legacy renderer to generate the UI
+      let html = this.legacyRenderer.generateHTML({});
+      
+      // Inject current version into script tags for cache busting
+      const timestamp = Date.now();
+      html = html.replace(
+        /src="([^"?]+\.js)(\?[^"]*)?"/g, 
+        `src="$1?v=${this.dynamicVersion}&bust=${timestamp}"`
+      );
+      
+      // Add aggressive no-cache headers for the HTML itself
+      res.writeHead(200, { 
+        'Content-Type': 'text/html',
+        'Cache-Control': 'no-cache, no-store, must-revalidate, proxy-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'Surrogate-Control': 'no-store',
+        'ETag': `"${this.dynamicVersion}-${timestamp}"`,
+        'Last-Modified': new Date().toUTCString()
+      });
+      res.end(html);
+      this.log(`✅ Served main UI via RendererDaemon (v${this.dynamicVersion})`);
+    } catch (error) {
+      this.log(`❌ Failed to serve UI: ${error.message}`, 'error');
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Error loading UI from RendererDaemon');
+    }
+  }
+
+  /**
+   * Handle agents API endpoint
+   */
+  private async handleAgentsApi(endpoint: string, req: any, res: any): Promise<void> {
+    try {
+      const agents = [
+        {
+          id: 'claude',
+          name: 'Claude',
+          role: 'AI Assistant',
+          avatar: '🧠',
+          status: 'online',
+          type: 'ai'
+        },
+        {
+          id: 'developer',
+          name: 'Developer',
+          role: 'Human Developer',
+          avatar: '👨‍💻',
+          status: 'online',
+          type: 'human'
+        }
+      ];
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(agents));
+      this.log('📋 Served agents data via RendererDaemon');
+    } catch (error) {
+      this.log(`❌ Failed to serve agents API: ${error.message}`, 'error');
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal server error' }));
+    }
+  }
+
+  /**
+   * Handle personas API endpoint
+   */
+  private async handlePersonasApi(endpoint: string, req: any, res: any): Promise<void> {
+    try {
+      const personas = [
+        {
+          id: 'coding-expert',
+          name: 'Coding Expert',
+          description: 'Specialized in software development and code review',
+          avatar: '👨‍💻',
+          type: 'technical'
+        },
+        {
+          id: 'creative-writer',
+          name: 'Creative Writer',
+          description: 'Expert in creative writing and storytelling',
+          avatar: '✍️',
+          type: 'creative'
+        }
+      ];
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(personas));
+      this.log('📋 Served personas data via RendererDaemon');
+    } catch (error) {
+      this.log(`❌ Failed to serve personas API: ${error.message}`, 'error');
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal server error' }));
+    }
+  }
+
+  /**
+   * Handle static file routes - this method is called by WebSocketDaemon
+   */
+  private async handleStaticRoute(pathname: string, req: any, res: any): Promise<void> {
+    try {
+      // Serve static files directly instead of proxying
+      const { promises: fs } = await import('fs');
+      const { join, extname } = await import('path');
+
+      // Remove query parameters and leading slash
+      const cleanPath = pathname.split('?')[0].substring(1);
+      const fullPath = join(process.cwd(), cleanPath);
+
+      // Security check - ensure path is within project
+      if (!fullPath.startsWith(process.cwd())) {
+        res.writeHead(403, { 'Content-Type': 'text/plain' });
+        res.end('Forbidden');
+        return;
+      }
+
+      // Check if file exists
+      await fs.access(fullPath);
+      const stats = await fs.stat(fullPath);
+
+      if (!stats.isFile()) {
+        this.log(`❌ Path is not a file: ${pathname}`, 'error');
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not Found');
+        return;
+      }
+
+      // Determine content type
+      const contentType = this.getContentType(extname(fullPath));
+
+      // Read and serve file
+      const content = await fs.readFile(fullPath);
+      
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Content-Length': content.length,
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      });
+      res.end(content);
+
+      this.log(`✅ Served static file: ${pathname} (${content.length} bytes, ${contentType})`);
+
+    } catch (error) {
+      this.log(`❌ Failed to serve static file ${pathname}: ${error.message}`, 'error');
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not Found');
+    }
+  }
+
+  private getContentType(ext: string): string {
+    // Handle both .js and js formats
+    const cleanExt = ext.startsWith('.') ? ext.substring(1) : ext;
+    
+    const mimeTypes: Record<string, string> = {
+      'js': 'application/javascript',
+      'mjs': 'application/javascript',
+      'css': 'text/css',
+      'html': 'text/html',
+      'json': 'application/json',
+      'ts': 'application/javascript', // TypeScript served as JS
+      'map': 'application/json'
+    };
+
+    return mimeTypes[cleanExt.toLowerCase()] || 'application/javascript';
+  }
+
   private getCapabilities(): string[] {
     const capabilities = ['basic-rendering', 'static-file-serving'];
     
@@ -460,21 +655,6 @@ export class RendererDaemon extends BaseDaemon {
     }
   }
 
-  private getContentType(ext: string | undefined): string {
-    const types: Record<string, string> = {
-      'js': 'application/javascript',
-      'ts': 'application/javascript',  // Serve TypeScript as JavaScript for ES modules
-      'css': 'text/css',
-      'html': 'text/html',
-      'json': 'application/json',
-      'png': 'image/png',
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-      'gif': 'image/gif',
-      'svg': 'image/svg+xml'
-    };
-    return types[ext || ''] || 'text/plain';
-  }
 
   private getCacheHeaders(ext: string | undefined): Record<string, string> {
     const cacheSettings: Record<string, Record<string, string>> = {
@@ -484,8 +664,9 @@ export class RendererDaemon extends BaseDaemon {
         'Expires': new Date(Date.now() + 31536000000).toUTCString()
       },
       'js': {
-        'Cache-Control': 'public, max-age=31536000, immutable', // 1 year
-        'Expires': new Date(Date.now() + 31536000000).toUTCString()
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
       },
       'ts': {
         'Cache-Control': 'public, max-age=31536000, immutable', // 1 year

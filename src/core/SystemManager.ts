@@ -330,8 +330,8 @@ export class SystemManager extends EventEmitter {
     const wsInfo = this.daemons.get('websocket-server');
     if (wsInfo && wsInfo.instance) {
       try {
-        // Register this daemon with the WebSocket daemon
-        (wsInfo.instance as any).registerDaemon(daemonName, daemon);
+        // Register this daemon with the WebSocket daemon  
+        (wsInfo.instance as any).registerExternalDaemon(daemonName, daemon);
         console.log(`🔌 Registered ${daemonName} with WebSocket daemon`);
       } catch (error) {
         console.log(`⚠️ Failed to register ${daemonName} with WebSocket daemon: ${error.message}`);
