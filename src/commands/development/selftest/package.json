@@ -1,0 +1,19 @@
+{
+    "name": "@continuum/selftest-command",
+    "version": "1.0.0",
+    "description": "JTAG system verification using daemon sessions and sandboxing",
+    "main": "SelfTestCommand.cjs",
+    "scripts": {
+        "test": "jest test/SelfTestCommand.test.js"
+    },
+    "continuum": {
+        "command": "selftest",
+        "category": "development",
+        "capabilities": [
+            "jtag-verification",
+            "session-testing", 
+            "browser-coordination",
+            "system-health-check"
+        ]
+    }
+}
