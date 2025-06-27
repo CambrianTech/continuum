@@ -2454,3 +2454,7 @@
 [2025-06-19 16:41:04] COMMAND: restart {} -> {'success': False, 'error': 'restart command timed out after 10.0s'}
 [2025-06-19 16:44:49] SYSTEM: DevTools monitoring started on port 9222
 [2025-06-19 16:53:59] ERROR: restart {} -> Failed to connect to ws://localhost:9000: Multiple exceptions: [Errno 61] Connect call failed ('::1', 9000, 0, 0), [Errno 61] Connect call failed ('127.0.0.1', 9000)
+[2025-06-25 14:29:20] ERROR: selftest {"mode": "simple"} -> Failed to connect to ws://localhost:9000: Multiple exceptions: [Errno 61] Connect call failed ('::1', 9000, 0, 0), [Errno 61] Connect call failed ('127.0.0.1', 9000)
+[2025-06-25 14:30:11] ERROR: selftest {"mode": "simple"} -> Failed to connect to ws://localhost:9000: Multiple exceptions: [Errno 61] Connect call failed ('::1', 9000, 0, 0), [Errno 61] Connect call failed ('127.0.0.1', 9000)
+[2025-06-25 14:33:34] ERROR: selftest {"mode": "simple"} -> Failed to connect to ws://localhost:9000: Multiple exceptions: [Errno 61] Connect call failed ('::1', 9000, 0, 0), [Errno 61] Connect call failed ('127.0.0.1', 9000)
+[2025-06-26 04:19:28] COMMAND: screenshot {"selector": "body", "filename": "typescript_ui_working.png"} -> {'success': True, 'response': {'type': 'execute_command_response', 'timestamp': '2025-06-26T09:19:28.737Z', 'clientId': 'client_1750929568734_g1u12ol06', 'processedBy': 'websocket-server'}}

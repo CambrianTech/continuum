@@ -28,25 +28,18 @@ class ContinuumServerManager:
         atexit.register(self.stop)
     
     def find_continuum_executable(self) -> Optional[Path]:
-        """Find the Continuum CLI executable"""
-        # Start from python-client and go up to find continuum.cjs
+        """Find the Continuum clean entry point"""
+        # Start from python-client and go up to find continuum (clean CLI)
         current_dir = Path(__file__).parent
         
-        # Go up from continuum_client/utils/ to find continuum.cjs
+        # Go up from continuum_client/utils/ to find continuum clean CLI
         while current_dir.name != '/' and len(current_dir.parts) > 1:
-            continuum_path = current_dir / 'continuum.cjs'
+            continuum_path = current_dir / 'continuum'
             if continuum_path.exists():
                 return continuum_path
             current_dir = current_dir.parent
         
-        # Try global node command
-        try:
-            result = subprocess.run(['which', 'continuum'], capture_output=True, text=True)
-            if result.returncode == 0:
-                return Path(result.stdout.strip())
-        except:
-            pass
-        
+        # Clean TypeScript entry point only!
         return None
     
     def kill_existing_server(self) -> bool:
@@ -100,34 +93,111 @@ class ContinuumServerManager:
         
         return False
     
-    def start(self, daemon: bool = True, restart: bool = True) -> bool:
-        """Start Continuum server with robust error handling"""
+    def is_websocket_server_healthy(self, timeout: int = 10) -> bool:
+        """Check if TypeScript WebSocket server is running on the port"""
+        import socket
+        
+        for _ in range(timeout):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex(('localhost', self.port))
+                sock.close()
+                if result == 0:
+                    print(f"✅ WebSocket server detected on port {self.port}")
+                    return True
+            except Exception as e:
+                print(f"🔍 Port check failed: {e}")
+            time.sleep(1)
+        
+        print(f"❌ No WebSocket server detected on port {self.port}")
+        return False
+    
+    def wait_for_typescript_startup(self, timeout: int = 30) -> bool:
+        """Monitor process output for TypeScript daemon startup confirmation"""
+        if not self.process:
+            return False
+            
+        import select
+        startup_messages = [
+            "✅ Core TypeScript daemons operational",
+            "🌐 WebSocket server ready on port",
+            "✅ WebSocket server ACTUALLY listening"
+        ]
+        
+        start_time = time.time()
+        output_buffer = ""
+        
+        while time.time() - start_time < timeout:
+            if self.process.poll() is not None:
+                print(f"❌ Process exited with code {self.process.returncode}")
+                return False
+                
+            try:
+                # Read available output
+                ready, _, _ = select.select([self.process.stdout], [], [], 0.1)
+                if ready:
+                    chunk = self.process.stdout.read(1024).decode('utf-8', errors='ignore')
+                    output_buffer += chunk
+                    print(f"📝 Startup log: {chunk.strip()}")
+                    
+                    # Check for startup confirmation
+                    for message in startup_messages:
+                        if message in output_buffer:
+                            print(f"✅ Detected startup confirmation: {message}")
+                            return True
+                            
+            except Exception as e:
+                print(f"⚠️ Error reading process output: {e}")
+                
+        print(f"❌ Startup timeout after {timeout}s")
+        return False
+    
+    def show_process_output(self):
+        """Show process output for debugging"""
+        if not self.process:
+            return
+            
+        try:
+            stdout, stderr = self.process.communicate(timeout=2)
+            if stdout:
+                print(f"📋 STDOUT:\n{stdout.decode()}")
+            if stderr:
+                print(f"📋 STDERR:\n{stderr.decode()}")
+        except subprocess.TimeoutExpired:
+            print("⚠️ Process still running, cannot capture output")
+        except Exception as e:
+            print(f"⚠️ Error capturing output: {e}")
+    
+    def start(self, daemon: bool = True, restart: bool = True, devtools: bool = False) -> bool:
+        """Start Continuum service with clean entry point"""
         continuum_path = self.find_continuum_executable()
         if not continuum_path:
             raise FileNotFoundError(
-                "Continuum CLI not found! "
-                "Please ensure continuum.cjs is accessible or install globally"
+                "Continuum service not found! "
+                "Please ensure 'continuum' CLI is accessible in the project root"
             )
         
-        print(f"🔧 Starting Continuum server on port {self.port}...")
+        print(f"🚀 Starting Continuum service (like Docker Desktop) on port {self.port}...")
+        if devtools:
+            print("🔧 Enhanced mode: DevTools + AI monitoring")
         
         try:
-            # Check if server is already running
-            if self.is_server_healthy(timeout=3):
-                print(f"✅ Server already running on port {self.port}")
+            # Check if WebSocket server is already running
+            if self.is_websocket_server_healthy(timeout=3):
+                print(f"✅ Continuum service already running on port {self.port}")
                 return True
             
-            # Kill any existing servers and start fresh
+            # Kill any existing servers
             if restart:
-                print("🔄 Cleaning up existing servers...")
+                print("🔄 Cleaning up existing services...")
                 self.kill_existing_server()
             
-            # Start the server
-            cmd = ['node', str(continuum_path), '--port', str(self.port)]
-            if daemon:
-                cmd.extend(['--daemon', '--idle-timeout', '0'])
+            # Start the clean Continuum service
+            cmd = [str(continuum_path), 'devtools' if devtools else 'start']
             
             print(f"🚀 Executing: {' '.join(cmd)}")
+            print(f"📁 Working directory: {continuum_path.parent}")
             
             self.process = subprocess.Popen(
                 cmd,
@@ -137,18 +207,18 @@ class ContinuumServerManager:
                 preexec_fn=os.setsid if hasattr(os, 'setsid') else None
             )
             
-            # Give daemon mode time to start
-            if daemon:
-                import time
-                time.sleep(3)
+            # Monitor process output for startup confirmation
+            print("⏳ Waiting for Continuum service to start...")
+            startup_success = self.wait_for_typescript_startup(timeout=30)
             
-            # Wait for server to be ready
-            print("⏳ Waiting for server to be ready...")
-            if self.is_server_healthy(timeout=30):
-                print("✅ Continuum server is ready!")
+            if startup_success and self.is_websocket_server_healthy(timeout=10):
+                print("✅ Continuum service is ready!")
                 return True
             else:
                 # Debug: show process output
+                print("❌ Continuum service failed to start properly")
+                self.show_process_output()
+                return False
                 if self.process:
                     stdout, stderr = self.process.communicate(timeout=5)
                     print(f"❌ Server failed to start")

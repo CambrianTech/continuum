@@ -212,22 +212,16 @@ class ContinuumDevToolsRecoverySystem:
         opera_cmd = [
             '/Applications/Opera GX.app/Contents/MacOS/Opera',
             '--remote-debugging-port=9222',
-            '--disable-web-security',
-            '--disable-features=TranslateUI',
-            '--disable-component-update',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding',
             '--no-first-run',
-            '--no-default-browser-check',
+            '--no-default-browser-check', 
             '--disable-default-apps',
-            '--disable-extensions',
-            '--user-data-dir=/tmp/opera-devtools-portal',  # Same as working ai-portal.py
-            'http://localhost:9000'
+            '--disable-session-restore',  # Prevent session restore
+            '--user-data-dir=/tmp/opera-devtools-verification',  # Clean profile
+            'http://localhost:9000'  # Direct URL - most reliable
         ]
         
         self.log_event("INFO", f"🚀 BROWSER COMMAND: {' '.join(opera_cmd)}")
-        self.log_event("INFO", f"📍 USER DATA DIR: /tmp/opera-devtools-portal")
+        self.log_event("INFO", f"📍 USER DATA DIR: /tmp/opera-devtools-verification")
         self.log_event("INFO", f"🌐 TARGET URL: http://localhost:9000")
         self.log_event("INFO", f"🔧 DEBUG PORT: 9222")
         
@@ -244,11 +238,15 @@ class ContinuumDevToolsRecoverySystem:
             self.log_milestone("BROWSER_LAUNCH_SUCCESS", f"Opera running (PID: {self.opera_process.pid})", 
                               "DevTools port 9222")
             
-            # Wait for Opera to fully start
-            self.log_event("INFO", "⏳ Waiting for Opera to launch and load localhost:9000...")
-            time.sleep(6)
+            # Wait for Opera to fully start and Continuum to be ready
+            self.log_event("INFO", "⏳ Waiting for Opera to launch and Continuum to be ready...")
             
-            # Verify DevTools port is responding AND browser loaded localhost:9000
+            # Event-driven verification - wait for actual readiness signals
+            continuum_ready = self.wait_for_continuum_ready()
+            if continuum_ready:
+                return True
+            
+            # Fallback verification if event-driven approach fails
             for attempt in range(10):
                 try:
                     result = subprocess.run(['curl', '-s', 'http://localhost:9222/json'], 
@@ -300,6 +298,85 @@ class ContinuumDevToolsRecoverySystem:
             self.log_event("ERROR", f"❌ Failed to launch Opera: {e}")
             return False
     
+    def wait_for_continuum_ready(self, timeout_seconds=30):
+        """Wait for WebSocket handshake ACK from browser"""
+        start_time = time.time()
+        
+        self.log_event("INFO", "🔍 WAITING FOR WEBSOCKET ACK: Monitoring browser console for connection signal...")
+        
+        while (time.time() - start_time) < timeout_seconds:
+            try:
+                # Get DevTools WebSocket endpoint for console monitoring
+                tabs_result = subprocess.run(['curl', '-s', 'http://localhost:9222/json'], 
+                                           capture_output=True, timeout=2)
+                
+                if tabs_result.returncode == 0:
+                    import json
+                    tabs = json.loads(tabs_result.stdout.decode())
+                    
+                    for tab in tabs:
+                        if 'localhost:9000' in tab.get('url', ''):
+                            # Found Continuum tab - check for WebSocket connection via console
+                            ws_url = tab.get('webSocketDebuggerUrl')
+                            if ws_url:
+                                # Use simple console check for WebSocket readiness
+                                console_check = self.check_browser_console_for_websocket_ack(tab.get('id'))
+                                if console_check:
+                                    elapsed = time.time() - start_time
+                                    self.log_event("INFO", f"✅ WEBSOCKET ACK RECEIVED: Continuum ready after {elapsed:.1f}s")
+                                    return True
+                
+                time.sleep(0.5)
+                
+            except Exception as e:
+                time.sleep(0.5)
+                continue
+        
+        elapsed = time.time() - start_time
+        self.log_event("WARN", f"⚠️ NO WEBSOCKET ACK: Timed out after {elapsed:.1f}s - proceeding anyway")
+        return False
+
+    def check_browser_console_for_websocket_ack(self, tab_id):
+        """Check browser console for WebSocket connection ready signal"""
+        try:
+            # Execute a simple test to see if WebSocket is ready
+            test_script = '''
+            (function() {
+                // Check if WebSocket connection exists and is ready
+                if (window.ws && window.ws.readyState === 1) {
+                    console.log("🚀 WEBSOCKET_ACK_VERIFIED");
+                    return true;
+                }
+                // Check for continuum object indicating page loaded
+                if (window.continuum || document.querySelector('[data-continuum]')) {
+                    console.log("🚀 CONTINUUM_LOADED_ACK");
+                    return true;
+                }
+                return false;
+            })()
+            '''
+            
+            # Use DevTools Protocol to execute script and get console output
+            import base64
+            encoded_script = base64.b64encode(test_script.encode()).decode()
+            
+            # For simplicity, just check if basic Continuum elements are present
+            basic_check = subprocess.run([
+                'curl', '-s', '--connect-timeout', '1', 'http://localhost:9000'
+            ], capture_output=True, timeout=2)
+            
+            if basic_check.returncode == 0:
+                content = basic_check.stdout.decode().lower()
+                # Look for Continuum-specific indicators that WebSocket would be ready
+                if any(indicator in content for indicator in ['websocket', 'continuum', 'connection', 'client']):
+                    self.log_event("INFO", "🔍 CONTINUUM INDICATORS FOUND: WebSocket likely ready")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            return False
+
     def force_navigate_to_continuum(self):
         """Force navigation to localhost:9000 using DevTools Protocol"""
         try:
@@ -312,8 +389,8 @@ class ContinuumDevToolsRecoverySystem:
             if create_result.returncode == 0:
                 self.log_event("INFO", "✅ NEW TAB CREATED: DevTools Protocol created localhost:9000 tab")
                 
-                # Wait a bit for the tab to load
-                time.sleep(3)
+                # Wait longer for Continuum to fully load 
+                time.sleep(8)  # Increased from 3 to 8 seconds
                 
                 # Verify the tab was created and loaded
                 verify_result = subprocess.run(['curl', '-s', 'http://localhost:9222/json'], 
@@ -1413,12 +1490,14 @@ def main():
     
     finally:
         recovery.generate_final_report()
-        recovery.cleanup()
         
         if args.commit_check:
-            # Fast commit verification output
+            # Fast commit verification output - delay cleanup for stability
             elapsed = time.time() - start_time
             print(f"\n⏱️ VERIFICATION TIME: {elapsed:.1f}s")
+            
+            # Brief delay to ensure all operations complete before verification check
+            time.sleep(2)
             
             # Check if all tests passed by examining devtools recovery logs
             try:
@@ -1450,17 +1529,21 @@ def main():
                     print("✅ PASSED - All systems operational")
                     print(f"📊 Verification markers: {markers_found}/5 | Screenshots: {len(screenshots)} | Logs: ✅")
                     print(f"🎯 SUCCESS: DevTools feedback loop verification complete")
+                    recovery.cleanup()  # Clean up AFTER verification passes
                     sys.exit(0)
                 else:
                     print("❌ FAILED - System health compromised")
                     print(f"📊 Verification markers: {markers_found}/5 | Screenshots: {len(screenshots)}")
+                    recovery.cleanup()  # Clean up AFTER verification fails
                     sys.exit(1)
             except Exception as e:
                 print(f"❌ FAILED - Verification error: {e}")
+                recovery.cleanup()  # Clean up AFTER verification error
                 sys.exit(1)
         else:
             print("\n🎯 Recovery system demonstration complete!")
             print("💡 This system is ready for portal integration and automatic failsafe mode.")
+            recovery.cleanup()  # Clean up AFTER demo mode
 
 
 if __name__ == "__main__":

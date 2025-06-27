@@ -62,9 +62,15 @@ class ContinuumClient:
                 # Initialize JavaScript executor
                 self.js = JSExecutor(self.ws, self.timeout)
                 
-                # Skip initial status messages
-                await self.ws.recv()  # Skip status
-                await self.ws.recv()  # Skip banner
+                # Handle initial connection confirmation
+                initial_message = await self.ws.recv()
+                try:
+                    data = json.loads(initial_message)
+                    if data.get('type') == 'connection_confirmed':
+                        print(f"✅ Connected as client: {data['data']['clientId']}")
+                except json.JSONDecodeError:
+                    print(f"✅ Connected, received: {initial_message}")
+                # Only one message expected - don't wait for more
                 
                 # Start message handling loop
                 asyncio.create_task(self._message_loop())
@@ -94,16 +100,21 @@ class ContinuumClient:
         import time
         
         try:
-            # Check if server process is running
-            result = subprocess.run(['pgrep', '-f', 'continuum.cjs'], 
+            # Check if TypeScript daemon system is running (check for tsx processes)
+            result = subprocess.run(['pgrep', '-f', 'tsx.*continuum.ts'], 
                                   capture_output=True, text=True)
             if result.returncode != 0:
-                print("🚀 Auto-healing: Starting Continuum server...")
-                subprocess.Popen(['node', 'continuum.cjs'], 
-                               stdout=subprocess.DEVNULL, 
-                               stderr=subprocess.DEVNULL)
-                time.sleep(5)  # Give server time to start
-                return True
+                print("🚀 Auto-healing: Starting Continuum TypeScript daemon system...")
+                # Use our updated server manager for TypeScript system
+                from ..utils.server_manager import ContinuumServerManager
+                manager = ContinuumServerManager()
+                success = manager.start(daemon=False, restart=True)
+                if success:
+                    print("✅ Auto-healing: TypeScript daemon system started")
+                    return True
+                else:
+                    print("❌ Auto-healing: Failed to start TypeScript daemon system")
+                    return False
         except Exception as e:
             print(f"⚠️ Auto-healing failed: {e}")
             return False
@@ -163,6 +174,17 @@ class ContinuumClient:
                                         future.set_result(result['result'])
                                     else:
                                         future.set_result(result)
+                        
+                        # Handle execute_command_response from server
+                        elif isinstance(data, dict) and data.get('type') == 'execute_command_response':
+                            # Server doesn't return commandId, so match to most recent pending command
+                            if self.pending_commands:
+                                recent_command_id = max(self.pending_commands.keys())
+                                future = self.pending_commands[recent_command_id]
+                                if not future.done():
+                                    # Return the data or success confirmation
+                                    result = data.get('data', data.get('result', {'success': True, 'response': data}))
+                                    future.set_result(result)
                         
                         # Handle traditional command responses with commandId
                         elif isinstance(data, dict) and data.get('type') == 'command_response':
@@ -229,12 +251,11 @@ class ContinuumClient:
             self.pending_commands = {}
         self.pending_commands[command_id] = future
         
-        # Send task with clean CLI syntax (no [CMD: prefix)
-        params_str = json.dumps(params or {})
+        # Send execute_command message (correct server type)
         message = {
-            'type': 'task',
-            'role': 'system',
-            'task': f'{command.lower()} {params_str}',
+            'type': 'execute_command',
+            'command': command.lower(),
+            'params': params or {},
             'commandId': command_id
         }
         

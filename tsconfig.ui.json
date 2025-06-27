@@ -3,29 +3,23 @@
     "target": "ES2020",
     "module": "ES2020",
     "moduleResolution": "node",
-    "lib": ["ES2020", "DOM"],
     "outDir": "./dist/ui",
-    "rootDir": "./src",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
+    "rootDir": "./src/ui",
     "declaration": true,
-    "declarationMap": true,
     "sourceMap": true,
-    "noEmitOnError": false,
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
-    "isolatedModules": true,
-    "noImplicitAny": false
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "strict": false
   },
   "include": [
-    "src/ui/**/*",
-    "src/commands/**/*"
+    "src/ui/**/*.ts"
   ],
   "exclude": [
+    "src/ui/**/*.test.ts",
+    "src/ui/widgets/chat/*.ts",
+    "src/ui/UIManager.ts",
     "node_modules",
-    "dist",
-    "tests"
+    "dist"
   ]
 }

@@ -101,3 +101,8 @@ claude-code-agent.cjs
 .test-instance-*
 /agent-scripts/bin
 archived/
+
+# Compiled UI components
+src/ui/**/*.js
+src/ui/**/*.js.map
+src/ui/**/*.d.ts
