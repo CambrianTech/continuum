@@ -26,7 +26,7 @@ export interface CommandStats {
 export interface ExecutionContext {
   processor: string;
   executionId: string;
-  timestamp: Date;
+  timestamp: string;
   continuum?: any;
   continuonStatus?: any;
   [key: string]: any;
@@ -34,10 +34,12 @@ export interface ExecutionContext {
 
 export interface CommandResult<T = any> {
   success: boolean;
-  message: string;
+  message?: string;
   data?: T;
   error?: string;
   timestamp: string;
+  executionTime?: number;
+  metadata?: Record<string, any>;
 }
 
 export interface CommandDefinition {

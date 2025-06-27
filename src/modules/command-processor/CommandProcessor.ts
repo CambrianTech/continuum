@@ -6,13 +6,14 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
-import { BaseCommand, CommandDefinition, CommandContext, CommandResult } from '../../commands/core/BaseCommand';
+import { CommandDefinition, CommandResult } from './types.js';
+import { CommandContext } from '../../commands/BaseCommand.js';
 import { ProcessorConfig, CommandModule, CommandStats, ExecutionContext, LoadResult } from './types';
 
 // Remove duplicate interfaces - now imported from types.ts
 
 export class TypeScriptCommandProcessor {
-  private commands = new Map<string, typeof BaseCommand>();
+  private commands = new Map<string, any>();
   private definitions = new Map<string, CommandDefinition>();
   private initialized = false;
   private config: ProcessorConfig;
@@ -93,10 +94,15 @@ export class TypeScriptCommandProcessor {
       
       // Create enriched context
       const executionContext: CommandContext = {
-        ...context,
-        processor: 'typescript',
-        executionId: this.generateExecutionId(),
-        timestamp: new Date()
+        sender: context?.sender || 'system',
+        room: context?.room,
+        timestamp: context?.timestamp || new Date().toISOString(),
+        requestId: context?.requestId || this.generateExecutionId(),
+        metadata: {
+          ...context?.metadata,
+          processor: 'typescript',
+          executionId: this.generateExecutionId()
+        }
       };
 
       const result = await CommandClass.execute(params, executionContext);
@@ -218,7 +224,7 @@ export class TypeScriptCommandProcessor {
                             typeof exp === 'function' && 
                             typeof (exp as any).getDefinition === 'function' && 
                             typeof (exp as any).execute === 'function'
-                          ) as typeof BaseCommand;
+                          ) as any;
 
       if (!CommandClass) {
         throw new Error(`No valid command class found in ${filePath}`);
@@ -393,22 +399,30 @@ export namespace TypeScriptCommandProcessorTests {
       (processor as any).commands.set('context-test', mockCommand);
       (processor as any).initialized = true;
       
-      const testContext = { test: 'value', continuum: { version: '1.0' } };
+      const testContext: CommandContext = { 
+        sender: 'test',
+        timestamp: new Date().toISOString(),
+        requestId: 'test-123',
+        metadata: {
+          test: 'value',
+          continuum: { version: '1.0' }
+        }
+      };
       await processor.executeCommand('context-test', {}, testContext);
       
       if (!receivedContext) {
         throw new Error('Context was not passed to command');
       }
       
-      if (receivedContext.processor !== 'typescript') {
-        throw new Error('Processor type not set in context');
+      if (receivedContext.metadata?.processor !== 'typescript') {
+        throw new Error('Processor type not set in context metadata');
       }
       
-      if (!receivedContext.executionId) {
+      if (!receivedContext.metadata?.executionId) {
         throw new Error('Execution ID not generated');
       }
       
-      if (receivedContext.test !== 'value') {
+      if (receivedContext.metadata?.test !== 'value') {
         throw new Error('Original context not preserved');
       }
     });

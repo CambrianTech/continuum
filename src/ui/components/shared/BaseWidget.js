@@ -1,242 +1,257 @@
 /**
- * Base Widget Class
- * Shared functionality for all Continuum UI widgets
+ * BaseWidget - TypeScript Base Class for All Widgets
+ * Provides common functionality and clean separation of concerns
+ * Standardized CSS loading, event handling, and lifecycle management
  */
-
-class BaseWidget extends HTMLElement {
-  constructor() {
-    super();
-    this.attachShadow({ mode: 'open' });
-    
-    // Common widget state
-    this.isLoading = false;
-    this.hasError = false;
-    this.errorMessage = '';
-    this.refreshTimeout = null;
-    
-    // Widget metadata (should be overridden)
-    this.widgetName = 'BaseWidget';
-    this.widgetIcon = '🎛️';
-    this.widgetCategory = 'User Interface';
-  }
-
-  async connectedCallback() {
-    await this.render();
-    this.setupEventListeners();
-    this.initializeWidget();
-  }
-
-  disconnectedCallback() {
-    this.cleanup();
-  }
-
-  /**
-   * Common widget header styling with collapsible functionality
-   */
-  getHeaderStyle() {
-    return `
-      .widget-container {
-        background: rgba(20, 25, 35, 0.95);
-        border-radius: 12px;
-        margin-bottom: 20px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-      }
-      
-      .widget-header-bar {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 16px 20px;
-        cursor: pointer;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        transition: all 0.3s ease;
-        user-select: none;
-      }
-      
-      .widget-header-bar:hover {
-        background: rgba(255, 255, 255, 0.05);
-      }
-      
-      .widget-header-title {
-        color: #e0e6ed;
-        font-size: 14px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin: 0;
-      }
-      
-      .widget-collapse-btn {
-        color: #8a92a5;
-        font-size: 16px;
-        font-weight: bold;
-        transition: all 0.3s ease;
-        transform: rotate(0deg);
-      }
-      
-      .widget-collapse-btn.collapsed {
-        transform: rotate(-90deg);
-      }
-      
-      .widget-content {
-        padding: 20px;
-        transition: all 0.3s ease;
-        overflow: hidden;
-      }
-      
-      .widget-content.collapsed {
-        display: none;
-      }
-      
-      .loading {
-        color: #8a92a5;
-        font-size: 14px;
-        text-align: center;
-        padding: 20px;
-      }
-      
-      .error {
-        color: #F44336;
-        font-size: 14px;
-        text-align: center;
-        padding: 20px;
-      }
-      
-      .refresh-btn {
-        width: 100%;
-        background: rgba(79, 195, 247, 0.1);
-        border: 1px solid rgba(79, 195, 247, 0.3);
-        color: #4FC3F7;
-        border-radius: 8px;
-        padding: 10px 15px;
-        font-size: 13px;
-        cursor: pointer;
-        transition: all 0.3s ease;
-        margin-top: 15px;
-      }
-      
-      .refresh-btn:hover {
-        background: rgba(79, 195, 247, 0.2);
-        border-color: rgba(79, 195, 247, 0.5);
-      }
+export class BaseWidget extends HTMLElement {
+    constructor() {
+        super();
+        this.widgetName = 'BaseWidget';
+        this.widgetIcon = '🔹';
+        this.widgetTitle = 'Widget';
+        this.widgetConnected = false;
+        this.cssPath = ''; // Override in child classes
+        this.cachedCSS = null;
+        this.isCollapsed = false; // Track collapse state
+        this.attachShadow({ mode: 'open' });
+    }
+    async connectedCallback() {
+        console.log(`🎛️ ${this.widgetName}: Connecting to DOM`);
+        this.widgetConnected = true;
+        await this.initializeWidget();
+        await this.render();
+    }
+    /**
+     * Initialize widget - override for custom initialization
+     */
+    async initializeWidget() {
+        // Override in child classes for custom initialization
+    }
+    disconnectedCallback() {
+        console.log(`🎛️ ${this.widgetName}: Disconnecting from DOM`);
+        this.widgetConnected = false;
+        this.cleanup();
+    }
+    /**
+     * Main render method - combines CSS and HTML
+     */
+    async render() {
+        try {
+            const css = await this.loadCSS();
+            const html = this.renderContent();
+            this.shadowRoot.innerHTML = `
+        <style>
+          ${css}
+        </style>
+        ${html}
+      `;
+            // Setup event listeners after DOM is ready
+            setTimeout(() => {
+                this.setupEventListeners();
+                this.setupCollapseToggle();
+            }, 0);
+        }
+        catch (error) {
+            console.error(`🎛️ ${this.widgetName}: Render failed:`, error);
+            this.renderError(error);
+        }
+    }
+    /**
+     * Load CSS for the widget with caching and error handling
+     */
+    async loadCSS() {
+        if (this.cachedCSS) {
+            return this.cachedCSS;
+        }
+        if (!this.cssPath) {
+            console.warn(`🎛️ ${this.widgetName}: No CSS path specified`);
+            return '';
+        }
+        try {
+            const response = await fetch(this.cssPath);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            this.cachedCSS = await response.text();
+            return this.cachedCSS;
+        }
+        catch (error) {
+            console.error(`🎛️ ${this.widgetName}: Failed to load CSS from ${this.cssPath}:`, error);
+            return `/* CSS loading failed: ${error.message} */`;
+        }
+    }
+    /**
+     * Cleanup method for when widget is disconnected
+     */
+    cleanup() {
+        // Override in child classes if needed
+    }
+    /**
+     * Render error state
+     */
+    renderError(error) {
+        this.shadowRoot.innerHTML = `
+      <style>
+        .error-container {
+          padding: 20px;
+          background: rgba(244, 67, 54, 0.1);
+          border: 1px solid rgba(244, 67, 54, 0.3);
+          border-radius: 8px;
+          color: #f44336;
+          text-align: center;
+        }
+        .error-title {
+          font-weight: 600;
+          margin-bottom: 8px;
+        }
+        .error-message {
+          font-size: 14px;
+          opacity: 0.8;
+        }
+      </style>
+      <div class="error-container">
+        <div class="error-title">❌ ${this.widgetName} Error</div>
+        <div class="error-message">${error.message || 'Unknown error occurred'}</div>
+      </div>
     `;
-  }
-
-  /**
-   * Common loading state management
-   */
-  setLoading(loading, message = 'Loading...') {
-    this.isLoading = loading;
-    this.loadingMessage = message;
-    this.updateLoadingState();
-  }
-
-  /**
-   * Common error state management
-   */
-  setError(error, message = 'An error occurred') {
-    this.hasError = !!error;
-    this.errorMessage = message;
-    this.updateErrorState();
-  }
-
-  /**
-   * Common refresh functionality
-   */
-  async refresh() {
-    try {
-      this.setLoading(true, `Refreshing ${this.widgetName}...`);
-      this.setError(false);
-      
-      await this.onRefresh();
-      
-      this.setLoading(false);
-    } catch (error) {
-      console.error(`${this.widgetName} refresh failed:`, error);
-      this.setError(true, `Failed to refresh ${this.widgetName}`);
-      this.setLoading(false);
     }
-  }
-
-  /**
-   * Auto-refresh functionality
-   */
-  startAutoRefresh(intervalMs = 30000) {
-    this.stopAutoRefresh();
-    this.refreshTimeout = setInterval(() => this.refresh(), intervalMs);
-  }
-
-  stopAutoRefresh() {
-    if (this.refreshTimeout) {
-      clearInterval(this.refreshTimeout);
-      this.refreshTimeout = null;
+    /**
+     * Update widget state and re-render
+     */
+    async update() {
+        if (this.widgetConnected) {
+            await this.render();
+        }
     }
-  }
-
-  /**
-   * Common API call wrapper
-   */
-  async apiCall(endpoint, options = {}) {
-    try {
-      const response = await fetch(endpoint, {
-        headers: {
-          'Content-Type': 'application/json',
-          ...options.headers
-        },
-        ...options
-      });
-      
-      if (!response.ok) {
-        throw new Error(`API call failed: ${response.status} ${response.statusText}`);
-      }
-      
-      return await response.json();
-    } catch (error) {
-      console.error(`${this.widgetName} API call failed:`, error);
-      throw error;
+    /**
+     * Get continuum API if available
+     */
+    getContinuumAPI() {
+        return window.continuum;
     }
-  }
+    /**
+     * Check if continuum API is connected
+     */
+    isContinuumConnected() {
+        const continuum = this.getContinuumAPI();
+        return continuum && continuum.isConnected();
+    }
+    /**
+     * Send message via continuum API
+     */
+    sendMessage(message) {
+        const continuum = this.getContinuumAPI();
+        if (continuum) {
+            continuum.send(message);
+        }
+        else {
+            console.warn(`🎛️ ${this.widgetName}: Continuum API not available`);
+        }
+    }
+    /**
+     * Execute command via continuum API
+     */
+    async executeCommand(command, params = {}) {
+        const continuum = this.getContinuumAPI();
+        if (continuum) {
+            return await continuum.execute(command, params);
+        }
+        else {
+            throw new Error('Continuum API not available');
+        }
+    }
+    /**
+     * Register event listener with continuum API
+     */
+    onContinuumEvent(type, handler) {
+        const continuum = this.getContinuumAPI();
+        if (continuum) {
+            continuum.on(type, handler);
+        }
+        else {
+            console.warn(`🎛️ ${this.widgetName}: Cannot register event ${type} - Continuum API not available`);
+        }
+    }
+    /**
+     * Remove event listener from continuum API
+     */
+    offContinuumEvent(type, handler) {
+        const continuum = this.getContinuumAPI();
+        if (continuum) {
+            continuum.off(type, handler);
+        }
+    }
 
-  /**
-   * Widget lifecycle methods - should be overridden by subclasses
-   */
-  async onRefresh() {
-    // Override in subclasses
-    console.log(`${this.widgetName}: onRefresh not implemented`);
-  }
+    /**
+     * Toggle collapse state for widgets
+     */
+    toggleCollapse() {
+        this.isCollapsed = !this.isCollapsed;
+        console.log(`🎛️ ${this.widgetName}: ${this.isCollapsed ? 'Collapsed' : 'Expanded'}`);
+        this.updateCollapseState();
+    }
 
-  initializeWidget() {
-    // Override in subclasses
-    console.log(`${this.widgetName}: initializeWidget not implemented`);
-  }
+    /**
+     * Update DOM to reflect collapse state
+     */
+    updateCollapseState() {
+        const content = this.shadowRoot.querySelector('.widget-content');
+        const toggle = this.shadowRoot.querySelector('.collapse-toggle');
+        
+        if (content) {
+            if (this.isCollapsed) {
+                content.style.display = 'none';
+                content.style.maxHeight = '0';
+                content.style.overflow = 'hidden';
+            } else {
+                content.style.display = '';
+                content.style.maxHeight = '';
+                content.style.overflow = '';
+            }
+        }
 
-  render() {
-    // Override in subclasses
-    console.log(`${this.widgetName}: render not implemented`);
-  }
+        if (toggle) {
+            toggle.innerHTML = this.isCollapsed ? '▶' : '▼';
+            toggle.style.transform = this.isCollapsed ? 'rotate(0deg)' : 'rotate(0deg)';
+        }
 
-  setupEventListeners() {
-    // Override in subclasses
-    console.log(`${this.widgetName}: setupEventListeners not implemented`);
-  }
+        // Add collapsed class to host element for CSS styling
+        if (this.isCollapsed) {
+            this.classList.add('collapsed');
+        } else {
+            this.classList.remove('collapsed');
+        }
+    }
 
-  cleanup() {
-    this.stopAutoRefresh();
-    // Additional cleanup in subclasses
-  }
+    /**
+     * Setup collapse toggle functionality
+     */
+    setupCollapseToggle() {
+        const toggle = this.shadowRoot.querySelector('.collapse-toggle');
+        if (toggle) {
+            toggle.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.toggleCollapse();
+            });
+        }
+    }
 
-  updateLoadingState() {
-    // Update UI based on loading state - override in subclasses
-  }
-
-  updateErrorState() {
-    // Update UI based on error state - override in subclasses
-  }
-}
-
-// Export for use by other widgets
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = BaseWidget;
-} else if (typeof window !== 'undefined') {
-  window.BaseWidget = BaseWidget;
+    /**
+     * Render widget with collapsible header
+     */
+    renderWithCollapseHeader(content) {
+        return `
+            <div class="widget-header">
+                <div class="widget-title-row">
+                    <span class="collapse-toggle">▼</span>
+                    <span class="widget-icon">${this.widgetIcon}</span>
+                    <span class="widget-title">${this.widgetTitle}</span>
+                </div>
+            </div>
+            <div class="widget-content">
+                ${content}
+            </div>
+        `;
+    }
 }

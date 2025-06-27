@@ -124,7 +124,7 @@ async def test_user_selector_interaction():
                 }
                 return { success: false, error: 'UserSelector search input not found' };
             })();
-        \\`)
+        `)
         
         if search_result['success']:
             data = json.loads(search_result['result'])

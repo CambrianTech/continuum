@@ -113,6 +113,20 @@ export class CommandProcessorDaemon extends BaseDaemon {
       case 'command.register_implementation':
         return await this.registerImplementation(message.data as CommandImplementation) as DaemonResponse<R>;
       
+      // Handle chat messages as commands
+      case 'message':
+      case 'group_message':
+      case 'direct_message':
+        return await this.handleChatMessage(message.data as any) as DaemonResponse<R>;
+      
+      case 'get_capabilities':
+        return {
+          success: true,
+          data: {
+            capabilities: this.getCapabilities()
+          }
+        } as DaemonResponse<R>;
+      
       default:
         return {
           success: false,
@@ -120,6 +134,144 @@ export class CommandProcessorDaemon extends BaseDaemon {
           timestamp: new Date()
         };
     }
+  }
+
+  /**
+   * Handle chat messages from rooms (route to appropriate handlers)
+   */
+  private async handleChatMessage(data: any): Promise<DaemonResponse> {
+    // Defensive check for data structure
+    if (!data || typeof data !== 'object') {
+      this.log(`⚠️ Invalid chat message data: ${JSON.stringify(data)}`);
+      return {
+        success: false,
+        error: `Invalid message data format: ${typeof data}`,
+        timestamp: new Date()
+      };
+    }
+    
+    const roomId = data.room || 'general';
+    const content = data.content || '';
+    
+    this.log(`💬 Chat message to room "${roomId}": ${content.substring(0, 50)}...`);
+    
+    try {
+      // Access room data from WebSocket daemon (set during system startup)
+      const webSocketDaemon = this.getWebSocketDaemon();
+      const chatRooms = webSocketDaemon?.chatRooms;
+      
+      if (!chatRooms || !chatRooms.has(roomId)) {
+        return {
+          success: false,
+          error: `Room "${roomId}" not found. Available rooms: ${Array.from(chatRooms?.keys() || []).join(', ')}`,
+          timestamp: new Date()
+        };
+      }
+      
+      const room = chatRooms.get(roomId);
+      
+      // Create message object
+      const message = {
+        id: this.generateMessageId(),
+        type: 'user_message',
+        content: content,
+        room: roomId,
+        sender: 'user',
+        timestamp: new Date().toISOString(),
+        participants: [...room.participants]
+      };
+      
+      // Add message to room history
+      room.messages.push(message);
+      room.lastActivity = new Date().toISOString();
+      
+      // Route based on room type
+      let response;
+      if (roomId === 'academy') {
+        response = await this.handleAcademyChat(message, room);
+      } else {
+        response = await this.handleGeneralChat(message, room);
+      }
+      
+      return {
+        success: true,
+        data: {
+          message_sent: true,
+          room: roomId,
+          message_id: message.id,
+          response: response,
+          timestamp: new Date().toISOString()
+        }
+      };
+      
+    } catch (error) {
+      return {
+        success: false,
+        error: `Failed to process chat message: ${error.message}`,
+        timestamp: new Date()
+      };
+    }
+  }
+  
+  /**
+   * Handle Academy room chat (training, LoRA, etc.)
+   */
+  private async handleAcademyChat(message: any, room: any): Promise<string> {
+    this.log(`🎓 Academy chat: ${message.content}`);
+    // TODO: Route to Academy AI services
+    return `Academy received: "${message.content}". Training features coming soon.`;
+  }
+  
+  /**
+   * Handle General room chat (general AI assistance)
+   */
+  private async handleGeneralChat(message: any, room: any): Promise<string> {
+    this.log(`💬 General chat: ${message.content}`);
+    // TODO: Route to general AI services (Claude, GPT, etc.)
+    return `General AI received: "${message.content}". AI responses coming soon.`;
+  }
+  
+  /**
+   * Get WebSocket daemon reference (injected by system)
+   */
+  private getWebSocketDaemon(): any {
+    // Access through global system reference
+    // This will be properly injected when the daemon is registered
+    return (global as any).continuumWebSocketDaemon || null;
+  }
+  
+  /**
+   * Generate unique message ID
+   */
+  private generateMessageId(): string {
+    return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * Get message types that this daemon can handle
+   */
+  getMessageTypes(): string[] {
+    return [
+      'command.execute',
+      'command.get_implementations', 
+      'command.register_implementation',
+      'message',
+      'group_message',
+      'direct_message',
+      'get_capabilities'
+    ];
+  }
+
+  /**
+   * Get daemon capabilities
+   */
+  private getCapabilities(): string[] {
+    return [
+      'command-execution',
+      'chat-processing',
+      'ai-routing',
+      'message-handling'
+    ];
   }
 
   /**

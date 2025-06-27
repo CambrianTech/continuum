@@ -91,7 +91,7 @@ async def analyze_version_screenshot():
                     elementCount: versionElements.length
                 };
             })();
-        \\`)
+        `)
         
         if result['success']:
             data = json.loads(result['result'])

@@ -1,0 +1,256 @@
+/**
+ * Persona Widget - Individual AI Persona Component
+ * Represents a single AI persona with its capabilities and status
+ */
+
+import { BaseWidget } from '../shared/BaseWidget.js';
+
+interface PersonaConfig {
+  id: string;
+  name: string;
+  specialization: string;
+  status: 'active' | 'training' | 'graduated' | 'offline';
+  avatar: string;
+  accuracy?: number;
+  description: string;
+  capabilities: string[];
+  lastActive?: Date;
+}
+
+export class PersonaWidget extends BaseWidget {
+  private config: PersonaConfig | null = null;
+  private isInteracting: boolean = false;
+
+  constructor() {
+    super();
+    this.widgetName = 'Persona';
+    this.widgetIcon = '🤖';
+    this.widgetTitle = 'AI Persona';
+  }
+
+  // Public method to configure the persona
+  public setPersona(config: PersonaConfig): void {
+    this.config = config;
+    this.widgetTitle = config.name;
+    this.render();
+  }
+
+  async loadCSS(): Promise<string> {
+    return `
+      :host {
+        display: block;
+        background: rgba(20, 25, 35, 0.95);
+        border-radius: 12px;
+        padding: 16px;
+        margin: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        transition: all 0.3s ease;
+        cursor: pointer;
+        min-width: 200px;
+        max-width: 300px;
+      }
+
+      :host(:hover) {
+        border-color: rgba(79, 195, 247, 0.3);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 16px rgba(79, 195, 247, 0.1);
+      }
+
+      .persona-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .persona-avatar {
+        font-size: 24px;
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(79, 195, 247, 0.1);
+        border-radius: 50%;
+      }
+
+      .persona-info {
+        flex: 1;
+      }
+
+      .persona-name {
+        font-size: 16px;
+        font-weight: 600;
+        color: #e0e6ed;
+        margin-bottom: 2px;
+      }
+
+      .persona-status {
+        font-size: 12px;
+        padding: 2px 8px;
+        border-radius: 10px;
+        text-transform: uppercase;
+        font-weight: 500;
+      }
+
+      .status-active { background: rgba(76, 175, 80, 0.2); color: #4CAF50; }
+      .status-training { background: rgba(255, 152, 0, 0.2); color: #FF9800; }
+      .status-graduated { background: rgba(33, 150, 243, 0.2); color: #2196F3; }
+      .status-offline { background: rgba(158, 158, 158, 0.2); color: #9E9E9E; }
+
+      .persona-specialization {
+        font-size: 12px;
+        color: #888;
+        margin-bottom: 8px;
+      }
+
+      .persona-description {
+        font-size: 13px;
+        color: #ccc;
+        line-height: 1.4;
+        margin-bottom: 12px;
+      }
+
+      .persona-capabilities {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-bottom: 12px;
+      }
+
+      .capability-tag {
+        font-size: 10px;
+        padding: 2px 6px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        color: #aaa;
+      }
+
+      .persona-metrics {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 11px;
+        color: #888;
+      }
+
+      .accuracy {
+        color: #4CAF50;
+        font-weight: 500;
+      }
+
+      .last-active {
+        opacity: 0.7;
+      }
+
+      .interaction-indicator {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        width: 8px;
+        height: 8px;
+        background: #4CAF50;
+        border-radius: 50%;
+        animation: pulse 2s infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 0.5; }
+        50% { opacity: 1; }
+      }
+    `;
+  }
+
+  renderContent(): string {
+    if (!this.config) {
+      return `
+        <div class="persona-header">
+          <div class="persona-avatar">❓</div>
+          <div class="persona-info">
+            <div class="persona-name">No Persona Configured</div>
+          </div>
+        </div>
+        <div class="persona-description">
+          Use setPersona() to configure this component.
+        </div>
+      `;
+    }
+
+    const lastActiveStr = this.config.lastActive 
+      ? this.config.lastActive.toLocaleDateString()
+      : 'Never';
+
+    return `
+      ${this.isInteracting ? '<div class="interaction-indicator"></div>' : ''}
+      
+      <div class="persona-header">
+        <div class="persona-avatar">${this.config.avatar}</div>
+        <div class="persona-info">
+          <div class="persona-name">${this.config.name}</div>
+          <div class="persona-status status-${this.config.status}">${this.config.status}</div>
+        </div>
+      </div>
+
+      <div class="persona-specialization">${this.config.specialization}</div>
+      
+      <div class="persona-description">${this.config.description}</div>
+
+      <div class="persona-capabilities">
+        ${this.config.capabilities.map(cap => `<span class="capability-tag">${cap}</span>`).join('')}
+      </div>
+
+      <div class="persona-metrics">
+        ${this.config.accuracy ? `<span class="accuracy">${this.config.accuracy}% accuracy</span>` : '<span></span>'}
+        <span class="last-active">Last: ${lastActiveStr}</span>
+      </div>
+    `;
+  }
+
+  setupEventListeners(): void {
+    this.addEventListener('click', () => {
+      if (this.config) {
+        console.log(`🤖 Persona: Clicked on ${this.config.name}`);
+        this.handlePersonaClick();
+      }
+    });
+  }
+
+  private handlePersonaClick(): void {
+    if (!this.config) return;
+
+    // Send persona selection event
+    this.sendMessage({
+      type: 'persona_selected',
+      personaId: this.config.id,
+      persona: this.config
+    });
+
+    // Show interaction indicator
+    this.setInteracting(true);
+    setTimeout(() => this.setInteracting(false), 2000);
+  }
+
+  public setInteracting(isInteracting: boolean): void {
+    if (this.isInteracting !== isInteracting) {
+      this.isInteracting = isInteracting;
+      this.render();
+    }
+  }
+
+  // Static method to create persona from data
+  static create(config: PersonaConfig): PersonaWidget {
+    const widget = new PersonaWidget();
+    widget.setPersona(config);
+    return widget;
+  }
+}
+
+// Register the custom element
+if (!customElements.get('persona-widget')) {
+  customElements.define('persona-widget', PersonaWidget);
+}
+
+// Also register as <persona> for short syntax
+if (!customElements.get('persona')) {
+  customElements.define('persona', PersonaWidget);
+}

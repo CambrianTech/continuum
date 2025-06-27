@@ -1,0 +1,37 @@
+{
+  "name": "@continuum/persona-daemon",
+  "version": "1.0.0",
+  "description": "Universal Session Framework for AI Personas - enables personas to use same commands as humans with LoRA adaptation",
+  "main": "PersonaDaemon.ts",
+  "scripts": {
+    "test": "jest"
+  },
+  "keywords": [
+    "continuum", 
+    "persona", 
+    "lora", 
+    "academy", 
+    "session", 
+    "ai",
+    "adversarial-training",
+    "universal-interface"
+  ],
+  "continuum": {
+    "daemon": "persona",
+    "category": "core",
+    "capabilities": [
+      "session-management",
+      "command-execution", 
+      "lora-adaptation",
+      "academy-training",
+      "chat-processing",
+      "artifact-storage"
+    ],
+    "dependencies": ["command-processor", "model-adapter", "lora-registry"],
+    "architecture": {
+      "role": "Universal session framework for AI personas",
+      "description": "Enables AI personas to use same command interface as humans while routing through AI backends with LoRA adaptation",
+      "integrations": ["Academy", "ModelAdapter", "CommandProcessor", "WebSocketDaemon"]
+    }
+  }
+}

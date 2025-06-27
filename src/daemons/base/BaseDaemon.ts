@@ -10,6 +10,11 @@ export abstract class BaseDaemon extends EventEmitter {
   public abstract readonly name: string;
   public abstract readonly version: string;
   
+  // Abstract lifecycle methods that subclasses must implement
+  protected abstract onStart(): Promise<void>;
+  protected abstract onStop(): Promise<void>;
+  protected abstract handleMessage(message: DaemonMessage): Promise<DaemonResponse>;
+  
   private status: DaemonStatus = 'stopped';
   private startTime?: Date;
   private lastHeartbeat?: Date;
@@ -33,11 +38,21 @@ export abstract class BaseDaemon extends EventEmitter {
     
     this.log(`Starting daemon ${this.name} v${this.version}`);
     
-    // Start heartbeat
-    this.startHeartbeat();
-    
-    this.status = 'running';
-    this.emit('started');
+    try {
+      // CRITICAL: Call the subclass's onStart() method
+      await this.onStart();
+      
+      // Start heartbeat
+      this.startHeartbeat();
+      
+      this.status = 'running';
+      this.emit('started');
+      
+    } catch (error) {
+      this.status = 'failed';
+      this.log(`Failed to start daemon: ${error.message}`, 'error');
+      throw error;
+    }
   }
 
   /**
@@ -51,11 +66,35 @@ export abstract class BaseDaemon extends EventEmitter {
     this.status = 'stopping';
     this.log(`Stopping daemon ${this.name}`);
     
-    // Stop heartbeat
-    this.stopHeartbeat();
-    
-    this.status = 'stopped';
-    this.emit('stopped');
+    try {
+      // CRITICAL: Call the subclass's onStop() method
+      await this.onStop();
+      
+      // Stop heartbeat
+      this.stopHeartbeat();
+      
+      this.status = 'stopped';
+      this.emit('stopped');
+      
+    } catch (error) {
+      this.log(`Error stopping daemon: ${error.message}`, 'error');
+      this.status = 'stopped'; // Still mark as stopped even if cleanup failed
+      throw error;
+    }
+  }
+
+  /**
+   * Get simple status string
+   */
+  getSimpleStatus(): DaemonStatus {
+    return this.status;
+  }
+
+  /**
+   * Get daemon uptime in milliseconds
+   */
+  getUptime(): number {
+    return this.startTime ? Date.now() - this.startTime.getTime() : 0;
   }
 
   /**
@@ -69,7 +108,7 @@ export abstract class BaseDaemon extends EventEmitter {
       pid: this.processId,
       startTime: this.startTime,
       lastHeartbeat: this.lastHeartbeat,
-      uptime: this.startTime ? Date.now() - this.startTime.getTime() : 0,
+      uptime: this.getUptime(),
       memoryUsage: process.memoryUsage(),
       cpuUsage: process.cpuUsage()
     };
