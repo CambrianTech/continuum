@@ -1,4 +1,5 @@
 // Version Monitor Script - Tracks version increments
+(function() {
 console.log("👁️ Version Monitor - Checking for increments...");
 
 // Get current version
@@ -60,3 +61,4 @@ if (!previousVersion) {
         timestamp: new Date().toISOString()
     });
 }
+})();

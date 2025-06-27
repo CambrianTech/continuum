@@ -1,3 +1,17 @@
+# 🚨🚨🚨 CLAUDE - NO TANGENTS - READ THIS 🚨🚨🚨
+
+## STOP RIGHT NOW - DON'T GO OFF ON TANGENTS
+After /compact you tend to wander off. FOCUS ON ONE THING.
+
+## SINGLE PRIORITY: FIX HTML RENDERING 
+localhost:9000 is broken. WebSocketDaemon (1193 lines) is doing RendererDaemon's job.
+
+## TEST FIRST: curl http://localhost:9000/
+
+## READ: CLAUDE_START_HERE.md, WAKE_UP_READ_THIS.md
+
+---
+
 # 🌌 Continuum - AI Academy Platform
 
 <div align="center">

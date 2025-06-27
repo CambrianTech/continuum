@@ -1,4 +1,5 @@
 // Trigger Server-Side File Save for Screenshots
+(function() {
 console.log("💾 Implementing server-side file save for screenshots...");
 
 // Check version badge and capture screenshot
@@ -97,9 +98,10 @@ html2canvas(versionBadge, {
 });
 
 // Return immediate status
-JSON.stringify({
+return JSON.stringify({
     status: "SERVER_FILE_SAVE_INITIATED",
     version: version,
     message: "Screenshot captured and server file save command sent",
     timestamp: Date.now()
 });
+})();

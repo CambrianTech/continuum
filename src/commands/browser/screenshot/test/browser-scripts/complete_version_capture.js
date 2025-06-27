@@ -1,4 +1,5 @@
 // Complete Version Screenshot Capture with File Saving
+(function() {
 console.log("📸 Complete version screenshot capture system...");
 
 // Step 1: Implement file saving function
@@ -159,9 +160,10 @@ html2canvas(versionBadge, {
 });
 
 // Return immediate status
-JSON.stringify({
+return JSON.stringify({
     status: "VERSION_CAPTURE_INITIATED",
     version: version,
     message: "Version screenshot capture in progress...",
     timestamp: Date.now()
 });
+})();

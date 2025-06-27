@@ -1,3 +1,34 @@
+# 🚨🚨🚨 CLAUDE - FIX HTML RENDERING FIRST - NO TANGENTS 🚨🚨🚨
+
+## CURRENT SESSION CRITICAL FINDINGS (DECEMBER 27, 2025):
+🎉 **MAJOR SUCCESS** - HTML rendering and TypeScript widgets fully working!
+✅ **HTML RENDERING WORKING** - localhost:9000 fully functional!
+✅ **TYPESCRIPT WIDGETS LOADING** - All widgets (Sidebar, Chat, ActiveProjects, UserSelector, SavedPersonas) working
+✅ **API CONNECTIVITY** - Continuum TypeScript API connected, commands executing properly
+✅ **WEBSOCKET COMMUNICATION** - Real-time message flow working perfectly
+✅ **STATIC FILES SERVING** - Fixed 503 errors, RendererDaemon now serves files directly
+✅ **MIME TYPE FIXED** - JS files served as application/javascript (duplicate methods removed)
+🔴 **STATUS DISPLAY BROKEN** - Shows [object Object] instead of proper daemon status (minor)
+
+## TESTING INFRASTRUCTURE EXISTS:
+✅ Use `npm run test:daemons` NOT root files
+✅ Tests belong with modules: src/daemons/*/test/*.test.ts  
+✅ Use ModularTestRunner.ts - don't create root test files
+
+## AFTER /COMPACT YOU GO ON TANGENTS - STOP
+Focus on ONE thing: localhost:9000 is broken
+
+## PRIORITY 1: HTML RENDERING
+- WebSocketDaemon (1193 lines) doing RendererDaemon's job  
+- Need: Browser → WebSocketDaemon → RendererDaemon → HTML/CSS/JS
+- Test: `curl localhost:9000` and `curl localhost:9001/src/ui/components/shared/BaseWidget.css`
+
+## READ FOR CONTEXT: WAKE_UP_READ_THIS.md
+
+## DON'T DO ANYTHING ELSE UNTIL HTML WORKS
+
+---
+
 # Claude Development Guidelines for Continuum
 
 ## 🌐 THE VISION: ONE LIVING ORGANISM
