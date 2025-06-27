@@ -290,7 +290,7 @@ export class WebSocketDaemon extends BaseDaemon {
       }
     } else if (req.method === 'GET' && (url.pathname.startsWith('/src/') || url.pathname.startsWith('/dist/'))) {
       // Serve static files from src directory (CSS, continuum-api.js) and dist directory (compiled JS)
-      await this.serveStaticFile(url.pathname, res);
+      await this.serveStaticFile(url.pathname, res, req);
     } else if (req.method === 'GET' && url.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'healthy', server: this.name, version: this.version }));
@@ -308,21 +308,53 @@ export class WebSocketDaemon extends BaseDaemon {
     }
   }
 
-  private async serveStaticFile(pathname: string, res: any): Promise<void> {
-    const { readFile } = await import('fs/promises');
+  private async serveStaticFile(pathname: string, res: any, req?: any): Promise<void> {
+    const { readFile, stat } = await import('fs/promises');
     const { join } = await import('path');
+    const crypto = await import('crypto');
     
     try {
       // Remove leading slash and construct file path
       const filePath = join(process.cwd(), pathname.substring(1));
       
+      // Get file stats for Last-Modified and ETag
+      const stats = await stat(filePath);
+      const lastModified = stats.mtime.toUTCString();
+      const etag = `"${crypto.createHash('md5')
+        .update(`${stats.size}-${stats.mtime.getTime()}`)
+        .digest('hex')}"`;
+      
+      // Check if client has cached version
+      if (req) {
+        const ifModifiedSince = req.headers['if-modified-since'];
+        const ifNoneMatch = req.headers['if-none-match'];
+        
+        if ((ifModifiedSince && ifModifiedSince === lastModified) ||
+            (ifNoneMatch && ifNoneMatch === etag)) {
+          res.writeHead(304); // Not Modified
+          res.end();
+          this.log(`📋 Cache hit for ${pathname} (304 Not Modified)`);
+          return;
+        }
+      }
+      
       // Determine content type
       const ext = pathname.split('.').pop();
       const contentType = this.getContentType(ext);
       
+      // Set caching headers based on file type
+      const cacheHeaders = this.getCacheHeaders(ext);
+      
       const content = await readFile(filePath);
-      res.writeHead(200, { 'Content-Type': contentType });
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Last-Modified': lastModified,
+        'ETag': etag,
+        ...cacheHeaders
+      });
       res.end(content);
+      
+      this.log(`📋 Served ${pathname} with caching headers (${content.length} bytes)`);
     } catch (error) {
       this.log(`Failed to serve static file ${pathname}: ${error.message}`, 'error');
       res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -344,6 +376,35 @@ export class WebSocketDaemon extends BaseDaemon {
       'svg': 'image/svg+xml'
     };
     return types[ext || ''] || 'text/plain';
+  }
+
+  private getCacheHeaders(ext: string | undefined): Record<string, string> {
+    const cacheSettings: Record<string, Record<string, string>> = {
+      // Long cache for static assets (CSS/JS)
+      'css': {
+        'Cache-Control': 'public, max-age=31536000, immutable', // 1 year
+        'Expires': new Date(Date.now() + 31536000000).toUTCString()
+      },
+      'js': {
+        'Cache-Control': 'public, max-age=31536000, immutable', // 1 year
+        'Expires': new Date(Date.now() + 31536000000).toUTCString()
+      },
+      'ts': {
+        'Cache-Control': 'public, max-age=31536000, immutable', // 1 year
+        'Expires': new Date(Date.now() + 31536000000).toUTCString()
+      },
+      // Medium cache for images
+      'png': { 'Cache-Control': 'public, max-age=2592000' }, // 30 days
+      'jpg': { 'Cache-Control': 'public, max-age=2592000' },
+      'jpeg': { 'Cache-Control': 'public, max-age=2592000' },
+      'gif': { 'Cache-Control': 'public, max-age=2592000' },
+      'svg': { 'Cache-Control': 'public, max-age=2592000' },
+      // Short cache for dynamic content
+      'html': { 'Cache-Control': 'public, max-age=300' }, // 5 minutes
+      'json': { 'Cache-Control': 'public, max-age=300' }
+    };
+    
+    return cacheSettings[ext || ''] || { 'Cache-Control': 'public, max-age=3600' }; // 1 hour default
   }
 
   private async handleApiRequest(pathname: string, req: any, res: any): Promise<void> {
