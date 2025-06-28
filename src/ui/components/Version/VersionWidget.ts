@@ -6,7 +6,7 @@
 import { BaseWidget } from '../shared/BaseWidget.js';
 
 export class VersionWidget extends BaseWidget {
-  private currentVersion: string = '0.2.2177';
+  private currentVersion: string = 'Loading...';
   private lastUpdate: Date = new Date();
 
   constructor() {
@@ -19,6 +19,7 @@ export class VersionWidget extends BaseWidget {
 
   protected async initializeWidget(): Promise<void> {
     await this.loadCSS();
+    await this.fetchCurrentVersion(); // Get real version first
     this.setupVersionMonitoring();
     this.render();
   }
@@ -41,10 +42,25 @@ export class VersionWidget extends BaseWidget {
     }, 30000);
   }
 
-  private checkForVersionUpdates(): void {
-    const continuum = (window as any).continuum;
-    if (continuum?.version && continuum.version !== this.currentVersion) {
-      this.updateVersion(continuum.version);
+  private async fetchCurrentVersion(): Promise<void> {
+    try {
+      const continuum = (window as any).continuum;
+      const result = await continuum.info();
+      this.currentVersion = result.version;
+      this.lastUpdate = new Date();
+    } catch (error) {
+      console.warn('Could not get version:', error);
+      this.currentVersion = 'Unknown';
+    }
+  }
+
+  private async checkForVersionUpdates(): Promise<void> {
+    const previousVersion = this.currentVersion;
+    await this.fetchCurrentVersion();
+    
+    if (this.currentVersion !== previousVersion) {
+      this.render();
+      this.showUpdateAnimation();
     }
   }
 

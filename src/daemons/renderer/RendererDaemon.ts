@@ -377,10 +377,6 @@ export class RendererDaemon extends BaseDaemon {
     // Register the root UI serving route
     this.webSocketDaemon.registerRouteHandler('/', this, this.handleUIRoute.bind(this));
     
-    // Register UI-related API endpoints
-    this.webSocketDaemon.registerApiHandler('/api/agents', this, this.handleAgentsApi.bind(this));
-    this.webSocketDaemon.registerApiHandler('/api/personas', this, this.handlePersonasApi.bind(this));
-    
     this.log('🔌 Registered routes and APIs with WebSocketDaemon');
   }
 
@@ -418,71 +414,8 @@ export class RendererDaemon extends BaseDaemon {
     }
   }
 
-  /**
-   * Handle agents API endpoint
-   */
-  private async handleAgentsApi(endpoint: string, req: any, res: any): Promise<void> {
-    try {
-      const agents = [
-        {
-          id: 'claude',
-          name: 'Claude',
-          role: 'AI Assistant',
-          avatar: '🧠',
-          status: 'online',
-          type: 'ai'
-        },
-        {
-          id: 'developer',
-          name: 'Developer',
-          role: 'Human Developer',
-          avatar: '👨‍💻',
-          status: 'online',
-          type: 'human'
-        }
-      ];
-      
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(agents));
-      this.log('📋 Served agents data via RendererDaemon');
-    } catch (error) {
-      this.log(`❌ Failed to serve agents API: ${error.message}`, 'error');
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Internal server error' }));
-    }
-  }
-
-  /**
-   * Handle personas API endpoint
-   */
-  private async handlePersonasApi(endpoint: string, req: any, res: any): Promise<void> {
-    try {
-      const personas = [
-        {
-          id: 'coding-expert',
-          name: 'Coding Expert',
-          description: 'Specialized in software development and code review',
-          avatar: '👨‍💻',
-          type: 'technical'
-        },
-        {
-          id: 'creative-writer',
-          name: 'Creative Writer',
-          description: 'Expert in creative writing and storytelling',
-          avatar: '✍️',
-          type: 'creative'
-        }
-      ];
-      
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(personas));
-      this.log('📋 Served personas data via RendererDaemon');
-    } catch (error) {
-      this.log(`❌ Failed to serve personas API: ${error.message}`, 'error');
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Internal server error' }));
-    }
-  }
+  // NOTE: API endpoints moved to DataAPIDaemon
+  // agents/personas data should not be hardcoded in rendering daemon
 
   /**
    * Handle static file routes - this method is called by WebSocketDaemon

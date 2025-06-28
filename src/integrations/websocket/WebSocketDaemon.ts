@@ -1,6 +1,17 @@
 /**
- * WebSocket Daemon - TypeScript Implementation
- * Extends BaseDaemon with WebSocket server functionality
+ * WebSocket Daemon - Clean Router Implementation
+ * 
+ * RESPONSIBILITIES (SHOULD DO):
+ * - WebSocket server management
+ * - HTTP request routing to other daemons  
+ * - Connection management
+ * - Message routing
+ * 
+ * NOT RESPONSIBLE FOR (DELEGATE TO OTHER DAEMONS):
+ * - HTML generation (RendererDaemon)
+ * - Static file serving (RendererDaemon)  
+ * - Command execution (CommandProcessorDaemon)
+ * - UI data generation (RendererDaemon)
  */
 
 import { BaseDaemon } from '../../daemons/base/BaseDaemon';
@@ -358,44 +369,6 @@ export class WebSocketDaemon extends BaseDaemon {
     return regex.test(path);
   }
 
-  private async proxyToRendererDaemon(pathname: string, req: any, res: any): Promise<void> {
-    try {
-      const http = await import('http');
-      
-      // Forward request to RendererDaemon on port 9001
-      const proxyReq = http.request({
-        hostname: 'localhost',
-        port: 9001,
-        path: pathname,
-        method: req.method,
-        headers: req.headers
-      }, (proxyRes) => {
-        // Forward status and headers from RendererDaemon
-        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-        proxyRes.pipe(res);
-        
-        if (proxyRes.statusCode === 200) {
-          this.log(`📋 Proxied ${pathname} from RendererDaemon (${proxyRes.headers['content-length'] || 'unknown'} bytes)`);
-        } else if (proxyRes.statusCode === 304) {
-          this.log(`📋 Proxied cache hit for ${pathname} (304 Not Modified)`);
-        }
-      });
-      
-      proxyReq.on('error', (error) => {
-        this.log(`❌ Proxy error for ${pathname}: ${error.message}`, 'error');
-        res.writeHead(503, { 'Content-Type': 'text/plain' });
-        res.end('Service Unavailable - RendererDaemon not responding');
-      });
-      
-      // Forward request body if present
-      req.pipe(proxyReq);
-      
-    } catch (error) {
-      this.log(`❌ Failed to proxy ${pathname}: ${error.message}`, 'error');
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end('Internal Server Error');
-    }
-  }
 
 
   private async handleApiRequest(pathname: string, req: any, res: any): Promise<void> {
@@ -472,57 +445,12 @@ export class WebSocketDaemon extends BaseDaemon {
     }
   }
 
-  private async getAgentsData(): Promise<any> {
-    // Return array directly as UserSelector widget expects iterable agents
-    return [
-      {
-        id: 'claude',
-        name: 'Claude',
-        role: 'AI Assistant',
-        avatar: '🧠',
-        status: 'online',
-        type: 'ai'
-      },
-      {
-        id: 'developer',
-        name: 'Developer',
-        role: 'Human Developer',
-        avatar: '👨‍💻',
-        status: 'online',
-        type: 'human'
-      }
-    ];
-  }
-
-  private async getPersonasData(): Promise<any> {
-    // Return array directly as SavedPersonas widget expects iterable apiPersonas
-    return [
-      {
-        id: 'default',
-        name: 'Default Assistant',
-        description: 'General purpose AI assistant',
-        avatar: '🤖',
-        category: 'general',
-        active: true
-      },
-      {
-        id: 'developer',
-        name: 'Code Expert',
-        description: 'Specialized in software development',
-        avatar: '👨‍💻',
-        category: 'development',
-        active: false
-      },
-      {
-        id: 'researcher',
-        name: 'Research Assistant',
-        description: 'Focused on research and analysis',
-        avatar: '🔬',
-        category: 'research',
-        active: false
-      }
-    ];
-  }
+  // TODO: MODULARIZATION NOTES
+  // These hardcoded data methods were removed because they belong in:
+  // 1. src/data/agents.ts - Agent configuration data
+  // 2. src/data/personas.ts - Persona configuration data
+  // 3. RendererDaemon should handle all /api/agents and /api/personas requests
+  // 4. Data should be dynamic, not hardcoded arrays
 
   /**
    * Register a daemon instance for direct communication
@@ -540,102 +468,9 @@ export class WebSocketDaemon extends BaseDaemon {
     throw new Error(`Daemon ${daemonName} not found or no handleMessage method`);
   }
 
-  private async generateStatusPage(): Promise<string> {
-    const { readFile } = await import('fs/promises');
-    const { join } = await import('path');
-    
-    try {
-      const templatePath = join(process.cwd(), 'src/ui/templates/status.html');
-      let html = await readFile(templatePath, 'utf8');
-      
-      const systemStatus = {
-        status: 'operational',
-        server: this.name,
-        version: this.version,
-        daemons: Array.from(this.registeredDaemons.keys()),
-        connections: this.connectionManager.getStats(),
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString()
-      };
-      
-      // Replace template variables
-      html = html.replace('{{PORT}}', this.config.port.toString());
-      html = html.replace('{{VERSION}}', this.version);
-      html = html.replace('{{SYSTEM_STATUS}}', JSON.stringify(systemStatus, null, 2));
-      
-      return html;
-    } catch (error) {
-      this.log(`Failed to load status template: ${error.message}`, 'error');
-      return '<h1>Status page error</h1><p>Could not load status template</p>';
-    }
-  }
-
-  private generateSimpleUI(): string {
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Continuum - Browser-Centric AI Collaboration</title>
-    <style>
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, sans-serif; 
-            margin: 0; padding: 20px; 
-            background: #0a0a0a; color: #ffffff; 
-        }
-        .container { max-width: 800px; margin: 0 auto; }
-        .status { 
-            background: #1a1a1a; padding: 20px; border-radius: 8px; 
-            border-left: 4px solid #00ff88; margin-bottom: 20px;
-        }
-        .emoji { font-size: 1.2em; }
-        .ws-status { color: #00ff88; }
-        pre { background: #1a1a1a; padding: 15px; border-radius: 8px; overflow-x: auto; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1><span class="emoji">🌐</span> Continuum Service</h1>
-        <div class="status">
-            <h2><span class="emoji">✅</span> System Ready</h2>
-            <p><strong>Service:</strong> Like Docker Desktop for AI collaboration</p>
-            <p><strong>WebSocket:</strong> <span class="ws-status">Connected</span> on ws://localhost:${this.config.port}</p>
-            <p><strong>Version:</strong> ${this.version}</p>
-        </div>
-        
-        <h3><span class="emoji">🔌</span> WebSocket Test</h3>
-        <div id="connection-status">Connecting...</div>
-        <div id="messages"></div>
-        
-        <script>
-            const ws = new WebSocket('ws://localhost:${this.config.port}');
-            const status = document.getElementById('connection-status');
-            const messages = document.getElementById('messages');
-            
-            ws.onopen = () => {
-                status.innerHTML = '<span style="color: #00ff88">✅ WebSocket Connected</span>';
-                ws.send(JSON.stringify({ type: 'ping', data: {}, timestamp: new Date().toISOString() }));
-            };
-            
-            ws.onmessage = (event) => {
-                const msg = JSON.parse(event.data);
-                const div = document.createElement('div');
-                div.innerHTML = '<pre>' + JSON.stringify(msg, null, 2) + '</pre>';
-                messages.appendChild(div);
-            };
-            
-            ws.onerror = () => {
-                status.innerHTML = '<span style="color: #ff4444">❌ WebSocket Error</span>';
-            };
-            
-            ws.onclose = () => {
-                status.innerHTML = '<span style="color: #ffaa00">⚠️ WebSocket Disconnected</span>';
-            };
-        </script>
-    </div>
-</body>
-</html>`;
-  }
+  // TODO: Move to src/data/agents.ts - Agent data should not be in router
+  // TODO: Move to src/data/personas.ts - Persona data should not be in router
+  // TODO: RendererDaemon should handle all status page and UI generation
 
   // ============================================================================
   // BROWSER MANAGEMENT API HANDLERS
@@ -996,65 +831,7 @@ export class WebSocketDaemon extends BaseDaemon {
     }
   }
 
-  private async readComponentCSSFile(cssPath: string): Promise<string> {
-    const { readFile } = await import('fs/promises');
-    const { join } = await import('path');
-    
-    // Remove leading slash and construct full path
-    const fullPath = join(process.cwd(), 'src', cssPath.replace(/^\//, ''));
-    this.log(`📁 Reading CSS file: ${fullPath}`);
-    
-    const cssContent = await readFile(fullPath, 'utf8');
-    this.log(`✅ Loaded CSS file (${cssContent.length} bytes)`);
-    return cssContent;
-  }
-
-  private getComponentCSS(componentName: string): string {
-    // Basic fallback CSS for components
-    const cssMap: Record<string, string> = {
-      'SavedPersonas': `
-        .saved-personas {
-          background: #1a1a1a;
-          border-radius: 8px;
-          padding: 16px;
-        }
-        .persona-item {
-          padding: 8px;
-          margin: 4px 0;
-          border-radius: 4px;
-          background: #2a2a2a;
-        }
-      `,
-      'UserSelector': `
-        .user-selector {
-          background: #1a1a1a;
-          border-radius: 8px;
-          padding: 16px;
-        }
-        .agent-item {
-          padding: 8px;
-          margin: 4px 0;
-          border-radius: 4px;
-          background: #2a2a2a;
-        }
-      `,
-      'ActiveProjects': `
-        .active-projects {
-          background: #1a1a1a;
-          border-radius: 8px;
-          padding: 16px;
-        }
-        .project-item {
-          padding: 8px;
-          margin: 4px 0;
-          border-radius: 4px;
-          background: #2a2a2a;
-        }
-      `
-    };
-    
-    return cssMap[componentName] || `/* No CSS found for ${componentName} */`;
-  }
+  // TODO: Move CSS handling to RendererDaemon - not router responsibility
 
   private sendToClient(clientId: string, message: WebSocketMessage): boolean {
     return this.connectionManager.sendToClient(clientId, message);

@@ -7,6 +7,7 @@
 
 import { WebSocketDaemon } from './src/integrations/websocket/WebSocketDaemon.js';
 import { RendererDaemon } from './src/daemons/renderer/RendererDaemon.js';
+import { DataAPIDaemon } from './src/daemons/api/DataAPIDaemon.js';
 import { BrowserManagerDaemon } from './src/daemons/browser-manager/BrowserManagerDaemon.js';
 import { AcademyDaemon } from './src/daemons/academy/AcademyDaemon.js';
 import { CommandProcessorDaemon } from './src/daemons/command-processor/CommandProcessorDaemon.js';
@@ -20,6 +21,7 @@ export class ContinuumSystem {
   private static readonly PID_FILE = '.continuum/system.pid';
   private webSocketDaemon: WebSocketDaemon | null = null;
   private rendererDaemon: RendererDaemon | null = null;
+  private dataAPIDaemon: DataAPIDaemon | null = null;
   private browserManagerDaemon: BrowserManagerDaemon | null = null;
   private academyDaemon: AcademyDaemon | null = null;
   private commandProcessorDaemon: CommandProcessorDaemon | null = null;
@@ -83,6 +85,13 @@ export class ContinuumSystem {
       await this.rendererDaemon.start();
       await this.webSocketDaemon.registerExternalDaemon('renderer', this.rendererDaemon);
       console.log('✅ Renderer daemon registered');
+
+      // Step 2.5: Start Data API daemon (agents/personas endpoints)
+      console.log('📋 Starting Data API daemon...');
+      this.dataAPIDaemon = new DataAPIDaemon();
+      await this.dataAPIDaemon.start();
+      await this.webSocketDaemon.registerExternalDaemon('data-api', this.dataAPIDaemon);
+      console.log('✅ Data API daemon registered');
 
       // Step 3: Start Browser Manager daemon (browser orchestration)
       console.log('🌐 Starting Browser Manager daemon...');
@@ -155,6 +164,11 @@ export class ContinuumSystem {
       if (this.browserManagerDaemon) {
         await this.browserManagerDaemon.stop();
         console.log('✅ Browser Manager daemon stopped');
+      }
+
+      if (this.dataAPIDaemon) {
+        await this.dataAPIDaemon.stop();
+        console.log('✅ Data API daemon stopped');
       }
 
       if (this.rendererDaemon) {
