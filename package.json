@@ -111,6 +111,7 @@
     "glob": "^11.0.1",
     "html2canvas": "^1.4.1",
     "inquirer": "^12.5.2",
+    "jsdom": "^26.1.0",
     "node-fetch": "^3.3.2",
     "node-notifier": "^10.0.1",
     "openai": "^5.0.1",
