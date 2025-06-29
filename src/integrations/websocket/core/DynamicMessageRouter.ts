@@ -116,11 +116,12 @@ export class DynamicMessageRouter extends EventEmitter {
       };
       
     } catch (error) {
-      console.error(`❌ Handler error for ${messageType} in ${targetDaemon.name}:`, error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ Handler error for ${messageType} in ${targetDaemon.name}:`, errorMessage);
       return {
         type: 'error',
         data: { 
-          error: error.message,
+          error: errorMessage,
           daemon: targetDaemon.name,
           messageType,
           routerVersion: this.routerVersion,
@@ -146,7 +147,7 @@ export class DynamicMessageRouter extends EventEmitter {
       'get_component_css': ['websocket-server', 'css-service']
     };
     
-    const preferredCapabilities = capabilityMap[messageType];
+    const preferredCapabilities = capabilityMap[messageType as keyof typeof capabilityMap];
     if (preferredCapabilities) {
       for (const daemon of this.registeredDaemons.values()) {
         const hasCapability = daemon.capabilities.some(cap => 
@@ -185,7 +186,8 @@ export class DynamicMessageRouter extends EventEmitter {
           console.log(`✅ Discovered daemon-specific message types: ${daemonSpecificTypes.join(', ')}`);
         }
       } catch (error) {
-        console.warn(`⚠️ Failed to get daemon-specific message types:`, error.message);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.warn(`⚠️ Failed to get daemon-specific message types:`, errorMessage);
       }
     }
     

@@ -25,6 +25,59 @@
 - ✅ **Modular assets** - CSS in separate files, proper loading patterns
 - ✅ **Sophisticated OOP** - Elegant, extensible patterns without intermixing
 
+### **JTAG Autonomous Development Methodology**
+
+**JTAG = Visual validation + logging feedback + comprehensive testing for human-out-of-loop development**
+
+#### **Complete JTAG Stack Requirements:**
+1. **🔧 Debuggable Browser Integration**
+   - DevTools protocol access for deep inspection
+   - Browser console forwarding to development logs
+   - DOM manipulation validation and monitoring
+
+2. **✅ Connection Selftests (Browser ↔ Server)**
+   - WebSocket connection health verification
+   - Command execution round-trip validation
+   - Real-time heartbeat and error recovery testing
+
+3. **📊 Comprehensive Logging Strategy**
+   - **Server logs**: Daemon health, command processing, error patterns
+   - **Browser logs**: Widget behavior, user interactions, DOM changes
+   - **Portal logs**: Command execution results, system status
+   - **Integration logs**: Cross-system validation and failure detection
+
+4. **📸 Visual Validation Through Screenshots**
+   - Widget design verification through automated capture
+   - UI regression detection via visual comparison
+   - Command execution results visible through browser state
+   - Error state visualization for debugging
+
+5. **🌐 Portal Command Integration**
+   - Full command execution from portal system
+   - Real-time result verification and logging
+   - Automated test execution and validation
+   - Progress reporting and status tracking
+
+6. **🎨 Widget Design Feedback Loop**
+   - Visual component verification through screenshots
+   - Real-time style and behavior validation
+   - Interactive testing through automated browser control
+   - Design iteration with visual confirmation
+
+7. **⚡ End-to-End Command Verification**
+   - Command → Browser execution → Visual result validation
+   - Error detection through multiple feedback channels
+   - Automated regression testing across full stack
+   - Performance monitoring and optimization
+
+#### **Autonomous Development Capability**
+With complete JTAG stack, AI development becomes:
+- **Self-validating**: Visual and logical verification of all changes
+- **Self-debugging**: Multiple feedback channels for issue detection
+- **Self-iterating**: Design → Test → Validate → Improve cycles
+- **Self-reporting**: Progress tracking and status communication
+- **Human-optional**: Only for design decisions and progress updates
+
 ## 🧅 THE DUAL ONION CONCEPT
 
 **Continuum has TWO parallel onion architectures that mirror each other:**

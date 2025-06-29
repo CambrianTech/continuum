@@ -353,16 +353,9 @@ export class BrowserManagerDaemon extends BaseDaemon {
     return 'chrome'; // Could be made configurable
   }
 
-  private async _launchBrowserProcess(_type: string, _port: number, _config: BrowserConfig): Promise<any> {
-    // Launch browser process using adapter system
-    // Implementation would use the browser adapters we created
-    throw new Error('Not implemented');
-  }
-
-  private async _waitForBrowserReady(_browser: ManagedBrowser): Promise<void> {
-    // Wait for browser to be responsive on DevTools port
-    throw new Error('Not implemented');
-  }
+  // TODO: Browser process management - extract to BrowserProcessManager class
+  // These methods will be implemented when browser automation is needed
+  // Currently browser management is handled through external DevTools integration
 
   private isIdle(browser: ManagedBrowser): boolean {
     const idleThreshold = 5 * 60 * 1000; // 5 minutes

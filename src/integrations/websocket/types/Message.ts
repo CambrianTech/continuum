@@ -8,6 +8,7 @@ export interface WebSocketMessage {
   readonly timestamp: string;
   readonly clientId?: string;
   readonly requestId?: string;
+  readonly processedBy?: string;
 }
 
 export interface CommandRequest {
