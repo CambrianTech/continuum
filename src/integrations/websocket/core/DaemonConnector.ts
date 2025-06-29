@@ -7,13 +7,13 @@ import { DaemonConnection, CommandResult, DaemonConfig } from '../types';
 
 export class DaemonConnector extends EventEmitter {
   private connection: DaemonConnection;
-  private config: Required<DaemonConfig>;
+  private _config: Required<DaemonConfig>;
   private commandProcessor: any = null;
 
   constructor(config: DaemonConfig = {}) {
     super();
     
-    this.config = {
+    this._config = {
       autoConnect: config.autoConnect ?? true,
       enableFallback: config.enableFallback ?? false,
       retryAttempts: config.retryAttempts ?? 3,
@@ -43,8 +43,11 @@ export class DaemonConnector extends EventEmitter {
             case 'selftest':
               const result = await SelfTestCommand.execute(params, context);
               return {
-                ...result,
-                processor: 'typescript-command-system'
+                success: result.success,
+                processor: 'typescript-command-system',
+                message: result.message,
+                ...(result.data !== undefined && { data: result.data }),
+                ...(result.error !== undefined && { error: result.error })
               };
               
             default:
@@ -77,7 +80,10 @@ export class DaemonConnector extends EventEmitter {
 
     } catch (error) {
       console.error('❌ Failed to connect to TypeScript command system:', error);
-      this.connection.connectionAttempts++;
+      this.connection = {
+        ...this.connection,
+        connectionAttempts: this.connection.connectionAttempts + 1
+      };
       this.emit('error', error);
       return false;
     }
@@ -85,7 +91,10 @@ export class DaemonConnector extends EventEmitter {
 
   async disconnect(): Promise<void> {
     if (this.connection.connected) {
-      this.connection.connected = false;
+      this.connection = {
+        ...this.connection,
+        connected: false
+      };
       this.commandProcessor = null;
       console.log('🔌 Disconnected from TypeScript command system');
       this.emit('disconnected');
@@ -108,9 +117,10 @@ export class DaemonConnector extends EventEmitter {
     try {
       return await this.commandProcessor.executeCommand(command, params, context);
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: error.message,
+        error: errorMessage,
         processor: 'daemon-connector-error'
       };
     }

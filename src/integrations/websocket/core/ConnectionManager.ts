@@ -159,7 +159,7 @@ export class ConnectionManager extends EventEmitter {
     
     this.stopHeartbeat();
     
-    for (const [clientId, client] of this.clients) {
+    for (const [_clientId, client] of this.clients) {
       if (client.socket.readyState === WebSocket.OPEN) {
         client.socket.close(1001, 'Server shutdown');
       }
@@ -204,7 +204,7 @@ export class ConnectionManager extends EventEmitter {
 
   private performHeartbeat(): void {
     const now = new Date();
-    const timeoutThreshold = now.getTime() - this.config.clientTimeout;
+    const _timeoutThreshold = now.getTime() - this.config.clientTimeout;
     const staleClients: string[] = [];
     
     console.log(`💓 Heartbeat check: ${this.clients.size} clients, timeout threshold: ${this.config.clientTimeout}ms`);
@@ -223,7 +223,8 @@ export class ConnectionManager extends EventEmitter {
           console.log(`💓 Sending ping to client ${clientId} (active for ${timeSinceActivity}ms)`);
           client.socket.ping();
         } catch (error) {
-          console.error(`❌ Ping failed for client ${clientId}:`, error.message);
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          console.error(`❌ Ping failed for client ${clientId}:`, errorMessage);
           staleClients.push(clientId);
         }
       } else {

@@ -34,7 +34,8 @@ export class DynamicMessageRouter extends EventEmitter {
       this.routerVersion = packageData.version;
       console.log(`📦 DynamicMessageRouter loaded version: ${this.routerVersion}`);
     } catch (error) {
-      console.warn(`⚠️ DynamicMessageRouter failed to load version: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.warn(`⚠️ DynamicMessageRouter failed to load version: ${errorMessage}`);
       this.routerVersion = '0.2.UNKNOWN';
     }
   }
@@ -64,7 +65,8 @@ export class DynamicMessageRouter extends EventEmitter {
       console.log(`📝 Message types: ${messageTypes.join(', ')}`);
       
     } catch (error) {
-      console.warn(`⚠️ Failed to register daemon ${name}:`, error.message);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.warn(`⚠️ Failed to register daemon ${name}:`, errorMessage);
     }
   }
 
@@ -74,7 +76,7 @@ export class DynamicMessageRouter extends EventEmitter {
   async routeMessage(
     message: any,
     clientId: string,
-    daemonConnector?: DaemonConnector
+    _daemonConnector?: DaemonConnector
   ): Promise<WebSocketMessage | null> {
     const messageType = message.type;
     
