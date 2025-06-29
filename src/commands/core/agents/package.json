@@ -1,0 +1,7 @@
+{
+  "name": "@continuum/agents-command",
+  "version": "1.0.0", 
+  "description": "List available AI agents and personas",
+  "main": "AgentsCommand.ts",
+  "type": "module"
+}

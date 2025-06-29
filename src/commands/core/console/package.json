@@ -1,0 +1,7 @@
+{
+  "name": "@continuum/console-command", 
+  "version": "1.0.0",
+  "description": "Bridge browser console logs to development portal for JTAG",
+  "main": "ConsoleCommand.ts",
+  "type": "module"
+}

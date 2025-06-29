@@ -1,0 +1,7 @@
+{
+  "name": "@continuum/projects-command",
+  "version": "1.0.0",
+  "description": "List active projects and their status",
+  "main": "ProjectsCommand.ts",
+  "type": "module"
+}
