@@ -69,8 +69,9 @@ export class ChatRoom extends BaseWidget {
 
   private setupRoomEventListeners(): void {
     // Listen for room switch requests
-    document.addEventListener('continuum:switch-room', (e: CustomEvent) => {
-      this.switchToRoom(e.detail.roomId);
+    document.addEventListener('continuum:switch-room', (e: Event) => {
+      const customEvent = e as CustomEvent;
+      this.switchToRoom(customEvent.detail.roomId);
     });
   }
 

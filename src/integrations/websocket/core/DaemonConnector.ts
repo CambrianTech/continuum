@@ -7,13 +7,13 @@ import { DaemonConnection, CommandResult, DaemonConfig } from '../types';
 
 export class DaemonConnector extends EventEmitter {
   private connection: DaemonConnection;
-  private _config: Required<DaemonConfig>;
+  private __config: Required<DaemonConfig>;
   private commandProcessor: any = null;
 
   constructor(config: DaemonConfig = {}) {
     super();
     
-    this._config = {
+    this.__config = {
       autoConnect: config.autoConnect ?? true,
       enableFallback: config.enableFallback ?? false,
       retryAttempts: config.retryAttempts ?? 3,
@@ -45,7 +45,6 @@ export class DaemonConnector extends EventEmitter {
               return {
                 success: result.success,
                 processor: 'typescript-command-system',
-                message: result.message,
                 ...(result.data !== undefined && { data: result.data }),
                 ...(result.error !== undefined && { error: result.error })
               };

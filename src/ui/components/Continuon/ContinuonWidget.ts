@@ -47,18 +47,21 @@ export class ContinuonWidget extends BaseWidget {
 
   setupEventListeners(): void {
     // Listen for status changes
-    document.addEventListener('continuum:status-change', (e: CustomEvent) => {
-      this.updateStatus(e.detail.status, e.detail.message);
+    document.addEventListener('continuum:status-change', (e: Event) => {
+      const customEvent = e as CustomEvent;
+      this.updateStatus(customEvent.detail.status, customEvent.detail.message);
     });
 
     // Listen for emotions
-    document.addEventListener('continuum:emotion', (e: CustomEvent) => {
-      this.showEmotion(e.detail.emotion, e.detail.duration || 3000);
+    document.addEventListener('continuum:emotion', (e: Event) => {
+      const customEvent = e as CustomEvent;
+      this.showEmotion(customEvent.detail.emotion, customEvent.detail.duration || 3000);
     });
 
     // Listen for system events
-    document.addEventListener('continuum:system-event', (e: CustomEvent) => {
-      this.addStatusMessage(e.detail.message);
+    document.addEventListener('continuum:system-event', (e: Event) => {
+      const customEvent = e as CustomEvent;
+      this.addStatusMessage(customEvent.detail.message);
     });
 
     // Setup orb interactions

@@ -300,7 +300,8 @@ export class WebSocketDaemon extends BaseDaemon {
       });
 
     } catch (error) {
-      this.log(`Failed to handle connection: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`Failed to handle connection: ${errorMessage}`, 'error');
       socket.close(1011, 'Server error');
     }
   }
@@ -469,7 +470,8 @@ export class WebSocketDaemon extends BaseDaemon {
       res.end(JSON.stringify(responseData));
       
     } catch (error) {
-      this.log(`❌ API error for ${pathname}: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ API error for ${pathname}: ${errorMessage}`, 'error');
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error' }));
     }
@@ -490,7 +492,7 @@ export class WebSocketDaemon extends BaseDaemon {
     this.log(`🔌 Registered daemon: ${daemonName}`);
   }
 
-  private async requestFromDaemon(daemonName: string, message: any): Promise<any> {
+  private async _requestFromDaemon(daemonName: string, message: any): Promise<any> {
     const daemon = this.registeredDaemons.get(daemonName);
     if (daemon && daemon.handleMessage) {
       return await daemon.handleMessage(message);
@@ -526,10 +528,11 @@ export class WebSocketDaemon extends BaseDaemon {
       };
       
     } catch (error) {
-      this.log(`❌ Browser ensure failed: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Browser ensure failed: ${errorMessage}`, 'error');
       return {
         success: false,
-        error: error.message
+        error: error instanceof Error ? error.message : String(error)
       };
     }
   }
@@ -556,10 +559,11 @@ export class WebSocketDaemon extends BaseDaemon {
       };
       
     } catch (error) {
-      this.log(`❌ DevTools launch failed: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ DevTools launch failed: ${errorMessage}`, 'error');
       return {
         success: false,
-        error: error.message
+        error: error instanceof Error ? error.message : String(error)
       };
     }
   }
@@ -597,10 +601,11 @@ export class WebSocketDaemon extends BaseDaemon {
       };
       
     } catch (error) {
-      this.log(`❌ Client registration failed: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Client registration failed: ${errorMessage}`, 'error');
       return {
         success: false,
-        error: error.message
+        error: error instanceof Error ? error.message : String(error)
       };
     }
   }
@@ -614,7 +619,7 @@ export class WebSocketDaemon extends BaseDaemon {
       const commands: any[] = [];
       
       for (const [daemonName, daemonInfo] of this.registeredDaemons) {
-        const daemonCommands = daemonInfo.messageTypes.map(type => ({
+        const daemonCommands = daemonInfo.messageTypes.map((type: string) => ({
           name: type,
           daemon: daemonName,
           type: 'daemon-command',
@@ -633,10 +638,11 @@ export class WebSocketDaemon extends BaseDaemon {
       };
       
     } catch (error) {
-      this.log(`❌ Command discovery failed: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Command discovery failed: ${errorMessage}`, 'error');
       return {
         success: false,
-        error: error.message,
+        error: error instanceof Error ? error.message : String(error),
         commands: []
       };
     }
@@ -662,10 +668,11 @@ export class WebSocketDaemon extends BaseDaemon {
       return response || { success: true, processed: true };
       
     } catch (error) {
-      this.log(`❌ API message failed: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ API message failed: ${errorMessage}`, 'error');
       return {
         success: false,
-        error: error.message
+        error: error instanceof Error ? error.message : String(error)
       };
     }
   }
@@ -686,10 +693,11 @@ export class WebSocketDaemon extends BaseDaemon {
       };
       
     } catch (error) {
-      this.log(`❌ Client disconnect handling failed: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Client disconnect handling failed: ${errorMessage}`, 'error');
       return {
         success: false,
-        error: error.message
+        error: error instanceof Error ? error.message : String(error)
       };
     }
   }
@@ -744,7 +752,7 @@ export class WebSocketDaemon extends BaseDaemon {
     return count;
   }
 
-  private async handleClientMessage(clientId: string, data: WebSocket.Data): Promise<void> {
+  private async handleClientMessage(clientId: string, data: any): Promise<void> {
     try {
       const message = JSON.parse(data.toString());
       
@@ -767,7 +775,8 @@ export class WebSocketDaemon extends BaseDaemon {
       }
 
     } catch (error) {
-      this.log(`Error handling message from ${clientId}: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`Error handling message from ${clientId}: ${errorMessage}`, 'error');
       
       // Get current version for error response
       const versionInfo = await this.getCurrentVersion();
@@ -847,7 +856,8 @@ export class WebSocketDaemon extends BaseDaemon {
         }
       };
     } catch (error) {
-      this.log(`❌ Failed to load CSS for ${component}: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to load CSS for ${component}: ${errorMessage}`, 'error');
       
       // Return fallback CSS
       return {
@@ -891,7 +901,8 @@ export class WebSocketDaemon extends BaseDaemon {
     });
 
     this.daemonConnector.on('error', (error) => {
-      this.log(`Daemon connector error: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`Daemon connector error: ${errorMessage}`, 'error');
     });
   }
 
@@ -939,7 +950,7 @@ export class WebSocketDaemon extends BaseDaemon {
         connectedClients: browserState.connectedClients.length,
         debugMode: browserState.debugMode,
         devToolsPort: browserState.devToolsPort,
-        clients: browserState.connectedClients.map(client => ({
+        clients: browserState.connectedClients.map((client: any) => ({
           type: client.type,
           lastSeen: client.lastSeen,
           capabilities: client.capabilities.length
@@ -968,7 +979,8 @@ export class WebSocketDaemon extends BaseDaemon {
         timestamp: new Date().toISOString()
       };
     } catch (error) {
-      this.log(`Failed to read version: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`Failed to read version: ${errorMessage}`, 'error');
       return {
         version: '0.2.UNKNOWN',
         build: 'TypeScript Daemon System',
@@ -1000,7 +1012,7 @@ export class WebSocketDaemon extends BaseDaemon {
     this.log(`📊 DEBUG: Total routes: ${this.routeHandlers.size}, APIs: ${this.apiHandlers.size}`, 'debug');
   }
 
-  private async handleMainUI(pathname: string, req: any, res: any): Promise<void> {
+  private async handleMainUI(_pathname: string, _req: any, res: any): Promise<void> {
     // TODO: P0 - Replace with proper RendererDaemon delegation (blocked by daemon registration #004)
     // TEMP FIX: Serve actual widget HTML instead of stub
     const html = `<!DOCTYPE html>
@@ -1055,7 +1067,7 @@ export class WebSocketDaemon extends BaseDaemon {
     res.end(html);
   }
 
-  private async handleProjectsAPI(endpoint: string, req: any, res: any): Promise<void> {
+  private async handleProjectsAPI(_endpoint: string, _req: any, res: any): Promise<void> {
     const projects = [
       { name: 'Continuum OS', progress: 75, team: ['Claude Sonnet', 'Protocol Sheriff'], status: 'active' },
       { name: 'Widget System', progress: 45, team: ['Code Specialist'], status: 'active' }
@@ -1064,7 +1076,7 @@ export class WebSocketDaemon extends BaseDaemon {
     res.end(JSON.stringify({ success: true, data: projects }));
   }
 
-  private async handleAgentsAPI(endpoint: string, req: any, res: any): Promise<void> {
+  private async handleAgentsAPI(_endpoint: string, _req: any, res: any): Promise<void> {
     const agents = [
       { name: 'Joel (You)', type: 'human', status: 'online', capabilities: ['leadership'] },
       { name: 'Claude Sonnet', type: 'ai', status: 'online', capabilities: ['coding', 'analysis'] },
@@ -1074,7 +1086,7 @@ export class WebSocketDaemon extends BaseDaemon {
     res.end(JSON.stringify({ success: true, data: agents }));
   }
 
-  private async handlePersonasAPI(endpoint: string, req: any, res: any): Promise<void> {
+  private async handlePersonasAPI(_endpoint: string, _req: any, res: any): Promise<void> {
     const personas = [
       { name: 'Protocol Sheriff', specialization: 'protocol_enforcement', experience: 98.7, status: 'active' },
       { name: 'Code Specialist', specialization: 'code_analysis', experience: 92.2, status: 'active' }
@@ -1083,14 +1095,14 @@ export class WebSocketDaemon extends BaseDaemon {
     res.end(JSON.stringify({ success: true, data: personas }));
   }
 
-  private async handleVersionAPI(endpoint: string, req: any, res: any): Promise<void> {
+  private async handleVersionAPI(_endpoint: string, _req: any, res: any): Promise<void> {
     const version = { version: '0.2.2205', build: 'TypeScript Daemon System', timestamp: new Date().toISOString() };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(version));
   }
 
-  private async handleStaticFiles(pathname: string, req: any, res: any): Promise<void> {
-    this.log(`📁 DEBUG: Static file request: ${req.method} ${pathname}`, 'debug');
+  private async handleStaticFiles(pathname: string, _req: any, res: any): Promise<void> {
+    this.log(`📁 DEBUG: Static file request: ${_req.method} ${pathname}`, 'debug');
     
     // TEMP: Serve basic static files until proper file serving is implemented
     try {
@@ -1111,7 +1123,7 @@ export class WebSocketDaemon extends BaseDaemon {
       else if (pathname.endsWith('.html')) contentType = 'text/html';
       
       // For HEAD requests, only send headers
-      if (req.method === 'HEAD') {
+      if (_req.method === 'HEAD') {
         res.writeHead(200, { 
           'Content-Type': contentType,
           'Content-Length': stats.size
@@ -1132,7 +1144,8 @@ export class WebSocketDaemon extends BaseDaemon {
       this.log(`✅ DEBUG: Served static file: ${pathname} (${stats.size} bytes)`, 'debug');
       
     } catch (error) {
-      this.log(`❌ DEBUG: Static file error: ${pathname} - ${error.message}`, 'debug');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ DEBUG: Static file error: ${pathname} - ${errorMessage}`, 'debug');
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Static file not found');
     }
@@ -1171,7 +1184,7 @@ export class WebSocketDaemon extends BaseDaemon {
 }
 
 // Main execution when run directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (require.main === module) {
   const daemon = new WebSocketDaemon();
   
   process.on('SIGINT', async () => {
