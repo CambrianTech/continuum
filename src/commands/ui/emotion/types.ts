@@ -15,7 +15,7 @@ export interface EmotionConfig {
   emoji: string;
   color: string;
   animation: string;
-  target?: string;
+  target?: string | undefined;
   persistent: boolean;
   returnToHome: boolean;
   duration: number;
@@ -43,8 +43,8 @@ export interface EmotionResult {
     emotion: string;
     config: EmotionConfig;
     timestamp: string;
-  };
-  error?: string;
+  } | undefined;
+  error?: string | undefined;
 }
 
 export type EmotionType = 'fleeting' | 'contextual' | 'system';

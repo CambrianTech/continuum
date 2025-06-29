@@ -3,7 +3,7 @@
  * Modular command definition separated from implementation logic
  */
 
-import { CommandDefinition } from '../../core/BaseCommand';
+import { CommandDefinition } from '../../core/base-command/BaseCommand';
 
 export const emotionDefinition: CommandDefinition = {
   name: 'emotion',

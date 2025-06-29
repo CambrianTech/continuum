@@ -3,7 +3,7 @@
  * Express emotions through continuon animations with full type safety
  */
 
-import { BaseCommand } from '../../core/BaseCommand';
+import { BaseCommand } from '../../core/base-command/BaseCommand';
 import { 
   EmotionParams, 
   EmotionConfig, 
@@ -13,7 +13,6 @@ import {
   ValidEmotion
 } from './types';
 import { 
-  emotionConfigs, 
   calculateEmotionProperties, 
   shouldReturnHome, 
   isPersistentEmotion 
@@ -31,9 +30,9 @@ export class EmotionCommand extends BaseCommand {
   static async execute(params: EmotionParams, context?: EmotionContext): Promise<EmotionResult> {
     try {
       // Parse and validate parameters with type safety
-      const parsedParams = this.parseParams(params);
+      const parsedParams = this.parseParams<EmotionParams>(params);
       const {
-        feeling = parsedParams.emotion, // Backward compatibility with 'emotion' parameter
+        feeling,
         intensity = EmotionCommand.DEFAULT_INTENSITY,
         duration = EmotionCommand.DEFAULT_DURATION,
         persist = false,
@@ -56,7 +55,7 @@ export class EmotionCommand extends BaseCommand {
       // Create typed emotion configuration
       const emotionConfig: EmotionConfig = {
         ...calculateEmotionProperties(feeling as ValidEmotion, intensity, target),
-        target,
+        target: target || undefined,
         persistent: shouldPersist,
         returnToHome: shouldReturnHome(feeling as ValidEmotion),
         duration: shouldPersist ? 0 : duration
@@ -71,15 +70,19 @@ export class EmotionCommand extends BaseCommand {
         await this.updateContinuonStatus(context.continuonStatus, feeling as ValidEmotion, emotionConfig);
       }
 
-      return this.createSuccessResult({
-        emotion: feeling,
-        config: emotionConfig,
-        timestamp: new Date().toISOString()
-      });
+      return this.createSuccessResult(
+        `Emotion '${feeling}' expressed successfully`,
+        {
+          emotion: feeling,
+          config: emotionConfig,
+          timestamp: new Date().toISOString()
+        }
+      );
 
     } catch (error) {
       console.error('❌ Emotion Command Error:', error);
-      return this.createErrorResult(`Emotion command failed: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return this.createErrorResult(`Emotion command failed: ${errorMessage}`);
     }
   }
 
@@ -117,41 +120,7 @@ export class EmotionCommand extends BaseCommand {
     }
   }
 
-  /**
-   * Create typed success result
-   */
-  private static createSuccessResult(data: EmotionResult['data']): EmotionResult {
-    return {
-      success: true,
-      message: `Emotion '${data.emotion}' expressed successfully`,
-      data
-    };
-  }
 
-  /**
-   * Create typed error result
-   */
-  private static createErrorResult(error: string): EmotionResult {
-    return {
-      success: false,
-      message: 'Emotion command failed',
-      error
-    };
-  }
-
-  /**
-   * Type-safe parameter parsing
-   */
-  private static parseParams(params: any): EmotionParams {
-    if (typeof params === 'string') {
-      try {
-        return JSON.parse(params) as EmotionParams;
-      } catch {
-        return { feeling: params };
-      }
-    }
-    return params as EmotionParams;
-  }
 }
 
 // Default export for easier module loading

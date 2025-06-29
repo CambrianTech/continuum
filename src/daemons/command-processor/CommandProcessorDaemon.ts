@@ -84,7 +84,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
   private readonly activeExecutions = new Map<string, CommandExecution>();
   private readonly executionHistory: CommandExecution[] = [];
   private readonly phaseOmegaEnabled = true;
-  private monitoringInterval?: NodeJS.Timeout;
+  private monitoringInterval: NodeJS.Timeout | undefined;
 
   protected async onStart(): Promise<void> {
     await this.registerCoreImplementations();
@@ -109,22 +109,22 @@ export class CommandProcessorDaemon extends BaseDaemon {
     this.log('Command Processor Daemon stopped');
   }
 
-  public async handleMessage<T, R>(message: DaemonMessage<T>): Promise<DaemonResponse<R>> {
+  protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
     switch (message.type) {
       case 'command.execute':
-        return await this.executeCommand(message.data as TypedCommandRequest) as DaemonResponse<R>;
+        return await this.executeCommand(message.data as TypedCommandRequest);
       
       case 'command.get_implementations':
-        return await this.getCommandImplementations(message.data as { command: string }) as DaemonResponse<R>;
+        return await this.getCommandImplementations(message.data as { command: string });
       
       case 'command.register_implementation':
-        return await this.registerImplementation(message.data as CommandImplementation) as DaemonResponse<R>;
+        return await this.registerImplementation(message.data as CommandImplementation);
       
       // Handle chat messages as commands
       case 'message':
       case 'group_message':
       case 'direct_message':
-        return await this.handleChatMessage(message.data as any) as DaemonResponse<R>;
+        return await this.handleChatMessage(message.data as any);
       
       case 'get_capabilities':
         return {
@@ -247,12 +247,6 @@ export class CommandProcessorDaemon extends BaseDaemon {
     return (global as any).continuumWebSocketDaemon || null;
   }
   
-  /**
-   * Generate unique message ID
-   */
-  private generateMessageId(): string {
-    return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  }
 
   /**
    * Get message types that this daemon can handle

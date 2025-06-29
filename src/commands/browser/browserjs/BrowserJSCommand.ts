@@ -3,24 +3,19 @@
  * Executes JavaScript code in connected browsers with full type safety
  */
 
-import { BaseCommand, CommandDefinition, CommandContext, CommandResult } from '../../core/BaseCommand';
-
-interface BrowserJSParams {
-  script?: string;
-  encoding?: 'base64' | 'auto' | 'utf8';
-}
+import { BaseCommand, CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
 
 interface BrowserJSResult {
   executed: boolean;
-  message?: string;
-  code?: string;
-  encoding?: string;
-  timestamp?: string;
+  message?: string | undefined;
+  code?: string | undefined;
+  encoding?: string | undefined;
+  timestamp?: string | undefined;
   browserResponse?: any;
-  output?: any[];
+  output?: any[] | undefined;
   result?: any;
-  error?: string;
-  note?: string;
+  error?: string | undefined;
+  note?: string | undefined;
 }
 
 interface BrowserExecutionResult {
@@ -55,7 +50,7 @@ export class BrowserJSCommand extends BaseCommand {
     this.logExecution('BrowserJS', params, context);
 
     try {
-      const { script, encoding, jsCode } = this.processScriptParams(params);
+      const { encoding, jsCode } = this.processScriptParams(params);
       
       if (!jsCode || jsCode.trim() === '') {
         return this.createErrorResult('Empty JavaScript code provided');
@@ -248,7 +243,7 @@ export class BrowserJSCommand extends BaseCommand {
         browserResponse: browserResult,
         output: browserResult.output || [],
         result: browserResult.result,
-        error: browserResult.error || null
+        error: browserResult.error || undefined
       };
     } catch (timeoutError) {
       return {
