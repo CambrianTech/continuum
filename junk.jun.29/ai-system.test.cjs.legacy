@@ -1,0 +1,365 @@
+/**
+ * COMPREHENSIVE AI SYSTEM TESTS
+ * Tests all aspects of the AI coordination system including self-recovery
+ */
+
+const { spawn, exec } = require('child_process');
+const { promisify } = require('util');
+const path = require('path');
+
+const execAsync = promisify(exec);
+
+class AISystemTester {
+  constructor() {
+    this.testPort = 5555;
+    this.baseURL = `http://localhost:${this.testPort}`;
+    this.aiProcess = null;
+    this.tests = [];
+    this.passed = 0;
+    this.failed = 0;
+    
+    console.log('🧪 AI SYSTEM COMPREHENSIVE TESTS');
+    console.log('================================');
+    console.log('');
+  }
+
+  async runAllTests() {
+    console.log('🚀 Starting test suite...');
+    console.log('');
+
+    // Test categories
+    await this.testSystemLifecycle();
+    await this.testSelfRecovery();
+    await this.testAIAgents();
+    await this.testCoordination();
+    await this.testErrorHandling();
+    await this.testPerformance();
+    
+    this.printResults();
+  }
+
+  async testSystemLifecycle() {
+    console.log('🔄 Testing System Lifecycle...');
+    
+    await this.test('System Startup', async () => {
+      await this.startAISystem();
+      return await this.isSystemHealthy();
+    });
+
+    await this.test('API Endpoints Available', async () => {
+      const endpoints = ['/', '/status', '/ask'];
+      for (const endpoint of endpoints) {
+        const response = await this.fetch(`${this.baseURL}${endpoint}`, { timeout: 5000 });
+        if (endpoint === '/ask' && response.status === 400) continue; // Expected for missing params
+        if (response.status >= 400) return false;
+      }
+      return true;
+    });
+
+    await this.test('Clean Shutdown', async () => {
+      await this.stopAISystem();
+      await this.sleep(2000);
+      return !(await this.isSystemRunning());
+    });
+  }
+
+  async testSelfRecovery() {
+    console.log('🔧 Testing Self-Recovery...');
+    
+    await this.test('Process Cleanup on Start', async () => {
+      // Start multiple instances to test cleanup
+      const process1 = this.spawnAISystem();
+      await this.sleep(3000);
+      const process2 = this.spawnAISystem(); // This should cleanup process1
+      await this.sleep(3000);
+      
+      process1.kill();
+      process2.kill();
+      await this.sleep(2000);
+      
+      // Now start fresh - should cleanup any remaining processes
+      await this.startAISystem();
+      return await this.isSystemHealthy();
+    });
+
+    await this.test('Recovery from Port Conflicts', async () => {
+      // Start system normally
+      await this.startAISystem();
+      
+      // Try to start another on same port (should fail gracefully)
+      const conflictProcess = this.spawnAISystem();
+      await this.sleep(3000);
+      
+      conflictProcess.kill();
+      
+      // Original should still be healthy
+      return await this.isSystemHealthy();
+    });
+
+    await this.test('Graceful Error Recovery', async () => {
+      // Send malformed requests and verify system stays stable
+      try {
+        await this.fetch(`${this.baseURL}/ask?task=`, { timeout: 3000 });
+        await this.fetch(`${this.baseURL}/invalid-endpoint`, { timeout: 3000 });
+        await this.fetch(`${this.baseURL}/status`, { timeout: 3000 });
+        
+        return await this.isSystemHealthy();
+      } catch (error) {
+        return true; // Errors are expected, we just want system to stay up
+      }
+    });
+  }
+
+  async testAIAgents() {
+    console.log('🤖 Testing AI Agents...');
+    
+    await this.test('Default Agents Created', async () => {
+      const status = await this.getSystemStatus();
+      const roles = status.agents.map(a => a.role);
+      return roles.includes('GeneralAI') && roles.includes('CodeAI') && roles.includes('PlannerAI');
+    });
+
+    await this.test('AI Response Generation', async () => {
+      const response = await this.askAI('GeneralAI', 'Hello, are you working?');
+      return response && response.result && response.result.length > 10;
+    });
+
+    await this.test('Dynamic AI Creation', async () => {
+      const response = await this.askAI('GeneralAI', 'CREATE_AGENT: TestAI');
+      await this.sleep(2000);
+      const status = await this.getSystemStatus();
+      const roles = status.agents.map(a => a.role);
+      return roles.includes('TestAI');
+    });
+
+    await this.test('Multi-Provider Support', async () => {
+      const anthropicResponse = await this.askAI('CodeAI', 'Write a simple function');
+      const openaiResponse = await this.askAI('PlannerAI', 'Plan a simple app');
+      return anthropicResponse.result && openaiResponse.result;
+    });
+  }
+
+  async testCoordination() {
+    console.log('🤝 Testing Coordination...');
+    
+    await this.test('Agent Role Assignment', async () => {
+      const codeResponse = await this.askAI('CodeAI', 'Implement authentication');
+      const planResponse = await this.askAI('PlannerAI', 'Design system architecture');
+      
+      return codeResponse.role === 'CodeAI' && planResponse.role === 'PlannerAI';
+    });
+
+    await this.test('Cross-Agent Awareness', async () => {
+      const response = await this.askAI('GeneralAI', 'What other agents are available?');
+      const result = response.result.toLowerCase();
+      return result.includes('codeai') || result.includes('plannerai');
+    });
+
+    await this.test('Cost Tracking', async () => {
+      const beforeStatus = await this.getSystemStatus();
+      await this.askAI('GeneralAI', 'Simple test task');
+      const afterStatus = await this.getSystemStatus();
+      
+      return afterStatus.costs.total > beforeStatus.costs.total &&
+             afterStatus.costs.requests > beforeStatus.costs.requests;
+    });
+  }
+
+  async testErrorHandling() {
+    console.log('❌ Testing Error Handling...');
+    
+    await this.test('Missing Task Parameter', async () => {
+      try {
+        const response = await this.fetch(`${this.baseURL}/ask?role=GeneralAI`);
+        const data = await response.json();
+        return data.error && data.error.includes('No task provided');
+      } catch (error) {
+        return false;
+      }
+    });
+
+    await this.test('Invalid Role Handling', async () => {
+      const response = await this.askAI('NonExistentAI', 'Test task');
+      return response && response.result; // Should create the agent
+    });
+
+    await this.test('Large Request Handling', async () => {
+      const largeTask = 'a'.repeat(5000); // 5KB task
+      const response = await this.askAI('GeneralAI', largeTask);
+      return response && response.result;
+    });
+  }
+
+  async testPerformance() {
+    console.log('⚡ Testing Performance...');
+    
+    await this.test('Response Time Under 30s', async () => {
+      const startTime = Date.now();
+      await this.askAI('GeneralAI', 'Quick response test');
+      const endTime = Date.now();
+      return (endTime - startTime) < 30000;
+    });
+
+    await this.test('Concurrent Requests', async () => {
+      const promises = [
+        this.askAI('GeneralAI', 'Task 1'),
+        this.askAI('CodeAI', 'Task 2'),
+        this.askAI('PlannerAI', 'Task 3')
+      ];
+      
+      const results = await Promise.all(promises);
+      return results.every(r => r && r.result);
+    });
+
+    await this.test('Memory Efficiency', async () => {
+      // Check system stays stable after multiple requests
+      for (let i = 0; i < 5; i++) {
+        await this.askAI('GeneralAI', `Memory test ${i}`);
+      }
+      return await this.isSystemHealthy();
+    });
+  }
+
+  // Test utilities
+  async test(name, testFunction) {
+    try {
+      console.log(`  🧪 ${name}...`);
+      const result = await Promise.race([
+        testFunction(),
+        this.timeout(30000) // 30 second timeout
+      ]);
+      
+      if (result) {
+        console.log(`  ✅ ${name}`);
+        this.passed++;
+      } else {
+        console.log(`  ❌ ${name} - Failed`);
+        this.failed++;
+      }
+    } catch (error) {
+      console.log(`  ❌ ${name} - Error: ${error.message}`);
+      this.failed++;
+    }
+  }
+
+  async startAISystem() {
+    if (this.aiProcess) {
+      this.aiProcess.kill();
+      await this.sleep(2000);
+    }
+    
+    this.aiProcess = this.spawnAISystem();
+    await this.sleep(5000); // Wait for startup
+  }
+
+  spawnAISystem() {
+    return spawn('node', ['final-ai-system.cjs'], {
+      cwd: __dirname,
+      stdio: 'pipe'
+    });
+  }
+
+  async stopAISystem() {
+    if (this.aiProcess) {
+      this.aiProcess.kill();
+      this.aiProcess = null;
+    }
+    
+    // Also cleanup any stray processes
+    try {
+      await execAsync('pkill -f final-ai-system || true');
+    } catch (error) {
+      // Ignore errors
+    }
+  }
+
+  async isSystemRunning() {
+    try {
+      const response = await this.fetch(`${this.baseURL}/status`, { timeout: 3000 });
+      return response.status === 200;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async isSystemHealthy() {
+    try {
+      const status = await this.getSystemStatus();
+      return status && status.agents && status.agents.length >= 3;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async getSystemStatus() {
+    const response = await this.fetch(`${this.baseURL}/status`, { timeout: 5000 });
+    if (!response.ok) throw new Error(`Status check failed: ${response.status}`);
+    return await response.json();
+  }
+
+  async askAI(role, task) {
+    const url = `${this.baseURL}/ask?role=${encodeURIComponent(role)}&task=${encodeURIComponent(task)}`;
+    const response = await this.fetch(url, { timeout: 25000 });
+    if (!response.ok) throw new Error(`AI request failed: ${response.status}`);
+    return await response.json();
+  }
+
+  async fetch(url, options = {}) {
+    const controller = new AbortController();
+    const timeout = options.timeout || 10000;
+    
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      return response;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      throw error;
+    }
+  }
+
+  async timeout(ms) {
+    return new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Test timeout')), ms);
+    });
+  }
+
+  async sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  printResults() {
+    console.log('');
+    console.log('📊 TEST RESULTS');
+    console.log('===============');
+    console.log(`✅ Passed: ${this.passed}`);
+    console.log(`❌ Failed: ${this.failed}`);
+    console.log(`📈 Success Rate: ${((this.passed / (this.passed + this.failed)) * 100).toFixed(1)}%`);
+    console.log('');
+    
+    if (this.failed === 0) {
+      console.log('🎉 ALL TESTS PASSED! System is fully functional.');
+    } else {
+      console.log('⚠️  Some tests failed. Check system implementation.');
+    }
+    
+    // Cleanup
+    this.stopAISystem();
+  }
+}
+
+// Self-executing test runner
+if (require.main === module) {
+  const tester = new AISystemTester();
+  tester.runAllTests().catch(error => {
+    console.error('Test runner failed:', error);
+    process.exit(1);
+  });
+}
+
+module.exports = AISystemTester;

@@ -1,0 +1,203 @@
+/**
+ * AI Model Classes
+ * Each model knows its own rates, limits, and capabilities
+ */
+
+class AIModel {
+  constructor(name, provider, config) {
+    this.name = name;
+    this.provider = provider;
+    this.maxTokens = config.maxTokens;
+    this.inputRate = config.inputRate; // per 1M tokens
+    this.outputRate = config.outputRate; // per 1M tokens
+    this.contextWindow = config.contextWindow;
+    this.capabilities = config.capabilities || [];
+  }
+
+  calculateCost(inputTokens, outputTokens) {
+    const inputCost = (inputTokens * this.inputRate) / 1000000;
+    const outputCost = (outputTokens * this.outputRate) / 1000000;
+    return inputCost + outputCost;
+  }
+
+  canHandle(task) {
+    // Override in subclasses for specialized capabilities
+    return true;
+  }
+
+  getConfig() {
+    return {
+      name: this.name,
+      provider: this.provider,
+      maxTokens: this.maxTokens,
+      inputRate: this.inputRate,
+      outputRate: this.outputRate,
+      contextWindow: this.contextWindow,
+      capabilities: this.capabilities
+    };
+  }
+}
+
+class ClaudeHaiku extends AIModel {
+  constructor() {
+    super('claude-3-haiku-20240307', 'anthropic', {
+      maxTokens: 4096,
+      inputRate: 0.25,  // $0.25 per 1M tokens
+      outputRate: 1.25, // $1.25 per 1M tokens
+      contextWindow: 200000,
+      capabilities: ['fast', 'cost-effective', 'coding', 'general']
+    });
+  }
+
+  canHandle(task) {
+    // Haiku is good for simple tasks and coding
+    const simplePatterns = ['what is', 'calculate', 'simple', 'quick'];
+    return simplePatterns.some(pattern => 
+      task.toLowerCase().includes(pattern)
+    ) || task.length < 100;
+  }
+}
+
+class ClaudeSonnet extends AIModel {
+  constructor() {
+    super('claude-3-5-sonnet-20241022', 'anthropic', {
+      maxTokens: 8192,
+      inputRate: 3.00,  // $3.00 per 1M tokens
+      outputRate: 15.00, // $15.00 per 1M tokens
+      contextWindow: 200000,
+      capabilities: ['balanced', 'reasoning', 'coding', 'analysis', 'planning']
+    });
+  }
+
+  canHandle(task) {
+    // Sonnet is good for balanced tasks requiring reasoning
+    return true; // Default choice for most tasks
+  }
+}
+
+class GPT4 extends AIModel {
+  constructor() {
+    super('gpt-4', 'openai', {
+      maxTokens: 4096,
+      inputRate: 30.00,  // $30.00 per 1M tokens
+      outputRate: 60.00, // $60.00 per 1M tokens
+      contextWindow: 8192,
+      capabilities: ['premium', 'complex-reasoning', 'planning', 'coordination']
+    });
+  }
+
+  canHandle(task) {
+    // GPT-4 for complex planning and coordination
+    const complexPatterns = ['plan', 'strategy', 'coordinate', 'analyze', 'complex'];
+    return complexPatterns.some(pattern => 
+      task.toLowerCase().includes(pattern)
+    );
+  }
+}
+
+class GPT4Turbo extends AIModel {
+  constructor() {
+    super('gpt-4-turbo-preview', 'openai', {
+      maxTokens: 4096,
+      inputRate: 10.00,  // $10.00 per 1M tokens
+      outputRate: 30.00, // $30.00 per 1M tokens
+      contextWindow: 128000,
+      capabilities: ['fast', 'large-context', 'planning', 'coordination']
+    });
+  }
+
+  canHandle(task) {
+    // GPT-4 Turbo for tasks requiring large context
+    return task.length > 1000 || task.includes('repository') || task.includes('codebase');
+  }
+}
+
+class ModelRegistry {
+  constructor() {
+    this.models = new Map();
+    this.apiClients = new Map(); // Store initialized API clients
+    this.registerDefaults();
+    this.initializeAPIClients();
+  }
+
+  registerDefaults() {
+    this.register(new ClaudeHaiku());
+    this.register(new ClaudeSonnet());
+    this.register(new GPT4());
+    this.register(new GPT4Turbo());
+  }
+
+  register(model) {
+    this.models.set(model.name, model);
+  }
+
+  get(modelName) {
+    return this.models.get(modelName);
+  }
+
+  findBestModel(task, role = 'GeneralAI') {
+    const models = Array.from(this.models.values());
+    
+    // Role-based model selection
+    if (role === 'CodeAI') {
+      return this.get('claude-3-haiku-20240307'); // Fast and cost-effective for coding
+    } else if (role === 'PlannerAI') {
+      return this.get('gpt-4-turbo-preview'); // Best for planning and coordination
+    } else {
+      // Find first model that can handle the task
+      return models.find(model => model.canHandle(task)) || this.get('claude-3-5-sonnet-20241022');
+    }
+  }
+
+  getAllModels() {
+    return Array.from(this.models.values());
+  }
+
+  getModelsByProvider(provider) {
+    return Array.from(this.models.values()).filter(model => model.provider === provider);
+  }
+
+  initializeAPIClients() {
+    const { Anthropic } = require('@anthropic-ai/sdk');
+    const { OpenAI } = require('openai');
+    
+    // Initialize Anthropic client if API key available
+    if (process.env.ANTHROPIC_API_KEY) {
+      this.apiClients.set('anthropic', new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }));
+    }
+    
+    // Initialize OpenAI client if API key available  
+    if (process.env.OPENAI_API_KEY) {
+      this.apiClients.set('openai', new OpenAI({ apiKey: process.env.OPENAI_API_KEY }));
+    }
+  }
+
+  isModelAvailable(modelName) {
+    const model = this.get(modelName);
+    if (!model) return false;
+    
+    // Check if we have the required API client for this model's provider
+    return this.apiClients.has(model.provider);
+  }
+
+  isProviderAvailable(provider) {
+    return this.apiClients.has(provider);
+  }
+
+  getAPIClient(provider) {
+    return this.apiClients.get(provider);
+  }
+
+  getAvailableModels() {
+    return Array.from(this.models.values()).filter(model => this.isModelAvailable(model.name));
+  }
+}
+
+module.exports = {
+  AIModel,
+  ClaudeHaiku,
+  ClaudeSonnet,
+  GPT4,
+  GPT4Turbo,
+  ModelRegistry
+};
