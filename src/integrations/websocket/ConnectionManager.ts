@@ -243,7 +243,7 @@ export class ConnectionManager extends EventEmitter {
     this.stopHeartbeat();
     
     // Close all client connections
-    for (const [clientId, client] of this.clients) {
+    for (const [_clientId, client] of this.clients) {
       if (client.socket.readyState === WebSocket.OPEN) {
         client.socket.close(1001, 'Server shutdown');
       }

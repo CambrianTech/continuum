@@ -2,6 +2,22 @@
  * Renderer Daemon - Encapsulates UI rendering system
  * Currently wraps legacy UIGenerator.cjs, can be swapped for modern TypeScript later
  * 
+ * CRITICAL TESTING REQUIREMENTS:
+ * ===============================
+ * INTEGRATION TEST COVERAGE NEEDED:
+ * - HTML output validation: Verify localhost:9000 serves expected UI structure
+ * - Static file serving: Test /src/* and /dist/* route handling with proper MIME types
+ * - Version injection: Verify cache-busting parameters added to script tags
+ * - Error fallback: Test clean UI generation when clean-continuum-ui.html missing
+ * - WebSocket registration: Verify routes properly registered with WebSocketDaemon
+ * - Memory leak detection: Monitor for file handle/connection leaks during serving
+ * 
+ * LOGGING STRATEGY FOR FAILURE DETECTION:
+ * - File serving errors with full path resolution traces
+ * - UI generation timing metrics for performance regression detection
+ * - Cache header validation logs for browser caching verification
+ * - Route registration success/failure with WebSocketDaemon integration status
+ * 
  * ARCHITECTURAL INSIGHTS FROM ERROR FIXING:
  * ==========================================
  * LEGACY INTEGRATION ISSUES:
@@ -292,17 +308,6 @@ export class RendererDaemon extends BaseDaemon {
       const UIGeneratorClass = class {
         generateHTML() { return cleanHTML; }
       };
-      const mockContinuum = {
-        costTracker: {
-          getTotalCost: () => 0,
-          getSessionCost: () => 0,
-          getRequestCount: () => 0,
-          getRequests: () => 0,
-          getTotal: () => 0
-        },
-        port: 9000,
-        version: this.version
-      };
       // TODO: Legacy UIGenerator coupling - should use dependency injection
       this.legacyRenderer = new UIGeneratorClass(); // Constructor expects 0 args
       this.log('✅ Fallback renderer loaded');
@@ -355,7 +360,7 @@ export class RendererDaemon extends BaseDaemon {
     }
   }
 
-  private async renderWithModern(request: RenderRequest): Promise<RenderResult> {
+  private async renderWithModern(_request: RenderRequest): Promise<RenderResult> {
     // TODO: Implement modern TypeScript rendering
     return {
       success: false,
@@ -390,9 +395,10 @@ export class RendererDaemon extends BaseDaemon {
       };
       
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: `Failed to switch engine: ${error.message}`
+        error: `Failed to switch engine: ${errorMessage}`
       };
     }
   }
@@ -417,7 +423,7 @@ export class RendererDaemon extends BaseDaemon {
   /**
    * Handle UI serving route - serve the main application
    */
-  private async handleUIRoute(pathname: string, req: any, res: any): Promise<void> {
+  private async handleUIRoute(_pathname: string, _req: any, res: any): Promise<void> {
     try {
       // Use our legacy renderer to generate the UI
       let html = this.legacyRenderer.generateHTML({});
@@ -442,7 +448,8 @@ export class RendererDaemon extends BaseDaemon {
       res.end(html);
       this.log(`✅ Served main UI via RendererDaemon (v${this.dynamicVersion})`);
     } catch (error) {
-      this.log(`❌ Failed to serve UI: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to serve UI: ${errorMessage}`, 'error');
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('Error loading UI from RendererDaemon');
     }
@@ -454,7 +461,7 @@ export class RendererDaemon extends BaseDaemon {
   /**
    * Handle static file routes - this method is called by WebSocketDaemon
    */
-  private async handleStaticRoute(pathname: string, req: any, res: any): Promise<void> {
+  private async handleStaticRoute(pathname: string, _req: any, res: any): Promise<void> {
     try {
       // Serve static files directly instead of proxying
       const { promises: fs } = await import('fs');
@@ -500,7 +507,8 @@ export class RendererDaemon extends BaseDaemon {
       this.log(`✅ Served static file: ${pathname} (${content.length} bytes, ${contentType})`);
 
     } catch (error) {
-      this.log(`❌ Failed to serve static file ${pathname}: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to serve static file ${pathname}: ${errorMessage}`, 'error');
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Not Found');
     }
@@ -535,7 +543,7 @@ export class RendererDaemon extends BaseDaemon {
     return capabilities;
   }
 
-  private async startStaticFileServer(): Promise<void> {
+  private async _startStaticFileServer(): Promise<void> {
     this.log(`🗂️ Starting static file server on port ${this.staticPort}...`);
     
     this.httpServer = http.createServer(async (req, res) => {
@@ -598,7 +606,7 @@ export class RendererDaemon extends BaseDaemon {
       }
       
       // Determine content type
-      const ext = pathname.split('.').pop();
+      const ext = pathname.split('.').pop() || '';
       const contentType = this.getContentType(ext);
       
       // Set caching headers based on file type
@@ -616,7 +624,8 @@ export class RendererDaemon extends BaseDaemon {
       
       this.log(`📋 Served ${pathname} with caching headers (${content.length} bytes)`);
     } catch (error) {
-      this.log(`Failed to serve static file ${pathname}: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`Failed to serve static file ${pathname}: ${errorMessage}`, 'error');
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Not Found');
     }
@@ -655,7 +664,7 @@ export class RendererDaemon extends BaseDaemon {
 }
 
 // Main execution when run directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (require.main === module) {
   const daemon = new RendererDaemon();
   
   process.on('SIGINT', async () => {

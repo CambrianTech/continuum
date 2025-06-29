@@ -133,7 +133,6 @@ export interface MeshCapability {
  * Semantic Dependency Resolver - Enhanced with mesh coordination
  */
 class SemanticDependencyResolver extends EventEmitter {
-  private _capabilities = new Map<string, MeshCapability>();
   private nodes = new Map<string, MeshNode>();
 
   /**
@@ -495,7 +494,6 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
 
   private semanticResolver: SemanticDependencyResolver;
   private meshNodes = new Map<string, MeshNode>();
-  private _pendingSynthesis = new Map<string, GapAnalysis>();
 
   constructor() {
     super();

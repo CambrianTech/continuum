@@ -5,6 +5,23 @@
  * Enables AI personas to use the same command interface as humans and external AIs,
  * while routing events through their AI backends with LoRA adaptation capabilities.
  * 
+ * CRITICAL TESTING REQUIREMENTS:
+ * ===============================
+ * INTEGRATION TEST COVERAGE NEEDED:
+ * - Academy training loop validation: TestingDroid vs ProtocolSheriff adversarial cycles
+ * - LoRA adapter stacking: Verify hierarchical composition with 190,735x storage reduction
+ * - Command interface delegation: Test personas can execute screenshot, browser_js, etc.
+ * - Session isolation: Verify personas have isolated artifacts and memory boundaries
+ * - Model adapter lifecycle: Test connection/disconnection with proper error recovery
+ * - Event pipe routing: Verify events flow through AI backends vs human interfaces
+ * 
+ * LOGGING STRATEGY FOR FAILURE DETECTION:
+ * - LoRA matrix operations with numerical precision validation
+ * - Academy training accuracy metrics with graduation threshold monitoring
+ * - Command execution timing and success rates per persona
+ * - Memory usage tracking for LoRA adapter caching and session artifacts
+ * - Model API connection health with retry/fallback logging
+ * 
  * Architecture based on ARCHITECTURE.md:
  * - GAN-like LoRA training system (Testing Droid vs Protocol Sheriff)
  * - Hierarchical adapter stacking for domain specialization  
@@ -58,6 +75,8 @@ export interface ModelAdapter {
   provider: string;
   model: string;
   connected: boolean;
+  baseWeights?: Record<string, number[][]>;
+  disconnect?: () => Promise<void>;
 }
 
 export interface TrainingData {
@@ -122,7 +141,7 @@ export class PersonaDaemon extends BaseDaemon {
     await this.initializeModelAdapter();
     
     // 2. Load LoRA adapters if specified
-    if (this.config.loraAdapters?.length > 0) {
+    if (this.config.loraAdapters && this.config.loraAdapters.length > 0) {
       await this.loadLoRAStack();
     }
     
@@ -147,7 +166,7 @@ export class PersonaDaemon extends BaseDaemon {
     this.log('Stopping PersonaDaemon...');
     
     // Graceful shutdown of all subsystems
-    if (this.modelAdapter) {
+    if (this.modelAdapter && this.modelAdapter.disconnect) {
       await this.modelAdapter.disconnect();
     }
     
@@ -198,6 +217,9 @@ export class PersonaDaemon extends BaseDaemon {
     this.log(`Executing command: ${command}`);
     
     // Route through same command interface as human/external AI sessions
+    if (!this.commandInterface) {
+      throw new Error('Command interface not initialized');
+    }
     const result = await this.commandInterface.execute(command, params);
     
     // Store command result in persona's session directory
@@ -334,12 +356,12 @@ export class PersonaDaemon extends BaseDaemon {
    * Apply hierarchical LoRA adapters to base model
    */
   private async applyLoRAStack(): Promise<any> {
-    if (this.loraStack.length === 0) {
+    if (this.loraStack.length === 0 || !this.modelAdapter) {
       return this.modelAdapter;
     }
     
     // Apply LoRA: W = W + (B @ A) * scaling for each adapter in stack
-    let currentWeights = this.modelAdapter.baseWeights;
+    let currentWeights = this.modelAdapter.baseWeights || {};
     
     for (const adapter of this.loraStack) {
       for (const [layerName, loraLayer] of adapter.adapters) {
@@ -465,6 +487,7 @@ export class PersonaDaemon extends BaseDaemon {
     
     // Learn from failed defense cases to improve LoRA adapters
     const { failedCases: _data } = payload; // TODO: Define proper FailedCase interface
+    const failedCases = _data as Array<unknown> | undefined;
     
     // This would update LoRA adapters based on training data
     // and improve the persona's capabilities
@@ -481,7 +504,7 @@ export class PersonaDaemon extends BaseDaemon {
   /**
    * Store session artifacts
    */
-  private async storeSessionArtifact(type: string, data: any): Promise<void> {
+  private async storeSessionArtifact(type: string, _data: any): Promise<void> {
     // Store in persona's session directory
     this.log(`Storing ${type} artifact`);
   }
@@ -509,7 +532,7 @@ export class PersonaDaemon extends BaseDaemon {
   /**
    * Create new LoRA adapter from training data
    */
-  private async createLoRAAdapter(data: any): Promise<LoRAAdapter> {
+  private async createLoRAAdapter(_data: any): Promise<LoRAAdapter> {
     // Implementation would create LoRA adapter from training data
     return await this.loadLoRAAdapter('new-adapter');
   }
