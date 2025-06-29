@@ -1,16 +1,41 @@
 /**
  * Renderer Daemon - Encapsulates UI rendering system
  * Currently wraps legacy UIGenerator.cjs, can be swapped for modern TypeScript later
+ * 
+ * ARCHITECTURAL INSIGHTS FROM ERROR FIXING:
+ * ==========================================
+ * LEGACY INTEGRATION ISSUES:
+ * - Heavy coupling to legacy UIGenerator.cjs (5000 lines!)
+ * - Should extract rendering interfaces for better abstraction
+ * - Error handling reveals tight coupling to file system operations
+ * 
+ * DISCOVERED REFACTORING OPPORTUNITIES:
+ * - RenderRequest.data should be properly typed (not 'any')
+ * - Version loading logic should be in separate VersionService
+ * - Static file serving should delegate to existing WebSocketDaemon
+ * - Legacy renderer loading suggests need for Renderer strategy pattern
+ * 
+ * TODO: Break into smaller, focused classes:
+ * - HTMLRenderingEngine (pure rendering logic)
+ * - StaticFileService (file serving abstraction)
+ * - ComponentRegistry (widget management)
+ * - VersionService (version detection/loading)
  */
 
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import * as http from 'http';
 
+// TODO: Replace 'any' with proper typed interfaces
 export interface RenderRequest {
   readonly type: 'render_ui' | 'update_component' | 'render_page';
-  readonly data: any;
+  readonly data: RenderData; // TODO: Define specific interfaces for each render type
   readonly clientId?: string;
+}
+
+export interface RenderData {
+  // TODO: Define proper union types for different render operations
+  [key: string]: unknown;
 }
 
 export interface RenderResult {
@@ -55,8 +80,10 @@ export class RendererDaemon extends BaseDaemon {
       
       this.log(`✅ Renderer Daemon started with ${this.renderingEngine} engine`);
     } catch (error) {
-      this.log(`❌ Failed to start Renderer Daemon: ${error.message}`, 'error');
-      this.log(`❌ Stack trace: ${error.stack}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : 'No stack trace available';
+      this.log(`❌ Failed to start Renderer Daemon: ${errorMessage}`, 'error');
+      this.log(`❌ Stack trace: ${errorStack}`, 'error');
       throw error;
     }
   }
@@ -78,7 +105,8 @@ export class RendererDaemon extends BaseDaemon {
       this.dynamicVersion = packageData.version;
       this.log(`📦 Loaded current version: ${this.dynamicVersion}`);
     } catch (error) {
-      this.log(`⚠️ Failed to load version from package.json: ${error.message}`, 'warn');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`⚠️ Failed to load version from package.json: ${errorMessage}`, 'warn');
       this.dynamicVersion = '0.2.UNKNOWN';
     }
   }

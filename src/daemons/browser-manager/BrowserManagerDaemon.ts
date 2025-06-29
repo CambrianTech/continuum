@@ -336,7 +336,7 @@ export class BrowserManagerDaemon extends BaseDaemon {
     return null;
   }
 
-  private isCompatible(browser: ManagedBrowser, config: BrowserConfig): boolean {
+  private isCompatible(browser: ManagedBrowser, _config: BrowserConfig): boolean {
     // Check if browser can handle this session
     return browser.config.requirements.isolation === 'shared' &&
            browser.sessions.size < this.getMaxTabsPerBrowser() &&
@@ -348,18 +348,18 @@ export class BrowserManagerDaemon extends BaseDaemon {
       .sort((a, b) => a.sessions.size - b.sessions.size)[0] || null;
   }
 
-  private selectBrowserType(config: BrowserConfig): string {
+  private selectBrowserType(_config: BrowserConfig): string {
     // Default browser selection logic
     return 'chrome'; // Could be made configurable
   }
 
-  private async launchBrowserProcess(type: string, port: number, config: BrowserConfig): Promise<any> {
+  private async launchBrowserProcess(_type: string, _port: number, _config: BrowserConfig): Promise<any> {
     // Launch browser process using adapter system
     // Implementation would use the browser adapters we created
     throw new Error('Not implemented');
   }
 
-  private async waitForBrowserReady(browser: ManagedBrowser): Promise<void> {
+  private async waitForBrowserReady(_browser: ManagedBrowser): Promise<void> {
     // Wait for browser to be responsive on DevTools port
     throw new Error('Not implemented');
   }
@@ -378,8 +378,8 @@ export class BrowserManagerDaemon extends BaseDaemon {
   private getMaxTabsPerBrowser(): number { return 10; }
 
   // Stub implementations for compilation
-  private async reuseBrowser(browserId: string, config: BrowserConfig): Promise<ManagedBrowser> { throw new Error('Not implemented'); }
-  private async addTabToBrowser(browserId: string, config: BrowserConfig): Promise<ManagedBrowser> { throw new Error('Not implemented'); }
+  private async reuseBrowser(_browserId: string, _config: BrowserConfig): Promise<ManagedBrowser> { throw new Error('Not implemented'); }
+  private async addTabToBrowser(_browserId: string, _config: BrowserConfig): Promise<ManagedBrowser> { throw new Error('Not implemented'); }
   private async allocatePort(): Promise<number> { 
     // Simple port allocation starting from 9222
     const usedPorts = new Set(Array.from(this.browsers.values()).map(b => b.port));
@@ -389,11 +389,11 @@ export class BrowserManagerDaemon extends BaseDaemon {
     }
     return port;
   }
-  private async getProcessStats(pid: number): Promise<{ memory: number; cpu: number }> { return { memory: 0, cpu: 0 }; }
-  private async getTabCount(port: number): Promise<number> { return 0; }
-  private async closeBrowser(id: string): Promise<void> {}
+  private async getProcessStats(_pid: number): Promise<{ memory: number; cpu: number }> { return { memory: 0, cpu: 0 }; }
+  private async getTabCount(_port: number): Promise<number> { return 0; }
+  private async closeBrowser(_id: string): Promise<void> {}
   private async consolidateResources(): Promise<void> {}
-  private async destroyBrowser(request: BrowserRequest): Promise<DaemonResponse> { return { success: true }; }
+  private async destroyBrowser(_request: BrowserRequest): Promise<DaemonResponse> { return { success: true }; }
   private async listBrowsers(request: BrowserRequest): Promise<DaemonResponse> { 
     const browsers = Array.from(this.browsers.values()).map(browser => ({
       id: browser.id,
@@ -414,9 +414,9 @@ export class BrowserManagerDaemon extends BaseDaemon {
       } 
     }; 
   }
-  private async optimizeResources(request: BrowserRequest): Promise<DaemonResponse> { return { success: true }; }
+  private async optimizeResources(_request: BrowserRequest): Promise<DaemonResponse> { return { success: true }; }
   private async shutdownAllBrowsers(): Promise<void> {}
-  private async sendToOS(type: string, data: any): Promise<void> {}
+  private async sendToOS(_type: string, _data: any): Promise<void> {}
 }
 
 interface PlacementStrategy {

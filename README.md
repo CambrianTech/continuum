@@ -165,6 +165,15 @@ continuum stop        # Graceful shutdown
 
 ## 🏗️ Architecture
 
+## **📚 ESSENTIAL: [MIDDLE-OUT.md](MIDDLE-OUT.md) - Complete Architectural Blueprint**
+
+**🧅 Dual Onion Architecture** - Server-side Core + Client-side Thin APIs  
+**🌐 Lambda Global Infrastructure** - Commands execute anywhere (local/cloud/quantum/robotics)  
+**📦 Docker-Style Dependencies** - LoRA-intelligent layer sharing and composition  
+**🔍 Dynamic Discovery** - Zero hardcoded command knowledge, infinite extensibility
+
+**READ MIDDLE-OUT.md for the complete vision and implementation patterns.**
+
 ### **Modular Command Bus**
 ```
 +------------------------------------------+
