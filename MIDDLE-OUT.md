@@ -78,6 +78,33 @@ With complete JTAG stack, AI development becomes:
 - **Self-reporting**: Progress tracking and status communication
 - **Human-optional**: Only for design decisions and progress updates
 
+## 🧬 **CLIENT-SIDE ARCHITECTURE (CRITICAL)**
+
+### **⚠️ CRITICAL OVERSIGHT DISCOVERED:**
+**Entry Point**: The client-side code has a **single entry point architecture**:
+- **`continuum.ts`** = Main client entry that **generates entire client API**
+- **Auto-discovery**: Client API methods **auto-generated from commands in core**
+- **Multi-process**: Daemons + core client system run in **web workers**
+- **Single import**: Everything spins up from **one HTML import**
+
+**Key Insight**: Client API is **not manually written** - it's **generated from server command definitions**. This enables:
+- Automatic client/server API synchronization
+- Command discovery without manual maintenance
+- Type-safe client methods matching server commands
+
+**Architecture Pattern**: 
+```
+RendererDaemon (Server) → HTML Generation → continuum.ts Load → Command Discovery → API Generation → Widget Management
+       ↓                                                                                           ↑
+Widget Rendering ←←←←←←←←←←←←←← Client-Side Widget System ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
+```
+
+**RendererDaemon Dual Role**:
+- **Server-Side**: HTML generation, static file serving, version coordination
+- **Client-Side**: Widget orchestration, DOM management, rendering lifecycle
+
+**Missing Knowledge**: The full command auto-discovery and web worker daemon system was not understood during initial integration fixes.
+
 ## 🛣️ **JTAG IMPLEMENTATION ROADMAP**
 
 ### **Phase 0: Foundation Diagnosis (CRITICAL FIRST)**

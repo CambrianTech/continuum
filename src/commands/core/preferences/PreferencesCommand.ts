@@ -38,7 +38,7 @@
  * - PreferenceDefaults (default values management)
  */
 
-import { BaseCommand, CommandResult, CommandDefinition } from '../base-command/BaseCommand.js';
+import { BaseCommand, CommandResult, CommandDefinition } from '../base-command/BaseCommand';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 
