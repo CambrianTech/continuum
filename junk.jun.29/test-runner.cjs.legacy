@@ -1,0 +1,321 @@
+/**
+ * Command Test Runner
+ * Comprehensive test suite for all room management commands
+ * Tests error handling, validation, and multi-agent chat functionality
+ */
+
+// Test framework setup (using built-in Node.js assert for simplicity)
+const assert = require('assert');
+const path = require('path');
+const fs = require('fs');
+
+class TestRunner {
+  constructor() {
+    this.tests = [];
+    this.passed = 0;
+    this.failed = 0;
+    this.errors = [];
+  }
+
+  // Register a test
+  test(name, fn) {
+    this.tests.push({ name, fn });
+  }
+
+  // Run all tests
+  async run() {
+    console.log('🧪 Starting Command Test Suite');
+    console.log('=' .repeat(50));
+
+    for (const { name, fn } of this.tests) {
+      try {
+        console.log(`🔍 Testing: ${name}`);
+        await fn();
+        this.passed++;
+        console.log(`✅ PASSED: ${name}`);
+      } catch (error) {
+        this.failed++;
+        this.errors.push({ test: name, error: error.message });
+        console.log(`❌ FAILED: ${name} - ${error.message}`);
+      }
+    }
+
+    this.printSummary();
+  }
+
+  printSummary() {
+    console.log('\n' + '='.repeat(50));
+    console.log(`📊 Test Results: ${this.passed} passed, ${this.failed} failed`);
+    
+    if (this.failed > 0) {
+      console.log('\n❌ Failed Tests:');
+      this.errors.forEach(({ test, error }) => {
+        console.log(`  • ${test}: ${error}`);
+      });
+    } else {
+      console.log('\n🎉 All tests passed!');
+    }
+  }
+}
+
+// Test utilities
+class TestUtils {
+  static createMockContinuum(testDataDir) {
+    return {
+      dataDir: testDataDir,
+      userId: 'test-user',
+      username: 'TestUser',
+      broadcast: () => {},
+      sendToRoom: () => {},
+      agentRegistry: {
+        getAgent: (id) => ({
+          id,
+          name: id.charAt(0).toUpperCase() + id.slice(1),
+          respond: async () => ({ success: true, response: `Response from ${id}` })
+        }),
+        getAllAgents: () => [
+          { id: 'claude', name: 'Claude', status: 'online', capabilities: ['text', 'code'] },
+          { id: 'gpt-4', name: 'GPT-4', status: 'online', capabilities: ['text', 'vision'] }
+        ]
+      }
+    };
+  }
+
+  static async setupTestEnvironment() {
+    const os = require('os');
+    const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'continuum-test-'));
+    
+    // Ensure rooms directory exists
+    const roomsDir = path.join(testDataDir, 'rooms');
+    if (!fs.existsSync(roomsDir)) {
+      fs.mkdirSync(roomsDir, { recursive: true });
+    }
+
+    return testDataDir;
+  }
+
+  static cleanupTestEnvironment(testDataDir) {
+    if (fs.existsSync(testDataDir)) {
+      fs.rmSync(testDataDir, { recursive: true, force: true });
+    }
+  }
+}
+
+// Main test execution
+async function runTests() {
+  const runner = new TestRunner();
+
+  // Test CommandRegistry error handling
+  runner.test('CommandRegistry should handle module loading errors', async () => {
+    const CommandRegistry = require('../CommandRegistry.cjs');
+    
+    // Create registry instance and verify it loads without errors
+    const registry = new CommandRegistry();
+    assert(registry.commands.size > 0, 'Should load commands successfully');
+    
+    // Test command execution with invalid command
+    const result = await registry.executeCommand('INVALID_COMMAND', {}, null);
+    assert(result.success === false, 'Should fail for invalid command');
+    assert(result.error.includes('not found'), 'Should provide helpful error message');
+  });
+
+  // Test BaseCommand parameter validation
+  runner.test('BaseCommand should validate parameters correctly', async () => {
+    const BaseCommand = require('../BaseCommand.cjs');
+    
+    // Test parameter parsing
+    const validParams = BaseCommand.parseParams('{"test": "value"}');
+    assert(validParams.test === 'value', 'Should parse JSON parameters');
+    
+    // Test invalid parameter parsing
+    try {
+      BaseCommand.parseParams('invalid-json');
+      assert(false, 'Should throw error for invalid JSON');
+    } catch (error) {
+      assert(error.message.includes('Invalid parameters'), 'Should provide helpful error');
+    }
+    
+    // Test parameter validation
+    const definition = {
+      parameters: {
+        required_param: { required: true, type: 'string' },
+        optional_param: { required: false, type: 'number' }
+      }
+    };
+    
+    const validationResult = BaseCommand.validateParams({ required_param: 'test' }, definition); 
+    assert(validationResult.valid === true, 'Should pass validation for valid params');
+    
+    const invalidResult = BaseCommand.validateParams({}, definition);
+    assert(invalidResult.valid === false, 'Should fail validation for missing required params');
+    assert(invalidResult.errors.length > 0, 'Should provide validation errors');
+  });
+
+  // Test FluentAPI error handling
+  runner.test('FluentAPI should handle errors gracefully', async () => {
+    const FluentAPI = require('../../modules/FluentAPI.cjs');
+    const CommandRegistry = require('../CommandRegistry.cjs');
+    
+    const registry = new CommandRegistry();
+    const api = new FluentAPI(registry);
+    
+    // Test unknown method handling
+    try {
+      api.nonExistentMethod();
+      assert(false, 'Should throw error for unknown method');
+    } catch (error) {
+      assert(error.message.includes('Unknown fluent method'), 'Should provide helpful suggestion');
+    }
+    
+    // Test empty pipeline execution
+    try {
+      await api.execute();
+      assert(false, 'Should fail for empty pipeline');  
+    } catch (error) {
+      assert(error.message.includes('No commands in pipeline'), 'Should explain empty pipeline error');
+    }
+  });
+
+  // Test CreateRoomCommand error scenarios
+  runner.test('CreateRoomCommand should handle errors properly', async () => {
+    const CreateRoomCommand = require('../core/createroom/CreateRoomCommand.cjs');
+    
+    // Test missing continuum context
+    const result1 = await CreateRoomCommand.execute('{"name": "Test"}', null);
+    assert(result1.success === false, 'Should fail without continuum context');
+    assert(result1.message.includes('required'), 'Should explain missing context');
+    
+    // Test invalid parameters
+    const result2 = await CreateRoomCommand.execute('invalid-json', {});
+    assert(result2.success === false, 'Should fail for invalid JSON');
+    assert(result2.message.includes('Invalid parameters'), 'Should explain parameter error');
+    
+    // Test empty room name
+    const result3 = await CreateRoomCommand.execute('{"name": ""}', { dataDir: '/tmp' });
+    assert(result3.success === false, 'Should fail for empty room name');
+    assert(result3.message.includes('cannot be empty'), 'Should explain validation error');
+  });
+
+  // Test room management integration
+  runner.test('Room commands should work together correctly', async () => {
+    const testDataDir = await TestUtils.setupTestEnvironment();
+    const mockContinuum = TestUtils.createMockContinuum(testDataDir);
+    
+    try {
+      const CreateRoomCommand = require('../core/createroom/CreateRoomCommand.cjs');
+      const JoinRoomCommand = require('../core/joinroom/JoinRoomCommand.cjs');
+      const LoadRoomsCommand = require('../core/loadrooms/LoadRoomsCommand.cjs');
+      
+      // Create room
+      const createResult = await CreateRoomCommand.execute(JSON.stringify({
+        name: 'Integration Test Room',
+        description: 'Testing integration'
+      }), mockContinuum);
+      
+      assert(createResult.success === true, 'Should create room successfully');
+      assert(createResult.data.roomId === 'integration-test-room', 'Should normalize room name');
+      
+      // Join room with different user
+      const joinUser = { ...mockContinuum, userId: 'join-user', username: 'JoinUser' };
+      const joinResult = await JoinRoomCommand.execute(JSON.stringify({
+        roomId: 'integration-test-room'
+      }), joinUser);
+      
+      assert(joinResult.success === true, 'Should join room successfully');
+      assert(joinResult.data.status === 'active', 'Should set active status');
+      
+      // Load rooms to verify state
+      const loadResult = await LoadRoomsCommand.execute('{}', joinUser);
+      assert(loadResult.success === true, 'Should load rooms successfully');
+      
+      const room = loadResult.data.rooms.find(r => r.roomId === 'integration-test-room');
+      assert(room !== undefined, 'Should find the room in results');
+      assert(room.subscription.status === 'active', 'Should show active subscription');
+      
+    } finally {
+      TestUtils.cleanupTestEnvironment(testDataDir);
+    }
+  });
+
+  // Test multi-agent chat functionality
+  runner.test('ChatCommand should orchestrate agents properly', async () => {
+    const testDataDir = await TestUtils.setupTestEnvironment();
+    const mockContinuum = TestUtils.createMockContinuum(testDataDir);
+    
+    try {
+      const CreateRoomCommand = require('../core/createroom/CreateRoomCommand.cjs');
+      const ChatCommand = require('../core/chat/ChatCommand.cjs');
+      
+      // Create room with agents
+      await CreateRoomCommand.execute(JSON.stringify({
+        name: 'Agent Chat Room',
+        inviteAgents: ['claude', 'gpt-4']
+      }), mockContinuum);
+      
+      // Send message that should trigger agents
+      const chatResult = await ChatCommand.execute(JSON.stringify({
+        roomId: 'agent-chat-room',
+        message: 'Hello agents!',
+        triggerAgents: true
+      }), mockContinuum);
+      
+      assert(chatResult.success === true, 'Should send message successfully');
+      assert(chatResult.data.content === 'Hello agents!', 'Should preserve message content');
+      
+      // Verify message was saved
+      const messagesPath = path.join(testDataDir, 'rooms', 'agent-chat-room', 'messages.json');
+      assert(fs.existsSync(messagesPath), 'Should create messages file');
+      
+      const messages = JSON.parse(fs.readFileSync(messagesPath, 'utf8'));
+      const userMessage = messages.find(msg => msg.content === 'Hello agents!' && msg.type === 'user');
+      assert(userMessage !== undefined, 'Should save user message');
+      
+    } finally {
+      TestUtils.cleanupTestEnvironment(testDataDir);
+    }
+  });
+
+  // Test error recovery and resilience
+  runner.test('Commands should recover from file system errors', async () => {
+    const testDataDir = await TestUtils.setupTestEnvironment();
+    const mockContinuum = TestUtils.createMockContinuum(testDataDir);
+    
+    try {
+      const CreateRoomCommand = require('../core/createroom/CreateRoomCommand.cjs');
+      
+      // Make rooms directory read-only to simulate permission error
+      const roomsDir = path.join(testDataDir, 'rooms');
+      fs.chmodSync(roomsDir, 0o444);
+      
+      const result = await CreateRoomCommand.execute(JSON.stringify({
+        name: 'Permission Test Room'
+      }), mockContinuum);
+      
+      assert(result.success === false, 'Should fail gracefully for permission errors');
+      assert(result.message.includes('Failed to create room'), 'Should provide helpful error message');
+      
+      // Restore permissions
+      fs.chmodSync(roomsDir, 0o755);
+      
+    } finally {
+      TestUtils.cleanupTestEnvironment(testDataDir);  
+    }
+  });
+
+  // Run all tests
+  await runner.run();
+  
+  // Exit with appropriate code
+  process.exit(runner.failed > 0 ? 1 : 0);
+}
+
+// Export for use in other test files
+module.exports = { TestRunner, TestUtils };
+
+// Run tests if this file is executed directly
+if (require.main === module) {
+  runTests().catch(error => {
+    console.error('❌ Test runner failed:', error);
+    process.exit(1);
+  });
+}

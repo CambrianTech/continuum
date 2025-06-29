@@ -1,0 +1,145 @@
+/**
+ * VersionWidget - Dynamic version display
+ * Shows current system version with real-time updates
+ */
+import { BaseWidget } from '../shared/BaseWidget.js';
+export class VersionWidget extends BaseWidget {
+    constructor() {
+        super();
+        this.currentVersion = 'loading...';
+        this.lastUpdate = new Date();
+        this.widgetName = 'VersionWidget';
+        this.widgetIcon = '🏷️';
+        this.widgetTitle = 'System Version';
+        this.cssPath = '/src/ui/components/Version/VersionWidget.css';
+    }
+    async initializeWidget() {
+        await this.loadCSS();
+        this.setupVersionMonitoring();
+        this.render();
+    }
+    setupVersionMonitoring() {
+        // Fetch version from API immediately
+        this.fetchVersionFromAPI();
+        
+        // Monitor for version changes every 30 seconds
+        setInterval(() => {
+            this.fetchVersionFromAPI();
+        }, 30000);
+    }
+    
+    async fetchVersionFromAPI() {
+        try {
+            // Use the continuum command system to get version
+            if (window.continuum && window.continuum.execute) {
+                window.continuum.execute('version', {}, (response) => {
+                    if (response.success && response.version) {
+                        this.updateVersion(response.version);
+                        this.versionData = response;
+                    }
+                });
+            } else {
+                // Fallback to direct API call
+                const response = await fetch('/api/version');
+                if (response.ok) {
+                    const versionData = await response.json();
+                    this.updateVersion(versionData.version);
+                    this.versionData = versionData;
+                }
+            }
+        } catch (error) {
+            console.error('Failed to fetch version:', error);
+        }
+    }
+    checkForVersionUpdates() {
+        const continuum = window.continuum;
+        if (continuum?.version && continuum.version !== this.currentVersion) {
+            this.updateVersion(continuum.version);
+        }
+    }
+    updateVersion(newVersion) {
+        if (newVersion !== this.currentVersion) {
+            console.log(`🏷️ Version: ${this.currentVersion} → ${newVersion}`);
+            this.currentVersion = newVersion;
+            this.lastUpdate = new Date();
+            this.render();
+            this.showUpdateAnimation();
+        }
+    }
+    renderContent() {
+        const updateTime = this.lastUpdate.toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+        
+        // Show additional build info if available
+        let buildInfo = '';
+        if (this.versionData) {
+            const buildTime = this.versionData.buildTimestamp ? 
+                new Date(this.versionData.buildTimestamp).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                }) : null;
+            
+            buildInfo = `
+                <div class="build-info">
+                    ${this.versionData.uptime ? `<span class="uptime">Up: ${this.versionData.uptime}</span>` : ''}
+                    ${buildTime ? `<span class="build-time">Built: ${buildTime}</span>` : ''}
+                </div>
+            `;
+        }
+        
+        return `
+      <div class="version-container">
+        <div class="version-info">
+          <span class="version-label">v</span>
+          <span class="version-number">${this.currentVersion}</span>
+        </div>
+        <div class="version-meta">
+          <span class="last-update">Updated ${updateTime}</span>
+        </div>
+        ${buildInfo}
+      </div>
+    `;
+    }
+    setupEventListeners() {
+        // Click to copy version to clipboard
+        const container = this.shadowRoot?.querySelector('.version-container');
+        if (container) {
+            container.addEventListener('click', () => {
+                this.copyVersionToClipboard();
+            });
+        }
+    }
+    copyVersionToClipboard() {
+        const versionText = `Continuum v${this.currentVersion}`;
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(versionText).then(() => {
+                this.showCopyFeedback();
+            }).catch(err => {
+                console.error('Failed to copy version:', err);
+            });
+        }
+    }
+    showCopyFeedback() {
+        const container = this.shadowRoot?.querySelector('.version-container');
+        if (container) {
+            container.classList.add('copied');
+            setTimeout(() => {
+                container.classList.remove('copied');
+            }, 1000);
+        }
+    }
+    showUpdateAnimation() {
+        const container = this.shadowRoot?.querySelector('.version-container');
+        if (container) {
+            container.classList.add('updated');
+            setTimeout(() => {
+                container.classList.remove('updated');
+            }, 600);
+        }
+    }
+}
+// Register the custom element
+customElements.define('version-widget', VersionWidget);
+//# sourceMappingURL=VersionWidget.js.map

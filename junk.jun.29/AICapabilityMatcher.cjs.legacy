@@ -1,0 +1,315 @@
+/**
+ * AI Capability Matcher - Performance-based model selection
+ * Makes decisions based on speed, size, cost characteristics rather than model names
+ */
+
+class AICapabilityMatcher {
+  constructor() {
+    this.performanceProfiles = new Map();
+    this.taskRequirements = new Map();
+    this.setupPerformanceProfiles();
+    this.setupTaskRequirements();
+  }
+
+  setupPerformanceProfiles() {
+    // Abstract performance profiles - no model names!
+    this.performanceProfiles.set('ultrafast', {
+      maxLatency: 1000,      // 1 second max
+      maxCostPer1K: 0.0005,  // $0.0005 per 1K tokens
+      maxContextSize: 4000,  // 4K context window
+      capabilities: ['simple_text', 'basic_validation'],
+      reliability: 0.9
+    });
+
+    this.performanceProfiles.set('fast', {
+      maxLatency: 3000,      // 3 seconds max
+      maxCostPer1K: 0.002,   // $0.002 per 1K tokens  
+      maxContextSize: 16000, // 16K context window
+      capabilities: ['text_analysis', 'code_review', 'validation', 'simple_reasoning'],
+      reliability: 0.95
+    });
+
+    this.performanceProfiles.set('balanced', {
+      maxLatency: 8000,      // 8 seconds max
+      maxCostPer1K: 0.01,    // $0.01 per 1K tokens
+      maxContextSize: 128000, // 128K context window
+      capabilities: ['complex_reasoning', 'code_generation', 'research', 'analysis'],
+      reliability: 0.98
+    });
+
+    this.performanceProfiles.set('powerful', {
+      maxLatency: 20000,     // 20 seconds max
+      maxCostPer1K: 0.06,    // $0.06 per 1K tokens
+      maxContextSize: 200000, // 200K context window
+      capabilities: ['advanced_reasoning', 'complex_coding', 'deep_analysis', 'planning'],
+      reliability: 0.99
+    });
+  }
+
+  setupTaskRequirements() {
+    // Define what different tasks need
+    this.taskRequirements.set('protocol_validation', {
+      requiredCapabilities: ['basic_validation'],
+      preferredProfile: 'fast',
+      maxAcceptableLatency: 2000,
+      maxAcceptableCost: 0.001
+    });
+
+    this.taskRequirements.set('simple_conversation', {
+      requiredCapabilities: ['simple_text'],
+      preferredProfile: 'fast',
+      maxAcceptableLatency: 3000,
+      maxAcceptableCost: 0.005
+    });
+
+    this.taskRequirements.set('code_analysis', {
+      requiredCapabilities: ['code_review', 'text_analysis'],
+      preferredProfile: 'balanced',
+      maxAcceptableLatency: 10000,
+      maxAcceptableCost: 0.02
+    });
+
+    this.taskRequirements.set('complex_planning', {
+      requiredCapabilities: ['advanced_reasoning', 'planning'],
+      preferredProfile: 'powerful',
+      maxAcceptableLatency: 30000,
+      maxAcceptableCost: 0.1
+    });
+  }
+
+  /**
+   * Find best model for a task based on performance characteristics
+   */
+  findBestModel(taskType, modelRegistry, context = {}) {
+    const requirements = this.getTaskRequirements(taskType, context);
+    const availableModels = modelRegistry.getAvailableModels();
+    
+    // Score each model against requirements
+    const scoredModels = availableModels.map(model => ({
+      model,
+      score: this.scoreModel(model, requirements)
+    }));
+
+    // Sort by score (higher is better)
+    scoredModels.sort((a, b) => b.score - a.score);
+    
+    // Return best model
+    if (scoredModels.length > 0 && scoredModels[0].score > 0) {
+      console.log(`🎯 Selected ${scoredModels[0].model.provider} model (score: ${scoredModels[0].score.toFixed(2)}) for ${taskType}`);
+      return scoredModels[0].model;
+    }
+
+    throw new Error(`No suitable models available for task: ${taskType}`);
+  }
+
+  getTaskRequirements(taskType, context) {
+    const baseReq = this.taskRequirements.get(taskType);
+    if (!baseReq) {
+      // Infer requirements from context
+      return this.inferRequirements(taskType, context);
+    }
+
+    // Adjust requirements based on context
+    const adjusted = { ...baseReq };
+    
+    if (context.urgent) {
+      adjusted.maxAcceptableLatency = Math.min(adjusted.maxAcceptableLatency, 2000);
+      adjusted.preferredProfile = 'fast';
+    }
+    
+    if (context.budget_conscious) {
+      adjusted.maxAcceptableCost = adjusted.maxAcceptableCost * 0.5;
+    }
+    
+    if (context.accuracy_critical) {
+      adjusted.preferredProfile = 'powerful';
+      adjusted.maxAcceptableCost = adjusted.maxAcceptableCost * 2;
+    }
+
+    return adjusted;
+  }
+
+  inferRequirements(taskType, context) {
+    // Smart inference based on task characteristics
+    const taskLower = taskType.toLowerCase();
+    
+    if (taskLower.includes('validation') || taskLower.includes('check')) {
+      return {
+        requiredCapabilities: ['basic_validation'],
+        preferredProfile: 'fast',
+        maxAcceptableLatency: 3000,
+        maxAcceptableCost: 0.002
+      };
+    }
+    
+    if (taskLower.includes('code') || taskLower.includes('debug')) {
+      return {
+        requiredCapabilities: ['code_review', 'text_analysis'],
+        preferredProfile: 'balanced',
+        maxAcceptableLatency: 10000,
+        maxAcceptableCost: 0.02
+      };
+    }
+    
+    if (taskLower.includes('plan') || taskLower.includes('strategy')) {
+      return {
+        requiredCapabilities: ['advanced_reasoning', 'planning'],
+        preferredProfile: 'powerful',
+        maxAcceptableLatency: 20000,
+        maxAcceptableCost: 0.05
+      };
+    }
+
+    // Default for unknown tasks
+    return {
+      requiredCapabilities: ['simple_text'],
+      preferredProfile: 'balanced',
+      maxAcceptableLatency: 8000,
+      maxAcceptableCost: 0.01
+    };
+  }
+
+  scoreModel(model, requirements) {
+    let score = 0;
+    
+    // Check capability match
+    const modelCaps = model.capabilities || [];
+    const requiredCaps = requirements.requiredCapabilities || [];
+    const capabilityMatch = requiredCaps.every(cap => 
+      modelCaps.includes(cap) || this.inferModelCapability(model, cap)
+    );
+    
+    if (!capabilityMatch) return 0; // Must have required capabilities
+    
+    score += 10; // Base score for capability match
+    
+    // Speed score (lower latency is better)
+    const estimatedLatency = this.estimateLatency(model);
+    if (estimatedLatency <= requirements.maxAcceptableLatency) {
+      score += (requirements.maxAcceptableLatency - estimatedLatency) / requirements.maxAcceptableLatency * 5;
+    }
+    
+    // Cost score (lower cost is better)
+    const estimatedCost = this.estimateCost(model);
+    if (estimatedCost <= requirements.maxAcceptableCost) {
+      score += (requirements.maxAcceptableCost - estimatedCost) / requirements.maxAcceptableCost * 5;
+    }
+    
+    // Context size bonus
+    if (model.contextWindow > 50000) score += 2;
+    if (model.contextWindow > 100000) score += 3;
+    
+    // Provider reliability bonus (could be learned over time)
+    if (model.provider === 'anthropic') score += 1;
+    if (model.provider === 'openai') score += 1;
+    
+    return score;
+  }
+
+  estimateLatency(model) {
+    // Estimate based on model characteristics
+    const baseLatency = {
+      'anthropic': 2000,  // Anthropic models tend to be fast
+      'openai': 3000      // OpenAI models vary
+    };
+    
+    let latency = baseLatency[model.provider] || 5000;
+    
+    // Adjust based on cost (cheaper usually means faster/smaller)
+    if (model.inputRate < 1.0) latency *= 0.5;  // Very cheap = very fast
+    else if (model.inputRate > 10.0) latency *= 1.5; // Expensive = slower
+    
+    return latency;
+  }
+
+  estimateCost(model) {
+    // Cost per 1K tokens
+    return (model.inputRate + model.outputRate) / 1000;
+  }
+
+  inferModelCapability(model, capability) {
+    const capabilityInference = {
+      'simple_text': true, // All models can do simple text
+      'basic_validation': model.inputRate < 2.0, // Cheap models for validation
+      'text_analysis': model.inputRate < 10.0,
+      'code_review': model.capabilities?.includes('coding') || model.inputRate < 5.0,
+      'simple_reasoning': model.inputRate < 10.0,
+      'complex_reasoning': model.inputRate >= 5.0,
+      'code_generation': model.capabilities?.includes('coding'),
+      'research': model.contextWindow > 50000,
+      'analysis': model.contextWindow > 30000,
+      'advanced_reasoning': model.inputRate >= 10.0,
+      'complex_coding': model.capabilities?.includes('coding') && model.inputRate >= 5.0,
+      'deep_analysis': model.contextWindow > 100000,
+      'planning': model.inputRate >= 5.0
+    };
+    
+    return capabilityInference[capability] || false;
+  }
+
+  /**
+   * Get performance characteristics of available models
+   */
+  analyzeAvailableModels(modelRegistry) {
+    const models = modelRegistry.getAvailableModels();
+    
+    return models.map(model => ({
+      provider: model.provider,
+      estimatedLatency: this.estimateLatency(model),
+      estimatedCost: this.estimateCost(model),
+      contextWindow: model.contextWindow,
+      capabilities: this.inferAllCapabilities(model),
+      performanceProfile: this.classifyPerformanceProfile(model)
+    }));
+  }
+
+  inferAllCapabilities(model) {
+    const allCapabilities = [
+      'simple_text', 'basic_validation', 'text_analysis', 'code_review',
+      'simple_reasoning', 'complex_reasoning', 'code_generation', 'research',
+      'analysis', 'advanced_reasoning', 'complex_coding', 'deep_analysis', 'planning'
+    ];
+    
+    return allCapabilities.filter(cap => this.inferModelCapability(model, cap));
+  }
+
+  classifyPerformanceProfile(model) {
+    const cost = this.estimateCost(model);
+    const latency = this.estimateLatency(model);
+    
+    if (cost < 0.001 && latency < 2000) return 'ultrafast';
+    if (cost < 0.005 && latency < 5000) return 'fast';
+    if (cost < 0.02 && latency < 10000) return 'balanced';
+    return 'powerful';
+  }
+
+  /**
+   * Get recommended task type for a user query
+   */
+  classifyTask(userQuery, context = {}) {
+    const query = userQuery.toLowerCase();
+    
+    if (context.purpose === 'validation') return 'protocol_validation';
+    
+    if (query.length < 20 && this.isSimpleQuery(query)) {
+      return 'simple_conversation';
+    }
+    
+    if (query.includes('code') || query.includes('debug') || query.includes('function')) {
+      return 'code_analysis';
+    }
+    
+    if (query.includes('plan') || query.includes('strategy') || query.includes('design')) {
+      return 'complex_planning';
+    }
+    
+    return 'simple_conversation'; // Default
+  }
+
+  isSimpleQuery(query) {
+    const simplePatterns = ['hello', 'hi', 'help', 'testing', 'test', 'thanks', 'ok'];
+    return simplePatterns.some(pattern => query.includes(pattern));
+  }
+}
+
+module.exports = AICapabilityMatcher;

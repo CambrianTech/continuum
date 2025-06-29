@@ -1,0 +1,182 @@
+/**
+ * SavedPersonas Widget - Clean TypeScript Web Component
+ * Proper separation of HTML, CSS, and TypeScript
+ */
+import { BaseWidget } from '../shared/BaseWidget.js';
+export class SavedPersonasWidget extends BaseWidget {
+    constructor() {
+        super();
+        this.personas = [];
+        this.selectedPersona = null;
+        this.widgetName = 'SavedPersonas';
+        this.widgetIcon = '👤';
+        this.widgetTitle = 'Saved Personas';
+    }
+    async connectedCallback() {
+        await super.connectedCallback();
+        await this.loadPersonas();
+        this.setupContinuumListeners();
+    }
+    async loadCSS() {
+        const response = await fetch('/src/ui/components/SavedPersonas/styles.css');
+        return await response.text();
+    }
+    setupContinuumListeners() {
+        if (this.getContinuumAPI()) {
+            this.onContinuumEvent('personas_updated', () => {
+                console.log('🎛️ SavedPersonas: personas_updated received');
+                this.loadPersonas();
+            });
+            this.onContinuumEvent('persona_added', (data) => {
+                console.log('🎛️ SavedPersonas: persona_added received', data);
+                this.loadPersonas();
+            });
+            this.onContinuumEvent('persona_deleted', (data) => {
+                console.log('🎛️ SavedPersonas: persona_deleted received', data);
+                this.loadPersonas();
+            });
+            console.log('🎛️ SavedPersonas: Connected to continuum API');
+        }
+        else {
+            setTimeout(() => this.setupContinuumListeners(), 1000);
+        }
+    }
+    async loadPersonas() {
+        try {
+            if (!this.isContinuumConnected()) {
+                console.log('🎛️ SavedPersonas: Not connected, using mock data');
+                this.loadMockData();
+                return;
+            }
+            const response = await this.executeCommand('personas', { action: 'list' });
+            if (response && response.personas) {
+                this.personas = response.personas;
+                console.log(`🎛️ SavedPersonas: Loaded ${this.personas.length} personas`);
+            }
+            else {
+                this.loadMockData();
+            }
+            this.render();
+        }
+        catch (error) {
+            console.error('🎛️ SavedPersonas: Failed to load personas:', error);
+            this.loadMockData();
+        }
+    }
+    loadMockData() {
+        this.personas = [
+            {
+                id: 'sheriff-001',
+                name: 'Protocol Sheriff',
+                specialization: 'protocol_enforcement',
+                status: 'graduated',
+                accuracy: 96.7,
+                created: '2025-01-20',
+                lastUsed: '2025-01-26'
+            },
+            {
+                id: 'coder-001',
+                name: 'Code Specialist',
+                specialization: 'code_analysis',
+                status: 'active',
+                accuracy: 94.2,
+                created: '2025-01-22',
+                lastUsed: '2025-01-25'
+            }
+        ];
+        this.render();
+    }
+    renderContent() {
+        return `
+      <div class="header">
+        <div class="title">
+          ${this.widgetIcon} ${this.widgetTitle}
+          <span class="count">(${this.personas.length})</span>
+        </div>
+      </div>
+
+      <div class="persona-list">
+        ${this.personas.length === 0 ? this.renderEmptyState() : this.personas.map(persona => this.renderPersona(persona)).join('')}
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-primary" data-action="create">Create Persona</button>
+        <button class="btn btn-secondary" data-action="refresh">Refresh</button>
+      </div>
+    `;
+    }
+    renderPersona(persona) {
+        const isSelected = this.selectedPersona?.id === persona.id;
+        return `
+      <div class="persona-item ${isSelected ? 'selected' : ''}" data-persona-id="${persona.id}">
+        <div class="persona-info">
+          <div class="persona-name">${persona.name}</div>
+          <div class="persona-details">${persona.specialization}</div>
+        </div>
+        <div class="persona-status">
+          ${persona.accuracy ? `<div class="accuracy">${persona.accuracy}%</div>` : ''}
+          <div class="status-badge status-${persona.status}">${persona.status}</div>
+        </div>
+      </div>
+    `;
+    }
+    renderEmptyState() {
+        return `
+      <div class="empty-state">
+        No saved personas yet.<br>
+        Create your first AI persona to get started!
+      </div>
+    `;
+    }
+    setupEventListeners() {
+        // Persona selection
+        this.shadowRoot.querySelectorAll('.persona-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                const personaId = e.currentTarget.dataset.personaId;
+                this.selectPersona(personaId);
+            });
+        });
+        // Action buttons
+        this.shadowRoot.querySelectorAll('.btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const action = e.currentTarget.dataset.action;
+                this.handleAction(action);
+            });
+        });
+    }
+    selectPersona(personaId) {
+        const persona = this.personas.find(p => p.id === personaId);
+        if (persona) {
+            this.selectedPersona = persona;
+            console.log('🎛️ SavedPersonas: Selected persona:', persona.name);
+            this.sendMessage({
+                type: 'persona_selected',
+                persona: persona
+            });
+            this.render();
+        }
+    }
+    async handleAction(action) {
+        switch (action) {
+            case 'create':
+                console.log('🎛️ SavedPersonas: Creating new persona...');
+                try {
+                    await this.executeCommand('personas', { action: 'create' });
+                }
+                catch (error) {
+                    console.error('🎛️ SavedPersonas: Failed to create persona:', error);
+                }
+                break;
+            case 'refresh':
+                console.log('🎛️ SavedPersonas: Refreshing personas...');
+                await this.loadPersonas();
+                break;
+            default:
+                console.log('🎛️ SavedPersonas: Unknown action:', action);
+        }
+    }
+}
+// Register the custom element
+if (!customElements.get('saved-personas')) {
+    customElements.define('saved-personas', SavedPersonasWidget);
+}

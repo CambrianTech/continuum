@@ -1,0 +1,22 @@
+/**
+ * Continuum Application Entry Point
+ * Loads TypeScript widget system and all components
+ */
+
+// Load TypeScript widget system first
+import('/dist/ui/components/shared/WidgetSystem.js');
+
+// Load base widget
+import('/dist/ui/components/shared/BaseWidget.js');
+
+// Load all widgets (they self-register via widget system)
+import('/dist/ui/components/Sidebar/SidebarWidget.js');
+import('/dist/ui/components/SavedPersonas/SavedPersonasWidget.js');
+import('/src/ui/components/ActiveProjects/ActiveProjects.js');
+import('/src/ui/components/UserSelector/UserSelector.js');
+
+// TypeScript widgets (compiled to JS)
+import('/dist/ui/components/Chat/ChatWidget.js');
+import('/dist/ui/components/ChatRoom/ChatRoom.js');
+import('/dist/ui/components/Continuon/ContinuonWidget.js');
+import('/dist/ui/components/Version/VersionWidget.js');
