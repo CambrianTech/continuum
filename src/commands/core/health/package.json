@@ -1,0 +1,7 @@
+{
+  "name": "@continuum/health-command",
+  "version": "1.0.0",
+  "description": "Universal health reporting system for server and client components",
+  "main": "HealthCommand.ts",
+  "type": "module"
+}

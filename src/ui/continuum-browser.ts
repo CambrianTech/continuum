@@ -130,6 +130,132 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     return this.connectionState;
   }
 
+  // CLIENT-SIDE HEALTH VALIDATION - Widgets, Commands, and Daemons self-validate
+  async validateClientHealth(): Promise<any> {
+    console.log('🏥 Starting client-side health validation...');
+    
+    const healthReport = {
+      timestamp: Date.now(),
+      environment: 'browser',
+      components: [] as any[],
+      overall: 'healthy'
+    };
+
+    // 1. WEBSOCKET CONNECTION HEALTH
+    healthReport.components.push({
+      component: 'websocket-connection',
+      status: this.connectionState === 'connected' ? 'healthy' : 'failed',
+      lastCheck: Date.now(),
+      details: `Connection state: ${this.connectionState}`,
+      metrics: {
+        reconnectAttempts: this.reconnectAttempts,
+        readyState: this.ws?.readyState
+      }
+    });
+
+    // 2. CONTINUUM API AVAILABILITY
+    const apiAvailable = typeof window !== 'undefined' && (window as any).continuum;
+    healthReport.components.push({
+      component: 'continuum-api',
+      status: apiAvailable ? 'healthy' : 'failed',
+      lastCheck: Date.now(),
+      details: apiAvailable ? 'API methods available on window.continuum' : 'API not available',
+      metrics: {
+        methodsAvailable: apiAvailable ? Object.keys((window as any).continuum).length : 0
+      }
+    });
+
+    // 3. WIDGET SELF-VALIDATION
+    const widgets = ['chat-widget', 'continuum-sidebar'];
+    widgets.forEach(widgetName => {
+      const widget = document.querySelector(widgetName);
+      const widgetStyles = widget ? window.getComputedStyle(widget) : null;
+      
+      healthReport.components.push({
+        component: widgetName,
+        status: widget ? 'healthy' : 'failed',
+        lastCheck: Date.now(),
+        details: widget ? 'Widget element present and styled' : 'Widget element missing from DOM',
+        metrics: {
+          hasElement: !!widget,
+          isVisible: widgetStyles ? widgetStyles.display !== 'none' : false,
+          hasStyles: widgetStyles ? widgetStyles.cssText.length > 0 : false
+        }
+      });
+    });
+
+    // 4. SCRIPT LOADING VALIDATION
+    const scripts = Array.from(document.querySelectorAll('script[src]'));
+    const continuumScript = scripts.find(script => script.getAttribute('src')?.includes('continuum'));
+    
+    healthReport.components.push({
+      component: 'script-loading',
+      status: continuumScript ? 'healthy' : 'failed',
+      lastCheck: Date.now(),
+      details: `${scripts.length} scripts loaded, continuum script: ${continuumScript ? 'found' : 'missing'}`,
+      metrics: {
+        totalScripts: scripts.length,
+        continuumScriptFound: !!continuumScript
+      }
+    });
+
+    // 5. CONSOLE ERROR MONITORING
+    const consoleErrors = (window as any).continuumErrorCount || 0;
+    healthReport.components.push({
+      component: 'console-errors',
+      status: consoleErrors === 0 ? 'healthy' : consoleErrors < 5 ? 'degraded' : 'failed',
+      lastCheck: Date.now(),
+      details: `${consoleErrors} console errors detected`,
+      metrics: {
+        errorCount: consoleErrors
+      }
+    });
+
+    // Calculate overall health
+    const failedComponents = healthReport.components.filter(c => c.status === 'failed').length;
+    const degradedComponents = healthReport.components.filter(c => c.status === 'degraded').length;
+    
+    if (failedComponents > 0) {
+      healthReport.overall = 'failed';
+    } else if (degradedComponents > 0) {
+      healthReport.overall = 'degraded';
+    } else {
+      healthReport.overall = 'healthy';
+    }
+
+    // Log comprehensive health report
+    console.log('🏥 CLIENT HEALTH REPORT:');
+    console.log('========================');
+    console.log(`Overall Status: ${healthReport.overall.toUpperCase()}`);
+    console.log(`Components Checked: ${healthReport.components.length}`);
+    
+    healthReport.components.forEach(component => {
+      const icon = component.status === 'healthy' ? '✅' : component.status === 'degraded' ? '🟡' : '❌';
+      console.log(`${icon} ${component.component}: ${component.status} - ${component.details}`);
+      if (component.metrics) {
+        console.log(`   Metrics:`, component.metrics);
+      }
+    });
+
+    console.log('🏥 Health validation complete');
+    
+    // Forward health report to development portal for JTAG
+    try {
+      if (this.isConnected()) {
+        await this.execute('console', {
+          action: 'health_report',
+          message: `Client health: ${healthReport.overall} (${healthReport.components.length} components)`,
+          source: 'health-validator',
+          data: healthReport
+        });
+      }
+    } catch (error) {
+      console.log('🏥 Could not forward health report to portal:', error.message);
+    }
+    
+    return healthReport;
+  }
+
   async execute(command: string, params: any = {}): Promise<any> {
     if (!this.isConnected()) {
       throw new Error('Continuum API not connected');
@@ -144,7 +270,7 @@ class ContinuumBrowserAPI implements ContinuumAPI {
 
       // Listen for response
       const responseHandler = (data: any) => {
-        if (data.requestId === requestId) {
+        if (data && data.requestId === requestId) {
           clearTimeout(timeout);
           this.off('command_response', responseHandler);
           
@@ -242,9 +368,14 @@ class ContinuumBrowserAPI implements ContinuumAPI {
         return;
       }
 
-      // Handle other message types
-      const eventName = message.type.replace(/_response$/, '');
-      this.emit(eventName, message.data);
+      // Handle other message types - only emit as command_response if it has requestId
+      if (message.data && message.data.requestId) {
+        this.emit('command_response', message.data);
+      } else {
+        // Handle as regular event
+        const eventName = message.type.replace(/_response$/, '');
+        this.emit(eventName, message.data);
+      }
       
     } catch (error) {
       console.error('🌐 Continuum API: Error parsing message:', error);
@@ -289,17 +420,39 @@ const continuum = new ContinuumBrowserAPI();
 (window as any).continuum = continuum;
 
 // Auto-connect on load
-continuum.connect().then(() => {
+continuum.connect().then(async () => {
   console.log('🌐 Continuum API: Ready! Widgets can now connect.');
   
   // Fire ready event for widgets to respond
   continuum.emit('continuum:ready');
   
-}).catch(error => {
+  // Run automatic client-side health validation
+  try {
+    const healthReport = await continuum.validateClientHealth();
+    
+    // Report health back to server
+    if (continuum.isConnected()) {
+      await continuum.execute('health', { 
+        clientReport: healthReport,
+        source: 'browser-auto-validation'
+      });
+    }
+  } catch (error) {
+    console.error('🏥 Auto health validation failed:', error);
+  }
+  
+}).catch(async (error) => {
   console.error('🌐 Continuum API: Initial connection failed:', error);
   
   // Still fire ready event so widgets can handle disconnected state
   continuum.emit('continuum:ready');
+  
+  // Run health validation even if connection failed
+  try {
+    await continuum.validateClientHealth();
+  } catch (healthError) {
+    console.error('🏥 Health validation failed:', healthError);
+  }
 });
 
 export default continuum;
