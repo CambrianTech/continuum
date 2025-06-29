@@ -524,7 +524,7 @@ export class RendererDaemon extends BaseDaemon {
       'css': 'text/css',
       'html': 'text/html',
       'json': 'application/json',
-      'ts': 'application/javascript', // TypeScript served as JS
+      'ts': 'application/javascript', // TypeScript transpiled to JS
       'map': 'application/json'
     };
 
