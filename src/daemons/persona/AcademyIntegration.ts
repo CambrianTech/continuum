@@ -141,6 +141,10 @@ export class AcademyTrainingOrchestrator extends EventEmitter {
     const protocolSheriff = this.personas.get(session.participants.protocolSheriff);
     const academyStudent = this.personas.get(session.participants.academyStudent);
     
+    if (!testingDroid) throw new Error(`Testing Droid persona not found: ${session.participants.testingDroid}`);
+    if (!protocolSheriff) throw new Error(`Protocol Sheriff persona not found: ${session.participants.protocolSheriff}`);
+    if (!academyStudent) throw new Error(`Academy Student persona not found: ${session.participants.academyStudent}`);
+    
     console.log(`🔄 Starting ${session.rounds} rounds of adversarial training`);
     
     for (let round = 1; round <= session.rounds; round++) {
@@ -214,7 +218,7 @@ export class AcademyTrainingOrchestrator extends EventEmitter {
       modelProvider: 'anthropic',
       modelConfig: {
         model: 'claude-3-haiku',
-        apiKey: process.env.ANTHROPIC_API_KEY
+        ...(process.env.ANTHROPIC_API_KEY && { apiKey: process.env.ANTHROPIC_API_KEY })
       },
       loraAdapters: [`continuum.${domain}.adversarial`, `continuum.testing.attacks`],
       capabilities: ['chat', 'attack_generation', 'vulnerability_discovery'],
@@ -247,7 +251,7 @@ export class AcademyTrainingOrchestrator extends EventEmitter {
       modelProvider: 'anthropic', 
       modelConfig: {
         model: 'claude-3-haiku',
-        apiKey: process.env.ANTHROPIC_API_KEY
+        ...(process.env.ANTHROPIC_API_KEY && { apiKey: process.env.ANTHROPIC_API_KEY })
       },
       loraAdapters: [`continuum.${domain}.security`, `continuum.protocol.defense`],
       capabilities: ['chat', 'attack_validation', 'security_analysis'],
@@ -280,7 +284,7 @@ export class AcademyTrainingOrchestrator extends EventEmitter {
       modelProvider: 'anthropic',
       modelConfig: {
         model: config.baseModel || 'claude-3-haiku',
-        apiKey: process.env.ANTHROPIC_API_KEY
+        ...(process.env.ANTHROPIC_API_KEY && { apiKey: process.env.ANTHROPIC_API_KEY })
       },
       loraAdapters: [], // Will be built incrementally through training
       capabilities: ['chat', 'browser_js', 'screenshot', 'devtools', 'continuum_commands'],
@@ -363,7 +367,7 @@ export class AcademyTrainingOrchestrator extends EventEmitter {
   /**
    * Generate LoRA updates from failed cases
    */
-  private async generateLoRAUpdates(academyStudent: PersonaDaemon, failedCases: FailedCase[]): Promise<LoRAUpdate[]> {
+  private async generateLoRAUpdates(_academyStudent: PersonaDaemon, failedCases: FailedCase[]): Promise<LoRAUpdate[]> {
     console.log(`🧬 Generating LoRA updates from ${failedCases.length} failed cases`);
     
     const updates: LoRAUpdate[] = [];
@@ -446,7 +450,7 @@ export class AcademyTrainingOrchestrator extends EventEmitter {
   /**
    * Show Continuon visual feedback for Academy events
    */
-  private async showContinuonFeedback(event: string, type: 'training' | 'success' | 'celebration'): Promise<void> {
+  private async showContinuonFeedback(_event: string, type: 'training' | 'success' | 'celebration'): Promise<void> {
     switch (type) {
       case 'training':
         this.continuonController.activate();

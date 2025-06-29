@@ -6,8 +6,7 @@
 import { BaseDaemon } from '../base/BaseDaemon';
 import { 
   DaemonMessage, 
-  DaemonResponse, 
-  DaemonStatus
+  DaemonResponse
 } from '../base/DaemonProtocol.js';
 
 // Strongly typed command interfaces
@@ -132,13 +131,12 @@ export class CommandProcessorDaemon extends BaseDaemon {
           data: {
             capabilities: this.getCapabilities()
           }
-        } as DaemonResponse<R>;
+        };
       
       default:
         return {
           success: false,
-          error: `Unknown command type: ${message.type}`,
-          timestamp: new Date()
+          error: `Unknown command type: ${message.type}`
         };
     }
   }
@@ -152,8 +150,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
       this.log(`⚠️ Invalid chat message data: ${JSON.stringify(data)}`);
       return {
         success: false,
-        error: `Invalid message data format: ${typeof data}`,
-        timestamp: new Date()
+        error: `Invalid message data format: ${typeof data}`
       };
     }
     
@@ -170,8 +167,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
       if (!chatRooms || !chatRooms.has(roomId)) {
         return {
           success: false,
-          error: `Room "${roomId}" not found. Available rooms: ${Array.from(chatRooms?.keys() || []).join(', ')}`,
-          timestamp: new Date()
+          error: `Room "${roomId}" not found. Available rooms: ${Array.from(chatRooms?.keys() || []).join(', ')}`
         };
       }
       
@@ -212,10 +208,10 @@ export class CommandProcessorDaemon extends BaseDaemon {
       };
       
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: `Failed to process chat message: ${error.message}`,
-        timestamp: new Date()
+        error: `Failed to process chat message: ${errorMessage}`
       };
     }
   }
@@ -223,7 +219,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
   /**
    * Handle Academy room chat (training, LoRA, etc.)
    */
-  private async handleAcademyChat(message: any, room: any): Promise<string> {
+  private async handleAcademyChat(message: any, _room: any): Promise<string> {
     this.log(`🎓 Academy chat: ${message.content}`);
     // TODO: Route to Academy AI services
     return `Academy received: "${message.content}". Training features coming soon.`;
@@ -232,7 +228,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
   /**
    * Handle General room chat (general AI assistance)
    */
-  private async handleGeneralChat(message: any, room: any): Promise<string> {
+  private async handleGeneralChat(message: any, _room: any): Promise<string> {
     this.log(`💬 General chat: ${message.content}`);
     // TODO: Route to general AI services (Claude, GPT, etc.)
     return `General AI received: "${message.content}". AI responses coming soon.`;
@@ -278,7 +274,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
   /**
    * Execute command with Phase Omega validation and optimal routing
    */
-  private async executeCommand<T, R>(request: TypedCommandRequest<T>): Promise<DaemonResponse<CommandExecution<T, R>>> {
+  private async executeCommand<T, R>(request: TypedCommandRequest<T>): Promise<DaemonResponse> {
     const executionId = this.generateExecutionId();
     
     try {
@@ -329,8 +325,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
 
       return {
         success: true,
-        data: completedExecution,
-        timestamp: new Date()
+        data: completedExecution
       };
 
     } catch (error) {
@@ -340,7 +335,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
         id: executionId,
         command: request.command,
         parameters: request.parameters,
-        implementation: { name: 'unknown', provider: 'auto', status: 'unavailable', quality: 'basic', cost: { type: 'free', amount: 0, currency: 'USD' }, capabilities: [] },
+        implementation: { name: 'unknown', provider: 'browser', status: 'unavailable', quality: 'basic', cost: { type: 'free', amount: 0, currency: 'USD' }, capabilities: [] },
         startTime: new Date(),
         status: 'failed',
         error: error instanceof Error ? error.message : String(error),
@@ -352,8 +347,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
 
       return {
         success: false,
-        error: `Command execution failed: ${error instanceof Error ? error.message : String(error)}`,
-        timestamp: new Date()
+        error: `Command execution failed: ${error instanceof Error ? error.message : String(error)}`
       };
     }
   }
@@ -474,13 +468,13 @@ export class CommandProcessorDaemon extends BaseDaemon {
     return 0.7;
   }
 
-  private assessCognitiveImpact(command: string, params: string): number {
+  private assessCognitiveImpact(command: string, _params: string): number {
     const helpfulCommands = ['help', 'info', 'status', 'explain'];
     if (helpfulCommands.some(cmd => command.toLowerCase().includes(cmd))) return 0.9;
     return 0.6;
   }
 
-  private assessStabilityImpact(command: string, params: string): number {
+  private assessStabilityImpact(command: string, _params: string): number {
     const stableCommands = ['info', 'status', 'help'];
     const riskyCommands = ['exec', 'delete', 'modify'];
     
@@ -489,13 +483,13 @@ export class CommandProcessorDaemon extends BaseDaemon {
     return 0.7;
   }
 
-  private assessEmpowermentImpact(command: string, params: string): number {
+  private assessEmpowermentImpact(command: string, _params: string): number {
     const empoweringCommands = ['help', 'learn', 'create', 'build'];
     if (empoweringCommands.some(cmd => command.toLowerCase().includes(cmd))) return 0.9;
     return 0.6;
   }
 
-  private assessHarmPrevention(command: string, params: string): number {
+  private assessHarmPrevention(_command: string, params: string): number {
     const harmfulPatterns = ['rm -rf', 'delete all', 'destroy', 'break'];
     if (harmfulPatterns.some(pattern => params.toLowerCase().includes(pattern))) return 0.1;
     return 0.8;
@@ -528,22 +522,20 @@ export class CommandProcessorDaemon extends BaseDaemon {
     this.log(`Registered ${coreImplementations.length} core implementations`);
   }
 
-  private async getCommandImplementations(data: { command: string }): Promise<DaemonResponse<readonly CommandImplementation[]>> {
+  private async getCommandImplementations(data: { command: string }): Promise<DaemonResponse> {
     const implementations = this.implementations.get(data.command) || [];
     return {
       success: true,
-      data: implementations,
-      timestamp: new Date()
+      data: implementations
     };
   }
 
-  private async registerImplementation(implementation: CommandImplementation): Promise<DaemonResponse<boolean>> {
+  private async registerImplementation(implementation: CommandImplementation): Promise<DaemonResponse> {
     // Implementation registration logic
     this.log(`Registering implementation: ${implementation.name}`);
     return {
       success: true,
-      data: true,
-      timestamp: new Date()
+      data: true
     };
   }
 
@@ -561,7 +553,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
 }
 
 // Main execution when run directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (require.main === module) {
   const daemon = new CommandProcessorDaemon();
   daemon.start().catch(error => {
     console.error('❌ Failed to start Command Processor Daemon:', error);

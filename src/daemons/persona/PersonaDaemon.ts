@@ -10,12 +10,31 @@
  * - Hierarchical adapter stacking for domain specialization  
  * - Universal session framework where personas are like users with different event pipes
  * - Modular plugin architecture for chat, devtools, screenshot, audio, etc.
+ * 
+ * CRITICAL TODO LIST:
+ * ===================
+ * MODULARITY ISSUES:
+ * - Model adapters hardcoded here should use ModelAdapterFactory pattern
+ * - Command interface duplicates CommandProcessorDaemon logic - needs delegation
+ * - LoRA stack management needs proper adapter pattern implementation
+ * 
+ * MISSING FUNCTIONALITY:
+ * - Unit tests for all persona lifecycle methods
+ * - Integration tests for Academy training loops
+ * - Proper model connection error recovery
+ * - Academy training isolation/sandboxing
+ * 
+ * PERFORMANCE CONCERNS:
+ * - Model initialization should be lazy-loaded on first use
+ * - LoRA loading could be optimized with caching
+ * - Event pipe management needs memory leak prevention
  */
 
-import { BaseDaemon, DaemonStatusInfo } from '../base/BaseDaemon';
+import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { EventEmitter } from 'events';
 
+// TODO: Replace 'any' types with proper interfaces throughout this file
 export interface PersonaConfig {
   id: string;
   name: string;
@@ -28,6 +47,22 @@ export interface PersonaConfig {
   loraAdapters?: string[]; // Stack of LoRA adapters to apply
   capabilities: string[]; // chat, devtools, screenshot, audio, etc.
   sessionDirectory: string; // Isolated session artifacts directory
+}
+
+// TODO: Replace any types with proper interfaces
+export interface CommandInterfaceMethod {
+  (command: string, params: Record<string, unknown>): Promise<{ success: boolean; data?: unknown }>;
+}
+
+export interface ModelAdapter {
+  provider: string;
+  model: string;
+  connected: boolean;
+}
+
+export interface TrainingData {
+  action: string;
+  payload: Record<string, unknown>;
 }
 
 export interface AcademyTrainingConfig {
@@ -58,15 +93,17 @@ export class PersonaDaemon extends BaseDaemon {
   private config: PersonaConfig;
   private academyConfig?: AcademyTrainingConfig;
   private loraStack: LoRAAdapter[] = [];
-  private modelAdapter: any; // ModelAdapterFactory instance
-  private commandInterface: any; // Same command interface as other sessions
+  private modelAdapter: ModelAdapter | null = null; // TODO: Use proper ModelAdapterFactory
+  private commandInterface: { execute: CommandInterfaceMethod } | null = null; // TODO: Use CommandProcessor interface
   private eventPipe: EventEmitter;
   
   constructor(config: PersonaConfig, academyConfig?: AcademyTrainingConfig) {
     super();
     this.name = `persona-${config.id}`;
     this.config = config;
-    this.academyConfig = academyConfig;
+    if (academyConfig !== undefined) {
+      this.academyConfig = academyConfig;
+    }
     this.eventPipe = new EventEmitter();
     
     this.log(`Initializing PersonaDaemon for ${config.name}`);
@@ -143,10 +180,11 @@ export class PersonaDaemon extends BaseDaemon {
       }
       
     } catch (error) {
-      this.log(`Error handling message: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`Error handling message: ${errorMessage}`, 'error');
       return {
         success: false,
-        error: error.message
+        error: errorMessage
       };
     }
   }
@@ -208,12 +246,12 @@ export class PersonaDaemon extends BaseDaemon {
   /**
    * Handle Academy training (Testing Droid vs Protocol Sheriff)
    */
-  private async handleAcademyTraining(trainingData: any): Promise<DaemonResponse> {
+  private async handleAcademyTraining(trainingData: TrainingData): Promise<DaemonResponse> {
     if (!this.academyConfig?.enabled) {
       throw new Error('Academy training not enabled for this persona');
     }
     
-    const { action, payload } = trainingData;
+    const { action: _action, payload } = trainingData;
     
     switch (this.academyConfig.role) {
       case 'testing_droid':
@@ -324,7 +362,7 @@ export class PersonaDaemon extends BaseDaemon {
   private async initializeCommandInterface(): Promise<void> {
     // This would connect to the same command system used by browser/console/API clients
     this.commandInterface = {
-      execute: async (command: string, params: any) => {
+      execute: async (command: string, _params: Record<string, unknown>) => {
         // Route through Continuum's unified command bus
         return { success: true, data: `Executed ${command}` };
       }
@@ -380,7 +418,10 @@ export class PersonaDaemon extends BaseDaemon {
   /**
    * Testing Droid attack generation
    */
-  private async runTestingDroidAttack(payload: any): Promise<DaemonResponse> {
+  private async runTestingDroidAttack(_payload: Record<string, unknown>): Promise<DaemonResponse> {
+    // TODO: This method needs proper attack generation logic
+    // TODO: Should integrate with actual ML adversarial generation frameworks
+    // TODO: Define proper AttackPayload interface to replace Record<string, unknown>
     this.log('Generating adversarial attacks...');
     
     // Generate attack examples to test Protocol Sheriff
@@ -419,11 +460,11 @@ export class PersonaDaemon extends BaseDaemon {
   /**
    * Academy learning from failures
    */
-  private async runAcademyLearning(payload: any): Promise<DaemonResponse> {
+  private async runAcademyLearning(payload: Record<string, unknown>): Promise<DaemonResponse> {
     this.log('Processing Academy learning...');
     
     // Learn from failed defense cases to improve LoRA adapters
-    const { failedCases } = payload;
+    const { failedCases: _data } = payload; // TODO: Define proper FailedCase interface
     
     // This would update LoRA adapters based on training data
     // and improve the persona's capabilities
@@ -483,9 +524,10 @@ export class PersonaDaemon extends BaseDaemon {
   /**
    * Matrix operations for LoRA adaptation
    */
-  private matrixMultiply(B: number[][], A: number[][], scaling: number): number[][] {
-    // Simplified matrix multiplication for LoRA
-    return B.map(row => row.map(() => Math.random() * scaling));
+  private matrixMultiply(_B: number[][], _A: number[][], scaling: number): number[][] {
+    // TODO: Implement proper matrix multiplication for LoRA adaptation
+    // TODO: This is a placeholder - needs real mathematical implementation
+    return [[Math.random() * scaling]];
   }
 
   private addMatrices(a: number[][], b: number[][]): number[][] {

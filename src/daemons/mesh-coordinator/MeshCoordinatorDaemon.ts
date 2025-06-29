@@ -133,7 +133,7 @@ export interface MeshCapability {
  * Semantic Dependency Resolver - Enhanced with mesh coordination
  */
 class SemanticDependencyResolver extends EventEmitter {
-  private capabilities = new Map<string, MeshCapability>();
+  private _capabilities = new Map<string, MeshCapability>();
   private nodes = new Map<string, MeshNode>();
 
   /**
@@ -198,10 +198,10 @@ class SemanticDependencyResolver extends EventEmitter {
   private async findMeshCapabilities(tokens: string[]): Promise<MeshCapability[]> {
     const capabilities: MeshCapability[] = [];
     
-    for (const [nodeId, node] of this.nodes) {
+    for (const [_nodeId, node] of this.nodes) {
       if (node.status !== 'online') continue;
       
-      for (const [packageName, loraPackage] of node.loraPackages) {
+      for (const [_packageName, loraPackage] of node.loraPackages) {
         const similarity = this.calculateSemanticSimilarity(tokens, loraPackage.capabilities);
         
         if (similarity > 0.3) { // Minimum similarity threshold
@@ -495,7 +495,7 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
 
   private semanticResolver: SemanticDependencyResolver;
   private meshNodes = new Map<string, MeshNode>();
-  private pendingSynthesis = new Map<string, GapAnalysis>();
+  private _pendingSynthesis = new Map<string, GapAnalysis>();
 
   constructor() {
     super();
@@ -503,14 +503,17 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
     this.setupEventHandling();
   }
 
-  async start(): Promise<void> {
-    await super.start();
-    
+  protected async onStart(): Promise<void> {
     // Initialize semantic resolver with mock data
     this.semanticResolver.addMockData();
-    
     this.log('Mesh Coordinator Daemon started - TypeScript-first LoRA mesh orchestration online');
   }
+
+  protected async onStop(): Promise<void> {
+    this.log('Mesh Coordinator Daemon stopping - cleaning up mesh connections');
+    this.meshNodes.clear();
+  }
+
 
   /**
    * Handle mesh coordination requests
@@ -609,7 +612,7 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
   /**
    * Handle mesh discovery operations
    */
-  private async handleMeshDiscovery(data: any): Promise<DaemonResponse> {
+  private async handleMeshDiscovery(_data: any): Promise<DaemonResponse> {
     // Implementation for mesh node discovery
     return { success: true, data: { nodes: Array.from(this.meshNodes.keys()) } };
   }
@@ -617,7 +620,7 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
   /**
    * Handle synthesis requests
    */
-  private async handleSynthesisRequest(data: any): Promise<DaemonResponse> {
+  private async handleSynthesisRequest(_data: any): Promise<DaemonResponse> {
     // Implementation for coordinating LoRA synthesis
     return { success: true, data: { status: 'synthesis-queued' } };
   }
@@ -625,7 +628,7 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
   /**
    * Handle node status updates
    */
-  private async handleNodeStatus(data: any): Promise<DaemonResponse> {
+  private async handleNodeStatus(_data: any): Promise<DaemonResponse> {
     // Implementation for node health monitoring
     return { success: true };
   }
@@ -645,7 +648,7 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
 }
 
 // Main execution when run directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (require.main === module) {
   const daemon = new MeshCoordinatorDaemon();
 
   // Setup signal handlers
