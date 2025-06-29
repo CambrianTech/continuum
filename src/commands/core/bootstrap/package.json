@@ -1,0 +1,35 @@
+{
+  "name": "bootstrap-commands",
+  "version": "1.0.0",
+  "description": "Root-level bootstrap commands with initialization dependencies",
+  "daemon": {
+    "type": "bootstrap-command-processor", 
+    "capabilities": ["bootstrap", "immediate", "post-discovery", "initialization"],
+    "entryPoint": "BootstrapCommandProcessor.ts",
+    "restartOnCrash": true,
+    "maxMemory": 64,
+    "priority": "high"
+  },
+  "commands": {
+    "info": {
+      "category": "immediate",
+      "description": "System information (available immediately)"
+    },
+    "status": {
+      "category": "immediate", 
+      "description": "System status (available immediately)"
+    },
+    "list": {
+      "category": "post-discovery",
+      "description": "List all commands (requires module discovery)"
+    },
+    "help": {
+      "category": "post-discovery",
+      "description": "Command help (requires module discovery)"
+    },
+    "filesave": {
+      "category": "always-available",
+      "description": "Save file (always available)"
+    }
+  }
+}
