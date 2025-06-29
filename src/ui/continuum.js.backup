@@ -1,0 +1,195 @@
+/**
+ * Continuum API - TypeScript compiled to ES5 for browser compatibility
+ * Single script that provides the continuum object for all interactions
+ */
+
+(function() {
+    'use strict';
+    
+    // TypeScript-style interface implementation in JavaScript
+    var ContinuumAPI = function() {
+        this.ws = null;
+        this.connected = false;
+        this.messageHandlers = new Map();
+        this.eventHandlers = new Map();
+    };
+    
+    ContinuumAPI.prototype.connect = function() {
+        var self = this;
+        
+        // Get version from server first
+        fetch('/api/version')
+            .then(response => response.json())
+            .then(versionData => {
+                var timestamp = new Date().toLocaleTimeString();
+                console.log(`🚀 Continuum Client v${versionData.version} (Build: ${versionData.build || 'unknown'}) - ${timestamp}`);
+                console.log(`📦 Server: ${versionData.server || 'unknown'} | Environment: ${versionData.environment || 'development'}`);
+                
+                // Store version for widgets to access
+                self.version = versionData.version;
+                self.versionData = versionData;
+                
+                // Notify widgets of version update
+                window.dispatchEvent(new CustomEvent('continuum:version-update', {
+                    detail: { version: versionData.version, data: versionData }
+                }));
+            })
+            .catch(error => {
+                console.log('⚠️ Could not fetch version info:', error.message);
+                console.log(`🕐 Client load time: ${new Date().toLocaleTimeString()}`);
+            });
+        
+        try {
+            this.ws = new WebSocket('ws://localhost:9000');
+            
+            this.ws.onopen = function() {
+                self.connected = true;
+                console.log('✅ Continuum TypeScript API connected');
+                // Dispatch connection event for widgets
+                window.dispatchEvent(new CustomEvent('continuum-connected'));
+            };
+            
+            this.ws.onmessage = function(event) {
+                try {
+                    var data = JSON.parse(event.data);
+                    console.log('📨 Command response:', data);
+                    
+                    // Emit events via clean API
+                    if (data.type) {
+                        self.emit(data.type, data);
+                    }
+                    
+                    // Handle specific command responses
+                    if (data.command && self.messageHandlers.has(data.command)) {
+                        self.messageHandlers.get(data.command)(data);
+                    }
+                } catch (error) {
+                    console.error('❌ Message parsing error:', error);
+                }
+            };
+            
+            this.ws.onerror = function(error) {
+                console.error('❌ WebSocket error:', error);
+            };
+            
+            this.ws.onclose = function() {
+                self.connected = false;
+                console.log('🔌 Continuum disconnected - attempting reconnect');
+                setTimeout(function() { self.connect(); }, 3000);
+            };
+            
+        } catch (error) {
+            console.error('❌ Connection failed:', error);
+        }
+    };
+    
+    // Main command execution method - everything goes through this
+    ContinuumAPI.prototype.execute = function(command, params, callback) {
+        params = params || {};
+        var self = this;
+        
+        if (!this.ws || !this.connected) {
+            console.warn('⚠️ Continuum not connected - command queued:', command);
+            if (callback) callback({ success: false, error: 'Not connected' });
+            return Promise.reject(new Error('Not connected'));
+        }
+        
+        var message = {
+            type: 'execute_command',
+            command: command,
+            params: params,
+            timestamp: new Date().toISOString(),
+            id: 'cmd_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
+        };
+        
+        return new Promise(function(resolve, reject) {
+            // Store callback for response
+            self.messageHandlers.set(message.id, function(response) {
+                if (callback) callback(response);
+                
+                if (response.success) {
+                    resolve(response.data || response);
+                } else {
+                    reject(new Error(response.error || 'Command failed'));
+                }
+            });
+            
+            try {
+                self.ws.send(JSON.stringify(message));
+                console.log('🎯 Command executed:', command, params);
+            } catch (error) {
+                console.error('❌ Command send error:', error);
+                self.messageHandlers.delete(message.id);
+                if (callback) callback({ success: false, error: error.message });
+                reject(error);
+            }
+        });
+    };
+    
+    // Convenience methods for common commands
+    ContinuumAPI.prototype.chat = function(message, room, callback) {
+        return this.execute('chat', { message: message, room: room || 'general' }, callback);
+    };
+    
+    ContinuumAPI.prototype.screenshot = function(params, callback) {
+        return this.execute('screenshot', params || {}, callback);
+    };
+    
+    ContinuumAPI.prototype.loadChatMessages = function(room, callback) {
+        return this.execute('load_chat_messages', { room: room || 'general' }, callback);
+    };
+    
+    ContinuumAPI.prototype.info = function(params, callback) {
+        return this.execute('info', params || {}, callback);
+    };
+    
+    ContinuumAPI.prototype.isConnected = function() {
+        return this.connected;
+    };
+    
+    // Event handling - clean API
+    ContinuumAPI.prototype.on = function(eventType, handler) {
+        if (!this.eventHandlers.has(eventType)) {
+            this.eventHandlers.set(eventType, []);
+        }
+        this.eventHandlers.get(eventType).push(handler);
+    };
+    
+    ContinuumAPI.prototype.off = function(eventType, handler) {
+        if (this.eventHandlers.has(eventType)) {
+            var handlers = this.eventHandlers.get(eventType);
+            var index = handlers.indexOf(handler);
+            if (index > -1) {
+                handlers.splice(index, 1);
+            }
+        }
+    };
+    
+    ContinuumAPI.prototype.emit = function(eventType, data) {
+        if (this.eventHandlers.has(eventType)) {
+            var handlers = this.eventHandlers.get(eventType);
+            handlers.forEach(function(handler) {
+                try {
+                    handler(data);
+                } catch (error) {
+                    console.error('❌ Event handler error:', error);
+                }
+            });
+        }
+    };
+    
+    // Create and expose global continuum object
+    window.continuum = new ContinuumAPI();
+    
+    // Auto-connect when DOM is ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function() {
+            window.continuum.connect();
+        });
+    } else {
+        window.continuum.connect();
+    }
+    
+    console.log('🚀 Continuum TypeScript API initialized');
+    
+})();

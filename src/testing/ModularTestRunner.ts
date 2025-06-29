@@ -10,7 +10,7 @@ import { spawn } from 'child_process';
 interface TestModule {
   path: string;
   name: string;
-  type: 'daemon' | 'widget' | 'command' | 'integration';
+  type: 'daemon' | 'widget' | 'command' | 'integration' | 'process';
   testFiles: string[];
 }
 
@@ -54,6 +54,10 @@ export class ModularTestRunner {
     // Scan for integration tests
     const integrationTests = await this.scanDirectory('src/integrations', 'integration');
     testModules.push(...integrationTests);
+    
+    // Scan for process tests
+    const processTests = await this.scanDirectory('src/process', 'process');
+    testModules.push(...processTests);
     
     this.testModules = testModules;
     console.log(`✅ Discovered ${testModules.length} test modules`);
@@ -370,11 +374,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         results = await runner.runAllTests();
       } else {
         const testType = args[0] as TestModule['type'];
-        if (['daemon', 'widget', 'command', 'integration'].includes(testType)) {
+        if (['daemon', 'widget', 'command', 'integration', 'process'].includes(testType)) {
           results = await runner.runModuleTypeTests(testType);
         } else {
           console.error(`❌ Invalid test type: ${testType}`);
-          console.error('Valid types: daemon, widget, command, integration');
+          console.error('Valid types: daemon, widget, command, integration, process');
           process.exit(1);
         }
       }

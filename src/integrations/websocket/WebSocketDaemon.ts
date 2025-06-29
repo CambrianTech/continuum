@@ -1,6 +1,26 @@
 /**
  * WebSocket Daemon - Clean Router Implementation
  * 
+ * 🎫 ISSUE TICKETS (Priority: HIGH → LOW):
+ * 
+ * #004 [HIGH] Remove temporary route handlers (HACKED FIXES)
+ *   - PROBLEM: Lines 975-1067 contain hardcoded route handlers violating separation of concerns
+ *   - SOLUTION: Move to RendererDaemon via proper registration system
+ *   - FILES: WebSocketDaemon.ts:975-1067, RendererDaemon.ts
+ *   - BLOCKED_BY: #002 (daemon registration)
+ * 
+ * #005 [HIGH] Separate static file serving  
+ *   - PROBLEM: handleStaticFiles() shouldn't be in WebSocket daemon
+ *   - SOLUTION: Create StaticFileService, register with RendererDaemon
+ *   - FILES: WebSocketDaemon.ts:1037-1067, new StaticFileService.ts
+ *   - BLOCKED_BY: #004
+ * 
+ * #006 [MED] Replace manual route registration with discovery
+ *   - PROBLEM: Manual registerRouteHandler() calls, not modular
+ *   - SOLUTION: Auto-discover route handlers via metadata/decorators
+ *   - FILES: WebSocketDaemon.ts:323-334
+ *   - BLOCKED_BY: #004, #005
+ * 
  * RESPONSIBILITIES (SHOULD DO):
  * - WebSocket server management
  * - HTTP request routing to other daemons  
@@ -121,6 +141,9 @@ export class WebSocketDaemon extends BaseDaemon {
       });
 
       this.log(`✅ WebSocket server started and verified listening on ws://${this.config.host}:${this.config.port}`);
+      
+      // TEMP FIX: Register essential routes until daemon registration is working
+      await this.registerEssentialRoutes();
       
     } catch (error) {
       this.log(`❌ Failed to start WebSocket server: ${error.message}`, 'error');
@@ -339,28 +362,35 @@ export class WebSocketDaemon extends BaseDaemon {
    * Find the best matching route handler for a path
    */
   private findRouteHandler(pathname: string): { daemon: any; handler: Function } | null {
-    this.log(`🔍 Finding route for: ${pathname}`);
-    this.log(`📋 Available routes: ${[...this.routeHandlers.keys()].join(', ')}`);
+    this.log(`🔍 Finding route for: ${pathname}`, 'debug');
+    this.log(`📋 Available routes: ${[...this.routeHandlers.keys()].join(', ')}`, 'debug');
+    this.log(`🔌 Available APIs: ${[...this.apiHandlers.keys()].join(', ')}`, 'debug');
     
-    // Exact match first
+    // Check API handlers first (exact match for /api/* paths)
+    if (this.apiHandlers.has(pathname)) {
+      this.log(`✅ API match found: ${pathname}`, 'debug');
+      return this.apiHandlers.get(pathname)!;
+    }
+    
+    // Exact match in route handlers
     if (this.routeHandlers.has(pathname)) {
-      this.log(`✅ Exact match found: ${pathname}`);
+      this.log(`✅ Route exact match found: ${pathname}`, 'debug');
       return this.routeHandlers.get(pathname)!;
     }
     
     // Pattern match (e.g., /src/* matches /src/anything)
     for (const [pattern, handler] of this.routeHandlers) {
       if (pattern.endsWith('*') && pathname.startsWith(pattern.slice(0, -1))) {
-        this.log(`✅ Pattern match: ${pathname} matches ${pattern}`);
+        this.log(`✅ Route pattern match: ${pathname} matches ${pattern}`, 'debug');
         return handler;
       }
       if (pattern.includes('*') && this.matchesPattern(pathname, pattern)) {
-        this.log(`✅ Complex pattern match: ${pathname} matches ${pattern}`);
+        this.log(`✅ Route complex pattern match: ${pathname} matches ${pattern}`, 'debug');
         return handler;
       }
     }
     
-    this.log(`❌ No route found for: ${pathname}`);
+    this.log(`❌ No handler found for: ${pathname} (checked ${this.routeHandlers.size} routes, ${this.apiHandlers.size} APIs)`, 'debug');
     return null;
   }
 
@@ -944,6 +974,115 @@ export class WebSocketDaemon extends BaseDaemon {
         build: 'TypeScript Daemon System',
         timestamp: new Date().toISOString()
       };
+    }
+  }
+
+  /**
+   * TEMP FIX: Register essential routes until daemon registration is working
+   */
+  private async registerEssentialRoutes(): Promise<void> {
+    this.log('🔧 Registering essential routes (temporary fix)...');
+    
+    // Register main UI route
+    this.registerRouteHandler('/', this, this.handleMainUI.bind(this));
+    
+    // Register static file routes (DEBUG: these need proper file serving)
+    this.registerRouteHandler('/src/*', this, this.handleStaticFiles.bind(this));
+    this.registerRouteHandler('/dist/*', this, this.handleStaticFiles.bind(this));
+    
+    // Register API routes
+    this.registerApiHandler('/api/projects', this, this.handleProjectsAPI.bind(this));
+    this.registerApiHandler('/api/agents', this, this.handleAgentsAPI.bind(this));
+    this.registerApiHandler('/api/personas', this, this.handlePersonasAPI.bind(this));
+    this.registerApiHandler('/api/version', this, this.handleVersionAPI.bind(this));
+    
+    this.log('✅ Essential routes registered successfully');
+    this.log(`📊 DEBUG: Total routes: ${this.routeHandlers.size}, APIs: ${this.apiHandlers.size}`, 'debug');
+  }
+
+  private async handleMainUI(pathname: string, req: any, res: any): Promise<void> {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Continuum v0.2.2205 - TypeScript Client</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🟢</text></svg>">
+    <style>* { margin: 0; padding: 0; box-sizing: border-box; }</style>
+</head>
+<body>
+    <div id="app">Loading Continuum...</div>
+    <script type="module" src="/src/ui/continuum.js?v=0.2.2205&bust=${Date.now()}"></script>
+</body>
+</html>`;
+    
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(html);
+  }
+
+  private async handleProjectsAPI(endpoint: string, req: any, res: any): Promise<void> {
+    const projects = [
+      { name: 'Continuum OS', progress: 75, team: ['Claude Sonnet', 'Protocol Sheriff'], status: 'active' },
+      { name: 'Widget System', progress: 45, team: ['Code Specialist'], status: 'active' }
+    ];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: projects }));
+  }
+
+  private async handleAgentsAPI(endpoint: string, req: any, res: any): Promise<void> {
+    const agents = [
+      { name: 'Joel (You)', type: 'human', status: 'online', capabilities: ['leadership'] },
+      { name: 'Claude Sonnet', type: 'ai', status: 'online', capabilities: ['coding', 'analysis'] },
+      { name: 'Protocol Sheriff', type: 'ai', status: 'online', capabilities: ['protocol enforcement', 'security'] }
+    ];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: agents }));
+  }
+
+  private async handlePersonasAPI(endpoint: string, req: any, res: any): Promise<void> {
+    const personas = [
+      { name: 'Protocol Sheriff', specialization: 'protocol_enforcement', experience: 98.7, status: 'active' },
+      { name: 'Code Specialist', specialization: 'code_analysis', experience: 92.2, status: 'active' }
+    ];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: personas }));
+  }
+
+  private async handleVersionAPI(endpoint: string, req: any, res: any): Promise<void> {
+    const version = { version: '0.2.2205', build: 'TypeScript Daemon System', timestamp: new Date().toISOString() };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(version));
+  }
+
+  private async handleStaticFiles(pathname: string, req: any, res: any): Promise<void> {
+    this.log(`📁 DEBUG: Static file request: ${pathname}`, 'debug');
+    
+    // TEMP: Serve basic static files until proper file serving is implemented
+    try {
+      const { promises: fs } = await import('fs');
+      const path = await import('path');
+      
+      // Remove leading slash and resolve file path
+      const filePath = path.join(process.cwd(), pathname);
+      this.log(`📁 DEBUG: Resolved file path: ${filePath}`, 'debug');
+      
+      const fileContent = await fs.readFile(filePath, 'utf8');
+      
+      // Determine content type
+      let contentType = 'text/plain';
+      if (pathname.endsWith('.js')) contentType = 'application/javascript';
+      else if (pathname.endsWith('.css')) contentType = 'text/css';
+      else if (pathname.endsWith('.html')) contentType = 'text/html';
+      
+      res.writeHead(200, { 'Content-Type': contentType });
+      res.end(fileContent);
+      
+      this.log(`✅ DEBUG: Served static file: ${pathname}`, 'debug');
+      
+    } catch (error) {
+      this.log(`❌ DEBUG: Static file error: ${pathname} - ${error.message}`, 'debug');
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Static file not found');
     }
   }
 }
