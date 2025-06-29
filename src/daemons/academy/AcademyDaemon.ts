@@ -129,10 +129,11 @@ export class AcademyDaemon extends BaseDaemon {
           };
       }
     } catch (error) {
-      this.log(`❌ Academy message error: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Academy message error: ${errorMessage}`, 'error');
       return {
         success: false,
-        error: error.message
+        error: error instanceof Error ? error.message : String(error)
       };
     }
   }
@@ -238,7 +239,7 @@ export class AcademyDaemon extends BaseDaemon {
 }
 
 // Main execution when run directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (require.main === module) {
   const daemon = new AcademyDaemon();
   
   process.on('SIGINT', async () => {

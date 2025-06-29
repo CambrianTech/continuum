@@ -40,7 +40,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { ConnectionManager } from './core/ConnectionManager';
 import { DynamicMessageRouter } from './core/DynamicMessageRouter';
 import { DaemonConnector } from './core/DaemonConnector';
-import { BrowserManager } from '../../core/BrowserManager';
+// BrowserManager removed - violates modular architecture
 import { ServerConfig, WebSocketMessage } from './types';
 import { createServer } from 'http';
 
@@ -309,7 +309,7 @@ export class WebSocketDaemon extends BaseDaemon {
     const url = new URL(req.url, `http://${this.config.host}:${this.config.port}`);
     
     // Check for registered route handlers first (including root '/')
-    if (req.method === 'GET') {
+    if (req.method === 'GET' || req.method === 'HEAD') {
       const routeHandler = this.findRouteHandler(url.pathname);
       if (routeHandler) {
         await routeHandler.handler(url.pathname, req, res);
@@ -1001,18 +1001,53 @@ export class WebSocketDaemon extends BaseDaemon {
   }
 
   private async handleMainUI(pathname: string, req: any, res: any): Promise<void> {
+    // TODO: P0 - Replace with proper RendererDaemon delegation (blocked by daemon registration #004)
+    // TEMP FIX: Serve actual widget HTML instead of stub
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Continuum v0.2.2205 - TypeScript Client</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🟢</text></svg>">
-    <style>* { margin: 0; padding: 0; box-sizing: border-box; }</style>
+    <title>continuum</title>
+    <link rel="icon" id="favicon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔴</text></svg>">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
+            color: #e0e6ed;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        .app-container {
+            display: flex;
+            height: 100vh;
+        }
+        
+        chat-widget {
+            flex: 1;
+            height: 100vh;
+        }
+    </style>
 </head>
 <body>
-    <div id="app">Loading Continuum...</div>
-    <script type="module" src="/src/ui/continuum.js?v=0.2.2205&bust=${Date.now()}"></script>
+    <div class="app-container">
+        <!-- TypeScript Widgets - Custom Elements -->
+        <continuum-sidebar></continuum-sidebar>
+        <chat-widget></chat-widget>
+    </div>
+    
+    <!-- Load Continuum API first -->
+    <script src="/src/ui/continuum.js?v=0.2.2193&bust=${Date.now()}"></script>
+    
+    <!-- Load TypeScript widget system -->
+    <script type="module" src="/dist/ui/widget-loader.js?v=0.2.2193&bust=${Date.now()}"></script>
 </body>
 </html>`;
     
@@ -1055,7 +1090,7 @@ export class WebSocketDaemon extends BaseDaemon {
   }
 
   private async handleStaticFiles(pathname: string, req: any, res: any): Promise<void> {
-    this.log(`📁 DEBUG: Static file request: ${pathname}`, 'debug');
+    this.log(`📁 DEBUG: Static file request: ${req.method} ${pathname}`, 'debug');
     
     // TEMP: Serve basic static files until proper file serving is implemented
     try {
@@ -1066,7 +1101,8 @@ export class WebSocketDaemon extends BaseDaemon {
       const filePath = path.join(process.cwd(), pathname);
       this.log(`📁 DEBUG: Resolved file path: ${filePath}`, 'debug');
       
-      const fileContent = await fs.readFile(filePath, 'utf8');
+      // Get file stats for HEAD requests
+      const stats = await fs.stat(filePath);
       
       // Determine content type
       let contentType = 'text/plain';
@@ -1074,10 +1110,26 @@ export class WebSocketDaemon extends BaseDaemon {
       else if (pathname.endsWith('.css')) contentType = 'text/css';
       else if (pathname.endsWith('.html')) contentType = 'text/html';
       
-      res.writeHead(200, { 'Content-Type': contentType });
+      // For HEAD requests, only send headers
+      if (req.method === 'HEAD') {
+        res.writeHead(200, { 
+          'Content-Type': contentType,
+          'Content-Length': stats.size
+        });
+        res.end();
+        this.log(`✅ DEBUG: HEAD response for: ${pathname}`, 'debug');
+        return;
+      }
+      
+      // For GET requests, send content
+      const fileContent = await fs.readFile(filePath, 'utf8');
+      res.writeHead(200, { 
+        'Content-Type': contentType,
+        'Content-Length': Buffer.byteLength(fileContent, 'utf8')
+      });
       res.end(fileContent);
       
-      this.log(`✅ DEBUG: Served static file: ${pathname}`, 'debug');
+      this.log(`✅ DEBUG: Served static file: ${pathname} (${stats.size} bytes)`, 'debug');
       
     } catch (error) {
       this.log(`❌ DEBUG: Static file error: ${pathname} - ${error.message}`, 'debug');

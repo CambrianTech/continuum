@@ -89,8 +89,9 @@ export abstract class BaseWidget extends HTMLElement {
       this.cachedCSS = await response.text();
       return baseCSS + '\n' + this.cachedCSS;
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       console.error(`🎛️ ${this.widgetName}: Failed to load CSS from ${this.cssPath}:`, error);
-      return baseCSS + `\n/* CSS loading failed: ${error.message} */`;
+      return baseCSS + `\n/* CSS loading failed: ${errorMessage} */`;
     }
   }
 

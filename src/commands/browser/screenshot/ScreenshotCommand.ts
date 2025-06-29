@@ -3,7 +3,7 @@
  * Elegant screenshot capture with advanced targeting and orchestration
  */
 
-import { BaseCommand, CommandDefinition, CommandContext, CommandResult } from '../../core/BaseCommand';
+import { BaseCommand, CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -22,7 +22,7 @@ interface ScreenshotParams {
 }
 
 interface ScreenshotResult {
-  filename?: string;
+  filename?: string | undefined;
   selector: string;
   timestamp: number;
   destination: string;
@@ -42,7 +42,7 @@ interface ScreenshotCallback {
   command: string;
   params: {
     type: string;
-    filename?: string;
+    filename?: string | undefined;
     requestId: string;
     source: string;
   };
@@ -227,7 +227,7 @@ export class ScreenshotCommand extends BaseCommand {
     
     // Return orchestration result
     const result: ScreenshotResult = {
-      filename: generatedFilename,
+      filename: generatedFilename || undefined,
       selector,
       timestamp,
       destination,
@@ -236,7 +236,7 @@ export class ScreenshotCommand extends BaseCommand {
       orchestration: true
     };
     
-    return this.createSuccessResult(result, `Screenshot workflow initiated (${destination} mode)`);
+    return this.createSuccessResult(`Screenshot workflow initiated (${destination} mode)`, result);
   }
 
   /**
@@ -326,7 +326,7 @@ export class ScreenshotCommand extends BaseCommand {
       command: 'wstransfer',
       params: {
         type: 'image',
-        filename: destination === 'file' ? filename || undefined : undefined,
+        filename: destination === 'file' && filename ? filename : undefined,
         requestId,
         source: 'screenshot'
       }

@@ -19,7 +19,7 @@ export abstract class BaseDaemon extends EventEmitter {
   private startTime?: Date;
   private lastHeartbeat?: Date;
   private processId: number = process.pid;
-  private heartbeatInterval?: NodeJS.Timeout;
+  private heartbeatInterval: NodeJS.Timeout | undefined;
   
   constructor() {
     super();
@@ -51,7 +51,8 @@ export abstract class BaseDaemon extends EventEmitter {
       
     } catch (error) {
       this.status = 'failed';
-      this.log(`Failed to start daemon: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`Failed to start daemon: ${errorMessage}`, 'error');
       throw error;
     }
   }
@@ -78,7 +79,8 @@ export abstract class BaseDaemon extends EventEmitter {
       this.emit('stopped');
       
     } catch (error) {
-      this.log(`Error stopping daemon: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`Error stopping daemon: ${errorMessage}`, 'error');
       this.status = 'stopped'; // Still mark as stopped even if cleanup failed
       throw error;
     }
@@ -102,23 +104,28 @@ export abstract class BaseDaemon extends EventEmitter {
    * Get daemon status and metrics
    */
   getStatus(): DaemonStatusInfo {
-    return {
+    const status: DaemonStatusInfo = {
       name: this.name,
       version: this.version,
       status: this.status,
       pid: this.processId,
-      startTime: this.startTime,
-      lastHeartbeat: this.lastHeartbeat,
       uptime: this.getUptime(),
       memoryUsage: process.memoryUsage(),
       cpuUsage: process.cpuUsage()
     };
+    
+    if (this.startTime) {
+      status.startTime = this.startTime;
+    }
+    
+    if (this.lastHeartbeat) {
+      status.lastHeartbeat = this.lastHeartbeat;
+    }
+    
+    return status;
   }
 
-  /**
-   * Abstract method for handling messages - each daemon implements its own logic
-   */
-  abstract handleMessage(message: DaemonMessage): Promise<DaemonResponse>;
+  // handleMessage is already declared as abstract above
 
   /**
    * Send message to another daemon or OS component
@@ -210,7 +217,7 @@ export abstract class BaseDaemon extends EventEmitter {
   /**
    * Generate unique message ID
    */
-  private generateMessageId(): string {
+  protected generateMessageId(): string {
     return `${this.name}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
 

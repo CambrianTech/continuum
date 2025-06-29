@@ -31,7 +31,7 @@ export class DaemonConnector extends EventEmitter {
     
     try {
       // Import the existing SelfTestCommand directly (proven working)
-      const { SelfTestCommand } = await import('../../commands/development/selftest/SelfTestCommand');
+      const { SelfTestCommand } = await import('../../../commands/development/selftest/SelfTestCommand');
       
       // Create a simple command processor that uses existing TypeScript commands
       this.commandProcessor = {
