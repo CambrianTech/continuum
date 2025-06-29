@@ -16,11 +16,29 @@
 ✅ **Error handling standardization** - Applied systematic `error instanceof Error` patterns  
 ✅ **Testing requirements documented** - Comprehensive integration test specs in file headers
 ✅ **Cognitive efficiency principles** - Documentation lives where needed, self-documenting code
-❌ **70 TypeScript compilation errors remaining** - Final patterns (unused params, error handling)
-❌ **JTAG visual validation pending** - Awaiting clean compilation for implementation
+❌ **63 TypeScript compilation errors remaining** - APPROACHING COMPACTION THRESHOLD
+❌ **JTAG visual validation pending** - Complete stack required for autonomous development
 ❌ **Academy persona spawning pending** - Requires JTAG + clean merge to main
 
-**Current Focus:** Final push to zero compilation errors → JTAG implementation → Autonomous collaboration leyline
+**🧅 UNIVERSAL INTEGRATION ARCHITECTURE INSIGHT:**
+**Each entity is an onion that plugs into the Continuum core:**
+- **Human**: Shell → IDE → Browser → API calls
+- **AI (Me)**: Tools → File system → TypeScript → Portal commands  
+- **AI Personas**: Academy training → LoRA adapters → Command interface → Same API
+- **Integrations**: Python portal, Browser client, API clients - all onion interfaces
+
+**Philosophy**: Personas are integrations. The Academy system spawns persona integrations that use the same command interface, WebSocket protocols, and modular architecture we're building. Every integration instantly understands the system through bootloader docs.
+
+**AUTONOMOUS DEVELOPMENT TARGET:**
+- 🔧 **Debuggable browser** with DevTools integration
+- ✅ **Connection selftests** passing (browser ↔ server validation)
+- 📊 **Real-time logs** from both browser and server
+- 📸 **Screenshot capture** for visual validation  
+- 🌐 **Portal integration** with full command execution
+- 🎨 **Widget design feedback** through visual validation
+- ⚡ **Command verification** with end-to-end testing
+
+**Current Focus:** 68 → 0 compilation errors → Complete JTAG stack → Human-out-of-loop autonomous development
 
 ---
 
