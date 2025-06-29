@@ -78,6 +78,489 @@ With complete JTAG stack, AI development becomes:
 - **Self-reporting**: Progress tracking and status communication
 - **Human-optional**: Only for design decisions and progress updates
 
+### **🔄 UNIVERSAL SELF-TESTING PATTERN (BREAKTHROUGH)**
+
+**CRITICAL DISCOVERY**: Components can test themselves universally across the server-client boundary using the same self-discovery patterns.
+
+#### **Server-Side Self-Testing:**
+```typescript
+// Commands validate their own execution
+await PreferencesCommand.execute()  // Self-validates preferences logic
+await ReloadCommand.execute()       // Self-validates reload coordination
+```
+
+#### **Client-Side Self-Testing:**
+```typescript
+// Widgets validate their own loading and dependencies
+widget.validateSelfLoading()        // Self-validates HTML containers exist
+continuum.execute('preferences')    // Self-validates API bridge works
+```
+
+#### **Integration-Level Self-Testing:**
+```typescript
+// Components validate cross-boundary integration
+const html = await fetch('http://localhost:9000/');
+const hasContainer = html.includes('<chat-widget>');    // Widget finds itself
+const scriptWorks = await fetch('/src/ui/continuum.js'); // API validates itself
+```
+
+#### **Universal Self-Discovery Architecture:**
+```
+Server Command ←→ API Generation ←→ Client Widget
+     ↓                  ↓                ↓
+Self-validates    Self-validates    Self-validates
+   execution         bridge           loading
+     ↓                  ↓                ↓
+   Reports          Reports          Reports
+   status           status           status
+```
+
+**Key Principles:**
+- ✅ **Every component is responsible for validating itself**
+- ✅ **Same testing patterns work server-side and client-side**  
+- ✅ **Self-discovery replaces external test orchestration**
+- ✅ **Components report their own status and readiness**
+- ✅ **Integration validates itself through cross-boundary checks**
+
+**Examples of Self-Testing in Practice:**
+- **Widgets discover their own HTML containers** in server-generated markup
+- **Commands validate their own execution results** and return status
+- **API bridge validates itself** by checking method generation
+- **Integration tests validate themselves** by checking actual server responses
+- **Browser environment validates itself** through WebSocket connection health
+
+This creates a **distributed autonomous testing ecosystem** where every component - regardless of server or client context - becomes a self-validating, self-reporting entity.
+
+### **🏥 UNIVERSAL HEALTH MONITORING SYSTEM**
+
+**CRITICAL PRINCIPLE**: Every component maintains its own health status and provides health checks to prevent cascade failures.
+
+#### **Health Status Architecture:**
+```typescript
+interface HealthStatus {
+  component: string;           // 'chat-widget' | 'renderer-daemon' | 'preferences-service'
+  status: 'healthy' | 'degraded' | 'failed' | 'unknown';
+  lastCheck: timestamp;
+  dependencies: string[];      // Components this depends on
+  dependents: string[];       // Components that depend on this
+  errorCount: number;
+  metrics: ComponentMetrics;
+}
+```
+
+#### **Component-Level Health Checks:**
+
+**🔧 Daemons:**
+```typescript
+// Each daemon reports its own health
+class RendererDaemon extends BaseDaemon {
+  getHealthStatus(): HealthStatus {
+    return {
+      component: 'renderer-daemon',
+      status: this.legacyRenderer ? 'healthy' : 'failed',
+      dependencies: ['websocket-daemon'],
+      dependents: ['chat-widget', 'sidebar-widget'],
+      errorCount: this.errorLog.length
+    };
+  }
+}
+```
+
+**🎨 Widgets:**
+```typescript
+// Widgets self-monitor their health
+class ChatWidget extends BaseWidget {
+  checkHealth(): HealthStatus {
+    return {
+      component: 'chat-widget',
+      status: this.isConnected() ? 'healthy' : 'degraded',
+      dependencies: ['continuum-api', 'websocket-connection'],
+      dependents: [],
+      errorCount: this.connectionFailures
+    };
+  }
+}
+```
+
+**⚙️ Services:**
+```typescript
+// Services validate their own operational status
+class PreferencesService {
+  async healthCheck(): Promise<HealthStatus> {
+    const canRead = await this.testConfigRead();
+    const canWrite = await this.testConfigWrite();
+    
+    return {
+      component: 'preferences-service',
+      status: canRead && canWrite ? 'healthy' : 'degraded',
+      dependencies: ['file-system'],
+      dependents: ['preferences-command', 'ui-theme-system']
+    };
+  }
+}
+```
+
+#### **Cascade Failure Prevention:**
+
+**🛡️ Isolation Boundaries:**
+```typescript
+// When a component fails, isolate the damage
+class SystemHealthMonitor {
+  async handleComponentFailure(failedComponent: string) {
+    const dependents = this.getDependents(failedComponent);
+    
+    // Graceful degradation instead of cascade failure
+    for (const dependent of dependents) {
+      await this.switchToFallbackMode(dependent, failedComponent);
+    }
+  }
+  
+  private async switchToFallbackMode(component: string, failedDependency: string) {
+    // Examples:
+    // - Chat widget shows "offline mode" when API fails
+    // - Renderer daemon uses fallback HTML when legacy renderer fails  
+    // - Preferences system uses defaults when config file corrupted
+  }
+}
+```
+
+**📊 Health Dashboard:**
+```
+🟢 websocket-daemon: healthy (30s heartbeat)
+🟡 renderer-daemon: degraded (legacy renderer issues)
+🟢 chat-widget: healthy (API connected)
+🔴 preferences-service: failed (config file corrupted)
+🟡 sidebar-widget: degraded (fallback mode - no preferences)
+```
+
+**Key Benefits:**
+- ✅ **Failure isolation**: One component failure doesn't crash the system
+- ✅ **Graceful degradation**: Dependent components switch to fallback modes
+- ✅ **Self-healing**: Components can restart/recover independently
+- ✅ **Diagnostic clarity**: Health status immediately shows what's broken
+- ✅ **Autonomous recovery**: System can fix itself without human intervention
+
+**Real-World Example:**
+```
+Preferences config file gets corrupted →
+PreferencesService reports 'failed' status →
+UI components switch to default themes →
+System continues working in degraded mode →
+Background service attempts config recovery →
+When fixed, components automatically return to full functionality
+```
+
+This health monitoring system enables **bulletproof autonomous development** where component failures become isolated, self-reporting events rather than system-wide crashes.
+
+#### **🔌 DYNAMIC COMMAND AVAILABILITY**
+
+**CRITICAL INSIGHT**: Commands have varying availability based on runtime conditions - network connectivity, API keys, external services, etc.
+
+**Command Health States:**
+```typescript
+interface CommandHealthStatus {
+  command: string;
+  available: boolean;
+  reason?: string;
+  requirements: CommandRequirement[];
+  lastCheck: timestamp;
+  retryable: boolean;
+}
+
+interface CommandRequirement {
+  type: 'network' | 'api-key' | 'file-system' | 'external-service';
+  resource: string;           // 'anthropic.com' | 'ANTHROPIC_API_KEY' | '/config/preferences.json'
+  status: 'available' | 'missing' | 'invalid' | 'timeout';
+}
+```
+
+**Examples of Dynamic Command Availability:**
+
+**🌐 Network-Dependent Commands:**
+```typescript
+// AI conversation commands
+class AnthropicCommand extends BaseCommand {
+  async checkAvailability(): Promise<CommandHealthStatus> {
+    const networkOk = await this.testConnection('api.anthropic.com');
+    const apiKeyValid = process.env.ANTHROPIC_API_KEY?.length > 10;
+    
+    return {
+      command: 'ai-chat',
+      available: networkOk && apiKeyValid,
+      reason: !networkOk ? 'Network unreachable' : !apiKeyValid ? 'Missing API key' : undefined,
+      requirements: [
+        { type: 'network', resource: 'api.anthropic.com', status: networkOk ? 'available' : 'timeout' },
+        { type: 'api-key', resource: 'ANTHROPIC_API_KEY', status: apiKeyValid ? 'available' : 'missing' }
+      ],
+      retryable: true
+    };
+  }
+}
+```
+
+**📁 File-System Commands:**
+```typescript
+class PreferencesCommand extends BaseCommand {
+  async checkAvailability(): Promise<CommandHealthStatus> {
+    const configExists = await this.fileExists('.continuum/preferences.json');
+    const canWrite = await this.testWrite('.continuum/');
+    
+    return {
+      command: 'preferences',
+      available: configExists && canWrite,
+      reason: !configExists ? 'Config file missing' : !canWrite ? 'Read-only filesystem' : undefined,
+      requirements: [
+        { type: 'file-system', resource: '.continuum/preferences.json', status: configExists ? 'available' : 'missing' },
+        { type: 'file-system', resource: '.continuum/', status: canWrite ? 'available' : 'invalid' }
+      ],
+      retryable: !configExists // Can retry if file missing, not if filesystem read-only
+    };
+  }
+}
+```
+
+**🔗 External Service Commands:**
+```typescript
+class GitHubCommand extends BaseCommand {
+  async checkAvailability(): Promise<CommandHealthStatus> {
+    const token = process.env.GITHUB_TOKEN;
+    const repoAccess = await this.testGitHubAPI(token);
+    
+    return {
+      command: 'github-issues',
+      available: !!token && repoAccess,
+      reason: !token ? 'GitHub token missing' : !repoAccess ? 'Repository access denied' : undefined,
+      requirements: [
+        { type: 'api-key', resource: 'GITHUB_TOKEN', status: token ? 'available' : 'missing' },
+        { type: 'external-service', resource: 'github.com/api', status: repoAccess ? 'available' : 'invalid' }
+      ],
+      retryable: true
+    };
+  }
+}
+```
+
+**🚀 Specialized Compute Services:**
+```typescript
+class CudaTestingCommand extends BaseCommand {
+  async checkAvailability(): Promise<CommandHealthStatus> {
+    const serviceKey = process.env.CUDA_TESTING_API_KEY;
+    const serviceHealth = await this.checkServiceHealth('cuda-testing-service.com');
+    const quotaRemaining = await this.checkComputeQuota(serviceKey);
+    
+    return {
+      command: 'cuda-test',
+      available: !!serviceKey && serviceHealth && quotaRemaining > 0,
+      reason: !serviceKey ? 'CUDA testing API key missing' : 
+              !serviceHealth ? 'CUDA testing service unavailable' :
+              quotaRemaining <= 0 ? 'Compute quota exhausted' : undefined,
+      requirements: [
+        { type: 'api-key', resource: 'CUDA_TESTING_API_KEY', status: serviceKey ? 'available' : 'missing' },
+        { type: 'external-service', resource: 'cuda-testing-service.com', status: serviceHealth ? 'available' : 'timeout' },
+        { type: 'compute-quota', resource: 'gpu-hours', status: quotaRemaining > 0 ? 'available' : 'exhausted' }
+      ],
+      retryable: serviceHealth && quotaRemaining > 0 // Don't retry if quota exhausted
+    };
+  }
+}
+
+class MLTrainingCommand extends BaseCommand {
+  async checkAvailability(): Promise<CommandHealthStatus> {
+    const localGpu = await this.detectLocalGPU();
+    const cloudService = await this.checkCloudGPUService();
+    
+    return {
+      command: 'ml-train',
+      available: localGpu.available || cloudService.available,
+      reason: !localGpu.available && !cloudService.available ? 'No GPU resources available' : undefined,
+      requirements: [
+        { type: 'hardware', resource: 'local-gpu', status: localGpu.available ? 'available' : 'missing' },
+        { type: 'external-service', resource: 'cloud-gpu-service', status: cloudService.available ? 'available' : 'unavailable' }
+      ],
+      retryable: true,
+      fallback: localGpu.available ? 'local' : cloudService.available ? 'cloud' : 'cpu-only'
+    };
+  }
+}
+```
+
+**Command Availability Dashboard:**
+```
+🟢 preferences: available (config loaded)
+🔴 ai-chat: unavailable (missing ANTHROPIC_API_KEY)
+🟡 github-issues: degraded (rate limited - retry in 15min)
+🟢 screenshot: available (browser connected)
+🔴 email-send: unavailable (SMTP server unreachable)
+🟢 reload: available (internal command)
+🔴 cuda-test: unavailable (compute quota exhausted - resets tomorrow)
+🟡 ml-train: degraded (local GPU available, cloud service down)
+🟢 code-format: available (local tool)
+```
+
+**Graceful Command Degradation:**
+```typescript
+class CommandRouter {
+  async executeCommand(commandName: string, params: any) {
+    const health = await this.checkCommandHealth(commandName);
+    
+    if (!health.available) {
+      if (health.retryable) {
+        return this.createRetryResponse(commandName, health.reason);
+      } else {
+        return this.createFallbackResponse(commandName, health.reason);
+      }
+    }
+    
+    return await this.actuallyExecuteCommand(commandName, params);
+  }
+  
+  private createFallbackResponse(command: string, reason: string) {
+    // Examples:
+    // - AI chat → local FAQ responses
+    // - GitHub issues → local issue cache
+    // - Email send → save to drafts folder
+    return { success: false, error: reason, fallback: this.getFallback(command) };
+  }
+}
+```
+
+**Key Benefits:**
+- ✅ **Predictable failures**: Commands fail gracefully with clear reasons
+- ✅ **Self-diagnosis**: System knows why commands aren't working
+- ✅ **Smart retries**: Only retry commands that can recover
+- ✅ **Fallback modes**: Alternative functionality when primary unavailable
+- ✅ **User transparency**: Clear status of what's working and why
+
+### **⚡ CHAINABLE EVENT + PROMISE ARCHITECTURE**
+
+**CRITICAL PRINCIPLE**: The system supports both event-driven and promise-based patterns since they serve different programming paradigms and use cases.
+
+#### **Dual Programming Models:**
+
+**🔗 Promise-Based (Imperative/Sequential):**
+```typescript
+// Direct command execution with awaitable results
+const result = await continuum.execute('preferences', { action: 'get', key: 'ui.theme' });
+const screenshot = await continuum.execute('screenshot', { filename: 'current-state.png' });
+const reloadResult = await continuum.execute('reload', { target: 'component', component: 'ui' });
+
+// Chainable for sequential operations
+await continuum.execute('preferences', { action: 'set', key: 'ui.theme.mode', value: 'dark' })
+  .then(() => continuum.execute('reload', { target: 'component', component: 'ui' }))
+  .then(() => continuum.execute('screenshot', { filename: 'dark-theme.png' }));
+```
+
+**📡 Event-Driven (Reactive/Declarative):**
+```typescript
+// Widget responds to system events
+continuum.on('continuum:ready', () => {
+  console.log('API ready - widget can initialize');
+});
+
+continuum.on('preferences:changed', (event) => {
+  if (event.key.startsWith('ui.theme')) {
+    this.updateTheme(event.value);
+  }
+});
+
+continuum.on('command:completed', (event) => {
+  if (event.command === 'reload' && event.success) {
+    this.refreshWidget();
+  }
+});
+
+// System health monitoring
+continuum.on('component:health', (event) => {
+  this.updateHealthStatus(event.component, event.status);
+});
+```
+
+#### **Hybrid Patterns (Best of Both Worlds):**
+
+**🔄 Event-Driven Commands with Promise Results:**
+```typescript
+// Start long-running command, get immediate promise + events
+const trainingPromise = continuum.execute('ml-train', { 
+  model: 'transformer',
+  dataset: 'large-corpus'
+});
+
+// Listen for progress events
+continuum.on('ml-train:progress', (event) => {
+  console.log(`Training progress: ${event.epoch}/${event.totalEpochs}`);
+  this.updateProgressBar(event.progress);
+});
+
+continuum.on('ml-train:error', (event) => {
+  console.error('Training error:', event.error);
+  this.showErrorDialog(event.error);
+});
+
+// Await final result
+const result = await trainingPromise;
+console.log('Training completed:', result);
+```
+
+**⚡ Chainable Event Streams:**
+```typescript
+// Command chains that emit events at each step
+continuum.chain()
+  .execute('preferences', { action: 'backup' })
+  .on('backup:complete', () => console.log('Preferences backed up'))
+  .execute('preferences', { action: 'reset' })
+  .on('reset:complete', () => console.log('Preferences reset'))
+  .execute('reload', { target: 'system' })
+  .on('reload:complete', () => console.log('System reloaded'))
+  .finally(() => console.log('Full reset sequence complete'));
+```
+
+#### **Programming Language Flexibility:**
+
+**Multiple API Styles for Different Developers:**
+```typescript
+// Async/await developers (modern JS/TS)
+const theme = await continuum.preferences.get('ui.theme.mode');
+
+// Promise chain developers (traditional JS)
+continuum.preferences.get('ui.theme.mode')
+  .then(theme => console.log('Current theme:', theme))
+  .catch(error => console.error('Failed to get theme:', error));
+
+// Event-driven developers (reactive programming)
+continuum.on('preferences:ui.theme.mode', (newTheme) => {
+  console.log('Theme changed to:', newTheme);
+});
+
+// Functional programming style
+continuum.pipe()
+  .map(cmd => cmd.execute('screenshot'))
+  .filter(result => result.success)
+  .forEach(result => console.log('Screenshot saved:', result.filename));
+```
+
+#### **Real-World Use Cases:**
+
+**🎯 When to Use Promises:**
+- Sequential command execution
+- File operations with clear start/end
+- API calls with single response
+- Testing and validation workflows
+
+**🎯 When to Use Events:**
+- Long-running operations (ML training, file uploads)
+- System health monitoring
+- User interface updates
+- Real-time collaboration features
+- Widget lifecycle management
+
+**🎯 When to Use Both:**
+- Complex workflows with progress updates
+- Commands that affect multiple components
+- Operations that need both completion status AND progress events
+- Autonomous systems that need reactive behavior + deterministic results
+
+This dual architecture enables **maximum programming flexibility** while maintaining the self-testing and health monitoring capabilities across both paradigms.
+
 ## 🧬 **CLIENT-SIDE ARCHITECTURE (CRITICAL)**
 
 ### **⚠️ CRITICAL OVERSIGHT DISCOVERED:**
