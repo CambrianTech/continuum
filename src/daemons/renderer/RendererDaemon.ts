@@ -25,6 +25,7 @@
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import * as http from 'http';
+import * as path from 'path'; // TODO: Consider using URL-based paths for better cross-platform support
 
 // TODO: Replace 'any' with proper typed interfaces
 export interface RenderRequest {
@@ -154,10 +155,11 @@ export class RendererDaemon extends BaseDaemon {
       };
       
     } catch (error) {
-      this.log(`❌ Render error: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Render error: ${errorMessage}`, 'error');
       return {
         success: false,
-        error: error.message
+        error: errorMessage
       };
     }
   }
@@ -199,7 +201,8 @@ export class RendererDaemon extends BaseDaemon {
       this.log('🎨 Features: Modern TypeScript architecture, clean module imports, proper API communication');
       
     } catch (error) {
-      this.log(`❌ CRITICAL: Failed to load clean TypeScript UI: ${error.message}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ CRITICAL: Failed to load clean TypeScript UI: ${errorMessage}`, 'error');
       this.log(`❌ CRITICAL: Working directory: ${process.cwd()}`, 'error');
       this.log(`❌ CRITICAL: Attempted path: ${path.join(process.cwd(), 'uigenerator.html')}`, 'error');
       this.log('🔄 Falling back to old TypeScript UI Generator (5000+ lines of mess)...');
@@ -300,7 +303,8 @@ export class RendererDaemon extends BaseDaemon {
         port: 9000,
         version: this.version
       };
-      this.legacyRenderer = new UIGeneratorClass(mockContinuum);
+      // TODO: Legacy UIGenerator coupling - should use dependency injection
+      this.legacyRenderer = new UIGeneratorClass(); // Constructor expects 0 args
       this.log('✅ Fallback renderer loaded');
     }
   }
@@ -335,16 +339,18 @@ export class RendererDaemon extends BaseDaemon {
       return {
         success: true,
         html,
-        // CSS and JS are embedded in the HTML output from legacy renderer
-        css: null,
-        js: null
+        // TODO: Legacy renderer embeds CSS/JS - extract to separate properties for cleaner architecture
+        css: '', // Legacy renderer embeds CSS in HTML
+        js: ''   // Legacy renderer embeds JS in HTML
       };
       
     } catch (error) {
-      this.log(`❌ Legacy renderer failed: ${error.message}`, 'error');
+      // TODO: Same error pattern as 5+ other places - extract BaseErrorHandler
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Legacy renderer failed: ${errorMessage}`, 'error');
       return {
         success: false,
-        error: `Legacy renderer error: ${error.message}`
+        error: `Legacy renderer error: ${errorMessage}`
       };
     }
   }
