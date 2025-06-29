@@ -129,11 +129,90 @@ src/[category]/[module]/
 - **TypeScript Quality:** Eliminated `any` types, added proper interfaces (PersonaConfig, ModelAdapter, TrainingData)
 - **Documentation:** Added critical TODO list identifying architectural issues
 
+### **Layer 4 (Renderer) - IN PROGRESS 🔄**
+- **Current:** 151 errors (progress: fixing error handling patterns)
+- **Patterns Fixed:** `error instanceof Error` standardization, `any` type elimination
+- **Architecture Insights:** RendererDaemon needs VersionService, HTMLRenderingEngine extraction
+
 ### **Future Layers - PENDING 📋**
-- **Layer 3:** Command category compilation issues
-- **Layer 4:** WebSocket/API compilation issues  
 - **Layer 5:** Widget compilation issues
 - **Layer 6:** Browser integration compilation issues
+
+---
+
+## 🧬 **EVOLUTIONARY ARCHITECTURE METHODOLOGY**
+
+**Core Philosophy: Architecture emerges through systematic constraint resolution - not upfront design.**
+
+### **🌱 The Organic Evolution Cycle**
+```
+1. Fix Immediate Problems → 2. Notice Patterns → 3. Extract Abstractions → 4. Refactor Naturally → 5. Repeat at Higher Levels
+```
+
+### **🔍 Pattern Recognition Examples from Current Development**
+
+**Error Handling Evolution (Discovered fixing 5+ daemons):**
+```typescript
+// REPEATED PATTERN noticed across PersonaDaemon, RendererDaemon, CommandProcessor:
+} catch (error) {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  this.log(`❌ ${operationName}: ${errorMessage}`, 'error');
+  return { success: false, error: errorMessage };
+}
+
+// NATURAL EXTRACTION candidate: BaseErrorHandler utility
+```
+
+**Widget State Management (Pattern emerging in UI layer):**
+```typescript
+// NOTICED: ContinuonWidget, SidebarWidget, VersionWidget all need:
+- private state management
+- updateState() methods  
+- render() lifecycle
+- event handling patterns
+
+// EXTRACTION OPPORTUNITY: StatefulComponent<T> base class
+```
+
+**Session Management (Discovered during daemon fixes):**
+```typescript
+// PATTERN: PersonaDaemon, CommandProcessor, WebSocketDaemon all have:
+- sessions Map
+- session lifecycle management
+- session configuration loading
+
+// NATURAL ABSTRACTION: SessionDaemon base class
+```
+
+### **🎯 Development Wisdom: "I've Seen This Pattern 3 Times"**
+
+**When you notice repetition:**
+1. **Document it** - Write down the pattern with examples
+2. **Count instances** - 3+ repetitions = extraction candidate
+3. **Find variation points** - What changes vs what stays same
+4. **Extract incrementally** - Interface first, then base class
+5. **Test the abstraction** - Does it actually make code cleaner?
+
+**The TypeScript compiler teaches us the real domain model by forcing us to:**
+- Replace `any` types → discover real interfaces
+- Fix error patterns → reveal common utilities needed
+- Handle null checks → understand object relationships
+- Resolve imports → see architectural boundaries
+
+### **🏗️ Why This Works Better Than Upfront Design**
+
+**Evolutionary Benefits:**
+- ✅ **Real constraints drive design** - TypeScript errors reveal true needs
+- ✅ **Usage patterns reveal abstractions** - Extract what actually repeats
+- ✅ **Refactoring feels natural** - Better patterns become obvious
+- ✅ **Architecture stays flexible** - Easy to evolve as understanding deepens
+
+**vs Traditional Problems:**
+- ❌ **Over-engineering** - Building abstractions before understanding needs
+- ❌ **Wrong abstractions** - Guessing at patterns that don't exist
+- ❌ **Analysis paralysis** - Endless design docs instead of working code
+
+**"The compiler and the codebase will teach you the right abstractions if you listen!"**
 
 ---
 
