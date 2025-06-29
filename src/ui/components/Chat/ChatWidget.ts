@@ -151,7 +151,7 @@ export class ChatWidget extends BaseWidget {
           </div>
           <div class="header-right">
             <div class="version-info">
-              <div class="version">v0.2.2177</div>
+              <div class="version" id="continuum-version">v${this.getVersion()}</div>
               <div class="timestamp">Updated ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</div>
             </div>
           </div>
@@ -442,6 +442,20 @@ export class ChatWidget extends BaseWidget {
         input.focus();
       }
     }, 100);
+  }
+
+  private getVersion(): string {
+    // Try to fetch version dynamically from server or show unknown
+    try {
+      // This will be set by the server when rendering the page
+      const serverVersion = (window as any).__CONTINUUM_VERSION__;
+      if (serverVersion) return serverVersion;
+      
+      // Fallback to unknown rather than hardcoded version
+      return 'unknown';
+    } catch (error) {
+      return 'unknown';
+    }
   }
 }
 

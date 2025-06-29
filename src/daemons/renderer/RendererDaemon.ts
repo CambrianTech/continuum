@@ -197,10 +197,13 @@ export class RendererDaemon extends BaseDaemon {
       // Create a renderer that serves the clean TypeScript UI
       this.legacyRenderer = {
         generateHTML: () => {
-          // Return the clean HTML with minimal modifications
+          // Return the clean HTML with version injection from package.json
           let html = cleanHTML;
           
-          // Just update version in title if needed
+          // Inject version from package.json
+          html = html.replace('{{CONTINUUM_VERSION}}', this.dynamicVersion);
+          
+          // Update title if needed
           html = html.replace(/Continuum - Clean TypeScript Client/, `Continuum v${this.dynamicVersion} - TypeScript Client`);
           
           return html;
@@ -305,8 +308,12 @@ export class RendererDaemon extends BaseDaemon {
 </body>
 </html>`;
       
+      const currentVersion = this.dynamicVersion;
       const UIGeneratorClass = class {
-        generateHTML() { return cleanHTML; }
+        generateHTML() { 
+          // Inject version from package.json into fallback HTML too
+          return cleanHTML.replace(/Continuum - TypeScript Architecture/, `Continuum v${currentVersion} - TypeScript Architecture`);
+        }
       };
       // TODO: Legacy UIGenerator coupling - should use dependency injection
       this.legacyRenderer = new UIGeneratorClass(); // Constructor expects 0 args
