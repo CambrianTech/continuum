@@ -18,7 +18,7 @@
  * - Component hot-reload: Test TypeScript widget reloading without page refresh
  */
 
-import { BaseCommand, CommandResult, CommandDefinition } from '../base-command/BaseCommand.js';
+import { BaseCommand, CommandResult, CommandDefinition } from '../base-command/BaseCommand';
 
 export interface ReloadRequest {
   readonly target: 'page' | 'browser' | 'daemon' | 'component' | 'system';
