@@ -26,8 +26,9 @@ export class VersionWidget extends BaseWidget {
 
   private setupVersionMonitoring(): void {
     // Listen for version updates
-    document.addEventListener('continuum:version-update', (e: CustomEvent) => {
-      this.updateVersion(e.detail.version);
+    document.addEventListener('continuum:version-update', (e: Event) => {
+      const customEvent = e as CustomEvent;
+      this.updateVersion(customEvent.detail.version);
     });
 
     // Check for version from continuum API

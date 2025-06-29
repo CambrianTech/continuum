@@ -17,7 +17,7 @@ interface Message {
   };
 }
 
-interface Room {
+interface _Room {
   id: string;
   name: string;
   description: string;
@@ -120,8 +120,9 @@ export class ChatWidget extends BaseWidget {
     });
 
     // Listen for room changes from ChatRoom component
-    document.addEventListener('continuum:room-changed', (e: CustomEvent) => {
-      this.switchRoom(e.detail.room.id);
+    document.addEventListener('continuum:room-changed', (e: Event) => {
+      const customEvent = e as CustomEvent;
+      this.switchRoom(customEvent.detail.room.id);
     });
   }
 

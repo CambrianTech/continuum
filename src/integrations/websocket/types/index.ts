@@ -4,5 +4,6 @@
  */
 
 export * from './Connection';
-export * from './Message';
-export * from './Daemon';
+export type { WebSocketMessage, CommandRequest, EventMessage, AuthRequest, AuthResult, ClientInfo } from './Message';
+export type { DaemonConnection, CommandProcessor, EventProcessor, CommandDefinition, ParameterDefinition, EventResult } from './Daemon';
+export type { CommandResult } from './Daemon'; // Use Daemon's CommandResult as primary

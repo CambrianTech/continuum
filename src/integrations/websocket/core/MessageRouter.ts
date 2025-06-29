@@ -3,7 +3,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { WebSocketMessage, CommandRequest, EventMessage } from '../types';
+import { WebSocketMessage, CommandRequest } from '../types';
 import { DaemonConnector } from './DaemonConnector';
 
 export class MessageRouter extends EventEmitter {
@@ -68,7 +68,7 @@ export class MessageRouter extends EventEmitter {
 
   private setupDefaultHandlers(): void {
     // Daemon stats handler
-    this.registerHandler('get_stats', async (data: any, clientId: string, daemonConnector: DaemonConnector) => {
+    this.registerHandler('get_stats', async (_data: any, clientId: string, daemonConnector: DaemonConnector) => {
       console.log(`📊 Getting daemon stats for client: ${clientId}`);
       return {
         server: 'websocket-server',
@@ -81,7 +81,7 @@ export class MessageRouter extends EventEmitter {
     });
 
     // Client list handler  
-    this.registerHandler('get_clients', async (data: any, clientId: string, daemonConnector: DaemonConnector) => {
+    this.registerHandler('get_clients', async (_data: any, clientId: string, _daemonConnector: DaemonConnector) => {
       console.log(`👥 Getting client list for: ${clientId}`);
       return {
         clients: [{ id: clientId, connected: true, timestamp: new Date().toISOString() }],
@@ -126,7 +126,7 @@ export class MessageRouter extends EventEmitter {
     });
 
     // Client initialization handler
-    this.registerHandler('client_init', async (data: any, clientId: string, daemonConnector: DaemonConnector) => {
+    this.registerHandler('client_init', async (_data: any, _clientId: string, daemonConnector: DaemonConnector) => {
       return {
         server: 'websocket-daemon',
         daemon: daemonConnector.isConnected() ? 'connected' : 'disconnected',
@@ -149,7 +149,7 @@ export class MessageRouter extends EventEmitter {
     });
 
     // Ping/pong handler
-    this.registerHandler('ping', async (data: any, clientId: string) => {
+    this.registerHandler('ping', async (_data: any, clientId: string) => {
       return {
         pong: true,
         timestamp: new Date().toISOString(),
