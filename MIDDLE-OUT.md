@@ -78,6 +78,139 @@ With complete JTAG stack, AI development becomes:
 - **Self-reporting**: Progress tracking and status communication
 - **Human-optional**: Only for design decisions and progress updates
 
+## 🛣️ **JTAG IMPLEMENTATION ROADMAP**
+
+### **Phase 0: Foundation Diagnosis (CRITICAL FIRST)**
+**Goal**: Verify basic communication layers before building advanced features
+
+```bash
+# Portal Connection Test
+python python-client/ai-portal.py --dashboard
+# SUCCESS: Shows daemon status and system health
+# FAILURE: Fix portal connectivity first
+
+# Browser Connection Test  
+open http://localhost:9000
+# SUCCESS: UI loads, shows WebSocket connected
+# FAILURE: Fix WebSocket daemon routing
+
+# Command Execution Test
+python python-client/ai-portal.py --cmd help
+# SUCCESS: Returns command list
+# FAILURE: Fix command routing/processing
+```
+
+**🚨 GATE**: Cannot proceed to Phase 1 until ALL Phase 0 tests pass
+
+### **Phase 1: Basic JTAG Components (Foundation)**
+**Goal**: Get minimal visual validation working
+
+```bash
+# 1. Screenshot Capture
+python python-client/ai-portal.py --cmd screenshot --filename test.png
+# SUCCESS: File created with browser screenshot
+# DEBUG: Check browser DevTools, WebSocket logs
+
+# 2. Console Log Forwarding
+python python-client/ai-portal.py --logs 5
+# SUCCESS: Shows both server and browser console logs
+# DEBUG: Check console.log forwarding in browser
+
+# 3. Basic Command Testing
+python python-client/ai-portal.py --cmd preferences list
+# SUCCESS: Returns preference data
+# DEBUG: Check command routing to PreferencesCommand
+```
+
+**Success Criteria**: Can see, log, and execute basic commands
+**Estimated Time**: 1-2 hours of focused debugging
+
+### **Phase 2: Command Verification Loop (Core JTAG)**
+**Goal**: Establish command → visual → feedback cycle
+
+```bash
+# 1. End-to-End Command Testing
+python python-client/ai-portal.py --cmd emotion --params '{"emotion": "wink"}'
+python python-client/ai-portal.py --cmd screenshot --filename after-emotion.png
+# SUCCESS: Screenshot shows emotion change
+
+# 2. State Change Validation  
+python python-client/ai-portal.py --cmd preferences set ui.theme.mode dark
+python python-client/ai-portal.py --cmd reload component ui
+python python-client/ai-portal.py --cmd screenshot --filename dark-theme.png
+# SUCCESS: Visual confirmation of preference change
+
+# 3. Error Detection Testing
+python python-client/ai-portal.py --cmd invalid-command
+python python-client/ai-portal.py --logs 3
+# SUCCESS: Error logged and visible in multiple channels
+```
+
+**Success Criteria**: Command → Execute → Visual Validation → Logs working
+**Estimated Time**: 2-3 hours
+
+### **Phase 3: Automated Testing Integration (Autonomous)**
+**Goal**: Self-validating development cycles
+
+```bash
+# 1. Unit Test Integration
+npm test src/commands/core/preferences
+# SUCCESS: All preference tests pass
+
+# 2. Integration Test Suite
+python python-client/ai-portal.py --cmd tests --component all
+# SUCCESS: Full system validation passes
+
+# 3. Visual Regression Testing
+python python-client/ai-portal.py --cmd screenshot --baseline
+# Make changes...
+python python-client/ai-portal.py --cmd screenshot --compare baseline
+# SUCCESS: Automated visual diff detection
+```
+
+**Success Criteria**: Fully autonomous test → fix → validate cycles
+**Estimated Time**: 3-4 hours
+
+### **Phase 4: DevTools Integration (Advanced)**
+**Goal**: Deep browser inspection and manipulation
+
+```bash
+# 1. DevTools System Integration
+python python-client/demos/devtools/start_devtools_system.py
+# SUCCESS: Browser launches with DevTools access
+
+# 2. Advanced Debugging
+python python-client/ai-portal.py --devtools --inspect element
+# SUCCESS: Can manipulate DOM, inspect state
+
+# 3. Performance Monitoring
+python python-client/ai-portal.py --devtools --performance
+# SUCCESS: Real-time performance metrics
+```
+
+**Success Criteria**: Full browser control and inspection
+**Estimated Time**: 2-3 hours
+
+## 🎯 **JTAG Success Metrics**
+
+### **Phase 0 Complete**: ✅ Basic connectivity working
+### **Phase 1 Complete**: ✅ Can see what's happening (screenshots + logs)  
+### **Phase 2 Complete**: ✅ Can verify commands work end-to-end
+### **Phase 3 Complete**: ✅ Autonomous development cycles enabled
+### **Phase 4 Complete**: ✅ Deep debugging and performance optimization
+
+## 🚨 **Current Blocker Diagnosis**
+
+**From daemon logs**: WebSocket clients connecting but commands may not be executing properly
+
+**Most Likely Issues**:
+1. **Portal → WebSocket communication broken**
+2. **Command routing not reaching TypeScript implementations** 
+3. **Browser client not properly handling command responses**
+
+**First Debug Command**: `python python-client/ai-portal.py --dashboard`
+**If this fails**: Portal connectivity is broken at fundamental level
+
 ## 🧅 THE DUAL ONION CONCEPT
 
 **Continuum has TWO parallel onion architectures that mirror each other:**

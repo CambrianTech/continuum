@@ -45,7 +45,7 @@ export class MessageRouter extends EventEmitter {
       console.error(`❌ Handler error for ${messageType}:`, error);
       return {
         type: 'error',
-        data: { error: error.message },
+        data: { error: error instanceof Error ? error.message : String(error) },
         timestamp: new Date().toISOString(),
         clientId,
         requestId: message.requestId
@@ -178,7 +178,7 @@ export class MessageRouter extends EventEmitter {
           console.error('❌ Error routing to chat command:', error);
           return {
             success: false,
-            error: `Chat command failed: ${error.message}`
+            error: `Chat command failed: ${error instanceof Error ? error.message : String(error)}`
           };
         }
       }

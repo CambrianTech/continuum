@@ -545,7 +545,7 @@ export class RendererDaemon extends BaseDaemon {
 
   // TODO: Static file server management - delegated to WebSocketDaemon  
   // This method will be removed once full transition to WebSocketDaemon routing is complete
-  private async __unused_startStaticFileServer(): Promise<void> {
+  private async _unused_startStaticFileServer(): Promise<void> {
     this.log(`🗂️ Starting static file server on port ${this.staticPort}...`);
     
     this.httpServer = http.createServer(async (req, res) => {
