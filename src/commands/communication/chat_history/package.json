@@ -1,0 +1,7 @@
+{
+  "name": "@continuum/chat-history-command",
+  "version": "1.0.0",
+  "description": "Retrieve chat room message history",
+  "main": "ChatHistoryCommand.ts",
+  "type": "module"
+}

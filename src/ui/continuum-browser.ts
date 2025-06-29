@@ -40,6 +40,354 @@ class ContinuumBrowserAPI implements ContinuumAPI {
 
   constructor() {
     console.log('🌐 Continuum Browser API: Initializing...');
+    this.setupConsoleErrorCapture();
+  }
+
+  private setupConsoleErrorCapture(): void {
+    // Capture ALL console logs in real-time and forward to development portal
+    const originalConsole = {
+      log: console.log,
+      info: console.info,
+      warn: console.warn,
+      error: console.error,
+      debug: console.debug,
+      trace: console.trace,
+      table: console.table,
+      group: console.group,
+      groupEnd: console.groupEnd
+    };
+    
+    let errorCount = 0;
+
+    // Override ALL console methods to capture everything
+    console.log = (...args: any[]) => {
+      originalConsole.log.apply(console, args);
+      this.forwardConsoleLog('log', args);
+    };
+
+    console.info = (...args: any[]) => {
+      originalConsole.info.apply(console, args);
+      this.forwardConsoleLog('info', args);
+    };
+
+    console.warn = (...args: any[]) => {
+      originalConsole.warn.apply(console, args);
+      this.forwardConsoleLog('warn', args);
+    };
+
+    console.error = (...args: any[]) => {
+      originalConsole.error.apply(console, args);
+      errorCount++;
+      (window as any).continuumErrorCount = errorCount;
+      this.forwardConsoleLog('error', args);
+    };
+
+    console.debug = (...args: any[]) => {
+      originalConsole.debug.apply(console, args);
+      this.forwardConsoleLog('debug', args);
+    };
+
+    console.trace = (...args: any[]) => {
+      originalConsole.trace.apply(console, args);
+      this.forwardConsoleLog('trace', args);
+    };
+
+    console.table = (...args: any[]) => {
+      originalConsole.table.apply(console, args);
+      this.forwardConsoleLog('table', args);
+    };
+
+    console.group = (...args: any[]) => {
+      originalConsole.group.apply(console, args);
+      this.forwardConsoleLog('group', args);
+    };
+
+    console.groupEnd = () => {
+      originalConsole.groupEnd.apply(console);
+      this.forwardConsoleLog('groupEnd', []);
+    };
+
+    // Capture unhandled errors
+    window.addEventListener('error', (event) => {
+      errorCount++;
+      (window as any).continuumErrorCount = errorCount;
+      
+      this.forwardConsoleLog('unhandled', [{
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+        error: event.error?.stack || event.error
+      }]);
+    });
+
+    // Capture unhandled promise rejections
+    window.addEventListener('unhandledrejection', (event) => {
+      errorCount++;
+      (window as any).continuumErrorCount = errorCount;
+      
+      this.forwardConsoleLog('promise-rejection', [{
+        reason: event.reason,
+        promise: 'Promise rejection'
+      }]);
+    });
+
+    console.log('🚨 Console error capture initialized - all errors will forward to development portal');
+  }
+
+  private forwardConsoleLog(type: string, args: any[]): void {
+    try {
+      if (this.isConnected()) {
+        // Capture EVERYTHING - full data structures, stack traces, source locations
+        const stackTrace = new Error().stack;
+        const sourceLocation = this.getSourceLocation(stackTrace);
+        
+        const consoleData = {
+          type,
+          timestamp: new Date().toISOString(),
+          level: type,
+          
+          // Capture full argument data with deep inspection
+          args: args.map(arg => this.inspectArgument(arg)),
+          
+          // Raw string representation (what user sees)
+          message: args.map(arg => {
+            if (typeof arg === 'string') return arg;
+            if (typeof arg === 'number' || typeof arg === 'boolean') return String(arg);
+            if (arg === null) return 'null';
+            if (arg === undefined) return 'undefined';
+            if (typeof arg === 'function') return arg.toString();
+            try {
+              return JSON.stringify(arg, null, 2);
+            } catch {
+              return String(arg);
+            }
+          }).join(' '),
+          
+          // Stack trace and source location
+          stackTrace: stackTrace || 'No stack trace available',
+          sourceLocation,
+          
+          // Browser context
+          url: window.location.href,
+          userAgent: navigator.userAgent,
+          viewport: {
+            width: window.innerWidth,
+            height: window.innerHeight
+          },
+          
+          // Error-specific data for errors
+          ...(type === 'error' && args.length > 0 && args[0] instanceof Error ? {
+            errorDetails: {
+              name: args[0].name,
+              message: args[0].message,
+              stack: args[0].stack,
+              cause: args[0].cause
+            }
+          } : {})
+        };
+
+        // Forward everything to development portal
+        this.execute('console', {
+          action: 'browser_console',
+          message: `[${type.toUpperCase()}] ${consoleData.message}`,
+          source: 'console-complete-capture',
+          data: consoleData
+        }).catch(() => {
+          // Fail silently to avoid infinite loops
+        });
+      }
+    } catch (error) {
+      // Fail silently to avoid error loops
+    }
+  }
+
+  private inspectArgument(arg: any): any {
+    try {
+      // Handle different types with full inspection
+      if (arg === null) return { type: 'null', value: null };
+      if (arg === undefined) return { type: 'undefined', value: undefined };
+      
+      const type = typeof arg;
+      
+      if (type === 'string' || type === 'number' || type === 'boolean') {
+        return { type, value: arg };
+      }
+      
+      if (type === 'function') {
+        return { 
+          type: 'function', 
+          name: arg.name || 'anonymous',
+          value: arg.toString(),
+          length: arg.length
+        };
+      }
+      
+      if (arg instanceof Error) {
+        return {
+          type: 'Error',
+          name: arg.name,
+          message: arg.message,
+          stack: arg.stack,
+          cause: arg.cause
+        };
+      }
+      
+      if (Array.isArray(arg)) {
+        return {
+          type: 'Array',
+          length: arg.length,
+          value: arg.map(item => this.inspectArgument(item)),
+          preview: `Array(${arg.length})`
+        };
+      }
+      
+      if (arg instanceof Date) {
+        return {
+          type: 'Date',
+          value: arg.toISOString(),
+          timestamp: arg.getTime()
+        };
+      }
+      
+      if (arg instanceof Promise) {
+        return {
+          type: 'Promise',
+          state: 'unknown',
+          value: '[Promise object]'
+        };
+      }
+      
+      if (type === 'object') {
+        // Deep object inspection
+        const keys = Object.keys(arg);
+        const result = {
+          type: 'Object',
+          constructor: arg.constructor?.name || 'Object',
+          keys: keys,
+          length: keys.length,
+          value: {} as any,
+          preview: `{${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}}`
+        };
+        
+        // Capture first level of properties (avoid infinite recursion)
+        for (const key of keys.slice(0, 10)) { // Limit to 10 properties
+          try {
+            result.value[key] = this.limitDepthInspection(arg[key], 2);
+          } catch {
+            result.value[key] = '[Inspection failed]';
+          }
+        }
+        
+        return result;
+      }
+      
+      return { type, value: String(arg) };
+      
+    } catch (error) {
+      return { type: 'unknown', value: '[Inspection error]', error: error.message };
+    }
+  }
+  
+  private limitDepthInspection(value: any, maxDepth: number): any {
+    if (maxDepth <= 0) return '[Max depth reached]';
+    
+    if (value === null || value === undefined) return value;
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+    if (typeof value === 'function') return '[Function]';
+    if (Array.isArray(value)) return value.slice(0, 5).map(item => this.limitDepthInspection(item, maxDepth - 1));
+    
+    if (typeof value === 'object') {
+      const result: any = {};
+      const keys = Object.keys(value).slice(0, 5);
+      for (const key of keys) {
+        result[key] = this.limitDepthInspection(value[key], maxDepth - 1);
+      }
+      return result;
+    }
+    
+    return String(value);
+  }
+  
+  private getSourceLocation(stackTrace?: string): string {
+    if (!stackTrace) return 'Unknown location';
+    
+    const lines = stackTrace.split('\n');
+    // Find the first line that's not this file or console methods
+    for (const line of lines) {
+      if (line.includes('http') && !line.includes('continuum-browser') && !line.includes('console')) {
+        return line.trim();
+      }
+    }
+    
+    return lines[2] || 'Unknown location';
+  }
+
+  private testConsoleCaptureSystem(): { allTestsPassed: boolean; summary: string; details: any } {
+    const tests = {
+      logOverride: false,
+      errorOverride: false,
+      stackTraceGeneration: false,
+      sourceLocationDetection: false,
+      dataInspection: false,
+      forwardingCapability: false
+    };
+
+    try {
+      // Test 1: Check if console.log has been overridden for capture
+      const originalLogString = console.log.toString();
+      tests.logOverride = !originalLogString.includes('[native code]') || 
+                         originalLogString.includes('forwardConsoleLog');
+
+      // Test 2: Check if console.error has been overridden 
+      const originalErrorString = console.error.toString();
+      tests.errorOverride = !originalErrorString.includes('[native code]') || 
+                           originalErrorString.includes('forwardConsoleLog');
+
+      // Test 3: Test stack trace generation
+      try {
+        const testError = new Error('Test stack trace');
+        tests.stackTraceGeneration = !!testError.stack && testError.stack.length > 0;
+      } catch {
+        tests.stackTraceGeneration = false;
+      }
+
+      // Test 4: Test source location detection
+      try {
+        const mockStack = `Error: test
+    at testFunction (http://localhost:9000/src/test.js:123:45)
+    at main (http://localhost:9000/app.js:67:89)`;
+        const location = this.getSourceLocation(mockStack);
+        tests.sourceLocationDetection = location.includes('http://localhost:9000/src/test.js');
+      } catch {
+        tests.sourceLocationDetection = false;
+      }
+
+      // Test 5: Test data inspection capability
+      try {
+        const testData = { complex: { nested: true }, array: [1, 2, 3] };
+        const inspected = this.inspectArgument(testData);
+        tests.dataInspection = inspected && inspected.type === 'Object' && inspected.keys;
+      } catch {
+        tests.dataInspection = false;
+      }
+
+      // Test 6: Test forwarding capability (WebSocket + execute method)
+      tests.forwardingCapability = this.isConnected() && typeof this.execute === 'function';
+
+    } catch (error) {
+      console.error('Console capture system test failed:', error);
+    }
+
+    const passedTests = Object.values(tests).filter(Boolean).length;
+    const totalTests = Object.keys(tests).length;
+    const allTestsPassed = passedTests === totalTests;
+
+    return {
+      allTestsPassed,
+      summary: `${passedTests}/${totalTests} tests passed`,
+      details: tests
+    };
   }
 
   async connect(wsUrl: string = 'ws://localhost:9000'): Promise<void> {
@@ -199,15 +547,19 @@ class ContinuumBrowserAPI implements ContinuumAPI {
       }
     });
 
-    // 5. CONSOLE ERROR MONITORING
+    // 5. CONSOLE CAPTURE SYSTEM VALIDATION
     const consoleErrors = (window as any).continuumErrorCount || 0;
+    const consoleCaptureResults = this.testConsoleCaptureSystem();
+    
     healthReport.components.push({
-      component: 'console-errors',
-      status: consoleErrors === 0 ? 'healthy' : consoleErrors < 5 ? 'degraded' : 'failed',
+      component: 'console-capture-system',
+      status: consoleCaptureResults.allTestsPassed ? 'healthy' : 'failed',
       lastCheck: Date.now(),
-      details: `${consoleErrors} console errors detected`,
+      details: `Console capture: ${consoleCaptureResults.summary}`,
       metrics: {
-        errorCount: consoleErrors
+        errorCount: consoleErrors,
+        consoleCaptureWorking: consoleCaptureResults.allTestsPassed,
+        consoleTestResults: consoleCaptureResults.details
       }
     });
 

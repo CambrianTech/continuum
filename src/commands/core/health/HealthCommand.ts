@@ -29,6 +29,17 @@ export interface HealthMetrics {
   responseTime?: number;
   memoryUsage?: number;
   connectionCount?: number;
+  consoleCaptureWorking?: boolean;
+  consoleTestResults?: ConsoleTestResults;
+}
+
+export interface ConsoleTestResults {
+  logCapture: boolean;
+  errorCapture: boolean;
+  stackTraceCapture: boolean;
+  sourceLocationCapture: boolean;
+  dataInspectionWorking: boolean;
+  forwardingWorking: boolean;
 }
 
 export interface HealthReport {
@@ -189,34 +200,16 @@ export class HealthCommand extends BaseCommand {
   }
 
   private static async requestClientHealthReport(): Promise<HealthReport | null> {
-    // TODO: Send WebSocket message to request client health
-    // For now, return mock client health
-    return {
-      timestamp: Date.now(),
-      environment: 'browser',
-      overall: 'healthy',
-      components: [
-        {
-          component: 'websocket-connection',
-          status: 'healthy',
-          lastCheck: Date.now(),
-          details: 'Connected to server'
-        },
-        {
-          component: 'chat-widget',
-          status: 'healthy', 
-          lastCheck: Date.now(),
-          details: 'Widget loaded and responsive'
-        },
-        {
-          component: 'continuum-api',
-          status: 'healthy',
-          lastCheck: Date.now(),
-          details: 'API methods available'
-        }
-      ],
-      summary: 'Browser health: healthy (3 components checked)'
-    };
+    // Client health is handled by the browser's own validateClientHealth() method
+    // This will be requested via WebSocket and the client will respond with its own health report
+    // The browser already has comprehensive health validation including console capture testing
+    
+    // NOTE: The actual client health report comes from:
+    // - Browser: continuum.validateClientHealth() 
+    // - Sent via: continuum.execute('health', { clientReport: healthReport })
+    // - This maintains proper separation of concerns
+    
+    return null; // Client health comes through WebSocket, not direct call
   }
 
   private static calculateOverallHealth(components: HealthStatus[]): 'healthy' | 'degraded' | 'failed' {
