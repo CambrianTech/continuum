@@ -26,6 +26,9 @@ interface ContinuumAPI {
   connect(wsUrl?: string): Promise<void>;
   disconnect(): void;
   getConnectionState(): 'connecting' | 'connected' | 'disconnected' | 'error';
+  
+  // Widget discovery methods
+  discoverAndLoadWidgets(): Promise<void>;
 }
 
 class ContinuumBrowserAPI implements ContinuumAPI {
@@ -308,6 +311,47 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     }
     
     return String(value);
+  }
+  
+  async discoverAndLoadWidgets(): Promise<void> {
+    console.log('🔍 Discovering widgets dynamically...');
+    
+    try {
+      // Discover widgets by looking for components with package.json
+      const widgetPaths = await this.discoverWidgetPaths();
+      
+      // Load each widget dynamically
+      for (const path of widgetPaths) {
+        try {
+          console.log(`📦 Loading widget: ${path}`);
+          await import(path);
+        } catch (error) {
+          console.warn(`⚠️ Failed to load widget ${path}:`, error);
+        }
+      }
+      
+      console.log(`✅ Widget discovery complete - ${widgetPaths.length} widgets processed`);
+    } catch (error) {
+      console.error('❌ Widget discovery failed:', error);
+    }
+  }
+  
+  private async discoverWidgetPaths(): Promise<string[]> {
+    try {
+      // Ask the server to discover widgets via command (no hard-coded paths)
+      if (this.isConnected()) {
+        const response = await this.execute('discover_widgets');
+        if (response && response.success && response.widgets) {
+          return response.widgets;
+        }
+      }
+    } catch (error) {
+      console.warn('⚠️ Server widget discovery failed:', error);
+    }
+    
+    // If server discovery fails, widgets simply won't load
+    // No fallback hard-coding - maintains separation of concerns
+    return [];
   }
   
   private getSourceLocation(stackTrace?: string): string {
@@ -809,7 +853,11 @@ continuum.connect().then(async () => {
   }
 });
 
-// Widgets auto-register themselves when bundled - no manual registration needed
-console.log('🎨 Widget system ready - widgets will auto-register from bundle');
+// Dynamic widget discovery and loading
+continuum.discoverAndLoadWidgets().then(() => {
+  console.log('🎨 Widget system ready - widgets dynamically discovered');
+}).catch((error) => {
+  console.error('❌ Widget discovery failed:', error);
+});
 
 export default continuum;

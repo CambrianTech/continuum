@@ -202,6 +202,52 @@ export class RendererDaemon extends BaseDaemon {
             };
           }
 
+        case 'serve_ui_component':
+          // Serve widget files dynamically based on pathname
+          const fs2 = await import('fs');
+          const path2 = await import('path');
+          const { fileURLToPath: fileURLToPath2 } = await import('url');
+          
+          const __dirname2 = path2.dirname(fileURLToPath2(import.meta.url));
+          // Convert /src/ui/components/Chat/ChatWidget.js to actual file path
+          const relativePath = pathname.replace(/^\/src\/ui\//, '');
+          let componentPath = path2.join(__dirname2, '../../ui/', relativePath);
+          
+          // Try .ts extension if .js doesn't exist
+          if (!fs2.existsSync(componentPath) && pathname.endsWith('.js')) {
+            const tsPath = componentPath.replace(/\.js$/, '.ts');
+            if (fs2.existsSync(tsPath)) {
+              // Compile TypeScript to JavaScript on the fly
+              const content = fs2.readFileSync(tsPath, 'utf-8');
+              const compiledJS = await this.tsCompiler.compileWidgetComponent(content, tsPath);
+              return {
+                success: true,
+                data: {
+                  contentType: 'application/javascript',
+                  content: compiledJS,
+                  headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+                }
+              };
+            }
+          }
+          
+          // Serve existing JS file
+          if (fs2.existsSync(componentPath)) {
+            const content = fs2.readFileSync(componentPath, 'utf-8');
+            return {
+              success: true,
+              data: {
+                contentType: 'application/javascript',
+                content,
+                headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+              }
+            };
+          }
+          
+          return {
+            success: false,
+            error: `Component not found: ${pathname}`
+          };
 
         default:
           return {

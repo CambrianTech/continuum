@@ -1,0 +1,12 @@
+{
+  "name": "browser-manager-daemon",
+  "version": "1.0.0",
+  "description": "Smart browser orchestration and connection management",
+  "main": "BrowserManagerDaemon.ts",
+  "type": "module",
+  "keywords": ["browser", "daemon", "connection", "jtag"],
+  "continuum": {
+    "type": "daemon",
+    "category": "browser-management"
+  }
+}
