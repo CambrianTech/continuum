@@ -21,8 +21,11 @@ export class ConnectCommand extends BaseCommand {
       category: 'development',
       icon: '🔌',
       description: 'Connect to browser sessions (placeholder - needs modern implementation)',
-      params: '{"session?": "string", "devtools?": "boolean"}',
-      examples: ['connect', 'connect --devtools'],
+      parameters: { session: 'string', devtools: 'boolean' },
+      examples: [
+        { description: 'Basic connection', command: 'connect' },
+        { description: 'Connect with DevTools', command: 'connect --devtools' }
+      ],
       usage: 'Establish browser connections for automation'
     };
   }

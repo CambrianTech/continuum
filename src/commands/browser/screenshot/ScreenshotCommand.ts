@@ -74,11 +74,11 @@ export class ScreenshotCommand extends BaseCommand {
         category: definition.category || 'Browser',
         icon: definition.icon || '📸',
         description: definition.description || 'Capture browser screenshot with advanced targeting',
-        params: JSON.stringify(definition.parameters),
+        parameters: definition.parameters,
         examples: [
-          '{"filename": "homepage.png"}',
-          '{"selector": ".main-content", "filename": "content.png"}',
-          '{"subdirectory": "ui-tests", "filename": "test-result.png"}'
+          { description: 'Basic screenshot', command: '{"filename": "homepage.png"}' },
+          { description: 'Element screenshot', command: '{"selector": ".main-content", "filename": "content.png"}' },
+          { description: 'Organized screenshot', command: '{"subdirectory": "ui-tests", "filename": "test-result.png"}' }
         ],
         usage: 'Capture screenshots with optional element targeting and custom naming'
       };
@@ -89,10 +89,10 @@ export class ScreenshotCommand extends BaseCommand {
         category: 'Browser',
         icon: '📸',
         description: 'Capture browser screenshot with advanced targeting',
-        params: '{"selector?": "string", "filename?": "string", "subdirectory?": "string"}',
+        parameters: { selector: 'string', filename: 'string', subdirectory: 'string' },
         examples: [
-          '{"filename": "homepage.png"}',
-          '{"selector": ".main-content", "filename": "content.png"}'
+          { description: 'Basic screenshot', command: '{"filename": "homepage.png"}' },
+          { description: 'Element screenshot', command: '{"selector": ".main-content", "filename": "content.png"}' }
         ],
         usage: 'Capture screenshots with optional element targeting and custom naming'
       };
