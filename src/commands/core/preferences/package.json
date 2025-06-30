@@ -2,7 +2,7 @@
   "name": "preferences-core",
   "version": "1.0.0",
   "description": "preferences core for Continuum",
-  "main": "PreferencesCore.ts",
+  "main": "PreferencesCommand.ts",
   "type": "module",
   "continuum": {
     "core": "preferences",
