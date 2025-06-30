@@ -809,28 +809,7 @@ continuum.connect().then(async () => {
   }
 });
 
-// Widget Registration - Load and register custom elements
-async function loadWidgets() {
-  try {
-    // Dynamic import of widget classes
-    const { SidebarWidget } = await import('./components/Sidebar/SidebarWidget.js');
-    const { ChatWidget } = await import('./components/Chat/ChatWidget.js');
-    
-    // Register custom elements
-    customElements.define('continuum-sidebar', SidebarWidget);
-    customElements.define('chat-widget', ChatWidget);
-    
-    console.log('✅ Widgets registered successfully');
-  } catch (error) {
-    console.error('❌ Widget registration failed:', error);
-  }
-}
-
-// Load widgets when DOM is ready
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', loadWidgets);
-} else {
-  loadWidgets();
-}
+// Widgets auto-register themselves when bundled - no manual registration needed
+console.log('🎨 Widget system ready - widgets will auto-register from bundle');
 
 export default continuum;
