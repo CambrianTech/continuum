@@ -12,6 +12,8 @@ export class AcademySpawnCommand extends DirectCommand {
     return {
       name: 'academy-spawn',
       description: 'Spawn new LoRA-adapted AI personas through vector space intelligence assembly',
+      category: 'academy',
+      examples: ['academy-spawn --persona_name="DataScientist" --specialization="machine-learning"'],
       parameters: {
         persona_name: { type: 'string', required: true, description: 'Name for the new AI persona' },
         base_model: { type: 'string', required: false, description: 'Base model to start from (default: auto-select)' },
@@ -28,6 +30,7 @@ export class AcademySpawnCommand extends DirectCommand {
       if (!params.persona_name) {
         return {
           success: false,
+          message: 'Persona name is required for Academy spawning',
           error: 'Persona name is required for Academy spawning'
         };
       }
@@ -46,6 +49,7 @@ export class AcademySpawnCommand extends DirectCommand {
 
       return {
         success: true,
+        message: 'Academy persona spawned successfully',
         data: {
           message: 'Academy persona spawned successfully',
           persona_id: spawnResult.persona_id,
@@ -61,6 +65,7 @@ export class AcademySpawnCommand extends DirectCommand {
     } catch (error) {
       return {
         success: false,
+        message: `Academy spawning failed: ${error instanceof Error ? error.message : String(error)}`,
         error: `Academy spawning failed: ${error instanceof Error ? error.message : String(error)}`
       };
     }

@@ -12,6 +12,8 @@ export class AcademyStatusCommand extends DirectCommand {
     return {
       name: 'academy-status',
       description: 'Monitor Academy training progress, P2P network health, and vector space evolution metrics',
+      category: 'academy',
+      examples: ['academy-status --detail_level="detailed" --include_p2p=true'],
       parameters: {
         persona_id: { type: 'string', required: false, description: 'Specific persona to check (all if not specified)' },
         detail_level: { type: 'string', required: false, description: 'summary | detailed | deep_metrics' },
@@ -36,6 +38,7 @@ export class AcademyStatusCommand extends DirectCommand {
 
       return {
         success: true,
+        message: 'Academy status retrieved successfully',
         data: {
           academy_overview: status.academy_overview,
           training_sessions: status.training_sessions,
@@ -50,6 +53,7 @@ export class AcademyStatusCommand extends DirectCommand {
     } catch (error) {
       return {
         success: false,
+        message: `Academy status check failed: ${error instanceof Error ? error.message : String(error)}`,
         error: `Academy status check failed: ${error instanceof Error ? error.message : String(error)}`
       };
     }
