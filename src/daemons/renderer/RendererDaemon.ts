@@ -176,6 +176,32 @@ export class RendererDaemon extends BaseDaemon {
             }
           };
 
+        case 'render_ui_components':
+          // Serve the existing continuum-browser.js file
+          const fs = await import('fs');
+          const path = await import('path');
+          const { fileURLToPath } = await import('url');
+          
+          const __dirname = path.dirname(fileURLToPath(import.meta.url));
+          const browserJSPath = path.join(__dirname, '../../ui/continuum-browser.js');
+          
+          if (fs.existsSync(browserJSPath)) {
+            const content = fs.readFileSync(browserJSPath, 'utf-8');
+            return {
+              success: true,
+              data: {
+                contentType: 'application/javascript',
+                content,
+                headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+              }
+            };
+          } else {
+            return {
+              success: false,
+              error: 'continuum-browser.js not found - run build first'
+            };
+          }
+
         default:
           return {
             success: false,

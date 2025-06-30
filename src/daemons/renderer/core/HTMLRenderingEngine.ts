@@ -58,6 +58,7 @@ export class HTMLRenderingEngine {
     <script>
         window.__CONTINUUM_VERSION__ = '${options.version}';
     </script>
+    <script type="module" src="/src/ui/continuum.js"></script>
     <script type="module" src="${apiPath}"></script>`;
   }
 

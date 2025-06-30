@@ -210,6 +210,14 @@ export class WebSocketDaemon extends BaseDaemon {
     }
   }
 
+  /**
+   * Register a route handler - called from main.ts
+   */
+  registerRouteHandler(path: string, daemonName: string, handler: string): void {
+    this.routeManager.registerRoute(path, daemonName, handler);
+    this.log(`🔗 Registered route: ${path} → ${daemonName}::${handler}`);
+  }
+
   private async sendMessageToDaemon(daemonName: string, message: any): Promise<any> {
     // In a proper implementation, this would connect to the daemon via WebSocket
     // For now, we'll use a simple direct call if the daemon is registered
