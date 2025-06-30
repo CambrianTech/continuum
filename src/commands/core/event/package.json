@@ -2,7 +2,7 @@
   "name": "event-core",
   "version": "1.0.0",
   "description": "event core for Continuum",
-  "main": "EventCore.ts",
+  "main": "index.ts",
   "type": "module",
   "continuum": {
     "core": "event",

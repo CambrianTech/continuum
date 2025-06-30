@@ -2,7 +2,7 @@
   "name": "projects-core",
   "version": "1.0.0",
   "description": "projects core for Continuum",
-  "main": "ProjectsCore.ts",
+  "main": "ProjectsCommand.ts",
   "type": "module",
   "continuum": {
     "core": "projects",

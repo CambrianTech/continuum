@@ -2,7 +2,7 @@
   "name": "bootstrap-core",
   "version": "1.0.0",
   "description": "bootstrap core for Continuum",
-  "main": "BootstrapCore.ts",
+  "main": "index.ts",
   "type": "module",
   "continuum": {
     "core": "bootstrap",

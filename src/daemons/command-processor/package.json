@@ -1,0 +1,47 @@
+{
+  "name": "command-processor-daemon",
+  "version": "1.0.0",
+  "description": "CommandProcessor daemon for Continuum - Layer 2 daemon coordination",
+  "main": "CommandProcessorDaemon.ts",
+  "type": "module",
+  "continuum": {
+    "daemon": "command-processor",
+    "category": "Core",
+    "layer": 2,
+    "capabilities": [
+      "command-routing",
+      "daemon-coordination", 
+      "message-bus",
+      "command-execution"
+    ],
+    "dependencies": [
+      "base-daemon",
+      "daemon-protocol"
+    ],
+    "interfaces": [
+      "daemon-protocol",
+      "command-bus"
+    ],
+    "permissions": [
+      "command-execution",
+      "daemon-communication",
+      "message-routing"
+    ]
+  },
+  "keywords": [
+    "command-processor",
+    "daemon",
+    "continuum",
+    "layer-2"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -2,7 +2,7 @@
   "name": "agents-core",
   "version": "1.0.0",
   "description": "agents core for Continuum",
-  "main": "AgentsCore.ts",
+  "main": "AgentsCommand.ts",
   "type": "module",
   "continuum": {
     "core": "agents",
