@@ -19,6 +19,67 @@
 
 **Philosophy**: New AI personas should understand the entire system within minutes by reading the bootloader docs, then dive into specific modules where all context lives in the file headers. No external documentation archaeology required.
 
+## 🧪 **UNIVERSAL TESTING & LAUNCHING SYSTEM**
+
+**"One command tests everything, one command launches everything - never forget how"**
+
+### **📋 Testing Entry Points (NEVER FORGET THESE)**
+
+```bash
+# Test everything, layer by layer
+npm run test-all
+
+# Test specific layer only  
+npm exec tsx test-all-layers.ts --layer=3
+
+# Test just widget compliance
+npm run test-widgets
+
+# Check compilation only
+npm run compile
+```
+
+### **🚀 Launch Entry Points (NEVER FORGET THESE)**
+
+```bash
+# Start full system (default)
+npm start
+npm run launch
+
+# Development mode with file watching
+npm run dev
+
+# Run all tests
+npm run test-all
+
+# Show all available modes
+npm exec tsx launch.ts --help
+```
+
+### **🧅 MIDDLE-OUT TESTING LAYERS (MANDATORY ORDER)**
+
+Each layer builds on the previous - test failures cascade down:
+
+1. **Layer 1: Core Foundation** - TypeScript compilation, BaseCommand loading
+2. **Layer 2: Daemon Processes** - Individual daemon module loading
+3. **Layer 3: Command System** - Command discovery and execution
+4. **Layer 4: System Integration** - Daemon + command integration, port availability
+5. **Layer 5: Widget UI System** - Widget discovery, compliance validation
+6. **Layer 6: Browser Integration** - Full browser + server end-to-end
+
+**Testing Law**: Each layer must pass before testing the next. No skipping layers.
+
+### **🎯 Widget Testing Requirements (AUTO-ENFORCED)**
+
+Every widget MUST have:
+- ✅ `package.json` (discoverable)
+- ✅ `{Name}Widget.ts` (implementation)
+- ✅ `{Name}Widget.test.ts` (unit tests)
+- ✅ CSS files (styling)
+- ✅ Passes compliance validation
+
+**Auto-Discovery**: New widgets are automatically found and tested. No hard-coded lists.
+
 ### **Language Separation Law**
 - ❌ **NO mixing languages** - No JavaScript in Python files, no CSS embedded in JS
 - ✅ **One language per file** - Clean boundaries, proper imports

@@ -141,8 +141,11 @@ export class ContinuumSystem extends EventEmitter {
     
     // Register HTTP routes  
     webSocketDaemon.registerRouteHandler('/', 'renderer', 'render_ui');
-    webSocketDaemon.registerRouteHandler('/src/ui/continuum.js', 'renderer', 'render_ui_components');
+    webSocketDaemon.registerRouteHandler('/src/ui/continuum-browser.js', 'renderer', 'render_ui_components');
     webSocketDaemon.registerRouteHandler('/dist/api.js', 'renderer', 'render_api');
+    
+    // Register wildcard route for all UI components (dynamic discovery)
+    webSocketDaemon.registerRouteHandler('/src/ui/components/*', 'renderer', 'serve_ui_component');
     
     console.log('✅ Inter-daemon communication established');
   }

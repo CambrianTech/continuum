@@ -110,12 +110,6 @@ export class WebSocketDaemon extends BaseDaemon {
     this.log(`🔌 Registered daemon: ${daemon.name}`);
   }
 
-  /**
-   * Register route handler - DEPRECATED: Use WebSocket message-based registration
-   */
-  public registerRouteHandler(pattern: string, daemonName: string, handlerName: string): void {
-    this.routeManager.registerRoute(pattern, daemonName, handlerName);
-  }
 
   private async handleHttpRequest(req: any, res: any): Promise<void> {
     const url = new URL(req.url!, `http://${this.config.host}:${this.config.port}`);

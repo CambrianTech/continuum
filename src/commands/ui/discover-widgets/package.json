@@ -1,0 +1,12 @@
+{
+  "name": "discover-widgets-command",
+  "version": "1.0.0",
+  "description": "Discover all compliant widgets for dynamic loading",
+  "main": "DiscoverWidgetsCommand.ts",
+  "type": "module",
+  "keywords": ["widgets", "discovery", "ui"],
+  "continuum": {
+    "type": "command",
+    "category": "ui"
+  }
+}

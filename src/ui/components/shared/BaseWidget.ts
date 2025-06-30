@@ -11,7 +11,6 @@ export abstract class BaseWidget extends HTMLElement {
   protected widgetTitle: string = 'Widget';
   protected widgetConnected: boolean = false;
   protected cssPath: string = ''; // Override in child classes
-  private cachedCSS: string | null = null;
   protected isCollapsed: boolean = false; // Track collapse state
 
   constructor() {

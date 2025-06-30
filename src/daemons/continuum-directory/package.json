@@ -1,0 +1,30 @@
+{
+  "name": "continuum-directory-daemon",
+  "version": "1.0.0",
+  "description": "Intelligent .continuum directory management daemon with session coordination",
+  "main": "ContinuumDirectoryDaemon.js",
+  "type": "module",
+  "continuum": {
+    "daemon": "continuum-directory",
+    "category": "Core",
+    "capabilities": [
+      "directory-management",
+      "session-coordination", 
+      "artifact-storage",
+      "retention-policies",
+      "directory-analytics",
+      "intelligent-organization"
+    ],
+    "dependencies": [],
+    "interfaces": ["daemon-protocol", "file-system"],
+    "permissions": ["read", "write", "create-directories", "directory-stats"]
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "test:unit": "node --test test/unit/",
+    "test:integration": "node --test test/integration/"
+  },
+  "keywords": ["continuum", "directory", "session", "artifacts", "daemon", "coordination"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

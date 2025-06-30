@@ -23,6 +23,28 @@ export class TypeScriptCompiler {
     return this.compileTypeScript(tsSource, options);
   }
 
+  async compileWidgetComponent(source: string, _filePath: string): Promise<string> {
+    // Compile widget TypeScript to JavaScript for browser
+    const compilerOptions: ts.CompilerOptions = {
+      target: ts.ScriptTarget.ES2020,
+      module: ts.ModuleKind.ES2020,
+      moduleResolution: ts.ModuleResolutionKind.NodeJs,
+      strict: false,
+      skipLibCheck: true,
+      removeComments: false,
+      allowSyntheticDefaultImports: true
+    };
+
+    // Transform imports to be browser-compatible
+    let browserSource = source
+      .replace(/from ['"]\.\/([^'"]+)\.ts['"]/g, "from './$1.js'")  // .ts -> .js
+      .replace(/from ['"]\.\.\/([^'"]+)\.ts['"]/g, "from '../$1.js'")  // relative .ts -> .js
+      .replace(/from ['"]([^'"]+)\.css['"]/g, "// CSS import: $1.css");  // remove CSS imports for now
+
+    const result = ts.transpile(browserSource, compilerOptions);
+    return result;
+  }
+
   private loadTypeScriptSource(): string {
     const moduleDir = __dirname;
     const tsSource = path.join(moduleDir, '../../../ui/continuum-browser.ts');

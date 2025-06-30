@@ -1,0 +1,29 @@
+{
+  "name": "continuum-system-testing",
+  "version": "1.0.0",
+  "description": "Universal testing system for all Continuum layers and modules",
+  "main": "test/universal-layer-runner.js",
+  "type": "module",
+  "continuum": {
+    "module": "system-testing",
+    "category": "Core",
+    "capabilities": [
+      "universal-testing",
+      "layer-validation", 
+      "modular-compliance",
+      "integration-testing",
+      "system-health"
+    ],
+    "dependencies": [],
+    "interfaces": ["testing-framework", "module-discovery"],
+    "permissions": ["read", "execute", "network-test"]
+  },
+  "scripts": {
+    "test": "tsx test/universal-layer-runner.ts",
+    "test:layer": "tsx test/universal-layer-runner.ts --layer=",
+    "test:widgets": "tsx ../ui/components/test/widget-runner.ts"
+  },
+  "keywords": ["continuum", "testing", "layers", "validation", "integration"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}
