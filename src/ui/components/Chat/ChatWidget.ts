@@ -452,13 +452,17 @@ export class ChatWidget extends BaseWidget {
   }
 
   private getVersion(): string {
-    // Try to fetch version dynamically from server or show unknown
     try {
-      // This will be set by the server when rendering the page
+      // Get version from continuum API if available
+      const continuum = (window as any).continuum;
+      if (continuum && continuum.version) {
+        return continuum.version;
+      }
+      
+      // Fallback to global version variable
       const serverVersion = (window as any).__CONTINUUM_VERSION__;
       if (serverVersion) return serverVersion;
       
-      // Fallback to unknown rather than hardcoded version
       return 'unknown';
     } catch (error) {
       return 'unknown';
@@ -467,4 +471,7 @@ export class ChatWidget extends BaseWidget {
 }
 
 // Register the custom element
-customElements.define('chat-widget', ChatWidget);
+// Prevent duplicate widget registration
+if (!customElements.get('chat-widget')) {
+    customElements.define('chat-widget', ChatWidget);
+}

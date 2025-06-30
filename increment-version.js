@@ -14,7 +14,8 @@ const packagePath = path.join(__dirname, 'package.json');
 const packageData = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
 
 // Parse current version
-const version = packageData.version.split('.');
+const oldVersion = packageData.version;
+const version = oldVersion.split('.');
 const major = parseInt(version[0]);
 const minor = parseInt(version[1]);
 const patch = parseInt(version[2]);
@@ -27,4 +28,4 @@ const newVersion = `${major}.${minor}.${newPatch}`;
 packageData.version = newVersion;
 fs.writeFileSync(packagePath, JSON.stringify(packageData, null, 2) + '\n');
 
-console.log(`✅ Version auto-incremented: ${packageData.version} → ${newVersion}`);
+console.log(`✅ Version auto-incremented: ${oldVersion} → ${newVersion}`);

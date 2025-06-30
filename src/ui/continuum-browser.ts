@@ -18,6 +18,7 @@
  */
 
 interface ContinuumAPI {
+  readonly version: string;
   isConnected(): boolean;
   execute(command: string, params?: any): Promise<any>;
   on(event: string, handler: (data: any) => void): void;
@@ -32,6 +33,7 @@ interface ContinuumAPI {
 }
 
 class ContinuumBrowserAPI implements ContinuumAPI {
+  public readonly version: string;
   private ws: WebSocket | null = null;
   private connectionState: 'connecting' | 'connected' | 'disconnected' | 'error' = 'disconnected';
   private eventHandlers = new Map<string, ((data: any) => void)[]>();
@@ -42,7 +44,8 @@ class ContinuumBrowserAPI implements ContinuumAPI {
   private reconnectDelay = 1000;
 
   constructor() {
-    console.log('🌐 Continuum Browser API: Initializing...');
+    this.version = (window as any).__CONTINUUM_VERSION__ || 'unknown';
+    console.log(`🌐 Continuum Browser API v${this.version}: Initializing...`);
     this.setupConsoleErrorCapture();
   }
 
@@ -461,13 +464,14 @@ class ContinuumBrowserAPI implements ContinuumAPI {
           this.connectionState = 'connected';
           this.reconnectAttempts = 0;
           
-          // Send client initialization
+          // Send client initialization with version
           this.sendMessage({
             type: 'client_init',
             data: {
               userAgent: navigator.userAgent,
               url: window.location.href,
-              timestamp: new Date().toISOString()
+              timestamp: new Date().toISOString(),
+              version: this.version
             }
           });
 
@@ -766,6 +770,14 @@ class ContinuumBrowserAPI implements ContinuumAPI {
         return;
       }
 
+      // Handle version mismatch - reload page
+      if (message.type === 'version_mismatch') {
+        const serverVersion = message.data?.serverVersion || 'unknown';
+        console.log(`🔄 Version mismatch detected - Server: ${serverVersion}, Client: ${this.version} - Reloading...`);
+        window.location.reload();
+        return;
+      }
+
       // Handle other message types - only emit as command_response if it has requestId
       if (message.data && message.data.requestId) {
         this.emit('command_response', message.data);
@@ -810,9 +822,9 @@ class ContinuumBrowserAPI implements ContinuumAPI {
   }
 }
 
-// Initialize and expose global API
-console.log('🌐 Continuum Browser API: Creating global instance...');
+// Initialize and expose global API  
 const continuum = new ContinuumBrowserAPI();
+console.log(`🌐 Continuum Browser API v${continuum.version}: Creating global instance...`);
 
 // Expose to window for widgets
 (window as any).continuum = continuum;

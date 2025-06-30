@@ -125,10 +125,42 @@ export class MessageRouter extends EventEmitter {
       };
     });
 
-    // Client initialization handler
-    this.registerHandler('client_init', async (_data: any, _clientId: string, daemonConnector: DaemonConnector) => {
+    // Client initialization handler with version checking
+    this.registerHandler('client_init', async (data: any, clientId: string, daemonConnector: DaemonConnector) => {
+      const clientVersion = data.version || 'unknown';
+      
+      // Import package.json to get server version
+      const fs = await import('fs');
+      const path = await import('path');
+      let serverVersion = 'unknown';
+      
+      try {
+        const packagePath = path.join(process.cwd(), 'package.json');
+        const packageData = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+        serverVersion = packageData.version;
+      } catch (error) {
+        console.warn('Could not read server version from package.json');
+      }
+      
+      console.log(`🔌 Client v${clientVersion} connecting (Server: v${serverVersion})`);
+      
+      // Check for version mismatch
+      if (clientVersion !== 'unknown' && serverVersion !== 'unknown' && clientVersion !== serverVersion) {
+        console.log(`⚠️ Version mismatch detected: Client v${clientVersion} vs Server v${serverVersion}`);
+        
+        // Send version mismatch message to trigger reload
+        setTimeout(() => {
+          this.emit('send_to_client', clientId, {
+            type: 'version_mismatch',
+            data: { serverVersion, clientVersion },
+            timestamp: new Date().toISOString()
+          });
+        }, 100);
+      }
+      
       return {
         server: 'websocket-daemon',
+        serverVersion,
         daemon: daemonConnector.isConnected() ? 'connected' : 'disconnected',
         capabilities: [
           'command-execution',

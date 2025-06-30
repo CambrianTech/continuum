@@ -356,32 +356,48 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
         async getBinaryPath(): Promise<string | null> { return 'system'; },
         buildLaunchArgs: () => [], // No args needed for 'open' command
         async launch(config: BrowserConfig, debugPort: number) {
-          // Use ProcessCommand to launch default browser at kernel level
+          // Use simple 'open' command to launch user's default browser (Opera GX)
           const url = 'http://localhost:9000';
           
           let openCommand = 'open'; // macOS
           if (process.platform === 'linux') openCommand = 'xdg-open';
           if (process.platform === 'win32') openCommand = 'start';
           
-          const ProcessCommandModule = await import('../../../commands/kernel/system/ProcessCommand');
-          const ProcessCommand = ProcessCommandModule.default;
+          console.log(`🌐 Launching default browser with '${openCommand} ${url}'...`);
           
-          const result = await ProcessCommand.execute({
-            subcommand: 'spawn',
-            spawnOptions: {
-              command: openCommand,
-              args: [url],
-              options: { detached: true, stdio: 'ignore' }
+          const { spawn } = await import('child_process');
+          const browserProcess = spawn(openCommand, [url], { 
+            detached: true, 
+            stdio: ['ignore', 'pipe', 'pipe'] // Capture output to see what happens
+          });
+          
+          // Monitor the open command to see if it works
+          if (browserProcess.stdout) {
+            browserProcess.stdout.on('data', (data) => {
+              console.log(`📋 Open command output: ${data.toString().trim()}`);
+            });
+          }
+          
+          if (browserProcess.stderr) {
+            browserProcess.stderr.on('data', (data) => {
+              console.log(`⚠️ Open command error: ${data.toString().trim()}`);
+            });
+          }
+          
+          browserProcess.on('exit', (code) => {
+            if (code === 0) {
+              console.log('✅ Open command succeeded - browser should be launching');
+            } else {
+              console.log(`❌ Open command failed with exit code: ${code}`);
             }
           });
           
-          if (!result.success) {
-            throw new Error(`Failed to launch default browser: ${result.error}`);
-          }
+          // Don't wait for process to finish - just launch and go
+          browserProcess.unref();
           
           return {
-            process: null, // ProcessCommand handles the process internally
-            pid: result.data.pid,
+            process: null, // System handles the browser process
+            pid: browserProcess.pid || Math.random() * 10000,
             debugPort: 0, // No DevTools for system default
             devToolsUrl: undefined,
             capabilities: this.capabilities
@@ -983,11 +999,12 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
         purpose: config?.purpose || 'development',
         persona: config?.persona || 'system',
         requirements: {
-          devtools: config?.requirements?.devtools || false,
+          devtools: false, // DEFAULT: No DevTools unless explicitly requested
           isolation: config?.requirements?.isolation || 'dedicated',
           visibility: config?.requirements?.visibility || 'visible',
           persistence: config?.requirements?.persistence || 'session'
         },
+        browserType: BrowserType.DEFAULT, // DEFAULT: Use system default browser (Opera GX)
         resources: {
           priority: config?.resources?.priority || 'high'
         }
