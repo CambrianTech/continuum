@@ -119,7 +119,7 @@ export class ConnectCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any = {}, context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, _context?: CommandContext): Promise<CommandResult> {
     const connectParams = this.parseParams<ConnectParams>(params);
     
     try {
@@ -188,7 +188,7 @@ export class ConnectCommand extends DirectCommand {
     // TODO: Implement actual daemon communication via WebSocket/message passing
     // This demonstrates the proper delegation pattern:
     
-    const daemonMessage = {
+    const _daemonMessage = {
       type: 'daemon_request',
       target: 'session-manager',
       operation,
@@ -233,7 +233,7 @@ export class ConnectCommand extends DirectCommand {
   private static async delegateToWindowManager(operation: string, params: any): Promise<WindowInfo> {
     // TODO: Implement actual daemon communication via WebSocket/message passing
     
-    const daemonMessage = {
+    const _daemonMessage = {
       type: 'daemon_request',
       target: 'window-manager', 
       operation,
@@ -262,10 +262,10 @@ export class ConnectCommand extends DirectCommand {
    * Delegate filesystem operations to ContinuumFileSystemDaemon
    * Commands don't touch filesystem directly - they use kernel services
    */
-  private static async delegateToContinuumFileSystem(operation: string, params: any): Promise<any> {
+  private static async _delegateToContinuumFileSystem(_operation: string, _params: any): Promise<any> {
     // TODO: Implement actual daemon communication
     
-    const daemonMessage = {
+    const _daemonMessage = {
       type: 'daemon_request',
       target: 'continuum-filesystem',
       operation,
@@ -285,7 +285,7 @@ export class ConnectCommand extends DirectCommand {
    * Legacy method - replaced by daemon delegation
    * @deprecated Use delegateToContinuumFileSystem instead
    */
-  private static async getContinuumDirectoryConfig(): Promise<{
+  private static async _getContinuumDirectoryConfig(): Promise<{
     rootPath: string;
     structure: string[];
   }> {
@@ -329,7 +329,7 @@ export class ConnectCommand extends DirectCommand {
   /**
    * Create session using daemon's directory organization
    */
-  private static async createSession(params: any, directoryConfig: any): Promise<{
+  private static async _createSession(_params: any, _directoryConfig: any): Promise<{
     sessionId: string;
     sessionPath: string;
     artifactPath: string;
@@ -394,7 +394,7 @@ export class ConnectCommand extends DirectCommand {
   /**
    * Launch browser using session information
    */
-  private static async launchBrowser(sessionData: any, params: any): Promise<{
+  private static async _launchBrowser(_sessionData: any, _params: any): Promise<{
     launched: boolean;
     pid?: number;
     devtools?: boolean;

@@ -12,6 +12,13 @@ export class DatabaseBackupCommand extends DirectCommand {
     return {
       name: 'database-backup',
       description: 'Backup or restore database data',
+      category: 'database',
+      examples: [
+        {
+          description: 'Create a database backup',
+          command: 'database-backup --action="backup" --backup_name="daily_backup"'
+        }
+      ],
       parameters: {
         action: { type: 'string', required: true, description: 'Action: backup or restore' },
         backup_name: { type: 'string', required: false, description: 'Backup name (auto-generated if not provided)' },
@@ -20,11 +27,12 @@ export class DatabaseBackupCommand extends DirectCommand {
     };
   }
 
-  async execute(params: any, context: CommandContext): Promise<CommandResult> {
+  async execute(params: any, _context: CommandContext): Promise<CommandResult> {
     try {
       if (!params.action || !['backup', 'restore'].includes(params.action)) {
         return {
           success: false,
+          message: 'Action must be either "backup" or "restore"',
           error: 'Action must be either "backup" or "restore"'
         };
       }
@@ -36,6 +44,7 @@ export class DatabaseBackupCommand extends DirectCommand {
 
         return {
           success: true,
+          message: 'Database backup created successfully',
           data: {
             message: 'Database backup created successfully',
             backup_path: result.backup_path,
@@ -48,6 +57,7 @@ export class DatabaseBackupCommand extends DirectCommand {
         if (!params.backup_path) {
           return {
             success: false,
+            message: 'Backup path is required for restore operation',
             error: 'Backup path is required for restore operation'
           };
         }
@@ -58,6 +68,7 @@ export class DatabaseBackupCommand extends DirectCommand {
 
         return {
           success: true,
+          message: 'Database restored successfully',
           data: {
             message: 'Database restored successfully',
             restored_from: result.restored_from,
@@ -68,11 +79,13 @@ export class DatabaseBackupCommand extends DirectCommand {
 
       return {
         success: false,
+        message: 'Unknown action',
         error: 'Unknown action'
       };
     } catch (error) {
       return {
         success: false,
+        message: `Database backup operation failed: ${error instanceof Error ? error.message : String(error)}`,
         error: `Database backup operation failed: ${error instanceof Error ? error.message : String(error)}`
       };
     }

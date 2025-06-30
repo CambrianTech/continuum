@@ -13,7 +13,12 @@ export class AcademySpawnCommand extends DirectCommand {
       name: 'academy-spawn',
       description: 'Spawn new LoRA-adapted AI personas through vector space intelligence assembly',
       category: 'academy',
-      examples: ['academy-spawn --persona_name="DataScientist" --specialization="machine-learning"'],
+      examples: [
+        {
+          description: 'Spawn a data science AI persona',
+          command: 'academy-spawn --persona_name="DataScientist" --specialization="machine-learning"'
+        }
+      ],
       parameters: {
         persona_name: { type: 'string', required: true, description: 'Name for the new AI persona' },
         base_model: { type: 'string', required: false, description: 'Base model to start from (default: auto-select)' },

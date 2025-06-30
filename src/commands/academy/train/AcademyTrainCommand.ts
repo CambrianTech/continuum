@@ -13,7 +13,12 @@ export class AcademyTrainCommand extends DirectCommand {
       name: 'academy-train',
       description: 'Start emergent AI evolution training with adversarial TrainerAI vs LoraAgent',
       category: 'academy',
-      examples: ['academy-train --student_persona="DataScientist" --trainer_mode="adversarial"'],
+      examples: [
+        {
+          description: 'Start adversarial training for DataScientist persona',
+          command: 'academy-train --student_persona="DataScientist" --trainer_mode="adversarial"'
+        }
+      ],
       parameters: {
         domain: { type: 'string', required: false, description: 'Training domain (auto-discovered if not specified)' },
         student_persona: { type: 'string', required: true, description: 'LoRA-adapted persona to train' },
