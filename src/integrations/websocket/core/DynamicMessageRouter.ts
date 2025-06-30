@@ -108,7 +108,7 @@ export class DynamicMessageRouter extends EventEmitter {
       
       return {
         type: `${messageType}_response`,
-        data: result.data,
+        data: result,
         timestamp: new Date().toISOString(),
         clientId,
         requestId: message.requestId,
@@ -144,7 +144,8 @@ export class DynamicMessageRouter extends EventEmitter {
       'render_request': ['basic-rendering', 'legacy-ui', 'modern-ui'],
       'switch_engine': ['basic-rendering', 'legacy-ui', 'modern-ui'],
       'tabRegister': ['websocket-server', 'client-management'],
-      'get_component_css': ['websocket-server', 'css-service']
+      'get_component_css': ['websocket-server', 'css-service'],
+      'execute_command': ['command-execution', 'daemon-connector']
     };
     
     const preferredCapabilities = capabilityMap[messageType as keyof typeof capabilityMap];
