@@ -5,6 +5,11 @@
   "main": "HealthCommand.ts",
   "type": "module",
   "continuum": {
-    "commandName": "health"
+    "command": "health",
+    "category": "Monitoring",
+    "capabilities": ["health-monitoring", "system-health", "daemon-communication"],
+    "dependencies": ["base-command"],
+    "interfaces": ["command-bus", "daemon-protocol"],
+    "permissions": ["system", "daemon-communication"]
   }
 }

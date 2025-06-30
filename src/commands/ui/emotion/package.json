@@ -4,11 +4,11 @@
   "type": "module",
   "main": "index.server.js",
   "continuum": {
-    "commandName": "emotion",
-    "category": "continuon expression",
-    "capabilities": ["emotion-expression", "visual-feedback", "personality"],
-    "dependencies": ["websocket", "continuon-animator"],
-    "hasTests": true,
-    "testDir": "test"
+    "command": "emotion",
+    "category": "UI",
+    "capabilities": ["ui-rendering", "widget-discovery"],
+    "dependencies": ["base-command"],
+    "interfaces": ["command-bus", "widget-system"],
+    "permissions": ["read"]
   }
 }

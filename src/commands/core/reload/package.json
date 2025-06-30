@@ -11,7 +11,11 @@
     }
   },
   "continuum": {
-    "commandName": "reload",
-    "capabilities": ["reload", "refresh", "restart"]
+    "command": "reload",
+    "category": "Core",
+    "capabilities": ["hot-reloading", "system-control", "daemon-management"],
+    "dependencies": ["base-command"],
+    "interfaces": ["command-bus", "daemon-protocol"],
+    "permissions": ["system", "daemon-control"]
   }
 }

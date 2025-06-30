@@ -11,7 +11,11 @@
     }
   },
   "continuum": {
-    "commandName": "saveFile",
-    "capabilities": ["file-saving", "storage", "persistence"]
+    "command": "savefile",
+    "category": "File",
+    "capabilities": ["file-writing", "artifact-management"],
+    "dependencies": ["base-command"],
+    "interfaces": ["command-bus", "file-system"],
+    "permissions": ["write", "create-files"]
   }
 }

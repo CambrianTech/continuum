@@ -3,5 +3,13 @@
   "version": "1.0.0",
   "description": "List active projects and their status",
   "main": "ProjectsCommand.ts",
-  "type": "module"
+  "type": "module",
+  "continuum": {
+    "command": "projects",
+    "category": "Monitoring",
+    "capabilities": ["artifact-management", "session-management"],
+    "dependencies": ["base-command"],
+    "interfaces": ["command-bus", "artifact-storage"],
+    "permissions": ["read", "list"]
+  }
 }

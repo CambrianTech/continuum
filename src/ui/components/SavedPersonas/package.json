@@ -17,23 +17,17 @@
     "test": "node --test test/*.test.js"
   },
   "continuum": {
-    "widgetName": "SavedPersonas",
-    "widgetType": "ui-component",
-    "category": "User Interface",
-    "icon": "👤",
-    "componentFile": "SavedPersonas.js",
-    "description": "Dynamic persona management and selection widget",
-    "selectors": [
-      ".persona-manager",
-      "[class*=\"persona\"]",
-      "#persona-list",
-      ".persona-list",
-      "[id*=\"persona\"]"
-    ],
-    "fallbackSelector": "body",
-    "capabilities": ["screenshot", "interaction", "validation", "dynamic-discovery", "api-integration"],
-    "dependencies": ["persistent", "screenshot"],
-    "hasTests": true,
-    "testDir": "./test"
+    "widget": "saved-personas",
+    "category": "UI",
+    "capabilities": ["widget-discovery", "ui-rendering"],
+    "dependencies": [],
+    "interfaces": ["widget-system", "ui-rendering"],
+    "permissions": ["read"],
+    "ui": {
+      "template": "SavedPersonas.html",
+      "styles": ["SavedPersonas.css"],
+      "scripts": ["SavedPersonas.js"],
+      "dependencies": []
+    }
   }
 }

@@ -17,24 +17,17 @@
     "test": "node --test test/*.test.js"
   },
   "continuum": {
-    "widgetName": "ActiveProjects",
-    "widgetType": "ui-component", 
-    "category": "User Interface",
-    "icon": "📁",
-    "componentFile": "ActiveProjects.js",
-    "description": "Dynamic project management and status widget",
-    "selectors": [
-      ".active-projects",
-      "[class*=\"project\"]",
-      "#project-list",
-      ".project-list",
-      "[id*=\"project\"]",
-      ".projects-container"
-    ],
-    "fallbackSelector": "body",
-    "capabilities": ["screenshot", "interaction", "validation", "dynamic-discovery", "api-integration"],
-    "dependencies": ["persistent", "screenshot"],
-    "hasTests": true,
-    "testDir": "./test"
+    "widget": "active-projects",
+    "category": "UI",
+    "capabilities": ["widget-discovery", "ui-rendering"],
+    "dependencies": [],
+    "interfaces": ["widget-system", "ui-rendering"],
+    "permissions": ["read"],
+    "ui": {
+      "template": "ActiveProjects.html",
+      "styles": ["ActiveProjects.css"],
+      "scripts": ["ActiveProjects.js"],
+      "dependencies": []
+    }
   }
 }

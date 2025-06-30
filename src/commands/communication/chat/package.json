@@ -10,5 +10,13 @@
   },
   "keywords": ["continuum", "chat", "multi-agent", "command"],
   "author": "Continuum Team",
-  "license": "MIT"
+  "license": "MIT",
+  "continuum": {
+    "command": "chat",
+    "category": "Communication",
+    "capabilities": ["session-management", "websocket-management", "message-routing"],
+    "dependencies": ["base-command"],
+    "interfaces": ["command-bus", "websocket-protocol"],
+    "permissions": ["network-access", "websocket-server"]
+  }
 }

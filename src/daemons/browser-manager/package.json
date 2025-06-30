@@ -14,12 +14,14 @@
       "devtools-integration",
       "session-coordination"
     ],
+    "startupOrder": 100,
+    "healthCheck": {
+      "enabled": true,
+      "intervalMs": 30000,
+      "timeoutMs": 5000
+    },
     "dependencies": [
-      "kernel-system-command",
-      "kernel-daemon-command",
-      "kernel-session-command",
-      "session-manager-daemon",
-      "file-write-command"
+      "session-manager"
     ],
     "interfaces": ["daemon-protocol", "browser-management"],
     "permissions": ["browser-control", "process-management", "session-management"]

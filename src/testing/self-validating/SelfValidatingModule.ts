@@ -11,12 +11,8 @@ import {
   ContinuumConfig, 
   ContinuumCommandConfig, 
   ContinuumDaemonConfig, 
-  ContinuumWidgetConfig, 
-  ContinuumModuleConfig,
+  ContinuumWidgetConfig,
   ContinuumPackageUtils,
-  ContinuumCapability,
-  ContinuumInterface,
-  ContinuumPermission,
   PackageJson 
 } from '../../types/ContinuumPackage.js';
 

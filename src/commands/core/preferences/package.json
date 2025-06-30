@@ -11,7 +11,11 @@
     }
   },
   "continuum": {
-    "commandName": "preferences",
-    "capabilities": ["preferences", "settings", "configuration"]
+    "command": "preferences",
+    "category": "Core", 
+    "capabilities": ["session-management", "artifact-management", "file-writing"],
+    "dependencies": ["base-command"],
+    "interfaces": ["command-bus", "file-system"],
+    "permissions": ["read", "write", "create-files"]
   }
 }

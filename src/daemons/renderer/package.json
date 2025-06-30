@@ -9,15 +9,18 @@
     "dev": "tsx watch RendererDaemon.ts",
     "build": "tsc"
   },
-  "capabilities": {
-    "legacy-renderer": "1.0.0",
-    "modern-renderer": "0.1.0",
-    "hot-swap": "1.0.0"
-  },
   "continuum": {
-    "category": "daemons", 
-    "subcategory": "renderer",
-    "critical": false,
-    "swappable": true
+    "daemon": "renderer",
+    "category": "Core", 
+    "capabilities": ["ui-rendering", "template-management", "hot-reloading"],
+    "dependencies": [],
+    "interfaces": ["daemon-protocol", "ui-rendering", "template-engine"],
+    "permissions": ["read", "http-server"],
+    "startupOrder": 200,
+    "healthCheck": {
+      "enabled": true,
+      "intervalMs": 30000,
+      "timeoutMs": 5000
+    }
   }
 }
