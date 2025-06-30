@@ -6,8 +6,26 @@
  */
 
 import { BaseCommand } from '../../core/base-command/BaseCommand';
-import * as fs from 'fs/promises';
 import * as path from 'path';
+
+// Strongly typed enums for daemon operations
+export enum FileSystemOperation {
+  READ_DIRECTORY = 'read_directory',
+  CREATE_DIRECTORY = 'create_directory', 
+  WRITE_FILE = 'write_file',
+  READ_FILE = 'read_file',
+  APPEND_FILE = 'append_file',
+  DELETE_FILE = 'delete_file',
+  GET_FILE_STATS = 'get_file_stats',
+  CHECK_FILE_ACCESS = 'check_file_access'
+}
+
+export enum DirectoryOperation {
+  GET_ROOT_DIRECTORY = 'get_root_directory',
+  GET_SESSION_DIRECTORY = 'get_session_directory',
+  CREATE_SESSION_STRUCTURE = 'create_session_structure',
+  GET_ARTIFACT_LOCATION = 'get_artifact_location'
+}
 
 export abstract class BaseFileCommand extends BaseCommand {
   
@@ -15,14 +33,15 @@ export abstract class BaseFileCommand extends BaseCommand {
    * Get .continuum root directory from ContinuumDirectoryDaemon
    */
   protected static async getContinuumRoot(): Promise<string> {
-    // TODO: Call ContinuumDirectoryDaemon to get this configuration
-    // For now, discover it programmatically
-    const homeDir = process.env.HOME || process.env.USERPROFILE || process.cwd();
-    const continuumRoot = path.join(homeDir, '.continuum');
-    
-    // Ensure it exists
-    await fs.mkdir(continuumRoot, { recursive: true });
-    return continuumRoot;
+    try {
+      const response = await this.delegateToContinuumDirectoryDaemon(DirectoryOperation.GET_ROOT_DIRECTORY, {});
+      return response.rootPath;
+    } catch (error) {
+      // Fallback during development
+      console.warn('ContinuumDirectoryDaemon delegation failed, using fallback:', error);
+      const homeDir = process.env.HOME || process.env.USERPROFILE || process.cwd();
+      return path.join(homeDir, '.continuum');
+    }
   }
 
   /**
@@ -49,7 +68,7 @@ export abstract class BaseFileCommand extends BaseCommand {
    * Search for session in a specific directory type
    */
   private static async searchSessionInDirectory(typeDir: string, sessionId: string, type: string): Promise<string | null> {
-    const items = await fs.readdir(typeDir, { withFileTypes: true });
+    const items = await this.delegateToContinuumFileSystemDaemon(FileSystemOperation.READ_DIRECTORY, { path: typeDir, withFileTypes: true });
     
     for (const item of items) {
       if (!item.isDirectory()) continue;
@@ -63,7 +82,7 @@ export abstract class BaseFileCommand extends BaseCommand {
       if (type === 'personas' || type === 'user') {
         try {
           const subDir = path.join(typeDir, item.name);
-          const subItems = await fs.readdir(subDir, { withFileTypes: true });
+          const subItems = await this.delegateToContinuumFileSystemDaemon(FileSystemOperation.READ_DIRECTORY, { path: subDir, withFileTypes: true });
           
           for (const subItem of subItems) {
             if (subItem.isDirectory() && subItem.name.includes(sessionId)) {
@@ -95,11 +114,14 @@ export abstract class BaseFileCommand extends BaseCommand {
   }
 
   /**
-   * Ensure directory exists using consistent error handling
+   * Ensure directory exists using ContinuumFileSystemDaemon
    */
   protected static async ensureDirectoryExists(dirPath: string): Promise<void> {
     try {
-      await fs.mkdir(dirPath, { recursive: true });
+      await this.delegateToContinuumFileSystemDaemon(FileSystemOperation.CREATE_DIRECTORY, { 
+        path: dirPath, 
+        recursive: true 
+      });
     } catch (error) {
       throw new Error(`Failed to create directory ${dirPath}: ${error}`);
     }
@@ -158,7 +180,11 @@ export abstract class BaseFileCommand extends BaseCommand {
       const logFile = path.join(logDir, 'file-operations.log');
       const logLine = JSON.stringify(logEntry) + '\n';
       
-      await fs.appendFile(logFile, logLine);
+      await this.delegateToContinuumFileSystemDaemon(FileSystemOperation.APPEND_FILE, {
+        path: logFile,
+        content: logLine,
+        encoding: 'utf8'
+      });
     } catch {
       // Don't fail the main operation if logging fails
     }
@@ -167,9 +193,9 @@ export abstract class BaseFileCommand extends BaseCommand {
   /**
    * Get file stats safely
    */
-  protected static async getFileStats(filePath: string): Promise<Awaited<ReturnType<typeof fs.stat>> | null> {
+  protected static async getFileStats(filePath: string): Promise<any | null> {
     try {
-      return await fs.stat(filePath);
+      return await this.delegateToContinuumFileSystemDaemon(FileSystemOperation.GET_FILE_STATS, { path: filePath });
     } catch {
       return null;
     }
@@ -180,10 +206,131 @@ export abstract class BaseFileCommand extends BaseCommand {
    */
   protected static async fileExists(filePath: string): Promise<boolean> {
     try {
-      await fs.access(filePath);
+      await this.delegateToContinuumFileSystemDaemon(FileSystemOperation.CHECK_FILE_ACCESS, { path: filePath });
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Delegate filesystem operations to ContinuumFileSystemDaemon
+   * All file commands use this pattern for actual filesystem operations
+   */
+  protected static async delegateToContinuumFileSystemDaemon(operation: FileSystemOperation, params: any): Promise<any> {
+    try {
+      const daemonMessage = {
+        type: 'daemon_request',
+        target: 'continuum-filesystem',
+        operation,
+        params,
+        requestId: `file_${operation}_${Date.now()}`,
+        timestamp: Date.now()
+      };
+      
+      const response = await this.sendDaemonMessage(daemonMessage);
+      
+      if (response.success) {
+        return response.data;
+      } else {
+        throw new Error(response.error || `Filesystem ${operation} failed`);
+      }
+      
+    } catch (error) {
+      // For critical file operations, provide fallback implementations
+      console.warn(`ContinuumFileSystemDaemon ${operation} failed, using fallback:`, error);
+      return this.fallbackFileOperation(operation, params);
+    }
+  }
+
+  /**
+   * Delegate directory operations to ContinuumDirectoryDaemon
+   */
+  protected static async delegateToContinuumDirectoryDaemon(operation: DirectoryOperation, params: any): Promise<any> {
+    try {
+      const daemonMessage = {
+        type: 'daemon_request',
+        target: 'continuum-directory',
+        operation,
+        params,
+        requestId: `dir_${operation}_${Date.now()}`,
+        timestamp: Date.now()
+      };
+      
+      const response = await this.sendDaemonMessage(daemonMessage);
+      
+      if (response.success) {
+        return response.data;
+      } else {
+        throw new Error(response.error || `Directory ${operation} failed`);
+      }
+      
+    } catch (error) {
+      console.warn(`ContinuumDirectoryDaemon ${operation} failed, using fallback:`, error);
+      return this.fallbackDirectoryOperation(operation, params);
+    }
+  }
+
+  /**
+   * Send message via internal daemon message bus (not WebSocket ports)
+   * Commands communicate with daemons through the CommandProcessorDaemon bus
+   */
+  protected static async sendDaemonMessage(_message: any): Promise<any> {
+    // TODO: Use internal daemon message bus via CommandProcessorDaemon
+    // Daemons communicate via internal bus, NOT across ports
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        resolve({
+          success: false,
+          error: 'Internal daemon bus communication not yet implemented',
+          mockMode: true
+        });
+      }, 10); // Quick fallback for file operations
+    });
+  }
+
+  /**
+   * Fallback file operations for development mode
+   */
+  protected static async fallbackFileOperation(operation: FileSystemOperation, params: any): Promise<any> {
+    const fs = await import('fs/promises');
+    
+    switch (operation) {
+      case FileSystemOperation.READ_DIRECTORY:
+        return await fs.readdir(params.path, { withFileTypes: params.withFileTypes });
+      case FileSystemOperation.CREATE_DIRECTORY:
+        await fs.mkdir(params.path, { recursive: params.recursive });
+        return { success: true };
+      case FileSystemOperation.WRITE_FILE:
+        await fs.writeFile(params.path, params.content, params.encoding ? { encoding: params.encoding } : undefined);
+        return { success: true };
+      case FileSystemOperation.APPEND_FILE:
+        await fs.appendFile(params.path, params.content, { encoding: params.encoding });
+        return { success: true };
+      case FileSystemOperation.GET_FILE_STATS:
+        return await fs.stat(params.path);
+      case FileSystemOperation.CHECK_FILE_ACCESS:
+        await fs.access(params.path);
+        return { success: true };
+      default:
+        throw new Error(`Unknown file operation: ${operation}`);
+    }
+  }
+
+  /**
+   * Fallback directory operations for development mode
+   */
+  protected static async fallbackDirectoryOperation(operation: DirectoryOperation, params: any): Promise<any> {
+    const fs = await import('fs/promises');
+    
+    switch (operation) {
+      case DirectoryOperation.GET_ROOT_DIRECTORY:
+        const homeDir = process.env.HOME || process.env.USERPROFILE || process.cwd();
+        const rootPath = path.join(homeDir, '.continuum');
+        await fs.mkdir(rootPath, { recursive: true });
+        return { rootPath };
+      default:
+        throw new Error(`Unknown directory operation: ${operation}`);
     }
   }
 }
