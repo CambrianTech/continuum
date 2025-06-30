@@ -162,7 +162,7 @@ class UniversalLayerTesting {
         
         try {
           // Scan command categories
-          const commandsDir = path.resolve(this.rootDir, 'src/commands');
+          const commandsDir = path.resolve(this.rootDir, '../../commands');
           const categories = fs.readdirSync(commandsDir, { withFileTypes: true })
             .filter(dirent => dirent.isDirectory())
             .map(dirent => dirent.name);
@@ -244,7 +244,7 @@ class UniversalLayerTesting {
         // Test if we can start the system (quick test)
         try {
           // Test main system can load
-          const mainPath = path.resolve(this.rootDir, 'main.js');
+          const mainPath = path.resolve(this.rootDir, '../../../main.ts');
           await import(mainPath);
           console.log('  ✅ Main system module loads');
           
