@@ -202,6 +202,7 @@ export class RendererDaemon extends BaseDaemon {
             };
           }
 
+
         default:
           return {
             success: false,

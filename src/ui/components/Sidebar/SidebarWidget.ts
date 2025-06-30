@@ -4,6 +4,8 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget.js';
+import baseCSS from '../shared/BaseWidget.css';
+import sidebarCSS from './SidebarWidget.css';
 
 export class SidebarWidget extends BaseWidget {
     private isResizing: boolean = false;
@@ -16,7 +18,11 @@ export class SidebarWidget extends BaseWidget {
         this.widgetName = 'Sidebar';
         this.widgetIcon = '📋';
         this.widgetTitle = 'Application Sidebar';
-        this.cssPath = '/src/ui/components/Sidebar/SidebarWidget.css';
+        // CSS is now bundled, no external path needed
+    }
+
+    getBundledCSS(): string {
+        return baseCSS + '\n' + sidebarCSS;
     }
 
     protected async initializeWidget(): Promise<void> {

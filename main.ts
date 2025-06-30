@@ -139,7 +139,7 @@ export class ContinuumSystem extends EventEmitter {
     webSocketDaemon.registerDaemon(rendererDaemon);
     webSocketDaemon.registerDaemon(commandProcessorDaemon);
     
-    // Register HTTP routes
+    // Register HTTP routes  
     webSocketDaemon.registerRouteHandler('/', 'renderer', 'render_ui');
     webSocketDaemon.registerRouteHandler('/src/ui/continuum.js', 'renderer', 'render_ui_components');
     webSocketDaemon.registerRouteHandler('/dist/api.js', 'renderer', 'render_api');
