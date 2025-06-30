@@ -348,6 +348,7 @@ export class ProcessCommand extends BaseCommand {
 
       return {
         success: true,
+        message: `Found processes on ${Object.keys(portProcesses).length} ports`,
         data: {
           portProcesses,
           summary: Object.entries(portProcesses).map(([port, procs]) => ({
@@ -361,6 +362,7 @@ export class ProcessCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Failed to get port processes`,
         error: `Failed to get port processes: ${errorMessage}`
       };
     }
@@ -485,6 +487,7 @@ export class ProcessCommand extends BaseCommand {
       if (!processInfo) {
         return {
           success: false,
+          message: `Process ${pid} not found`,
           error: `Process ${pid} not found`
         };
       }
@@ -509,6 +512,7 @@ export class ProcessCommand extends BaseCommand {
 
       return {
         success: true,
+        message: `Process ${pid} monitoring complete`,
         data: {
           pid,
           processInfo,
@@ -523,6 +527,7 @@ export class ProcessCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Process monitoring failed`,
         error: `Process monitoring failed: ${errorMessage}`
       };
     }
@@ -538,6 +543,7 @@ export class ProcessCommand extends BaseCommand {
       
       return {
         success: true,
+        message: `Process tree for PID ${pid}`,
         data: {
           pid,
           tree,
@@ -550,12 +556,14 @@ export class ProcessCommand extends BaseCommand {
       if (!processInfo) {
         return {
           success: false,
+          message: `Process ${pid} not found`,
           error: `Process ${pid} not found`
         };
       }
 
       return {
         success: true,
+        message: `Process tree for PID ${pid}`,
         data: {
           pid,
           processInfo,
@@ -614,6 +622,7 @@ export class ProcessCommand extends BaseCommand {
 
       return {
         success: true,
+        message: `Cleanup complete: ${cleanedUp} processes cleaned`,
         data: {
           zombiesFound: zombies.length,
           orphansFound: orphans.length,
@@ -625,6 +634,7 @@ export class ProcessCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Process cleanup failed`,
         error: `Cleanup failed: ${errorMessage}`
       };
     }

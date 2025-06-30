@@ -325,6 +325,8 @@ Focus on the components that showed poor performance in validation.
   }
 
   private async callFormulaGenerationAI(prompt: string): Promise<any> {
+    // TODO: Remove this log when AI model integration is implemented
+    console.log('TODO: Call formula generation AI with prompt:', prompt);
     // In production, this would call an actual AI model
     // For now, return a realistic simulated response
     return {

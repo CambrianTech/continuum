@@ -102,11 +102,11 @@ export interface PotentialSolution {
  * a capable AI persona from available components + fine-tuning
  */
 export class CapabilitySynthesis {
-  private searchIndex: PersonaSearchIndex;
+  private searchIndex: any; // TODO: Define PersonaSearchIndex interface
   private loraDiscovery: LoRADiscovery;
   private synthesisCache: Map<string, SynthesisResult> = new Map();
 
-  constructor(searchIndex: PersonaSearchIndex, loraDiscovery: LoRADiscovery) {
+  constructor(searchIndex: any, loraDiscovery: LoRADiscovery) {
     this.searchIndex = searchIndex;
     this.loraDiscovery = loraDiscovery;
   }
@@ -183,7 +183,7 @@ export class CapabilitySynthesis {
     
     // Search for personas with relevant domains
     for (const domain of analysis.domain_capabilities.keys()) {
-      const personaQuery: PersonaSearchQuery = {
+      const personaQuery: any = { // TODO: Define PersonaSearchQuery interface
         domain_filter: [domain],
         min_proficiency: 0.3, // Lower threshold to find partial matches
         max_results: 5
