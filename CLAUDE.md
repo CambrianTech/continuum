@@ -201,6 +201,34 @@ PreferencesCommand.execute() + ReloadCommand.execute()
 
 **NEXT PHASE:** Complete JTAG stack → Portal autonomous development → Academy persona spawning → Human-out-of-loop collaboration
 
+---
+
+## 🚨 **CRITICAL TECHNICAL DEBT: WIDGET SYSTEM BROKEN**
+
+**❌ WIDGET SYSTEM CURRENTLY NON-FUNCTIONAL** - Stubbed for compilation only!
+
+### **Widget Template Issues (MUST FIX):**
+- **BaseWidget.ts**: HTMLElement extension needs proper implementation
+- **InteractiveWidget.ts**: Missing core methods (`getTypedElement`, `log`, proper BaseWidget import)
+- **ChatWidget.ts**: Missing API integration (`getElement`, `api`, `updateConnectionStatus`, `executeCommand`)
+- **SidebarWidget.ts**: Template system not implemented (`_templateHTML` unused)
+
+### **Required Widget Implementation:**
+1. **Template System**: `{{WIDGET_HTML}}` replacement mechanism
+2. **Element Discovery**: `getElement()`, `getTypedElement()` selectors  
+3. **API Integration**: WebSocket connection to command system
+4. **Logging System**: Proper `log()` method with levels
+5. **Command Execution**: `executeCommand()` routing to daemon system
+
+### **Widget Architecture Decision:**
+**Option 1**: Implement full widget system now (delays Layer 2 completion)
+**Option 2**: Move widgets to Layer 5 (UI layer) and focus on core daemon functionality
+**Option 3**: Remove widget template files entirely, implement later when needed
+
+**RECOMMENDATION**: **Option 2** - Move widget files to `src/ui/widgets/` as Layer 5 components. Core daemon functionality (Layer 2) doesn't need widgets to work. Browser can load without interactive widgets initially.
+
+**WIDGETS ≠ CORE SYSTEM** - Daemons, commands, and WebSocket routing should work independently of widget templates.
+
 ## 🧠 **BOOTLOADER COGNITIVE EFFECTIVENESS**
 
 **AUTONOMOUS MECHANIC READINESS TEST**: Can a fresh AI session become productive within minutes using only CLAUDE.md?
