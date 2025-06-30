@@ -4,6 +4,7 @@
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
+import { Server as HttpServer } from 'http';
 
 export interface WebSocketConnection {
   id: string;
@@ -16,8 +17,8 @@ export class WebSocketManager {
   private connections = new Map<string, WebSocketConnection>();
   private server: WebSocketServer | null = null;
 
-  async start(port: number): Promise<void> {
-    this.server = new WebSocketServer({ port });
+  async start(httpServer: HttpServer): Promise<void> {
+    this.server = new WebSocketServer({ server: httpServer });
     
     this.server.on('connection', (ws, req) => {
       const connectionId = this.generateConnectionId();
@@ -56,7 +57,7 @@ export class WebSocketManager {
       });
     });
 
-    console.log(`🌐 WebSocket server listening on port ${port}`);
+    console.log(`🌐 WebSocket server attached to HTTP server`);
   }
 
   async stop(): Promise<void> {

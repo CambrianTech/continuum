@@ -51,13 +51,13 @@ export class WebSocketDaemon extends BaseDaemon {
       await this.handleHttpRequest(req, res);
     });
 
-    // Start WebSocket server
-    await this.wsManager.start(this.config.port);
-
-    // Start HTTP server on same port
+    // Start HTTP server first
     this.httpServer.listen(this.config.port, this.config.host, () => {
       this.log(`✅ Pure router ready - knows nothing about content, only routes`);
     });
+
+    // Attach WebSocket server to the HTTP server
+    await this.wsManager.start(this.httpServer);
   }
 
   protected async onStop(): Promise<void> {

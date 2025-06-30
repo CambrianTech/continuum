@@ -1,10 +1,14 @@
 /**
  * TypeScript Compiler - Handles TypeScript to JavaScript compilation
- * Pure compilation logic, no daemon concerns
+ * Uses real TypeScript compiler instead of fragile regex
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
+import * as ts from 'typescript';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export interface CompilationOptions {
   version: string;
@@ -21,23 +25,33 @@ export class TypeScriptCompiler {
 
   private loadTypeScriptSource(): string {
     const moduleDir = __dirname;
-    const tsSource = path.join(moduleDir, '../../ui/continuum-browser.ts');
+    const tsSource = path.join(moduleDir, '../../../ui/continuum-browser.ts');
     return fs.readFileSync(tsSource, 'utf-8');
   }
 
   private compileTypeScript(source: string, options: CompilationOptions): string {
-    // Simple compilation: strip types and interfaces
-    let compiled = source
-      .replace(/interface\s+\w+\s*{[^}]*}/gs, '') // Remove interfaces
-      .replace(/:\s*\w+(\[\])?(\s*\||\s*&)?(\s*\w+)*(?=\s*[,;=\)])/g, '') // Remove type annotations
-      .replace(/export\s+/g, '') // Remove exports for browser
-      .replace(/import\s+.*?from\s+.*?;/g, '') // Remove imports
-      .replace(/\{\{CONTINUUM_VERSION\}\}/g, options.version);
-    
-    // Add dynamic widget loading capability
-    compiled += `
+    // Configure TypeScript for clean browser output
+    const compilerOptions: ts.CompilerOptions = {
+      target: ts.ScriptTarget.ES2020,
+      module: ts.ModuleKind.None,  // No module system = plain browser JS
+      strict: false,
+      skipLibCheck: true,
+      removeComments: false
+    };
 
-// Dynamic widget loading for modular architecture
+    // Prepare source for browser: remove exports/imports before compilation
+    let browserSource = source
+      .replace(/export\s+/g, '') // Remove export keywords
+      .replace(/import\s+.*?from\s+.*?;?\s*/g, '') // Remove import statements
+      .replace(/\{\{CONTINUUM_VERSION\}\}/g, options.version);
+
+    // Transpile with TypeScript - should produce clean browser JS
+    const result = ts.transpile(browserSource, compilerOptions);
+    
+    // Add browser integration
+    const compiled = result + `
+
+// Dynamic widget loading for modular architecture  
 if (window.continuum) {
   window.continuum.loadWidgets = async function() {
     console.log('🔍 Loading widgets dynamically...');
