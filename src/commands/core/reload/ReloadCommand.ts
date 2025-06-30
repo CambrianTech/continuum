@@ -47,12 +47,24 @@ export class ReloadCommand extends BaseCommand {
       category: 'core',
       icon: '🔄',
       description: 'Reload browser page or refresh system components',
-      params: '[target] [force]',
+      parameters: { target: 'string', force: 'boolean' },
       examples: [
-        'reload page',
-        'reload browser --force',
-        'reload daemon websocket-server',
-        'reload component MyWidget'
+        {
+          description: 'Reload the current page',
+          command: 'reload page'
+        },
+        {
+          description: 'Force reload browser',
+          command: 'reload browser --force'
+        },
+        {
+          description: 'Reload websocket daemon',
+          command: 'reload daemon websocket-server'
+        },
+        {
+          description: 'Reload specific widget',
+          command: 'reload component MyWidget'
+        }
       ],
       usage: 'reload <page|browser|daemon|component|system> [options]'
     };

@@ -188,7 +188,11 @@ export class RendererDaemon extends BaseDaemon {
       const fs = await import('fs');
       const path = await import('path');
       
-      const sophisticatedUIPath = path.join(process.cwd(), 'clean-continuum-ui.html');
+      // Load main UI template from templates directory
+      const { dirname } = await import('path');
+      const { fileURLToPath } = await import('url');
+      const moduleDir = dirname(fileURLToPath(import.meta.url));
+      const sophisticatedUIPath = path.join(moduleDir, 'templates', 'main-ui.html');
       this.log(`🔧 Reading clean TypeScript UI from: ${sophisticatedUIPath}`);
       this.log(`🔧 Current working directory: ${process.cwd()}`);
       
@@ -219,6 +223,18 @@ export class RendererDaemon extends BaseDaemon {
           
           // Update title if needed
           html = html.replace(/Continuum - Clean TypeScript Client/, `Continuum v${this.dynamicVersion} - TypeScript Client`);
+          
+          // Dynamically inject script tags before </body>
+          const apiPath = this.getApiPath();
+          const scriptInjection = `
+    <!-- Dynamically injected by RendererDaemon -->
+    <script>
+        window.__CONTINUUM_VERSION__ = '${this.dynamicVersion}';
+    </script>
+    <script type="module" src="${apiPath}"></script>`;
+          
+          html = html.replace('</body>', `${scriptInjection}
+</body>`);
           
           return html;
         },
@@ -265,6 +281,62 @@ export class RendererDaemon extends BaseDaemon {
       
       this.log('✅ Simple error page loaded (system configuration failure)');
     }
+  }
+
+  /**
+   * Get API path based on context (repo development vs npm module)
+   */
+  private getApiPath(): string {
+    if (this.isRunningFromRepo()) {
+      this.log('📍 Context: Repository development mode');
+      return '/node_modules/continuum/dist/api.js';
+    } else {
+      this.log('📍 Context: npm module mode');
+      return '/dist/api.js';
+    }
+  }
+
+  /**
+   * Detect if running from repository (development) or npm module (production)
+   */
+  private isRunningFromRepo(): boolean {
+    const fs = require('fs');
+    const path = require('path');
+    
+    // Smart detection: Look for package.json with "continuum" name
+    let searchDir = __dirname;
+    
+    // Walk up the directory tree to find package.json
+    for (let i = 0; i < 10; i++) { // Limit search depth
+      try {
+        const packagePath = path.join(searchDir, 'package.json');
+        if (fs.existsSync(packagePath)) {
+          const packageData = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+          
+          // Check if this is the continuum package
+          if (packageData.name === 'continuum') {
+            // Check if we have development structure (src/ directory)
+            const srcPath = path.join(searchDir, 'src');
+            const gitPath = path.join(searchDir, '.git');
+            const isRepo = fs.existsSync(srcPath) && fs.existsSync(gitPath);
+            
+            this.log(`🔍 Found continuum package at: ${searchDir}`);
+            this.log(`🔍 Repository detection: ${isRepo ? 'REPO' : 'NPM_MODULE'}`);
+            return isRepo;
+          }
+        }
+      } catch (error) {
+        // Continue searching
+      }
+      
+      const parentDir = path.dirname(searchDir);
+      if (parentDir === searchDir) break; // Reached root
+      searchDir = parentDir;
+    }
+    
+    // Fallback: assume npm module if no package.json found
+    this.log(`🔍 No continuum package.json found, assuming NPM_MODULE`);
+    return false;
   }
 
   private async loadModernRenderer(): Promise<void> {
@@ -363,9 +435,16 @@ export class RendererDaemon extends BaseDaemon {
   public registerWithWebSocketDaemon(webSocketDaemon: any): void {
     this.webSocketDaemon = webSocketDaemon;
     
-    // Register route handlers for static files
+    // Register route handlers based on context
+    if (this.isRunningFromRepo()) {
+      // Development mode: serve from node_modules/continuum/dist/
+      this.webSocketDaemon.registerRouteHandler('/node_modules/continuum/dist/*', this, this.handleAPIGeneration.bind(this));
+    }
+    // Always register /dist/* for npm module mode
+    this.webSocketDaemon.registerRouteHandler('/dist/*', this, this.handleAPIGeneration.bind(this));
+    
+    // Register other static files
     this.webSocketDaemon.registerRouteHandler('/src/*', this, this.handleStaticRoute.bind(this));
-    this.webSocketDaemon.registerRouteHandler('/dist/*', this, this.handleStaticRoute.bind(this));
     
     // Register the root UI serving route
     this.webSocketDaemon.registerRouteHandler('/', this, this.handleUIRoute.bind(this));
@@ -406,6 +485,99 @@ export class RendererDaemon extends BaseDaemon {
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('Error loading UI from RendererDaemon');
     }
+  }
+
+  /**
+   * Handle API generation - compile TypeScript to JavaScript on-demand
+   */
+  private async handleAPIGeneration(pathname: string, _req: any, res: any): Promise<void> {
+    try {
+      this.log(`🔧 Compiling TypeScript for: ${pathname}`);
+      
+      if (pathname.endsWith('/api.js')) {
+        await this.compileContinuumAPI(_req, res);
+        return;
+      }
+      
+      // Handle other compiled assets
+      this.log(`❌ Unknown API path: ${pathname}`, 'error');
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('API not found');
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ API generation failed: ${errorMessage}`, 'error');
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end(`API generation error: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Compile continuum-browser.ts to api.js
+   */
+  private async compileContinuumAPI(_req: any, res: any): Promise<void> {
+    try {
+      const { promises: fs } = await import('fs');
+      const { join, dirname } = await import('path');
+      const { fileURLToPath } = await import('url');
+
+      // Find TypeScript source
+      const moduleDir = dirname(fileURLToPath(import.meta.url));
+      const tsSource = join(moduleDir, '../../ui/continuum-browser.ts');
+      
+      this.log(`📁 Loading TypeScript source: ${tsSource}`);
+      
+      const sourceCode = await fs.readFile(tsSource, 'utf-8');
+      
+      // Simple TypeScript to JavaScript compilation
+      const compiledJS = this.compileTypeScript(sourceCode);
+      
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      });
+      res.end(compiledJS);
+      
+      this.log(`✅ Compiled TypeScript API (${compiledJS.length} chars)`);
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ TypeScript compilation failed: ${errorMessage}`, 'error');
+      
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end(`TypeScript compilation error: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Simple TypeScript to JavaScript compiler
+   */
+  private compileTypeScript(source: string): string {
+    this.log('🔄 Compiling TypeScript...');
+    
+    // Simple compilation: strip types and interfaces
+    let compiled = source
+      .replace(/interface\s+\w+\s*{[^}]*}/gs, '') // Remove interfaces
+      .replace(/:\s*\w+(\[\])?(\s*\||\s*&)?(\s*\w+)*(?=\s*[,;=\)])/g, '') // Remove type annotations
+      .replace(/export\s+/g, '') // Remove exports for browser
+      .replace(/import\s+.*?from\s+.*?;/g, '') // Remove imports
+      .replace(/\{\{CONTINUUM_VERSION\}\}/g, this.dynamicVersion);
+    
+    // Add dynamic widget loading capability
+    compiled += `
+
+// Dynamic widget loading for modular architecture
+if (window.continuum) {
+  window.continuum.loadWidgets = async function() {
+    console.log('🔍 Loading widgets dynamically...');
+    // Widget loading will be implemented based on discovered modules
+  };
+}`;
+    
+    this.log(`✅ TypeScript compiled (${compiled.length} chars)`);
+    return compiled;
   }
 
   // NOTE: API endpoints moved to DataAPIDaemon

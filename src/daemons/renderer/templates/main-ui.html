@@ -38,15 +38,6 @@
         <chat-widget></chat-widget>
     </div>
     
-    <!-- Version injection placeholder - replaced by build/server -->
-    <script>
-        window.__CONTINUUM_VERSION__ = '{{CONTINUUM_VERSION}}';
-    </script>
-    
-    <!-- Load Pure TypeScript Continuum API -->
-    <script src="/src/ui/continuum.js"></script>
-    
-    <!-- Load TypeScript widget system -->
-    <script type="module" src="/dist/ui/widget-loader.js"></script>
+    <!-- All scripts injected dynamically by RendererDaemon -->
 </body>
 </html>

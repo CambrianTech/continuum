@@ -20,8 +20,13 @@ export class InfoCommand extends BaseCommand {
       category: 'core',
       icon: 'ℹ️',
       description: 'Show system information (placeholder - needs modern implementation)',
-      params: '{}',
-      examples: ['info'],
+      parameters: {},
+      examples: [
+        {
+          description: 'Show system information',
+          command: 'info'
+        }
+      ],
       usage: 'Display system information and status'
     };
   }

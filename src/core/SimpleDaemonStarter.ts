@@ -5,7 +5,7 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import { promises as fs } from 'fs';
-import path from 'path';
+// path module available for future use
 
 interface DaemonConfig {
   name: string;
@@ -67,27 +67,27 @@ export class SimpleDaemonStarter {
   private async startDaemon(daemon: DaemonConfig): Promise<void> {
     console.log(`🚀 Starting ${daemon.name}...`);
     
-    const process = spawn('npx', ['tsx', daemon.script], {
+    const childProcess = spawn('npx', ['tsx', daemon.script], {
       stdio: 'pipe',
       detached: false,
       cwd: process.cwd()
     });
     
-    daemon.process = process;
+    daemon.process = childProcess;
     
     // Handle process output with prefixed logging
-    process.stdout?.on('data', (data) => {
+    childProcess.stdout?.on('data', (data: any) => {
       const lines = data.toString().trim().split('\n');
-      lines.forEach(line => {
+      lines.forEach((line: string) => {
         if (line.trim()) {
           console.log(`[${daemon.name}] ${line}`);
         }
       });
     });
     
-    process.stderr?.on('data', (data) => {
+    childProcess.stderr?.on('data', (data: any) => {
       const lines = data.toString().trim().split('\n');
-      lines.forEach(line => {
+      lines.forEach((line: string) => {
         if (line.trim()) {
           console.log(`[${daemon.name}] ❌ ${line}`);
         }
@@ -95,7 +95,7 @@ export class SimpleDaemonStarter {
     });
     
     // Handle process exit
-    process.on('exit', (code, signal) => {
+    childProcess.on('exit', (code: any, signal: any) => {
       console.log(`[${daemon.name}] Process exited with code ${code}, signal ${signal}`);
       if (daemon.critical && code !== 0) {
         console.log(`❌ Critical daemon ${daemon.name} failed - system unstable`);

@@ -21,8 +21,17 @@ export class HelpCommand extends BaseCommand {
       category: 'core',
       icon: '❓',
       description: 'Show help for commands (placeholder - needs modern implementation)',
-      params: '{"command?": "string"}',
-      examples: ['help', 'help screenshot'],
+      parameters: { command: 'string' },
+      examples: [
+        {
+          description: 'Show general help',
+          command: 'help'
+        },
+        {
+          description: 'Show help for screenshot command',
+          command: 'help screenshot'
+        }
+      ],
       usage: 'Get help for available commands'
     };
   }

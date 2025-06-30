@@ -1149,14 +1149,10 @@ export class WebSocketDaemon extends BaseDaemon {
       const { promises: fs } = await import('fs');
       const path = await import('path');
       
-      // Special handling for TypeScript-generated content
-      if (pathname === '/src/ui/continuum.js') {
-        await this.handleContinuumJSGeneration(_req, res);
-        return;
-      }
-      
-      if (pathname === '/dist/ui/widget-loader.js') {
-        await this.handleWidgetLoaderGeneration(_req, res);
+      // Pure routing - find registered handler for this pathname
+      const handler = this.findRouteHandler(pathname);
+      if (handler) {
+        await handler.daemon[handler.handlerMethod](pathname, _req, res);
         return;
       }
       
@@ -1244,25 +1240,69 @@ export class WebSocketDaemon extends BaseDaemon {
     try {
       this.log('🎨 Generating continuum.js from TypeScript source...');
 
-      // Simple but functional Continuum API
-      const continuumAPI = `
-// Continuum API - Generated dynamically v${this.version}
+      const { promises: fs } = await import('fs');
+      const { join, dirname } = await import('path');
+      const { fileURLToPath } = await import('url');
+
+      // Get module path for continuum TypeScript source
+      const moduleDir = dirname(fileURLToPath(import.meta.url));
+      const continuumRootDir = join(moduleDir, '..', '..');
+      
+      // Load the actual TypeScript source
+      const continuumTSPath = join(continuumRootDir, 'ui/continuum-browser.ts');
+      
+      this.log(`📁 Loading TypeScript source: ${continuumTSPath}`);
+      
+      let continuumTS: string;
+      try {
+        continuumTS = await fs.readFile(continuumTSPath, 'utf-8');
+        this.log(`✅ Loaded TypeScript source (${continuumTS.length} chars)`);
+        
+        // Process TypeScript: remove types, replace placeholders
+        let processedJS = continuumTS
+          .replace(/interface\s+\w+\s*{[^}]*}/gs, '') // Remove interfaces
+          .replace(/:\s*\w+(\[\])?/g, '') // Remove type annotations
+          .replace(/\{\{CONTINUUM_VERSION\}\}/g, this.version)
+          .replace(/export\s+/g, '') // Remove exports for browser
+          .replace(/import\s+.*?from\s+.*?;/g, ''); // Remove imports for now
+          
+        this.log(`🔄 Processed TypeScript to JavaScript (${processedJS.length} chars)`);
+        continuumTS = processedJS;
+        
+      } catch (error) {
+        this.log('⚠️ TypeScript source not found, using fallback implementation...');
+        
+        // Fallback implementation if source not found
+        continuumTS = `
+// Continuum API - Fallback implementation v${this.version}
 console.log('Continuum API v${this.version} loaded');
 
-class ContinuumAPI {
+class ContinuumAPIImpl {
   constructor() {
     this.version = '${this.version}';
     this.websocket = null;
+    this.widgets = new Map();
+    this.init();
+  }
+  
+  async init() {
+    await this.connect();
+    await this.discoverAndLoadWidgets();
   }
   
   connect() {
     this.websocket = new WebSocket('ws://localhost:9000');
     console.log('WebSocket connecting...');
-    return this.websocket;
+    return new Promise((resolve) => {
+      this.websocket.onopen = () => {
+        console.log('✅ WebSocket connected');
+        resolve();
+      };
+    });
   }
   
   async execute(command, data = {}) {
-    if (!this.websocket) this.connect();
+    if (!this.websocket) await this.connect();
     return new Promise((resolve) => {
       this.websocket.send(JSON.stringify({
         type: 'execute_command',
@@ -1273,11 +1313,47 @@ class ContinuumAPI {
       resolve({ success: true });
     });
   }
+  
+  async discoverAndLoadWidgets() {
+    console.log('🔍 Discovering widgets...');
+    
+    const widgetList = await this.getAvailableWidgets();
+    
+    for (const widget of widgetList) {
+      await this.loadWidget(widget);
+    }
+    
+    console.log(\`✅ Loaded \${widgetList.length} widgets\`);
+  }
+  
+  async getAvailableWidgets() {
+    return [
+      { name: 'chat-widget', path: '/src/ui/components/Chat/ChatWidget.js' },
+      { name: 'continuum-sidebar', path: '/src/ui/components/Sidebar/SidebarWidget.js' }
+    ];
+  }
+  
+  async loadWidget(widget) {
+    try {
+      console.log(\`📦 Loading widget: \${widget.name}\`);
+      const module = await import(widget.path);
+      
+      if (!customElements.get(widget.name)) {
+        customElements.define(widget.name, module.default);
+        this.widgets.set(widget.name, module.default);
+        console.log(\`✅ Registered widget: \${widget.name}\`);
+      }
+      
+    } catch (error) {
+      console.error(\`❌ Failed to load widget \${widget.name}:\`, error);
+    }
+  }
 }
 
-window.continuum = new ContinuumAPI();
-console.log('✅ Continuum API available globally');
+window.continuum = new ContinuumAPIImpl();
+console.log('✅ Continuum API initializing...');
 `;
+      }
 
       // Set appropriate headers for JavaScript
       res.writeHead(200, {

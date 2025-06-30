@@ -53,7 +53,7 @@ export class Continuum {
    * Initialize and start the Continuum system
    * Returns hooks and API connection for JTAG integration
    */
-  async init(options: { devtools?: boolean } = {}): Promise<ContinuumSystem> {
+  async init(_options: { devtools?: boolean } = {}): Promise<ContinuumSystem> {
     if (this.isRunning) {
       console.log('✅ Continuum is already running');
       return this.getSystemHooks();
@@ -131,10 +131,10 @@ export class Continuum {
       
       // Event system
       events: {
-        on: (event: string, callback: Function) => {
+        on: (_event: string, _callback: Function) => {
           // TODO: Implement event system
         },
-        emit: (event: string, data: any) => {
+        emit: (_event: string, _data: any) => {
           // TODO: Implement event system
         }
       },
@@ -314,7 +314,7 @@ export class Continuum {
 export default Continuum;
 
 // Direct execution support
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (require.main === module) {
   const continuum = new Continuum();
   
   continuum.init()
