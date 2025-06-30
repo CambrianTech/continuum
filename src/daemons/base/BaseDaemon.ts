@@ -22,7 +22,7 @@ export abstract class BaseDaemon extends EventEmitter {
   private heartbeatInterval: NodeJS.Timeout | undefined;
   private startPromise?: Promise<void>;
   private stopPromise?: Promise<void>;
-  private signalHandlers: { [key: string]: (signal: NodeJS.Signals) => void } = {};
+  private signalHandlers: { [key: string]: any } = {};
   
   constructor() {
     super();

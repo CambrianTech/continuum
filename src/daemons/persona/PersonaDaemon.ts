@@ -47,8 +47,8 @@
  * - Event pipe management needs memory leak prevention
  */
 
-import { BaseDaemon } from '../base/BaseDaemon';
-import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import { RequestResponseDaemon, RequestHandler, RequestHandlerMap } from '../base/RequestResponseDaemon.js';
+import { DaemonResponse } from '../base/DaemonProtocol.js';
 import { EventEmitter } from 'events';
 
 // TODO: Replace 'any' types with proper interfaces throughout this file
@@ -105,7 +105,7 @@ export interface LoRAAdapter {
   };
 }
 
-export class PersonaDaemon extends BaseDaemon {
+export class PersonaDaemon extends RequestResponseDaemon {
   public readonly name: string;
   public readonly version: string = '1.0.0';
   
@@ -115,6 +115,17 @@ export class PersonaDaemon extends BaseDaemon {
   private modelAdapter: ModelAdapter | null = null; // TODO: Use proper ModelAdapterFactory
   private commandInterface: { execute: CommandInterfaceMethod } | null = null; // TODO: Use CommandProcessor interface
   private eventPipe: EventEmitter;
+  
+  // RequestResponseDaemon implementation
+  protected getRequestHandlers(): RequestHandlerMap {
+    return {
+      'execute_command': this.executeCommand.bind(this),
+      'chat_message': this.processChatMessage.bind(this),
+      'academy_training': this.handleAcademyTraining.bind(this),
+      'lora_adaptation': this.handleLoRAAdaptation.bind(this),
+      'get_status': this.getPersonaStatus.bind(this)
+    };
+  }
   
   constructor(config: PersonaConfig, academyConfig?: AcademyTrainingConfig) {
     super();
@@ -174,39 +185,7 @@ export class PersonaDaemon extends BaseDaemon {
     this.log('PersonaDaemon stopped');
   }
 
-  async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
-    try {
-      this.log(`Handling message: ${message.type} from ${message.from}`);
-      
-      switch (message.type) {
-        case 'execute_command':
-          return await this.executeCommand(message.data);
-          
-        case 'chat_message':
-          return await this.processChatMessage(message.data);
-          
-        case 'academy_training':
-          return await this.handleAcademyTraining(message.data);
-          
-        case 'lora_adaptation':
-          return await this.handleLoRAAdaptation(message.data);
-          
-        case 'get_status':
-          return await this.getPersonaStatus();
-          
-        default:
-          throw new Error(`Unknown message type: ${message.type}`);
-      }
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`Error handling message: ${errorMessage}`, 'error');
-      return {
-        success: false,
-        error: errorMessage
-      };
-    }
-  }
+  // Removed handleMessage - now handled by MessageRoutedDaemon base class
 
   /**
    * Execute same commands as human sessions (screenshot, browser_js, etc.)

@@ -4,8 +4,8 @@
  * Handles browser lifecycle, tab management, resource optimization
  */
 
-import { BaseDaemon } from '../base/BaseDaemon';
-import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon.js';
+import { DaemonResponse } from '../base/DaemonProtocol.js';
 
 export interface BrowserRequest {
   type: 'create' | 'destroy' | 'list' | 'optimize';
@@ -32,10 +32,9 @@ export interface BrowserConfig {
 }
 
 export interface BrowserFilters {
-  byPurpose?: string;
-  byPersona?: string;
-  byState?: string[];
-  minResources?: number;
+  status?: string[];
+  persona?: string[];
+  ageMinutes?: number;
 }
 
 export interface ManagedBrowser {
@@ -58,11 +57,29 @@ export interface ManagedBrowser {
 /**
  * Browser Manager Daemon - System service
  */
-export class BrowserManagerDaemon extends BaseDaemon {
+export class BrowserManagerDaemon extends MessageRoutedDaemon {
   public readonly name = 'browser-manager';
   public readonly version = '1.0.0';
   private browsers = new Map<string, ManagedBrowser>();
   private resourceMonitor: NodeJS.Timeout | null = null;
+  
+  // MessageRoutedDaemon implementation
+  protected readonly primaryMessageType = 'browser_request';
+  
+  protected getRouteMap(): MessageRouteMap {
+    return {
+      'create': this.createBrowser.bind(this),
+      'destroy': this.destroyBrowser.bind(this),
+      'list': this.listBrowsers.bind(this),
+      'optimize': this.optimizeResources.bind(this)
+    };
+  }
+
+  protected getAdditionalMessageHandlers(): { [messageType: string]: MessageRouteHandler } {
+    return {
+      'get_capabilities': this.getCapabilities.bind(this)
+    };
+  }
 
   protected async onStart(): Promise<void> {
     // Start resource monitoring
@@ -83,55 +100,18 @@ export class BrowserManagerDaemon extends BaseDaemon {
     await this.shutdownAllBrowsers();
   }
 
-  /**
-   * Handle requests from Continuum OS or other processes
-   */
-  async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
-    // Handle standard daemon messages
-    if (message.type === 'get_capabilities') {
-      return {
-        success: true,
-        data: {
-          capabilities: [
-            'browser-management',
-            'tab-orchestration', 
-            'resource-optimization'
-          ],
-          messageTypes: [
-            'browser_request'
-          ]
-        }
-      };
-    }
-
-    // Handle browser requests
-    if (message.type === 'browser_request') {
-      const request = message.data as BrowserRequest;
-      
-      switch (request.type) {
-        case 'create':
-          return await this.createBrowser(request);
-        
-        case 'destroy':
-          return await this.destroyBrowser(request);
-        
-        case 'list':
-          return await this.listBrowsers(request);
-        
-        case 'optimize':
-          return await this.optimizeResources(request);
-        
-        default:
-          return {
-            success: false,
-            error: `Unknown browser request type: ${request.type}`
-          };
-      }
-    }
-
+  private async getCapabilities(): Promise<DaemonResponse> {
     return {
-      success: false,
-      error: `Unknown message type: ${message.type}`
+      success: true,
+      data: {
+        capabilities: [
+          'browser-management',
+          'tab-orchestration', 
+          'resource-optimization'
+        ],
+        messageTypes: this.getSupportedMessageTypes(),
+        routes: this.getSupportedRoutes()
+      }
     };
   }
 
@@ -158,18 +138,25 @@ export class BrowserManagerDaemon extends BaseDaemon {
       return {
         success: true,
         data: {
-          browserId: browser.id,
-          port: browser.port,
-          type: browser.type,
-          strategy: strategy.type
+          browser: {
+            id: browser.id,
+            type: browser.type,
+            port: browser.port,
+            status: browser.state,
+            purpose: browser.config.purpose,
+            persona: browser.config.persona,
+            sessionId: request.sessionId,
+            created: browser.startTime,
+            pid: browser.pid
+          }
         }
       };
       
     } catch (error) {
-      this.log(`Failed to create browser: ${error}`, 'error');
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: `Browser creation failed: ${error}`
+        error: errorMessage
       };
     }
   }
@@ -386,28 +373,45 @@ export class BrowserManagerDaemon extends BaseDaemon {
   private async getTabCount(_port: number): Promise<number> { return 0; }
   private async closeBrowser(_id: string): Promise<void> {}
   private async consolidateResources(): Promise<void> {}
-  private async destroyBrowser(_request: BrowserRequest): Promise<DaemonResponse> { return { success: true }; }
-  private async listBrowsers(request: BrowserRequest): Promise<DaemonResponse> { 
+  private async destroyBrowser(request: BrowserRequest): Promise<DaemonResponse> {
+    // Mock browser destruction
+    return {
+      success: true,
+      data: {
+        message: 'Browser terminated',
+        sessionId: request.sessionId
+      }
+    };
+  }
+
+  private async listBrowsers(request: BrowserRequest): Promise<DaemonResponse> {
     const browsers = Array.from(this.browsers.values()).map(browser => ({
       id: browser.id,
       type: browser.type,
-      state: browser.state,
-      port: browser.port,
-      sessions: browser.sessions.size,
-      resources: browser.resources,
-      purpose: browser.config.purpose
+      status: browser.state,
+      persona: browser.config.persona,
+      created: browser.startTime
     }));
     
-    return { 
-      success: true, 
-      data: { 
-        browsers,
-        total: browsers.length,
-        filters: request.filters || {}
-      } 
-    }; 
+    return {
+      success: true,
+      data: {
+        browsers
+      }
+    };
   }
-  private async optimizeResources(_request: BrowserRequest): Promise<DaemonResponse> { return { success: true }; }
+
+  private async optimizeResources(request: BrowserRequest): Promise<DaemonResponse> {
+    // Mock optimization
+    return {
+      success: true,
+      data: {
+        optimized: true,
+        memoryFreed: Math.floor(Math.random() * 100) + 50,
+        browsersOptimized: Math.floor(Math.random() * 5) + 1
+      }
+    };
+  }
   private async shutdownAllBrowsers(): Promise<void> {}
   private async sendToOS(_type: string, _data: any): Promise<void> {}
 }
