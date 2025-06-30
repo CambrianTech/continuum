@@ -2,7 +2,7 @@
   "name": "connect-core",
   "version": "1.0.0",
   "description": "connect core for Continuum",
-  "main": "ConnectCore.ts",
+  "main": "ConnectCommand.ts",
   "type": "module",
   "continuum": {
     "core": "connect",

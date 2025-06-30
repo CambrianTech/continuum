@@ -12,7 +12,8 @@
     ],
     "dependencies": [],
     "interfaces": [],
-    "permissions": []
+    "permissions": [],
+    "disabled": true
   },
   "keywords": [
     "listagents",

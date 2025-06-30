@@ -320,7 +320,7 @@ export abstract class BaseFileCommand extends BaseCommand {
   /**
    * Fallback directory operations for development mode
    */
-  protected static async fallbackDirectoryOperation(operation: DirectoryOperation, params: any): Promise<any> {
+  protected static async fallbackDirectoryOperation(operation: DirectoryOperation, _params: any): Promise<any> {
     const fs = await import('fs/promises');
     
     switch (operation) {

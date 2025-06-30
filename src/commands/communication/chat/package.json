@@ -2,7 +2,7 @@
   "name": "chat-core",
   "version": "1.0.0",
   "description": "chat core for Continuum",
-  "main": "ChatCore.ts",
+  "main": "ChatCommand.ts",
   "type": "module",
   "continuum": {
     "core": "chat",

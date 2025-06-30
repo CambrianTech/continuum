@@ -2,7 +2,7 @@
   "name": "append-core",
   "version": "1.0.0",
   "description": "append core for Continuum",
-  "main": "AppendCore.ts",
+  "main": "FileAppendCommand.ts",
   "type": "module",
   "continuum": {
     "core": "append",

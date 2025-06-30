@@ -2,7 +2,7 @@
   "name": "base-core",
   "version": "1.0.0",
   "description": "base core for Continuum",
-  "main": "BaseCore.ts",
+  "main": "BaseFileCommand.ts",
   "type": "module",
   "continuum": {
     "core": "base",

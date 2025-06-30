@@ -2,17 +2,19 @@
   "name": "createroom-core",
   "version": "1.0.0",
   "description": "createroom core for Continuum",
-  "main": "CreateroomCore.ts",
+  "main": "CreateroomCommand.ts",
   "type": "module",
   "continuum": {
     "core": "createroom",
     "category": "Core",
     "capabilities": [
-      "auto-generated"
+      "messaging"
     ],
     "dependencies": [],
     "interfaces": [],
-    "permissions": []
+    "permissions": [
+      "network"
+    ]
   },
   "keywords": [
     "createroom",

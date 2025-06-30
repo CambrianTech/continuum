@@ -2,7 +2,7 @@
   "name": "read-core",
   "version": "1.0.0",
   "description": "read core for Continuum",
-  "main": "ReadCore.ts",
+  "main": "FileReadCommand.ts",
   "type": "module",
   "continuum": {
     "core": "read",

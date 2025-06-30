@@ -2,7 +2,7 @@
   "name": "write-core",
   "version": "1.0.0",
   "description": "write core for Continuum",
-  "main": "WriteCore.ts",
+  "main": "FileWriteCommand.ts",
   "type": "module",
   "continuum": {
     "core": "write",

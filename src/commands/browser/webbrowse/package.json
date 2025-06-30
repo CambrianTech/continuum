@@ -8,11 +8,12 @@
     "core": "webbrowse",
     "category": "Core",
     "capabilities": [
-      "auto-generated"
+      "browser-automation"
     ],
     "dependencies": [],
     "interfaces": [],
-    "permissions": []
+    "permissions": [],
+    "disabled": true
   },
   "keywords": [
     "webbrowse",

@@ -8,6 +8,7 @@
 
 import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
 import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand.js';
+import * as fs from 'fs/promises';
 import * as path from 'path';
 
 // Strongly typed enums for session and window management

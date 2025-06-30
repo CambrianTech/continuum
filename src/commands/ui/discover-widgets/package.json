@@ -2,7 +2,7 @@
   "name": "discover-widgets-core",
   "version": "1.0.0",
   "description": "discover-widgets core for Continuum",
-  "main": "DiscoverWidgetsCore.ts",
+  "main": "DiscoverWidgetsCommand.ts",
   "type": "module",
   "continuum": {
     "core": "discover_widgets",
