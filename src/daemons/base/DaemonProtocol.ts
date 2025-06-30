@@ -22,13 +22,16 @@ export interface DaemonResponse {
   processingTime?: number;
 }
 
-export type DaemonStatus = 
-  | 'stopped' 
-  | 'starting' 
-  | 'running' 
-  | 'stopping' 
-  | 'failed' 
-  | 'restarting';
+export enum DaemonStatus {
+  STOPPED = 'stopped',
+  STARTING = 'starting', 
+  RUNNING = 'running',
+  STOPPING = 'stopping',
+  FAILED = 'failed'
+}
+
+// Keep type for backward compatibility
+export type DaemonStatusType = DaemonStatus;
 
 export interface DaemonCapability {
   name: string;
