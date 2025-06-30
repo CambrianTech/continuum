@@ -91,8 +91,9 @@ class ComprehensiveBrowserTester {
     
     await this.runTest('command-discovery', async () => {
       // Test that the API can discover available commands
-      const testCommands = ['preferences', 'reload', 'help', 'info'];
-      const availableCommands = [];
+      // TODO: Implement command discovery validation
+      // const testCommands = ['preferences', 'reload', 'help', 'info'];
+      // const availableCommands = [];
       
       // Try to connect to WebSocket and list commands
       const ws = new WebSocket('ws://localhost:9000');
@@ -166,7 +167,8 @@ class ComprehensiveBrowserTester {
       const hasModernFonts = html.includes('-apple-system') || html.includes('BlinkMacSystemFont');
       const hasResponsiveDesign = html.includes('viewport');
       const hasFlexbox = html.includes('display: flex');
-      const hasProperColors = html.includes('#0f1419') || html.includes('#1a1f2e');
+      // TODO: Add color scheme validation
+      // const hasProperColors = html.includes('#0f1419') || html.includes('#1a1f2e');
       
       if (!hasGradient || !hasModernFonts || !hasResponsiveDesign || !hasFlexbox) {
         throw new Error(`Visual polish missing: gradient:${hasGradient}, fonts:${hasModernFonts}, responsive:${hasResponsiveDesign}, flexbox:${hasFlexbox}`);

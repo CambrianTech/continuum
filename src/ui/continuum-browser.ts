@@ -93,7 +93,7 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     };
 
     console.table = (...args: any[]) => {
-      originalConsole.table.apply(console, args);
+      (originalConsole.table as any).apply(console, args);
       this.forwardConsoleLog('table', args);
     };
 
@@ -182,7 +182,7 @@ class ContinuumBrowserAPI implements ContinuumAPI {
               name: args[0].name,
               message: args[0].message,
               stack: args[0].stack,
-              cause: args[0].cause
+              cause: (args[0] as any).cause
             }
           } : {})
         };
@@ -229,7 +229,7 @@ class ContinuumBrowserAPI implements ContinuumAPI {
           name: arg.name,
           message: arg.message,
           stack: arg.stack,
-          cause: arg.cause
+          cause: (arg as any).cause
         };
       }
       
@@ -285,7 +285,8 @@ class ContinuumBrowserAPI implements ContinuumAPI {
       return { type, value: String(arg) };
       
     } catch (error) {
-      return { type: 'unknown', value: '[Inspection error]', error: error.message };
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return { type: 'unknown', value: '[Inspection error]', error: errorMessage };
     }
   }
   
@@ -602,7 +603,8 @@ class ContinuumBrowserAPI implements ContinuumAPI {
         });
       }
     } catch (error) {
-      console.log('🏥 Could not forward health report to portal:', error.message);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.log('🏥 Could not forward health report to portal:', errorMessage);
     }
     
     return healthReport;

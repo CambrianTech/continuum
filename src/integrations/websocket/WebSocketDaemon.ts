@@ -110,7 +110,7 @@ export class WebSocketDaemon extends BaseDaemon {
   /**
    * Register route handler - PURE ROUTING
    */
-  public registerRouteHandler(pattern: string, daemon: any, handler: Function): void {
+  public registerRouteHandler(pattern: string, daemon: any, handler: (pathname: string, req: any, res: any) => Promise<void>): void {
     this.routeManager.registerRoute(pattern, daemon, handler);
   }
 
@@ -168,7 +168,7 @@ export class WebSocketDaemon extends BaseDaemon {
     }
   }
 
-  private handleDaemonRegistration(data: any): DaemonResponse {
+  private handleDaemonRegistration(_data: any): DaemonResponse {
     // Handle external daemon registration
     return {
       success: true,

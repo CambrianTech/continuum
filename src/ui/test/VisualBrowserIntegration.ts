@@ -102,7 +102,7 @@ class VisualBrowserIntegration {
       this.results.push({
         test: 'browser-window-opens',
         passed: false,
-        details: `Failed to open browser: ${error.message}`
+        details: `Failed to open browser: ${error instanceof Error ? error.message : String(error)}`
       });
       console.log('  ❌ Failed to open browser window');
       throw error;
@@ -146,7 +146,7 @@ class VisualBrowserIntegration {
       this.results.push({
         test: 'ui-renders-correctly',
         passed: false,
-        details: `UI rendering failed: ${error.message}`
+        details: `UI rendering failed: ${error instanceof Error ? error.message : String(error)}`
       });
       console.log('  ❌ UI rendering validation failed');
     }
@@ -194,7 +194,7 @@ class VisualBrowserIntegration {
       this.results.push({
         test: 'websocket-status', 
         passed: false,
-        details: `WebSocket test failed: ${error.message}`
+        details: `WebSocket test failed: ${error instanceof Error ? error.message : String(error)}`
       });
       console.log('  ❌ WebSocket connection failed');
     }
@@ -231,7 +231,7 @@ class VisualBrowserIntegration {
       this.results.push({
         test: 'devtools-integration',
         passed: false,
-        details: `DevTools test failed: ${error.message}`
+        details: `DevTools test failed: ${error instanceof Error ? error.message : String(error)}`
       });
       console.log('  ❌ DevTools integration failed');
     }
@@ -272,7 +272,7 @@ class VisualBrowserIntegration {
       this.results.push({
         test: 'screenshot-capture',
         passed: false,
-        details: `Screenshot test failed: ${error.message}`
+        details: `Screenshot test failed: ${error instanceof Error ? error.message : String(error)}`
       });
       console.log('  ❌ Screenshot infrastructure failed');
     }

@@ -204,7 +204,8 @@ export class ConnectionManager extends EventEmitter {
 
   private performHeartbeat(): void {
     const now = new Date();
-    const _timeoutThreshold = now.getTime() - this.config.clientTimeout;
+    // TODO: Implement timeout threshold for client cleanup
+    // const timeoutThreshold = now.getTime() - this.config.clientTimeout;
     const staleClients: string[] = [];
     
     console.log(`💓 Heartbeat check: ${this.clients.size} clients, timeout threshold: ${this.config.clientTimeout}ms`);
