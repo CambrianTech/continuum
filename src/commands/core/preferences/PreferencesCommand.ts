@@ -38,7 +38,8 @@
  * - PreferenceDefaults (default values management)
  */
 
-import { BaseCommand, CommandResult, CommandDefinition } from '../base-command/BaseCommand';
+import { OperationRoutedCommand, OperationMap } from '../operation-routed-command/OperationRoutedCommand.js';
+import { CommandResult, CommandDefinition } from '../base-command/BaseCommand.js';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 
@@ -57,7 +58,7 @@ export interface PreferencesData {
   readonly [key: string]: string | number | boolean | object | unknown[] | PreferencesData;
 }
 
-export class PreferencesCommand extends BaseCommand {
+export class PreferencesCommand extends OperationRoutedCommand {
   private static preferences: PreferencesData = {};
   private static preferencesFile: string = '';
   private static schema: PreferenceSchema = {};
@@ -92,43 +93,26 @@ export class PreferencesCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any): Promise<CommandResult> {
+  // OperationRoutedCommand implementation
+  protected static getOperationMap(): OperationMap {
+    return {
+      'get': this.getPreference.bind(this),
+      'set': this.setPreference.bind(this),
+      'list': this.listPreferences.bind(this),
+      'reset': this.resetPreferences.bind(this),
+      'export': this.exportPreferences.bind(this),
+      'import': this.importPreferences.bind(this)
+    };
+  }
+
+  protected static getDefaultOperation(): string {
+    return 'list';
+  }
+
+  // Override execute to ensure initialization
+  static async execute(params: any, context?: any): Promise<CommandResult> {
     await this.ensureInitialized();
-    
-    const parsedParams = this.parseParams(params);
-    const operation = parsedParams.operation || parsedParams._?.[0] || 'list';
-    const data = parsedParams.data || parsedParams;
-    
-    try {
-      console.log(`Executing preferences operation: ${operation}`);
-      
-      switch (operation) {
-        case 'get':
-          return await this.getPreference(data);
-          
-        case 'set':
-          return await this.setPreference(data);
-          
-        case 'list':
-          return await this.listPreferences(data);
-          
-        case 'reset':
-          return await this.resetPreferences(data);
-          
-        case 'export':
-          return await this.exportPreferences();
-          
-        case 'import':
-          return await this.importPreferences(data);
-          
-        default:
-          return this.createErrorResult(`Unknown preferences operation: ${operation}. Available: get, set, list, reset, export, import`);
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`Preferences operation failed: ${errorMessage}`);
-      return this.createErrorResult(`Preferences operation failed: ${errorMessage}`);
-    }
+    return await super.execute(params, context);
   }
 
   private static async ensureInitialized(): Promise<void> {

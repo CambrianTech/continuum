@@ -2,10 +2,10 @@
  * Personas Command - List available AI personas
  */
 
-import { BaseCommand } from '../base-command/BaseCommand.js';
-import { CommandDefinition, CommandResult } from '../../../types/CommandTypes.js';
+import { DirectCommand } from '../direct-command/DirectCommand.js';
+import { CommandDefinition, CommandResult, CommandContext } from '../../../types/CommandTypes.js';
 
-export class PersonasCommand extends BaseCommand {
+export class PersonasCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
     return {
       name: 'personas',
@@ -32,7 +32,7 @@ export class PersonasCommand extends BaseCommand {
     };
   }
 
-  static async execute(_command: string, params: any = {}): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, _context?: CommandContext): Promise<CommandResult> {
     try {
       const showActiveOnly = params.active || false;
 

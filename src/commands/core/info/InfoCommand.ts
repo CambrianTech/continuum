@@ -11,9 +11,10 @@
  * Original functionality: System information display
  */
 
-import { BaseCommand, CommandDefinition, CommandContext, CommandResult } from '../base-command/BaseCommand';
+import { DirectCommand } from '../direct-command/DirectCommand.js';
+import { CommandDefinition, CommandContext, CommandResult } from '../base-command/BaseCommand.js';
 
-export class InfoCommand extends BaseCommand {
+export class InfoCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
     return {
       name: 'info',
@@ -31,7 +32,7 @@ export class InfoCommand extends BaseCommand {
     };
   }
 
-  static async execute(_params: any, _context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(_params: any, _context?: CommandContext): Promise<CommandResult> {
     return this.createSuccessResult(
       'Info system placeholder - original moved to junk.jun.29/legacy-typescript/info/',
       {
