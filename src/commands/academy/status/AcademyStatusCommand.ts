@@ -13,7 +13,12 @@ export class AcademyStatusCommand extends DirectCommand {
       name: 'academy-status',
       description: 'Monitor Academy training progress, P2P network health, and vector space evolution metrics',
       category: 'academy',
-      examples: ['academy-status --detail_level="detailed" --include_p2p=true'],
+      examples: [
+        {
+          description: 'Get detailed Academy status with P2P network info',
+          command: 'academy-status --detail_level="detailed" --include_p2p=true'
+        }
+      ],
       parameters: {
         persona_id: { type: 'string', required: false, description: 'Specific persona to check (all if not specified)' },
         detail_level: { type: 'string', required: false, description: 'summary | detailed | deep_metrics' },

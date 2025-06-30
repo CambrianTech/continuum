@@ -12,6 +12,13 @@ export class DatabaseSaveCommand extends DirectCommand {
     return {
       name: 'database-save',
       description: 'Save data records to the database',
+      category: 'database',
+      examples: [
+        {
+          description: 'Save user data to database',
+          command: 'database-save --table="users" --data="{\"name\":\"John\", \"email\":\"john@example.com\"}"'
+        }
+      ],
       parameters: {
         table: { type: 'string', required: true, description: 'Database table name' },
         data: { type: 'object', required: true, description: 'Data to save' },
@@ -20,11 +27,12 @@ export class DatabaseSaveCommand extends DirectCommand {
     };
   }
 
-  async execute(params: any, context: CommandContext): Promise<CommandResult> {
+  async execute(params: any, _context: CommandContext): Promise<CommandResult> {
     try {
       if (!params.table || !params.data) {
         return {
           success: false,
+          message: 'Table name and data are required',
           error: 'Table name and data are required'
         };
       }
@@ -38,6 +46,7 @@ export class DatabaseSaveCommand extends DirectCommand {
 
       return {
         success: true,
+        message: 'Record saved successfully',
         data: {
           message: 'Record saved successfully',
           record_id: result.record_id,
@@ -47,6 +56,7 @@ export class DatabaseSaveCommand extends DirectCommand {
     } catch (error) {
       return {
         success: false,
+        message: `Database save failed: ${error instanceof Error ? error.message : String(error)}`,
         error: `Database save failed: ${error instanceof Error ? error.message : String(error)}`
       };
     }

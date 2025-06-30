@@ -12,6 +12,13 @@ export class CreateroomCommand extends DirectCommand {
     return {
       name: 'createroom',
       description: 'Create communication rooms for collaborative sessions',
+      category: 'communication',
+      examples: [
+        {
+          description: 'Create a new chat room',
+          command: 'createroom --name="project_discussion"'
+        }
+      ],
       parameters: {
         name: { type: 'string', required: true, description: 'Room name' },
         type: { type: 'string', required: false, description: 'Room type (chat, collaboration, etc.)' },
@@ -25,6 +32,7 @@ export class CreateroomCommand extends DirectCommand {
       if (!params.name) {
         return {
           success: false,
+          message: 'Room name is required',
           error: 'Room name is required'
         };
       }
@@ -43,6 +51,7 @@ export class CreateroomCommand extends DirectCommand {
 
       return {
         success: true,
+        message: 'Room created successfully',
         data: {
           message: 'Room created successfully',
           room_id: result.room_id,
@@ -52,6 +61,7 @@ export class CreateroomCommand extends DirectCommand {
     } catch (error) {
       return {
         success: false,
+        message: `Room creation failed: ${error instanceof Error ? error.message : String(error)}`,
         error: `Room creation failed: ${error instanceof Error ? error.message : String(error)}`
       };
     }

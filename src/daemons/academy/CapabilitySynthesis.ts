@@ -5,8 +5,6 @@
  * by finding, composing, and fine-tuning LoRA layers dynamically
  */
 
-import { PersonaGenome, PersonaGenomeQuery } from './PersonaGenome.js';
-import { PersonaSearchIndex, PersonaSearchQuery } from './PersonaSearchIndex.js';
 import { LoRADiscovery, LoRAMetadata } from './LoRADiscovery.js';
 
 export interface CapabilityRequest {
@@ -25,6 +23,26 @@ export interface PerformanceReq {
   context_understanding: number;         // How well it needs to understand domain context
 }
 
+export interface EstimatedPerformance {
+  overall_score: number;
+  domain_scores: Record<string, number>;
+  confidence_interval: [number, number];
+}
+
+export interface ResourceRequirements {
+  compute_hours: number;
+  memory_gb: number;
+  storage_gb: number;
+  network_bandwidth_mbps: number;
+}
+
+export interface DataSource {
+  type: 'public_dataset' | 'custom_data' | 'synthetic' | 'peer_knowledge';
+  source_id: string;
+  data_quality: number;
+  relevance_score: number;
+}
+
 export interface SynthesisResult {
   synthesis_strategy: 'exact_match' | 'layer_composition' | 'fine_tune_required' | 'novel_creation';
   confidence: number;                    // 0-1 confidence in meeting requirements
@@ -33,7 +51,7 @@ export interface SynthesisResult {
   fine_tuning_plan?: FineTuningPlan;
   estimated_performance: EstimatedPerformance;
   creation_time_estimate: number;        // milliseconds
-  resource_requirements: ResourceReq;
+  resource_requirements: ResourceRequirements;
 }
 
 export interface ComponentPersona {

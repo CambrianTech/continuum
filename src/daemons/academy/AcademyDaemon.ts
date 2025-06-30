@@ -5,8 +5,8 @@
 
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
-import { LocalAcademyTrainer, TrainingSession } from './LocalAcademyTrainer.js';
-import { LoRADiscovery, LoRAMetadata } from './LoRADiscovery.js';
+import { LocalAcademyTrainer } from './LocalAcademyTrainer.js';
+import { LoRADiscovery } from './LoRADiscovery.js';
 
 export interface AcademyStatus {
   isActive: boolean;
@@ -63,10 +63,10 @@ export class AcademyDaemon extends BaseDaemon {
   };
 
   private trainingSessions: Map<string, TrainingSession> = new Map();
-  private vectorSpaceEvolution: VectorSpaceEvolution;
-  private p2pNetworkStatus: P2PNetworkStatus;
-  private localTrainer: LocalAcademyTrainer;
-  private loraDiscovery: LoRADiscovery;
+  private vectorSpaceEvolution!: VectorSpaceEvolution;
+  private p2pNetworkStatus!: P2PNetworkStatus;
+  private localTrainer!: LocalAcademyTrainer;
+  private loraDiscovery!: LoRADiscovery;
 
   protected async onStart(): Promise<void> {
     this.log('🎓 Starting Academy Daemon...');
@@ -251,7 +251,7 @@ export class AcademyDaemon extends BaseDaemon {
   }
 
   private async startTraining(data: any): Promise<DaemonResponse> {
-    const { student_persona, trainer_mode, evolution_target, vector_exploration, session_id, personaId, config } = data;
+    const { student_persona, trainer_mode, evolution_target, vector_exploration, session_id: _session_id, personaId, config } = data;
     
     // Support both new evolution session format and legacy format
     const persona = student_persona || personaId;
@@ -466,7 +466,7 @@ export class AcademyDaemon extends BaseDaemon {
    * Get comprehensive Academy status including vector space evolution and P2P network
    */
   private async getComprehensiveStatus(data: any): Promise<DaemonResponse> {
-    const { persona_id, detail_level, include_p2p, include_vector_space, include_adversarial } = data;
+    const { persona_id, detail_level: _detail_level, include_p2p, include_vector_space, include_adversarial } = data;
     
     this.log('📊 Getting comprehensive Academy status');
     

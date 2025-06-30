@@ -12,6 +12,13 @@ export class ChatCommand extends DirectCommand {
     return {
       name: 'chat',
       description: 'Core chat messaging functionality',
+      category: 'communication',
+      examples: [
+        {
+          description: 'Send a message to default room',
+          command: 'chat --message="Hello world"'
+        }
+      ],
       parameters: {
         message: { type: 'string', required: false, description: 'Message to send' },
         room: { type: 'string', required: false, description: 'Chat room ID' }
@@ -32,6 +39,7 @@ export class ChatCommand extends DirectCommand {
         
         return {
           success: true,
+          message: 'Message sent successfully',
           data: result
         };
       }
@@ -43,6 +51,7 @@ export class ChatCommand extends DirectCommand {
 
       return {
         success: true,
+        message: 'Chat system ready',
         data: {
           status: 'Chat system ready',
           available_rooms: roomsResult.rooms
@@ -52,6 +61,7 @@ export class ChatCommand extends DirectCommand {
       // Fallback if ChatRoomDaemon not available
       return {
         success: false,
+        message: `Chat system error: ${error instanceof Error ? error.message : String(error)}`,
         error: `Chat system error: ${error instanceof Error ? error.message : String(error)}`
       };
     }

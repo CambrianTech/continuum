@@ -12,6 +12,13 @@ export class DatabaseQueryCommand extends DirectCommand {
     return {
       name: 'database-query',
       description: 'Query and retrieve records from the database',
+      category: 'database',
+      examples: [
+        {
+          description: 'Query all records from a table',
+          command: 'database-query --table="users"'
+        }
+      ],
       parameters: {
         table: { type: 'string', required: true, description: 'Database table name' },
         id: { type: 'string', required: false, description: 'Specific record ID to retrieve' },
@@ -24,11 +31,12 @@ export class DatabaseQueryCommand extends DirectCommand {
     };
   }
 
-  async execute(params: any, context: CommandContext): Promise<CommandResult> {
+  async execute(params: any, _context: CommandContext): Promise<CommandResult> {
     try {
       if (!params.table) {
         return {
           success: false,
+          message: 'Table name is required',
           error: 'Table name is required'
         };
       }
@@ -44,6 +52,7 @@ export class DatabaseQueryCommand extends DirectCommand {
         
         return {
           success: true,
+          message: 'Record retrieved successfully',
           data: {
             record: result.record,
             table: params.table
@@ -65,6 +74,7 @@ export class DatabaseQueryCommand extends DirectCommand {
 
       return {
         success: true,
+        message: 'Records retrieved successfully',
         data: {
           records: result.records,
           total_count: result.total_count,
@@ -74,6 +84,7 @@ export class DatabaseQueryCommand extends DirectCommand {
     } catch (error) {
       return {
         success: false,
+        message: `Database query failed: ${error instanceof Error ? error.message : String(error)}`,
         error: `Database query failed: ${error instanceof Error ? error.message : String(error)}`
       };
     }

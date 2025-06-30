@@ -49,6 +49,7 @@ export interface IndexEntry {
 export interface QueryFilter {
   type?: string;
   domain?: string;
+  target_capability?: string;
   date_range?: { start: Date; end: Date };
   performance_threshold?: number;
   size_limit?: number;
@@ -71,11 +72,10 @@ export interface SearchResult<T> {
  */
 export class AcademyDatabase {
   private dbClient: AcademyDatabaseClient;
-  private config: AcademyDatabaseConfig;
 
   constructor(databaseDaemon: any, config: Partial<AcademyDatabaseConfig> = {}) {
     this.dbClient = new AcademyDatabaseClient(databaseDaemon);
-    this.config = {
+    const _config = {
       base_path: '.continuum/academy',
       auto_backup: true,
       compression_enabled: false,
@@ -373,14 +373,14 @@ export class AcademyDatabase {
   // Private utility methods for Academy-specific operations
   // These are stubs - would be implemented based on actual requirements
   
-  private generateDatePath(date: Date): string {
+  private _generateDatePath(date: Date): string {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     return `${year}/${month}/${day}`;
   }
 
-  private calculateChecksum(data: string): string {
+  private _calculateChecksum(data: string): string {
     // Simple checksum - in production would use crypto hash
     let hash = 0;
     for (let i = 0; i < data.length; i++) {

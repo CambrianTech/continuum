@@ -34,8 +34,8 @@ export class ContinuumSystem extends EventEmitter {
     console.log('🌟 Continuum System Starting');
     console.log('============================');
     
-    // Clear any existing port conflicts
-    await this.clearPorts();
+    // Clear any existing port conflicts (temporarily disabled for debugging)
+    // await this.clearPorts();
     
     // Set up daemon event listeners
     for (const [name, daemon] of this.daemons) {
@@ -80,12 +80,22 @@ export class ContinuumSystem extends EventEmitter {
           resolve();
         });
         
-        server.on('error', (error: any) => {
+        server.on('error', async (error: any) => {
           if (error.code === 'EADDRINUSE') {
             console.log('⚠️  Port 9000 in use - attempting cleanup...');
-            // In a real implementation, we'd identify and clean up the conflicting process
-            // For now, just fail fast with a clear message
-            reject(new Error('Port 9000 is in use. Please stop other Continuum instances.'));
+            try {
+              await this.killPortProcesses(9000);
+              console.log('✅ Port 9000 freed, retrying...');
+              // Retry after cleanup
+              setTimeout(() => {
+                server.listen(9000, () => {
+                  server.close();
+                  resolve();
+                });
+              }, 1000);
+            } catch (cleanupError) {
+              reject(new Error(`Port 9000 cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`));
+            }
           } else {
             reject(error);
           }
@@ -93,6 +103,44 @@ export class ContinuumSystem extends EventEmitter {
       });
     } catch (error) {
       console.log('⚠️  Port check failed:', error);
+    }
+  }
+
+  private async killPortProcesses(port: number): Promise<void> {
+    const { exec } = await import('child_process');
+    const { promisify } = await import('util');
+    const execAsync = promisify(exec);
+
+    try {
+      // Find processes using the port
+      const { stdout } = await execAsync(`lsof -ti:${port}`);
+      const pids = stdout.trim().split('\n').filter(pid => pid);
+      
+      if (pids.length > 0) {
+        console.log(`🔧 Killing processes on port ${port}: ${pids.join(', ')}`);
+        
+        // Kill processes gracefully first
+        for (const pid of pids) {
+          try {
+            await execAsync(`kill ${pid}`);
+          } catch (error) {
+            // If graceful kill fails, force kill
+            try {
+              await execAsync(`kill -9 ${pid}`);
+            } catch (forceError) {
+              console.log(`⚠️  Could not kill process ${pid}:`, forceError);
+            }
+          }
+        }
+        
+        // Wait a moment for processes to die
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    } catch (error) {
+      // lsof might fail if no processes found - that's actually good
+      if (!error.message.includes('No such file or directory')) {
+        throw error;
+      }
     }
   }
 
@@ -174,7 +222,7 @@ export class ContinuumSystem extends EventEmitter {
       const WebSocket = (await import('ws')).default;
       const ws = new WebSocket('ws://localhost:9000');
       
-      await new Promise((resolve, reject) => {
+      await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
           ws.close();
           reject(new Error('WebSocket connection timeout'));
