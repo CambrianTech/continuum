@@ -545,22 +545,52 @@ export class ContinuumDirectoryDaemon extends BaseDaemon {
   }
 
   private async findSessionPath(sessionId: string): Promise<string | null> {
-    // Search for session in all session directories
+    // Search for session in all session directories recursively
     const sessionTypes = ['portal', 'validation', 'user', 'personas'];
     
     for (const type of sessionTypes) {
       const typeDir = path.join(this.continuumRoot, 'sessions', type);
-      try {
-        // Simple search - in real implementation would be more sophisticated
-        const items = await fs.readdir(typeDir, { withFileTypes: true });
-        for (const item of items) {
-          if (item.isDirectory() && item.name.includes(sessionId)) {
-            return path.join(typeDir, item.name);
+      const found = await this.searchSessionRecursively(typeDir, sessionId);
+      if (found) {
+        return found;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Recursively search for session directory by sessionId
+   */
+  private async searchSessionRecursively(dir: string, sessionId: string): Promise<string | null> {
+    try {
+      const items = await fs.readdir(dir, { withFileTypes: true });
+      
+      for (const item of items) {
+        if (item.isDirectory()) {
+          const itemPath = path.join(dir, item.name);
+          
+          // Check if this directory matches the sessionId
+          if (item.name === sessionId || item.name.includes(sessionId)) {
+            // Verify it's actually a session directory by checking for session.json
+            const sessionJsonPath = path.join(itemPath, 'session.json');
+            try {
+              await fs.access(sessionJsonPath);
+              return itemPath;
+            } catch {
+              // Not a session directory, continue searching
+            }
+          }
+          
+          // Recursively search subdirectories
+          const found = await this.searchSessionRecursively(itemPath, sessionId);
+          if (found) {
+            return found;
           }
         }
-      } catch {
-        // Directory doesn't exist or can't read
       }
+    } catch {
+      // Directory doesn't exist or can't read
     }
     
     return null;

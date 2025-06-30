@@ -15,11 +15,14 @@ export abstract class BaseDaemon extends EventEmitter {
   protected abstract onStop(): Promise<void>;
   protected abstract handleMessage(message: DaemonMessage): Promise<DaemonResponse>;
   
-  private status: DaemonStatus = 'stopped';
+  private status: DaemonStatus = DaemonStatus.STOPPED;
   private startTime?: Date;
   private lastHeartbeat?: Date;
   private processId: number = process.pid;
   private heartbeatInterval: NodeJS.Timeout | undefined;
+  private startPromise?: Promise<void>;
+  private stopPromise?: Promise<void>;
+  private signalHandlers: { [key: string]: (signal: NodeJS.Signals) => void } = {};
   
   constructor() {
     super();
@@ -30,11 +33,29 @@ export abstract class BaseDaemon extends EventEmitter {
    * Start the daemon
    */
   async start(): Promise<void> {
-    if (this.status !== 'stopped') {
+    // Handle concurrent start attempts
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+    
+    if (this.status === DaemonStatus.RUNNING) {
+      return;
+    }
+    
+    if (this.status !== DaemonStatus.STOPPED) {
       throw new Error(`Daemon ${this.name} is already ${this.status}`);
     }
 
-    this.status = 'starting';
+    this.startPromise = this._performStart();
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = undefined;
+    }
+  }
+
+  private async _performStart(): Promise<void> {
+    this.status = DaemonStatus.STARTING;
     this.startTime = new Date();
     
     this.log(`Starting daemon ${this.name} v${this.version}`);
@@ -46,11 +67,11 @@ export abstract class BaseDaemon extends EventEmitter {
       // Start heartbeat
       this.startHeartbeat();
       
-      this.status = 'running';
+      this.status = DaemonStatus.RUNNING;
       this.emit('started');
       
     } catch (error) {
-      this.status = 'failed';
+      this.status = DaemonStatus.FAILED;
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.log(`Failed to start daemon: ${errorMessage}`, 'error');
       throw error;
@@ -61,11 +82,25 @@ export abstract class BaseDaemon extends EventEmitter {
    * Stop the daemon gracefully
    */
   async stop(): Promise<void> {
-    if (this.status === 'stopped') {
+    // Handle concurrent stop attempts
+    if (this.stopPromise) {
+      return this.stopPromise;
+    }
+    
+    if (this.status === DaemonStatus.STOPPED) {
       return;
     }
 
-    this.status = 'stopping';
+    this.stopPromise = this._performStop();
+    try {
+      await this.stopPromise;
+    } finally {
+      this.stopPromise = undefined;
+    }
+  }
+
+  private async _performStop(): Promise<void> {
+    this.status = DaemonStatus.STOPPING;
     this.log(`Stopping daemon ${this.name}`);
     
     try {
@@ -75,13 +110,16 @@ export abstract class BaseDaemon extends EventEmitter {
       // Stop heartbeat
       this.stopHeartbeat();
       
-      this.status = 'stopped';
+      // Cleanup signal handlers
+      this.cleanupSignalHandlers();
+      
+      this.status = DaemonStatus.STOPPED;
       this.emit('stopped');
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.log(`Error stopping daemon: ${errorMessage}`, 'error');
-      this.status = 'stopped'; // Still mark as stopped even if cleanup failed
+      this.status = DaemonStatus.STOPPED; // Still mark as stopped even if cleanup failed
       throw error;
     }
   }
@@ -103,6 +141,13 @@ export abstract class BaseDaemon extends EventEmitter {
   /**
    * Get daemon status and metrics
    */
+  /**
+   * Check if daemon is currently running (including during shutdown)
+   */
+  isRunning(): boolean {
+    return this.status === DaemonStatus.RUNNING || this.status === DaemonStatus.STOPPING;
+  }
+
   getStatus(): DaemonStatusInfo {
     const status: DaemonStatusInfo = {
       name: this.name,
@@ -190,28 +235,52 @@ export abstract class BaseDaemon extends EventEmitter {
    * Setup signal handlers for graceful shutdown
    */
   private setupSignalHandlers(): void {
-    process.on('SIGTERM', async () => {
+    this.signalHandlers['SIGTERM'] = async () => {
       this.log('Received SIGTERM, shutting down gracefully');
       await this.stop();
       process.exit(0);
-    });
+    };
 
-    process.on('SIGINT', async () => {
+    this.signalHandlers['SIGINT'] = async () => {
       this.log('Received SIGINT, shutting down gracefully');
       await this.stop();
       process.exit(0);
-    });
+    };
 
-    process.on('uncaughtException', (error) => {
+    this.signalHandlers['uncaughtException'] = (error: Error) => {
       this.log(`Uncaught exception: ${error.message}`, 'error');
       this.log(error.stack || '', 'error');
       process.exit(1);
-    });
+    };
 
-    process.on('unhandledRejection', (reason) => {
+    this.signalHandlers['unhandledRejection'] = (reason: any) => {
       this.log(`Unhandled rejection: ${reason}`, 'error');
       process.exit(1);
-    });
+    };
+
+    process.on('SIGTERM', this.signalHandlers['SIGTERM']);
+    process.on('SIGINT', this.signalHandlers['SIGINT']);
+    process.on('uncaughtException', this.signalHandlers['uncaughtException']);
+    process.on('unhandledRejection', this.signalHandlers['unhandledRejection']);
+  }
+
+  /**
+   * Clean up signal handlers to prevent memory leaks
+   */
+  private cleanupSignalHandlers(): void {
+    if (this.signalHandlers['SIGTERM']) {
+      process.off('SIGTERM', this.signalHandlers['SIGTERM']);
+    }
+    if (this.signalHandlers['SIGINT']) {
+      process.off('SIGINT', this.signalHandlers['SIGINT']);
+    }
+    if (this.signalHandlers['uncaughtException']) {
+      process.off('uncaughtException', this.signalHandlers['uncaughtException']);
+    }
+    if (this.signalHandlers['unhandledRejection']) {
+      process.off('unhandledRejection', this.signalHandlers['unhandledRejection']);
+    }
+    this.signalHandlers = {};
   }
 
   /**
