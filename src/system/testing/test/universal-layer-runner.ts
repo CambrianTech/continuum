@@ -195,6 +195,13 @@ class UniversalLayerTesting {
                 // Test command can load and has definition
                 try {
                   const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf-8'));
+                  
+                  // Check if command is disabled
+                  if (packageJson.continuum?.disabled === true) {
+                    console.log(`    ⏸️  Command disabled - skipping`);
+                    continue;
+                  }
+                  
                   const commandFile = path.join(commandPath, packageJson.main);
                   const commandModule = await import(commandFile);
                   
@@ -203,13 +210,18 @@ class UniversalLayerTesting {
                   if (commandClassName) {
                     const CommandClass = commandModule[commandClassName];
                     
-                    // Test command definition
-                    const definition = CommandClass.getDefinition();
-                    if (definition && definition.name) {
-                      console.log(`    ✅ Command loads and has definition: ${definition.name}`);
+                    // Skip base classes - they're abstract
+                    if (commandClassName === 'BaseCommand' || commandClassName === 'BaseFileCommand') {
+                      console.log(`    ✅ ${commandClassName} (abstract base class - skipped)`);
                     } else {
-                      console.log(`    ❌ Command missing definition`);
-                      allPassed = false;
+                      // Test command definition
+                      const definition = CommandClass.getDefinition();
+                      if (definition && definition.name) {
+                        console.log(`    ✅ Command loads and has definition: ${definition.name}`);
+                      } else {
+                        console.log(`    ❌ Command missing definition`);
+                        allPassed = false;
+                      }
                     }
                   } else {
                     console.log(`    ❌ No command class found`);

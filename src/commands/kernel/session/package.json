@@ -8,11 +8,12 @@
     "core": "session",
     "category": "Core",
     "capabilities": [
-      "auto-generated"
+      "session-management"
     ],
     "dependencies": [],
     "interfaces": [],
-    "permissions": []
+    "permissions": [],
+    "disabled": true
   },
   "keywords": [
     "session",

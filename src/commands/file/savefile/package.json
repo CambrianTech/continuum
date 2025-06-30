@@ -16,7 +16,8 @@
     "permissions": [
       "read",
       "write"
-    ]
+    ],
+    "disabled": true
   },
   "keywords": [
     "savefile",

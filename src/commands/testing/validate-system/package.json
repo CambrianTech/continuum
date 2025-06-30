@@ -2,7 +2,7 @@
   "name": "validate-system-core",
   "version": "1.0.0",
   "description": "validate-system core for Continuum",
-  "main": "ValidateSystemCore.ts",
+  "main": "ValidateSystemCommand.ts",
   "type": "module",
   "continuum": {
     "core": "validate_system",

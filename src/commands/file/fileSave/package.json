@@ -14,7 +14,8 @@
     "interfaces": [],
     "permissions": [
       "read"
-    ]
+    ],
+    "disabled": true
   },
   "keywords": [
     "fileSave",

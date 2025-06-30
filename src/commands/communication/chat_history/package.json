@@ -2,7 +2,7 @@
   "name": "chat_history-core",
   "version": "1.0.0",
   "description": "chat_history core for Continuum",
-  "main": "Chat_historyCore.ts",
+  "main": "ChatHistoryCommand.ts",
   "type": "module",
   "continuum": {
     "core": "chat_history",

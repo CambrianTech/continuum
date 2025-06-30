@@ -2,7 +2,7 @@
   "name": "emotion-core",
   "version": "1.0.0",
   "description": "emotion core for Continuum",
-  "main": "EmotionCore.ts",
+  "main": "EmotionCommand.ts",
   "type": "module",
   "continuum": {
     "core": "emotion",
