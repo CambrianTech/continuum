@@ -1,18 +1,32 @@
 {
-  "name": "file-append-command",
+  "name": "append-core",
   "version": "1.0.0",
-  "description": "Append to files with session management",
-  "main": "FileAppendCommand.ts",
+  "description": "append core for Continuum",
+  "main": "AppendCore.ts",
   "type": "module",
   "continuum": {
-    "command": "file_append",
-    "category": "File",
-    "capabilities": ["file-appending", "session-aware"],
-    "dependencies": ["base-file-command"],
-    "interfaces": ["command-bus", "file-system"],
-    "permissions": ["write", "append"]
+    "core": "append",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
-  "keywords": ["file", "append", "continuum"],
+  "keywords": [
+    "append",
+    "core",
+    "continuum"
+  ],
   "author": "Continuum AI Platform",
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

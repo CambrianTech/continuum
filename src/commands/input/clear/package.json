@@ -1,17 +1,32 @@
 {
-  "name": "clear",
+  "name": "clear-core",
   "version": "1.0.0",
-  "description": "Continuum Clear Command Module",
+  "description": "clear core for Continuum",
+  "main": "ClearCore.ts",
   "type": "module",
-  "main": "index.server.js",
-  "exports": {
-    ".": {
-      "node": "./index.server.js",
-      "default": "./index.server.js"
-    }
-  },
   "continuum": {
-    "commandName": "clear",
-    "capabilities": ["clear", "reset", "cleanup"]
+    "core": "clear",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "clear",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

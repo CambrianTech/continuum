@@ -1,31 +1,32 @@
 {
-  "name": "self-validating-module",
+  "name": "self-validating-core",
   "version": "1.0.0",
-  "description": "Self-validating module framework where each module's configuration becomes its test contract",
-  "main": "SelfValidatingModule.ts",
+  "description": "self-validating core for Continuum",
+  "main": "SelfValidatingCore.ts",
   "type": "module",
   "continuum": {
-    "module": "self-validating-module",
-    "category": "Testing",
-    "type": "test-framework",
+    "core": "self_validating",
+    "category": "Core",
     "capabilities": [
-      "universal-testing",
-      "modular-compliance",
-      "code-generation"
+      "auto-generated"
     ],
-    "dependencies": [
-      "continuum-package-types",
-      "module-compliance-framework"
-    ],
-    "interfaces": ["testing-framework"],
-    "permissions": ["read", "write", "execute", "system-test"]
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
-  "scripts": {
-    "test": "node --test test/",
-    "test:unit": "node --test test/unit/",
-    "test:integration": "node --test test/integration/"
-  },
-  "keywords": ["continuum", "testing", "self-validation", "compliance", "framework"],
+  "keywords": [
+    "self-validating",
+    "core",
+    "continuum"
+  ],
   "author": "Continuum AI Platform",
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

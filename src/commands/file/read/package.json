@@ -1,18 +1,34 @@
 {
-  "name": "file-read-command",
+  "name": "read-core",
   "version": "1.0.0",
-  "description": "Read files with session management - equivalent to cat",
-  "main": "FileReadCommand.ts",
+  "description": "read core for Continuum",
+  "main": "ReadCore.ts",
   "type": "module",
   "continuum": {
-    "command": "file_read",
-    "category": "File",
-    "capabilities": ["file-reading", "session-aware"],
-    "dependencies": ["base-file-command"],
-    "interfaces": ["command-bus", "file-system"],
-    "permissions": ["read"]
+    "core": "read",
+    "category": "Core",
+    "capabilities": [
+      "file-reading"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": [
+      "read"
+    ]
   },
-  "keywords": ["file", "read", "cat", "continuum"],
+  "keywords": [
+    "read",
+    "core",
+    "continuum"
+  ],
   "author": "Continuum AI Platform",
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

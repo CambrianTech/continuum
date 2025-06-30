@@ -1,23 +1,34 @@
 {
-  "name": "file-write-command",
+  "name": "write-core",
   "version": "1.0.0",
-  "description": "Write files to session-managed locations using ContinuumDirectoryDaemon",
-  "main": "FileWriteCommand.ts",
+  "description": "write core for Continuum",
+  "main": "WriteCore.ts",
   "type": "module",
   "continuum": {
-    "command": "file_write",
-    "category": "File",
+    "core": "write",
+    "category": "Core",
     "capabilities": [
-      "file-writing",
-      "session-aware",
-      "artifact-management",
-      "directory-integration"
+      "file-writing"
     ],
-    "dependencies": ["continuum-directory-daemon"],
-    "interfaces": ["command-bus", "file-system"],
-    "permissions": ["write", "create-files"]
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": [
+      "write"
+    ]
   },
-  "keywords": ["file", "write", "session", "artifacts", "continuum"],
+  "keywords": [
+    "write",
+    "core",
+    "continuum"
+  ],
   "author": "Continuum AI Platform",
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

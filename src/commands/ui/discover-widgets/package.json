@@ -1,12 +1,32 @@
 {
-  "name": "discover-widgets-command",
+  "name": "discover-widgets-core",
   "version": "1.0.0",
-  "description": "Discover all compliant widgets for dynamic loading",
-  "main": "DiscoverWidgetsCommand.ts",
+  "description": "discover-widgets core for Continuum",
+  "main": "DiscoverWidgetsCore.ts",
   "type": "module",
-  "keywords": ["widgets", "discovery", "ui"],
   "continuum": {
-    "type": "command",
-    "category": "ui"
+    "core": "discover_widgets",
+    "category": "Core",
+    "capabilities": [
+      "ui-rendering"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "discover-widgets",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

@@ -1,15 +1,32 @@
 {
-  "name": "@continuum/console-command", 
+  "name": "console-core",
   "version": "1.0.0",
-  "description": "Bridge browser console logs to development portal for JTAG",
-  "main": "ConsoleCommand.ts",
+  "description": "console core for Continuum",
+  "main": "ConsoleCore.ts",
   "type": "module",
   "continuum": {
-    "command": "console",
-    "category": "Development",
-    "capabilities": ["devtools-integration", "error-reporting", "browser-control"],
-    "dependencies": ["base-command"],
-    "interfaces": ["command-bus", "browser-management"],
-    "permissions": ["browser-control", "devtools-access"]
+    "core": "console",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "console",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

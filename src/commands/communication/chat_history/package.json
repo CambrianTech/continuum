@@ -1,7 +1,34 @@
 {
-  "name": "@continuum/chat-history-command",
+  "name": "chat_history-core",
   "version": "1.0.0",
-  "description": "Retrieve chat room message history",
-  "main": "ChatHistoryCommand.ts",
-  "type": "module"
+  "description": "chat_history core for Continuum",
+  "main": "Chat_historyCore.ts",
+  "type": "module",
+  "continuum": {
+    "core": "chat_history",
+    "category": "Core",
+    "capabilities": [
+      "messaging"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": [
+      "network"
+    ]
+  },
+  "keywords": [
+    "chat_history",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

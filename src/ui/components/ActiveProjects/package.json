@@ -1,33 +1,32 @@
 {
-  "name": "active-projects-widget",
-  "version": "1.0.0", 
-  "description": "ActiveProjects Widget Module",
+  "name": "ActiveProjects-core",
+  "version": "1.0.0",
+  "description": "ActiveProjects core for Continuum",
+  "main": "ActiveProjectsCore.ts",
   "type": "module",
-  "main": "index.js",
-  "exports": {
-    ".": "./index.js",
-    "./component": "./ActiveProjects.js"
-  },
-  "files": [
-    "ActiveProjects.js",
-    "index.js"
-  ],
-  "keywords": ["widget", "projects", "ui", "continuum"],
-  "scripts": {
-    "test": "node --test test/*.test.js"
-  },
   "continuum": {
-    "widget": "active-projects",
-    "category": "UI",
-    "capabilities": ["widget-discovery", "ui-rendering"],
+    "core": "ActiveProjects",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
     "dependencies": [],
-    "interfaces": ["widget-system", "ui-rendering"],
-    "permissions": ["read"],
-    "ui": {
-      "template": "ActiveProjects.html",
-      "styles": ["ActiveProjects.css"],
-      "scripts": ["ActiveProjects.js"],
-      "dependencies": []
-    }
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "ActiveProjects",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

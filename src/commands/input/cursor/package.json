@@ -1,14 +1,32 @@
 {
-  "name": "cursor",
+  "name": "cursor-core",
   "version": "1.0.0",
+  "description": "cursor core for Continuum",
+  "main": "CursorCore.ts",
   "type": "module",
-  "main": "index.server.js",
   "continuum": {
-    "commandName": "cursor",
-    "category": "continuon control",
-    "capabilities": ["cursor-control", "visual-feedback", "continuon"],
-    "dependencies": ["websocket"],
-    "hasTests": true,
-    "testDir": "test"
+    "core": "cursor",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "cursor",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

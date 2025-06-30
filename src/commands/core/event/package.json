@@ -1,11 +1,32 @@
 {
-  "name": "@continuum/event-command",
+  "name": "event-core",
   "version": "1.0.0",
-  "description": "Real-time event subscription system",
-  "main": "EventCommand.cjs",
-  "keywords": ["event", "subscription", "real-time", "logs"],
+  "description": "event core for Continuum",
+  "main": "EventCore.ts",
+  "type": "module",
   "continuum": {
-    "command": "event",
-    "category": "Core"
+    "core": "event",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "event",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

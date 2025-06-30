@@ -13,6 +13,7 @@
 
 import { AllWidgetsTestRunner } from '../../../ui/components/test/AllWidgetsTest.js';
 import * as path from 'path';
+import * as fs from 'fs';
 
 interface LayerTest {
   name: string;
@@ -34,9 +35,9 @@ class UniversalLayerTesting {
     let currentDir = path.dirname(new URL(import.meta.url).pathname);
     
     while (currentDir !== path.dirname(currentDir)) {
-      const fs = await import('fs');
       const packagePath = path.join(currentDir, 'package.json');
       
+      // Use fs from top-level import
       if (fs.existsSync(packagePath)) {
         return currentDir;
       }

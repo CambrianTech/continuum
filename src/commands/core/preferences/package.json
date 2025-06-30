@@ -1,21 +1,32 @@
 {
-  "name": "preferences",
+  "name": "preferences-core",
   "version": "1.0.0",
-  "description": "Continuum Preferences Command Module",
+  "description": "preferences core for Continuum",
+  "main": "PreferencesCore.ts",
   "type": "module",
-  "main": "index.server.js",
-  "exports": {
-    ".": {
-      "node": "./index.server.js",
-      "default": "./index.server.js"
-    }
-  },
   "continuum": {
-    "command": "preferences",
-    "category": "Core", 
-    "capabilities": ["session-management", "artifact-management", "file-writing"],
-    "dependencies": ["base-command"],
-    "interfaces": ["command-bus", "file-system"],
-    "permissions": ["read", "write", "create-files"]
+    "core": "preferences",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "preferences",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

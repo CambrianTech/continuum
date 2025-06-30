@@ -1,36 +1,32 @@
 {
-  "name": "continuum-directory-daemon",
+  "name": "continuum-directory-core",
   "version": "1.0.0",
-  "description": "Intelligent .continuum directory management daemon with session coordination",
-  "main": "ContinuumDirectoryDaemon.js",
+  "description": "continuum-directory core for Continuum",
+  "main": "ContinuumDirectoryCore.ts",
   "type": "module",
   "continuum": {
-    "daemon": "continuum-directory",
+    "core": "continuum_directory",
     "category": "Core",
     "capabilities": [
-      "directory-management",
-      "session-coordination", 
-      "artifact-storage",
-      "retention-policies",
-      "directory-analytics",
-      "intelligent-organization"
+      "auto-generated"
     ],
-    "dependencies": [
-      "kernel-system-command",
-      "kernel-daemon-command",
-      "file-write-command",
-      "file-read-command",
-      "file-list-command"
-    ],
-    "interfaces": ["daemon-protocol", "file-system"],
-    "permissions": ["read", "write", "create-directories", "directory-stats"]
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
-  "scripts": {
-    "test": "node --test test/",
-    "test:unit": "node --test test/unit/",
-    "test:integration": "node --test test/integration/"
-  },
-  "keywords": ["continuum", "directory", "session", "artifacts", "daemon", "coordination"],
+  "keywords": [
+    "continuum-directory",
+    "core",
+    "continuum"
+  ],
   "author": "Continuum AI Platform",
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

@@ -1,24 +1,32 @@
 {
-  "name": "kernel-session-command",
+  "name": "session-core",
   "version": "1.0.0",
-  "description": "Kernel-level session management commands",
-  "main": "SessionCommand.ts", 
+  "description": "session core for Continuum",
+  "main": "SessionCore.ts",
   "type": "module",
   "continuum": {
-    "command": "session",
-    "category": "Kernel",
+    "core": "session",
+    "category": "Core",
     "capabilities": [
-      "session-management",
-      "session-coordination",
-      "artifact-management",
-      "isolation-control"
+      "auto-generated"
     ],
-    "dependencies": ["session-manager-daemon", "continuum-directory-daemon"],
-    "interfaces": ["command-bus", "daemon-protocol", "session-management"],
-    "permissions": ["kernel", "session-management", "file-system"],
-    "priority": "high"
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
-  "keywords": ["kernel", "session", "management", "artifacts", "continuum"],
-  "author": "Continuum AI Platform", 
-  "license": "MIT"
+  "keywords": [
+    "session",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

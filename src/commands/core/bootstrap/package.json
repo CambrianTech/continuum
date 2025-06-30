@@ -1,35 +1,32 @@
 {
-  "name": "bootstrap-commands",
+  "name": "bootstrap-core",
   "version": "1.0.0",
-  "description": "Root-level bootstrap commands with initialization dependencies",
-  "daemon": {
-    "type": "bootstrap-command-processor", 
-    "capabilities": ["bootstrap", "immediate", "post-discovery", "initialization"],
-    "entryPoint": "BootstrapCommandProcessor.ts",
-    "restartOnCrash": true,
-    "maxMemory": 64,
-    "priority": "high"
+  "description": "bootstrap core for Continuum",
+  "main": "BootstrapCore.ts",
+  "type": "module",
+  "continuum": {
+    "core": "bootstrap",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
-  "commands": {
-    "info": {
-      "category": "immediate",
-      "description": "System information (available immediately)"
-    },
-    "status": {
-      "category": "immediate", 
-      "description": "System status (available immediately)"
-    },
-    "list": {
-      "category": "post-discovery",
-      "description": "List all commands (requires module discovery)"
-    },
-    "help": {
-      "category": "post-discovery",
-      "description": "Command help (requires module discovery)"
-    },
-    "filesave": {
-      "category": "always-available",
-      "description": "Save file (always available)"
-    }
+  "keywords": [
+    "bootstrap",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

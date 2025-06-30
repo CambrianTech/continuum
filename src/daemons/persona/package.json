@@ -1,39 +1,32 @@
 {
-  "name": "@continuum/persona-daemon",
+  "name": "persona-core",
   "version": "1.0.0",
-  "description": "Universal Session Framework for AI Personas - enables personas to use same commands as humans with LoRA adaptation",
-  "main": "PersonaDaemon.ts",
+  "description": "persona core for Continuum",
+  "main": "PersonaCore.ts",
   "type": "module",
-  "scripts": {
-    "test": "jest"
-  },
-  "keywords": [
-    "continuum", 
-    "persona", 
-    "lora", 
-    "academy", 
-    "session", 
-    "ai",
-    "adversarial-training",
-    "universal-interface"
-  ],
   "continuum": {
-    "daemon": "persona",
+    "core": "persona",
     "category": "Core",
     "capabilities": [
-      "session-management",
-      "artifact-management", 
-      "daemon-communication",
-      "process-coordination"
+      "auto-generated"
     ],
-    "dependencies": ["command-processor"],
-    "interfaces": ["daemon-protocol", "session-management", "command-bus"],
-    "permissions": ["session-management", "daemon-communication", "network-access"],
-    "startupOrder": 300,
-    "healthCheck": {
-      "enabled": true,
-      "intervalMs": 30000,
-      "timeoutMs": 5000
-    }
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "persona",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

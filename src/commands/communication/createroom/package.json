@@ -1,14 +1,32 @@
 {
-  "name": "@continuum/createroom-command",
+  "name": "createroom-core",
   "version": "1.0.0",
-  "description": "Discord-style room management command for continuum",
-  "main": "index.server.js",
+  "description": "createroom core for Continuum",
+  "main": "CreateroomCore.ts",
   "type": "module",
-  "exports": {
-    ".": "./index.server.js",
-    "./server": "./index.server.js"
+  "continuum": {
+    "core": "createroom",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
-  "keywords": ["continuum", "room", "discord", "chat", "command"],
-  "author": "Continuum Team",
-  "license": "MIT"
+  "keywords": [
+    "createroom",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

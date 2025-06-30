@@ -1,14 +1,32 @@
 {
-  "name": "emotion",
+  "name": "emotion-core",
   "version": "1.0.0",
+  "description": "emotion core for Continuum",
+  "main": "EmotionCore.ts",
   "type": "module",
-  "main": "index.server.js",
   "continuum": {
-    "command": "emotion",
-    "category": "UI",
-    "capabilities": ["ui-rendering", "widget-discovery"],
-    "dependencies": ["base-command"],
-    "interfaces": ["command-bus", "widget-system"],
-    "permissions": ["read"]
+    "core": "emotion",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "emotion",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

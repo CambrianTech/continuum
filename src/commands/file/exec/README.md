@@ -1,78 +1,104 @@
-# Exec Command
+# Exec
 
-## Definition
-- **Name**: exec
-- **Description**: Execute shell commands on server
-- **Category**: Core
-- **Icon**: ⚡
-- **Status**: 🟢 STABLE (Last verified: 2025-06-18, Auto-tested: Daily)
-- **Parameters**: `<command_and_args>`
+exec module for Continuum
 
-## Overview
-The Exec command provides powerful shell command execution on the server. Use with caution as it has full system access and can modify files, install packages, and run any system command.
+## 🚀 Usage
 
-## Parameters
-- `command_and_args`: Complete shell command with arguments to execute
-
-## Usage Examples
+### Command Interface
 ```bash
-# Basic commands
-python3 ai-portal.py --cmd exec --params '"ls -la"'
-python3 ai-portal.py --cmd exec --params '"ps aux | grep node"'
+# Basic usage
+continuum exec
 
-# Git operations
-python3 ai-portal.py --cmd exec --params '"git status"'
-python3 ai-portal.py --cmd exec --params '"git log --oneline -5"'
-
-# Development commands
-python3 ai-portal.py --cmd exec --params '"npm test"'
-python3 ai-portal.py --cmd exec --params '"python3 -m pytest tests/"'
-
-# System monitoring
-python3 ai-portal.py --cmd exec --params '"df -h"'
-python3 ai-portal.py --cmd exec --params '"top -l 1 | head -10"'
+# With options (customize based on your module)
+continuum exec --help
+continuum exec --verbose
 ```
 
-## Package Rules
+### Programmatic Usage
+```typescript
+import { ExecCommand } from './ExecCommand.js';
+
+// Execute the command
+const result = await ExecCommand.execute({
+  // Add your parameters here
+});
+
+console.log(result);
+```
+
+## ⚙️ Configuration
+
 ```json
 {
-  "timeouts": {"client": 60.0, "server": 30.0},
-  "retries": {"client": 1, "server": 0},
-  "concurrency": {"client": false, "server": false},
-  "sideEffects": ["system_commands", "file_system", "process_spawning"],
-  "security": "HIGH_RISK"
+  "command": "exec",
+  "category": "File",
+  "capabilities": [
+    "system-control",
+    "process-coordination"
+  ],
+  "dependencies": [
+    "base-command"
+  ],
+  "interfaces": [
+    "command-bus"
+  ],
+  "permissions": [
+    "execute",
+    "system"
+  ]
 }
 ```
 
-## Architecture
-- **Full system access**: Can execute any shell command
-- **Process spawning**: Creates child processes for command execution
-- **Stream output**: Returns command output and error streams
-- **Exit codes**: Properly handles command success/failure status
+## 🧪 Testing
 
-## Security Considerations
-- ⚠️ **HIGH RISK**: Full system access - use responsibly
-- ⚠️ **No sandboxing**: Commands run with server privileges
-- ⚠️ **Data exposure**: Command output may contain sensitive information
-- ⚠️ **System modification**: Can install packages, modify files, change system state
+```bash
+# Run all tests
+npm test
 
-## Status History
-- 🟢 **2025-06-18**: STABLE - Command working reliably in production
-- 🟡 **2025-06-17**: TESTING - Migrated to README-driven system
-- 🟢 **2025-06-16**: STABLE - Core functionality verified
-- 🟢 **2025-06-15**: STABLE - Security review completed
+# Run specific test types
+npm run test:unit
+npm run test:integration
 
-## TODO: Future Improvements
-- TODO: Add command sandboxing for security
-- TODO: Implement command whitelist/blacklist
-- TODO: Add execution time limits per command type
-- TODO: Create audit logging for all executed commands
-- TODO: Add interactive command support (stdin)
+# Validate module compliance
+npm run validate
+```
 
-## Test Status
-- ✅ **Basic commands**: ls, ps, pwd - PASSING
-- ✅ **Git operations**: status, log, diff - PASSING  
-- ✅ **NPM commands**: test, install, build - PASSING
-- ✅ **Python scripts**: pytest, python3 execution - PASSING
-- ⚠️ **Long-running commands**: Needs timeout testing
-- ❌ **Interactive commands**: Not supported yet
+## 🏗️ Development
+
+This module follows the Continuum modular architecture:
+
+- **Self-validating**: Module validates its own compliance
+- **Middle-out**: Tests from core outward 
+- **Object-oriented**: Inherits from base classes
+- **Migration-ready**: Can upgrade structure automatically
+
+### Module Structure
+```
+exec/
+├── ExecCommand.ts     # Main implementation
+├── test/
+│   ├── unit/             # Unit tests
+│   └── integration/      # Integration tests
+├── package.json          # Module configuration
+└── README.md            # This file
+```
+
+## 📋 Implementation Notes
+
+**TODO**: Customize this section with:
+- Specific usage examples
+- Configuration options
+- API documentation
+- Performance considerations
+- Known limitations
+
+## 🔧 Bootstrap Information
+
+This file was auto-generated during module migration. The module now has:
+
+- ✅ Complete package.json with continuum configuration
+- ✅ Test directories (unit/integration)
+- ✅ TypeScript ES module setup
+- ✅ Compliance validation
+
+**Next Steps**: Implement your module logic and update this documentation!

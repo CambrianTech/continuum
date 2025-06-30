@@ -1,22 +1,32 @@
 {
-  "name": "@continuum/browser-command",
-  "version": "1.0.0", 
-  "description": "Browser WebSocket coordination command for continuum",
-  "main": "index.server.js",
+  "name": "browser-core",
+  "version": "1.0.0",
+  "description": "browser core for Continuum",
+  "main": "BrowserCore.ts",
   "type": "module",
-  "exports": {
-    ".": "./index.server.js",
-    "./server": "./index.server.js"
-  },
-  "keywords": ["continuum", "browser", "websocket", "command"],
-  "author": "Continuum Team",
-  "license": "MIT",
   "continuum": {
-    "command": "browser",
-    "category": "Browser",
-    "capabilities": ["browser-control", "websocket-management"],
-    "dependencies": ["base-command"],
-    "interfaces": ["command-bus", "browser-management", "websocket-protocol"],
-    "permissions": ["browser-control", "websocket-server"]
+    "core": "browser",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "browser",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

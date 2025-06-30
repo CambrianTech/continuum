@@ -1,17 +1,32 @@
 {
-  "name": "promiseJS",
+  "name": "promisejs-core",
   "version": "1.0.0",
-  "description": "Continuum PromiseJS Command Module",
+  "description": "promisejs core for Continuum",
+  "main": "PromisejsCore.ts",
   "type": "module",
-  "main": "index.server.js",
-  "exports": {
-    ".": {
-      "node": "./index.server.js",
-      "default": "./index.server.js"
-    }
-  },
   "continuum": {
-    "commandName": "promiseJS",
-    "capabilities": ["promises", "async", "javascript"]
+    "core": "promisejs",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "promisejs",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

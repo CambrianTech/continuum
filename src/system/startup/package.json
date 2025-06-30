@@ -1,31 +1,32 @@
 {
-  "name": "continuum-system-startup",
+  "name": "startup-core",
   "version": "1.0.0",
-  "description": "System startup orchestration and daemon coordination",
-  "main": "ContinuumSystemStartup.ts",
+  "description": "startup core for Continuum",
+  "main": "StartupCore.ts",
   "type": "module",
   "continuum": {
-    "module": "system-startup",
+    "core": "startup",
     "category": "Core",
     "capabilities": [
-      "daemon-orchestration",
-      "system-coordination",
-      "startup-management",
-      "browser-launching",
-      "self-testing"
+      "auto-generated"
     ],
-    "dependencies": [
-      "websocket-daemon",
-      "renderer-daemon", 
-      "command-processor-daemon",
-      "browser-manager-daemon",
-      "session-manager-daemon",
-      "continuum-directory-daemon"
-    ],
-    "interfaces": ["daemon-protocol", "system-management"],
-    "permissions": ["system", "daemon-management", "process-control"]
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
-  "keywords": ["continuum", "system", "startup", "daemon", "orchestration"],
+  "keywords": [
+    "startup",
+    "core",
+    "continuum"
+  ],
   "author": "Continuum AI Platform",
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

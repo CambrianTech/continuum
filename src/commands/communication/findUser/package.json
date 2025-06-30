@@ -1,17 +1,32 @@
 {
-  "name": "findUser",
-  "version": "1.0.0", 
-  "description": "Continuum FindUser Command Module",
+  "name": "findUser-core",
+  "version": "1.0.0",
+  "description": "findUser core for Continuum",
+  "main": "FindUserCore.ts",
   "type": "module",
-  "main": "index.server.js",
-  "exports": {
-    ".": {
-      "node": "./index.server.js",
-      "default": "./index.server.js"
-    }
-  },
   "continuum": {
-    "commandName": "findUser",
-    "capabilities": ["user-lookup", "user-selection"]
+    "core": "findUser",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "findUser",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

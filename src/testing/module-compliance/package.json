@@ -1,31 +1,32 @@
 {
-  "name": "module-compliance-framework",
+  "name": "module-compliance-core",
   "version": "1.0.0",
-  "description": "Universal module compliance testing framework that validates modules against their configuration contracts",
-  "main": "ModuleComplianceFramework.ts",
+  "description": "module-compliance core for Continuum",
+  "main": "ModuleComplianceCore.ts",
   "type": "module",
   "continuum": {
-    "module": "module-compliance-framework",
-    "category": "Testing",
-    "type": "test-framework",
+    "core": "module_compliance",
+    "category": "Core",
     "capabilities": [
-      "universal-testing",
-      "modular-compliance",
-      "layer-validation",
-      "integration-testing"
+      "auto-generated"
     ],
-    "dependencies": [
-      "continuum-package-types"
-    ],
-    "interfaces": ["testing-framework", "command-bus"],
-    "permissions": ["read", "execute", "system-test"]
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
-  "scripts": {
-    "test": "node --test test/",
-    "test:unit": "node --test test/unit/",
-    "test:integration": "node --test test/integration/"
-  },
-  "keywords": ["continuum", "testing", "compliance", "validation", "framework"],
+  "keywords": [
+    "module-compliance",
+    "core",
+    "continuum"
+  ],
   "author": "Continuum AI Platform",
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

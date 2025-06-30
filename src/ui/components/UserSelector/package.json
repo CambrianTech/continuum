@@ -1,42 +1,32 @@
 {
-  "name": "user-selector-widget",
+  "name": "UserSelector-core",
   "version": "1.0.0",
-  "description": "UserSelector Widget Module",
+  "description": "UserSelector core for Continuum",
+  "main": "UserSelectorCore.ts",
   "type": "module",
-  "main": "index.js",
-  "exports": {
-    ".": "./index.js",
-    "./component": "./UserSelector.js"
-  },
-  "files": [
-    "UserSelector.js",
-    "index.js"
-  ],
-  "keywords": ["widget", "user-selector", "ui", "continuum"],
-  "scripts": {
-    "test": "node --test test/*.test.js"
-  },
   "continuum": {
-    "widgetName": "UserSelector",
-    "widgetType": "ui-component",
-    "category": "User Interface",
-    "icon": "👥",
-    "componentFile": "UserSelector.js",
-    "description": "Dynamic user and agent selection widget",
-    "selectors": [
-      "[class*=\"user-selector\"]",
-      "[class*=\"UserSelector\"]", 
-      "[id*=\"user\"]",
-      "[class*=\"user\"]",
-      ".user-selector",
-      "#user-selector",
-      "#sidebar",
-      ".sidebar"
+    "core": "UserSelector",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
     ],
-    "fallbackSelector": "body",
-    "capabilities": ["screenshot", "interaction", "validation", "dynamic-discovery"],
-    "dependencies": ["persistent", "screenshot"],
-    "hasTests": true,
-    "testDir": "./test"
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "UserSelector",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

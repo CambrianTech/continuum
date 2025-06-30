@@ -1,36 +1,32 @@
 {
-  "name": "screenshot",
-  "version": "1.2.0",
-  "description": "Continuum Screenshot Command Module",
+  "name": "screenshot-core",
+  "version": "1.0.0",
+  "description": "screenshot core for Continuum",
+  "main": "ScreenshotCore.ts",
   "type": "module",
-  "main": "index.server.js",
-  "browser": "index.client.js",
-  "exports": {
-    ".": {
-      "node": "./index.server.js",
-      "browser": "./index.client.js",
-      "default": "./index.server.js"
-    },
-    "./server": "./index.server.js",
-    "./client": "./index.client.js"
-  },
-  "files": [
-    "ScreenshotCommand.cjs",
-    "ScreenshotCommand.client.js", 
-    "ScreenshotUtils.js",
-    "index.server.js",
-    "index.client.js"
-  ],
-  "keywords": ["screenshot", "html2canvas", "continuum", "command"],
-  "scripts": {
-    "test": "node --test test/*.test.js"
-  },
   "continuum": {
-    "command": "screenshot",
-    "category": "Browser",
-    "capabilities": ["browser-control", "devtools-integration"],
-    "dependencies": ["base-command"],
-    "interfaces": ["command-bus", "browser-management"],
-    "permissions": ["browser-control", "devtools-access", "create-files", "write"]
+    "core": "screenshot",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "screenshot",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
