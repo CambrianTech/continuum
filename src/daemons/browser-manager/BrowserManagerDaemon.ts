@@ -7,6 +7,8 @@
 import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon.js';
 import { DaemonResponse } from '../base/DaemonProtocol.js';
 import ProcessCommand from '../../commands/kernel/system/ProcessCommand';
+import { IBrowserModule } from './modules/IBrowserModule';
+import { ChromeBrowserModule } from './modules/ChromeBrowserModule';
 
 export enum BrowserType {
   DEFAULT = 'default',
@@ -99,6 +101,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   public readonly version = '1.0.0';
   private browsers = new Map<string, ManagedBrowser>();
   private resourceMonitor: NodeJS.Timeout | null = null;
+  private browserModules = new Map<BrowserType, IBrowserModule>();
   
   // MessageRoutedDaemon implementation
   protected readonly primaryMessageType = 'browser_request';
@@ -120,6 +123,9 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   }
 
   protected async onStart(): Promise<void> {
+    // Initialize browser modules
+    await this.initializeBrowserModules();
+    
     // Start resource monitoring
     this.startResourceMonitoring();
     
@@ -127,6 +133,33 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     await this.registerWithOS();
     
     this.log('Browser Manager Daemon started');
+  }
+
+  /**
+   * Initialize available browser modules
+   */
+  private async initializeBrowserModules(): Promise<void> {
+    // Register Chrome browser module
+    const chromeModule = new ChromeBrowserModule();
+    if (await chromeModule.isAvailable()) {
+      this.browserModules.set(BrowserType.CHROME, chromeModule);
+      this.log('✅ Chrome browser module available');
+    } else {
+      this.log('⚠️ Chrome browser module not available');
+    }
+    
+    // Check for Opera GX specifically
+    const fs = await import('fs');
+    if (fs.existsSync('/Applications/Opera GX.app/Contents/MacOS/Opera')) {
+      // For now, use Chrome module for Opera GX (same Chromium base, same DevTools Protocol)
+      this.browserModules.set(BrowserType.OPERA, chromeModule);
+      this.log('✅ Opera GX browser module available (using Chrome DevTools Protocol)');
+    }
+    
+    // TODO: Add other browser modules (Firefox, Safari, Edge)
+    // this.browserModules.set(BrowserType.FIREFOX, new FirefoxBrowserModule());
+    // this.browserModules.set(BrowserType.SAFARI, new SafariBrowserModule());
+    // this.browserModules.set(BrowserType.EDGE, new EdgeBrowserModule());
   }
 
   protected async onStop(): Promise<void> {
@@ -254,35 +287,28 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   }
 
   /**
-   * Create new browser instance with real process
+   * Create new browser instance using browser modules
    */
   private async createNewBrowser(config: BrowserConfig): Promise<ManagedBrowser> {
     const browserId = `browser-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const port = await this.allocatePort();
     
-    // Select browser type and binary path
+    // Select browser type and get module
     const browserType = this.selectBrowserType(config);
-    const browserPath = await this.getBrowserPath(browserType);
+    const browserModule = this.getBrowserModule(browserType);
     
-    if (!browserPath) {
-      throw new Error(`Browser ${browserType} not found on system`);
+    if (!browserModule) {
+      throw new Error(`Browser module for ${browserType} not available`);
     }
     
-    // Build browser launch arguments
-    const args = this.buildBrowserArgs(config, port);
-    
     try {
-      // Launch real browser process
-      const { spawn } = await import('child_process');
-      const browserProcess = spawn(browserPath, args, {
-        detached: false,
-        stdio: 'pipe'
-      });
+      // Launch browser using module
+      const launchResult = await browserModule.launch(config, port);
       
       const browser: ManagedBrowser = {
         id: browserId,
-        pid: browserProcess.pid!,
-        port,
+        pid: launchResult.pid,
+        port: launchResult.debugPort,
         type: browserType,
         state: 'starting',
         sessions: new Set(),
@@ -293,19 +319,93 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       };
       
       // Set up process monitoring
-      this.monitorBrowserProcess(browser, browserProcess);
+      this.monitorBrowserProcess(browser, launchResult.process);
       
-      // Wait for browser to be ready
-      await this.waitForBrowserReady(browser);
+      // Wait for browser to be ready using module
+      await browserModule.waitForReady(browser);
       
-      this.log(`✅ Real browser launched: ${browserId} (${browserType}) PID ${browser.pid} on port ${port}`);
+      this.log(`✅ Browser launched via module: ${browserId} (${browserType}) PID ${browser.pid} on port ${port}`);
       return browser;
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ Failed to launch browser: ${errorMessage}`, 'error');
+      this.log(`❌ Failed to launch browser via module: ${errorMessage}`, 'error');
       throw new Error(`Browser launch failed: ${errorMessage}`);
     }
+  }
+
+  /**
+   * Get browser module for browser type
+   */
+  private getBrowserModule(browserType: BrowserType): IBrowserModule | null {
+    // Handle DEFAULT by using system default browser via 'open' command
+    if (browserType === BrowserType.DEFAULT) {
+      // Use a special "system default" module that uses 'open' command
+      return {
+        browserType: BrowserType.DEFAULT,
+        capabilities: {
+          protocol: 'system-default',
+          supportsHeadless: false, // System default browser typically doesn't support headless
+          supportsRemoteDebugging: false, // May not support DevTools
+          supportsAutomation: false,
+          supportsExtensions: true,
+          defaultPort: 0, // No specific port
+          portRange: [0, 0]
+        },
+        async isAvailable(): Promise<boolean> { return true; }, // System always has a default browser
+        async getBinaryPath(): Promise<string | null> { return 'system'; },
+        buildLaunchArgs: () => [], // No args needed for 'open' command
+        async launch(config: BrowserConfig, debugPort: number) {
+          // Use ProcessCommand to launch default browser at kernel level
+          const url = 'http://localhost:9000';
+          
+          let openCommand = 'open'; // macOS
+          if (process.platform === 'linux') openCommand = 'xdg-open';
+          if (process.platform === 'win32') openCommand = 'start';
+          
+          const ProcessCommandModule = await import('../../../commands/kernel/system/ProcessCommand');
+          const ProcessCommand = ProcessCommandModule.default;
+          
+          const result = await ProcessCommand.execute({
+            subcommand: 'spawn',
+            spawnOptions: {
+              command: openCommand,
+              args: [url],
+              options: { detached: true, stdio: 'ignore' }
+            }
+          });
+          
+          if (!result.success) {
+            throw new Error(`Failed to launch default browser: ${result.error}`);
+          }
+          
+          return {
+            process: null, // ProcessCommand handles the process internally
+            pid: result.data.pid,
+            debugPort: 0, // No DevTools for system default
+            devToolsUrl: undefined,
+            capabilities: this.capabilities
+          };
+        },
+        async waitForReady(): Promise<void> {
+          // For system default, we just wait a moment for browser to start
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        },
+        async getTabAPI() {
+          // System default browser doesn't support tab management
+          throw new Error('Tab management not supported for system default browser');
+        },
+        async terminate(): Promise<void> {
+          // Cannot programmatically terminate system default browser
+        },
+        async isHealthy(): Promise<boolean> { return true; },
+        async getMetrics() {
+          return { tabs: 0, memory: 0, cpu: 0, devToolsConnections: 0 };
+        }
+      };
+    }
+    
+    return this.browserModules.get(browserType) || null;
   }
   
   /**
@@ -723,13 +823,14 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
         break;
         
       case BrowserPurpose.DEVELOPMENT:
-        // Development can use default browser unless DevTools required
+        // Development uses default browser (user's choice) unless DevTools specifically required
+        // This respects user's browser preference (Opera GX in this case)
         defaultBrowser = config.requirements.devtools ? BrowserType.CHROME : BrowserType.DEFAULT;
         break;
         
       case BrowserPurpose.USER:
       default:
-        // Regular user experience should respect their default browser choice
+        // Always respect user's default browser choice for user sessions
         defaultBrowser = BrowserType.DEFAULT;
         break;
     }

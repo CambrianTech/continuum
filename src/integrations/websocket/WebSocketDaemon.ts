@@ -152,7 +152,9 @@ export class WebSocketDaemon extends BaseDaemon {
       // This is pure message routing, no content knowledge
       
       if (message.type === 'execute_command') {
-        this.routeCommandToProcessor(connectionId, message);
+        this.routeCommandToProcessor(connectionId, message).catch(error => {
+          this.log(`❌ Failed to route command: ${error}`, 'error');
+        });
       } else if (message.type === 'register_http_routes') {
         // Handle route registration from daemons via WebSocket
         const response = this.handleRouteRegistration(message);
@@ -166,15 +168,97 @@ export class WebSocketDaemon extends BaseDaemon {
     }
   }
 
-  private routeCommandToProcessor(connectionId: string, message: any): void {
+  private async routeCommandToProcessor(connectionId: string, message: any): Promise<void> {
     // Pure routing - find command processor daemon and forward
     const commandProcessor = this.registeredDaemons.get('command-processor');
     
     if (commandProcessor) {
-      // Forward to command processor - router doesn't care about content
-      commandProcessor.handleWebSocketCommand?.(connectionId, message);
+      try {
+        // Extract command info from the WebSocket message structure
+        const commandData = message.data;
+        const commandName = commandData.command;
+        const commandParams = commandData.params;
+        const requestId = commandData.requestId;
+        
+        // Parse parameters (they might be JSON string from browser)
+        let parsedParams = {};
+        if (commandParams) {
+          try {
+            parsedParams = typeof commandParams === 'string' ? JSON.parse(commandParams) : commandParams;
+          } catch (error) {
+            this.log(`⚠️ Failed to parse command parameters: ${error}`, 'warn');
+            parsedParams = commandParams;
+          }
+        }
+        
+        // Convert WebSocket message to DaemonMessage format
+        const daemonMessage = {
+          id: `ws-${Date.now()}`,
+          from: 'websocket-server',
+          to: 'command-processor',
+          type: 'command.execute',
+          timestamp: new Date(),
+          data: {
+            command: commandName,
+            parameters: parsedParams,
+            context: {
+              connectionId: connectionId,
+              websocket: true,
+              requestId: requestId
+            }
+          }
+        };
+        
+        this.log(`🔄 Routing command "${commandName}" to command processor`);
+        
+        // Forward to command processor using standard daemon protocol
+        const response = await commandProcessor.handleMessage(daemonMessage);
+        
+        // Send response back to WebSocket client
+        const wsResponse = {
+          type: 'command_response',
+          requestId: requestId,
+          command: commandName,
+          success: response.success,
+          data: response.data,
+          error: response.error,
+          timestamp: new Date().toISOString()
+        };
+        
+        this.wsManager.sendToConnection(connectionId, wsResponse);
+        
+        this.log(`✅ Command "${commandName}" ${response.success ? 'completed' : 'failed'}`);
+        
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.log(`❌ Error routing command to processor: ${errorMessage}`, 'error');
+        
+        // Send error response to client
+        const errorResponse = {
+          type: 'command_response',
+          requestId: message.data?.requestId,
+          command: message.data?.command || 'unknown',
+          success: false,
+          error: errorMessage,
+          timestamp: new Date().toISOString()
+        };
+        
+        this.wsManager.sendToConnection(connectionId, errorResponse);
+      }
     } else {
       this.log('❌ No command processor registered', 'error');
+      
+      // Send error response to client
+      const errorResponse = {
+        type: 'command_response',
+        requestId: message.data?.requestId,
+        command: message.data?.command || 'unknown',
+        success: false,
+        error: 'Command processor daemon not available',
+        timestamp: new Date().toISOString()
+      };
+      
+      this.wsManager.sendToConnection(connectionId, errorResponse);
     }
   }
 
