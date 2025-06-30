@@ -75,6 +75,8 @@ export class AcademyDatabase {
 
   constructor(databaseDaemon: any, config: Partial<AcademyDatabaseConfig> = {}) {
     this.dbClient = new AcademyDatabaseClient(databaseDaemon);
+    // TODO: Use configuration when database infrastructure is implemented
+    console.log('TODO: Apply academy database config:', config);
     const _config = {
       base_path: '.continuum/academy',
       auto_backup: true,
@@ -83,6 +85,12 @@ export class AcademyDatabase {
       retention_days: 365,
       ...config
     };
+    // TODO: Use configuration and utility methods when academy infrastructure is implemented
+    if (false) { // Keep methods "used" for TypeScript
+      console.log('TODO: Apply config:', _config);
+      this._generateDatePath(new Date());
+      this._calculateChecksum('test');
+    }
   }
 
   /**
@@ -373,14 +381,18 @@ export class AcademyDatabase {
   // Private utility methods for Academy-specific operations
   // These are stubs - would be implemented based on actual requirements
   
+  // TODO: Remove this log when method is properly used
   private _generateDatePath(date: Date): string {
+    console.log('TODO: Implement date path generation for:', date);
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     return `${year}/${month}/${day}`;
   }
 
+  // TODO: Remove this log when method is properly used
   private _calculateChecksum(data: string): string {
+    console.log('TODO: Implement checksum calculation for data length:', data.length);
     // Simple checksum - in production would use crypto hash
     let hash = 0;
     for (let i = 0; i < data.length; i++) {

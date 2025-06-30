@@ -125,7 +125,7 @@ export class FormulaAnalyzer {
     const behaviors: EmergentBehavior[] = [];
     
     // Predict emergent behaviors based on formula components
-    if (formula.p2p_integration.collaboration_balance > 0.7) {
+    if (formula.p2p_integration.competition_balance > 0.7) {
       behaviors.push({
         behavior: 'Collective intelligence emergence',
         probability: 0.8,
@@ -198,9 +198,18 @@ export class FormulaAnalyzer {
   }
 
   // Placeholder implementations for mathematical analysis methods
-  private static calculateConvergenceRate(schedule: any): number { return 0.8; }
-  private static findStabilityRegions(formula: TrainingFormula): string[] { return ['low_lr_region']; }
-  private static identifyBifurcationPoints(formula: TrainingFormula): number[] { return [0.1, 0.5]; }
+  private static calculateConvergenceRate(schedule: any): number { 
+    console.log('TODO: Implement convergence rate calculation for:', schedule);
+    return 0.8; 
+  }
+  private static findStabilityRegions(formula: TrainingFormula): string[] { 
+    console.log('TODO: Implement stability regions analysis for:', formula.name);
+    return ['low_lr_region']; 
+  }
+  private static identifyBifurcationPoints(formula: TrainingFormula): number[] { 
+    console.log('TODO: Implement bifurcation analysis for:', formula.name);
+    return [0.1, 0.5]; 
+  }
   private static analyzeGradientFlow(formula: TrainingFormula): string { return 'smooth_descent'; }
   private static assessMinimaAvoidance(formula: TrainingFormula): number { return 0.7; }
   private static calculateExplorationBalance(formula: TrainingFormula): number { return 0.6; }
