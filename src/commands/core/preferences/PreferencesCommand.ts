@@ -69,12 +69,24 @@ export class PreferencesCommand extends BaseCommand {
       category: 'core',
       icon: '⚙️',
       description: 'Manage user preferences and system configuration with type safety',
-      params: '[operation] [data]',
+      parameters: { operation: 'string', data: 'any' },
       examples: [
-        'preferences get ui.theme.mode',
-        'preferences set ui.theme.mode dark',
-        'preferences list --filter ui',
-        'preferences reset ui.theme'
+        {
+          description: 'Get theme mode preference',
+          command: 'preferences get ui.theme.mode'
+        },
+        {
+          description: 'Set theme to dark mode',
+          command: 'preferences set ui.theme.mode dark'
+        },
+        {
+          description: 'List UI preferences',
+          command: 'preferences list --filter ui'
+        },
+        {
+          description: 'Reset theme preferences',
+          command: 'preferences reset ui.theme'
+        }
       ],
       usage: 'preferences <get|set|list|reset|export|import> [key|data]'
     };

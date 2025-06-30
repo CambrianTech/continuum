@@ -32,7 +32,7 @@ export class PersonasCommand extends BaseCommand {
     };
   }
 
-  static async execute(command: string, params: any = {}): Promise<CommandResult> {
+  static async execute(_command: string, params: any = {}): Promise<CommandResult> {
     try {
       const showActiveOnly = params.active || false;
 
@@ -71,11 +71,14 @@ export class PersonasCommand extends BaseCommand {
         ? mockPersonas.filter(p => p.status === 'active')
         : mockPersonas;
 
-      return this.createSuccessResult({
-        personas: filteredPersonas,
-        count: filteredPersonas.length,
-        filter: showActiveOnly ? 'active' : 'all'
-      });
+      return this.createSuccessResult(
+        `Found ${filteredPersonas.length} personas (${showActiveOnly ? 'active' : 'all'})`,
+        {
+          personas: filteredPersonas,
+          count: filteredPersonas.length,
+          filter: showActiveOnly ? 'active' : 'all'
+        }
+      );
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

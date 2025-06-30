@@ -21,7 +21,7 @@ export class ProjectsCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any = {}): Promise<CommandResult> {
+  static async execute(_params: any = {}): Promise<CommandResult> {
     try {
       // Mock project data based on what we saw in the UI
       const projects = [
@@ -45,11 +45,15 @@ export class ProjectsCommand extends BaseCommand {
         }
       ];
 
-      return this.createSuccessResult({
-        projects,
-        count: projects.length,
-        activeCount: projects.filter(p => p.status === 'active').length
-      });
+      const activeCount = projects.filter(p => p.status === 'active').length;
+      return this.createSuccessResult(
+        `Found ${projects.length} projects (${activeCount} active)`,
+        {
+          projects,
+          count: projects.length,
+          activeCount
+        }
+      );
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

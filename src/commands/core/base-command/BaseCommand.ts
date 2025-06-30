@@ -6,11 +6,14 @@
 export interface CommandDefinition {
   name: string;
   category: string;
-  icon: string;
+  icon?: string;
   description: string;
-  params: string;
-  examples: string[];
-  usage: string;
+  parameters: Record<string, any>;
+  examples: Array<{
+    description: string;
+    command: string;
+  }>;
+  usage?: string;
 }
 
 export interface CommandContext {

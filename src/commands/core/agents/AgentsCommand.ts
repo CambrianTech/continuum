@@ -21,7 +21,7 @@ export class AgentsCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any = {}): Promise<CommandResult> {
+  static async execute(_params: any = {}): Promise<CommandResult> {
     try {
       // Mock agent data for now
       const agents = [
@@ -41,10 +41,13 @@ export class AgentsCommand extends BaseCommand {
         }
       ];
 
-      return this.createSuccessResult({
-        agents,
-        count: agents.length
-      });
+      return this.createSuccessResult(
+        `Found ${agents.length} available agents`,
+        {
+          agents,
+          count: agents.length
+        }
+      );
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

@@ -70,24 +70,28 @@ export class ConsoleCommand extends BaseCommand {
 
       // TODO: Forward to actual development portal
       // For now, log to server console for JTAG development
-      const icon = {
+      const iconMap: Record<string, string> = {
         'log': '📝',
         'error': '❌', 
         'warn': '⚠️',
         'info': 'ℹ️',
         'health_report': '🏥'
-      }[action] || '📝';
+      };
+      const icon = iconMap[action as string] || '📝';
 
       console.log(`${icon} PORTAL BRIDGE [${source}]: ${message}`);
       if (data && Object.keys(data).length > 0) {
         console.log(`   Data:`, data);
       }
 
-      return this.createSuccessResult({
-        forwarded: true,
-        timestamp,
-        consoleEntry
-      });
+      return this.createSuccessResult(
+        'Console message forwarded successfully',
+        {
+          forwarded: true,
+          timestamp,
+          consoleEntry
+        }
+      );
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

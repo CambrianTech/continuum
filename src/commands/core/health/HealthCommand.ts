@@ -101,12 +101,15 @@ export class HealthCommand extends BaseCommand {
       
       const responseTime = Date.now() - startTime;
       
-      return this.createSuccessResult({
-        server: serverReport,
-        client: clientReport,
-        summary: this.generateHealthSummary(serverReport, clientReport),
-        responseTime: `${responseTime}ms`
-      });
+      return this.createSuccessResult(
+        'Health check completed successfully',
+        {
+          server: serverReport,
+          client: clientReport,
+          summary: this.generateHealthSummary(serverReport, clientReport),
+          responseTime: `${responseTime}ms`
+        }
+      );
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
