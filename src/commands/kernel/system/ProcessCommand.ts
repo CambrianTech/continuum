@@ -54,6 +54,17 @@ export class ProcessCommand extends BaseCommand {
       name: 'process',
       description: 'Low-level process management for system operations',
       category: 'kernel',
+      parameters: {
+        subcommand: 'string',
+        filter: 'ProcessFilter',
+        pid: 'number',
+        signal: 'string'
+      },
+      examples: [
+        { description: 'List all processes', command: '{"subcommand": "list"}' },
+        { description: 'Find Node.js processes', command: '{"subcommand": "find", "filter": {"name": "node"}}' },
+        { description: 'Kill process by PID', command: '{"subcommand": "kill", "pid": 1234}' }
+      ],
       subcommands: {
         'list': 'List processes with optional filtering',
         'find': 'Find processes matching criteria',
@@ -99,6 +110,7 @@ export class ProcessCommand extends BaseCommand {
         default:
           return {
             success: false,
+            message: `Unknown subcommand: ${subcommand}`,
             error: `Unknown subcommand: ${subcommand}. Use 'list', 'find', 'spawn', 'kill', 'monitor', 'ports', 'tree', or 'cleanup'`
           };
       }
@@ -106,6 +118,7 @@ export class ProcessCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Process command failed`,
         error: `Process command failed: ${errorMessage}`
       };
     }
@@ -138,6 +151,7 @@ export class ProcessCommand extends BaseCommand {
 
       return {
         success: true,
+        message: `Found ${filteredProcesses.length} processes`,
         data: {
           processes: filteredProcesses,
           total: filteredProcesses.length,
@@ -148,6 +162,7 @@ export class ProcessCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Failed to list processes`,
         error: `Failed to list processes: ${errorMessage}`
       };
     }
@@ -176,6 +191,7 @@ export class ProcessCommand extends BaseCommand {
 
       return {
         success: true,
+        message: `Found ${matches.length} matching processes`,
         data: {
           matches,
           count: matches.length,
@@ -187,6 +203,7 @@ export class ProcessCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Process search failed`,
         error: `Process search failed: ${errorMessage}`
       };
     }
@@ -229,6 +246,7 @@ export class ProcessCommand extends BaseCommand {
 
       return {
         success: true,
+        message: `Process spawned successfully: PID ${childProcess.pid}`,
         data: {
           pid: childProcess.pid,
           process: processInfo,
@@ -239,6 +257,7 @@ export class ProcessCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Failed to spawn process`,
         error: `Failed to spawn process: ${errorMessage}`
       };
     }
@@ -256,6 +275,7 @@ export class ProcessCommand extends BaseCommand {
       if (!processName) {
         return {
           success: false,
+          message: `Process ${pid} not found`,
           error: `Process ${pid} not found`
         };
       }
@@ -272,6 +292,7 @@ export class ProcessCommand extends BaseCommand {
           // If we get here, process still exists
           return {
             success: false,
+            message: `Process ${pid} did not terminate`,
             error: `Process ${pid} did not terminate after SIGKILL`
           };
         } catch (error) {
@@ -281,6 +302,7 @@ export class ProcessCommand extends BaseCommand {
 
       return {
         success: true,
+        message: `Process ${pid} terminated`,
         data: {
           pid,
           processName,
@@ -292,6 +314,7 @@ export class ProcessCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Failed to kill process ${pid}`,
         error: `Failed to kill process ${pid}: ${errorMessage}`
       };
     }
