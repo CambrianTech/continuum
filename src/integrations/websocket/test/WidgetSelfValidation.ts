@@ -42,7 +42,8 @@ class MockWidget {
       return true;
       
     } catch (error) {
-      console.error(`❌ ${this.name}: Self-validation failed:`, error.message);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ ${this.name}: Self-validation failed:`, errorMessage);
       return false;
     }
   }
@@ -65,7 +66,7 @@ class MockWidget {
       'Sidebar': /<continuum-sidebar>/i
     };
     
-    const pattern = containerPatterns[this.name] || new RegExp(`<${this.name.toLowerCase()}-widget`, 'i');
+    const pattern = (containerPatterns as any)[this.name] || new RegExp(`<${this.name.toLowerCase()}-widget`, 'i');
     if (!pattern.test(html)) {
       throw new Error(`Container element not found in HTML`);
     }

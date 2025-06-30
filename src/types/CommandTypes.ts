@@ -3,7 +3,7 @@
  * Re-exports from BaseCommand to maintain clean import structure
  */
 
-export {
+export type {
   CommandDefinition,
   CommandContext,
   CommandResult

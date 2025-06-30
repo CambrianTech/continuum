@@ -9,7 +9,7 @@ export class SidebarWidget extends BaseWidget {
     private isResizing: boolean = false;
     private startX: number = 0;
     private startWidth: number = 0;
-    private _currentRoom: string = 'general';
+    private currentRoom: string = 'general';
 
     constructor() {
         super();
@@ -88,7 +88,8 @@ export class SidebarWidget extends BaseWidget {
     }
 
     private switchRoom(room: string): void {
-        this._currentRoom = room;
+        this.currentRoom = room;
+        console.log(`🔄 Switched to room: ${this.currentRoom}`);
         
         // Update active tab
         this.shadowRoot.querySelectorAll('.room-tab').forEach(tab => {

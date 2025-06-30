@@ -83,7 +83,7 @@ async function validateDaemonConnectorBug() {
   }
 }
 
-// Run if called directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run if called directly (module detection for ES modules)
+if (require.main === module) {
   validateDaemonConnectorBug();
 }

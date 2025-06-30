@@ -17,7 +17,8 @@ interface Message {
   };
 }
 
-interface _Room {
+// TODO: Move to shared types when room system is implemented
+export interface Room {
   id: string;
   name: string;
   description: string;
