@@ -8,6 +8,7 @@ import {
   DaemonMessage, 
   DaemonResponse
 } from '../base/DaemonProtocol.js';
+import { DaemonConnector } from '../../integrations/websocket/core/DaemonConnector';
 
 // Strongly typed command interfaces
 export interface TypedCommandRequest<T = unknown> {
@@ -84,11 +85,16 @@ export class CommandProcessorDaemon extends BaseDaemon {
   private readonly executionHistory: CommandExecution[] = [];
   private readonly phaseOmegaEnabled = true;
   private monitoringInterval: NodeJS.Timeout | undefined;
+  private commandConnector: DaemonConnector;
 
   protected async onStart(): Promise<void> {
+    // Initialize command discovery
+    this.commandConnector = new DaemonConnector();
+    await this.commandConnector.connect();
+    
     await this.registerCoreImplementations();
     this.startExecutionMonitoring();
-    this.log('Command Processor Daemon started with TypeScript architecture');
+    this.log('Command Processor Daemon started with TypeScript architecture and command discovery');
   }
 
   protected async onStop(): Promise<void> {
@@ -96,6 +102,11 @@ export class CommandProcessorDaemon extends BaseDaemon {
     if (this.monitoringInterval) {
       clearInterval(this.monitoringInterval);
       this.monitoringInterval = undefined;
+    }
+    
+    // Disconnect command connector
+    if (this.commandConnector) {
+      await this.commandConnector.disconnect();
     }
     
     // Cancel active executions
@@ -376,15 +387,16 @@ export class CommandProcessorDaemon extends BaseDaemon {
    */
   private async validatePatternOfCare<T>(request: TypedCommandRequest<T>): Promise<CareValidation> {
     const { command, parameters } = request;
-    const paramsStr = JSON.stringify(parameters);
+    const commandStr = command || '';
+    const paramsStr = parameters ? JSON.stringify(parameters) : '';
     
     // Calculate care metrics
     const metrics = {
-      dignityPreservation: this.assessDignityImpact(command, paramsStr),
-      cognitiveLoadReduction: this.assessCognitiveImpact(command, paramsStr),
-      systemStability: this.assessStabilityImpact(command, paramsStr),
-      empowermentFactor: this.assessEmpowermentImpact(command, paramsStr),
-      harmPrevention: this.assessHarmPrevention(command, paramsStr)
+      dignityPreservation: this.assessDignityImpact(commandStr, paramsStr),
+      cognitiveLoadReduction: this.assessCognitiveImpact(commandStr, paramsStr),
+      systemStability: this.assessStabilityImpact(commandStr, paramsStr),
+      empowermentFactor: this.assessEmpowermentImpact(commandStr, paramsStr),
+      harmPrevention: this.assessHarmPrevention(commandStr, paramsStr)
     };
     
     const score = Object.values(metrics).reduce((sum, metric) => sum + metric, 0) / Object.keys(metrics).length;
@@ -456,9 +468,24 @@ export class CommandProcessorDaemon extends BaseDaemon {
 
   // Implementation-specific execution methods
   private async executeBrowserImplementation<T, R>(request: TypedCommandRequest<T>): Promise<R> {
-    this.log(`🌐 Executing in browser: ${request.command}`);
-    // Would integrate with browser WebSocket system
-    return { provider: 'browser', status: 'executed' } as R;
+    this.log(`🌐 Executing command via dynamic discovery: ${request.command}`);
+    
+    // Use the command connector to execute discovered commands
+    if (!this.commandConnector || !this.commandConnector.isConnected()) {
+      throw new Error('Command discovery system not available');
+    }
+    
+    const result = await this.commandConnector.executeCommand(
+      request.command,
+      request.parameters,
+      request.context
+    );
+    
+    if (result.success) {
+      return result.data as R;
+    } else {
+      throw new Error(result.error || 'Command execution failed');
+    }
   }
 
   private async executePythonImplementation<T, R>(request: TypedCommandRequest<T>): Promise<R> {
@@ -516,29 +543,28 @@ export class CommandProcessorDaemon extends BaseDaemon {
 
   // Helper methods
   private async registerCoreImplementations(): Promise<void> {
-    const coreImplementations: CommandImplementation[] = [
-      {
-        name: 'screenshot-browser',
-        provider: 'browser',
-        status: 'available',
-        quality: 'standard',
-        cost: { type: 'free', amount: 0, currency: 'USD' },
-        capabilities: ['screenshot', 'visual', 'browser']
-      },
-      {
-        name: 'info-local',
-        provider: 'python',
-        status: 'available',
-        quality: 'basic',
-        cost: { type: 'free', amount: 0, currency: 'USD' },
-        capabilities: ['info', 'system', 'status']
-      }
-    ];
-
-    this.implementations.set('screenshot', [coreImplementations[0]]);
-    this.implementations.set('info', [coreImplementations[1]]);
+    // Get discovered commands from the command connector
+    const availableCommands = this.commandConnector?.getAvailableCommands() || [];
     
-    this.log(`Registered ${coreImplementations.length} core implementations`);
+    // Register all discovered commands as browser implementations
+    // (since the dynamic discovery uses filesystem-based command loading)
+    const discoveredImplementations: CommandImplementation[] = availableCommands.map(commandName => ({
+      name: `${commandName}-discovered`,
+      provider: 'browser' as const,
+      status: 'available' as const,
+      quality: 'standard' as const,
+      cost: { type: 'free', amount: 0, currency: 'USD' },
+      capabilities: ['command-execution', 'discovered']
+    }));
+
+    // Register implementations for each command
+    for (let i = 0; i < availableCommands.length; i++) {
+      const commandName = availableCommands[i];
+      const implementation = discoveredImplementations[i];
+      this.implementations.set(commandName, [implementation]);
+    }
+    
+    this.log(`Registered ${discoveredImplementations.length} discovered command implementations: ${availableCommands.join(', ')}`);
   }
 
   private async getCommandImplementations(data: { command: string }): Promise<DaemonResponse> {

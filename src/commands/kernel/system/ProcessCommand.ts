@@ -10,8 +10,8 @@
  */
 
 import { BaseCommand } from '../../core/base-command/BaseCommand';
-import { CommandResult } from '../../core/base-command/CommandResult';
-import { spawn, exec, ChildProcess } from 'child_process';
+import { CommandResult } from '../../core/base-command/BaseCommand';
+import { spawn, exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);

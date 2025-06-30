@@ -26,6 +26,8 @@ export class ChromeBrowserModule implements IBrowserModule {
     portRange: [9222, 9299]
   };
 
+  private devToolsAdapters = new Map<string, ChromiumDevToolsAdapter>();
+
   async isAvailable(): Promise<boolean> {
     const binaryPath = await this.getBinaryPath();
     return binaryPath !== null;
@@ -225,6 +227,7 @@ export class ChromeBrowserModule implements IBrowserModule {
 
   async getTabAPI(browser: ManagedBrowser): Promise<TabManagementAPI> {
     const baseUrl = `http://localhost:${browser.port}`;
+    const adapter = await this.getDevToolsAdapter(browser);
     
     return {
       async createTab(url: string): Promise<string> {
@@ -238,43 +241,71 @@ export class ChromeBrowserModule implements IBrowserModule {
       },
       
       async refreshTab(tabId: string): Promise<void> {
-        // Send reload command via DevTools Protocol
-        const response = await fetch(`${baseUrl}/json/runtime/evaluate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            expression: 'location.reload()',
-            contextId: tabId
-          })
-        });
+        if (adapter.isConnected()) {
+          await adapter.reload(tabId);
+        } else {
+          // Fallback to HTTP API
+          await fetch(`${baseUrl}/json/runtime/evaluate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              expression: 'location.reload()',
+              contextId: tabId
+            })
+          });
+        }
       },
       
       async navigateTab(tabId: string, url: string): Promise<void> {
-        const response = await fetch(`${baseUrl}/json/runtime/evaluate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            expression: `location.href = '${url}'`,
-            contextId: tabId
-          })
-        });
+        if (adapter.isConnected()) {
+          await adapter.navigate(url, tabId);
+        } else {
+          // Fallback to HTTP API
+          await fetch(`${baseUrl}/json/runtime/evaluate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              expression: `location.href = '${url}'`,
+              contextId: tabId
+            })
+          });
+        }
       },
       
       async listTabs(): Promise<Array<{ id: string; url: string; title: string }>> {
-        const response = await fetch(`${baseUrl}/json`);
-        const tabs = await response.json();
-        return tabs.map((tab: any) => ({
-          id: tab.id,
-          url: tab.url,
-          title: tab.title
-        }));
+        if (adapter.isConnected()) {
+          const targets = await adapter.getTargets();
+          return targets
+            .filter(target => target.type === 'page')
+            .map(target => ({
+              id: target.id,
+              url: target.url,
+              title: target.title
+            }));
+        } else {
+          // Fallback to HTTP API
+          const response = await fetch(`${baseUrl}/json`);
+          const tabs = await response.json();
+          return tabs.map((tab: any) => ({
+            id: tab.id,
+            url: tab.url,
+            title: tab.title
+          }));
+        }
       }
     };
   }
 
   async terminate(browser: ManagedBrowser): Promise<void> {
     try {
-      // Gracefully close via DevTools first
+      // Clean up DevTools adapter first
+      const adapter = this.devToolsAdapters.get(browser.id);
+      if (adapter) {
+        await adapter.disconnect();
+        this.devToolsAdapters.delete(browser.id);
+      }
+
+      // Gracefully close via DevTools first  
       await fetch(`http://localhost:${browser.port}/json/close`, { method: 'POST' });
       
       // Wait a moment, then force kill if needed
@@ -323,7 +354,7 @@ export class ChromeBrowserModule implements IBrowserModule {
         tabs: tabs.length,
         memory: 0, // TODO: Get from ProcessCommand
         cpu: 0,    // TODO: Get from ProcessCommand  
-        devToolsConnections: 1 // TODO: Count active DevTools connections
+        devToolsConnections: this.devToolsAdapters.has(browser.id) ? 1 : 0
       };
     } catch (error) {
       return {
@@ -333,5 +364,80 @@ export class ChromeBrowserModule implements IBrowserModule {
         devToolsConnections: 0
       };
     }
+  }
+
+  /**
+   * Get or create DevTools adapter for browser
+   */
+  async getDevToolsAdapter(browser: ManagedBrowser): Promise<ChromiumDevToolsAdapter> {
+    let adapter = this.devToolsAdapters.get(browser.id);
+    
+    if (!adapter) {
+      adapter = new ChromiumDevToolsAdapter();
+      
+      try {
+        const debugUrl = `http://localhost:${browser.port}`;
+        await adapter.connect(debugUrl);
+        this.devToolsAdapters.set(browser.id, adapter);
+        console.log(`✅ DevTools adapter connected for browser ${browser.id}`);
+      } catch (error) {
+        console.warn(`⚠️ DevTools adapter connection failed for browser ${browser.id}: ${error}`);
+        // Return adapter anyway - it will fall back to HTTP API
+      }
+    }
+    
+    return adapter;
+  }
+
+  /**
+   * Enable console monitoring for browser
+   */
+  async enableConsoleMonitoring(browser: ManagedBrowser, callback: (message: any) => void): Promise<void> {
+    const adapter = await this.getDevToolsAdapter(browser);
+    if (adapter.isConnected()) {
+      await adapter.enableConsole(callback);
+    }
+  }
+
+  /**
+   * Enable network monitoring for browser
+   */
+  async enableNetworkMonitoring(browser: ManagedBrowser, callback: (request: any) => void): Promise<void> {
+    const adapter = await this.getDevToolsAdapter(browser);
+    if (adapter.isConnected()) {
+      await adapter.enableNetwork(callback);
+    }
+  }
+
+  /**
+   * Enable performance monitoring for browser
+   */
+  async enablePerformanceMonitoring(browser: ManagedBrowser, callback: (metrics: any) => void): Promise<void> {
+    const adapter = await this.getDevToolsAdapter(browser);
+    if (adapter.isConnected()) {
+      await adapter.enablePerformance(callback);
+    }
+  }
+
+  /**
+   * Take screenshot of browser
+   */
+  async takeScreenshot(browser: ManagedBrowser, options?: { format?: 'png' | 'jpeg'; quality?: number; fullPage?: boolean }): Promise<Buffer | null> {
+    const adapter = await this.getDevToolsAdapter(browser);
+    if (adapter.isConnected()) {
+      return await adapter.screenshot(undefined, options);
+    }
+    return null;
+  }
+
+  /**
+   * Execute JavaScript in browser
+   */
+  async executeScript(browser: ManagedBrowser, expression: string): Promise<any> {
+    const adapter = await this.getDevToolsAdapter(browser);
+    if (adapter.isConnected()) {
+      return await adapter.evaluateScript(expression);
+    }
+    throw new Error('DevTools not connected - cannot execute script');
   }
 }
