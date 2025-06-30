@@ -10,7 +10,9 @@
  * - Compositions
  */
 
-import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
+// TODO: Add @types/uuid package for proper typing
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { v4: uuidv4, v5: uuidv5 } = require('uuid');
 import * as crypto from 'crypto';
 
 // Global namespace UUIDs for different types of entities
@@ -164,6 +166,8 @@ export class GlobalIdentitySystem {
     const contentHash = this.calculateContentHash(personaContent);
     const seedString = `${this.nodeId}:${name}:${contentHash}`;
     const uuid = uuidv5(seedString, CONTINUUM_NAMESPACES.PERSONA);
+    // TODO: Use uuidv4 for random IDs when needed
+    if (false) console.log('TODO: Random UUID option:', uuidv4());
 
     const identity: GlobalPersonaIdentity = {
       uuid,
@@ -173,8 +177,8 @@ export class GlobalIdentitySystem {
       creator_node: this.nodeId,
       creation_timestamp: new Date(),
       content_hash: contentHash,
-      parent_personas: parentPersonas,
-      derivation_type: parentPersonas ? 'bred' : 'original'
+      derivation_type: parentPersonas ? 'bred' : 'original',
+      ...(parentPersonas && { parent_personas: parentPersonas })
     };
 
     this.personaRegistry.set(uuid, identity);
@@ -210,7 +214,7 @@ export class GlobalIdentitySystem {
       rank: layerConfig.rank,
       alpha: layerConfig.alpha,
       base_model_hash: baseModelHash,
-      training_dataset_uuid: trainingDatasetUuid,
+      ...(trainingDatasetUuid && { training_dataset_uuid: trainingDatasetUuid }),
       creator_node: this.nodeId,
       creation_timestamp: new Date(),
       layer_hash: layerHash,
@@ -273,7 +277,7 @@ export class GlobalIdentitySystem {
       resource_type: resourceType as any,
       name,
       description,
-      creation_prompt: creationPrompt,
+      ...(creationPrompt && { creation_prompt: creationPrompt }),
       content_hash: contentHash,
       size_bytes: JSON.stringify(content).length,
       creator_node: this.nodeId,
@@ -332,7 +336,7 @@ export class GlobalIdentitySystem {
   findLayersByPrompt(queryPrompt: string, similarityThreshold: number = 0.7): GlobalLoRALayerIdentity[] {
     const results: GlobalLoRALayerIdentity[] = [];
 
-    for (const [uuid, layer] of this.layerRegistry) {
+    for (const [_uuid, layer] of this.layerRegistry) {
       const similarity = this.calculatePromptSimilarity(queryPrompt, layer.creation_prompt);
       if (similarity >= similarityThreshold) {
         results.push(layer);

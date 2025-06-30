@@ -4,7 +4,17 @@
  * Combines layers, prunes ineffective ones, optimizes composition based on Academy performance data
  */
 
-import { LoRAComposition, LoRALayer } from './CapabilitySynthesis.js';
+import { LoRAComposition } from './CapabilitySynthesis.js';
+
+// TODO: Define LoRALayer interface when CapabilitySynthesis is complete
+interface LoRALayer {
+  layer_id: string;
+  name: string;
+  domain: string;
+  rank: number;
+  alpha: number;
+  performance_metrics: any;
+}
 
 export interface OptimizationMetrics {
   performance_benchmarks: PerformanceBenchmark[];
@@ -58,6 +68,7 @@ export interface MergeOpportunity {
   expected_performance_retention: number; // 0-1
   benchmarks_affected: string[];
   optimization_priority: number; // 0-1
+  similarity_score: number; // 0-1
 }
 
 export interface CompressionOpportunity {
@@ -82,6 +93,11 @@ export class LayerOptimization {
   private performanceDatabase: Map<string, PerformanceBenchmark[]> = new Map();
   private utilizationTracking: Map<string, LayerUtilization> = new Map();
   private optimizationHistory: OptimizationRecord[] = [];
+
+  constructor() {
+    // TODO: Implement utilization tracking when layer monitoring is ready
+    console.log('TODO: Initialize utilization tracking:', this.utilizationTracking.size);
+  }
 
   /**
    * Analyze composition for optimization opportunities
@@ -423,6 +439,7 @@ export class LayerOptimization {
     const successfulMerges = this.optimizationHistory
       .filter(record => record.success_rating > 0.8)
       .flatMap(record => record.optimization_steps.filter(step => step.type === 'layer_merge'));
+    console.log('TODO: Use successful merge patterns for optimization:', successfulMerges.length);
 
     // Extract patterns from successful optimizations
     // This would build predictive models for future optimizations
@@ -457,6 +474,7 @@ export class LayerOptimization {
 
   // Placeholder implementations for complex analysis methods...
   private async analyzeLayerUtilization(composition: LoRAComposition, benchmarks: PerformanceBenchmark[]): Promise<LayerUtilization[]> {
+    console.log('TODO: Implement real layer utilization analysis using benchmarks:', benchmarks.length);
     // Analyze how much each layer is actually contributing
     return composition.primary_layers.map(layer => ({
       layer_id: layer.source_id,
