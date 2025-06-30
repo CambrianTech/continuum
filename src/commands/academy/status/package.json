@@ -1,0 +1,10 @@
+{
+  "name": "@continuum/academy-status-command",
+  "version": "1.0.0",
+  "main": "AcademyStatusCommand.ts",
+  "description": "Academy Status Command - Monitor AI evolution training progress and P2P network health",
+  "dependencies": {
+    "@continuum/base-command": "file:../../core/base-command",
+    "@continuum/direct-command": "file:../../core/direct-command"
+  }
+}
