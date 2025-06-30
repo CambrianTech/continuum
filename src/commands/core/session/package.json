@@ -2,7 +2,7 @@
   "name": "session-core",
   "version": "1.0.0",
   "description": "session core for Continuum",
-  "main": "SessionCore.ts",
+  "main": "index.ts",
   "type": "module",
   "continuum": {
     "core": "session",

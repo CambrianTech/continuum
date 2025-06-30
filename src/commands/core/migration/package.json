@@ -2,7 +2,7 @@
   "name": "migration-core",
   "version": "1.0.0",
   "description": "migration core for Continuum",
-  "main": "MigrationCore.ts",
+  "main": "index.ts",
   "type": "module",
   "continuum": {
     "core": "migration",

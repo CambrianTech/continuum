@@ -2,7 +2,7 @@
   "name": "reload-core",
   "version": "1.0.0",
   "description": "reload core for Continuum",
-  "main": "ReloadCore.ts",
+  "main": "ReloadCommand.ts",
   "type": "module",
   "continuum": {
     "core": "reload",

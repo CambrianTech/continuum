@@ -2,7 +2,7 @@
   "name": "health-core",
   "version": "1.0.0",
   "description": "health core for Continuum",
-  "main": "HealthCore.ts",
+  "main": "HealthCommand.ts",
   "type": "module",
   "continuum": {
     "core": "health",

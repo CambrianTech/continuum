@@ -2,7 +2,7 @@
   "name": "help-core",
   "version": "1.0.0",
   "description": "help core for Continuum",
-  "main": "HelpCore.ts",
+  "main": "HelpCommand.ts",
   "type": "module",
   "continuum": {
     "core": "help",

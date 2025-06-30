@@ -2,7 +2,7 @@
   "name": "console-core",
   "version": "1.0.0",
   "description": "console core for Continuum",
-  "main": "ConsoleCore.ts",
+  "main": "ConsoleCommand.ts",
   "type": "module",
   "continuum": {
     "core": "console",

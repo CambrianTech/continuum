@@ -2,7 +2,7 @@
   "name": "base-command-core",
   "version": "1.0.0",
   "description": "base-command core for Continuum",
-  "main": "BaseCommandCore.ts",
+  "main": "BaseCommand.ts",
   "type": "module",
   "continuum": {
     "core": "base_command",
