@@ -2,7 +2,7 @@
   "name": "screenshot-core",
   "version": "1.0.0",
   "description": "screenshot core for Continuum",
-  "main": "ScreenshotCore.ts",
+  "main": "ScreenshotCommand.ts",
   "type": "module",
   "continuum": {
     "core": "screenshot",

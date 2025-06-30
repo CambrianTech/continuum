@@ -3,7 +3,7 @@
  */
 
 import { DirectCommand } from '../direct-command/DirectCommand.js';
-import { CommandDefinition, CommandResult, CommandContext } from '../../../types/CommandTypes.js';
+import { CommandDefinition, CommandResult, CommandContext } from '../base-command/BaseCommand.js';
 
 export class PersonasCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {

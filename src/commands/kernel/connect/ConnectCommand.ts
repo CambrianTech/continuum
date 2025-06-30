@@ -1,58 +1,175 @@
 /**
- * Connect Command - Proper Implementation
+ * Connect Command - Session & Window Management with Daemon Integration
  * 
- * Low-level command that uses ContinuumDirectoryDaemon for session management
- * Creates sessions, manages .continuum filesystem, launches browsers
+ * Orchestrates collaborative sessions with intelligent window/tab management
+ * Integrates with SessionManagerDaemon, ContinuumDirectoryDaemon, BrowserManagerDaemon
+ * Supports Portal-AI collaboration with shared browser state
  */
 
-import { BaseCommand, CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
+import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand.js';
 import * as path from 'path';
-import * as fs from 'fs/promises';
 
-export class ConnectCommand extends BaseCommand {
+// Strongly typed enums for session and window management
+export enum SessionType {
+  PORTAL = 'portal',
+  DEVTOOLS = 'devtools', 
+  COLLABORATIVE = 'collaborative',
+  GIT_HOOK = 'git-hook',
+  INTERACTIVE = 'interactive',
+  PERSONA = 'persona'
+}
+
+export enum WindowStrategy {
+  NEW_WINDOW = 'new-window',
+  NEW_TAB = 'new-tab',
+  JOIN_EXISTING = 'join-existing',
+  SHARED_TAB = 'shared-tab'
+}
+
+export enum CollaborationMode {
+  SHARED_VIEW = 'shared-view',        // Same tab, synchronized view
+  PARALLEL_VIEW = 'parallel-view',    // Parallel tabs in same window
+  ISOLATED = 'isolated'               // Separate windows
+}
+
+export enum ParticipantType {
+  HUMAN_PORTAL = 'human-portal',
+  HUMAN_BROWSER = 'human-browser',
+  AI_PORTAL = 'ai-portal',
+  AI_PERSONA = 'ai-persona',
+  CLI_USER = 'cli-user'
+}
+
+interface ConnectParams {
+  sessionType?: SessionType;
+  windowStrategy?: WindowStrategy;
+  collaborationMode?: CollaborationMode;
+  participantType?: ParticipantType;
+  joinSession?: string;              // Existing session ID to join
+  maintainWindow?: boolean;          // Keep window open across commands
+  devtools?: boolean;
+  background?: boolean;
+  owner?: string;
+}
+
+interface SessionInfo {
+  sessionId: string;
+  sessionType: SessionType;
+  windowStrategy: WindowStrategy;
+  collaborationMode: CollaborationMode;
+  participants: ParticipantInfo[];
+  windowInfo: WindowInfo;
+  artifactLocation: string;
+}
+
+interface ParticipantInfo {
+  id: string;
+  type: ParticipantType;
+  joinedAt: number;
+  capabilities: string[];
+}
+
+interface WindowInfo {
+  windowId: string;
+  tabId: string;
+  url: string;
+  title: string;
+  devToolsAccess: boolean;
+}
+
+export class ConnectCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
     return {
       name: 'connect',
-      category: 'development',
+      category: 'kernel',
       icon: '🔌',
-      description: 'Connect to Continuum system with session management and browser launching',
+      description: 'Create collaborative sessions with intelligent window/tab management',
       parameters: { 
-        sessionType: 'string',
-        owner: 'string', 
+        sessionType: `Enum: ${Object.values(SessionType).join(' | ')}`,
+        windowStrategy: `Enum: ${Object.values(WindowStrategy).join(' | ')}`,
+        collaborationMode: `Enum: ${Object.values(CollaborationMode).join(' | ')}`,
+        participantType: `Enum: ${Object.values(ParticipantType).join(' | ')}`,
+        joinSession: 'string',
+        maintainWindow: 'boolean',
         devtools: 'boolean',
-        background: 'boolean'
+        background: 'boolean',
+        owner: 'string'
       },
       examples: [
-        { description: 'Basic connection', command: 'connect' },
-        { description: 'Connect with DevTools', command: 'connect --devtools' },
-        { description: 'Portal session', command: 'connect --sessionType=portal --owner=claude' }
+        { 
+          description: 'Start Portal-AI collaboration', 
+          command: `{"sessionType": "${SessionType.COLLABORATIVE}", "participantType": "${ParticipantType.HUMAN_PORTAL}", "collaborationMode": "${CollaborationMode.SHARED_VIEW}"}` 
+        },
+        { 
+          description: 'Join existing session', 
+          command: `{"joinSession": "portal-collab-1905", "windowStrategy": "${WindowStrategy.JOIN_EXISTING}"}` 
+        },
+        { 
+          description: 'DevTools session', 
+          command: `{"sessionType": "${SessionType.DEVTOOLS}", "devtools": true, "windowStrategy": "${WindowStrategy.NEW_WINDOW}"}` 
+        },
+        {
+          description: 'AI Persona joins collaboration',
+          command: `{"joinSession": "collaborative-1905", "participantType": "${ParticipantType.AI_PERSONA}", "collaborationMode": "${CollaborationMode.SHARED_VIEW}"}`
+        }
       ],
-      usage: 'Create session, organize .continuum directory, and launch browser'
+      usage: 'Create or join sessions with daemon-coordinated window management and artifact organization'
     };
   }
 
-  static async execute(params: any = {}, _context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, context?: CommandContext): Promise<CommandResult> {
+    const connectParams = this.parseParams<ConnectParams>(params);
+    
     try {
-      // 1. Get .continuum directory configuration from ContinuumDirectoryDaemon
-      const directoryConfig = await this.getContinuumDirectoryConfig();
-      
-      // 2. Create session using daemon's directory organization
-      const sessionData = await this.createSession(params, directoryConfig);
-      
-      // 3. Launch browser using session information
-      const browserResult = await this.launchBrowser(sessionData, params);
-      
-      // 4. Return complete connection information
+      // Use strongly typed enums with defaults
+      const sessionType = connectParams.sessionType || SessionType.INTERACTIVE;
+      const windowStrategy = connectParams.windowStrategy || WindowStrategy.NEW_WINDOW;
+      const collaborationMode = connectParams.collaborationMode || CollaborationMode.ISOLATED;
+      const participantType = connectParams.participantType || ParticipantType.CLI_USER;
+
+      let sessionInfo: SessionInfo;
+
+      if (connectParams.joinSession) {
+        // Join existing session - delegate to SessionManagerDaemon
+        sessionInfo = await this.delegateToSessionManager('join_session', {
+          sessionId: connectParams.joinSession,
+          participantType,
+          windowStrategy,
+          collaborationMode
+        });
+      } else {
+        // Create new session - delegate to SessionManagerDaemon  
+        sessionInfo = await this.delegateToSessionManager('create_session', {
+          sessionType,
+          participantType,
+          owner: connectParams.owner || 'default'
+        });
+      }
+
+      // Window management - delegate to WindowManagerDaemon
+      const windowInfo = await this.delegateToWindowManager('manage_window', {
+        sessionId: sessionInfo.sessionId,
+        windowStrategy,
+        collaborationMode,
+        devtools: connectParams.devtools || false,
+        background: connectParams.background || false
+      });
+
+      // Update session with window info
+      sessionInfo.windowInfo = windowInfo;
+
       return this.createSuccessResult(
-        `Connected successfully - Session ${sessionData.sessionId}`,
+        `Connected to ${sessionType} session ${sessionInfo.sessionId}`,
         {
-          sessionId: sessionData.sessionId,
-          sessionPath: sessionData.sessionPath,
-          artifactPath: sessionData.artifactPath,
-          browserUrl: 'http://localhost:9000',
-          devtools: params.devtools || false,
-          browser: browserResult,
-          continuumDir: directoryConfig.rootPath
+          session: sessionInfo,
+          // Command chaining: Return session info for other commands to use
+          sessionContext: {
+            sessionId: sessionInfo.sessionId,
+            artifactLocation: sessionInfo.artifactLocation,
+            windowInfo: sessionInfo.windowInfo,
+            collaborationMode: sessionInfo.collaborationMode
+          }
         }
       );
 

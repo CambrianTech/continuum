@@ -20,7 +20,7 @@ import { BaseCommand, CommandResult, CommandContext } from '../base-command/Base
 export interface RemoteExecutionRequest {
   command: string;
   params: any;
-  sessionId?: string;
+  sessionId?: string | undefined;
   timeout?: number;
 }
 
@@ -45,7 +45,7 @@ export abstract class RemoteCommand extends BaseCommand {
     return {
       command: this.getDefinition().name,
       params: parsedParams,
-      sessionId: context?.sessionId,
+      sessionId: context?.sessionId || undefined,
       timeout: this.getRemoteTimeout()
     };
   }
@@ -53,7 +53,7 @@ export abstract class RemoteCommand extends BaseCommand {
   /**
    * Execute on the client side (implemented by subclasses)
    */
-  protected static async executeOnClient(request: RemoteExecutionRequest): Promise<RemoteExecutionResponse> {
+  protected static async executeOnClient(_request: RemoteExecutionRequest): Promise<RemoteExecutionResponse> {
     throw new Error('executeOnClient() must be implemented by subclass');
   }
 
@@ -98,7 +98,7 @@ export abstract class RemoteCommand extends BaseCommand {
   /**
    * WebSocket communication infrastructure
    */
-  private static async sendToClientViaWebSocket(request: RemoteExecutionRequest, context?: CommandContext): Promise<RemoteExecutionResponse> {
+  private static async sendToClientViaWebSocket(_request: RemoteExecutionRequest, _context?: CommandContext): Promise<RemoteExecutionResponse> {
     // TODO: Implement actual WebSocket communication
     // This should:
     // 1. Find the client WebSocket connection by sessionId
@@ -128,7 +128,7 @@ export abstract class RemoteCommand extends BaseCommand {
   /**
    * Validate that WebSocket connection exists for session
    */
-  protected static async validateClientConnection(context?: CommandContext): Promise<boolean> {
+  protected static async validateClientConnection(_context?: CommandContext): Promise<boolean> {
     // TODO: Check if WebSocket connection exists for context.sessionId
     // Return false if no connection, true if connected
     return true; // Mock implementation

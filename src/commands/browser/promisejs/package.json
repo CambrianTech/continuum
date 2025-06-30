@@ -2,7 +2,7 @@
   "name": "promisejs-core",
   "version": "1.0.0",
   "description": "promisejs core for Continuum",
-  "main": "PromisejsCore.ts",
+  "main": "PromisejsCommand.ts",
   "type": "module",
   "continuum": {
     "core": "promisejs",

@@ -2,7 +2,7 @@
   "name": "browser-core",
   "version": "1.0.0",
   "description": "browser core for Continuum",
-  "main": "BrowserCore.ts",
+  "main": "BrowserCommand.ts",
   "type": "module",
   "continuum": {
     "core": "browser",
