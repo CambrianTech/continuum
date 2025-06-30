@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env tsx
 /**
  * Continuum CLI - Simple wrapper around the Continuum OS
  * Auto-healing system via import
