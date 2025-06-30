@@ -1,7 +1,6 @@
-#!/usr/bin/env tsx
 /**
- * Continuum Daemon System Starter
- * Simple orchestration of independent TypeScript daemons
+ * Simple Daemon Starter
+ * Manages the core Continuum daemon processes
  */
 
 import { spawn, ChildProcess } from 'child_process';
@@ -12,11 +11,10 @@ interface DaemonConfig {
   name: string;
   script: string;
   critical: boolean;
-  restartCount?: number;
   process?: ChildProcess;
 }
 
-class SimpleDaemonStarter {
+export class SimpleDaemonStarter {
   private daemons: DaemonConfig[] = [
     {
       name: 'WebSocket',
@@ -32,14 +30,19 @@ class SimpleDaemonStarter {
       name: 'Renderer',
       script: 'src/daemons/renderer/RendererDaemon.ts', 
       critical: true
+    },
+    {
+      name: 'BrowserManager',
+      script: 'src/daemons/browser-manager/BrowserManagerDaemon.ts',
+      critical: false
     }
   ];
 
   private lockFile = '.continuum/system.lock';
 
   async startAll(): Promise<void> {
-    console.log('🌟 Continuum TypeScript Daemon System');
-    console.log('====================================');
+    console.log('🌟 Starting Continuum Daemon System');
+    console.log('===================================');
     
     // Create lock file directory
     await fs.mkdir('.continuum', { recursive: true });
@@ -58,24 +61,21 @@ class SimpleDaemonStarter {
     }
     
     console.log('');
-    console.log('✅ All daemons started successfully');
-    console.log('🌐 Browser interface: http://localhost:9000');
-    console.log('🔌 WebSocket API: ws://localhost:9000');
-    console.log('');
+    console.log('✅ Core daemons started');
   }
 
   private async startDaemon(daemon: DaemonConfig): Promise<void> {
-    console.log(`🚀 Starting ${daemon.name} daemon...`);
+    console.log(`🚀 Starting ${daemon.name}...`);
     
     const process = spawn('npx', ['tsx', daemon.script], {
       stdio: 'pipe',
-      detached: false
+      detached: false,
+      cwd: process.cwd()
     });
     
     daemon.process = process;
-    daemon.restartCount = 0;
     
-    // Handle process output
+    // Handle process output with prefixed logging
     process.stdout?.on('data', (data) => {
       const lines = data.toString().trim().split('\n');
       lines.forEach(line => {
@@ -98,13 +98,13 @@ class SimpleDaemonStarter {
     process.on('exit', (code, signal) => {
       console.log(`[${daemon.name}] Process exited with code ${code}, signal ${signal}`);
       if (daemon.critical && code !== 0) {
-        console.log(`❌ Critical daemon ${daemon.name} failed - system may be unstable`);
+        console.log(`❌ Critical daemon ${daemon.name} failed - system unstable`);
       }
     });
     
-    // Wait a moment for startup
+    // Wait for startup
     await new Promise(resolve => setTimeout(resolve, 1000));
-    console.log(`✅ ${daemon.name} daemon started`);
+    console.log(`✅ ${daemon.name} started`);
   }
 
   async stopAll(): Promise<void> {
@@ -126,44 +126,4 @@ class SimpleDaemonStarter {
     
     console.log('✅ All daemons stopped');
   }
-}
-
-async function main() {
-  const starter = new SimpleDaemonStarter();
-  
-  // Setup graceful shutdown
-  process.on('SIGINT', async () => {
-    console.log('\n🛑 Received shutdown signal...');
-    await starter.stopAll();
-    process.exit(0);
-  });
-  
-  process.on('SIGTERM', async () => {
-    console.log('\n🛑 Received termination signal...');
-    await starter.stopAll();
-    process.exit(0);
-  });
-  
-  try {
-    await starter.startAll();
-    
-    // Keep process alive
-    console.log('🔄 System running - press Ctrl+C to stop');
-    
-    // Simple keep-alive without polling spam
-    setInterval(() => {
-      // Just keep the process alive
-    }, 30000);
-    
-  } catch (error) {
-    console.error('❌ Failed to start daemon system:', error);
-    process.exit(1);
-  }
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch(error => {
-    console.error('❌ Daemon system startup failed:', error);
-    process.exit(1);
-  });
 }
