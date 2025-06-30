@@ -1,6 +1,6 @@
-# Continuum Directory
+# Continuum Directory Daemon
 
-continuum-directory module for Continuum
+**🎯 Kernel Service**: `.continuum` directory structure management for the unified artifact system. Provides consistent directory creation, lifecycle management, and organization for all Continuum artifacts.
 
 ## 🚀 Usage
 

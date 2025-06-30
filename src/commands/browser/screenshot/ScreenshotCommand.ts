@@ -4,9 +4,28 @@
  */
 
 import { RemoteCommand, RemoteExecutionRequest, RemoteExecutionResponse } from '../../core/remote-command/RemoteCommand.js';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand.js';
-import * as fs from 'fs';
+import { CommandDefinition, CommandResult } from '../../core/base-command/BaseCommand.js';
 import * as path from 'path';
+
+// Strongly typed enums for screenshot behavior
+export enum ScreenshotFormat {
+  PNG = 'png',
+  JPG = 'jpg', 
+  JPEG = 'jpeg',
+  WEBP = 'webp'
+}
+
+export enum ScreenshotDestination {
+  FILE = 'file',           // Save to file, return filename
+  BYTES = 'bytes',         // Return raw image data
+  BOTH = 'both'           // Save to file AND return bytes
+}
+
+export enum ScreenshotAnimation {
+  NONE = 'none',           // No UI feedback
+  VISIBLE = 'visible',     // Show ROI highlighting
+  ANIMATED = 'animated'    // Animate ROI highlighting
+}
 
 interface ScreenshotParams {
   selector?: string;
@@ -16,10 +35,10 @@ interface ScreenshotParams {
   scale?: number;
   manual?: boolean;
   source?: string;
-  format?: 'png' | 'jpg' | 'jpeg' | 'webp';
-  destination?: 'file' | 'bytes';
-  animation?: 'visible' | 'animated' | 'none';
+  destination?: ScreenshotDestination;
+  animation?: ScreenshotAnimation;
   roi?: boolean;
+  // format is inferred from filename extension
 }
 
 
@@ -41,6 +60,8 @@ export class ScreenshotCommand extends RemoteCommand {
   static getDefinition(): CommandDefinition {
     try {
       const readmePath = path.join(__dirname, 'README.md');
+      // TODO: Use file/read command instead of direct fs access
+      const fs = require('fs');
       const readme = fs.readFileSync(readmePath, 'utf8');
       const definition = this.parseReadmeDefinition(readme);
       
@@ -51,9 +72,10 @@ export class ScreenshotCommand extends RemoteCommand {
         description: definition.description || 'Capture browser screenshot with advanced targeting',
         parameters: definition.parameters,
         examples: [
-          { description: 'Basic screenshot', command: '{"filename": "homepage.png"}' },
-          { description: 'Element screenshot', command: '{"selector": ".main-content", "filename": "content.png"}' },
-          { description: 'Organized screenshot', command: '{"subdirectory": "ui-tests", "filename": "test-result.png"}' }
+          { description: 'Save to file', command: `{"filename": "homepage.png", "destination": "${ScreenshotDestination.FILE}"}` },
+          { description: 'Return bytes only', command: `{"selector": ".main-content", "destination": "${ScreenshotDestination.BYTES}"}` },
+          { description: 'Both file and bytes', command: `{"filename": "content.png", "destination": "${ScreenshotDestination.BOTH}"}` },
+          { description: 'Animated screenshot', command: `{"filename": "ui-test.png", "animation": "${ScreenshotAnimation.ANIMATED}"}` }
         ],
         usage: 'Capture screenshots with optional element targeting and custom naming'
       };
@@ -66,8 +88,8 @@ export class ScreenshotCommand extends RemoteCommand {
         description: 'Capture browser screenshot with advanced targeting',
         parameters: { selector: 'string', filename: 'string', subdirectory: 'string' },
         examples: [
-          { description: 'Basic screenshot', command: '{"filename": "homepage.png"}' },
-          { description: 'Element screenshot', command: '{"selector": ".main-content", "filename": "content.png"}' }
+          { description: 'Save to file', command: `{"filename": "homepage.png", "destination": "${ScreenshotDestination.FILE}"}` },
+          { description: 'Return bytes only', command: `{"selector": ".main-content", "destination": "${ScreenshotDestination.BYTES}"}` }
         ],
         usage: 'Capture screenshots with optional element targeting and custom naming'
       };
@@ -159,20 +181,18 @@ export class ScreenshotCommand extends RemoteCommand {
       subdirectory,
       name_prefix = 'screenshot',
       scale = 2.0,
-      manual = false,
       source = 'unknown',
-      format = 'png',
-      destination = 'file',
-      animation = 'visible',
-      roi = true
+      destination = ScreenshotDestination.FILE
     } = options;
     
-    console.log(`📸 SCREENSHOT Command: ${source} requesting ${selector} -> ${destination} (${name_prefix}) [${animation}]`);
+    // Infer format from filename extension
+    const format = this.getFormatFromFilename(filename, name_prefix);
+    
+    console.log(`📸 SCREENSHOT Command: ${source} requesting ${selector} -> ${destination} (${name_prefix})`);
     
     // Generate filename/id for tracking
     const timestamp = Date.now();
     const generatedFilename = this.generateFilename(filename, subdirectory, name_prefix, format, destination, timestamp);
-    const requestId = `${source}_${timestamp}`;
     
     // Browser-side screenshot execution using html2canvas
     try {
@@ -232,7 +252,7 @@ export class ScreenshotCommand extends RemoteCommand {
   }
 
   /**
-   * Process client response and save screenshot to file system
+   * Process client response and orchestrate file saving through command chaining
    */
   protected static async processClientResponse(response: RemoteExecutionResponse, originalParams: any): Promise<CommandResult> {
     if (!response.success) {
@@ -242,26 +262,41 @@ export class ScreenshotCommand extends RemoteCommand {
     const { imageData, filename, selector, format, width, height } = response.data;
     const options = this.parseParams<ScreenshotParams>(originalParams);
     
-    // Save to file if filename provided
-    if (filename && options.destination === 'file') {
-      try {
-        const base64Data = imageData.replace(/^data:image\/[a-z]+;base64,/, '');
-        const buffer = Buffer.from(base64Data, 'base64');
-        
-        // Ensure directory exists
-        const fullPath = path.resolve(filename);
-        const dir = path.dirname(fullPath);
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
+    const base64Data = imageData.replace(/^data:image\/[a-z]+;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+    
+    // Handle different destination modes using strongly typed enums
+    switch (options.destination) {
+      case ScreenshotDestination.FILE:
+        if (!filename) {
+          return this.createErrorResult('Filename required when destination is FILE');
         }
-        
-        // Write file
-        fs.writeFileSync(fullPath, buffer);
-        
         return this.createSuccessResult(
-          `Screenshot saved successfully`,
+          `Screenshot captured - ready for file save command`,
           {
-            filename: fullPath,
+            filename: path.resolve(filename),
+            selector,
+            dimensions: { width, height },
+            format,
+            size: buffer.length,
+            client: response.clientMetadata,
+            nextCommand: {
+              command: 'file_write',
+              params: {
+                filename: path.resolve(filename),
+                content: base64Data,
+                encoding: 'base64',
+                ensureDirectory: true
+              }
+            }
+          }
+        );
+
+      case ScreenshotDestination.BYTES:
+        return this.createSuccessResult(
+          `Screenshot captured - returning bytes`,
+          {
+            imageData: base64Data,
             selector,
             dimensions: { width, height },
             format,
@@ -269,21 +304,61 @@ export class ScreenshotCommand extends RemoteCommand {
             client: response.clientMetadata
           }
         );
-      } catch (error) {
-        return this.createErrorResult(`Failed to save screenshot: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    } else {
-      // Return bytes only
-      return this.createSuccessResult(
-        `Screenshot captured successfully`,
-        {
-          imageData,
-          selector,
-          dimensions: { width, height },
-          format,
-          client: response.clientMetadata
+
+      case ScreenshotDestination.BOTH:
+        if (!filename) {
+          return this.createErrorResult('Filename required when destination is BOTH');
         }
-      );
+        return this.createSuccessResult(
+          `Screenshot captured - file and bytes available`,
+          {
+            imageData: base64Data,
+            filename: path.resolve(filename),
+            selector,
+            dimensions: { width, height },
+            format,
+            size: buffer.length,
+            client: response.clientMetadata,
+            nextCommand: {
+              command: 'file_write',
+              params: {
+                filename: path.resolve(filename),
+                content: base64Data,
+                encoding: 'base64',
+                ensureDirectory: true
+              }
+            }
+          }
+        );
+
+      default:
+        // Default to bytes-only for backward compatibility
+        return this.createSuccessResult(
+          `Screenshot captured successfully`,
+          {
+            imageData: base64Data,
+            selector,
+            dimensions: { width, height },
+            format,
+            client: response.clientMetadata
+          }
+        );
+    }
+  }
+
+  /**
+   * Extract format from filename extension or default to PNG
+   */
+  private static getFormatFromFilename(filename?: string, name_prefix?: string): ScreenshotFormat {
+    const targetFilename = filename || `${name_prefix || 'screenshot'}.png`;
+    const extension = path.extname(targetFilename).toLowerCase().replace('.', '');
+    
+    switch (extension) {
+      case 'jpg':
+      case 'jpeg': return ScreenshotFormat.JPG;
+      case 'webp': return ScreenshotFormat.WEBP;
+      case 'png':
+      default: return ScreenshotFormat.PNG;
     }
   }
 
@@ -294,11 +369,11 @@ export class ScreenshotCommand extends RemoteCommand {
     filename: string | undefined,
     subdirectory: string | undefined,
     name_prefix: string,
-    format: string,
-    destination: string,
+    format: ScreenshotFormat,
+    destination: ScreenshotDestination,
     timestamp: number
   ): string | null {
-    if (destination === 'file') {
+    if (destination === ScreenshotDestination.FILE || destination === ScreenshotDestination.BOTH) {
       const baseName = filename || `${name_prefix}_${timestamp}.${format}`;
       return subdirectory ? `${subdirectory}/${baseName}` : baseName;
     }

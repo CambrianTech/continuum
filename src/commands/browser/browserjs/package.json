@@ -2,7 +2,7 @@
   "name": "browserjs-core",
   "version": "1.0.0",
   "description": "browserjs core for Continuum",
-  "main": "BrowserjsCore.ts",
+  "main": "BrowserJSCommand.ts",
   "type": "module",
   "continuum": {
     "core": "browserjs",

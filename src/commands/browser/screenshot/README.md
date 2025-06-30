@@ -1,6 +1,6 @@
-# Screenshot
+# Screenshot Command
 
-screenshot module for Continuum
+**🎯 RemoteCommand**: Browser-server orchestrated screenshot capture with unified artifact system integration. Demonstrates proper command chaining and session-aware file handling.
 
 ## 🚀 Usage
 
@@ -86,14 +86,127 @@ screenshot/
 └── README.md            # This file
 ```
 
-## 📋 Implementation Notes
+## 🏗️ **RemoteCommand Architecture & Artifact Integration**
 
-**TODO**: Customize this section with:
-- Specific usage examples
-- Configuration options
-- API documentation
-- Performance considerations
-- Known limitations
+ScreenshotCommand demonstrates the **complete RemoteCommand pattern** with proper **command chaining** and **unified artifact system** integration:
+
+### **RemoteCommand Pattern Implementation**
+```typescript
+class ScreenshotCommand extends RemoteCommand {
+  // 1. Server prepares request for browser execution
+  protected static async prepareForRemoteExecution(params, context) {
+    // Validates parameters, infers format from filename
+    // Returns standardized RemoteExecutionRequest
+  }
+  
+  // 2. Browser-side execution with html2canvas
+  protected static async executeOnClient(request) {
+    // Runs in browser context
+    // Uses html2canvas for DOM screenshot capture
+    // Returns image data + metadata
+  }
+  
+  // 3. Server processes response with artifact integration
+  protected static async processClientResponse(response, originalParams) {
+    // Uses strongly typed enums for behavior control
+    // Integrates with unified artifact system
+    // Returns appropriate result based on destination mode
+  }
+}
+```
+
+### **Strongly Typed Behavior Control**
+```typescript
+export enum ScreenshotDestination {
+  FILE = 'file',           // Save to session artifacts, return filename
+  BYTES = 'bytes',         // Return raw image data only
+  BOTH = 'both'           // Save to artifacts AND return bytes
+}
+
+export enum ScreenshotFormat {
+  PNG = 'png',            // Inferred from filename extension
+  JPG = 'jpg', 
+  JPEG = 'jpeg',
+  WEBP = 'webp'
+}
+
+export enum ScreenshotAnimation {
+  NONE = 'none',          // No UI feedback
+  VISIBLE = 'visible',    // Show ROI highlighting
+  ANIMATED = 'animated'   // Animate ROI highlighting
+}
+```
+
+### **Command Chaining vs Direct Operations**
+**❌ Old Approach (Direct fs operations):**
+```typescript
+// Anti-pattern: Direct fs operations create tight coupling
+const buffer = Buffer.from(base64Data, 'base64');
+fs.writeFileSync(fullPath, buffer);  // ❌ Circular dependencies
+```
+
+**✅ New Approach (Kernel service integration):**
+```typescript
+// Proper pattern: Delegate to kernel services
+return this.createSuccessResult('Screenshot captured', {
+  artifact: {
+    type: ArtifactType.SCREENSHOT,
+    content: base64Data,
+    metadata: {
+      command: 'screenshot',
+      filename: params.filename,
+      category: 'ui-validation'
+    }
+  }
+});
+// SessionManager + ContinuumDirectoryDaemon handle file operations
+```
+
+### **Session-Aware Artifact Placement**
+```bash
+# AI Portal usage
+python3 python-client/ai-portal.py --cmd screenshot --params '{"selector": ".main-ui"}'
+# → .continuum/sessions/portal-2025-06-30-1843/artifacts/screenshots/main-ui_timestamp.png
+
+# Git Hook usage  
+continuum screenshot --selector="body" --filename="pre-commit-validation.png"
+# → .continuum/sessions/git-hook-2025-06-30-1843/artifacts/screenshots/pre-commit-validation.png
+
+# Interactive CLI usage
+continuum screenshot --filename="test.png" --destination="both"
+# → .continuum/sessions/interactive-2025-06-30-1843/artifacts/screenshots/test.png
+# + Returns base64 image data for immediate use
+```
+
+### **Universal Usage Examples**
+```typescript
+// Return bytes only (for immediate processing)
+{
+  "selector": ".main-content",
+  "destination": "bytes"
+}
+
+// Save to session artifacts  
+{
+  "filename": "dashboard.png",
+  "destination": "file"
+}
+
+// Both save and return (for command composition)
+{
+  "filename": "analysis.png", 
+  "destination": "both",
+  "animation": "animated"
+}
+```
+
+### **Architecture Benefits**
+- ✅ **No circular dependencies** - Uses kernel services, not other commands
+- ✅ **Session awareness** - Automatically routes to appropriate session artifacts
+- ✅ **Universal usage** - Same command works for Portal, Git Hook, CLI
+- ✅ **Command chaining ready** - Returns both artifacts and data for composition
+- ✅ **Strongly typed behavior** - Enums prevent runtime errors
+- ✅ **RemoteCommand pattern** - Template for all browser-server coordination
 
 ## 🔧 Bootstrap Information
 

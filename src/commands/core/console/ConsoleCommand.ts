@@ -6,8 +6,7 @@
  */
 
 import { DirectCommand } from '../direct-command/DirectCommand.js';
-import { CommandResult, CommandContext } from '../base-command/BaseCommand.js';
-import { CommandDefinition } from '../../../types/CommandTypes';
+import { CommandResult, CommandContext, CommandDefinition } from '../base-command/BaseCommand.js';
 
 export class ConsoleCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
