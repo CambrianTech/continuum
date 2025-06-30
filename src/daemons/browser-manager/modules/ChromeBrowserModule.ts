@@ -11,6 +11,7 @@
 
 import { IBrowserModule, DevToolsCapabilities, BrowserLaunchResult, TabManagementAPI } from './IBrowserModule';
 import { BrowserConfig, ManagedBrowser, BrowserType, BrowserVisibility, BrowserIsolation } from '../BrowserManagerDaemon';
+import { ChromiumDevToolsAdapter } from '../adapters/ChromiumDevToolsAdapter';
 import { spawn, ChildProcess } from 'child_process';
 
 export class ChromeBrowserModule implements IBrowserModule {
