@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2205",
+  "version": "0.2.2210",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -13,9 +13,8 @@
   "scripts": {
     "install:global": "node scripts/install.js",
     "postinstall": "lerna run prepare",
-    
     "launch": "npx tsx launch.ts",
-    "start": "npx tsx launch.ts --mode=system",
+    "start": "node increment-version.js && npx tsx launch.ts --mode=system",
     "dev": "npx tsx launch.ts --mode=dev",
     "test-all": "npx tsx launch.ts --mode=test",
     "test-widgets": "npx tsx launch.ts --mode=test-widgets",
@@ -27,7 +26,7 @@
     "dev:ui": "npm run build:ui-components -- --watch",
     "test": "npx tsx src/system/testing/test/universal-layer-runner.ts",
     "test:layer": "npx tsx src/system/testing/test/universal-layer-runner.ts --layer=",
-    "test:widgets": "npx tsx src/ui/components/test/widget-runner.ts",
+    "test:widgets": "npx tsx src/testing/ModularTestRunner.ts widget",
     "test:daemons": "npx tsx src/testing/ModularTestRunner.ts daemon",
     "test:unit": "npm run test:unit:js && npm run test:unit:python",
     "test:unit:js": "jest __tests__/unit/js --config __tests__/config/jest.config.cjs",
@@ -40,7 +39,6 @@
     "test:critical": "jest __tests__/critical --config __tests__/config/jest.config.cjs",
     "test:screenshot": "node __tests__/config/test-runner.cjs screenshot",
     "test:commands": "npx tsx src/testing/ModularTestRunner.ts command",
-    "test:widgets": "npx tsx src/testing/ModularTestRunner.ts widget",
     "test:websocket": "npx tsx src/testing/ModularTestRunner.ts integration",
     "test:browser": "npx tsx src/ui/test/BrowserComprehensiveTest.ts",
     "test:visual": "npx tsx src/ui/test/VisualBrowserIntegration.ts",

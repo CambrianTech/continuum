@@ -147,8 +147,8 @@ export class DaemonConnector extends EventEmitter {
           const packageJson = JSON.parse(packageContent);
           
           // Check if this is a command module
-          if (packageJson.continuum?.commandName) {
-            const commandName = packageJson.continuum.commandName;
+          const commandName = packageJson.continuum?.commandName || packageJson.continuum?.core;
+          if (commandName) {
             const moduleName = packageJson.name;
             
             // Find the TypeScript implementation

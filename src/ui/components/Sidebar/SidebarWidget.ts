@@ -160,4 +160,7 @@ export class SidebarWidget extends BaseWidget {
 }
 
 // Register the custom element
-customElements.define('continuum-sidebar', SidebarWidget);
+// Prevent duplicate widget registration
+if (!customElements.get('continuum-sidebar')) {
+    customElements.define('continuum-sidebar', SidebarWidget);
+}
