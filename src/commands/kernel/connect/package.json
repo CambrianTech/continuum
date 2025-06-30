@@ -1,0 +1,30 @@
+{
+  "name": "kernel-connect-command",
+  "version": "1.0.0",
+  "description": "Kernel-level connection command for system integration",
+  "main": "ConnectCommand.ts",
+  "type": "module",
+  "continuum": {
+    "command": "connect",
+    "category": "Kernel",
+    "capabilities": [
+      "system-connection",
+      "browser-launching", 
+      "session-creation",
+      "daemon-coordination"
+    ],
+    "dependencies": [
+      "session-manager-daemon",
+      "browser-manager-daemon",
+      "continuum-directory-daemon",
+      "file-write-command",
+      "file-read-command"
+    ],
+    "interfaces": ["command-bus", "daemon-protocol", "session-management"],
+    "permissions": ["kernel", "session-management", "browser-control", "file-system"],
+    "priority": "high"
+  },
+  "keywords": ["kernel", "connect", "session", "browser", "continuum"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

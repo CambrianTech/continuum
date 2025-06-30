@@ -1,0 +1,31 @@
+{
+  "name": "self-validating-module",
+  "version": "1.0.0",
+  "description": "Self-validating module framework where each module's configuration becomes its test contract",
+  "main": "SelfValidatingModule.ts",
+  "type": "module",
+  "continuum": {
+    "module": "self-validating-module",
+    "category": "Testing",
+    "type": "test-framework",
+    "capabilities": [
+      "universal-testing",
+      "modular-compliance",
+      "code-generation"
+    ],
+    "dependencies": [
+      "continuum-package-types",
+      "module-compliance-framework"
+    ],
+    "interfaces": ["testing-framework"],
+    "permissions": ["read", "write", "execute", "system-test"]
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "test:unit": "node --test test/unit/",
+    "test:integration": "node --test test/integration/"
+  },
+  "keywords": ["continuum", "testing", "self-validation", "compliance", "framework"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

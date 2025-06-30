@@ -1,0 +1,29 @@
+{
+  "name": "session-manager-daemon",
+  "version": "1.0.0",
+  "description": "Session isolation and artifact management daemon",
+  "main": "SessionManagerDaemon.ts",
+  "type": "module",
+  "continuum": {
+    "daemon": "session-manager",
+    "category": "Core",
+    "capabilities": [
+      "session-management",
+      "artifact-coordination", 
+      "session-isolation",
+      "connection-identity"
+    ],
+    "dependencies": [
+      "kernel-session-command",
+      "kernel-daemon-command",
+      "continuum-directory-daemon",
+      "file-write-command",
+      "file-read-command"
+    ],
+    "interfaces": ["daemon-protocol", "session-management"],
+    "permissions": ["session-management", "file-system", "daemon-communication"]
+  },
+  "keywords": ["session", "daemon", "artifacts", "isolation", "continuum"],
+  "author": "Continuum AI Platform", 
+  "license": "MIT"
+}

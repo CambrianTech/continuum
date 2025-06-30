@@ -31,10 +31,10 @@ class UniversalLayerTesting {
   }
 
   private findProjectRoot(): string {
-    let currentDir = __dirname;
+    let currentDir = path.dirname(new URL(import.meta.url).pathname);
     
     while (currentDir !== path.dirname(currentDir)) {
-      const fs = require('fs');
+      const fs = await import('fs');
       const packagePath = path.join(currentDir, 'package.json');
       
       if (fs.existsSync(packagePath)) {

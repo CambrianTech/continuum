@@ -1,0 +1,18 @@
+{
+  "name": "file-list-command",
+  "version": "1.0.0",
+  "description": "List directory contents with session awareness - equivalent to ls",
+  "main": "FileListCommand.ts",
+  "type": "module",
+  "continuum": {
+    "command": "file_list",
+    "category": "File",
+    "capabilities": ["directory-listing", "session-aware"],
+    "dependencies": ["base-file-command"],
+    "interfaces": ["command-bus", "file-system"],
+    "permissions": ["read", "list"]
+  },
+  "keywords": ["file", "list", "ls", "directory", "continuum"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

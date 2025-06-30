@@ -1,0 +1,24 @@
+{
+  "name": "kernel-system-command",
+  "version": "1.0.0",
+  "description": "Kernel-level system commands for daemon coordination and system management",
+  "main": "SystemCommand.ts",
+  "type": "module",
+  "continuum": {
+    "command": "system",
+    "category": "Kernel",
+    "capabilities": [
+      "system-control",
+      "daemon-management",
+      "process-coordination",
+      "kernel-operations"
+    ],
+    "dependencies": ["command-processor-daemon", "all-daemons"],
+    "interfaces": ["command-bus", "daemon-protocol", "system-management"],
+    "permissions": ["kernel", "system", "daemon-control", "process-management"],
+    "priority": "critical"
+  },
+  "keywords": ["kernel", "system", "daemon", "control", "continuum"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

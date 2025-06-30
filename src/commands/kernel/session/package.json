@@ -1,0 +1,24 @@
+{
+  "name": "kernel-session-command",
+  "version": "1.0.0",
+  "description": "Kernel-level session management commands",
+  "main": "SessionCommand.ts", 
+  "type": "module",
+  "continuum": {
+    "command": "session",
+    "category": "Kernel",
+    "capabilities": [
+      "session-management",
+      "session-coordination",
+      "artifact-management",
+      "isolation-control"
+    ],
+    "dependencies": ["session-manager-daemon", "continuum-directory-daemon"],
+    "interfaces": ["command-bus", "daemon-protocol", "session-management"],
+    "permissions": ["kernel", "session-management", "file-system"],
+    "priority": "high"
+  },
+  "keywords": ["kernel", "session", "management", "artifacts", "continuum"],
+  "author": "Continuum AI Platform", 
+  "license": "MIT"
+}

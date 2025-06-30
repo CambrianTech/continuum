@@ -15,7 +15,13 @@
       "directory-analytics",
       "intelligent-organization"
     ],
-    "dependencies": [],
+    "dependencies": [
+      "kernel-system-command",
+      "kernel-daemon-command",
+      "file-write-command",
+      "file-read-command",
+      "file-list-command"
+    ],
     "interfaces": ["daemon-protocol", "file-system"],
     "permissions": ["read", "write", "create-directories", "directory-stats"]
   },

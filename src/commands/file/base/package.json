@@ -1,0 +1,24 @@
+{
+  "name": "base-file-command",
+  "version": "1.0.0",
+  "description": "Base class for all file operations with session management",
+  "main": "BaseFileCommand.ts",
+  "type": "module",
+  "continuum": {
+    "command": "base_file",
+    "category": "File",
+    "type": "base-class",
+    "capabilities": [
+      "session-integration",
+      "continuum-directory-daemon",
+      "artifact-management",
+      "path-resolution"
+    ],
+    "dependencies": ["continuum-directory-daemon"],
+    "interfaces": ["file-system"],
+    "permissions": ["read", "write"]
+  },
+  "keywords": ["file", "base", "session", "continuum"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

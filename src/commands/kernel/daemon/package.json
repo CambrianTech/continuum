@@ -1,0 +1,24 @@
+{
+  "name": "kernel-daemon-command",
+  "version": "1.0.0", 
+  "description": "Kernel-level daemon management commands",
+  "main": "DaemonCommand.ts",
+  "type": "module",
+  "continuum": {
+    "command": "daemon",
+    "category": "Kernel",
+    "capabilities": [
+      "daemon-control",
+      "process-management",
+      "daemon-communication",
+      "system-coordination"
+    ],
+    "dependencies": ["command-processor-daemon", "daemon-protocol"],
+    "interfaces": ["command-bus", "daemon-protocol"],
+    "permissions": ["kernel", "daemon-management"],
+    "priority": "critical"
+  },
+  "keywords": ["kernel", "daemon", "process", "management", "continuum"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

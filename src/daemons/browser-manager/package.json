@@ -6,7 +6,22 @@
   "type": "module",
   "keywords": ["browser", "daemon", "connection", "jtag"],
   "continuum": {
-    "type": "daemon",
-    "category": "browser-management"
+    "daemon": "browser-manager",
+    "category": "Core",
+    "capabilities": [
+      "browser-orchestration",
+      "tab-management",
+      "devtools-integration",
+      "session-coordination"
+    ],
+    "dependencies": [
+      "kernel-system-command",
+      "kernel-daemon-command",
+      "kernel-session-command",
+      "session-manager-daemon",
+      "file-write-command"
+    ],
+    "interfaces": ["daemon-protocol", "browser-management"],
+    "permissions": ["browser-control", "process-management", "session-management"]
   }
 }

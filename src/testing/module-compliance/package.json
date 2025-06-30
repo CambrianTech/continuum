@@ -1,0 +1,31 @@
+{
+  "name": "module-compliance-framework",
+  "version": "1.0.0",
+  "description": "Universal module compliance testing framework that validates modules against their configuration contracts",
+  "main": "ModuleComplianceFramework.ts",
+  "type": "module",
+  "continuum": {
+    "module": "module-compliance-framework",
+    "category": "Testing",
+    "type": "test-framework",
+    "capabilities": [
+      "universal-testing",
+      "modular-compliance",
+      "layer-validation",
+      "integration-testing"
+    ],
+    "dependencies": [
+      "continuum-package-types"
+    ],
+    "interfaces": ["testing-framework", "command-bus"],
+    "permissions": ["read", "execute", "system-test"]
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "test:unit": "node --test test/unit/",
+    "test:integration": "node --test test/integration/"
+  },
+  "keywords": ["continuum", "testing", "compliance", "validation", "framework"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}
