@@ -16,6 +16,11 @@ export interface WebSocketConnection {
 export class WebSocketManager {
   private connections = new Map<string, WebSocketConnection>();
   private server: WebSocketServer | null = null;
+  
+  // Event callbacks
+  public onMessage?: (connectionId: string, data: any) => void;
+  public onConnection?: (connectionId: string, connection: WebSocketConnection) => void;
+  public onDisconnection?: (connectionId: string) => void;
 
   async start(httpServer: HttpServer): Promise<void> {
     this.server = new WebSocketServer({ server: httpServer });
@@ -36,6 +41,11 @@ export class WebSocketManager {
       this.connections.set(connectionId, connection);
       console.log(`🔌 WebSocket connected: ${connectionId} (${this.connections.size} total)`);
 
+      // Notify connection callback
+      if (this.onConnection) {
+        this.onConnection(connectionId, connection);
+      }
+
       ws.on('message', (data) => {
         this.handleMessage(connectionId, data);
       });
@@ -43,6 +53,11 @@ export class WebSocketManager {
       ws.on('close', () => {
         this.connections.delete(connectionId);
         console.log(`🔌 WebSocket disconnected: ${connectionId} (${this.connections.size} remaining)`);
+        
+        // Notify disconnection callback
+        if (this.onDisconnection) {
+          this.onDisconnection(connectionId);
+        }
       });
 
       ws.on('error', (error) => {

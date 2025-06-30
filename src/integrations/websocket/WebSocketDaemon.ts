@@ -37,9 +37,17 @@ export class WebSocketDaemon extends BaseDaemon {
     this.routeManager = new RouteManager((daemonName, message) => this.sendMessageToDaemon(daemonName, message));
     this.wsManager = new WebSocketManager();
     
-    // Set up WebSocket message handling
+    // Set up WebSocket event handling
     this.wsManager.onMessage = (connectionId: string, data: any) => {
       this.handleWebSocketMessage(connectionId, data);
+    };
+    
+    this.wsManager.onConnection = (connectionId: string, connection: any) => {
+      this.handleNewConnection(connectionId, connection);
+    };
+    
+    this.wsManager.onDisconnection = (connectionId: string) => {
+      this.handleConnectionClosed(connectionId);
     };
   }
 
@@ -222,6 +230,184 @@ export class WebSocketDaemon extends BaseDaemon {
     } else {
       throw new Error(`Daemon ${daemonName} not found or doesn't support messaging`);
     }
+  }
+
+  /**
+   * Handle new WebSocket connection - ensure browser session exists
+   */
+  private async handleNewConnection(connectionId: string, connection: any): Promise<void> {
+    try {
+      // 1. Identify connection type from user-agent or URL patterns
+      const connectionType = this.identifyConnectionType(connection);
+      
+      this.log(`🔌 New ${connectionType.type} connection: ${connectionId}`);
+      
+      // 2. Check if this connection needs a browser session
+      if (this.shouldCreateBrowserSession(connectionType)) {
+        await this.ensureBrowserSession(connectionId, connectionType);
+      }
+      
+      // 3. Handle DevTools mode for git hooks and portal connections
+      if (connectionType.needsDevTools) {
+        await this.setupDevToolsMode(connectionId, connectionType);
+      }
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to handle new connection ${connectionId}: ${errorMessage}`, 'error');
+    }
+  }
+
+  /**
+   * Handle connection closure - cleanup sessions if needed
+   */
+  private async handleConnectionClosed(connectionId: string): Promise<void> {
+    try {
+      // Could add session cleanup logic here if needed
+      this.log(`🔌 Connection ${connectionId} closed - session cleanup handled by SessionManager`);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`⚠️  Error handling connection closure for ${connectionId}: ${errorMessage}`, 'error');
+    }
+  }
+
+  /**
+   * Identify connection type from metadata
+   */
+  private identifyConnectionType(connection: any): { type: string; needsDevTools: boolean; context: string } {
+    const userAgent = connection.metadata.userAgent || '';
+    const url = connection.metadata.url || '';
+    
+    // Git hook connections (often have specific user agents or URL patterns)
+    if (userAgent.includes('git') || url.includes('hook') || url.includes('ci')) {
+      return { type: 'git-hook', needsDevTools: true, context: 'automation' };
+    }
+    
+    // Portal connections (your development interface)
+    if (userAgent.includes('Portal') || url.includes('portal') || url.includes('dev')) {
+      return { type: 'portal', needsDevTools: true, context: 'development' };
+    }
+    
+    // Browser-based user connections
+    if (userAgent.includes('Chrome') || userAgent.includes('Firefox') || userAgent.includes('Safari')) {
+      return { type: 'user-browser', needsDevTools: false, context: 'user' };
+    }
+    
+    // Default to user connection
+    return { type: 'user', needsDevTools: false, context: 'user' };
+  }
+
+  /**
+   * Determine if connection type needs a browser session
+   */
+  private shouldCreateBrowserSession(connectionType: any): boolean {
+    // All user connections need browser sessions
+    // Git hooks and portal connections might need them for testing
+    return ['user', 'user-browser', 'portal'].includes(connectionType.type);
+  }
+
+  /**
+   * Ensure browser session exists for this connection
+   */
+  private async ensureBrowserSession(connectionId: string, connectionType: any): Promise<void> {
+    try {
+      const sessionManager = this.registeredDaemons.get('session-manager');
+      const browserManager = this.registeredDaemons.get('browser-manager');
+      
+      if (!sessionManager || !browserManager) {
+        this.log(`⚠️  Session or Browser manager not available for ${connectionId}`);
+        return;
+      }
+
+      // Create session for this connection
+      const sessionRequest = {
+        type: 'create_session',
+        data: {
+          sessionType: connectionType.context,
+          owner: connectionId,
+          connectionType: connectionType.type,
+          options: {
+            autoCleanup: true,
+            devtools: connectionType.needsDevTools,
+            context: connectionType.context
+          }
+        }
+      };
+
+      const sessionResponse = await sessionManager.handleMessage(sessionRequest);
+      
+      if (sessionResponse.success) {
+        const sessionData = sessionResponse.data;
+        
+        // Request smart browser management
+        const browserRequest = {
+          type: 'create_browser',
+          data: {
+            sessionId: sessionData.sessionId,
+            url: `http://localhost:${this.config.port}`,
+            config: {
+              purpose: connectionType.context,
+              requirements: {
+                devtools: connectionType.needsDevTools,
+                isolation: 'dedicated',
+                visibility: 'visible',
+                persistence: 'session'
+              },
+              resources: {
+                priority: connectionType.needsDevTools ? 'high' : 'normal'
+              }
+            }
+          }
+        };
+
+        const browserResponse = await browserManager.handleMessage(browserRequest);
+        
+        if (browserResponse.success) {
+          this.log(`✅ Browser session ready for ${connectionId}: ${browserResponse.data.action}`);
+          
+          // Send session info to client
+          this.wsManager.sendToConnection(connectionId, {
+            type: 'session_ready',
+            data: {
+              sessionId: sessionData.sessionId,
+              browserId: browserResponse.data.browserId,
+              devtools: connectionType.needsDevTools,
+              action: browserResponse.data.action
+            }
+          });
+        } else {
+          this.log(`❌ Browser session failed for ${connectionId}: ${browserResponse.error}`);
+        }
+      } else {
+        this.log(`❌ Session creation failed for ${connectionId}: ${sessionResponse.error}`);
+      }
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Error ensuring browser session for ${connectionId}: ${errorMessage}`, 'error');
+    }
+  }
+
+  /**
+   * Setup DevTools mode with extra control port
+   */
+  private async setupDevToolsMode(connectionId: string, connectionType: any): Promise<void> {
+    // For git hooks and portal connections, set up debug mode with extra port
+    this.log(`🛠️  Setting up DevTools mode for ${connectionType.type} connection ${connectionId}`);
+    
+    // In real implementation:
+    // 1. Allocate debug port (e.g., 9001, 9002)
+    // 2. Launch browser with --remote-debugging-port
+    // 3. Send debug port info to client
+    
+    this.wsManager.sendToConnection(connectionId, {
+      type: 'devtools_ready',
+      data: {
+        debugPort: 9001, // Mock debug port
+        connectionType: connectionType.type,
+        capabilities: ['console', 'network', 'sources', 'performance']
+      }
+    });
   }
 }
 
