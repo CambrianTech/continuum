@@ -3,8 +3,8 @@
  * Uses focused components: HTMLRenderingEngine, TypeScriptCompiler, VersionService
  */
 
-import { BaseDaemon } from '../base/BaseDaemon';
-import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon.js';
+import { DaemonResponse } from '../base/DaemonProtocol.js';
 import { HTMLRenderingEngine } from './core/HTMLRenderingEngine';
 import { TypeScriptCompiler } from './core/TypeScriptCompiler';
 import { VersionService } from './core/VersionService';
@@ -23,13 +23,31 @@ export interface RenderResult {
   readonly error?: string;
 }
 
-export class RendererDaemon extends BaseDaemon {
+export class RendererDaemon extends MessageRoutedDaemon {
   public readonly name = 'renderer';
   public readonly version = '1.0.0';
 
   private htmlEngine: HTMLRenderingEngine;
   private tsCompiler: TypeScriptCompiler;
   private versionService: VersionService;
+  
+  // MessageRoutedDaemon implementation
+  protected readonly primaryMessageType = 'render_request';
+  
+  protected getRouteMap(): MessageRouteMap {
+    return {
+      'render_ui': this.handleRenderUI.bind(this),
+      'update_component': this.handleUpdateComponent.bind(this),
+      'render_page': this.handleRenderPage.bind(this)
+    };
+  }
+
+  protected getAdditionalMessageHandlers(): { [messageType: string]: MessageRouteHandler } {
+    return {
+      'http_request': this.handleHttpRequest.bind(this),
+      'get_capabilities': this.getCapabilities.bind(this)
+    };
+  }
 
   constructor() {
     super();
@@ -80,39 +98,33 @@ export class RendererDaemon extends BaseDaemon {
     this.log('🛑 Stopping Renderer Daemon...');
   }
 
-  protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
-    try {
-      switch (message.type) {
-        case 'render_request':
-          return await this.handleRenderRequest(message.data as RenderRequest);
-        
-        case 'http_request':
-          return await this.handleHttpRequest(message.data);
-        
-        case 'get_capabilities':
-          return {
-            success: true,
-            data: {
-              ui_generation: true,
-              typescript_compilation: true,
-              template_rendering: true,
-              version_management: true
-            }
-          };
-
-        default:
-          return {
-            success: false,
-            error: `Unknown message type: ${message.type}`
-          };
+  private async getCapabilities(): Promise<DaemonResponse> {
+    return {
+      success: true,
+      data: {
+        capabilities: [
+          'ui_generation',
+          'typescript_compilation',
+          'template_rendering',
+          'version_management'
+        ],
+        messageTypes: this.getSupportedMessageTypes(),
+        routes: this.getSupportedRoutes()
       }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        success: false,
-        error: `Failed to handle message: ${errorMessage}`
-      };
-    }
+    };
+  }
+
+  // Route handlers
+  private async handleRenderUI(request: RenderRequest): Promise<DaemonResponse> {
+    return await this.handleRenderRequest(request);
+  }
+
+  private async handleUpdateComponent(request: RenderRequest): Promise<DaemonResponse> {
+    return await this.handleRenderRequest(request);
+  }
+
+  private async handleRenderPage(request: RenderRequest): Promise<DaemonResponse> {
+    return await this.handleRenderRequest(request);
   }
 
   private async handleRenderRequest(request: RenderRequest): Promise<DaemonResponse> {
