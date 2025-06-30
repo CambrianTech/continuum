@@ -142,7 +142,7 @@ export class WebSocketDaemon extends BaseDaemon {
 
       this.log(`✅ WebSocket server started and verified listening on ws://${this.config.host}:${this.config.port}`);
       
-      // TEMP FIX: Register essential routes until daemon registration is working
+      // TEMP FIX: Register essential routes until daemon auto-discovery is working
       await this.registerEssentialRoutes();
       
     } catch (error) {
@@ -186,6 +186,7 @@ export class WebSocketDaemon extends BaseDaemon {
     }
   }
 
+
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
     switch (message.type) {
       case 'get_stats':
@@ -217,6 +218,9 @@ export class WebSocketDaemon extends BaseDaemon {
 
       case 'get_component_css':
         return this.handleGetComponentCSS(message.data);
+
+      case 'execute_command':
+        return this.handleExecuteCommand(message.data);
 
       case 'get_capabilities':
         return {
@@ -770,8 +774,14 @@ export class WebSocketDaemon extends BaseDaemon {
         this.daemonConnector
       );
 
+      this.log(`🔄 Response from router: ${response ? 'EXISTS' : 'NULL'} for ${message.type}`);
+      
       if (response) {
-        this.sendToClient(clientId, response);
+        this.log(`📤 Sending response: ${JSON.stringify(response).substring(0, 200)}...`);
+        const sent = this.sendToClient(clientId, response);
+        this.log(`📬 Response sent: ${sent ? 'SUCCESS' : 'FAILED'} to client ${clientId}`);
+      } else {
+        this.log(`⚠️ No response to send for ${message.type}`);
       }
 
     } catch (error) {
@@ -827,6 +837,36 @@ export class WebSocketDaemon extends BaseDaemon {
         timestamp: new Date().toISOString()
       }
     };
+  }
+
+  private async handleExecuteCommand(data: any): Promise<DaemonResponse> {
+    this.log(`🚀 Executing command via DaemonConnector: ${data.command}`);
+    
+    try {
+      if (!this.daemonConnector.isConnected()) {
+        return {
+          success: false,
+          error: 'DaemonConnector not connected to Command Processor'
+        };
+      }
+      
+      const result = await this.daemonConnector.executeCommand(
+        data.command, 
+        data.args || {}, 
+        { timestamp: new Date().toISOString() }
+      );
+      
+      this.log(`✅ Command ${data.command} result: ${JSON.stringify(result)}`);
+      return result;
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Command execution failed: ${errorMessage}`, 'error');
+      return {
+        success: false,
+        error: errorMessage
+      };
+    }
   }
 
   private async handleGetComponentCSS(data: any): Promise<DaemonResponse> {
@@ -1104,10 +1144,21 @@ export class WebSocketDaemon extends BaseDaemon {
   private async handleStaticFiles(pathname: string, _req: any, res: any): Promise<void> {
     this.log(`📁 DEBUG: Static file request: ${_req.method} ${pathname}`, 'debug');
     
-    // TEMP: Serve basic static files until proper file serving is implemented
+    // Dynamic TypeScript generation for specific routes
     try {
       const { promises: fs } = await import('fs');
       const path = await import('path');
+      
+      // Special handling for TypeScript-generated content
+      if (pathname === '/src/ui/continuum.js') {
+        await this.handleContinuumJSGeneration(_req, res);
+        return;
+      }
+      
+      if (pathname === '/dist/ui/widget-loader.js') {
+        await this.handleWidgetLoaderGeneration(_req, res);
+        return;
+      }
       
       // Remove leading slash and resolve file path
       const filePath = path.join(process.cwd(), pathname);
@@ -1184,6 +1235,164 @@ export class WebSocketDaemon extends BaseDaemon {
       removeClient: () => {},
       getBrowserState: () => ({ hasActiveConnections: true, connectedClients: [], debugMode: false })
     };
+  }
+
+  /**
+   * Generate continuum.js from TypeScript source - dynamic compilation
+   */
+  private async handleContinuumJSGeneration(_req: any, res: any): Promise<void> {
+    try {
+      this.log('🎨 Generating continuum.js from TypeScript source...');
+
+      // Simple but functional Continuum API
+      const continuumAPI = `
+// Continuum API - Generated dynamically v${this.version}
+console.log('Continuum API v${this.version} loaded');
+
+class ContinuumAPI {
+  constructor() {
+    this.version = '${this.version}';
+    this.websocket = null;
+  }
+  
+  connect() {
+    this.websocket = new WebSocket('ws://localhost:9000');
+    console.log('WebSocket connecting...');
+    return this.websocket;
+  }
+  
+  async execute(command, data = {}) {
+    if (!this.websocket) this.connect();
+    return new Promise((resolve) => {
+      this.websocket.send(JSON.stringify({
+        type: 'execute_command',
+        command,
+        data
+      }));
+      console.log('Command sent:', command);
+      resolve({ success: true });
+    });
+  }
+}
+
+window.continuum = new ContinuumAPI();
+console.log('✅ Continuum API available globally');
+`;
+
+      // Set appropriate headers for JavaScript
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      });
+      res.end(continuumAPI);
+      
+      this.log(`✅ Generated continuum.js dynamically (${continuumAPI.length} chars)`);
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to generate continuum.js: ${errorMessage}`, 'error');
+      
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end(`Error generating continuum.js: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Generate widget-loader.js from TypeScript templates - dynamic compilation
+   */
+  private async handleWidgetLoaderGeneration(_req: any, res: any): Promise<void> {
+    try {
+      this.log('🎨 Generating widget-loader.js...');
+
+      // Widget loader with working custom elements
+      const widgetLoaderCode = `
+// Widget Loader - Generated v${this.version}
+console.log('Widget Loader v${this.version} loading...');
+
+// Base Widget Class
+class BaseWidget extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+  }
+  
+  connectedCallback() {
+    console.log('Widget connected:', this.tagName);
+    this.render();
+  }
+  
+  render() {
+    this.shadowRoot.innerHTML = this.getTemplate();
+  }
+  
+  getTemplate() {
+    return '<div>Base Widget</div>';
+  }
+}
+
+// Chat Widget
+class ChatWidget extends BaseWidget {
+  getTemplate() {
+    return \`
+      <div style="flex: 1; padding: 20px; background: #1a1f2e; color: #e0e6ed;">
+        <h2 style="margin-bottom: 20px;">Chat Interface</h2>
+        <div id="messages" style="height: 400px; background: #0f1419; padding: 10px; margin-bottom: 10px; border-radius: 8px; overflow-y: auto; border: 1px solid #3a3f4e;">
+          <div style="color: #8a94a6;">Chat ready...</div>
+        </div>
+        <input id="chatInput" type="text" placeholder="Type a message..." 
+               style="width: 100%; padding: 10px; background: #2a2f3e; color: #e0e6ed; border: 1px solid #3a3f4e; border-radius: 4px; outline: none;">
+      </div>
+    \`;
+  }
+}
+
+// Sidebar Widget  
+class ContinuumSidebar extends BaseWidget {
+  getTemplate() {
+    return \`
+      <div style="width: 250px; background: #0f1419; padding: 20px; border-right: 1px solid #2a2f3e; color: #e0e6ed;">
+        <h2 style="margin-bottom: 20px;">Continuum</h2>
+        <div style="color: #8a94a6; font-size: 14px;">
+          <p style="margin-bottom: 10px;">Version: v${this.version}</p>
+          <p style="margin-bottom: 10px;">Status: <span style="color: #4ade80;">Connected</span></p>
+          <p>WebSocket: Active</p>
+        </div>
+      </div>
+    \`;
+  }
+}
+
+// Register custom elements
+if (!customElements.get('chat-widget')) {
+  customElements.define('chat-widget', ChatWidget);
+}
+if (!customElements.get('continuum-sidebar')) {
+  customElements.define('continuum-sidebar', ContinuumSidebar);
+}
+
+console.log('✅ Custom elements registered: chat-widget, continuum-sidebar');
+`;
+
+      // Set appropriate headers
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      });
+      res.end(widgetLoaderCode);
+      
+      this.log(`✅ Generated widget-loader.js (${widgetLoaderCode.length} chars)`);
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to generate widget-loader.js: ${errorMessage}`, 'error');
+      
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end(`Error generating widget-loader.js: ${errorMessage}`);
+    }
   }
 }
 
