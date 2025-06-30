@@ -1,0 +1,35 @@
+{
+  "name": "database-daemon",
+  "version": "1.0.0",
+  "description": "Database Daemon for Continuum - Data persistence and management",
+  "main": "DatabaseDaemon.ts",
+  "type": "module",
+  "continuum": {
+    "daemon": "database",
+    "category": "Storage",
+    "capabilities": [
+      "data-persistence",
+      "query-operations",
+      "transaction-management"
+    ],
+    "dependencies": ["continuum-directory"],
+    "interfaces": ["EventBus"],
+    "permissions": ["storage", "read", "write"]
+  },
+  "keywords": [
+    "database",
+    "daemon",
+    "continuum",
+    "storage"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

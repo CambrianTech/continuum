@@ -1,0 +1,34 @@
+{
+  "name": "database-backup-command",
+  "version": "1.0.0",
+  "description": "Database backup command for Continuum",
+  "main": "DatabaseBackupCommand.ts",
+  "type": "module",
+  "continuum": {
+    "command": "database-backup",
+    "category": "Database",
+    "capabilities": [
+      "data-backup",
+      "data-recovery"
+    ],
+    "dependencies": ["database-daemon", "continuum-directory"],
+    "interfaces": ["CommandProcessor"],
+    "permissions": ["read", "write", "storage"]
+  },
+  "keywords": [
+    "database",
+    "backup",
+    "command",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
