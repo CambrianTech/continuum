@@ -160,3 +160,6 @@ abstract class BaseWidget extends HTMLElement {
         }
     }
 }
+
+// Export to make this a module for global augmentation
+export {};

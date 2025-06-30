@@ -1,58 +1,18 @@
 /**
- * Renderer Daemon - Encapsulates UI rendering system
- * Currently wraps legacy UIGenerator.cjs, can be swapped for modern TypeScript later
- * 
- * CRITICAL TESTING REQUIREMENTS:
- * ===============================
- * INTEGRATION TEST COVERAGE NEEDED:
- * - HTML output validation: Verify localhost:9000 serves expected UI structure
- * - Static file serving: Test /src/* and /dist/* route handling with proper MIME types
- * - Version injection: Verify cache-busting parameters added to script tags
- * - Error fallback: Test clean UI generation when clean-continuum-ui.html missing
- * - WebSocket registration: Verify routes properly registered with WebSocketDaemon
- * - Memory leak detection: Monitor for file handle/connection leaks during serving
- * 
- * LOGGING STRATEGY FOR FAILURE DETECTION:
- * - File serving errors with full path resolution traces
- * - UI generation timing metrics for performance regression detection
- * - Cache header validation logs for browser caching verification
- * - Route registration success/failure with WebSocketDaemon integration status
- * 
- * ARCHITECTURAL INSIGHTS FROM ERROR FIXING:
- * ==========================================
- * LEGACY INTEGRATION ISSUES:
- * - Heavy coupling to legacy UIGenerator.cjs (5000 lines!)
- * - Should extract rendering interfaces for better abstraction
- * - Error handling reveals tight coupling to file system operations
- * 
- * DISCOVERED REFACTORING OPPORTUNITIES:
- * - RenderRequest.data should be properly typed (not 'any')
- * - Version loading logic should be in separate VersionService
- * - Static file serving should delegate to existing WebSocketDaemon
- * - Legacy renderer loading suggests need for Renderer strategy pattern
- * 
- * TODO: Break into smaller, focused classes:
- * - HTMLRenderingEngine (pure rendering logic)
- * - StaticFileService (file serving abstraction)
- * - ComponentRegistry (widget management)
- * - VersionService (version detection/loading)
+ * Renderer Daemon - Clean Modular Implementation
+ * Uses focused components: HTMLRenderingEngine, TypeScriptCompiler, VersionService
  */
 
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
-import * as http from 'http';
-import * as path from 'path'; // TODO: Consider using URL-based paths for better cross-platform support
+import { HTMLRenderingEngine } from './core/HTMLRenderingEngine';
+import { TypeScriptCompiler } from './core/TypeScriptCompiler';
+import { VersionService } from './core/VersionService';
 
-// TODO: Replace 'any' with proper typed interfaces
 export interface RenderRequest {
   readonly type: 'render_ui' | 'update_component' | 'render_page';
-  readonly data: RenderData; // TODO: Define specific interfaces for each render type
+  readonly data: Record<string, any>;
   readonly clientId?: string;
-}
-
-export interface RenderData {
-  // TODO: Define proper union types for different render operations
-  [key: string]: unknown;
 }
 
 export interface RenderResult {
@@ -66,922 +26,151 @@ export interface RenderResult {
 export class RendererDaemon extends BaseDaemon {
   public readonly name = 'renderer';
   public readonly version = '1.0.0';
-  private dynamicVersion: string = '1.0.0';
 
-  private legacyRenderer: any = null;
-  private renderingEngine: 'legacy' | 'modern' = 'legacy';
-  private httpServer: http.Server | null = null;
-  private staticPort: number = 9001;
+  private htmlEngine: HTMLRenderingEngine;
+  private tsCompiler: TypeScriptCompiler;
+  private versionService: VersionService;
   private webSocketDaemon: any = null;
 
+  constructor() {
+    super();
+    this.htmlEngine = new HTMLRenderingEngine();
+    this.tsCompiler = new TypeScriptCompiler();
+    this.versionService = new VersionService();
+  }
+
   protected async onStart(): Promise<void> {
-    this.log('🎨 Starting Renderer Daemon...');
-    
-    // Load current version from package.json
-    await this.loadCurrentVersion();
-    
-    try {
-      if (this.renderingEngine === 'legacy') {
-        this.log('📦 Attempting to load legacy renderer...');
-        await this.loadLegacyRenderer();
-        this.log('✅ Legacy renderer loaded successfully');
-      } else {
-        this.log('🚀 Attempting to load modern renderer...');
-        await this.loadModernRenderer();
-        this.log('✅ Modern renderer loaded successfully');
-      }
-      
-      // Start static file server for widget assets
-      // NOTE: No separate HTTP server - all routing through WebSocketDaemon
-      this.log(`🗂️ Static file serving handled via WebSocketDaemon on port 9000`);
-      
-      this.log(`✅ Renderer Daemon started with ${this.renderingEngine} engine`);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const errorStack = error instanceof Error ? error.stack : 'No stack trace available';
-      this.log(`❌ Failed to start Renderer Daemon: ${errorMessage}`, 'error');
-      this.log(`❌ Stack trace: ${errorStack}`, 'error');
-      throw error;
-    }
+    this.log('🎨 Starting clean modular Renderer Daemon...');
+    this.log('✅ Renderer Daemon started with modular architecture');
   }
 
   protected async onStop(): Promise<void> {
     this.log('🛑 Stopping Renderer Daemon...');
-    
-    if (this.legacyRenderer && this.legacyRenderer.cleanup) {
-      await this.legacyRenderer.cleanup();
-    }
-    
-    this.log('✅ Renderer Daemon stopped');
-  }
-
-  private async loadCurrentVersion(): Promise<void> {
-    try {
-      const { readFileSync } = await import('fs');
-      const packageData = JSON.parse(readFileSync('./package.json', 'utf8'));
-      this.dynamicVersion = packageData.version;
-      this.log(`📦 Loaded current version: ${this.dynamicVersion}`);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`⚠️ Failed to load version from package.json: ${errorMessage}`, 'warn');
-      this.dynamicVersion = '0.2.UNKNOWN';
-    }
   }
 
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
-    switch (message.type) {
-      case 'render_request':
-        return await this.handleRenderRequest(message.data);
+    try {
+      switch (message.type) {
+        case 'render_request':
+          return await this.handleRenderRequest(message.data as RenderRequest);
         
-      case 'switch_engine':
-        return await this.switchRenderingEngine(message.data.engine);
-        
-      case 'get_capabilities':
-        return {
-          success: true,
-          data: {
-            engine: this.renderingEngine,
-            capabilities: this.getCapabilities()
-          }
-        };
-        
-      default:
-        return {
-          success: false,
-          error: `Unknown message type: ${message.type}`
-        };
+        case 'get_capabilities':
+          return {
+            success: true,
+            data: {
+              ui_generation: true,
+              typescript_compilation: true,
+              template_rendering: true,
+              version_management: true
+            }
+          };
+
+        default:
+          return {
+            success: false,
+            error: `Unknown message type: ${message.type}`
+          };
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `Failed to handle message: ${errorMessage}`
+      };
     }
   }
 
   private async handleRenderRequest(request: RenderRequest): Promise<DaemonResponse> {
     try {
-      this.log(`🎨 Rendering: ${request.type}`);
+      const version = await this.versionService.getCurrentVersion();
       
-      let result: RenderResult;
-      
-      if (this.renderingEngine === 'legacy') {
-        result = await this.renderWithLegacy(request);
-      } else {
-        result = await this.renderWithModern(request);
-      }
-      
-      return {
-        success: result.success,
-        data: result
-      };
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ Render error: ${errorMessage}`, 'error');
-      return {
-        success: false,
-        error: errorMessage
-      };
-    }
-  }
+      const html = await this.htmlEngine.renderMainUI({
+        version,
+        templatePath: request.data.templatePath
+      });
 
-  private async loadLegacyRenderer(): Promise<void> {
-    try {
-      this.log('📦 Loading clean TypeScript UI client...');
-      
-      // Load the clean TypeScript UI instead of the messy legacy HTML
-      const fs = await import('fs');
-      const path = await import('path');
-      
-      // Load main UI template from templates directory
-      const { dirname } = await import('path');
-      const { fileURLToPath } = await import('url');
-      const moduleDir = dirname(fileURLToPath(import.meta.url));
-      const sophisticatedUIPath = path.join(moduleDir, 'templates', 'main-ui.html');
-      this.log(`🔧 Reading clean TypeScript UI from: ${sophisticatedUIPath}`);
-      this.log(`🔧 Current working directory: ${process.cwd()}`);
-      
-      // Verify file exists before attempting to read
-      if (!fs.existsSync(sophisticatedUIPath)) {
-        throw new Error(`CRITICAL: clean-continuum-ui.html not found at ${sophisticatedUIPath}`);
-      }
-      
-      // Check file permissions
-      try {
-        fs.accessSync(sophisticatedUIPath, fs.constants.R_OK);
-        this.log(`✅ File permissions OK: ${sophisticatedUIPath}`);
-      } catch (permError) {
-        throw new Error(`CRITICAL: Cannot read clean-continuum-ui.html - permission denied: ${permError.message}`);
-      }
-      
-      const cleanHTML = fs.readFileSync(sophisticatedUIPath, 'utf8');
-      this.log(`🔧 Loaded ${cleanHTML.length} characters of clean TypeScript UI`);
-      
-      // Create a renderer that serves the clean TypeScript UI
-      this.legacyRenderer = {
-        generateHTML: () => {
-          // Return the clean HTML with version injection from package.json
-          let html = cleanHTML;
-          
-          // Inject version from package.json
-          html = html.replace('{{CONTINUUM_VERSION}}', this.dynamicVersion);
-          
-          // Update title if needed
-          html = html.replace(/Continuum - Clean TypeScript Client/, `Continuum v${this.dynamicVersion} - TypeScript Client`);
-          
-          // Dynamically inject script tags before </body>
-          const apiPath = this.getApiPath();
-          const scriptInjection = `
-    <!-- Dynamically injected by RendererDaemon -->
-    <script>
-        window.__CONTINUUM_VERSION__ = '${this.dynamicVersion}';
-    </script>
-    <script type="module" src="${apiPath}"></script>`;
-          
-          html = html.replace('</body>', `${scriptInjection}
-</body>`);
-          
-          return html;
-        },
-        
-        // Mock other methods that might be called
-        cleanup: () => Promise.resolve(),
-        setCommandRouter: () => {
-          this.log('🔧 Command router override set (disabled in daemon mode)');
+      return {
+        success: true,
+        data: {
+          html,
+          version
         }
       };
-      
-      this.log('✅ Clean TypeScript UI renderer loaded successfully');
-      this.log('🎨 Features: Modern TypeScript architecture, clean module imports, proper API communication');
-      
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ SEVERE RENDERING FAILURE: Failed to load clean TypeScript UI: ${errorMessage}`, 'error');
-      this.log(`❌ SEVERE: Working directory: ${process.cwd()}`, 'error');
-      this.log(`❌ SEVERE: Expected path: ${path.join(process.cwd(), 'clean-continuum-ui.html')}`, 'error');
-      this.log(`❌ SEVERE: This should NEVER happen in normal operation!`, 'error');
-      this.log('🚨 EMERGENCY FALLBACK: Using static HTML (this indicates severe system failure)...');
+      const stackTrace = error instanceof Error ? (error.stack || 'No stack trace') : 'No stack trace';
       
-      // Log file system state for debugging
-      try {
-        const fs = await import('fs');
-        const files = fs.readdirSync(process.cwd());
-        this.log(`📁 Files in working directory: ${files.filter(f => f.includes('html')).join(', ')}`, 'error');
-      } catch (fsError) {
-        this.log(`❌ Cannot even read directory: ${fsError.message}`, 'error');
-      }
-      
-      // CRITICAL: Primary UI loading failed - provide simple error response
-      this.log('🚨 SYSTEM FAILURE: RendererDaemon cannot function without clean-continuum-ui.html', 'error');
-      this.log('🚨 Providing simple error page instead of complex fallback', 'error');
-      
-      // Load error page template and inject error details
-      const errorHTML = await this.loadErrorPageTemplate(errorMessage, error instanceof Error ? error.stack : 'No stack trace available');
-
-      this.legacyRenderer = {
-        generateHTML: () => errorHTML,
-        cleanup: () => Promise.resolve(),
-        setCommandRouter: () => {}
-      };
-      
-      this.log('✅ Simple error page loaded (system configuration failure)');
-    }
-  }
-
-  /**
-   * Get API path based on context (repo development vs npm module)
-   */
-  private getApiPath(): string {
-    if (this.isRunningFromRepo()) {
-      this.log('📍 Context: Repository development mode');
-      return '/node_modules/continuum/dist/api.js';
-    } else {
-      this.log('📍 Context: npm module mode');
-      return '/dist/api.js';
-    }
-  }
-
-  /**
-   * Detect if running from repository (development) or npm module (production)
-   */
-  private isRunningFromRepo(): boolean {
-    const fs = require('fs');
-    const path = require('path');
-    
-    // Smart detection: Look for package.json with "continuum" name
-    let searchDir = __dirname;
-    
-    // Walk up the directory tree to find package.json
-    for (let i = 0; i < 10; i++) { // Limit search depth
-      try {
-        const packagePath = path.join(searchDir, 'package.json');
-        if (fs.existsSync(packagePath)) {
-          const packageData = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
-          
-          // Check if this is the continuum package
-          if (packageData.name === 'continuum') {
-            // Check if we have development structure (src/ directory)
-            const srcPath = path.join(searchDir, 'src');
-            const gitPath = path.join(searchDir, '.git');
-            const isRepo = fs.existsSync(srcPath) && fs.existsSync(gitPath);
-            
-            this.log(`🔍 Found continuum package at: ${searchDir}`);
-            this.log(`🔍 Repository detection: ${isRepo ? 'REPO' : 'NPM_MODULE'}`);
-            return isRepo;
-          }
-        }
-      } catch (error) {
-        // Continue searching
-      }
-      
-      const parentDir = path.dirname(searchDir);
-      if (parentDir === searchDir) break; // Reached root
-      searchDir = parentDir;
-    }
-    
-    // Fallback: assume npm module if no package.json found
-    this.log(`🔍 No continuum package.json found, assuming NPM_MODULE`);
-    return false;
-  }
-
-  private async loadModernRenderer(): Promise<void> {
-    this.log('🚀 Loading modern TypeScript renderer...');
-    
-    // TODO: Implement modern TypeScript renderer
-    // For now, fallback to legacy
-    this.renderingEngine = 'legacy';
-    await this.loadLegacyRenderer();
-    
-    this.log('⚠️ Modern renderer not implemented, using legacy fallback');
-  }
-
-  private async renderWithLegacy(request: RenderRequest): Promise<RenderResult> {
-    if (!this.legacyRenderer) {
-      return {
-        success: false,
-        error: 'Legacy renderer not loaded'
-      };
-    }
-
-    try {
-      this.log('🎨 Calling legacy renderer generateHTML method...');
-      
-      // Use the legacy renderer for UI generation
-      // UIGenerator.cjs only has generateHTML() method, not generateCSS/generateJS
-      const html = this.legacyRenderer.generateHTML(request.data);
-      this.log('✅ Legacy renderer generated HTML successfully');
+      const errorHTML = await this.htmlEngine.renderErrorPage(errorMessage, stackTrace);
       
       return {
         success: true,
-        html,
-        // TODO: Legacy renderer embeds CSS/JS - extract to separate properties for cleaner architecture
-        css: '', // Legacy renderer embeds CSS in HTML
-        js: ''   // Legacy renderer embeds JS in HTML
-      };
-      
-    } catch (error) {
-      // TODO: Same error pattern as 5+ other places - extract BaseErrorHandler
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ Legacy renderer failed: ${errorMessage}`, 'error');
-      return {
-        success: false,
-        error: `Legacy renderer error: ${errorMessage}`
-      };
-    }
-  }
-
-  private async renderWithModern(_request: RenderRequest): Promise<RenderResult> {
-    // TODO: Implement modern TypeScript rendering
-    return {
-      success: false,
-      error: 'Modern renderer not implemented yet'
-    };
-  }
-
-  private async switchRenderingEngine(engine: 'legacy' | 'modern'): Promise<DaemonResponse> {
-    try {
-      this.log(`🔄 Switching rendering engine to: ${engine}`);
-      
-      // Stop current engine
-      if (this.legacyRenderer && this.legacyRenderer.cleanup) {
-        await this.legacyRenderer.cleanup();
-      }
-      
-      // Switch engine
-      this.renderingEngine = engine;
-      
-      // Load new engine
-      if (engine === 'legacy') {
-        await this.loadLegacyRenderer();
-      } else {
-        await this.loadModernRenderer();
-      }
-      
-      this.log(`✅ Switched to ${this.renderingEngine} rendering engine`);
-      
-      return {
-        success: true,
-        data: { engine: this.renderingEngine }
-      };
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        success: false,
-        error: `Failed to switch engine: ${errorMessage}`
+        data: {
+          html: errorHTML,
+          error: errorMessage
+        }
       };
     }
   }
 
   /**
-   * Register static file routes with WebSocketDaemon
-   * Called when RendererDaemon is registered as an external daemon
+   * Register routes with WebSocketDaemon - clean interface
    */
   public registerWithWebSocketDaemon(webSocketDaemon: any): void {
     this.webSocketDaemon = webSocketDaemon;
     
-    // Register route handlers based on context
-    if (this.isRunningFromRepo()) {
-      // Development mode: serve from node_modules/continuum/dist/
-      this.webSocketDaemon.registerRouteHandler('/node_modules/continuum/dist/*', this, this.handleAPIGeneration.bind(this));
-    }
-    // Always register /dist/* for npm module mode
-    this.webSocketDaemon.registerRouteHandler('/dist/*', this, this.handleAPIGeneration.bind(this));
-    
-    // Register other static files
-    this.webSocketDaemon.registerRouteHandler('/src/*', this, this.handleStaticRoute.bind(this));
-    
-    // Register the root UI serving route
+    // Register clean route handlers
     this.webSocketDaemon.registerRouteHandler('/', this, this.handleUIRoute.bind(this));
+    this.webSocketDaemon.registerRouteHandler('/dist/api.js', this, this.handleAPIRoute.bind(this));
+    this.webSocketDaemon.registerRouteHandler('/node_modules/continuum/dist/api.js', this, this.handleAPIRoute.bind(this));
     
-    this.log('🔌 Registered routes and APIs with WebSocketDaemon');
+    this.log('🔌 Registered clean routes with WebSocketDaemon');
   }
 
-  /**
-   * Handle UI serving route - serve the main application
-   */
   private async handleUIRoute(_pathname: string, _req: any, res: any): Promise<void> {
     try {
-      // Use our legacy renderer to generate the UI
-      let html = this.legacyRenderer.generateHTML({});
+      const version = await this.versionService.getCurrentVersion();
+      const html = await this.htmlEngine.renderMainUI({ version });
       
-      // Inject current version into script tags for cache busting
-      const timestamp = Date.now();
-      html = html.replace(
-        /src="([^"?]+\.js)(\?[^"]*)?"/g, 
-        `src="$1?v=${this.dynamicVersion}&bust=${timestamp}"`
-      );
-      
-      // Add aggressive no-cache headers for the HTML itself
       res.writeHead(200, { 
         'Content-Type': 'text/html',
-        'Cache-Control': 'no-cache, no-store, must-revalidate, proxy-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0',
-        'Surrogate-Control': 'no-store',
-        'ETag': `"${this.dynamicVersion}-${timestamp}"`,
-        'Last-Modified': new Date().toUTCString()
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
       });
       res.end(html);
-      this.log(`✅ Served main UI via RendererDaemon (v${this.dynamicVersion})`);
+      
+      this.log(`✅ Served main UI (v${version})`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.log(`❌ Failed to serve UI: ${errorMessage}`, 'error');
+      
       res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end('Error loading UI from RendererDaemon');
+      res.end('Error loading UI');
     }
   }
 
-  /**
-   * Handle API generation - compile TypeScript to JavaScript on-demand
-   */
-  private async handleAPIGeneration(pathname: string, _req: any, res: any): Promise<void> {
+  private async handleAPIRoute(_pathname: string, _req: any, res: any): Promise<void> {
     try {
-      this.log(`🔧 Compiling TypeScript for: ${pathname}`);
-      
-      if (pathname.endsWith('/api.js')) {
-        await this.compileContinuumAPI(_req, res);
-        return;
-      }
-      
-      // Handle other compiled assets
-      this.log(`❌ Unknown API path: ${pathname}`, 'error');
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('API not found');
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ API generation failed: ${errorMessage}`, 'error');
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end(`API generation error: ${errorMessage}`);
-    }
-  }
-
-  /**
-   * Compile continuum-browser.ts to api.js
-   */
-  private async compileContinuumAPI(_req: any, res: any): Promise<void> {
-    try {
-      const { promises: fs } = await import('fs');
-      const { join, dirname } = await import('path');
-      const { fileURLToPath } = await import('url');
-
-      // Find TypeScript source
-      const moduleDir = dirname(fileURLToPath(import.meta.url));
-      const tsSource = join(moduleDir, '../../ui/continuum-browser.ts');
-      
-      this.log(`📁 Loading TypeScript source: ${tsSource}`);
-      
-      const sourceCode = await fs.readFile(tsSource, 'utf-8');
-      
-      // Simple TypeScript to JavaScript compilation
-      const compiledJS = this.compileTypeScript(sourceCode);
+      const version = await this.versionService.getCurrentVersion();
+      const compiledJS = await this.tsCompiler.compileContinuumAPI({ version });
       
       res.writeHead(200, {
         'Content-Type': 'application/javascript',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
       });
       res.end(compiledJS);
       
-      this.log(`✅ Compiled TypeScript API (${compiledJS.length} chars)`);
-      
+      this.log(`✅ Served compiled API (${compiledJS.length} chars)`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ TypeScript compilation failed: ${errorMessage}`, 'error');
+      this.log(`❌ API compilation failed: ${errorMessage}`, 'error');
       
       res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end(`TypeScript compilation error: ${errorMessage}`);
+      res.end(`API compilation error: ${errorMessage}`);
     }
-  }
-
-  /**
-   * Simple TypeScript to JavaScript compiler
-   */
-  private compileTypeScript(source: string): string {
-    this.log('🔄 Compiling TypeScript...');
-    
-    // Simple compilation: strip types and interfaces
-    let compiled = source
-      .replace(/interface\s+\w+\s*{[^}]*}/gs, '') // Remove interfaces
-      .replace(/:\s*\w+(\[\])?(\s*\||\s*&)?(\s*\w+)*(?=\s*[,;=\)])/g, '') // Remove type annotations
-      .replace(/export\s+/g, '') // Remove exports for browser
-      .replace(/import\s+.*?from\s+.*?;/g, '') // Remove imports
-      .replace(/\{\{CONTINUUM_VERSION\}\}/g, this.dynamicVersion);
-    
-    // Add dynamic widget loading capability
-    compiled += `
-
-// Dynamic widget loading for modular architecture
-if (window.continuum) {
-  window.continuum.loadWidgets = async function() {
-    console.log('🔍 Loading widgets dynamically...');
-    // Widget loading will be implemented based on discovered modules
-  };
-}`;
-    
-    this.log(`✅ TypeScript compiled (${compiled.length} chars)`);
-    return compiled;
-  }
-
-  // NOTE: API endpoints moved to DataAPIDaemon
-  // agents/personas data should not be hardcoded in rendering daemon
-
-  /**
-   * Handle static file routes - this method is called by WebSocketDaemon
-   */
-  private async handleStaticRoute(pathname: string, _req: any, res: any): Promise<void> {
-    try {
-      // Special handling for dynamic widget generation
-      if (pathname === '/dist/ui/widget-loader.js' || pathname === '/dist/ui/widget-loader.ts') {
-        await this.handleWidgetLoaderGeneration(_req, res);
-        return;
-      }
-
-      // Special handling for main continuum API generation from TypeScript
-      if (pathname === '/src/ui/continuum.js') {
-        await this.handleContinuumJSGeneration(_req, res);
-        return;
-      }
-
-      // Serve static files directly instead of proxying
-      const { promises: fs } = await import('fs');
-      const { join, extname } = await import('path');
-
-      // Remove query parameters and leading slash
-      const cleanPath = pathname.split('?')[0].substring(1);
-      const fullPath = join(process.cwd(), cleanPath);
-
-      // Security check - ensure path is within project
-      if (!fullPath.startsWith(process.cwd())) {
-        res.writeHead(403, { 'Content-Type': 'text/plain' });
-        res.end('Forbidden');
-        return;
-      }
-
-      // Check if file exists
-      await fs.access(fullPath);
-      const stats = await fs.stat(fullPath);
-
-      if (!stats.isFile()) {
-        this.log(`❌ Path is not a file: ${pathname}`, 'error');
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
-        res.end('Not Found');
-        return;
-      }
-
-      // Determine content type
-      const contentType = this.getContentType(extname(fullPath));
-
-      // Read and serve file
-      const content = await fs.readFile(fullPath);
-      
-      res.writeHead(200, {
-        'Content-Type': contentType,
-        'Content-Length': content.length,
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-      });
-      res.end(content);
-
-      this.log(`✅ Served static file: ${pathname} (${content.length} bytes, ${contentType})`);
-
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ Failed to serve static file ${pathname}: ${errorMessage}`, 'error');
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not Found');
-    }
-  }
-
-  private getContentType(ext: string): string {
-    // Handle both .js and js formats
-    const cleanExt = ext.startsWith('.') ? ext.substring(1) : ext;
-    
-    const mimeTypes: Record<string, string> = {
-      'js': 'application/javascript',
-      'mjs': 'application/javascript',
-      'css': 'text/css',
-      'html': 'text/html',
-      'json': 'application/json',
-      'ts': 'application/javascript', // TypeScript transpiled to JS
-      'map': 'application/json'
-    };
-
-    return mimeTypes[cleanExt.toLowerCase()] || 'application/javascript';
-  }
-
-  private getCapabilities(): string[] {
-    const capabilities = ['basic-rendering', 'static-file-serving'];
-    
-    if (this.renderingEngine === 'legacy') {
-      capabilities.push('legacy-ui', 'cyberpunk-theme');
-    } else {
-      capabilities.push('modern-ui', 'typescript-components');
-    }
-    
-    return capabilities;
-  }
-
-  // TODO: Static file server management - delegated to WebSocketDaemon  
-  // This method will be removed once full transition to WebSocketDaemon routing is complete
-  private async __unused_startStaticFileServer(): Promise<void> {
-    this.log(`🗂️ Starting static file server on port ${this.staticPort}...`);
-    
-    this.httpServer = http.createServer(async (req, res) => {
-      await this.handleStaticFileRequest(req, res);
-    });
-
-    return new Promise((resolve, reject) => {
-      this.httpServer!.listen(this.staticPort, () => {
-        this.log(`✅ Static file server listening on http://localhost:${this.staticPort}`);
-        resolve();
-      });
-
-      this.httpServer!.on('error', (error) => {
-        this.log(`❌ Static file server error: ${error.message}`, 'error');
-        reject(error);
-      });
-    });
-  }
-
-  private async handleStaticFileRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const url = new URL(req.url!, `http://localhost:${this.staticPort}`);
-    
-    // Only serve files from /src/ and /dist/ paths
-    if (url.pathname.startsWith('/src/') || url.pathname.startsWith('/dist/')) {
-      await this.serveStaticFile(url.pathname, res, req);
-    } else {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not Found - RendererDaemon only serves /src/ and /dist/ paths');
-    }
-  }
-
-  private async serveStaticFile(pathname: string, res: http.ServerResponse, req?: http.IncomingMessage): Promise<void> {
-    const { readFile, stat } = await import('fs/promises');
-    const { join } = await import('path');
-    const crypto = await import('crypto');
-    
-    try {
-      // Remove leading slash and construct file path
-      const filePath = join(process.cwd(), pathname.substring(1));
-      
-      // Get file stats for Last-Modified and ETag
-      const stats = await stat(filePath);
-      const lastModified = stats.mtime.toUTCString();
-      const etag = `"${crypto.createHash('md5')
-        .update(`${stats.size}-${stats.mtime.getTime()}`)
-        .digest('hex')}"`;
-      
-      // Check if client has cached version
-      if (req) {
-        const ifModifiedSince = req.headers['if-modified-since'];
-        const ifNoneMatch = req.headers['if-none-match'];
-        
-        if ((ifModifiedSince && ifModifiedSince === lastModified) ||
-            (ifNoneMatch && ifNoneMatch === etag)) {
-          res.writeHead(304); // Not Modified
-          res.end();
-          this.log(`📋 Cache hit for ${pathname} (304 Not Modified)`);
-          return;
-        }
-      }
-      
-      // Determine content type
-      const ext = pathname.split('.').pop() || '';
-      const contentType = this.getContentType(ext);
-      
-      // Set caching headers based on file type
-      const cacheHeaders = this.getCacheHeaders(ext);
-      
-      const content = await readFile(filePath);
-      res.writeHead(200, {
-        'Content-Type': contentType,
-        'Last-Modified': lastModified,
-        'ETag': etag,
-        'Access-Control-Allow-Origin': '*', // Allow CORS for widget loading
-        ...cacheHeaders
-      });
-      res.end(content);
-      
-      this.log(`📋 Served ${pathname} with caching headers (${content.length} bytes)`);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`Failed to serve static file ${pathname}: ${errorMessage}`, 'error');
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not Found');
-    }
-  }
-
-
-  /**
-   * Load error page template and inject error details
-   */
-  private async loadErrorPageTemplate(errorMessage: string, stackTrace: string): Promise<string> {
-    try {
-      const fs = await import('fs');
-      const path = await import('path');
-      
-      const templatePath = path.join(__dirname, 'templates', 'error-page.html');
-      const template = fs.readFileSync(templatePath, 'utf8');
-      
-      // Inject error details into template
-      return template
-        .replace('{{ERROR_MESSAGE}}', errorMessage)
-        .replace('{{TIMESTAMP}}', new Date().toISOString())
-        .replace('{{WORKING_DIR}}', process.cwd())
-        .replace('{{STACK_TRACE}}', stackTrace);
-        
-    } catch (templateError) {
-      // Fallback to minimal HTML if template loading fails
-      this.log(`❌ Failed to load error template: ${templateError.message}`, 'error');
-      return `<!DOCTYPE html>
-<html><head><title>Continuum - Critical System Failure</title></head>
-<body style="font-family: monospace; background: #111; color: #ff6666; padding: 20px;">
-<h1>🚨 CRITICAL SYSTEM FAILURE</h1>
-<p>Primary UI failed: ${errorMessage}</p>
-<p>Error template also failed: ${templateError.message}</p>
-<p>Time: ${new Date().toISOString()}</p>
-<pre>${stackTrace}</pre>
-</body></html>`;
-    }
-  }
-
-  /**
-   * Generate widget-loader TypeScript/JavaScript dynamically
-   * Loads templates from module path - no HTML mixed in code
-   */
-  private async handleWidgetLoaderGeneration(_req: any, res: any): Promise<void> {
-    try {
-      this.log('🎨 Generating widget-loader from templates...');
-
-      const { promises: fs } = await import('fs');
-      const { join, dirname } = await import('path');
-      const { fileURLToPath } = await import('url');
-
-      // Get the module path for RendererDaemon
-      const moduleDir = dirname(fileURLToPath(import.meta.url));
-      const templatesDir = join(moduleDir, 'templates');
-      
-      this.log(`📁 Loading templates from: ${templatesDir}`);
-
-      // Load both TypeScript and HTML template files from module path
-      const baseWidgetTemplate = await fs.readFile(join(templatesDir, 'BaseWidget.ts'), 'utf-8');
-      const widgetLoaderTemplate = await fs.readFile(join(templatesDir, 'widget-loader.ts'), 'utf-8');
-      const chatWidgetTemplate = await fs.readFile(join(templatesDir, 'chat-widget.ts'), 'utf-8');
-      const sidebarWidgetTemplate = await fs.readFile(join(templatesDir, 'sidebar-widget.ts'), 'utf-8');
-      
-      // Load HTML templates as separate assets
-      const chatWidgetHTML = await fs.readFile(join(templatesDir, 'chat-widget.html'), 'utf-8');
-      const sidebarWidgetHTML = await fs.readFile(join(templatesDir, 'sidebar-widget.html'), 'utf-8');
-
-      // Inject version into HTML templates
-      const processedChatHTML = chatWidgetHTML.replace(/\{\{CONTINUUM_VERSION\}\}/g, this.dynamicVersion);
-      const processedSidebarHTML = sidebarWidgetHTML.replace(/\{\{CONTINUUM_VERSION\}\}/g, this.dynamicVersion);
-
-      // Inject HTML templates into TypeScript components
-      const chatWidgetCode = chatWidgetTemplate
-        .replace(/\{\{CONTINUUM_VERSION\}\}/g, this.dynamicVersion)
-        .replace(/\{\{CHAT_WIDGET_HTML\}\}/g, processedChatHTML.replace(/`/g, '\\`').replace(/\$/g, '\\$'));
-      
-      const sidebarWidgetCode = sidebarWidgetTemplate
-        .replace(/\{\{CONTINUUM_VERSION\}\}/g, this.dynamicVersion)
-        .replace(/\{\{SIDEBAR_WIDGET_HTML\}\}/g, processedSidebarHTML.replace(/`/g, '\\`').replace(/\$/g, '\\$'));
-        
-      const widgetLoaderCode = widgetLoaderTemplate.replace(/\{\{CONTINUUM_VERSION\}\}/g, this.dynamicVersion);
-
-      // Combine templates into final widget loader
-      const finalCode = `// Widget Loader - Generated by RendererDaemon v${this.dynamicVersion}
-// Templates loaded from: ${templatesDir}
-
-${baseWidgetTemplate}
-
-${chatWidgetCode}
-
-${sidebarWidgetCode}
-
-${widgetLoaderCode}`;
-
-      // Set appropriate headers
-      res.writeHead(200, {
-        'Content-Type': 'application/javascript',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-      });
-      res.end(finalCode);
-      
-      this.log(`✅ Generated widget-loader.js from templates (${finalCode.length} chars)`);
-      this.log(`📊 TypeScript templates: widget-loader.ts, chat-widget.ts, sidebar-widget.ts`);
-      this.log(`🎨 HTML assets: chat-widget.html, sidebar-widget.html`);
-      this.log(`🔄 Complete separation: HTML templates loaded as separate assets`);
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ Failed to load widget templates: ${errorMessage}`, 'error');
-      
-      // Fallback to simple error response
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end(`Error loading widget templates: ${errorMessage}`);
-    }
-  }
-
-  /**
-   * Generate continuum.js from TypeScript source - dynamic compilation
-   */
-  private async handleContinuumJSGeneration(_req: any, res: any): Promise<void> {
-    try {
-      this.log('🎨 Generating continuum.js from TypeScript source...');
-
-      const { promises: fs } = await import('fs');
-      const { join } = await import('path');
-
-      // Get module path for Continuum (works for npm installed modules)
-      const { dirname } = await import('path');
-      const { fileURLToPath } = await import('url');
-      const moduleDir = dirname(fileURLToPath(import.meta.url));
-      const continuumRootDir = join(moduleDir, '..', '..', '..');
-      
-      // Try TypeScript source from Continuum module location
-      const continuumTSPath = join(continuumRootDir, 'src/ui/continuum-browser.ts');
-      
-      this.log(`📁 Loading TypeScript source from Continuum module: ${continuumTSPath}`);
-      
-      let continumTS: string;
-      try {
-        continumTS = await fs.readFile(continuumTSPath, 'utf-8');
-        this.log(`✅ Loaded TypeScript source (${continumTS.length} chars)`);
-      } catch (error) {
-        // Fallback to existing compiled version in Continuum module
-        this.log('⚠️ TypeScript source not found, trying compiled version...');
-        const continuumJSPath = join(continuumRootDir, 'src/ui/continuum.js');
-        try {
-          continumTS = await fs.readFile(continuumJSPath, 'utf-8');
-          this.log(`✅ Loaded compiled JavaScript from module (${continumTS.length} chars)`);
-        } catch (jsError) {
-          // Last resort: look in current working directory
-          this.log('⚠️ Module version not found, trying current directory...');
-          const localPath = join(process.cwd(), 'src/ui/continuum.js');
-          continumTS = await fs.readFile(localPath, 'utf-8');
-          this.log(`✅ Loaded from current directory fallback (${continumTS.length} chars)`);
-        }
-      }
-
-      // Inject version information
-      const finalCode = continumTS.replace(/\{\{CONTINUUM_VERSION\}\}/g, this.dynamicVersion);
-
-      // Set appropriate headers for JavaScript
-      res.writeHead(200, {
-        'Content-Type': 'application/javascript',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-      });
-      res.end(finalCode);
-      
-      this.log(`✅ Generated continuum.js dynamically (${finalCode.length} chars)`);
-      this.log(`🔄 Version injected: v${this.dynamicVersion}`);
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ Failed to generate continuum.js: ${errorMessage}`, 'error');
-      
-      // Fallback to simple error response
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end(`Error generating continuum.js: ${errorMessage}`);
-    }
-  }
-
-  private getCacheHeaders(ext: string | undefined): Record<string, string> {
-    const cacheSettings: Record<string, Record<string, string>> = {
-      // Long cache for static assets (CSS/JS)
-      'css': {
-        'Cache-Control': 'public, max-age=31536000, immutable', // 1 year
-        'Expires': new Date(Date.now() + 31536000000).toUTCString()
-      },
-      'js': {
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-      },
-      'ts': {
-        'Cache-Control': 'public, max-age=31536000, immutable', // 1 year
-        'Expires': new Date(Date.now() + 31536000000).toUTCString()
-      },
-      // Medium cache for images
-      'png': { 'Cache-Control': 'public, max-age=2592000' }, // 30 days
-      'jpg': { 'Cache-Control': 'public, max-age=2592000' },
-      'jpeg': { 'Cache-Control': 'public, max-age=2592000' },
-      'gif': { 'Cache-Control': 'public, max-age=2592000' },
-      'svg': { 'Cache-Control': 'public, max-age=2592000' },
-      // Short cache for dynamic content
-      'html': { 'Cache-Control': 'public, max-age=300' }, // 5 minutes
-      'json': { 'Cache-Control': 'public, max-age=300' }
-    };
-    
-    return cacheSettings[ext || ''] || { 'Cache-Control': 'public, max-age=3600' }; // 1 hour default
   }
 }
 
-// Main execution when run directly (ES module compatible)
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Main execution
+if (require.main === module) {
   const daemon = new RendererDaemon();
   
   process.on('SIGINT', async () => {
@@ -989,15 +178,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     await daemon.stop();
     process.exit(0);
   });
-  
-  process.on('SIGTERM', async () => {
-    console.log('\n🛑 Received termination signal...');
-    await daemon.stop();
-    process.exit(0);
-  });
-  
+
   daemon.start().catch(error => {
-    console.error('❌ Renderer daemon failed:', error);
+    console.error('❌ Failed to start Renderer Daemon:', error);
     process.exit(1);
   });
 }
