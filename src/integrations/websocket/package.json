@@ -50,17 +50,12 @@
       "types": "./DaemonConnector.d.ts"
     }
   },
-  "capabilities": {
-    "websocket-server": "1.0.0",
-    "daemon-integration": "1.0.0",
-    "connection-management": "1.0.0",
-    "message-routing": "1.0.0",
-    "typescript-commands": "1.0.0"
-  },
   "continuum": {
-    "category": "integrations",
-    "subcategory": "websocket",
-    "critical": true,
-    "autoload": true
+    "module": "websocket-integration",
+    "category": "Integration",
+    "capabilities": ["websocket-management", "message-routing", "daemon-communication"],
+    "dependencies": [],
+    "interfaces": ["websocket-protocol", "daemon-protocol"],
+    "permissions": ["websocket-server", "network-access", "daemon-communication"]
   }
 }

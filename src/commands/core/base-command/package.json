@@ -3,5 +3,13 @@
   "version": "1.0.0",
   "description": "Base class for all Continuum commands",
   "main": "BaseCommand.ts",
-  "type": "module"
+  "type": "module",
+  "continuum": {
+    "module": "base-command",
+    "category": "Core",
+    "capabilities": ["command-bus", "system-coordination"],
+    "dependencies": [],
+    "interfaces": ["command-bus"],
+    "permissions": []
+  }
 }

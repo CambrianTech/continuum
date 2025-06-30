@@ -3,5 +3,13 @@
   "version": "1.0.0", 
   "description": "List available AI agents and personas",
   "main": "AgentsCommand.ts",
-  "type": "module"
+  "type": "module",
+  "continuum": {
+    "command": "agents",
+    "category": "Monitoring",
+    "capabilities": ["daemon-communication", "system-health"],
+    "dependencies": ["base-command"],
+    "interfaces": ["command-bus", "daemon-protocol"],
+    "permissions": ["daemon-communication", "system"]
+  }
 }

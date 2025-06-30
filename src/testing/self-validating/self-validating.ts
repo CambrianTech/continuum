@@ -1,0 +1,1 @@
+SelfValidatingModule.ts

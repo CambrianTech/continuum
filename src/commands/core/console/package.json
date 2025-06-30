@@ -3,5 +3,13 @@
   "version": "1.0.0",
   "description": "Bridge browser console logs to development portal for JTAG",
   "main": "ConsoleCommand.ts",
-  "type": "module"
+  "type": "module",
+  "continuum": {
+    "command": "console",
+    "category": "Development",
+    "capabilities": ["devtools-integration", "error-reporting", "browser-control"],
+    "dependencies": ["base-command"],
+    "interfaces": ["command-bus", "browser-management"],
+    "permissions": ["browser-control", "devtools-access"]
+  }
 }

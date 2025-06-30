@@ -10,5 +10,13 @@
   },
   "keywords": ["continuum", "browser", "websocket", "command"],
   "author": "Continuum Team",
-  "license": "MIT"
+  "license": "MIT",
+  "continuum": {
+    "command": "browser",
+    "category": "Browser",
+    "capabilities": ["browser-control", "websocket-management"],
+    "dependencies": ["base-command"],
+    "interfaces": ["command-bus", "browser-management", "websocket-protocol"],
+    "permissions": ["browser-control", "websocket-server"]
+  }
 }

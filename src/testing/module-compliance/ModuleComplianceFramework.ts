@@ -9,10 +9,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { 
   ContinuumConfig, 
-  ContinuumCommandConfig, 
-  ContinuumDaemonConfig, 
-  ContinuumWidgetConfig, 
-  ContinuumModuleConfig,
+  ContinuumWidgetConfig,
   ContinuumPackageUtils,
   PackageJson 
 } from '../../types/ContinuumPackage.js';
@@ -224,7 +221,7 @@ export class ModuleComplianceFramework {
         {
           name: 'package-json-structure',
           description: 'Validates package.json has required fields',
-          validate: async (modulePath: string, config: ContinuumConfig) => {
+          validate: async (modulePath: string, _config: ContinuumConfig) => {
             const errors: string[] = [];
             const warnings: string[] = [];
             
@@ -253,7 +250,7 @@ export class ModuleComplianceFramework {
         {
           name: 'readme-documentation',
           description: 'Validates module has README.md documentation',
-          validate: async (modulePath: string, config: ContinuumConfig) => {
+          validate: async (modulePath: string, _config: ContinuumConfig) => {
             const errors: string[] = [];
             const warnings: string[] = [];
             
@@ -270,7 +267,7 @@ export class ModuleComplianceFramework {
         {
           name: 'test-directory-structure',
           description: 'Validates module has proper test directory structure',
-          validate: async (modulePath: string, config: ContinuumConfig) => {
+          validate: async (modulePath: string, _config: ContinuumConfig) => {
             const errors: string[] = [];
             const warnings: string[] = [];
             
@@ -302,7 +299,7 @@ export class ModuleComplianceFramework {
         {
           name: 'dependency-validation',
           description: 'Validates declared dependencies exist',
-          validate: async (modulePath: string, config: ContinuumConfig) => {
+          validate: async (_modulePath: string, config: ContinuumConfig) => {
             const errors: string[] = [];
             const warnings: string[] = [];
             
@@ -325,11 +322,11 @@ export class ModuleComplianceFramework {
         {
           name: 'command-implementation',
           description: 'Validates command has proper execute method',
-          validate: async (modulePath: string, config: ContinuumConfig) => {
+          validate: async (modulePath: string, _config: ContinuumConfig) => {
             const errors: string[] = [];
             const warnings: string[] = [];
             
-            const commandConfig = config as ContinuumCommandConfig;
+            // const commandConfig = config as ContinuumCommandConfig;
             
             try {
               const mainFile = path.join(modulePath, path.basename(modulePath) + '.ts');
@@ -360,11 +357,11 @@ export class ModuleComplianceFramework {
         {
           name: 'daemon-lifecycle',
           description: 'Validates daemon has proper lifecycle methods',
-          validate: async (modulePath: string, config: ContinuumConfig) => {
+          validate: async (modulePath: string, _config: ContinuumConfig) => {
             const errors: string[] = [];
             const warnings: string[] = [];
             
-            const daemonConfig = config as ContinuumDaemonConfig;
+            // const daemonConfig = config as ContinuumDaemonConfig;
             
             try {
               const mainFile = path.join(modulePath, path.basename(modulePath) + '.ts');
@@ -427,11 +424,11 @@ export class ModuleComplianceFramework {
         {
           name: 'module-exports',
           description: 'Validates module has proper exports',
-          validate: async (modulePath: string, config: ContinuumConfig) => {
+          validate: async (modulePath: string, _config: ContinuumConfig) => {
             const errors: string[] = [];
             const warnings: string[] = [];
             
-            const moduleConfig = config as ContinuumModuleConfig;
+            // const moduleConfig = config as ContinuumModuleConfig;
             
             try {
               const mainFile = path.join(modulePath, path.basename(modulePath) + '.ts');

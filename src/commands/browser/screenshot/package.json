@@ -26,11 +26,11 @@
     "test": "node --test test/*.test.js"
   },
   "continuum": {
-    "commandName": "screenshot",
-    "serverFiles": ["ScreenshotCommand.cjs"],
-    "clientFiles": ["ScreenshotUtils.js", "ScreenshotCommand.client.js"],
-    "capabilities": ["screenshot", "browser", "websocket"],
-    "hasTests": true,
-    "testDir": "./test"
+    "command": "screenshot",
+    "category": "Browser",
+    "capabilities": ["browser-control", "devtools-integration"],
+    "dependencies": ["base-command"],
+    "interfaces": ["command-bus", "browser-management"],
+    "permissions": ["browser-control", "devtools-access", "create-files", "write"]
   }
 }

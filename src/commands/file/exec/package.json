@@ -14,7 +14,11 @@
     "test": "node --test test/*.test.js"
   },
   "continuum": {
-    "commandName": "exec",
-    "capabilities": ["execution", "system", "command"]
+    "command": "exec",
+    "category": "File",
+    "capabilities": ["system-control", "process-coordination"],
+    "dependencies": ["base-command"],
+    "interfaces": ["command-bus"],
+    "permissions": ["execute", "system"]
   }
 }
