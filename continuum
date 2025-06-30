@@ -54,151 +54,22 @@ AIs connect via WebSocket. Simple and clean.
 `);
 }
 
-// Check system status
-function checkStatus() {
-  const lockFile = path.join(__dirname, '.continuum', 'system.lock');
-  
-  console.log('📊 Continuum System Status');
-  console.log('='.repeat(30));
-  
-  if (fs.existsSync(lockFile)) {
-    try {
-      const lockData = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-      const pid = lockData.pid;
-      
-      try {
-        process.kill(pid, 0);
-        console.log('🟢 Status: RUNNING');
-        console.log(`📍 PID: ${pid}`);
-        console.log(`🕐 Started: ${lockData.startTime}`);
-        console.log(`🌐 Interface: http://localhost:9000`);
-      } catch {
-        console.log('🔴 Status: STOPPED (stale lock)');
-      }
-    } catch {
-      console.log('🟡 Status: UNKNOWN (invalid lock)');
-    }
-  } else {
-    console.log('🔴 Status: STOPPED');
-  }
-}
-
-// Stop system
-function stopSystem() {
-  const lockFile = path.join(__dirname, '.continuum', 'system.lock');
-  
-  console.log('🛑 Stopping Continuum system...');
-  
-  if (fs.existsSync(lockFile)) {
-    try {
-      const lockData = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-      const pid = lockData.pid;
-      
-      console.log(`📍 Found running system (PID: ${pid})`);
-      
-      try {
-        process.kill(pid, 'SIGTERM');
-        console.log('✅ Termination signal sent');
-        
-        setTimeout(() => {
-          try {
-            process.kill(pid, 0);
-            console.log('⚡ Forcing shutdown...');
-            process.kill(pid, 'SIGKILL');
-          } catch {
-            // Already dead
-          }
-        }, 5000);
-        
-      } catch (error) {
-        if (error.code === 'ESRCH') {
-          console.log('💀 Process already stopped');
-        } else {
-          console.error('❌ Error stopping system:', error.message);
-        }
-      }
-      
-      fs.unlinkSync(lockFile);
-      console.log('🧹 Lock file removed');
-      
-    } catch (error) {
-      console.log('⚠️ Error stopping system:', error.message);
-    }
-  } else {
-    console.log('📍 No running system found');
-  }
-}
-
-// Handle dynamic commands by routing to running system
-async function handleDynamicCommand(command, args) {
+// Import and use Continuum core
+async function importContinuum() {
   try {
-    // Import fetch for Node.js
-    const fetch = (await import('node-fetch')).default;
-    
-    // Check if Continuum service is running
-    const healthResponse = await fetch('http://localhost:9000/health');
-    if (!healthResponse.ok) {
-      console.log('❌ Continuum service not running');
-      console.log('💡 Start the service first: continuum start');
-      return;
-    }
-    
-    // Route command to the running system
-    console.log(`🔄 Executing command: ${command}`);
-    
-    const commandPayload = {
-      type: command,
-      data: {
-        args: args,
-        timestamp: new Date().toISOString()
-      }
-    };
-    
-    const response = await fetch('http://localhost:9000/api/message', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(commandPayload)
-    });
-    
-    if (response.ok) {
-      const result = await response.json();
-      if (result.success) {
-        console.log('✅ Command executed successfully');
-        if (result.data) {
-          console.log(JSON.stringify(result.data, null, 2));
-        }
-      } else {
-        console.log('❌ Command failed:', result.error);
-      }
-    } else {
-      console.log(`❌ Failed to execute command: ${response.status}`);
-    }
-    
+    const ContinuumModule = await import('./src/core/Continuum.js');
+    return ContinuumModule.default;
   } catch (error) {
-    console.error('❌ Command execution failed:', error.message);
-    console.log('💡 Make sure Continuum service is running: continuum start');
+    console.error('❌ Failed to import Continuum core:', error);
+    process.exit(1);
   }
-}
-
-// Start TypeScript system - Pure, no Python dependencies
-function startSystem(withDevTools = false) {
-  console.log('🚀 Starting Continuum - Browser-Centric Service');
-  console.log('🌐 Like Docker Desktop, but for AI collaboration');
-  console.log('🔌 Browser interface + WebSocket API + DevTools ready');
-  console.log('');
-  
-  // Use new resilient ContinuumSystem with BrowserManager
-  const systemScript = path.join(__dirname, 'src/core/ContinuumSystem.ts');
-  const process = spawn('npx', ['tsx', systemScript, withDevTools ? '--devtools' : ''], {
-    cwd: __dirname,
-    stdio: 'inherit'
-  });
-  
-  return process;
 }
 
 // Main CLI handler
 async function main() {
+  const Continuum = await importContinuum();
+  const continuum = new Continuum();
+
   switch (command) {
     case 'help':
     case '--help':
@@ -213,33 +84,46 @@ async function main() {
       break;
       
     case 'status':
-      checkStatus();
+      const status = await continuum.status();
+      console.log('📊 Continuum System Status');
+      console.log('='.repeat(30));
+      if (status.running) {
+        console.log('🟢 Status: RUNNING');
+        console.log(`🌐 Interface: ${status.interface}`);
+        console.log(`🔌 API: ${status.api}`);
+      } else {
+        console.log('🔴 Status: STOPPED');
+        console.log(status.message);
+      }
       break;
       
     case 'stop':
-      stopSystem();
+      await continuum.stop();
       break;
       
     case 'restart':
       console.log('🔄 Restarting Continuum system...');
-      stopSystem();
-      setTimeout(() => {
-        startSystem();
+      await continuum.stop();
+      setTimeout(async () => {
+        await continuum.init();
+        continuum.keepAlive();
       }, 2000);
       break;
       
+    case 'connect':
+      await continuum.connect();
+      break;
+      
     case 'devtools':
-      startSystem(true);
+      await continuum.init({ devtools: true });
+      continuum.keepAlive();
       break;
       
     case 'start':
     default:
-      // Check if it's a dynamic command for running system
-      if (command !== 'start' && command) {
-        handleDynamicCommand(command, args.slice(1));
-      } else {
-        startSystem();
-      }
+      // Default action: connect to existing or start new
+      await continuum.connect();
+      continuum.keepAlive();
       break;
   }
 }

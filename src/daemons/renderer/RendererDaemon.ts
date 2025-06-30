@@ -190,6 +190,20 @@ export class RendererDaemon extends BaseDaemon {
       
       const sophisticatedUIPath = path.join(process.cwd(), 'clean-continuum-ui.html');
       this.log(`🔧 Reading clean TypeScript UI from: ${sophisticatedUIPath}`);
+      this.log(`🔧 Current working directory: ${process.cwd()}`);
+      
+      // Verify file exists before attempting to read
+      if (!fs.existsSync(sophisticatedUIPath)) {
+        throw new Error(`CRITICAL: clean-continuum-ui.html not found at ${sophisticatedUIPath}`);
+      }
+      
+      // Check file permissions
+      try {
+        fs.accessSync(sophisticatedUIPath, fs.constants.R_OK);
+        this.log(`✅ File permissions OK: ${sophisticatedUIPath}`);
+      } catch (permError) {
+        throw new Error(`CRITICAL: Cannot read clean-continuum-ui.html - permission denied: ${permError.message}`);
+      }
       
       const cleanHTML = fs.readFileSync(sophisticatedUIPath, 'utf8');
       this.log(`🔧 Loaded ${cleanHTML.length} characters of clean TypeScript UI`);
@@ -221,103 +235,35 @@ export class RendererDaemon extends BaseDaemon {
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ CRITICAL: Failed to load clean TypeScript UI: ${errorMessage}`, 'error');
-      this.log(`❌ CRITICAL: Working directory: ${process.cwd()}`, 'error');
-      this.log(`❌ CRITICAL: Attempted path: ${path.join(process.cwd(), 'uigenerator.html')}`, 'error');
-      this.log('🔄 Falling back to old TypeScript UI Generator (5000+ lines of mess)...');
+      this.log(`❌ SEVERE RENDERING FAILURE: Failed to load clean TypeScript UI: ${errorMessage}`, 'error');
+      this.log(`❌ SEVERE: Working directory: ${process.cwd()}`, 'error');
+      this.log(`❌ SEVERE: Expected path: ${path.join(process.cwd(), 'clean-continuum-ui.html')}`, 'error');
+      this.log(`❌ SEVERE: This should NEVER happen in normal operation!`, 'error');
+      this.log('🚨 EMERGENCY FALLBACK: Using static HTML (this indicates severe system failure)...');
       
-      // Generate clean TypeScript UI directly (no CommonJS fallback)
-      this.log('🚀 Generating clean TypeScript UI directly...');
+      // Log file system state for debugging
+      try {
+        const fs = await import('fs');
+        const files = fs.readdirSync(process.cwd());
+        this.log(`📁 Files in working directory: ${files.filter(f => f.includes('html')).join(', ')}`, 'error');
+      } catch (fsError) {
+        this.log(`❌ Cannot even read directory: ${fsError.message}`, 'error');
+      }
       
-      const cleanHTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Continuum - TypeScript Architecture</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🟢</text></svg>">
-    
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-            background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
-            color: #e0e6ed; height: 100vh; overflow: hidden;
-        }
-        .app-container { display: flex; height: 100vh; }
-        .sidebar { width: 350px; background: rgba(20, 25, 35, 0.95); border-right: 1px solid rgba(255, 255, 255, 0.1); padding: 20px; }
-        .main-content { flex: 1; display: flex; flex-direction: column; }
-        .chat-container { flex: 1; padding: 20px; overflow-y: auto; }
-        .input-area { padding: 20px; border-top: 1px solid rgba(255, 255, 255, 0.1); background: rgba(20, 25, 35, 0.9); }
-        .input-container { display: flex; gap: 12px; align-items: flex-end; }
-        .input-field { flex: 1; background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 24px; padding: 14px 20px; color: #e0e6ed; font-size: 16px; resize: none; outline: none; }
-        .send-button { width: 48px; height: 48px; background: linear-gradient(135deg, #4FC3F7, #29B6F6); border: none; border-radius: 50%; color: white; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 18px; }
-        .status-indicator { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
-    </style>
-</head>
-<body>
-    <div class="app-container">
-        <div class="sidebar">
-            <h2>Continuum</h2>
-            <div style="margin-top: 20px;">
-                <div style="display: flex; align-items: center; margin-bottom: 10px;">
-                    <div id="status-indicator" class="status-indicator" style="background: #FF9800;"></div>
-                    <span id="status-text">Connecting...</span>
-                </div>
-            </div>
-        </div>
-        
-        <div class="main-content">
-            <div class="chat-container" id="chat-container">
-                <div style="margin-bottom: 15px; padding: 12px; border-radius: 8px; background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.1); max-width: 70%;">
-                    <div>Welcome to Continuum! Pure TypeScript architecture loaded.</div>
-                </div>
-            </div>
-            
-            <div class="input-area">
-                <div class="input-container">
-                    <textarea id="messageInput" class="input-field" placeholder="Type your message..." rows="1"></textarea>
-                    <button class="send-button" id="sendButton">➤</button>
-                </div>
-            </div>
-        </div>
-    </div>
+      // CRITICAL: Primary UI loading failed - provide simple error response
+      this.log('🚨 SYSTEM FAILURE: RendererDaemon cannot function without clean-continuum-ui.html', 'error');
+      this.log('🚨 Providing simple error page instead of complex fallback', 'error');
+      
+      // Load error page template and inject error details
+      const errorHTML = await this.loadErrorPageTemplate(errorMessage, error instanceof Error ? error.stack : 'No stack trace available');
 
-    <!-- PURE TYPESCRIPT - NO COMMONJS HELL -->
-    <script type="module">
-        import { uiManager } from '/src/ui/UIManager.js';
-        import { browserCommandProcessor } from '/src/ui/BrowserCommandProcessor.js';
-        
-        console.log('🚀 Pure TypeScript client loading...');
-        
-        async function initializeClient() {
-            try {
-                await uiManager.connect('ws://localhost:9000');
-                document.getElementById('status-text').textContent = 'Connected';
-                document.getElementById('status-indicator').style.background = '#4CAF50';
-                console.log('✅ Pure TypeScript client connected');
-            } catch (error) {
-                document.getElementById('status-text').textContent = 'Failed';
-                document.getElementById('status-indicator').style.background = '#F44336';
-                console.error('❌ TypeScript client failed:', error);
-            }
-        }
-        
-        initializeClient();
-    </script>
-</body>
-</html>`;
-      
-      const currentVersion = this.dynamicVersion;
-      const UIGeneratorClass = class {
-        generateHTML() { 
-          // Inject version from package.json into fallback HTML too
-          return cleanHTML.replace(/Continuum - TypeScript Architecture/, `Continuum v${currentVersion} - TypeScript Architecture`);
-        }
+      this.legacyRenderer = {
+        generateHTML: () => errorHTML,
+        cleanup: () => Promise.resolve(),
+        setCommandRouter: () => {}
       };
-      // TODO: Legacy UIGenerator coupling - should use dependency injection
-      this.legacyRenderer = new UIGeneratorClass(); // Constructor expects 0 args
-      this.log('✅ Fallback renderer loaded');
+      
+      this.log('✅ Simple error page loaded (system configuration failure)');
     }
   }
 
@@ -641,6 +587,39 @@ export class RendererDaemon extends BaseDaemon {
   }
 
 
+  /**
+   * Load error page template and inject error details
+   */
+  private async loadErrorPageTemplate(errorMessage: string, stackTrace: string): Promise<string> {
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+      
+      const templatePath = path.join(__dirname, 'templates', 'error-page.html');
+      const template = fs.readFileSync(templatePath, 'utf8');
+      
+      // Inject error details into template
+      return template
+        .replace('{{ERROR_MESSAGE}}', errorMessage)
+        .replace('{{TIMESTAMP}}', new Date().toISOString())
+        .replace('{{WORKING_DIR}}', process.cwd())
+        .replace('{{STACK_TRACE}}', stackTrace);
+        
+    } catch (templateError) {
+      // Fallback to minimal HTML if template loading fails
+      this.log(`❌ Failed to load error template: ${templateError.message}`, 'error');
+      return `<!DOCTYPE html>
+<html><head><title>Continuum - Critical System Failure</title></head>
+<body style="font-family: monospace; background: #111; color: #ff6666; padding: 20px;">
+<h1>🚨 CRITICAL SYSTEM FAILURE</h1>
+<p>Primary UI failed: ${errorMessage}</p>
+<p>Error template also failed: ${templateError.message}</p>
+<p>Time: ${new Date().toISOString()}</p>
+<pre>${stackTrace}</pre>
+</body></html>`;
+    }
+  }
+
   private getCacheHeaders(ext: string | undefined): Record<string, string> {
     const cacheSettings: Record<string, Record<string, string>> = {
       // Long cache for static assets (CSS/JS)
@@ -672,8 +651,8 @@ export class RendererDaemon extends BaseDaemon {
   }
 }
 
-// Main execution when run directly
-if (require.main === module) {
+// Main execution when run directly (ES module compatible)
+if (import.meta.url === `file://${process.argv[1]}`) {
   const daemon = new RendererDaemon();
   
   process.on('SIGINT', async () => {

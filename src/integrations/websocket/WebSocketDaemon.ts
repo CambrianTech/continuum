@@ -1183,8 +1183,8 @@ export class WebSocketDaemon extends BaseDaemon {
   }
 }
 
-// Main execution when run directly
-if (require.main === module) {
+// Main execution when run directly (ES module compatible)
+if (import.meta.url === `file://${process.argv[1]}`) {
   const daemon = new WebSocketDaemon();
   
   process.on('SIGINT', async () => {
