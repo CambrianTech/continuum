@@ -1,0 +1,56 @@
+{
+  "name": "navigation-widget-base", 
+  "version": "1.0.0",
+  "description": "Layer 2 Navigation Domain - Base class for navigation, sidebar, and routing widgets",
+  "main": "NavigationWidget.ts",
+  "type": "module",
+  "layer": 2, 
+  "domain": "navigation",
+  "dependencies": {
+    "base-widget": "file:../../../core/base-widget",
+    "data-display-widget": "file:../../../core/data-display"
+  },
+  "architecture": {
+    "layer_description": "Navigation and routing domain base functionality",
+    "depends_on": ["Layer 1 core widgets only"],
+    "provides": [
+      "NavigationWidget - Base for all navigation widgets",
+      "Route management and navigation patterns",
+      "Sidebar and menu functionality",
+      "Breadcrumb and navigation state",
+      "Widget organization and layout"
+    ],
+    "domain_concepts": [
+      "Application routes and navigation",
+      "Sidebar organization and menus",
+      "Widget discovery and access",
+      "User interface layout",
+      "Navigation state management",
+      "Quick access and shortcuts"
+    ],
+    "used_by": [
+      "SidebarWidget - Main application sidebar",
+      "MenuWidget - Navigation menus",
+      "BreadcrumbWidget - Navigation breadcrumbs",
+      "QuickAccessWidget - Shortcut navigation"
+    ]
+  },
+  "navigation_interface": {
+    "route_types": ["widget_routes", "system_routes", "external_routes"],
+    "navigation_events": ["route_change", "widget_activate", "menu_select"],
+    "layout_types": ["sidebar", "toolbar", "tabs", "breadcrumbs"],
+    "organization_patterns": ["hierarchical", "categorical", "contextual"]
+  },
+  "integration_points": {
+    "widget_system": "Dynamic widget discovery and access",
+    "command_system": "Navigation commands and shortcuts",
+    "browser_routing": "URL synchronization and history management",
+    "user_preferences": "Navigation layout and organization preferences"
+  },
+  "testing": {
+    "unit_tests": "Navigation logic and route handling",
+    "integration_tests": "Widget system integration and routing",
+    "layout_tests": "Sidebar and menu layout patterns",
+    "navigation_tests": "Route changes and navigation state"
+  }
+}
