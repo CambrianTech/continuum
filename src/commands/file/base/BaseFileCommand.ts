@@ -110,9 +110,9 @@ export abstract class BaseFileCommand extends BaseCommand {
    */
   protected static async getTargetPath(params: {
     filename: string;
-    sessionId?: string;
-    artifactType?: string;
-    directory?: string;
+    sessionId: string | undefined;
+    artifactType: string | undefined;
+    directory: string | undefined;
   }): Promise<string> {
     // If directory is explicitly provided, use it
     if (params.directory) {
@@ -167,7 +167,7 @@ export abstract class BaseFileCommand extends BaseCommand {
   /**
    * Get file stats safely
    */
-  protected static async getFileStats(filePath: string): Promise<fs.Stats | null> {
+  protected static async getFileStats(filePath: string): Promise<Awaited<ReturnType<typeof fs.stat>> | null> {
     try {
       return await fs.stat(filePath);
     } catch {

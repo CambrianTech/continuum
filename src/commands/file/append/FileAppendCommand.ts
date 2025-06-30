@@ -43,7 +43,7 @@ export class FileAppendCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: FileAppendParams, context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: FileAppendParams, _context?: CommandContext): Promise<CommandResult> {
     try {
       // 1. Get target path using session management
       const targetPath = await this.getTargetPath({

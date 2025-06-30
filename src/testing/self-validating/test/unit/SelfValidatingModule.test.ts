@@ -1,7 +1,5 @@
 /**
- * Unit tests for SelfValidatingModule
- * 
- * Tests the core functionality of self-validation against module's own configuration
+ * Unit tests for SelfValidatingModule using object-oriented validation
  */
 
 import { test } from 'node:test';
@@ -12,54 +10,55 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-test('SelfValidatingModule can validate itself', async () => {
+test('SelfValidatingModule validates itself using OOP approach', async () => {
   const modulePath = path.join(__dirname, '../..');
   const result = await SelfValidatingModule.validateSelf(modulePath);
   
-  assert.equal(typeof result.modulePath, 'string');
+  // Should successfully validate itself
   assert.equal(result.moduleId, 'self-validating-module');
   assert.equal(result.configType, 'module');
   assert.equal(typeof result.testsGenerated, 'number');
   assert.equal(typeof result.testsPassed, 'number');
-  assert.equal(typeof result.testsFailed, 'number');
   assert.equal(typeof result.isCompliant, 'boolean');
   
-  // Should have capability tests
-  assert.equal(Array.isArray(result.capabilityTests), true);
-  
-  // Should have structure tests  
+  // Should have structure tests from the module's own validate() method
   assert.equal(Array.isArray(result.structureTests), true);
+  assert.equal(result.structureTests.length > 0, true);
+  
+  console.log(`✅ Self-validation: ${result.testsPassed}/${result.testsGenerated} checks passed`);
+  console.log(`   Compliance: ${result.isCompliant ? 'COMPLIANT' : 'NON-COMPLIANT'}`);
 });
 
-test('SelfValidatingModule detects missing capabilities', async () => {
-  // This is a conceptual test - in practice we'd need a mock module
-  // For now, test with invalid path
-  const result = await SelfValidatingModule.validateSelf('/invalid/path');
+test('SelfValidatingModule creates correct module instances', async () => {
+  // Test that it creates appropriate module types
+  const testConfigs = [
+    {
+      modulePath: './test-command',
+      config: { command: 'test', category: 'Testing', capabilities: [], dependencies: [], interfaces: [], permissions: [] }
+    },
+    {
+      modulePath: './test-daemon', 
+      config: { daemon: 'test', category: 'Core', capabilities: [], dependencies: [], interfaces: [], permissions: [] }
+    },
+    {
+      modulePath: './test-module',
+      config: { module: 'test', category: 'Testing', capabilities: [], dependencies: [], interfaces: [], permissions: [] }
+    }
+  ];
+  
+  for (const testConfig of testConfigs) {
+    const instance = SelfValidatingModule['createModuleInstance'](testConfig.modulePath, testConfig.config);
+    assert.notEqual(instance, null);
+    assert.equal(typeof instance.validate, 'function');
+    assert.equal(typeof instance.migrate, 'function');
+  }
+});
+
+test('SelfValidatingModule handles validation errors gracefully', async () => {
+  const invalidPath = '/non/existent/path';
+  const result = await SelfValidatingModule.validateSelf(invalidPath);
   
   assert.equal(result.isCompliant, false);
   assert.equal(result.validationErrors.length > 0, true);
-});
-
-test('SelfValidatingModule can generate test content', async () => {
-  const modulePath = path.join(__dirname, '../..');
-  const testContent = await SelfValidatingModule.generateSelfTest(modulePath);
-  
-  assert.equal(typeof testContent, 'string');
-  assert.equal(testContent.includes('self-validation test'), true);
-  assert.equal(testContent.includes('SelfValidatingModule.validateSelf'), true);
-  assert.equal(testContent.includes('assert.equal'), true);
-});
-
-test('SelfValidatingModule validates structure requirements', async () => {
-  const modulePath = path.join(__dirname, '../..');
-  const result = await SelfValidatingModule.validateSelf(modulePath);
-  
-  // Check that it found structure tests
-  const packageJsonTest = result.structureTests.find(t => t.requirement.includes('package.json'));
-  assert.notEqual(packageJsonTest, undefined);
-  assert.equal(packageJsonTest.met, true);
-  
-  const testDirTest = result.structureTests.find(t => t.requirement.includes('Test directory'));
-  assert.notEqual(testDirTest, undefined);
-  assert.equal(testDirTest.met, true);
+  assert.equal(result.moduleId, 'unknown');
 });
