@@ -68,9 +68,9 @@ export class Continuum {
       this.isRunning = true;
       
       // Auto-launch browser (BrowserManager daemon handles single window)
-      setTimeout(() => {
+      setTimeout(async () => {
         console.log('🌐 Opening browser interface...');
-        this.openBrowser();
+        await this.openBrowser();
       }, 2000);
       
       console.log('✅ Continuum system ready');
@@ -98,7 +98,7 @@ export class Continuum {
       if (response.ok) {
         console.log('✅ Connected to running Continuum system');
         this.isRunning = true;
-        this.openBrowser();
+        await this.openBrowser();
         return this.getSystemHooks();
       }
     } catch (error) {
@@ -265,8 +265,8 @@ export class Continuum {
   /**
    * Open browser interface (delegates to BrowserManager daemon)
    */
-  private openBrowser(): void {
-    const { spawn } = require('child_process');
+  private async openBrowser(): Promise<void> {
+    const { spawn } = (await import('child_process'));
     let command;
     
     if (process.platform === 'darwin') {
@@ -314,7 +314,7 @@ export class Continuum {
 export default Continuum;
 
 // Direct execution support
-if (require.main === module) {
+if (import.meta.url === `file://${process.argv[1]}`) {
   const continuum = new Continuum();
   
   continuum.init()

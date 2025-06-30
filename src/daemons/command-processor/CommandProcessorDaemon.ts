@@ -108,6 +108,25 @@ export class CommandProcessorDaemon extends BaseDaemon {
     this.log('Command Processor Daemon stopped');
   }
 
+  /**
+   * Public interface for test compatibility
+   */
+  async processCommand<T = unknown, R = unknown>(request: TypedCommandRequest<T>): Promise<{ success: boolean; result?: R; error?: string }> {
+    try {
+      const response = await this.executeCommand(request);
+      return {
+        success: response.success,
+        result: response.data as R,
+        error: response.success ? undefined : (response.data as any)?.error || 'Command execution failed'
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
     switch (message.type) {
       case 'command.execute':

@@ -30,7 +30,6 @@ export class RendererDaemon extends BaseDaemon {
   private htmlEngine: HTMLRenderingEngine;
   private tsCompiler: TypeScriptCompiler;
   private versionService: VersionService;
-  private webSocketDaemon: any = null;
 
   constructor() {
     super();
@@ -70,7 +69,7 @@ export class RendererDaemon extends BaseDaemon {
         resolve();
       });
 
-      ws.on('error', (error) => {
+      ws.on('error', (error: any) => {
         this.log(`❌ Failed to register routes with WebSocket: ${error}`, 'error');
         reject(error);
       });

@@ -1,145 +1,32 @@
 #!/usr/bin/env node
 /**
- * Continuum CLI - Clean TypeScript System Launcher
- * Simple wrapper around the TypeScript daemon system
+ * Continuum CLI - Simple wrapper around the Continuum OS
+ * Auto-healing system via import
  */
 
-import { spawn } from 'child_process';
-import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
+import Continuum from './src/core/Continuum.ts';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Parse simple command line arguments
-const args = process.argv.slice(2);
-const command = args[0] || 'start';
-
-// Get package version
-function getVersion() {
-  try {
-    const packagePath = path.join(__dirname, 'package.json');
-    const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
-    return packageJson.version;
-  } catch (error) {
-    return 'unknown';
-  }
-}
-
-// Show help
-function showHelp() {
-  console.log(`
-🌐 Continuum v${getVersion()} - Like Docker Desktop for AI Collaboration
-
-USAGE:
-  continuum                    Start service + browser interface
-  continuum start              Start the service (explicit)
-  continuum stop               Stop the running service
-  continuum restart            Restart the service
-  continuum status             Show service status
-  continuum browser            Ensure browser interface is up
-  continuum devtools           Enhanced mode for AI agents
-  continuum --version          Show version
-  continuum --help             Show this help
-
-SERVICE:
-  🐳 Like Docker Desktop - Simple persistent service
-  🌐 Browser Interface - Primary UI at localhost:9000  
-  🔌 WebSocket API - Universal connection point for AIs/humans
-  🛠️ DevTools Ready - Built-in debugging protocol
-
-The browser is your PRIMARY interface - opens automatically.
-AIs connect via WebSocket. Simple and clean.
-`);
-}
-
-// Import and use Continuum core
-async function importContinuum() {
-  try {
-    const ContinuumModule = await import('./src/core/Continuum.js');
-    return ContinuumModule.default;
-  } catch (error) {
-    console.error('❌ Failed to import Continuum core:', error);
-    process.exit(1);
-  }
-}
-
-// Main CLI handler
 async function main() {
-  const Continuum = await importContinuum();
   const continuum = new Continuum();
-
-  switch (command) {
-    case 'help':
-    case '--help':
-    case '-h':
-      showHelp();
-      break;
-      
-    case 'version':
-    case '--version':
-    case '-v':
-      console.log(`continuum v${getVersion()}`);
-      break;
-      
-    case 'status':
-      const status = await continuum.status();
-      console.log('📊 Continuum System Status');
-      console.log('='.repeat(30));
-      if (status.running) {
-        console.log('🟢 Status: RUNNING');
-        console.log(`🌐 Interface: ${status.interface}`);
-        console.log(`🔌 API: ${status.api}`);
-      } else {
-        console.log('🔴 Status: STOPPED');
-        console.log(status.message);
-      }
-      break;
-      
-    case 'stop':
-      await continuum.stop();
-      break;
-      
-    case 'restart':
-      console.log('🔄 Restarting Continuum system...');
-      await continuum.stop();
-      setTimeout(async () => {
-        await continuum.init();
-        continuum.keepAlive();
-      }, 2000);
-      break;
-      
-    case 'connect':
-      await continuum.connect();
-      break;
-      
-    case 'devtools':
-      await continuum.init({ devtools: true });
-      continuum.keepAlive();
-      break;
-      
-    case 'start':
-    default:
-      // Default action: connect to existing or start new
-      await continuum.connect();
-      continuum.keepAlive();
-      break;
-  }
+  
+  // Auto-healing connection - will start system if needed
+  await continuum.connect();
+  
+  // Keep alive for CLI usage
+  continuum.keepAlive();
 }
 
-// Handle graceful shutdown
-process.on('SIGINT', () => {
-  console.log('\n🛑 Shutting down...');
-  process.exit(0);
-});
+// Execute if run directly
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch(error => {
+    console.error('❌ Continuum failed:', error);
+    process.exit(1);
+  });
+}
 
-process.on('SIGTERM', () => {
-  console.log('\n🛑 Terminating...');
-  process.exit(0);
-});
-
-main().catch(error => {
-  console.error('❌ CLI error:', error);
-  process.exit(1);
-});
+// Export for import usage (auto-healing on import)
+export default async function() {
+  const continuum = new Continuum();
+  await continuum.connect(); // Auto-heal
+  return continuum;
+}
