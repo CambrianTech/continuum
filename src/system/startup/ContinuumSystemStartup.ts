@@ -341,35 +341,4 @@ export class ContinuumSystem extends EventEmitter {
   }
 }
 
-async function main() {
-  const system = new ContinuumSystem();
-  
-  // Graceful shutdown
-  process.on('SIGINT', async () => {
-    console.log('\n🛑 Received shutdown signal...');
-    await system.stop();
-    process.exit(0);
-  });
-  
-  process.on('SIGTERM', async () => {
-    console.log('\n🛑 Received termination signal...');
-    await system.stop();
-    process.exit(0);
-  });
-  
-  try {
-    await system.start();
-    
-    // Keep running
-    console.log('🔄 System running - press Ctrl+C to stop');
-    
-  } catch (error) {
-    console.error('❌ System startup failed:', error);
-    await system.stop();
-    process.exit(1);
-  }
-}
-
-if (process.argv[1] && process.argv[1].endsWith('main.ts')) {
-  main();
-}
+// This file is imported by main.ts - no direct execution needed
