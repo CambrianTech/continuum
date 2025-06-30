@@ -216,7 +216,7 @@ async function runWidgetSelfValidation(): Promise<void> {
   console.log('\n📊 Widget Self-Validation Summary:');
   console.log('====================================');
   
-  widgets.forEach((widget, index) => {
+  widgets.forEach((widget, _index) => {
     const summary = widget.getValidationSummary();
     console.log(`\n${widget.constructor.name}:`);
     summary.forEach(result => {

@@ -10,16 +10,16 @@ export const emotionDefinition: CommandDefinition = {
   description: 'Express emotions through continuon visual animations',
   icon: '💚',
   category: 'ui',
-  params: '{"feeling": "string", "intensity": "subtle|medium|strong|overwhelming", "duration": "number", "persist": "boolean", "target": "string"}',
+  parameters: { feeling: 'string', intensity: 'string', duration: 'number', persist: 'boolean', target: 'string' },
   usage: 'emotion --params \'{"feeling": "love|joy|excitement|thinking|curious", "intensity": "medium", "duration": 3000}\'',
   examples: [
-    'emotion --params \'{"feeling": "love"}\'',
-    'emotion --params \'{"feeling": "excitement", "intensity": "strong"}\'',
-    'emotion --params \'{"feeling": "curious", "target": ".chat-area", "intensity": "medium"}\'',
-    'emotion --params \'{"feeling": "joy", "intensity": "subtle", "duration": 5000}\'',
-    'emotion --params \'{"feeling": "thinking", "intensity": "medium"}\'',
-    'emotion --params \'{"feeling": "proud", "intensity": "strong"}\'',
-    'emotion --params \'{"feeling": "error", "intensity": "strong", "persist": true}\'',
-    'emotion --params \'{"feeling": "success", "intensity": "medium", "duration": 2000}\''
+    { description: 'Express love emotion', command: 'emotion --params \'{"feeling": "love"}\'' },
+    { description: 'Strong excitement', command: 'emotion --params \'{"feeling": "excitement", "intensity": "strong"}\'' },
+    { description: 'Curious about chat area', command: 'emotion --params \'{"feeling": "curious", "target": ".chat-area", "intensity": "medium"}\'' },
+    { description: 'Subtle joy for 5 seconds', command: 'emotion --params \'{"feeling": "joy", "intensity": "subtle", "duration": 5000}\'' },
+    { description: 'Thinking emotion', command: 'emotion --params \'{"feeling": "thinking", "intensity": "medium"}\'' },
+    { description: 'Strong pride', command: 'emotion --params \'{"feeling": "proud", "intensity": "strong"}\'' },
+    { description: 'Persistent error emotion', command: 'emotion --params \'{"feeling": "error", "intensity": "strong", "persist": true}\'' },
+    { description: 'Success for 2 seconds', command: 'emotion --params \'{"feeling": "success", "intensity": "medium", "duration": 2000}\'' }
   ]
 };

@@ -38,7 +38,7 @@ export class ChatHistoryCommand extends BaseCommand {
     };
   }
 
-  static async execute(command: string, params: any = {}): Promise<CommandResult> {
+  static async execute(_command: string, params: any = {}): Promise<CommandResult> {
     try {
       const room = params.room || 'general';
       const limit = params.limit || 50;
@@ -71,12 +71,15 @@ export class ChatHistoryCommand extends BaseCommand {
         }
       ];
 
-      return this.createSuccessResult({
-        room: room,
-        messages: mockHistory.slice(0, limit),
-        count: mockHistory.length,
-        limit: limit
-      });
+      return this.createSuccessResult(
+        `Found ${mockHistory.length} messages in room "${room}"`,
+        {
+          room: room,
+          messages: mockHistory.slice(0, limit),
+          count: mockHistory.length,
+          limit: limit
+        }
+      );
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

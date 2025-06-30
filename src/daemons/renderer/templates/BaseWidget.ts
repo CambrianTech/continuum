@@ -21,7 +21,7 @@ declare global {
 }
 
 abstract class BaseWidget extends HTMLElement {
-    protected shadowRoot: ShadowRoot;
+    public shadowRoot: ShadowRoot;
     protected api?: ContinuumAPI;
     protected static templateHTML: string = '';
 

@@ -2,7 +2,7 @@
 // Automatic validation and status handling via parent class
 
 class ContinuumSidebar extends StatusWidget {
-    private static templateHTML: string = `{{SIDEBAR_WIDGET_HTML}}`;
+    private static _templateHTML: string = `{{SIDEBAR_WIDGET_HTML}}`;
 
     protected getStatusElements(): Record<string, string> {
         return {
