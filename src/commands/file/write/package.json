@@ -1,0 +1,23 @@
+{
+  "name": "file-write-command",
+  "version": "1.0.0",
+  "description": "Write files to session-managed locations using ContinuumDirectoryDaemon",
+  "main": "FileWriteCommand.ts",
+  "type": "module",
+  "continuum": {
+    "command": "file_write",
+    "category": "File",
+    "capabilities": [
+      "file-writing",
+      "session-aware",
+      "artifact-management",
+      "directory-integration"
+    ],
+    "dependencies": ["continuum-directory-daemon"],
+    "interfaces": ["command-bus", "file-system"],
+    "permissions": ["write", "create-files"]
+  },
+  "keywords": ["file", "write", "session", "artifacts", "continuum"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

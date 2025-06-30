@@ -1,0 +1,31 @@
+{
+  "name": "continuum-system-startup",
+  "version": "1.0.0",
+  "description": "System startup orchestration and daemon coordination",
+  "main": "ContinuumSystemStartup.ts",
+  "type": "module",
+  "continuum": {
+    "module": "system-startup",
+    "category": "Core",
+    "capabilities": [
+      "daemon-orchestration",
+      "system-coordination",
+      "startup-management",
+      "browser-launching",
+      "self-testing"
+    ],
+    "dependencies": [
+      "websocket-daemon",
+      "renderer-daemon", 
+      "command-processor-daemon",
+      "browser-manager-daemon",
+      "session-manager-daemon",
+      "continuum-directory-daemon"
+    ],
+    "interfaces": ["daemon-protocol", "system-management"],
+    "permissions": ["system", "daemon-management", "process-control"]
+  },
+  "keywords": ["continuum", "system", "startup", "daemon", "orchestration"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

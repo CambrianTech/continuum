@@ -1,0 +1,18 @@
+{
+  "name": "file-read-command",
+  "version": "1.0.0",
+  "description": "Read files with session management - equivalent to cat",
+  "main": "FileReadCommand.ts",
+  "type": "module",
+  "continuum": {
+    "command": "file_read",
+    "category": "File",
+    "capabilities": ["file-reading", "session-aware"],
+    "dependencies": ["base-file-command"],
+    "interfaces": ["command-bus", "file-system"],
+    "permissions": ["read"]
+  },
+  "keywords": ["file", "read", "cat", "continuum"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

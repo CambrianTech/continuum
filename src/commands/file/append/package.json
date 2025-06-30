@@ -1,0 +1,18 @@
+{
+  "name": "file-append-command",
+  "version": "1.0.0",
+  "description": "Append to files with session management",
+  "main": "FileAppendCommand.ts",
+  "type": "module",
+  "continuum": {
+    "command": "file_append",
+    "category": "File",
+    "capabilities": ["file-appending", "session-aware"],
+    "dependencies": ["base-file-command"],
+    "interfaces": ["command-bus", "file-system"],
+    "permissions": ["write", "append"]
+  },
+  "keywords": ["file", "append", "continuum"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

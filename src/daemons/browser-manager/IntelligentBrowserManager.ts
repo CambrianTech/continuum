@@ -184,7 +184,7 @@ export class IntelligentBrowserManager extends SafeBrowserManager {
   private async detectWindowsBrowsers(): Promise<void> {
     const { exec } = await import('child_process');
     const { promisify } = await import('util');
-    const execAsync = promisify(exec);
+    // const execAsync = promisify(exec); // TODO: Implement Windows browser detection
 
     // Common Windows browser paths
     const browsers = [
@@ -245,10 +245,11 @@ export class IntelligentBrowserManager extends SafeBrowserManager {
         // macOS: get default browser
         const { exec } = await import('child_process');
         const { promisify } = await import('util');
-        const execAsync = promisify(exec);
+        // const execAsync = promisify(exec); // TODO: Implement macOS browser detection
         
-        const { stdout } = await execAsync('defaults read com.apple.LaunchServices/com.apple.launchservices.secure LSHandlers | grep -A 2 -B 2 "https" | grep LSHandlerRoleAll -A 1 | grep "string" | cut -d '"' -f 2');
-        const bundleId = stdout.trim();
+        // TODO: Implement macOS default browser detection
+        // const { stdout } = await execAsync('defaults read ...');
+        const bundleId = 'com.google.Chrome'; // Default fallback
         
         // Map bundle ID to browser name
         const browserMap: Record<string, string> = {

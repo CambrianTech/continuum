@@ -1,0 +1,32 @@
+{
+  "name": "validate-system-command",
+  "version": "1.0.0",
+  "description": "System-wide validation command that ensures all modules follow consistent structure and implement declared capabilities",
+  "main": "ValidateSystemCommand.ts",
+  "type": "module",
+  "continuum": {
+    "command": "validate-system",
+    "category": "Testing",
+    "capabilities": [
+      "universal-testing",
+      "modular-compliance",
+      "system-health",
+      "layer-validation"
+    ],
+    "dependencies": [
+      "kernel-system-command",
+      "module-compliance-framework",
+      "self-validating-module"
+    ],
+    "interfaces": ["command-bus", "testing-framework"],
+    "permissions": ["read", "write", "execute", "system-test"]
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "test:unit": "node --test test/unit/",
+    "test:integration": "node --test test/integration/"
+  },
+  "keywords": ["continuum", "validation", "testing", "compliance", "system", "structure"],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}
