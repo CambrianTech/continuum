@@ -1,1 +1,0 @@
-export { VersionCommand } from './VersionCommand.js';
