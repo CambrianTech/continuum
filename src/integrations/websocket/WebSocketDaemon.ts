@@ -69,7 +69,7 @@ export class WebSocketDaemon extends BaseDaemon {
       enableHeartbeat: config.enableHeartbeat ?? true,
       enableAuth: config.enableAuth ?? false,
       daemonConfig: {
-        autoConnect: false, // Disable until module paths fixed
+        autoConnect: true, // ENABLED: Module paths now fixed with dynamic discovery
         enableFallback: false,
         retryAttempts: 3,
         retryInterval: 5000,
@@ -1178,7 +1178,11 @@ export class WebSocketDaemon extends BaseDaemon {
       connect: () => Promise.resolve(),
       disconnect: () => Promise.resolve(),
       getConnectedBrowsers: () => [],
-      takeScreenshot: () => Promise.resolve(null)
+      takeScreenshot: () => Promise.resolve(null),
+      registerClient: () => {},
+      updateClientActivity: () => {},
+      removeClient: () => {},
+      getBrowserState: () => ({ hasActiveConnections: true, connectedClients: [], debugMode: false })
     };
   }
 }
