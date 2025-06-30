@@ -3,7 +3,8 @@
  * Elegant screenshot capture with advanced targeting and orchestration
  */
 
-import { BaseCommand, CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { RemoteCommand, RemoteExecutionRequest, RemoteExecutionResponse } from '../../core/remote-command/RemoteCommand.js';
+import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -21,32 +22,6 @@ interface ScreenshotParams {
   roi?: boolean;
 }
 
-interface ScreenshotResult {
-  filename?: string | undefined;
-  selector: string;
-  timestamp: number;
-  destination: string;
-  requestId: string;
-  workflow: string;
-  orchestration: boolean;
-}
-
-interface ContinuonAnimation {
-  enabled: boolean;
-  type: string;
-  showROI: boolean;
-  fromRing: boolean;
-}
-
-interface ScreenshotCallback {
-  command: string;
-  params: {
-    type: string;
-    filename?: string | undefined;
-    requestId: string;
-    source: string;
-  };
-}
 
 interface ReadmeDefinition {
   name?: string;
@@ -62,7 +37,7 @@ interface ReadmeDefinition {
  * Screenshot Command - Captures browser screenshots with advanced targeting
  * Supports README-driven definitions and sophisticated browser orchestration
  */
-export class ScreenshotCommand extends BaseCommand {
+export class ScreenshotCommand extends RemoteCommand {
   static getDefinition(): CommandDefinition {
     try {
       const readmePath = path.join(__dirname, 'README.md');
@@ -172,20 +147,10 @@ export class ScreenshotCommand extends BaseCommand {
     return definition;
   }
 
-  static async execute(params: any, context?: CommandContext): Promise<CommandResult<ScreenshotResult>> {
-    this.logExecution('Screenshot', params, context);
+  protected static async executeOnClient(request: RemoteExecutionRequest): Promise<RemoteExecutionResponse> {
+    console.log(`🖼️ SCREENSHOT: Executing on client with params:`, request.params);
     
-    console.log(`🔬 PROBE: ScreenshotCommand.execute called`);
-    console.log('🔥 SCREENSHOT_COMMAND: Execute called with params:', params);
-    
-    const continuum = context?.continuum;
-    if (!continuum?.webSocketServer) {
-      return this.createErrorResult('WebSocket server not available for screenshot capture');
-    }
-
-    console.log('🔥 SCREENSHOT_COMMAND: Continuum object keys:', Object.keys(continuum || {}));
-    
-    const options = this.parseParams<ScreenshotParams>(params);
+    const options = this.parseParams<ScreenshotParams>(request.params);
     
     // Default parameters for elegant API
     const {
@@ -204,51 +169,121 @@ export class ScreenshotCommand extends BaseCommand {
     
     console.log(`📸 SCREENSHOT Command: ${source} requesting ${selector} -> ${destination} (${name_prefix}) [${animation}]`);
     
-    // Continuon animation setup
-    this.setupContinuonAnimation(animation, roi);
-    
     // Generate filename/id for tracking
     const timestamp = Date.now();
     const generatedFilename = this.generateFilename(filename, subdirectory, name_prefix, format, destination, timestamp);
     const requestId = `${source}_${timestamp}`;
     
-    // Create screenshot orchestration message
-    const screenshotMessage = this.createScreenshotMessage(
-      selector, scale, generatedFilename, manual, source, timestamp,
-      format, destination, requestId, animation, roi
-    );
-    
-    console.log(`📸 Orchestrating screenshot: browser capture → WSTransfer → ${destination === 'file' ? 'FileSave' : 'bytes only'}`);
-    
-    // Send enhanced message with WSTransfer callback
-    const enhancedMessage = this.addWSTransferCallback(screenshotMessage, generatedFilename, requestId, destination);
-    
-    continuum.webSocketServer.broadcast(enhancedMessage);
-    
-    // Return orchestration result
-    const result: ScreenshotResult = {
-      filename: generatedFilename || undefined,
-      selector,
-      timestamp,
-      destination,
-      requestId,
-      workflow: `html2canvas → WSTransfer → ${destination === 'file' ? 'FileSave' : 'bytes only'}`,
-      orchestration: true
-    };
-    
-    return this.createSuccessResult(`Screenshot workflow initiated (${destination} mode)`, result);
+    // Browser-side screenshot execution using html2canvas
+    try {
+      // This runs in the browser context
+      const element = document.querySelector(selector) as HTMLElement;
+      if (!element) {
+        return {
+          success: false,
+          error: `Element not found: ${selector}`,
+          clientMetadata: {
+            userAgent: navigator.userAgent,
+            timestamp: Date.now(),
+            executionTime: 0
+          }
+        };
+      }
+
+      // Use html2canvas for screenshot capture
+      const startTime = Date.now();
+      const canvas = await (window as any).html2canvas(element, {
+        scale: scale,
+        useCORS: true,
+        allowTaint: true
+      });
+      
+      const imageData = canvas.toDataURL(`image/${format}`);
+      const executionTime = Date.now() - startTime;
+      
+      return {
+        success: true,
+        data: {
+          imageData,
+          selector,
+          filename: generatedFilename,
+          format,
+          width: canvas.width,
+          height: canvas.height
+        },
+        clientMetadata: {
+          userAgent: navigator.userAgent,
+          timestamp: Date.now(),
+          executionTime
+        }
+      };
+      
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        clientMetadata: {
+          userAgent: navigator.userAgent,
+          timestamp: Date.now(),
+          executionTime: 0
+        }
+      };
+    }
   }
 
   /**
-   * Setup Continuon animation logging based on animation type
+   * Process client response and save screenshot to file system
    */
-  private static setupContinuonAnimation(animation: string, roi: boolean): void {
-    if (animation === 'animated' && roi) {
-      console.log('🟢 Continuon will animate ROI highlighting for screenshot');
-    } else if (animation === 'visible' && roi) {
-      console.log('🟢 Continuon will show ROI highlighting without animation');
+  protected static async processClientResponse(response: RemoteExecutionResponse, originalParams: any): Promise<CommandResult> {
+    if (!response.success) {
+      return this.createErrorResult(`Screenshot capture failed: ${response.error}`);
+    }
+
+    const { imageData, filename, selector, format, width, height } = response.data;
+    const options = this.parseParams<ScreenshotParams>(originalParams);
+    
+    // Save to file if filename provided
+    if (filename && options.destination === 'file') {
+      try {
+        const base64Data = imageData.replace(/^data:image\/[a-z]+;base64,/, '');
+        const buffer = Buffer.from(base64Data, 'base64');
+        
+        // Ensure directory exists
+        const fullPath = path.resolve(filename);
+        const dir = path.dirname(fullPath);
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+        
+        // Write file
+        fs.writeFileSync(fullPath, buffer);
+        
+        return this.createSuccessResult(
+          `Screenshot saved successfully`,
+          {
+            filename: fullPath,
+            selector,
+            dimensions: { width, height },
+            format,
+            size: buffer.length,
+            client: response.clientMetadata
+          }
+        );
+      } catch (error) {
+        return this.createErrorResult(`Failed to save screenshot: ${error instanceof Error ? error.message : String(error)}`);
+      }
     } else {
-      console.log('🟢 Continuon will capture screenshot without ROI highlighting');
+      // Return bytes only
+      return this.createSuccessResult(
+        `Screenshot captured successfully`,
+        {
+          imageData,
+          selector,
+          dimensions: { width, height },
+          format,
+          client: response.clientMetadata
+        }
+      );
     }
   }
 
@@ -268,77 +303,6 @@ export class ScreenshotCommand extends BaseCommand {
       return subdirectory ? `${subdirectory}/${baseName}` : baseName;
     }
     return null;
-  }
-
-  /**
-   * Create the base screenshot message for browser communication
-   */
-  private static createScreenshotMessage(
-    selector: string,
-    scale: number,
-    filename: string | null,
-    manual: boolean,
-    source: string,
-    timestamp: number,
-    format: string,
-    destination: string,
-    requestId: string,
-    animation: string,
-    roi: boolean
-  ) {
-    const continuonAnimation: ContinuonAnimation = {
-      enabled: animation === 'animated' || animation === 'visible',
-      type: animation,
-      showROI: roi,
-      fromRing: true  // Continuon comes from the ring in top-left
-    };
-
-    return {
-      type: 'command',
-      command: 'screenshot',
-      params: {
-        selector,
-        scale,
-        filename,
-        manual,
-        source,
-        timestamp,
-        format,
-        destination,
-        requestId,
-        animation,
-        roi,
-        continuonAnimation
-      }
-    };
-  }
-
-  /**
-   * Add WSTransfer callback configuration to screenshot message
-   */
-  private static addWSTransferCallback(
-    screenshotMessage: any,
-    filename: string | null,
-    requestId: string,
-    destination: string
-  ) {
-    const callback: ScreenshotCallback = {
-      command: 'wstransfer',
-      params: {
-        type: 'image',
-        filename: destination === 'file' && filename ? filename : undefined,
-        requestId,
-        source: 'screenshot'
-      }
-    };
-
-    return {
-      ...screenshotMessage,
-      params: {
-        ...screenshotMessage.params,
-        callback
-      }
-    };
   }
 }
 

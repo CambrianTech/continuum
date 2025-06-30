@@ -5,10 +5,11 @@
  * browser console logs, errors, and health reports back to the AI portal
  */
 
-import { BaseCommand } from '../base-command/BaseCommand';
-import { CommandDefinition, CommandResult } from '../../../types/CommandTypes';
+import { DirectCommand } from '../direct-command/DirectCommand.js';
+import { CommandResult, CommandContext } from '../base-command/BaseCommand.js';
+import { CommandDefinition } from '../../../types/CommandTypes';
 
-export class ConsoleCommand extends BaseCommand {
+export class ConsoleCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
     return {
       name: 'console',
@@ -49,7 +50,7 @@ export class ConsoleCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any = {}): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, _context?: CommandContext): Promise<CommandResult> {
     try {
       const { action, message, source, data } = params;
       

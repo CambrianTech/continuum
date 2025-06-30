@@ -2,10 +2,10 @@
  * Projects Command - List active projects and their status
  */
 
-import { BaseCommand } from '../base-command/BaseCommand';
-import { CommandDefinition, CommandResult } from '../../../types/CommandTypes';
+import { DirectCommand } from '../direct-command/DirectCommand.js';
+import { CommandDefinition, CommandResult, CommandContext } from '../../../types/CommandTypes';
 
-export class ProjectsCommand extends BaseCommand {
+export class ProjectsCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
     return {
       name: 'projects',
@@ -21,7 +21,7 @@ export class ProjectsCommand extends BaseCommand {
     };
   }
 
-  static async execute(_params: any = {}): Promise<CommandResult> {
+  protected static async executeOperation(_params: any = {}, _context?: CommandContext): Promise<CommandResult> {
     try {
       // Mock project data based on what we saw in the UI
       const projects = [

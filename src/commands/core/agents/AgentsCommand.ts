@@ -2,10 +2,10 @@
  * Agents Command - List available AI agents/personas
  */
 
-import { BaseCommand } from '../base-command/BaseCommand';
-import { CommandDefinition, CommandResult } from '../../../types/CommandTypes';
+import { DirectCommand } from '../direct-command/DirectCommand.js';
+import { CommandDefinition, CommandResult, CommandContext } from '../../../types/CommandTypes';
 
-export class AgentsCommand extends BaseCommand {
+export class AgentsCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
     return {
       name: 'agents',
@@ -21,7 +21,7 @@ export class AgentsCommand extends BaseCommand {
     };
   }
 
-  static async execute(_params: any = {}): Promise<CommandResult> {
+  protected static async executeOperation(_params: any = {}, _context?: CommandContext): Promise<CommandResult> {
     try {
       // Mock agent data for now
       const agents = [

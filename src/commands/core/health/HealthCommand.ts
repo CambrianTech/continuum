@@ -11,7 +11,7 @@
  * AUTONOMOUS VALIDATION: Complete system health visible to AI for diagnosis
  */
 
-import { BaseCommand } from '../base-command/BaseCommand';
+import { DirectCommand } from '../direct-command/DirectCommand.js';
 import { CommandDefinition, CommandResult } from '../../../types/CommandTypes';
 
 export interface HealthStatus {
@@ -50,7 +50,7 @@ export interface HealthReport {
   summary: string;
 }
 
-export class HealthCommand extends BaseCommand {
+export class HealthCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
     return {
       name: 'health',
@@ -86,35 +86,29 @@ export class HealthCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any = {}): Promise<CommandResult> {
-    try {
-      const startTime = Date.now();
-      
-      // Generate server-side health report
-      const serverReport = await this.generateServerHealthReport(params.component);
-      
-      // If client health requested, wait for client report
-      let clientReport: HealthReport | null = null;
-      if (params.includeClient !== false) {
-        clientReport = await this.requestClientHealthReport();
-      }
-      
-      const responseTime = Date.now() - startTime;
-      
-      return this.createSuccessResult(
-        'Health check completed successfully',
-        {
-          server: serverReport,
-          client: clientReport,
-          summary: this.generateHealthSummary(serverReport, clientReport),
-          responseTime: `${responseTime}ms`
-        }
-      );
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      return this.createErrorResult(`Health check failed: ${errorMessage}`);
+  protected static async executeOperation(params: any = {}): Promise<CommandResult> {
+    const startTime = Date.now();
+    
+    // Generate server-side health report
+    const serverReport = await this.generateServerHealthReport(params.component);
+    
+    // If client health requested, wait for client report
+    let clientReport: HealthReport | null = null;
+    if (params.includeClient !== false) {
+      clientReport = await this.requestClientHealthReport();
     }
+    
+    const responseTime = Date.now() - startTime;
+    
+    return this.createSuccessResult(
+      'Health check completed successfully',
+      {
+        server: serverReport,
+        client: clientReport,
+        summary: this.generateHealthSummary(serverReport, clientReport),
+        responseTime: `${responseTime}ms`
+      }
+    );
   }
 
   private static async generateServerHealthReport(specificComponent?: string): Promise<HealthReport> {
