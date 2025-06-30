@@ -5,6 +5,8 @@
 
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import { LocalAcademyTrainer, TrainingSession } from './LocalAcademyTrainer.js';
+import { LoRADiscovery, LoRAMetadata } from './LoRADiscovery.js';
 
 export interface AcademyStatus {
   isActive: boolean;
@@ -63,6 +65,8 @@ export class AcademyDaemon extends BaseDaemon {
   private trainingSessions: Map<string, TrainingSession> = new Map();
   private vectorSpaceEvolution: VectorSpaceEvolution;
   private p2pNetworkStatus: P2PNetworkStatus;
+  private localTrainer: LocalAcademyTrainer;
+  private loraDiscovery: LoRADiscovery;
 
   protected async onStart(): Promise<void> {
     this.log('🎓 Starting Academy Daemon...');
@@ -74,6 +78,18 @@ export class AcademyDaemon extends BaseDaemon {
       trainingProgress: {},
       academyMode: 'idle'
     };
+
+    // Initialize local training components
+    this.localTrainer = new LocalAcademyTrainer();
+    this.loraDiscovery = new LoRADiscovery();
+
+    // Discover available LoRA adapters
+    try {
+      const adapters = await this.loraDiscovery.discoverAdapters();
+      this.log(`🧬 Discovered ${adapters.length} LoRA adapters`);
+    } catch (error) {
+      this.log(`⚠️  LoRA discovery warning: ${error instanceof Error ? error.message : String(error)}`, 'warn');
+    }
 
     // Initialize vector space evolution tracking
     this.vectorSpaceEvolution = {
@@ -94,21 +110,20 @@ export class AcademyDaemon extends BaseDaemon {
       ]
     };
 
-    // Initialize P2P network status
+    // Initialize P2P network status (local mode)
     this.p2pNetworkStatus = {
-      total_nodes: 15,
-      active_connections: 12,
-      skill_sharing_rate: '3.2 transfers/minute',
-      network_health: 'optimal',
-      torrent_efficiency: 0.94,
+      total_nodes: 1, // Local only
+      active_connections: 0, // No P2P yet
+      skill_sharing_rate: 'local_mode',
+      network_health: 'local_operational',
+      torrent_efficiency: 0.0, // No P2P sharing
       emergent_specializations: [
-        'code_review_specialist',
-        'debugging_expert',
-        'architectural_consultant'
+        'local_training_specialist',
+        'adversarial_evaluation_expert'
       ]
     };
     
-    this.log('✅ Academy Daemon started successfully');
+    this.log('✅ Academy Daemon started successfully (local mode)');
   }
 
   protected async onStop(): Promise<void> {
@@ -249,22 +264,29 @@ export class AcademyDaemon extends BaseDaemon {
         this.academyStatus.trainingProgress[persona] = 0;
         this.academyStatus.academyMode = 'training';
         
-        // Create evolution training session
-        const sessionId = session_id || `academy_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        // Start local Academy training session
+        const localSession = await this.localTrainer.startEvolutionSession({
+          student_persona: persona,
+          trainer_mode: trainer_mode,
+          evolution_target: evolution_target,
+          vector_exploration: vector_exploration
+        });
+        
+        // Convert to our session format
         const trainingSession: TrainingSession = {
-          session_id: sessionId,
-          persona_name: persona,
-          status: 'active_training',
-          trainer_mode: trainer_mode || 'adversarial',
-          progress: 0,
-          duration: '0m',
-          battles_won: 0,
-          battles_lost: 0,
-          current_challenge: 'initialization',
-          evolution_rate: 'starting'
+          session_id: localSession.id,
+          persona_name: localSession.persona_name,
+          status: localSession.status,
+          trainer_mode: localSession.trainer_mode,
+          progress: localSession.progress,
+          duration: `${Math.round(localSession.duration_ms / 1000)}s`,
+          battles_won: localSession.battles_won,
+          battles_lost: localSession.battles_lost,
+          current_challenge: localSession.current_challenge,
+          evolution_rate: localSession.evolution_metrics.fitness_score > 0.7 ? 'accelerating' : 'steady'
         };
         
-        this.trainingSessions.set(sessionId, trainingSession);
+        this.trainingSessions.set(localSession.id, trainingSession);
         
         // Add to current personas if not already there
         if (!this.academyStatus.currentPersonas.find(p => p.id === persona)) {
@@ -281,26 +303,27 @@ export class AcademyDaemon extends BaseDaemon {
           return {
             success: true,
             data: {
-              session_id: sessionId,
-              training_mode: trainer_mode || 'adversarial',
+              session_id: localSession.id,
+              training_mode: localSession.trainer_mode,
               vector_exploration: vector_exploration !== false,
-              estimated_duration: '30-120 minutes',
+              estimated_duration: 'local_training_session',
               initial_metrics: {
-                student_capability_vector: [0.3, 0.7, 0.1, 0.9, 0.2],
-                target_vector_space: 'expanding',
+                student_capability_vector: localSession.evolution_metrics.capability_vector,
+                target_vector_space: 'local_discovery',
                 evolution_rate: 'adaptive',
-                p2p_skill_availability: 'scanning'
+                p2p_skill_availability: 'local_mode'
               },
               trainer_ai: {
-                id: 'protocol_sheriff_1',
+                id: 'local_trainer_1',
                 specialization: 'adversarial_evaluation',
-                challenge_generation_mode: 'gap_targeted'
+                challenge_generation_mode: 'adaptive_difficulty'
               },
               evolution_environment: {
-                sandbox_repo: '/tmp/continuum_sandbox',
+                sandbox_repo: 'local_academy_environment',
                 vector_space_dimensions: 512,
                 mutation_rate: 0.1,
-                selection_pressure: 'moderate'
+                selection_pressure: 'moderate',
+                local_mode: true
               }
             }
           };
@@ -458,6 +481,7 @@ export class AcademyDaemon extends BaseDaemon {
           last_update: new Date().toISOString()
         },
         training_sessions: Array.from(this.trainingSessions.values()),
+        local_trainer_status: this.localTrainer.getTrainingStatus(),
         persona_status: persona_id ? 
           this.academyStatus.currentPersonas.find(p => p.id === persona_id) || null :
           {
@@ -523,10 +547,11 @@ export class AcademyDaemon extends BaseDaemon {
       'persona-training',
       'persona-spawning',
       'vector-space-evolution',
-      'p2p-skill-sharing',
+      'local-lora-discovery',
       'adversarial-training',
       'progress-tracking',
-      'academy-ui-integration'
+      'academy-ui-integration',
+      'local-training-mode'
     ];
   }
 
@@ -539,7 +564,10 @@ export class AcademyDaemon extends BaseDaemon {
       'academy_message',
       'get_training_progress',
       'start_training',
-      'stop_training'
+      'start_evolution_session',
+      'stop_training',
+      'spawn_persona',
+      'get_comprehensive_status'
     ];
   }
 }

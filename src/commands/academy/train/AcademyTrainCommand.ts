@@ -12,6 +12,8 @@ export class AcademyTrainCommand extends DirectCommand {
     return {
       name: 'academy-train',
       description: 'Start emergent AI evolution training with adversarial TrainerAI vs LoraAgent',
+      category: 'academy',
+      examples: ['academy-train --student_persona="DataScientist" --trainer_mode="adversarial"'],
       parameters: {
         domain: { type: 'string', required: false, description: 'Training domain (auto-discovered if not specified)' },
         student_persona: { type: 'string', required: true, description: 'LoRA-adapted persona to train' },
@@ -27,6 +29,7 @@ export class AcademyTrainCommand extends DirectCommand {
       if (!params.student_persona) {
         return {
           success: false,
+          message: 'Student persona ID is required for Academy training',
           error: 'Student persona ID is required for Academy training'
         };
       }
@@ -43,6 +46,7 @@ export class AcademyTrainCommand extends DirectCommand {
 
       return {
         success: true,
+        message: 'Academy evolution training session started',
         data: {
           message: 'Academy evolution training session started',
           session_id: session.session_id,
@@ -55,6 +59,7 @@ export class AcademyTrainCommand extends DirectCommand {
     } catch (error) {
       return {
         success: false,
+        message: `Academy training failed: ${error instanceof Error ? error.message : String(error)}`,
         error: `Academy training failed: ${error instanceof Error ? error.message : String(error)}`
       };
     }
