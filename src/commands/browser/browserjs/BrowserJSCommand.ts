@@ -36,11 +36,11 @@ export class BrowserJSCommand extends BaseCommand {
       category: 'Browser',
       icon: '💻',
       description: 'Execute JavaScript in browser',
-      params: '<javascript_code> [encoding]',
+      parameters: { script: 'string', encoding: 'string' },
       examples: [
-        '{"script": "Y29uc29sZS5sb2coJ3Rlc3QnKQ==", "encoding": "base64"}',
-        '{"script": "ZG9jdW1lbnQudGl0bGUgPSAnTmV3IFRpdGxlJw==", "encoding": "base64"}',
-        '{"script": "ZG9jdW1lbnQucXVlcnlTZWxlY3RvcignLmJ0bicpLmNsaWNrKCk=", "encoding": "base64"}'
+        { description: 'Console log test', command: '{"script": "Y29uc29sZS5sb2coJ3Rlc3QnKQ==", "encoding": "base64"}' },
+        { description: 'Change page title', command: '{"script": "ZG9jdW1lbnQudGl0bGUgPSAnTmV3IFRpdGxlJw==", "encoding": "base64"}' },
+        { description: 'Click button', command: '{"script": "ZG9jdW1lbnQucXVlcnlTZWxlY3RvcignLmJ0bicpLmNsaWNrKCk=", "encoding": "base64"}' }
       ],
       usage: 'Execute JavaScript in connected browsers. Supports base64 encoding for safety and auto-conversion.'
     };
