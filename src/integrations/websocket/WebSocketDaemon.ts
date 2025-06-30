@@ -34,7 +34,7 @@ export class WebSocketDaemon extends BaseDaemon {
       maxClients: config.maxClients ?? 100
     };
 
-    this.routeManager = new RouteManager();
+    this.routeManager = new RouteManager((daemonName, message) => this.sendMessageToDaemon(daemonName, message));
     this.wsManager = new WebSocketManager();
     
     // Set up WebSocket message handling
@@ -75,6 +75,9 @@ export class WebSocketDaemon extends BaseDaemon {
       case 'register_daemon':
         return this.handleDaemonRegistration(message.data);
       
+      case 'register_http_routes':
+        return this.handleRouteRegistration(message.data);
+      
       case 'get_status':
         return {
           success: true,
@@ -108,10 +111,10 @@ export class WebSocketDaemon extends BaseDaemon {
   }
 
   /**
-   * Register route handler - PURE ROUTING
+   * Register route handler - DEPRECATED: Use WebSocket message-based registration
    */
-  public registerRouteHandler(pattern: string, daemon: any, handler: (pathname: string, req: any, res: any) => Promise<void>): void {
-    this.routeManager.registerRoute(pattern, daemon, handler);
+  public registerRouteHandler(pattern: string, daemonName: string, handlerName: string): void {
+    this.routeManager.registerRoute(pattern, daemonName, handlerName);
   }
 
   private async handleHttpRequest(req: any, res: any): Promise<void> {
@@ -148,6 +151,11 @@ export class WebSocketDaemon extends BaseDaemon {
       
       if (message.type === 'execute_command') {
         this.routeCommandToProcessor(connectionId, message);
+      } else if (message.type === 'register_http_routes') {
+        // Handle route registration from daemons via WebSocket
+        const response = this.handleRouteRegistration(message);
+        // TODO: Send response back to daemon
+        this.log(`📨 Route registration: ${response.success ? 'success' : 'failed'}`);
       } else {
         this.log(`📨 Unknown WebSocket message type: ${message.type}`);
       }
@@ -175,10 +183,48 @@ export class WebSocketDaemon extends BaseDaemon {
       data: { registered: true }
     };
   }
+
+  private handleRouteRegistration(data: any): DaemonResponse {
+    const { daemon, routes } = data;
+    
+    try {
+      // Register each route with the daemon handler using new message-based format
+      for (const route of routes) {
+        this.routeManager.registerRoute(route.pattern, daemon, route.handler);
+      }
+      
+      this.log(`🔌 Registered ${routes.length} routes for daemon: ${daemon}`);
+      
+      return {
+        success: true,
+        data: { routes_registered: routes.length }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Route registration failed: ${errorMessage}`, 'error');
+      
+      return {
+        success: false,
+        error: errorMessage
+      };
+    }
+  }
+
+  private async sendMessageToDaemon(daemonName: string, message: any): Promise<any> {
+    // In a proper implementation, this would connect to the daemon via WebSocket
+    // For now, we'll use a simple direct call if the daemon is registered
+    const daemon = this.registeredDaemons.get(daemonName);
+    
+    if (daemon && daemon.handleMessage) {
+      return await daemon.handleMessage(message);
+    } else {
+      throw new Error(`Daemon ${daemonName} not found or doesn't support messaging`);
+    }
+  }
 }
 
-// Main execution
-if (require.main === module) {
+// Main execution (direct execution detection)
+if (process.argv[1] && process.argv[1].endsWith('WebSocketDaemon.ts')) {
   const daemon = new WebSocketDaemon();
   
   process.on('SIGINT', async () => {

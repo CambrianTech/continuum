@@ -44,6 +44,39 @@ export class RendererDaemon extends BaseDaemon {
     this.log('✅ Renderer Daemon started with modular architecture');
   }
 
+  public async registerRoutesWithWebSocket(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const WebSocket = require('ws');
+      const ws = new WebSocket('ws://localhost:9000');
+      
+      ws.on('open', () => {
+        // Register routes through WebSocket messages
+        const routeRegistrations = [
+          { pattern: '/', handler: 'render_ui' },
+          { pattern: '/src/ui/continuum.js', handler: 'render_api' },
+          { pattern: '/dist/api.js', handler: 'render_api' },
+          { pattern: '/node_modules/continuum/dist/api.js', handler: 'render_api' }
+        ];
+
+        const registrationMessage = {
+          type: 'register_http_routes',
+          daemon: 'renderer',
+          routes: routeRegistrations
+        };
+
+        ws.send(JSON.stringify(registrationMessage));
+        this.log('📨 Sent route registration to WebSocket daemon');
+        ws.close();
+        resolve();
+      });
+
+      ws.on('error', (error) => {
+        this.log(`❌ Failed to register routes with WebSocket: ${error}`, 'error');
+        reject(error);
+      });
+    });
+  }
+
   protected async onStop(): Promise<void> {
     this.log('🛑 Stopping Renderer Daemon...');
   }
@@ -53,6 +86,9 @@ export class RendererDaemon extends BaseDaemon {
       switch (message.type) {
         case 'render_request':
           return await this.handleRenderRequest(message.data as RenderRequest);
+        
+        case 'http_request':
+          return await this.handleHttpRequest(message.data);
         
         case 'get_capabilities':
           return {
@@ -112,65 +148,62 @@ export class RendererDaemon extends BaseDaemon {
     }
   }
 
+  private async handleHttpRequest(data: any): Promise<DaemonResponse> {
+    const { pathname, handler } = data;
+    
+    try {
+      switch (handler) {
+        case 'render_ui':
+          const version = await this.versionService.getCurrentVersion();
+          const html = await this.htmlEngine.renderMainUI({ version });
+          return {
+            success: true,
+            data: {
+              contentType: 'text/html',
+              content: html,
+              headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+            }
+          };
+
+        case 'render_api':
+          const apiVersion = await this.versionService.getCurrentVersion();
+          const compiledJS = await this.tsCompiler.compileContinuumAPI({ version: apiVersion });
+          return {
+            success: true,
+            data: {
+              contentType: 'application/javascript',
+              content: compiledJS,
+              headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+            }
+          };
+
+        default:
+          return {
+            success: false,
+            error: `Unknown handler: ${handler}`
+          };
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ HTTP request error for ${pathname}: ${errorMessage}`, 'error');
+      
+      return {
+        success: false,
+        error: errorMessage
+      };
+    }
+  }
+
   /**
-   * Register routes with WebSocketDaemon - clean interface
+   * DEPRECATED: Use WebSocket message-based registration instead
    */
-  public registerWithWebSocketDaemon(webSocketDaemon: any): void {
-    this.webSocketDaemon = webSocketDaemon;
-    
-    // Register clean route handlers
-    this.webSocketDaemon.registerRouteHandler('/', this, this.handleUIRoute.bind(this));
-    this.webSocketDaemon.registerRouteHandler('/dist/api.js', this, this.handleAPIRoute.bind(this));
-    this.webSocketDaemon.registerRouteHandler('/node_modules/continuum/dist/api.js', this, this.handleAPIRoute.bind(this));
-    
-    this.log('🔌 Registered clean routes with WebSocketDaemon');
-  }
-
-  private async handleUIRoute(_pathname: string, _req: any, res: any): Promise<void> {
-    try {
-      const version = await this.versionService.getCurrentVersion();
-      const html = await this.htmlEngine.renderMainUI({ version });
-      
-      res.writeHead(200, { 
-        'Content-Type': 'text/html',
-        'Cache-Control': 'no-cache, no-store, must-revalidate'
-      });
-      res.end(html);
-      
-      this.log(`✅ Served main UI (v${version})`);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ Failed to serve UI: ${errorMessage}`, 'error');
-      
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end('Error loading UI');
-    }
-  }
-
-  private async handleAPIRoute(_pathname: string, _req: any, res: any): Promise<void> {
-    try {
-      const version = await this.versionService.getCurrentVersion();
-      const compiledJS = await this.tsCompiler.compileContinuumAPI({ version });
-      
-      res.writeHead(200, {
-        'Content-Type': 'application/javascript',
-        'Cache-Control': 'no-cache, no-store, must-revalidate'
-      });
-      res.end(compiledJS);
-      
-      this.log(`✅ Served compiled API (${compiledJS.length} chars)`);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ API compilation failed: ${errorMessage}`, 'error');
-      
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end(`API compilation error: ${errorMessage}`);
-    }
+  public registerWithWebSocketDaemon(_webSocketDaemon: any): void {
+    this.log('⚠️  Direct registration deprecated - using WebSocket messages instead');
   }
 }
 
-// Main execution
-if (require.main === module) {
+// Main execution (direct execution detection)
+if (process.argv[1] && process.argv[1].endsWith('RendererDaemon.ts')) {
   const daemon = new RendererDaemon();
   
   process.on('SIGINT', async () => {
