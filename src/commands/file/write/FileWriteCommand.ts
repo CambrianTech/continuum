@@ -8,6 +8,7 @@
 import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
 import { BaseFileCommand } from '../base/BaseFileCommand';
 import * as fs from 'fs/promises';
+import * as path from 'path';
 
 export interface FileWriteParams {
   content: string | Buffer;
@@ -41,7 +42,7 @@ export class FileWriteCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: FileWriteParams, context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: FileWriteParams, _context?: CommandContext): Promise<CommandResult> {
     try {
       // 1. Get target directory from ContinuumDirectoryDaemon
       const targetPath = await this.getTargetPath(params);
@@ -54,7 +55,7 @@ export class FileWriteCommand extends BaseFileCommand {
       await fs.writeFile(targetPath, params.content, encoding ? { encoding } : undefined);
       
       // 4. Log the write operation
-      await this.logFileOperation(targetPath, params);
+      await this.logFileOperation(targetPath, 'write');
       
       return this.createSuccessResult(
         `File written successfully: ${params.filename}`,

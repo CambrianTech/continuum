@@ -6,8 +6,6 @@
  */
 
 import { BaseCommand, CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
-import { FileWriteCommand } from '../../file/write/FileWriteCommand';
-import { FileReadCommand } from '../../file/read/FileReadCommand';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 
@@ -33,7 +31,7 @@ export class ConnectCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any = {}, context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: any = {}, _context?: CommandContext): Promise<CommandResult> {
     try {
       // 1. Get .continuum directory configuration from ContinuumDirectoryDaemon
       const directoryConfig = await this.getContinuumDirectoryConfig();

@@ -1,20 +1,23 @@
 /**
  * Self-Validating Module Framework
  * 
- * Each module's configuration becomes its test contract.
- * Tests are auto-generated from the module's own continuum config.
+ * Each module validates itself using the object-oriented module hierarchy.
+ * Simple wrapper around the module's own validate() method.
  */
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { 
   ContinuumConfig, 
-  ContinuumCommandConfig, 
+  ContinuumCommandConfig,
   ContinuumDaemonConfig, 
   ContinuumWidgetConfig,
   ContinuumPackageUtils,
   PackageJson 
 } from '../../types/ContinuumPackage.js';
+import { BaseModule } from '../../types/BaseModule.js';
+import { ContinuumCommand } from '../../types/ContinuumCommand.js';
+import { ContinuumDaemon } from '../../types/ContinuumDaemon.js';
 
 export interface SelfValidationResult {
   modulePath: string;
@@ -54,7 +57,7 @@ export interface StructureTestResult {
 export class SelfValidatingModule {
   
   /**
-   * Validate a module against its own configuration contract
+   * Validate a module using its own validate() method
    */
   static async validateSelf(modulePath: string): Promise<SelfValidationResult> {
     const packageJsonPath = path.join(modulePath, 'package.json');
@@ -70,21 +73,14 @@ export class SelfValidatingModule {
       const moduleId = ContinuumPackageUtils.getModuleId(config);
       const configType = ContinuumPackageUtils.getModuleType(config);
       
-      // Generate and run tests based on the module's own config
-      const validationErrors: ConfigValidationError[] = [];
-      const capabilityTests = await this.validateCapabilities(modulePath, config);
-      const structureTests = await this.validateStructure(modulePath, config);
+      // Create appropriate module instance and call its validate() method
+      const moduleInstance = this.createModuleInstance(modulePath, config);
+      const validationResult = await moduleInstance.validate();
       
-      // Count test results
-      const testsGenerated = capabilityTests.length + structureTests.length;
-      const testsPassed = capabilityTests.filter(t => t.implemented).length + 
-                         structureTests.filter(t => t.met).length;
+      // Convert ValidationResult to SelfValidationResult
+      const testsGenerated = Object.keys(validationResult.checks).length;
+      const testsPassed = Object.values(validationResult.checks).filter(Boolean).length;
       const testsFailed = testsGenerated - testsPassed;
-      
-      // Determine compliance
-      const hasErrors = validationErrors.some(e => e.severity === 'error') || 
-                       capabilityTests.some(t => t.required && !t.implemented) ||
-                       structureTests.some(t => !t.met);
       
       return {
         modulePath,
@@ -93,10 +89,19 @@ export class SelfValidatingModule {
         testsGenerated,
         testsPassed,
         testsFailed,
-        isCompliant: !hasErrors,
-        validationErrors,
-        capabilityTests,
-        structureTests
+        isCompliant: validationResult.isValid,
+        validationErrors: validationResult.errors.map(error => ({
+          type: 'missing-file' as const,
+          severity: 'error' as const,
+          message: error,
+          expectedBy: 'validation'
+        })),
+        capabilityTests: [], // Legacy format - not needed with new approach
+        structureTests: Object.entries(validationResult.checks).map(([requirement, met]) => ({
+          requirement,
+          met,
+          details: met ? `✅ ${requirement}` : `❌ ${requirement}`
+        }))
       };
       
     } catch (error) {
@@ -119,11 +124,31 @@ export class SelfValidatingModule {
       };
     }
   }
+
+  /**
+   * Create the appropriate module instance based on configuration
+   */
+  private static createModuleInstance(modulePath: string, config: ContinuumConfig): BaseModule {
+    const moduleType = ContinuumPackageUtils.getModuleType(config);
+    
+    switch (moduleType) {
+      case 'command':
+        return new ContinuumCommand(modulePath);
+      case 'daemon':
+        return new ContinuumDaemon(modulePath);
+      case 'widget':
+        // TODO: Create ContinuumWidget class
+        return new BaseModule(modulePath);
+      default:
+        return new BaseModule(modulePath);
+    }
+  }
   
   /**
-   * Validate that the module implements its declared capabilities
+   * LEGACY METHOD - Replaced by object-oriented validation
+   * @deprecated Use module.validate() instead
    */
-  private static async validateCapabilities(
+  private static async _validateCapabilities(
     modulePath: string, 
     config: ContinuumConfig
   ): Promise<CapabilityTestResult[]> {
@@ -213,9 +238,10 @@ export class SelfValidatingModule {
   }
   
   /**
-   * Validate the module's structure based on its type
+   * LEGACY METHOD - Replaced by object-oriented validation
+   * @deprecated Use module.validate() instead
    */
-  private static async validateStructure(
+  private static async _validateStructure(
     modulePath: string, 
     config: ContinuumConfig
   ): Promise<StructureTestResult[]> {
@@ -233,7 +259,7 @@ export class SelfValidatingModule {
     switch (moduleType) {
       case 'command':
         const commandConfig = config as ContinuumCommandConfig;
-        const commandFile = `${commandConfig.command.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('')}Command.ts`;
+        const commandFile = `${commandConfig.command.split('-').map((word: string) => word.charAt(0).toUpperCase() + word.slice(1)).join('')}Command.ts`;
         results.push(await this.testFileExists(modulePath, commandFile, 'Command implementation'));
         results.push(await this.testMethodExists(modulePath, commandFile, 'static async execute', 'Execute method'));
         results.push(await this.testMethodExists(modulePath, commandFile, 'static getDefinition', 'Definition method'));
@@ -241,7 +267,7 @@ export class SelfValidatingModule {
         
       case 'daemon':
         const daemonConfig = config as ContinuumDaemonConfig;
-        const daemonFile = `${daemonConfig.daemon.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('')}Daemon.ts`;
+        const daemonFile = `${daemonConfig.daemon.split('-').map((word: string) => word.charAt(0).toUpperCase() + word.slice(1)).join('')}Daemon.ts`;
         results.push(await this.testFileExists(modulePath, daemonFile, 'Daemon implementation'));
         results.push(await this.testMethodExists(modulePath, daemonFile, 'async onStart', 'Start method'));
         results.push(await this.testMethodExists(modulePath, daemonFile, 'async onStop', 'Stop method'));
@@ -249,7 +275,7 @@ export class SelfValidatingModule {
         
       case 'widget':
         const widgetConfig = config as ContinuumWidgetConfig;
-        const widgetFile = `${widgetConfig.widget.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('')}Widget.ts`;
+        const widgetFile = `${widgetConfig.widget.split('-').map((word: string) => word.charAt(0).toUpperCase() + word.slice(1)).join('')}Widget.ts`;
         results.push(await this.testFileExists(modulePath, widgetFile, 'Widget implementation'));
         
         // Test UI assets if declared

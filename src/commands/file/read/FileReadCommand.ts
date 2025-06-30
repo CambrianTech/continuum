@@ -43,7 +43,7 @@ export class FileReadCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: FileReadParams, context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: FileReadParams, _context?: CommandContext): Promise<CommandResult> {
     try {
       // 1. Get file path using session management
       const filePath = await this.getTargetPath({

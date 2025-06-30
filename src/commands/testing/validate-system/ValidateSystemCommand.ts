@@ -22,7 +22,7 @@ export interface ValidateSystemParams {
 
 export class ValidateSystemCommand extends BaseCommand {
   
-  static async execute(params: ValidateSystemParams, context: CommandContext): Promise<CommandResult> {
+  static async execute(params: ValidateSystemParams, _context: CommandContext): Promise<CommandResult> {
     const srcPath = params.srcPath || './src';
     
     try {
@@ -66,6 +66,7 @@ export class ValidateSystemCommand extends BaseCommand {
         console.log('\n✅ System validation PASSED - All modules are compliant');
         return {
           success: true,
+          message: 'System validation PASSED - All modules are compliant',
           data: {
             totalModules,
             compliantModules,
@@ -83,6 +84,7 @@ export class ValidateSystemCommand extends BaseCommand {
         
         return {
           success: false,
+          message: `System validation failed: ${complianceRate}% compliance rate`,
           error: `System validation failed: ${complianceRate}% compliance rate`,
           data: {
             totalModules,
