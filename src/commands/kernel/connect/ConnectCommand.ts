@@ -180,7 +180,109 @@ export class ConnectCommand extends DirectCommand {
   }
 
   /**
-   * Get .continuum directory configuration from daemon
+   * Delegate session operations to SessionManagerDaemon
+   * Commands don't manage sessions directly - they delegate to specialized daemons
+   */
+  private static async delegateToSessionManager(operation: string, params: any): Promise<SessionInfo> {
+    // TODO: Implement actual daemon communication via WebSocket/message passing
+    // This demonstrates the proper delegation pattern:
+    
+    const daemonMessage = {
+      type: 'daemon_request',
+      target: 'session-manager',
+      operation,
+      params,
+      requestId: `connect_${Date.now()}`
+    };
+    
+    // In real implementation, this would:
+    // 1. Send message via WebSocket to SessionManagerDaemon
+    // 2. Wait for response with session info
+    // 3. Return strongly typed SessionInfo
+    
+    // Mock response for now
+    const mockSessionInfo: SessionInfo = {
+      sessionId: `${params.sessionType || 'collaborative'}-${Date.now()}`,
+      sessionType: params.sessionType || SessionType.COLLABORATIVE,
+      windowStrategy: params.windowStrategy || WindowStrategy.NEW_WINDOW,
+      collaborationMode: params.collaborationMode || CollaborationMode.SHARED_VIEW,
+      participants: [{
+        id: `participant_${Date.now()}`,
+        type: params.participantType || ParticipantType.CLI_USER,
+        joinedAt: Date.now(),
+        capabilities: ['screenshot', 'navigate', 'inspect']
+      }],
+      windowInfo: {
+        windowId: '',
+        tabId: '',
+        url: '',
+        title: '',
+        devToolsAccess: false
+      },
+      artifactLocation: `.continuum/sessions/${params.sessionType || 'collaborative'}-${Date.now()}/artifacts/`
+    };
+    
+    return mockSessionInfo;
+  }
+
+  /**
+   * Delegate window operations to WindowManagerDaemon  
+   * Commands don't manage windows directly - they delegate to specialized daemons
+   */
+  private static async delegateToWindowManager(operation: string, params: any): Promise<WindowInfo> {
+    // TODO: Implement actual daemon communication via WebSocket/message passing
+    
+    const daemonMessage = {
+      type: 'daemon_request',
+      target: 'window-manager', 
+      operation,
+      params,
+      requestId: `connect_window_${Date.now()}`
+    };
+    
+    // In real implementation, this would:
+    // 1. Send message via WebSocket to WindowManagerDaemon  
+    // 2. WindowManagerDaemon coordinates with BrowserManagerDaemon
+    // 3. Returns window/tab information for collaborative sessions
+    
+    // Mock response for now
+    const mockWindowInfo: WindowInfo = {
+      windowId: `window_${Date.now()}`,
+      tabId: `tab_${Date.now()}`,
+      url: `localhost:9000?session=${params.sessionId}`,
+      title: `Collaborative Session - ${params.sessionId.split('-').pop()}`,
+      devToolsAccess: params.devtools || false
+    };
+    
+    return mockWindowInfo;
+  }
+
+  /**
+   * Delegate filesystem operations to ContinuumFileSystemDaemon
+   * Commands don't touch filesystem directly - they use kernel services
+   */
+  private static async delegateToContinuumFileSystem(operation: string, params: any): Promise<any> {
+    // TODO: Implement actual daemon communication
+    
+    const daemonMessage = {
+      type: 'daemon_request',
+      target: 'continuum-filesystem',
+      operation,
+      params,
+      requestId: `connect_fs_${Date.now()}`
+    };
+    
+    // In real implementation:
+    // 1. ContinuumFileSystemDaemon manages .continuum directory structure
+    // 2. Creates session-appropriate artifact directories  
+    // 3. Handles file operations with proper permissions and organization
+    
+    return { success: true, path: params.artifactLocation };
+  }
+
+  /**
+   * Legacy method - replaced by daemon delegation
+   * @deprecated Use delegateToContinuumFileSystem instead
    */
   private static async getContinuumDirectoryConfig(): Promise<{
     rootPath: string;
