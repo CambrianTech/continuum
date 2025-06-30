@@ -1,14 +1,32 @@
 {
-  "name": "@continuum/listagents-command",
+  "name": "listagents-core",
   "version": "1.0.0",
-  "description": "Agent discovery and status command for continuum",
-  "main": "index.server.js",
+  "description": "listagents core for Continuum",
+  "main": "ListagentsCore.ts",
   "type": "module",
-  "exports": {
-    ".": "./index.server.js",
-    "./server": "./index.server.js"
+  "continuum": {
+    "core": "listagents",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
-  "keywords": ["continuum", "agents", "list", "discovery", "command"],
-  "author": "Continuum Team",
-  "license": "MIT"
+  "keywords": [
+    "listagents",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

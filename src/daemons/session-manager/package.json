@@ -1,29 +1,32 @@
 {
-  "name": "session-manager-daemon",
+  "name": "session-manager-core",
   "version": "1.0.0",
-  "description": "Session isolation and artifact management daemon",
-  "main": "SessionManagerDaemon.ts",
+  "description": "session-manager core for Continuum",
+  "main": "SessionManagerCore.ts",
   "type": "module",
   "continuum": {
-    "daemon": "session-manager",
+    "core": "session_manager",
     "category": "Core",
     "capabilities": [
-      "session-management",
-      "artifact-coordination", 
-      "session-isolation",
-      "connection-identity"
+      "auto-generated"
     ],
-    "dependencies": [
-      "kernel-session-command",
-      "kernel-daemon-command",
-      "continuum-directory-daemon",
-      "file-write-command",
-      "file-read-command"
-    ],
-    "interfaces": ["daemon-protocol", "session-management"],
-    "permissions": ["session-management", "file-system", "daemon-communication"]
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
-  "keywords": ["session", "daemon", "artifacts", "isolation", "continuum"],
-  "author": "Continuum AI Platform", 
-  "license": "MIT"
+  "keywords": [
+    "session-manager",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

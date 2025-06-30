@@ -1,29 +1,32 @@
 {
-  "name": "browser-manager-daemon",
+  "name": "browser-manager-core",
   "version": "1.0.0",
-  "description": "Smart browser orchestration and connection management",
-  "main": "BrowserManagerDaemon.ts",
+  "description": "browser-manager core for Continuum",
+  "main": "BrowserManagerCore.ts",
   "type": "module",
-  "keywords": ["browser", "daemon", "connection", "jtag"],
   "continuum": {
-    "daemon": "browser-manager",
+    "core": "browser_manager",
     "category": "Core",
     "capabilities": [
-      "browser-orchestration",
-      "tab-management",
-      "devtools-integration",
-      "session-coordination"
+      "auto-generated"
     ],
-    "startupOrder": 100,
-    "healthCheck": {
-      "enabled": true,
-      "intervalMs": 30000,
-      "timeoutMs": 5000
-    },
-    "dependencies": [
-      "session-manager"
-    ],
-    "interfaces": ["daemon-protocol", "browser-management"],
-    "permissions": ["browser-control", "process-management", "session-management"]
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "browser-manager",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

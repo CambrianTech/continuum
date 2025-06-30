@@ -1,0 +1,32 @@
+{
+  "name": "validate-all-core",
+  "version": "1.0.0",
+  "description": "validate-all core for Continuum",
+  "main": "ValidateAllCore.ts",
+  "type": "module",
+  "continuum": {
+    "core": "validate_all",
+    "category": "Core",
+    "capabilities": [
+      "testing"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "validate-all",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

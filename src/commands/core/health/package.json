@@ -1,15 +1,32 @@
 {
-  "name": "@continuum/health-command",
+  "name": "health-core",
   "version": "1.0.0",
-  "description": "Universal health reporting system for server and client components",
-  "main": "HealthCommand.ts",
+  "description": "health core for Continuum",
+  "main": "HealthCore.ts",
   "type": "module",
   "continuum": {
-    "command": "health",
-    "category": "Monitoring",
-    "capabilities": ["health-monitoring", "system-health", "daemon-communication"],
-    "dependencies": ["base-command"],
-    "interfaces": ["command-bus", "daemon-protocol"],
-    "permissions": ["system", "daemon-communication"]
+    "core": "health",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "health",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

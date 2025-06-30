@@ -1,38 +1,100 @@
-# Cursor Command
+# Cursor
 
-## Definition
-- **Name**: cursor
-- **Description**: Handle cursor positioning and graphics rendering
-- **Category**: Core
-- **Icon**: 🎯
-- **Status**: 🔴 BROKEN (2025-06-18) - BaseCommand error: "execute must be implemented by subclass"
-- **Parameters**: `[x] [y] [action] [duration]`
+cursor module for Continuum
 
-## Overview
-The Cursor command manages cursor positioning, graphics rendering, and visual feedback for user interactions.
+## 🚀 Usage
 
-## Dependencies
-```mermaid
-graph TD
-    A[CursorCommand] --> B[BaseCommand]
-    A --> C[GraphicsRenderer]
-    A --> D[BrowserJSCommand]
-    A --> E[MoveCommand]
+### Command Interface
+```bash
+# Basic usage
+continuum cursor
+
+# With options (customize based on your module)
+continuum cursor --help
+continuum cursor --verbose
 ```
 
-## Learning Notes (for next AI agent)
-**🔍 Investigation Results (2025-06-18)**:
-- Command exists but inherits from BaseCommand without implementing execute()
-- Server response: `"execute must be implemented by subclass"`
-- **Root Cause**: Missing execute method in CursorCommand.cjs
-- **Next Steps**: Implement execute method or identify correct base class
-- **Related Issues**: Same pattern seen in `info`, `input`, `type` commands
+### Programmatic Usage
+```typescript
+import { CursorCommand } from './CursorCommand.js';
 
-**💡 Quick Fix**: Add execute method to CursorCommand.cjs or find correct parent class
+// Execute the command
+const result = await CursorCommand.execute({
+  // Add your parameters here
+});
 
-## TODO:
-- TODO: Implement cursor positioning logic
-- TODO: Add graphics rendering integration
-- TODO: Test browser interaction feedback
-- TODO: Write comprehensive unit tests
-- TODO: Document cursor animation system
+console.log(result);
+```
+
+## ⚙️ Configuration
+
+```json
+{
+  "commandName": "cursor",
+  "category": "continuon control",
+  "capabilities": [
+    "cursor-control",
+    "visual-feedback",
+    "continuon"
+  ],
+  "dependencies": [
+    "websocket"
+  ],
+  "hasTests": true,
+  "testDir": "test"
+}
+```
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+npm test
+
+# Run specific test types
+npm run test:unit
+npm run test:integration
+
+# Validate module compliance
+npm run validate
+```
+
+## 🏗️ Development
+
+This module follows the Continuum modular architecture:
+
+- **Self-validating**: Module validates its own compliance
+- **Middle-out**: Tests from core outward 
+- **Object-oriented**: Inherits from base classes
+- **Migration-ready**: Can upgrade structure automatically
+
+### Module Structure
+```
+cursor/
+├── CursorCommand.ts     # Main implementation
+├── test/
+│   ├── unit/             # Unit tests
+│   └── integration/      # Integration tests
+├── package.json          # Module configuration
+└── README.md            # This file
+```
+
+## 📋 Implementation Notes
+
+**TODO**: Customize this section with:
+- Specific usage examples
+- Configuration options
+- API documentation
+- Performance considerations
+- Known limitations
+
+## 🔧 Bootstrap Information
+
+This file was auto-generated during module migration. The module now has:
+
+- ✅ Complete package.json with continuum configuration
+- ✅ Test directories (unit/integration)
+- ✅ TypeScript ES module setup
+- ✅ Compliance validation
+
+**Next Steps**: Implement your module logic and update this documentation!

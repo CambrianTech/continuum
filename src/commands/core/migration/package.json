@@ -1,18 +1,32 @@
 {
-  "name": "@continuum/migration-command",
+  "name": "migration-core",
   "version": "1.0.0",
-  "description": "System migration command for gradual legacy to modern architecture transition",
-  "main": "MigrationCommand.cjs",
-  "type": "commonjs",
-  "keywords": ["migration", "architecture", "typescript", "system"],
-  "capabilities": [
-    "system-migration",
-    "traffic-routing",
-    "gradual-cutover",
-    "rollback-protection"
+  "description": "migration core for Continuum",
+  "main": "MigrationCore.ts",
+  "type": "module",
+  "continuum": {
+    "core": "migration",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "migration",
+    "core",
+    "continuum"
   ],
-  "dependencies": {},
+  "author": "Continuum AI Platform",
+  "license": "MIT",
   "scripts": {
-    "test": "echo 'Migration command tests not yet implemented'"
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

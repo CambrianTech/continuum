@@ -1,33 +1,32 @@
 {
-  "name": "saved-personas-widget",
+  "name": "SavedPersonas-core",
   "version": "1.0.0",
-  "description": "SavedPersonas Widget Module",
+  "description": "SavedPersonas core for Continuum",
+  "main": "SavedPersonasCore.ts",
   "type": "module",
-  "main": "index.js",
-  "exports": {
-    ".": "./index.js",
-    "./component": "./SavedPersonas.js"
-  },
-  "files": [
-    "SavedPersonas.js",
-    "index.js"
-  ],
-  "keywords": ["widget", "personas", "ui", "continuum"],
-  "scripts": {
-    "test": "node --test test/*.test.js"
-  },
   "continuum": {
-    "widget": "saved-personas",
-    "category": "UI",
-    "capabilities": ["widget-discovery", "ui-rendering"],
+    "core": "SavedPersonas",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
     "dependencies": [],
-    "interfaces": ["widget-system", "ui-rendering"],
-    "permissions": ["read"],
-    "ui": {
-      "template": "SavedPersonas.html",
-      "styles": ["SavedPersonas.css"],
-      "scripts": ["SavedPersonas.js"],
-      "dependencies": []
-    }
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "SavedPersonas",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

@@ -1,14 +1,32 @@
 {
-  "name": "@continuum/loadrooms-command",
+  "name": "loadrooms-core",
   "version": "1.0.0",
-  "description": "Room state management command for continuum",
-  "main": "index.server.js",
+  "description": "loadrooms core for Continuum",
+  "main": "LoadroomsCore.ts",
   "type": "module",
-  "exports": {
-    ".": "./index.server.js",
-    "./server": "./index.server.js"
+  "continuum": {
+    "core": "loadrooms",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
-  "keywords": ["continuum", "rooms", "state", "unread", "command"],
-  "author": "Continuum Team",
-  "license": "MIT"
+  "keywords": [
+    "loadrooms",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

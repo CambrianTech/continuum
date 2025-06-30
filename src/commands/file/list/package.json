@@ -1,18 +1,32 @@
 {
-  "name": "file-list-command",
+  "name": "list-core",
   "version": "1.0.0",
-  "description": "List directory contents with session awareness - equivalent to ls",
-  "main": "FileListCommand.ts",
+  "description": "list core for Continuum",
+  "main": "ListCore.ts",
   "type": "module",
   "continuum": {
-    "command": "file_list",
-    "category": "File",
-    "capabilities": ["directory-listing", "session-aware"],
-    "dependencies": ["base-file-command"],
-    "interfaces": ["command-bus", "file-system"],
-    "permissions": ["read", "list"]
+    "core": "list",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
-  "keywords": ["file", "list", "ls", "directory", "continuum"],
+  "keywords": [
+    "list",
+    "core",
+    "continuum"
+  ],
   "author": "Continuum AI Platform",
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

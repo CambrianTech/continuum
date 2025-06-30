@@ -1,21 +1,36 @@
 {
-  "name": "saveFile",
+  "name": "savefile-core",
   "version": "1.0.0",
-  "description": "Continuum SaveFile Command Module",
+  "description": "savefile core for Continuum",
+  "main": "SavefileCore.ts",
   "type": "module",
-  "main": "index.server.js",
-  "exports": {
-    ".": {
-      "node": "./index.server.js",
-      "default": "./index.server.js"
-    }
-  },
   "continuum": {
-    "command": "savefile",
-    "category": "File",
-    "capabilities": ["file-writing", "artifact-management"],
-    "dependencies": ["base-command"],
-    "interfaces": ["command-bus", "file-system"],
-    "permissions": ["write", "create-files"]
+    "core": "savefile",
+    "category": "Core",
+    "capabilities": [
+      "file-reading",
+      "file-writing"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": [
+      "read",
+      "write"
+    ]
+  },
+  "keywords": [
+    "savefile",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

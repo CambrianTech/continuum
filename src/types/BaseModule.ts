@@ -389,31 +389,95 @@ export class BaseModule {
     return { isValid, errors, warnings, checks };
   }
 
+
   /**
-   * Base migration - handle common migration tasks
-   * Subclasses call super.migrate() first, then do module-specific migration
+   * Smart migration - delegates to ModuleMigration class
    */
-  async migrate(migrationStruct?: BaseMigrationStruct): Promise<MigrationResult> {
-    const result: MigrationResult = {
-      migrated: false,
-      changes: [],
-      errors: [],
-      versionFrom: migrationStruct?.versionFrom || this.getCurrentVersion(),
-      versionTo: migrationStruct?.versionTo || this.getTargetVersion(),
-      migrationSteps: []
-    };
+  async migrate(): Promise<MigrationResult> {
+    const { ModuleMigration } = await import('./ModuleMigration.js');
+    const migration = new ModuleMigration(this.modulePath, this.packageJson);
+    return await migration.migrate();
+  }
 
-    try {
-      // Run base migration steps using protected methods
-      await this.migrateStandardDirectories(result);
-      await this.migratePackageJsonStructure(result);
-      await this.migrateBasicConfiguration(result);
+  /**
+   * Static method for system-wide mass migration - delegates to SystemMigration
+   */
+  static async migrateAllModules(rootPath: string = './src'): Promise<MigrationResult[]> {
+    const { SystemMigration } = await import('./SystemMigration.js');
+    return await SystemMigration.migrateAllModules(rootPath);
+  }
 
-    } catch (error) {
-      result.errors.push(`Base migration failed: ${error instanceof Error ? error.message : String(error)}`);
+  /**
+   * Static method for category migration - delegates to SystemMigration
+   */
+  static async migrateByCategory(category: 'commands' | 'daemons' | 'ui', rootPath: string = './src'): Promise<MigrationResult[]> {
+    const { SystemMigration } = await import('./SystemMigration.js');
+    return await SystemMigration.migrateByCategory(category, rootPath);
+  }
+
+  protected async fixDirectories(result: MigrationResult): Promise<void> {
+    const dirs = ['test', 'test/unit', 'test/integration'];
+    
+    for (const dir of dirs) {
+      if (!await this.checkDirectoryExists(dir)) {
+        await fs.mkdir(path.join(this.modulePath, dir), { recursive: true });
+        result.changes.push(`Created ${dir} directory`);
+        result.migrated = true;
+      }
+    }
+  }
+
+  protected async fixFiles(result: MigrationResult): Promise<void> {
+    // Fix README.md
+    if (!await this.checkFileExists('README.md')) {
+      await this.generateReadme();
+      result.changes.push('Generated README.md');
+      result.migrated = true;
+    }
+  }
+
+  protected async fixPackageJson(result: MigrationResult): Promise<void> {
+    if (!this.packageJson) return;
+
+    let updated = false;
+
+    // Add test scripts if missing
+    if (!this.packageJson.scripts?.test) {
+      if (!this.packageJson.scripts) this.packageJson.scripts = {};
+      this.packageJson.scripts.test = 'node --test test/';
+      this.packageJson.scripts['test:unit'] = 'node --test test/unit/';
+      this.packageJson.scripts['test:integration'] = 'node --test test/integration/';
+      updated = true;
     }
 
-    return result;
+    if (updated) {
+      await this.savePackageJson();
+      result.changes.push('Added test scripts to package.json');
+      result.migrated = true;
+    }
+  }
+
+  /**
+   * Generate missing files (README.md, etc.)
+   */
+  protected async generateMissingFiles(result: MigrationResult): Promise<void> {
+    const step = this.createMigrationStep('generate-files', 'Generate missing files');
+    
+    try {
+      // Generate README.md if missing
+      if (!await this.checkFileExists('README.md')) {
+        await this.generateReadme();
+        result.changes.push('Generated README.md');
+        result.migrated = true;
+      }
+
+      step.completed = true;
+    } catch (error) {
+      step.error = error instanceof Error ? error.message : String(error);
+      result.errors.push(`File generation failed: ${step.error}`);
+    }
+    
+    if (result.migrationSteps) result.migrationSteps.push(step);
   }
 
   /**
@@ -517,6 +581,105 @@ export class BaseModule {
     if (this.packageJson) {
       const packagePath = path.join(this.modulePath, 'package.json');
       await fs.writeFile(packagePath, JSON.stringify(this.packageJson, null, 2));
+    }
+  }
+
+  /**
+   * Generate missing module structure without overwriting existing files
+   */
+  async generateStructure(): Promise<MigrationResult> {
+    const result: MigrationResult = {
+      migrated: false,
+      changes: [],
+      errors: [],
+      versionFrom: this.getCurrentVersion(),
+      versionTo: this.getTargetVersion(),
+      migrationSteps: []
+    };
+
+    try {
+      // Generate README.md if missing
+      if (!await this.checkFileExists('README.md')) {
+        await this.generateReadme();
+        result.changes.push('Generated README.md');
+        result.migrated = true;
+      }
+
+      // Generate test directories if missing
+      await this.generateTestStructure(result);
+
+      // Generate package.json improvements if needed
+      await this.generatePackageJsonImprovements(result);
+
+    } catch (error) {
+      result.errors.push(`Structure generation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    return result;
+  }
+
+  protected async generateReadme(): Promise<void> {
+    const moduleId = this.getModuleId();
+    const description = this.packageJson?.description || `${moduleId} module`;
+    
+    const template = `# ${moduleId.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
+
+${description}
+
+## Usage
+\`\`\`bash
+# Add usage examples here
+\`\`\`
+
+## Configuration
+\`\`\`json
+${this.packageJson?.continuum ? JSON.stringify(this.packageJson.continuum, null, 2) : '// Add continuum configuration'}
+\`\`\`
+
+## Testing
+\`\`\`bash
+npm test
+\`\`\`
+
+## Auto-generated file - customize as needed
+`;
+
+    await fs.writeFile(path.join(this.modulePath, 'README.md'), template);
+  }
+
+  protected async generateTestStructure(result: MigrationResult): Promise<void> {
+    const testDirs = ['test', 'test/unit', 'test/integration'];
+    
+    for (const dir of testDirs) {
+      if (!await this.checkDirectoryExists(dir)) {
+        await fs.mkdir(path.join(this.modulePath, dir), { recursive: true });
+        result.changes.push(`Created ${dir} directory`);
+        result.migrated = true;
+      }
+    }
+  }
+
+  protected async generatePackageJsonImprovements(result: MigrationResult): Promise<void> {
+    if (!this.packageJson) return;
+
+    let updated = false;
+
+    // Add test scripts if missing
+    if (!this.packageJson.scripts) {
+      this.packageJson.scripts = {};
+    }
+
+    if (!this.packageJson.scripts.test) {
+      this.packageJson.scripts.test = 'node --test test/';
+      this.packageJson.scripts['test:unit'] = 'node --test test/unit/';
+      this.packageJson.scripts['test:integration'] = 'node --test test/integration/';
+      updated = true;
+    }
+
+    if (updated) {
+      await this.savePackageJson();
+      result.changes.push('Added test scripts to package.json');
+      result.migrated = true;
     }
   }
 

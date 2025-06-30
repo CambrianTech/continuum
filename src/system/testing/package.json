@@ -1,29 +1,32 @@
 {
-  "name": "continuum-system-testing",
+  "name": "testing-core",
   "version": "1.0.0",
-  "description": "Universal testing system for all Continuum layers and modules",
-  "main": "test/universal-layer-runner.js",
+  "description": "testing core for Continuum",
+  "main": "TestingCore.ts",
   "type": "module",
   "continuum": {
-    "module": "system-testing",
+    "core": "testing",
     "category": "Core",
     "capabilities": [
-      "universal-testing",
-      "layer-validation", 
-      "modular-compliance",
-      "integration-testing",
-      "system-health"
+      "testing"
     ],
     "dependencies": [],
-    "interfaces": ["testing-framework", "module-discovery"],
-    "permissions": ["read", "execute", "network-test"]
+    "interfaces": [],
+    "permissions": []
   },
-  "scripts": {
-    "test": "tsx test/universal-layer-runner.ts",
-    "test:layer": "tsx test/universal-layer-runner.ts --layer=",
-    "test:widgets": "tsx ../ui/components/test/widget-runner.ts"
-  },
-  "keywords": ["continuum", "testing", "layers", "validation", "integration"],
+  "keywords": [
+    "testing",
+    "core",
+    "continuum"
+  ],
   "author": "Continuum AI Platform",
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

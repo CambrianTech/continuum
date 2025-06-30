@@ -99,6 +99,7 @@ export class ValidateSystemCommand extends BaseCommand {
     } catch (error) {
       return {
         success: false,
+        message: `System validation failed: ${error instanceof Error ? error.message : String(error)}`,
         error: `System validation failed: ${error instanceof Error ? error.message : String(error)}`
       };
     }
@@ -128,7 +129,7 @@ export class ValidateSystemCommand extends BaseCommand {
    */
   private static async generateValidationReports(
     srcPath: string, 
-    complianceResults: any[], 
+    _complianceResults: any[], 
     selfValidationResults: any[]
   ) {
     const reportsDir = path.join(srcPath, '..', 'reports');

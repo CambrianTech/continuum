@@ -1,26 +1,32 @@
 {
-  "name": "@continuum/renderer-daemon",
+  "name": "renderer-core",
   "version": "1.0.0",
-  "description": "Renderer daemon that can switch between legacy and modern UI systems",
-  "main": "index.server.js",
+  "description": "renderer core for Continuum",
+  "main": "RendererCore.ts",
   "type": "module",
-  "scripts": {
-    "test": "jest",
-    "dev": "tsx watch RendererDaemon.ts",
-    "build": "tsc"
-  },
   "continuum": {
-    "daemon": "renderer",
-    "category": "Core", 
-    "capabilities": ["ui-rendering", "template-management", "hot-reloading"],
+    "core": "renderer",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
     "dependencies": [],
-    "interfaces": ["daemon-protocol", "ui-rendering", "template-engine"],
-    "permissions": ["read", "http-server"],
-    "startupOrder": 200,
-    "healthCheck": {
-      "enabled": true,
-      "intervalMs": 30000,
-      "timeoutMs": 5000
-    }
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "renderer",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
