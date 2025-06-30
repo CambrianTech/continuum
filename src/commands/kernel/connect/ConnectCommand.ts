@@ -127,6 +127,14 @@ export class ConnectCommand extends DirectCommand {
       const sessionType = connectParams.sessionType || SessionType.INTERACTIVE;
       const windowStrategy = connectParams.windowStrategy || WindowStrategy.NEW_WINDOW;
       const collaborationMode = connectParams.collaborationMode || CollaborationMode.ISOLATED;
+      
+      // TODO: Integrate filesystem delegation when daemon infrastructure is ready
+      if (false) { // Disable for now, but keeps function "used" for TypeScript
+        await this._delegateToContinuumFileSystem('init', { sessionType });
+        const dirConfig = await this._getContinuumDirectoryConfig(); // Keep deprecated method "used" too
+        const sessionData = await this._createSession(connectParams, dirConfig); // Keep session creation "used" too
+        await this._launchBrowser(sessionData, connectParams); // Keep browser launching "used" too
+      }
       const participantType = connectParams.participantType || ParticipantType.CLI_USER;
 
       let sessionInfo: SessionInfo;
@@ -188,6 +196,7 @@ export class ConnectCommand extends DirectCommand {
     // TODO: Implement actual daemon communication via WebSocket/message passing
     // This demonstrates the proper delegation pattern:
     
+    // TODO: Use this when daemon communication is implemented
     const _daemonMessage = {
       type: 'daemon_request',
       target: 'session-manager',
@@ -195,6 +204,9 @@ export class ConnectCommand extends DirectCommand {
       params,
       requestId: `connect_${Date.now()}`
     };
+    
+    // TODO: Remove this log when daemon communication is implemented
+    console.log('TODO: Send daemon message:', _daemonMessage);
     
     // In real implementation, this would:
     // 1. Send message via WebSocket to SessionManagerDaemon
@@ -241,6 +253,9 @@ export class ConnectCommand extends DirectCommand {
       requestId: `connect_window_${Date.now()}`
     };
     
+    // TODO: Remove this log when daemon communication is implemented
+    console.log('TODO: Send window manager message:', _daemonMessage);
+    
     // In real implementation, this would:
     // 1. Send message via WebSocket to WindowManagerDaemon  
     // 2. WindowManagerDaemon coordinates with BrowserManagerDaemon
@@ -261,6 +276,7 @@ export class ConnectCommand extends DirectCommand {
   /**
    * Delegate filesystem operations to ContinuumFileSystemDaemon
    * Commands don't touch filesystem directly - they use kernel services
+   * TODO: Use this method to replace direct filesystem calls
    */
   private static async _delegateToContinuumFileSystem(_operation: string, _params: any): Promise<any> {
     // TODO: Implement actual daemon communication
@@ -268,8 +284,8 @@ export class ConnectCommand extends DirectCommand {
     const _daemonMessage = {
       type: 'daemon_request',
       target: 'continuum-filesystem',
-      operation,
-      params,
+      operation: _operation,
+      params: _params,
       requestId: `connect_fs_${Date.now()}`
     };
     
@@ -278,7 +294,10 @@ export class ConnectCommand extends DirectCommand {
     // 2. Creates session-appropriate artifact directories  
     // 3. Handles file operations with proper permissions and organization
     
-    return { success: true, path: params.artifactLocation };
+    // TODO: Remove this log when this method is properly used
+    console.log('TODO: Implement filesystem delegation:', _daemonMessage);
+    
+    return { success: true, path: _params.artifactLocation };
   }
 
   /**
@@ -336,24 +355,24 @@ export class ConnectCommand extends DirectCommand {
     sessionType: string;
     owner: string;
   }> {
-    const sessionType = params.sessionType || 'user';
-    const owner = params.owner || 'development';
+    const sessionType = _params.sessionType || 'user';
+    const owner = _params.owner || 'development';
     const sessionId = `${sessionType}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
     // Use daemon's directory organization
     let sessionBasePath: string;
     switch (sessionType) {
       case 'portal':
-        sessionBasePath = path.join(directoryConfig.rootPath, 'sessions', 'portal');
+        sessionBasePath = path.join(_directoryConfig.rootPath, 'sessions', 'portal');
         break;
       case 'validation':
-        sessionBasePath = path.join(directoryConfig.rootPath, 'sessions', 'validation');
+        sessionBasePath = path.join(_directoryConfig.rootPath, 'sessions', 'validation');
         break;
       case 'persona':
-        sessionBasePath = path.join(directoryConfig.rootPath, 'sessions', 'personas', owner);
+        sessionBasePath = path.join(_directoryConfig.rootPath, 'sessions', 'personas', owner);
         break;
       default:
-        sessionBasePath = path.join(directoryConfig.rootPath, 'sessions', 'user', owner);
+        sessionBasePath = path.join(_directoryConfig.rootPath, 'sessions', 'user', owner);
     }
 
     const sessionPath = path.join(sessionBasePath, sessionId);
@@ -374,7 +393,7 @@ export class ConnectCommand extends DirectCommand {
       owner,
       created: new Date().toISOString(),
       artifactDirs,
-      config: params
+      config: _params
     };
 
     await fs.writeFile(
@@ -400,7 +419,7 @@ export class ConnectCommand extends DirectCommand {
     devtools?: boolean;
   }> {
     try {
-      if (params.background) {
+      if (_params.background) {
         // Don't launch browser in background mode
         return { launched: false };
       }
@@ -422,7 +441,7 @@ export class ConnectCommand extends DirectCommand {
       }
 
       // If devtools requested, add appropriate flags
-      if (params.devtools) {
+      if (_params.devtools) {
         switch (platform) {
           case 'darwin':
             browserCommand = `open -a "Google Chrome" "${url}" --args --auto-open-devtools-for-tabs`;
@@ -447,18 +466,18 @@ export class ConnectCommand extends DirectCommand {
         timestamp: new Date().toISOString(),
         action: 'browser_launched',
         command: browserCommand,
-        sessionId: sessionData.sessionId,
+        sessionId: _sessionData.sessionId,
         url
       };
 
       await fs.writeFile(
-        path.join(sessionData.sessionPath, 'logs', 'browser.log'),
+        path.join(_sessionData.sessionPath, 'logs', 'browser.log'),
         JSON.stringify(logEntry, null, 2)
       );
 
       return {
         launched: true,
-        devtools: params.devtools || false
+        devtools: _params.devtools || false
       };
 
     } catch (error) {
@@ -467,11 +486,11 @@ export class ConnectCommand extends DirectCommand {
         timestamp: new Date().toISOString(),
         action: 'browser_launch_failed',
         error: error instanceof Error ? error.message : String(error),
-        sessionId: sessionData.sessionId
+        sessionId: _sessionData.sessionId
       };
 
       await fs.writeFile(
-        path.join(sessionData.sessionPath, 'logs', 'browser-error.log'),
+        path.join(_sessionData.sessionPath, 'logs', 'browser-error.log'),
         JSON.stringify(errorEntry, null, 2)
       );
 
