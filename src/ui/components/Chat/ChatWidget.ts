@@ -4,6 +4,8 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget.js';
+import baseCSS from '../shared/BaseWidget.css';
+import chatCSS from './ChatWidget.css';
 
 interface Message {
   id: string;
@@ -38,7 +40,11 @@ export class ChatWidget extends BaseWidget {
     this.widgetName = 'ChatWidget';
     this.widgetIcon = '💬';
     this.widgetTitle = 'Chat';
-    this.cssPath = '/src/ui/components/Chat/ChatWidget.css';
+    // CSS is now bundled, no external path needed
+  }
+
+  getBundledCSS(): string {
+    return baseCSS + '\n' + chatCSS;
   }
 
   protected async initializeWidget(): Promise<void> {

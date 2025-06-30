@@ -67,32 +67,18 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   /**
-   * Load CSS for the widget with caching and error handling
+   * Load CSS for the widget - now uses bundled CSS
    */
   async loadCSS(): Promise<string> {
-    const baseCSS = await this.loadBaseCSS();
-    
-    if (this.cachedCSS) {
-      return baseCSS + '\n' + this.cachedCSS;
-    }
+    // CSS is now bundled with the widget - return bundled styles
+    return this.getBundledCSS();
+  }
 
-    if (!this.cssPath) {
-      console.warn(`🎛️ ${this.widgetName}: No CSS path specified`);
-      return baseCSS;
-    }
-
-    try {
-      const response = await fetch(this.cssPath);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      this.cachedCSS = await response.text();
-      return baseCSS + '\n' + this.cachedCSS;
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`🎛️ ${this.widgetName}: Failed to load CSS from ${this.cssPath}:`, error);
-      return baseCSS + `\n/* CSS loading failed: ${errorMessage} */`;
-    }
+  /**
+   * Get bundled CSS - override in child classes to provide their CSS
+   */
+  getBundledCSS(): string {
+    return this.getDefaultBaseCSS();
   }
 
   /**
