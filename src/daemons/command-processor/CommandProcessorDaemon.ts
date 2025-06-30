@@ -552,8 +552,8 @@ export class CommandProcessorDaemon extends BaseDaemon {
   }
 }
 
-// Main execution when run directly (ES module compatible)
-if (require.main === module) {
+// Main execution when run directly (direct execution detection)
+if (process.argv[1] && process.argv[1].endsWith('CommandProcessorDaemon.ts')) {
   const daemon = new CommandProcessorDaemon();
   daemon.start().catch(error => {
     console.error('❌ Failed to start Command Processor Daemon:', error);

@@ -57,11 +57,54 @@ class SimpleDaemonStarter {
       await this.startDaemon(daemon);
     }
     
+    // Wait for WebSocket daemon to be ready, then setup inter-daemon communication
+    await this.setupInterDaemonCommunication();
+    
     console.log('');
     console.log('✅ All daemons started successfully');
     console.log('🌐 Browser interface: http://localhost:9000');
     console.log('🔌 WebSocket API: ws://localhost:9000');
     console.log('');
+  }
+
+  private async setupInterDaemonCommunication(): Promise<void> {
+    console.log('🔌 Setting up inter-daemon communication...');
+    
+    // Give daemons a moment to finish startup, then register routes
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // TODO: Replace with proper event-driven approach
+    // For now, use a simple script approach to register RendererDaemon routes
+    try {
+      const { spawn } = await import('child_process');
+      
+      const registrationScript = spawn('npx', ['tsx', '-e', `
+        const { RendererDaemon } = require('./src/daemons/renderer/RendererDaemon');
+        const renderer = new RendererDaemon();
+        renderer.registerRoutesWithWebSocket().then(() => {
+          console.log('✅ Route registration complete');
+          process.exit(0);
+        }).catch(error => {
+          console.error('❌ Route registration failed:', error);
+          process.exit(1);
+        });
+      `], { stdio: 'pipe' });
+
+      registrationScript.stdout?.on('data', (data) => {
+        console.log(`[Registration] ${data.toString().trim()}`);
+      });
+
+      registrationScript.stderr?.on('data', (data) => {
+        console.log(`[Registration] ❌ ${data.toString().trim()}`);
+      });
+
+      await new Promise((resolve) => {
+        registrationScript.on('exit', resolve);
+      });
+
+    } catch (error) {
+      console.log(`⚠️  Route registration failed: ${error}`);
+    }
   }
 
   private async startDaemon(daemon: DaemonConfig): Promise<void> {
