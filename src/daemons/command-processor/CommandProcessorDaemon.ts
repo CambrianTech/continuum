@@ -553,7 +553,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
 }
 
 // Main execution when run directly (ES module compatible)
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (require.main === module) {
   const daemon = new CommandProcessorDaemon();
   daemon.start().catch(error => {
     console.error('❌ Failed to start Command Processor Daemon:', error);
