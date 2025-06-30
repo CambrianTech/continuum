@@ -1,6 +1,11 @@
 // InteractiveWidget - Common parent for widgets with user input/interaction
 // Handles all common interactive widget validation and functionality
 
+// TODO: Import BaseWidget properly
+declare class BaseWidget extends HTMLElement {
+    validate(): void;
+}
+
 abstract class InteractiveWidget extends BaseWidget {
     protected inputElements: Map<string, HTMLInputElement> = new Map();
     protected buttonElements: Map<string, HTMLButtonElement> = new Map();
@@ -154,5 +159,14 @@ abstract class InteractiveWidget extends BaseWidget {
         if (input) {
             input.focus();
         }
+    }
+
+    // TODO: Add missing methods (temporary stubs)
+    protected getTypedElement<T extends HTMLElement>(_id: string): T | null {
+        return null;
+    }
+
+    protected log(_message: string, _level?: string): void {
+        // TODO: Implement logging
     }
 }
