@@ -301,9 +301,32 @@ export class ContinuumPackageUtils {
   static validateConfig(config: any): config is ContinuumConfig {
     if (!this.validateBaseConfig(config)) return false;
     
+    // Get valid module types from types package configuration
+    const validModuleTypes = this.getValidModuleTypes();
+    
     // Check for exactly one module type identifier
-    const identifiers = ['command' in config, 'daemon' in config, 'widget' in config, 'module' in config].filter(Boolean);
+    const identifiers = validModuleTypes.map(type => type in config).filter(Boolean);
     return identifiers.length === 1;
+  }
+
+  /**
+   * Get valid module types from types package configuration
+   */
+  private static getValidModuleTypes(): string[] {
+    try {
+      // Read types package.json to get valid module types
+      const fs = require('fs');
+      const path = require('path');
+      const typesPackagePath = path.join(__dirname, 'package.json');
+      const typesPackage = JSON.parse(fs.readFileSync(typesPackagePath, 'utf8'));
+      
+      return typesPackage.continuum?.config?.validModuleTypes || [
+        'command', 'daemon', 'widget', 'module', 'core' // fallback
+      ];
+    } catch (error) {
+      // Fallback to default types if can't read config
+      return ['command', 'daemon', 'widget', 'module', 'core'];
+    }
   }
 
   /**
