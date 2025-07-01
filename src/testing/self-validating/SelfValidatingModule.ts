@@ -9,9 +9,6 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { 
   ContinuumConfig, 
-  ContinuumCommandConfig,
-  ContinuumDaemonConfig, 
-  ContinuumWidgetConfig,
   ContinuumPackageUtils,
   PackageJson 
 } from '../../types/ContinuumPackage.js';
@@ -144,32 +141,14 @@ export class SelfValidatingModule {
     }
   }
   
-  /**
-   * LEGACY METHOD - Replaced by object-oriented validation
-   * @deprecated Use module.validate() instead
-   */
-  private static async _validateCapabilities(
-    modulePath: string, 
-    config: ContinuumConfig
-  ): Promise<CapabilityTestResult[]> {
-    const results: CapabilityTestResult[] = [];
-    
-    for (const capability of config.capabilities) {
-      const result = await this.testCapability(modulePath, config, capability as string);
-      results.push(result);
-    }
-    
-    return results;
-  }
+  // REMOVED: _validateCapabilities() - deprecated legacy method
+  // Modern replacement: Use module.validate() from object-oriented validation system
   
-  /**
-   * Test if a specific capability is actually implemented
-   */
+  // REMOVED: testCapability() - legacy helper for deprecated _validateCapabilities()
+  // Modern replacement: Capabilities are validated through module.validate()
+  
+  /*
   private static async testCapability(
-    modulePath: string, 
-    config: ContinuumConfig, 
-    capability: string
-  ): Promise<CapabilityTestResult> {
     const evidence: string[] = [];
     const errors: string[] = [];
     let implemented = false;
@@ -237,61 +216,8 @@ export class SelfValidatingModule {
     };
   }
   
-  /**
-   * LEGACY METHOD - Replaced by object-oriented validation
-   * @deprecated Use module.validate() instead
-   */
-  private static async _validateStructure(
-    modulePath: string, 
-    config: ContinuumConfig
-  ): Promise<StructureTestResult[]> {
-    const results: StructureTestResult[] = [];
-    const moduleType = ContinuumPackageUtils.getModuleType(config);
-    
-    // Base structure requirements for all modules
-    results.push(await this.testFileExists(modulePath, 'package.json', 'Package definition'));
-    results.push(await this.testFileExists(modulePath, 'README.md', 'Documentation'));
-    results.push(await this.testDirectoryExists(modulePath, 'test', 'Test directory'));
-    results.push(await this.testDirectoryExists(modulePath, 'test/unit', 'Unit tests'));
-    results.push(await this.testDirectoryExists(modulePath, 'test/integration', 'Integration tests'));
-    
-    // Type-specific structure requirements
-    switch (moduleType) {
-      case 'command':
-        const commandConfig = config as ContinuumCommandConfig;
-        const commandFile = `${commandConfig.command.split('-').map((word: string) => word.charAt(0).toUpperCase() + word.slice(1)).join('')}Command.ts`;
-        results.push(await this.testFileExists(modulePath, commandFile, 'Command implementation'));
-        results.push(await this.testMethodExists(modulePath, commandFile, 'static async execute', 'Execute method'));
-        results.push(await this.testMethodExists(modulePath, commandFile, 'static getDefinition', 'Definition method'));
-        break;
-        
-      case 'daemon':
-        const daemonConfig = config as ContinuumDaemonConfig;
-        const daemonFile = `${daemonConfig.daemon.split('-').map((word: string) => word.charAt(0).toUpperCase() + word.slice(1)).join('')}Daemon.ts`;
-        results.push(await this.testFileExists(modulePath, daemonFile, 'Daemon implementation'));
-        results.push(await this.testMethodExists(modulePath, daemonFile, 'async onStart', 'Start method'));
-        results.push(await this.testMethodExists(modulePath, daemonFile, 'async onStop', 'Stop method'));
-        break;
-        
-      case 'widget':
-        const widgetConfig = config as ContinuumWidgetConfig;
-        const widgetFile = `${widgetConfig.widget.split('-').map((word: string) => word.charAt(0).toUpperCase() + word.slice(1)).join('')}Widget.ts`;
-        results.push(await this.testFileExists(modulePath, widgetFile, 'Widget implementation'));
-        
-        // Test UI assets if declared
-        if (widgetConfig.ui?.template) {
-          results.push(await this.testFileExists(modulePath, widgetConfig.ui.template, 'Widget template'));
-        }
-        if (widgetConfig.ui?.styles) {
-          for (const styleFile of widgetConfig.ui.styles) {
-            results.push(await this.testFileExists(modulePath, styleFile, `Style file: ${styleFile}`));
-          }
-        }
-        break;
-    }
-    
-    return results;
-  }
+  // REMOVED: _validateStructure() - deprecated legacy method
+  // Modern replacement: Use module.validate() from object-oriented validation system
   
   /**
    * Test if a file exists

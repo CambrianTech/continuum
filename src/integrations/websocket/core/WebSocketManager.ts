@@ -117,6 +117,5 @@ export class WebSocketManager {
     this.onMessage?.(connectionId, data);
   }
 
-  // Event handler set by daemon
-  onMessage?: (connectionId: string, data: any) => void;
+  // Event handler set by daemon is already defined at class level
 }

@@ -124,12 +124,15 @@ export class ContinuumCommand extends BaseModule {
       const startTime = Date.now();
       try {
         const passed = await test();
-        details.push({
+        const detail: TestDetail = {
           name: `command-${name}`,
           passed,
-          duration: Date.now() - startTime,
-          error: passed ? undefined : `Command test failed: ${name}`
-        });
+          duration: Date.now() - startTime
+        };
+        if (!passed) {
+          detail.error = `Command test failed: ${name}`;
+        }
+        details.push(detail);
         if (passed) successful++;
       } catch (error) {
         details.push({
