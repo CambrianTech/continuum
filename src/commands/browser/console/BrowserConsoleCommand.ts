@@ -63,22 +63,15 @@ export class BrowserConsoleCommand extends BaseCommand {
       examples: [
         {
           description: 'Read recent console output from session',
-          input: { action: 'read', lines: 20 }
+          command: 'browser-console --action=read --lines=20'
         },
         {
           description: 'Execute console command with session tracking',
-          input: { 
-            action: 'execute', 
-            script: 'console.log("Hello from console command!")'
-          }
+          command: 'browser-console --action=execute --script="console.log(\"Hello from console command!\")"'
         },
         {
           description: 'Monitor console for errors only',
-          input: { 
-            action: 'monitor', 
-            filter: 'error',
-            follow: true
-          }
+          command: 'browser-console --action=monitor --filter=error --follow=true'
         }
       ]
     };
@@ -278,7 +271,7 @@ export class BrowserConsoleCommand extends BaseCommand {
   /**
    * Get session console log content
    */
-  private async getSessionConsoleLog(sessionId: string | undefined): Promise<string[]> {
+  private async getSessionConsoleLog(_sessionId: string | undefined): Promise<string[]> {
     // TODO: Integrate with SessionManagerDaemon
     // This would read from the actual session browser.log file
     
