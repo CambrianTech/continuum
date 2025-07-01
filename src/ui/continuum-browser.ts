@@ -343,17 +343,21 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     
     console.log(`✅ Core widgets loaded: ${loadedCount}/${coreWidgets.length}`);
     
-    // Now register widget fallbacks AFTER widgets are loaded
-    try {
-      console.log('🔧 Registering widget fallbacks...');
-      await Promise.all([
-        import('./components/shared/WidgetFallbacks.js'),
-        import('./components/shared/WidgetServerControls.js'),
-        import('./components/shared/InteractivePersona.js')
-      ]);
-      console.log('✅ Widget fallbacks registered');
-    } catch (error) {
-      console.warn('⚠️ Failed to load widget fallbacks:', error);
+    // Register fallbacks ONLY if some widgets failed to load
+    if (loadedCount < coreWidgets.length) {
+      console.log(`🔧 Some widgets failed (${loadedCount}/${coreWidgets.length}) - registering fallbacks...`);
+      try {
+        await Promise.all([
+          import('./components/shared/WidgetFallbacks.js'),
+          import('./components/shared/WidgetServerControls.js'),
+          import('./components/shared/InteractivePersona.js')
+        ]);
+        console.log('✅ Widget fallbacks registered for failed widgets');
+      } catch (error) {
+        console.warn('⚠️ Failed to load widget fallbacks:', error);
+      }
+    } else {
+      console.log('✅ All core widgets loaded successfully - no fallbacks needed');
     }
     
     // Try dynamic discovery as backup
@@ -923,15 +927,6 @@ console.log(`🌐 Continuum Browser API v${continuum.version}: Creating global i
 
 // Expose to window for widgets
 (window as any).continuum = continuum;
-
-// CRITICAL: Register widget fallbacks IMMEDIATELY - before any connection attempts
-// This ensures widgets show fallbacks even if WebSocket/daemon connections fail
-console.log('🔧 Registering widget fallbacks immediately...');
-import('./components/shared/WidgetFallbacks.js').then(() => {
-  console.log('✅ Widget fallbacks registered - widgets will show fallbacks if real widgets fail to load');
-}).catch((error) => {
-  console.error('❌ Failed to register widget fallbacks:', error);
-});
 
 // Auto-connect on load
 continuum.connect().then(async () => {

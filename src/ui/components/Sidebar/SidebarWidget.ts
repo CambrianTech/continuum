@@ -35,7 +35,12 @@ export class SidebarWidget extends BaseWidget {
     private setupResizeHandlers(): void {
         const resizeHandle = this.shadowRoot.querySelector('.sidebar-resize-handle') as HTMLElement;
         
-        if (!resizeHandle) return;
+        if (!resizeHandle) {
+            console.log(`🎛️ ${this.widgetName}: No resize handle found - skipping resize setup`);
+            return;
+        }
+
+        console.log(`🎛️ ${this.widgetName}: Setting up resize handlers...`);
 
         resizeHandle.addEventListener('mousedown', (e: MouseEvent) => {
             this.isResizing = true;
@@ -51,7 +56,8 @@ export class SidebarWidget extends BaseWidget {
             e.stopPropagation();
         });
 
-        document.addEventListener('mousemove', (e: MouseEvent) => {
+        // Use arrow functions to avoid potential context issues
+        const mouseMoveHandler = (e: MouseEvent) => {
             if (!this.isResizing) return;
 
             const newWidth = this.startWidth + (e.clientX - this.startX);
@@ -63,9 +69,9 @@ export class SidebarWidget extends BaseWidget {
             }
             
             e.preventDefault();
-        });
+        };
 
-        document.addEventListener('mouseup', (e: MouseEvent) => {
+        const mouseUpHandler = (e: MouseEvent) => {
             if (this.isResizing) {
                 this.isResizing = false;
                 document.body.classList.remove('resizing');
@@ -74,7 +80,12 @@ export class SidebarWidget extends BaseWidget {
                 
                 e.preventDefault();
             }
-        });
+        };
+
+        document.addEventListener('mousemove', mouseMoveHandler);
+        document.addEventListener('mouseup', mouseUpHandler);
+        
+        console.log(`🎛️ ${this.widgetName}: Resize handlers setup complete`);
     }
 
     private setupRoomSwitching(): void {

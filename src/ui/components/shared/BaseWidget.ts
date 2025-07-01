@@ -23,11 +23,11 @@ export abstract class BaseWidget extends HTMLElement {
     
     // Special case for shared components
     if (className === 'Base' || className === 'Interactive' || this.name.includes('BaseWidget')) {
-      return '/dist/ui/components/shared';
+      return '/src/ui/components/shared';
     }
     
-    // All other widgets: /dist/ui/components/{WidgetName}
-    return `/dist/ui/components/${className}`;
+    // All other widgets: /src/ui/components/{WidgetName}  
+    return `/src/ui/components/${className}`;
   }
   
   /**
@@ -39,6 +39,7 @@ export abstract class BaseWidget extends HTMLElement {
       const basePath = this.getBasePath().replace('/dist/', '/src/'); // Read from source
       const packagePath = `${basePath}/package.json`;
       
+      console.log(`📦 ${this.name}: Fetching package.json from ${packagePath}`);
       const response = await fetch(packagePath);
       if (!response.ok) {
         console.warn(`📦 No package.json found for ${this.name} at ${packagePath}`);
@@ -129,7 +130,9 @@ export abstract class BaseWidget extends HTMLElement {
 
   constructor() {
     super();
+    console.log(`🏗️ ${this.constructor.name}: Constructor called`);
     this.attachShadow({ mode: 'open' });
+    console.log(`🏗️ ${this.constructor.name}: Shadow DOM attached`);
   }
 
   async connectedCallback() {
@@ -172,11 +175,9 @@ export abstract class BaseWidget extends HTMLElement {
         ${html}
       `;
 
-      // Setup event listeners after DOM is ready
-      setTimeout(() => {
-        this.setupEventListeners();
-        this.setupCollapseToggle();
-      }, 0);
+      // Setup event listeners - DOM is ready after innerHTML assignment
+      this.setupEventListeners();
+      this.setupCollapseToggle();
       
     } catch (error) {
       console.error(`🎛️ ${this.widgetName}: Render failed:`, error);
@@ -190,7 +191,7 @@ export abstract class BaseWidget extends HTMLElement {
   async loadCSS(): Promise<string> {
     // Load BaseWidget CSS + any CSS files declared in package.json
     const constructor = this.constructor as typeof BaseWidget;
-    const baseCSS = ['/dist/ui/components/shared/BaseWidget.css'];
+    const baseCSS = ['/src/ui/components/shared/BaseWidget.css'];
     const widgetAssets = await constructor.getWidgetAssets();
     const cssFiles = widgetAssets.filter(asset => asset.endsWith('.css'));
     const allCSSAssets = [...baseCSS, ...cssFiles];
