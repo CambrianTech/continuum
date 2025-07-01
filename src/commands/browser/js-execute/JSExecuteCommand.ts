@@ -97,9 +97,14 @@ export class JSExecuteCommand extends BaseCommand {
 
       // Log execution start to session
       if (logExecution) {
-        await this.logToSession(sessionId, 'info', 
-          `🚀 JavaScript execution started ${executionUUID ? `[UUID: ${executionUUID}]` : ''}`
-        );
+        try {
+          await this.logToSession(sessionId, 'info', 
+            `🚀 JavaScript execution started ${executionUUID ? `[UUID: ${executionUUID}]` : ''}`
+          );
+        } catch (error) {
+          // Continue execution even if session logging fails
+          console.warn('⚠️ Session logging failed at start:', error);
+        }
       }
 
       // Execute JavaScript via browser manager
@@ -111,9 +116,14 @@ export class JSExecuteCommand extends BaseCommand {
 
       // Log execution completion
       if (logExecution) {
-        await this.logToSession(sessionId, 'info', 
-          `✅ JavaScript execution completed ${executionUUID ? `[UUID: ${executionUUID}]` : ''}`
-        );
+        try {
+          await this.logToSession(sessionId, 'info', 
+            `✅ JavaScript execution completed ${executionUUID ? `[UUID: ${executionUUID}]` : ''}`
+          );
+        } catch (error) {
+          // Continue execution even if session logging fails
+          console.warn('⚠️ Session logging failed at completion:', error);
+        }
       }
 
       return {
@@ -133,9 +143,14 @@ export class JSExecuteCommand extends BaseCommand {
       
       // Log execution error to session
       if (options.logExecution !== false) {
-        await this.logToSession(options.sessionId, 'error', 
-          `❌ JavaScript execution failed: ${errorMessage}`
-        );
+        try {
+          await this.logToSession(options.sessionId, 'error', 
+            `❌ JavaScript execution failed: ${errorMessage}`
+          );
+        } catch (error) {
+          // Continue with error response even if session logging fails
+          console.warn('⚠️ Session error logging failed:', error);
+        }
       }
 
       return {
@@ -211,17 +226,57 @@ export class JSExecuteCommand extends BaseCommand {
    */
   private async logToSession(sessionId: string | undefined, level: 'info' | 'warn' | 'error', message: string): Promise<void> {
     try {
-      // TODO: Integrate with SessionManagerDaemon logging
-      // This would send a message to session manager to write to session logs
-      
-      const timestamp = new Date().toISOString();
-      const logMessage = `[${timestamp}] ${level.toUpperCase()}: ${message}`;
-      
-      // For now, log to console (Layer 8 will implement proper session integration)
-      console.log(`📝 Session Log [${sessionId || 'auto'}]: ${logMessage}`);
+      // Get the actual session and append to its server log file
+      if (sessionId && sessionId !== 'auto-detected') {
+        const timestamp = new Date().toISOString();
+        const logMessage = `[${timestamp}] ${level.toUpperCase()}: ${message}`;
+        
+        // TODO: Send message to SessionManagerDaemon to append to session server log
+        // For now, we'll append directly to session log file if we can determine the path
+        await this.appendToSessionServerLog(sessionId, logMessage);
+      } else {
+        // Fallback to console logging for auto-detected sessions
+        const timestamp = new Date().toISOString();
+        const logMessage = `[${timestamp}] ${level.toUpperCase()}: ${message}`;
+        console.log(`📝 Session Log [${sessionId || 'auto'}]: ${logMessage}`);
+      }
       
     } catch (error) {
       console.warn('⚠️ Failed to log to session:', error);
+    }
+  }
+
+  /**
+   * Append message to session server log file
+   */
+  private async appendToSessionServerLog(sessionId: string, message: string): Promise<void> {
+    try {
+      // TODO: This should integrate with SessionManagerDaemon to get proper session log path
+      // For now, use the session artifacts pattern from SessionManagerDaemon
+      
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      
+      // Construct session log path (this should match SessionManagerDaemon pattern)
+      const sessionLogPath = path.join('.continuum/sessions', 'development', 'console-test', sessionId, 'logs', 'server.log');
+      
+      // Check if session log exists, if not create it
+      try {
+        await fs.access(sessionLogPath);
+      } catch {
+        // Session log doesn't exist, create directory structure and file
+        await fs.mkdir(path.dirname(sessionLogPath), { recursive: true });
+        const sessionStartTime = new Date().toISOString();
+        const headerContent = `# Continuum Session Log\n# Session: ${sessionId}\n# Created: ${sessionStartTime}\n# Type: development\n# Owner: console-test\n#\n# Session started at ${sessionStartTime}\n\n`;
+        await fs.writeFile(sessionLogPath, headerContent);
+      }
+      
+      // Append the message
+      await fs.appendFile(sessionLogPath, message + '\n');
+      
+    } catch (error) {
+      // If session file writing fails, fall back to console
+      console.log(`📝 Session Log [${sessionId}]: ${message}`);
     }
   }
 }

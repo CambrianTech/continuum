@@ -14,6 +14,7 @@ import { BrowserType, BrowserRequest, BrowserConfig, BrowserStatus, BrowserActio
 import { BrowserLauncher } from './modules/BrowserLauncher.js';
 import { BrowserSessionManager } from './modules/BrowserSessionManager.js';
 import { ChromeBrowserModule } from './modules/ChromeBrowserModule.js';
+import { SessionConsoleLogger } from '../session-manager/modules/SessionConsoleLogger.js';
 
 export class BrowserManagerDaemon extends MessageRoutedDaemon {
   public readonly name = 'browser-manager';
@@ -21,6 +22,9 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
 
   private launcher = new BrowserLauncher();
   private sessionManager = new BrowserSessionManager();
+  
+  // Track console loggers for each session
+  private consoleLoggers = new Map<string, SessionConsoleLogger>();
   
   // MessageRoutedDaemon implementation
   protected readonly primaryMessageType = 'browser_request';
@@ -49,6 +53,17 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   }
 
   protected async onStop(): Promise<void> {
+    // Stop all console loggers
+    for (const [sessionId, logger] of this.consoleLoggers) {
+      try {
+        await logger.stopLogging();
+        this.log(`🔌 Stopped console logging for session ${sessionId}`);
+      } catch (error) {
+        this.log(`⚠️ Error stopping console logger for ${sessionId}: ${error}`, 'warn');
+      }
+    }
+    this.consoleLoggers.clear();
+    
     // Cleanup managed browsers
     const browsers = this.sessionManager.getAllBrowsers();
     this.log(`Shutting down ${browsers.length} managed browsers`);
@@ -316,16 +331,42 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
    */
   private async startSessionConsoleLogging(sessionId: string, devToolsUrl: string): Promise<void> {
     try {
-      // TODO: This should use proper daemon messaging instead of direct calls
-      // For now, we'll implement this pattern that works with the current architecture
-      this.log(`🔌 Requesting console logging for session ${sessionId}: ${devToolsUrl}`);
+      this.log(`🔌 Starting console logging for session ${sessionId}: ${devToolsUrl}`);
       
-      // In a proper implementation, this would send a message to the session manager daemon
-      // For now, we'll log the request and let Layer 7 implement the actual communication
-      this.log(`📝 Console logging request: session=${sessionId}, url=${devToolsUrl}`, 'debug');
+      // Get session info from session manager daemon via messaging
+      const sessionInfoResponse = await this.sendMessage('session-manager', {
+        type: 'get_session_info',
+        data: { sessionId }
+      });
+      
+      if (!sessionInfoResponse.success) {
+        this.log(`⚠️ Could not get session info for ${sessionId}: ${sessionInfoResponse.error}`, 'warn');
+        return;
+      }
+      
+      const sessionData = sessionInfoResponse.data;
+      const browserLogPath = sessionData.artifacts?.logs?.client?.[0];
+      
+      if (!browserLogPath) {
+        this.log(`⚠️ No browser log path found for session ${sessionId}`, 'warn');
+        return;
+      }
+      
+      // Create and configure console logger
+      const consoleLogger = new SessionConsoleLogger();
+      consoleLogger.setSessionLogPath(browserLogPath);
+      
+      // Start capturing console logs
+      await consoleLogger.startLogging(devToolsUrl);
+      
+      // Track the logger for cleanup
+      this.consoleLoggers.set(sessionId, consoleLogger);
+      
+      this.log(`✅ Console logging active for session ${sessionId} → ${browserLogPath}`);
       
     } catch (error) {
-      this.log(`⚠️ Failed to start console logging for session ${sessionId}: ${error}`, 'warn');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to start console logging for session ${sessionId}: ${errorMessage}`, 'error');
     }
   }
 }
