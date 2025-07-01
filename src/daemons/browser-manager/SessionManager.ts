@@ -12,8 +12,22 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+export interface SessionIdentity {
+  starter: 'cli' | 'portal' | 'persona' | 'git-hook' | 'api' | 'test';
+  name: string; // User-provided name (e.g., "joel", "main-dev", "feature-branch")
+  user?: string; // Who is this? (e.g., "joel", "teammate", "ai-persona-alice")
+  type?: 'development' | 'debugging' | 'testing' | 'automation' | 'collaboration';
+  metadata?: {
+    project?: string;
+    branch?: string;
+    task?: string;
+    description?: string;
+  };
+}
+
 export interface BrowserSession {
-  id: string;
+  id: string; // Generated: "cli-joel-main-dev-20250701-1234"
+  identity: SessionIdentity;
   type: 'persona' | 'portal' | 'git-hook' | 'development' | 'test' | 'user' | 'validation';
   owner: string; // persona name, 'portal', 'git-hook', etc.
   created: Date;
@@ -59,9 +73,17 @@ export interface SessionArtifact {
 }
 
 export interface ConnectionIdentity {
-  type: 'portal' | 'validation' | 'user' | 'persona';
-  name: string; // portal, git-hook, username, persona-name
+  starter: 'cli' | 'portal' | 'persona' | 'git-hook' | 'api' | 'test';
+  identity: SessionIdentity;
   sessionContext?: string; // additional context like branch name for git hooks
+}
+
+export interface SessionEvent {
+  type: 'session_created' | 'session_joined' | 'session_closed' | 'identity_updated';
+  sessionId: string;
+  identity: SessionIdentity;
+  timestamp: Date;
+  metadata?: Record<string, any>;
 }
 
 export class SessionManager {
@@ -69,6 +91,7 @@ export class SessionManager {
   private artifactRoot: string;
   private cleanupInterval?: NodeJS.Timeout;
   private connectionIdentities = new Map<string, ConnectionIdentity>(); // connectionId -> identity
+  private eventListeners = new Set<(event: SessionEvent) => void>();
 
   constructor(artifactRoot: string = '.continuum/sessions') {
     this.artifactRoot = artifactRoot;
@@ -99,11 +122,38 @@ export class SessionManager {
   }
 
   /**
+   * Add event listener for session events
+   */
+  onSessionEvent(listener: (event: SessionEvent) => void): void {
+    this.eventListeners.add(listener);
+  }
+
+  /**
+   * Remove event listener
+   */
+  offSessionEvent(listener: (event: SessionEvent) => void): void {
+    this.eventListeners.delete(listener);
+  }
+
+  /**
+   * Emit session event to all listeners
+   */
+  private emitEvent(event: SessionEvent): void {
+    this.eventListeners.forEach(listener => {
+      try {
+        listener(event);
+      } catch (error) {
+        console.warn('⚠️ Session event listener error:', error);
+      }
+    });
+  }
+
+  /**
    * Register connection identity (called when someone connects)
    */
   registerConnectionIdentity(connectionId: string, identity: ConnectionIdentity): void {
     this.connectionIdentities.set(connectionId, identity);
-    console.log(`🆔 Registered connection: ${connectionId} as ${identity.type}/${identity.name}`);
+    console.log(`🆔 Registered connection: ${connectionId} as ${identity.starter}/${identity.identity.name}`);
     
     if (identity.sessionContext) {
       console.log(`📋 Session context: ${identity.sessionContext}`);
@@ -118,7 +168,31 @@ export class SessionManager {
   }
 
   /**
-   * Create session for identified connection
+   * Query available sessions for joining
+   */
+  queryAvailableSessions(filter?: {
+    starter?: string;
+    user?: string;
+    type?: string;
+    active?: boolean;
+    joinable?: boolean;
+  }): BrowserSession[] {
+    return Array.from(this.sessions.values()).filter(session => {
+      if (filter?.starter && session.identity.starter !== filter.starter) return false;
+      if (filter?.user && session.identity.user !== filter.user) return false;
+      if (filter?.type && session.identity.type !== filter.type) return false;
+      if (filter?.active !== undefined && session.isActive !== filter.active) return false;
+      if (filter?.joinable !== undefined) {
+        // Sessions are joinable if they're active and belong to the same user/team
+        const isJoinable = session.isActive && session.identity.type === 'collaboration';
+        if (isJoinable !== filter.joinable) return false;
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Create session for identified connection - with option to join existing
    */
   async createSessionForConnection(
     connectionId: string,
@@ -126,6 +200,7 @@ export class SessionManager {
       autoCleanup?: boolean;
       cleanupAfterMs?: number;
       url?: string;
+      joinExisting?: string; // Session ID to join
     } = {}
   ): Promise<string> {
     const identity = this.connectionIdentities.get(connectionId);
@@ -133,32 +208,94 @@ export class SessionManager {
       throw new Error(`Connection ${connectionId} not identified. Call registerConnectionIdentity first.`);
     }
 
-    return await this.createSession(identity.type, identity.name, {
+    // Join existing session if requested
+    if (options.joinExisting) {
+      return await this.joinSession(connectionId, options.joinExisting);
+    }
+
+    return await this.createSession(identity.identity, {
       ...options,
+      starter: identity.starter,
       ...(identity.sessionContext && { sessionContext: identity.sessionContext })
     });
+  }
+
+  /**
+   * Join an existing session
+   */
+  async joinSession(connectionId: string, sessionId: string): Promise<string> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
+
+    if (!session.isActive) {
+      throw new Error(`Session ${sessionId} is not active`);
+    }
+
+    const identity = this.connectionIdentities.get(connectionId);
+    if (!identity) {
+      throw new Error(`Connection ${connectionId} not identified`);
+    }
+
+    // Emit join event
+    this.emitEvent({
+      type: 'session_joined',
+      sessionId,
+      identity: identity.identity,
+      timestamp: new Date(),
+      metadata: {
+        joinedBy: identity.identity.name,
+        originalOwner: session.identity.name,
+        connectionId
+      }
+    });
+
+    this.updateSessionActivity(sessionId);
+    
+    console.log(`🤝 ${identity.identity.name} joined session: ${sessionId}`);
+    return sessionId;
+  }
+
+  /**
+   * Find latest session (most recently active)
+   */
+  getLatestSession(filter?: {
+    starter?: string;
+    user?: string;
+    type?: string;
+    active?: boolean;
+  }): BrowserSession | null {
+    const sessions = this.queryAvailableSessions(filter);
+    if (sessions.length === 0) return null;
+
+    return sessions.reduce((latest, session) => 
+      session.lastActive > latest.lastActive ? session : latest
+    );
   }
 
   /**
    * Create a new isolated browser session
    */
   async createSession(
-    type: BrowserSession['type'],
-    owner: string,
+    identity: SessionIdentity,
     options: {
       autoCleanup?: boolean;
       cleanupAfterMs?: number;
       url?: string;
       sessionContext?: string;
+      starter?: string;
     } = {}
   ): Promise<string> {
-    const sessionId = this.generateSessionId(type, owner, options.sessionContext);
-    const storageDir = await this.createSessionStorage(type, owner, sessionId, options.sessionContext);
+    const sessionId = this.generateSessionId(identity, options.sessionContext);
+    const type = this.mapIdentityToType(identity);
+    const storageDir = await this.createSessionStorage(type, identity.name, sessionId, options.sessionContext);
 
     const session: BrowserSession = {
       id: sessionId,
+      identity,
       type,
-      owner,
+      owner: identity.name,
       created: new Date(),
       lastActive: new Date(),
       
@@ -192,7 +329,20 @@ export class SessionManager {
 
     this.sessions.set(sessionId, session);
     
-    console.log(`📋 Created session: ${sessionId} for ${owner} (${type})`);
+    // Emit session created event
+    this.emitEvent({
+      type: 'session_created',
+      sessionId,
+      identity,
+      timestamp: new Date(),
+      metadata: {
+        starter: options.starter || identity.starter,
+        storageDir,
+        type
+      }
+    });
+    
+    console.log(`📋 Created session: ${sessionId} for ${identity.name} (${type})`);
     console.log(`📁 Storage: ${storageDir}`);
     
     return sessionId;
@@ -470,12 +620,70 @@ export class SessionManager {
   }
 
   /**
-   * Generate unique session ID
+   * Map identity to session type
    */
-  private generateSessionId(type: string, owner: string): string {
-    const timestamp = Date.now().toString(36);
-    const random = Math.random().toString(36).substr(2, 5);
-    return `${type}-${owner}-${timestamp}-${random}`;
+  private mapIdentityToType(identity: SessionIdentity): BrowserSession['type'] {
+    switch (identity.type) {
+      case 'development': return 'development';
+      case 'debugging': return 'development';
+      case 'testing': return 'test';
+      case 'automation': return 'git-hook';
+      case 'collaboration': return 'user';
+      default: return 'user';
+    }
+  }
+
+  /**
+   * Create a default session for CLI users (connect to existing or create new)
+   */
+  async createOrConnectDefaultSession(
+    identity: SessionIdentity,
+    options: {
+      autoCleanup?: boolean;
+      cleanupAfterMs?: number;
+      url?: string;
+    } = {}
+  ): Promise<string> {
+    // For CLI, try to find existing session first
+    if (identity.starter === 'cli') {
+      const existing = this.getLatestSession({
+        starter: 'cli',
+        user: identity.user || identity.name,
+        active: true
+      });
+
+      if (existing) {
+        console.log(`🔌 Connecting to existing CLI session: ${existing.id}`);
+        this.updateSessionActivity(existing.id);
+        return existing.id;
+      }
+    }
+
+    // Create new session if none found
+    return await this.createSession(identity, { ...options, starter: identity.starter });
+  }
+
+  /**
+   * Generate meaningful session ID with structure: starter-name-context-timestamp
+   */
+  private generateSessionId(identity: SessionIdentity, sessionContext?: string): string {
+    const today = new Date();
+    const dateStr = today.getFullYear().toString().slice(-2) + 
+                   String(today.getMonth() + 1).padStart(2, '0') + 
+                   String(today.getDate()).padStart(2, '0');
+    const timeStr = String(today.getHours()).padStart(2, '0') + 
+                   String(today.getMinutes()).padStart(2, '0');
+    
+    // Build meaningful name: cli-joel-main-dev-250701-1234
+    const parts = [
+      identity.starter,
+      identity.name,
+      sessionContext || identity.metadata?.task || identity.metadata?.branch || 'session',
+      dateStr,
+      timeStr
+    ];
+    
+    return parts.filter(Boolean).join('-').toLowerCase().replace(/[^a-z0-9-]/g, '');
   }
 
   /**
