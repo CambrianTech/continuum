@@ -3,15 +3,7 @@
  * Handles browser discovery, module initialization, and intelligent browser selection
  */
 
-import { BrowserType, BrowserConfig } from '../types/index.js';
-// TODO: BrowserPurpose needs to be defined in types
-enum BrowserPurpose {
-  AUTOMATION = 'automation',
-  DEVELOPMENT = 'development', 
-  USER = 'user',
-  TESTING = 'testing',
-  INTEGRATION_TEST = 'integration_test'
-}
+import { BrowserType, BrowserConfig, BrowserPurpose } from '../types/index.js';
 import { IBrowserModule } from './IBrowserModule';
 import { ChromeBrowserModule } from './ChromeBrowserModule';
 

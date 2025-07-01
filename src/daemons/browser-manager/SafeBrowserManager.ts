@@ -189,7 +189,7 @@ export class SafeBrowserManager {
         success: true,
         action: 'launched',
         details: {
-          pid,
+          ...(pid !== undefined && { pid }),
           url,
           reason: 'process_spawned'
         }

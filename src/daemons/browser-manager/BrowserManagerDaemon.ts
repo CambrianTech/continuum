@@ -9,7 +9,7 @@
 
 import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon.js';
 import { DaemonResponse } from '../base/DaemonProtocol.js';
-import { BrowserType, BrowserRequest, BrowserConfig } from './types/index.js';
+import { BrowserType, BrowserRequest, BrowserConfig, BrowserStatus, BrowserAction } from './types/index.js';
 // BrowserFilters unused in this file
 import { BrowserLauncher } from './modules/BrowserLauncher.js';
 import { BrowserSessionManager } from './modules/BrowserSessionManager.js';
@@ -140,7 +140,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       type: request.options?.type || BrowserType.DEFAULT,
       pid: launchResult.pid,
       debugPort: launchResult.debugPort,
-      status: 'ready' as const,
+      status: BrowserStatus.READY,
       devToolsUrl: launchResult.devToolsUrl || `http://localhost:${debugPort}`,
       launchedAt: new Date(),
       lastActivity: new Date(),
@@ -281,7 +281,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   private async handleSmartBrowserRequest(requestData: any): Promise<DaemonResponse> {
     // Convert legacy request format to new BrowserRequest format
     const request: BrowserRequest = {
-      action: 'launch',
+      action: BrowserAction.LAUNCH,
       sessionId: requestData.sessionId,
       options: {
         type: BrowserType.DEFAULT,

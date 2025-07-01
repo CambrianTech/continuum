@@ -3,7 +3,7 @@
  * Handles session creation, tracking, browser reuse decisions, and session cleanup
  */
 
-import { BrowserConfig, ManagedBrowser, BrowserPurpose } from '../types/index.js';
+import { BrowserConfig, ManagedBrowser } from '../types/index.js';
 
 export interface PlacementStrategy {
   type: 'reuse' | 'add-tab' | 'create';
@@ -33,7 +33,7 @@ export class SessionManager {
    */
   analyzePlacement(config: BrowserConfig): PlacementStrategy {
     // Check for reusable browsers
-    if (config.requirements.isolation === 'shared') {
+    if (config.requirements?.isolation === 'shared') {
       const compatible = this.findCompatibleBrowser(config);
       if (compatible) {
         return {
@@ -47,7 +47,7 @@ export class SessionManager {
     // Check resource constraints
     if (this.browsers.size >= this.getMaxBrowsers()) {
       const leastUsed = this.findLeastUsedBrowser();
-      if (leastUsed && leastUsed.sessions.size < this.getMaxTabsPerBrowser()) {
+      if (leastUsed && (leastUsed.sessions?.length || 0) < this.getMaxTabsPerBrowser()) {
         return {
           type: 'add-tab',
           browserId: leastUsed.id,
@@ -68,7 +68,7 @@ export class SessionManager {
    */
   calculatePlacement(config: BrowserConfig): PlacementStrategy {
     // DevTools sessions always get new browser + new tab (isolation needed)
-    if (config.requirements.devtools) {
+    if (config.requirements?.devtools) {
       return {
         type: 'create',
         reasoning: `DevTools sessions always get fresh browser for clean debugging environment`
@@ -79,19 +79,19 @@ export class SessionManager {
     const compatibleBrowsers = Array.from(this.browsers.values()).filter(browser => 
       browser.state === 'ready' && 
       browser.config.purpose === config.purpose &&
-      browser.resources.cpu < 70 && // Not overloaded
-      !browser.config.requirements.devtools // Don't reuse DevTools browsers
+      (browser.resources?.cpu || 0) < 70 && // Not overloaded
+      !(browser.config.requirements?.devtools) // Don't reuse DevTools browsers
     );
     
     if (compatibleBrowsers.length > 0) {
       const browser = compatibleBrowsers[0];
       
       // Decide between reuse and add-tab based on session count
-      if (browser.sessions.size < 3) {
+      if ((browser.sessions?.length || 0) < 3) {
         return {
           type: 'add-tab',
           browserId: browser.id,
-          reasoning: `Adding tab to existing ${config.purpose} browser with ${browser.sessions.size} sessions`
+          reasoning: `Adding tab to existing ${config.purpose} browser with ${browser.sessions?.length || 0} sessions`
         };
       } else {
         return {
@@ -112,9 +112,9 @@ export class SessionManager {
   /**
    * Find existing browser for session/URL combination
    */
-  findExistingBrowser(sessionId: string, url: string): ManagedBrowser | null {
+  findExistingBrowser(sessionId: string, _url: string): ManagedBrowser | null {
     for (const browser of this.browsers.values()) {
-      if (browser.sessions.has(sessionId) && browser.state === 'ready') {
+      if (browser.sessions?.includes(sessionId) && browser.state === 'ready') {
         return browser;
       }
     }
@@ -126,8 +126,8 @@ export class SessionManager {
    */
   shouldRefreshExisting(browser: ManagedBrowser, newConfig: any): boolean {
     // Refresh if same requirements and browser is healthy
-    const devToolsMatch = (browser.config.requirements.devtools || false) === (newConfig?.requirements?.devtools || false);
-    const browserHealthy = browser.state === 'ready' && browser.resources.cpu < 80;
+    const devToolsMatch = (browser.config.requirements?.devtools || false) === (newConfig?.requirements?.devtools || false);
+    const browserHealthy = browser.state === 'ready' && (browser.resources?.cpu || 0) < 80;
     
     return devToolsMatch && browserHealthy;
   }
@@ -138,7 +138,8 @@ export class SessionManager {
   addSession(sessionId: string, browserId: string, url: string, config: BrowserConfig): void {
     const browser = this.browsers.get(browserId);
     if (browser) {
-      browser.sessions.add(sessionId);
+      if (!browser.sessions) browser.sessions = [];
+      browser.sessions.push(sessionId);
       browser.lastActivity = new Date();
       
       this.sessions.set(sessionId, {
@@ -162,7 +163,9 @@ export class SessionManager {
     if (session) {
       const browser = this.browsers.get(session.browserId);
       if (browser) {
-        browser.sessions.delete(sessionId);
+        if (browser.sessions) {
+          browser.sessions = browser.sessions.filter(id => id !== sessionId);
+        }
         browser.lastActivity = new Date();
       }
       
@@ -232,8 +235,8 @@ export class SessionManager {
    */
   private isCompatible(browser: ManagedBrowser, config: BrowserConfig): boolean {
     // Check if browser can handle this session
-    return browser.config.requirements.isolation === 'shared' &&
-           browser.sessions.size < this.getMaxTabsPerBrowser() &&
+    return browser.config.requirements?.isolation === 'shared' &&
+           (browser.sessions?.length || 0) < this.getMaxTabsPerBrowser() &&
            browser.state === 'ready' &&
            browser.config.purpose === config.purpose;
   }
@@ -243,7 +246,7 @@ export class SessionManager {
    */
   private findLeastUsedBrowser(): ManagedBrowser | null {
     return Array.from(this.browsers.values())
-      .sort((a, b) => a.sessions.size - b.sessions.size)[0] || null;
+      .sort((a, b) => ((a.sessions?.length || 0) - (b.sessions?.length || 0)))[0] || null;
   }
 
   /**

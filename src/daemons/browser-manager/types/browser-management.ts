@@ -2,10 +2,10 @@
  * Browser Management and Connection Types
  */
 
-import { BrowserType, BrowserStatus, BrowserConfig, DevToolsCapabilities } from './browser-core.js';
+import { BrowserType, BrowserStatus, BrowserConfig, DevToolsCapabilities, BrowserAction } from './browser-core.js';
 
 export interface BrowserRequest {
-  action: 'launch' | 'close' | 'refresh' | 'navigate' | 'screenshot' | 'status';
+  action: BrowserAction;
   browserType?: BrowserType;
   url?: string;
   options?: BrowserConfig;
@@ -38,6 +38,12 @@ export interface ManagedBrowser {
   lastActivity: Date;
   config: BrowserConfig;
   process?: any;
+  resources?: {
+    memory: number;
+    cpu: number;
+    handles: number;
+  };
+  sessions?: string[];
 }
 
 export interface BrowserFilters {

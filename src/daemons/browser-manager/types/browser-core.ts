@@ -2,6 +2,8 @@
  * Core Browser Types and Enums
  */
 
+import { DevToolsCapabilities } from './devtools.js';
+
 export enum BrowserType {
   DEFAULT = 'default',
   CHROME = 'chrome',
@@ -12,7 +14,30 @@ export enum BrowserType {
   OPERA = 'opera'
 }
 
-export type BrowserStatus = 'launching' | 'ready' | 'error' | 'closing' | 'closed';
+export enum BrowserStatus {
+  LAUNCHING = 'launching',
+  READY = 'ready',
+  ERROR = 'error',
+  CLOSING = 'closing',
+  CLOSED = 'closed'
+}
+
+export enum BrowserPurpose {
+  AUTOMATION = 'automation',
+  DEVELOPMENT = 'development',
+  USER = 'user',
+  TESTING = 'testing',
+  INTEGRATION_TEST = 'integration_test'
+}
+
+export enum BrowserAction {
+  LAUNCH = 'launch',
+  CLOSE = 'close',
+  REFRESH = 'refresh',
+  NAVIGATE = 'navigate',
+  SCREENSHOT = 'screenshot',
+  STATUS = 'status'
+}
 
 export interface BrowserConfig {
   type: BrowserType;
@@ -24,7 +49,7 @@ export interface BrowserConfig {
   args?: string[];
   env?: Record<string, string>;
   timeout?: number;
-  purpose?: string; // Browser usage purpose
+  purpose?: BrowserPurpose; // Browser usage purpose
   requirements?: { devtools?: boolean; [key: string]: any }; // Browser requirements
   resources?: { [key: string]: any }; // Browser resource configuration
 }
@@ -54,12 +79,4 @@ export interface BrowserInfo {
   capabilities: string[];
 }
 
-export interface DevToolsCapabilities {
-  supportsConsole: boolean;
-  supportsNetwork: boolean;
-  supportsPerformance: boolean;
-  supportsScreenshot: boolean;
-  supportsProfiling: boolean;
-  supportsCodeCoverage: boolean;
-  supportsSecurityAnalysis: boolean;
-}
+// DevToolsCapabilities moved to devtools.ts to avoid duplication

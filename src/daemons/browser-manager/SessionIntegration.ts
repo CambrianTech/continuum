@@ -74,7 +74,7 @@ export class BrowserSessionIntegration {
   /**
    * Register browser connection with session info
    */
-  registerBrowserWithSession(sessionInfo: ExistingSessionInfo, launchResult: any): void {
+  registerBrowserWithSession(sessionInfo: ExistingSessionInfo, _launchResult: any): void {
     // Use existing session system's connection identity
     const connectionId = `browser-${sessionInfo.sessionId}`;
     
@@ -91,7 +91,7 @@ export class BrowserSessionIntegration {
   /**
    * Get browser status for session diagnostics
    */
-  getBrowserStatusForSession(sessionId: string): {
+  getBrowserStatusForSession(_sessionId: string): {
     connected: boolean;
     healthy: boolean;
     lastSeen: Date | null;
@@ -164,7 +164,7 @@ export class BrowserSessionIntegration {
       if (!launchResult.success) {
         return {
           ready: false,
-          error: launchResult.error
+          ...(launchResult.error && { error: launchResult.error })
         };
       }
 
@@ -173,7 +173,7 @@ export class BrowserSessionIntegration {
       
       return {
         ready: connected,
-        error: connected ? undefined : `Browser connection timeout after ${timeoutMs}ms`
+        ...(!connected && { error: `Browser connection timeout after ${timeoutMs}ms` })
       };
 
     } catch (error) {

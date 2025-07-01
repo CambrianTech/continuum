@@ -79,12 +79,15 @@ export class ResourceManager {
     try {
       // Get process stats
       const stats = await this.getProcessStats(browser.pid);
+      if (!browser.resources) {
+        browser.resources = { memory: 0, cpu: 0, handles: 0 };
+      }
       browser.resources.memory = stats.memory;
       browser.resources.cpu = stats.cpu;
       
       // Get tab count from DevTools
-      const tabs = await this.getTabCount(browser.port);
-      browser.resources.tabs = tabs;
+      const tabs = await this.getTabCount(browser.port || browser.debugPort);
+      (browser.resources as any).tabs = tabs;
       
       // Update last activity
       browser.lastActivity = new Date();
@@ -139,9 +142,9 @@ export class ResourceManager {
   getResourceMetrics(): ResourceMetrics {
     const browsers = Array.from(this.browsers.values());
     
-    const totalMemory = browsers.reduce((sum, b) => sum + b.resources.memory, 0);
-    const totalCpu = browsers.reduce((sum, b) => sum + b.resources.cpu, 0);
-    const tabCount = browsers.reduce((sum, b) => sum + b.resources.tabs, 0);
+    const totalMemory = browsers.reduce((sum, b) => sum + (b.resources?.memory || 0), 0);
+    const totalCpu = browsers.reduce((sum, b) => sum + (b.resources?.cpu || 0), 0);
+    const tabCount = browsers.reduce((sum, b) => sum + ((b.resources as any)?.tabs || 0), 0);
 
     return {
       totalMemory,
@@ -165,7 +168,7 @@ export class ResourceManager {
     // Close idle browsers
     for (const browser of this.browsers.values()) {
       if (this.isIdle(browser) && this.canClose(browser)) {
-        const memoryBefore = browser.resources.memory;
+        const memoryBefore = browser.resources?.memory || 0;
         await this.closeBrowser(browser.id);
         memoryFreed += memoryBefore;
         browsersOptimized++;
@@ -210,14 +213,14 @@ export class ResourceManager {
   isIdle(browser: ManagedBrowser): boolean {
     const idleThreshold = 5 * 60 * 1000; // 5 minutes
     return Date.now() - browser.lastActivity.getTime() > idleThreshold &&
-           browser.sessions.size === 0;
+           (browser.sessions?.length || 0) === 0;
   }
 
   /**
    * Check if browser can be closed
    */
   canClose(browser: ManagedBrowser): boolean {
-    return browser.config.requirements.persistence === 'ephemeral';
+    return browser.config.requirements?.persistence === 'ephemeral';
   }
 
   /**
