@@ -337,9 +337,17 @@ class ContinuumBrowserAPI implements ContinuumAPI {
       }
     });
     
-    // Wait for all core widgets to load
-    const results = await Promise.all(widgetPromises);
-    const loadedCount = results.filter(r => r.success).length;
+    // Wait for all core widgets to load (with individual error handling)
+    const results = await Promise.allSettled(widgetPromises);
+    const loadedCount = results.filter((r, i) => {
+      if (r.status === 'fulfilled' && r.value.success) {
+        return true;
+      } else {
+        const widgetPath = coreWidgets[i];
+        console.warn(`⚠️ Widget ${widgetPath} failed:`, r.status === 'rejected' ? r.reason : r.value.error);
+        return false;
+      }
+    }).length;
     
     console.log(`✅ Core widgets loaded: ${loadedCount}/${coreWidgets.length}`);
     
@@ -347,7 +355,7 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     if (loadedCount < coreWidgets.length) {
       console.log(`🔧 Some widgets failed (${loadedCount}/${coreWidgets.length}) - registering fallbacks...`);
       try {
-        await Promise.all([
+        await Promise.allSettled([
           import('./components/shared/WidgetFallbacks.js'),
           import('./components/shared/WidgetServerControls.js'),
           import('./components/shared/InteractivePersona.js')
@@ -374,8 +382,16 @@ class ContinuumBrowserAPI implements ContinuumAPI {
         }
       });
       
-      const discoveryResults = await Promise.all(discoveryPromises);
-      const discoveredCount = discoveryResults.filter(r => r.success).length;
+      const discoveryResults = await Promise.allSettled(discoveryPromises);
+      const discoveredCount = discoveryResults.filter((r, i) => {
+        if (r.status === 'fulfilled' && r.value.success) {
+          return true;
+        } else {
+          const widgetPath = widgetPaths[i];
+          console.warn(`⚠️ Discovery widget ${widgetPath} failed:`, r.status === 'rejected' ? r.reason : r.value.error);
+          return false;
+        }
+      }).length;
       console.log(`✅ Discovery widgets loaded: ${discoveredCount}/${widgetPaths.length}`);
     } catch (error) {
       console.warn('⚠️ Dynamic widget discovery failed:', error);
@@ -433,7 +449,18 @@ class ContinuumBrowserAPI implements ContinuumAPI {
       }
     });
     
-    await Promise.all(widgetPromises);
+    const instantiationResults = await Promise.allSettled(widgetPromises);
+    const successfulWidgets = instantiationResults.filter((r, i) => {
+      if (r.status === 'fulfilled' && r.value.success) {
+        return true;
+      } else {
+        const widgetName = widgetConfigs[i].name;
+        console.warn(`⚠️ Widget instantiation failed for ${widgetName}:`, r.status === 'rejected' ? r.reason : r.value.error);
+        return false;
+      }
+    }).length;
+    
+    console.log(`✅ Widget instantiation: ${successfulWidgets}/${widgetConfigs.length} successful`);
     
     console.log('🎨 Widget instantiation complete');
   }

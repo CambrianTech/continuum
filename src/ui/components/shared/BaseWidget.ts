@@ -203,12 +203,14 @@ export abstract class BaseWidget extends HTMLElement {
           console.log(`🎨 ${constructor.name}: Fetching CSS: ${assetPath}`);
           const response = await fetch(assetPath);
           if (!response.ok) {
-            console.warn(`Failed to load CSS asset ${assetPath}: HTTP ${response.status}`);
+            console.warn(`❌ Failed to load CSS asset ${assetPath}: HTTP ${response.status}`);
             return '/* CSS asset failed to load */';
           }
-          return await response.text();
+          const cssText = await response.text();
+          console.log(`✅ Loaded CSS: ${assetPath} (${cssText.length} chars)`);
+          return cssText;
         } catch (error) {
-          console.warn(`Failed to fetch CSS asset ${assetPath}:`, error);
+          console.warn(`❌ Failed to fetch CSS asset ${assetPath}:`, error);
           return '/* CSS asset failed to load */';
         }
       });
