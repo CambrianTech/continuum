@@ -351,3 +351,312 @@ export interface Pattern { id: string; name: string; description: string; }
 export interface PatternHierarchy { parent: string; children: string[]; }
 export interface CrossDomainPattern { pattern_id: string; domains: string[]; }
 export interface ConceptualFramework { concepts: string[]; relationships: string[]; }
+
+// Behavioral DNA interfaces
+export interface AdaptationRule {
+  trigger_condition: string;
+  adaptation_strategy: string;
+  learning_rate: number;
+  confidence_threshold: number;
+}
+
+export interface ErrorStrategy {
+  error_type: string;
+  response_method: string;
+  recovery_steps: string[];
+  prevention_measures: string[];
+}
+
+export interface CollaborationProtocol {
+  protocol_name: string;
+  communication_style: string;
+  decision_making_role: string;
+  conflict_resolution: string;
+}
+
+export interface GoalPursuit {
+  goal_type: string;
+  pursuit_strategy: string;
+  success_metrics: string[];
+  failure_recovery: string;
+}
+
+export interface AttentionMechanism {
+  attention_type: string;
+  focus_duration: number;
+  switching_criteria: string[];
+  priority_weighting: number[];
+}
+
+// Evolution interfaces
+export interface Mutation {
+  mutation_id: string;
+  mutation_type: string;
+  target_component: string;
+  change_description: string;
+  impact_score: number;
+}
+
+export interface SelectionPressure {
+  pressure_source: string;
+  intensity: number;
+  target_traits: string[];
+  adaptation_direction: string;
+}
+
+export interface EmergentProperty {
+  property_name: string;
+  emergence_conditions: string[];
+  manifestation_examples: string[];
+  stability_score: number;
+}
+
+export interface FitnessMetrics {
+  overall_fitness: number;
+  domain_specific_scores: Record<string, number>;
+  adaptation_rate: number;
+  survival_probability: number;
+}
+
+// Substrate interfaces
+export interface ModelArchitecture {
+  base_model: string;
+  model_size: string;
+  architecture_type: string;
+  layer_count: number;
+  parameter_count: number;
+}
+
+export interface ComputeProfile {
+  cpu_cores: number;
+  memory_gb: number;
+  gpu_count: number;
+  storage_gb: number;
+  bandwidth_mbps: number;
+}
+
+export interface MemoryStructure {
+  structure_type: string;
+  capacity: number;
+  access_pattern: string;
+  retention_policy: string;
+}
+
+export interface ExecutionEnv {
+  environment_type: string;
+  runtime_version: string;
+  dependencies: string[];
+  security_constraints: string[];
+}
+
+export interface InterfaceProtocol {
+  protocol_name: string;
+  version: string;
+  data_format: string;
+  authentication_method: string;
+}
+
+// Reproduction interfaces
+export interface DependencyTree {
+  root_dependencies: string[];
+  dependency_graph: Record<string, string[]>;
+  version_constraints: Record<string, string>;
+}
+
+export interface InitStep {
+  step_id: string;
+  step_description: string;
+  execution_order: number;
+  required_resources: string[];
+}
+
+export interface ValidationTest {
+  test_name: string;
+  test_description: string;
+  expected_outcome: string;
+  success_criteria: string[];
+}
+
+export interface BreedingProfile {
+  compatible_genomes: string[];
+  breeding_restrictions: string[];
+  offspring_characteristics: string[];
+}
+
+export interface MutationPotential {
+  mutation_rate: number;
+  allowed_mutations: string[];
+  stability_constraints: string[];
+}
+
+// Value system interfaces
+export interface EthicalConstraint {
+  constraint_type: string;
+  description: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  enforcement_method: string;
+}
+
+export interface Priority {
+  priority_name: string;
+  weight: number;
+  context_conditions: string[];
+}
+
+export interface ConflictResolution {
+  conflict_type: string;
+  resolution_strategy: string;
+  success_rate: number;
+}
+
+export interface ProcessStep {
+  step_name: string;
+  step_description: string;
+  input_requirements: string[];
+  output_expectations: string[];
+}
+
+export interface PracticalExperience {
+  experience_type: string;
+  domain: string;
+  proficiency_level: number;
+  examples: string[];
+}
+
+export interface TheoreticalKnowledge {
+  knowledge_area: string;
+  depth_level: number;
+  key_concepts: string[];
+  understanding_confidence: number;
+}
+
+export interface SkillNode {
+  skill_id: string;
+  skill_name: string;
+  proficiency_level: number;
+  related_domains: string[];
+}
+
+export interface SkillConnection {
+  source_skill: string;
+  target_skill: string;
+  connection_strength: number;
+  connection_type: string;
+}
+
+export interface SkillCluster {
+  cluster_id: string;
+  cluster_name: string;
+  member_skills: string[];
+  cluster_coherence: number;
+}
+
+export interface SkillPathway {
+  pathway_id: string;
+  pathway_name: string;
+  skill_sequence: string[];
+  learning_difficulty: number;
+}
+
+export interface Challenge {
+  challenge_id: string;
+  challenge_type: string;
+  difficulty_level: number;
+  domain: string;
+  resolution_approach: string;
+}
+
+export interface Adaptation {
+  adaptation_id: string;
+  adaptation_type: string;
+  trigger_condition: string;
+  modification_description: string;
+  success_rate: number;
+}
+
+export interface PerformanceDelta {
+  before_metrics: Record<string, number>;
+  after_metrics: Record<string, number>;
+  improvement_areas: string[];
+  regression_areas: string[];
+}
+
+export interface GeneticContribution {
+  parent_id: string;
+  contribution_percentage: number;
+  inherited_components: string[];
+  novel_variations: string[];
+}
+
+export interface CrossoverPoint {
+  crossover_location: string;
+  parent_a_contribution: string[];
+  parent_b_contribution: string[];
+  crossover_strategy: string;
+}
+
+export interface InheritedTrait {
+  trait_name: string;
+  source_parent: string;
+  expression_strength: number;
+  modification_level: number;
+}
+
+export interface NovelMutation {
+  mutation_id: string;
+  mutation_description: string;
+  emergence_trigger: string;
+  stability_assessment: number;
+}
+
+export interface LoRALayer {
+  layer_id: string;
+  layer_type: string;
+  rank: number;
+  alpha: number;
+  target_modules: string[];
+}
+
+export interface ActivationPattern {
+  pattern_name: string;
+  activation_sequence: number[];
+  frequency: number;
+  context_triggers: string[];
+}
+
+export interface PrerequisiteCheck {
+  check_name: string;
+  validation_method: string;
+  required_resources: string[];
+  success_criteria: string[];
+}
+
+export interface AssemblyStep {
+  step_id: string;
+  step_name: string;
+  execution_method: string;
+  dependencies: string[];
+  validation_points: string[];
+}
+
+export interface ValidationStep {
+  validation_id: string;
+  validation_name: string;
+  validation_method: string;
+  success_criteria: string[];
+  failure_handling: string;
+}
+
+export interface OptimizationPass {
+  pass_name: string;
+  optimization_target: string;
+  optimization_strategy: string;
+  expected_improvement: number;
+}
+
+export interface FinalizationStep {
+  step_name: string;
+  finalization_action: string;
+  completion_criteria: string[];
+  cleanup_requirements: string[];
+}
