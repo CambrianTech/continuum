@@ -330,6 +330,12 @@ export class ContinuumSystem extends EventEmitter {
         return;
       }
 
+      // Enable live session logging for all daemons
+      const session = sessionResponse.data.session;
+      if (session && session.artifacts && session.artifacts.logs.server[0]) {
+        this.setupSessionLogging(session.artifacts.logs.server[0]);
+      }
+
       // 2. Launch browser using session information
       const sessionData = sessionResponse.data;
       const browserRequest: DaemonMessage = {
@@ -372,6 +378,65 @@ export class ContinuumSystem extends EventEmitter {
     } catch (error) {
       console.log('⚠️  Browser auto-launch error:', error);
       console.log('💡 You can manually open: http://localhost:9000');
+    }
+  }
+
+  /**
+   * Setup session-specific logging for all daemons
+   */
+  private setupSessionLogging(serverLogPath: string): void {
+    console.log(`📝 Setting up live session logging: ${serverLogPath}`);
+    
+    // Configure all daemons to write to the session log file
+    for (const [daemonName, daemon] of this.daemons) {
+      if (daemon && typeof daemon.setSessionLogPath === 'function') {
+        daemon.setSessionLogPath(serverLogPath);
+        console.log(`✅ ${daemonName} daemon logging to session file`);
+      }
+    }
+  }
+
+  async getCurrentSessionInfo(): Promise<any> {
+    // Use the new connection orchestration instead of direct session access
+    const sessionManagerDaemon = this.daemons.get('session-manager');
+    if (!sessionManagerDaemon) {
+      return { success: false, error: 'SessionManagerDaemon not available' };
+    }
+
+    try {
+      // Use intelligent connection orchestration
+      const connectionResult = await sessionManagerDaemon.handleConnect({
+        source: 'continuum-cli',
+        owner: 'system',
+        sessionPreference: 'current',
+        capabilities: ['browser', 'commands', 'screenshots'],
+        context: 'development',
+        type: 'development'
+      });
+
+      if (!connectionResult.success) {
+        return connectionResult;
+      }
+
+      // Transform to the expected format for display
+      return {
+        success: true,
+        data: {
+          session: {
+            id: connectionResult.data.sessionId,
+            action: connectionResult.data.action,
+            launched: connectionResult.data.launched,
+            logPaths: connectionResult.data.logs,
+            directories: {
+              screenshots: connectionResult.data.screenshots
+            },
+            interface: connectionResult.data.interface,
+            commands: connectionResult.data.commands
+          }
+        }
+      };
+    } catch (error) {
+      return { success: false, error: `Connection orchestration failed: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 

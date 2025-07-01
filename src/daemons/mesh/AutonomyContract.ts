@@ -375,7 +375,7 @@ export class AutonomyContractManager extends EventEmitter {
   /**
    * Get last migration time for cooldown calculation
    */
-  private getLastMigrationTime(personaId: string): Date {
+  private getLastMigrationTime(_personaId: string): Date {
     // TODO: Track migration history
     return new Date(Date.now() - 25 * 60 * 60 * 1000); // Assume 25 hours ago for now
   }

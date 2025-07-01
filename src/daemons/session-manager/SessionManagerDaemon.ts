@@ -50,6 +50,8 @@ export interface BrowserSession {
   cleanupAfterMs: number;
 }
 
+export type SessionType = 'persona' | 'portal' | 'git-hook' | 'development' | 'test';
+
 export interface SessionEvent {
   type: 'session_created' | 'session_joined' | 'session_closed' | 'connection_registered';
   sessionId?: string;
@@ -214,6 +216,248 @@ export class SessionManagerDaemon extends BaseDaemon {
   }
 
   /**
+   * Handle intelligent connection orchestration
+   */
+  async handleConnect(connectParams: {
+    source: string;
+    owner: string;
+    sessionPreference?: 'current' | 'new' | string;
+    capabilities?: string[];
+    context?: string;
+    type?: SessionType;
+  }): Promise<{
+    success: boolean;
+    data?: {
+      sessionId: string;
+      action: 'joined_existing' | 'created_new' | 'forked_from';
+      launched: {
+        browser: boolean;
+        webserver: boolean;
+        newLogFiles: boolean;
+      };
+      logs: {
+        browser: string;
+        server: string;
+      };
+      interface: string;
+      screenshots: string;
+      commands: {
+        otherClients: string;
+        stop: string;
+        fork: string;
+        info: string;
+      };
+    };
+    error?: string;
+  }> {
+    const { source, owner, sessionPreference = 'current', capabilities = [], context = 'development', type = 'development' } = connectParams;
+
+    try {
+      let session: BrowserSession | null = null;
+      let action: 'joined_existing' | 'created_new' | 'forked_from' = 'joined_existing';
+      let newLogFiles = false;
+
+      // Intelligent session routing
+      if (sessionPreference === 'new' || sessionPreference.startsWith('fork:')) {
+        // Force new session or fork from existing
+        if (sessionPreference.startsWith('fork:')) {
+          const forkFromId = sessionPreference.split(':')[1];
+          session = await this.forkSession(forkFromId, { owner, type, context });
+          action = 'forked_from';
+        } else {
+          session = await this.createSession({ 
+            type, 
+            owner, 
+            context,
+            starter: source,
+            identity: { name: owner, user: owner }
+          });
+          action = 'created_new';
+        }
+        newLogFiles = true;
+      } else if (sessionPreference !== 'current' && sessionPreference.length > 10) {
+        // Specific session ID requested
+        session = this.getSession(sessionPreference);
+        if (!session) {
+          return { success: false, error: `Session ${sessionPreference} not found` };
+        }
+      } else {
+        // Default: find or create current session
+        session = this.getLatestSession({
+          owner,
+          type,
+          active: true
+        });
+
+        if (!session) {
+          session = await this.createSession({
+            type,
+            owner,
+            context,
+            starter: source,
+            identity: { name: owner, user: owner }
+          });
+          action = 'created_new';
+          newLogFiles = true;
+        }
+      }
+
+      if (!session) {
+        return { success: false, error: 'Failed to get or create session' };
+      }
+
+      // Orchestrate what needs to be launched based on capabilities
+      const launched = {
+        browser: capabilities.includes('browser'),
+        webserver: true, // Always running
+        newLogFiles
+      };
+
+      // Return session info struct with orchestration details
+      return {
+        success: true,
+        data: {
+          sessionId: session.id,
+          action,
+          launched,
+          logs: {
+            browser: session.artifacts.logs.client[0] || `${session.artifacts.storageDir}/logs/browser.log`,
+            server: session.artifacts.logs.server[0] || `${session.artifacts.storageDir}/logs/server.log`
+          },
+          interface: 'http://localhost:9000',
+          screenshots: `${session.artifacts.storageDir}/screenshots`,
+          commands: {
+            otherClients: `continuum session-clients ${session.id}`,
+            stop: `continuum session-stop ${session.id}`,
+            fork: `continuum session-fork ${session.id}`,
+            info: `continuum session-info ${session.id}`
+          }
+        }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return { success: false, error: `Connection orchestration failed: ${errorMessage}` };
+    }
+  }
+
+  /**
+   * Fork session from existing session
+   */
+  private async forkSession(fromSessionId: string, options: { owner: string; type: SessionType; context?: string }): Promise<BrowserSession> {
+    const sourceSession = this.getSession(fromSessionId);
+    if (!sourceSession) {
+      throw new Error(`Source session ${fromSessionId} not found for forking`);
+    }
+
+    // Create new session with copied context
+    const newSession = await this.createSession({
+      type: options.type,
+      owner: options.owner,
+      context: `forked-from-${fromSessionId}`,
+      starter: 'fork-operation',
+      identity: { name: options.owner, user: options.owner }
+    });
+
+    // TODO: Copy relevant artifacts/state from source session
+    this.log(`🍴 Forked session ${newSession.id} from ${fromSessionId}`, 'info');
+
+    return newSession;
+  }
+
+  /**
+   * Get session by ID
+   */
+  getSession(sessionId: string): BrowserSession | null {
+    return this.sessions.get(sessionId) || null;
+  }
+
+  /**
+   * Get latest session matching criteria
+   */
+  getLatestSession(criteria: {
+    owner?: string;
+    type?: SessionType;
+    active?: boolean;
+  }): BrowserSession | null {
+    const sessions = Array.from(this.sessions.values())
+      .filter(session => {
+        if (criteria.owner && session.owner !== criteria.owner) return false;
+        if (criteria.type && session.type !== criteria.type) return false;
+        if (criteria.active !== undefined && session.isActive !== criteria.active) return false;
+        return true;
+      })
+      .sort((a, b) => b.lastActive.getTime() - a.lastActive.getTime());
+    
+    return sessions.length > 0 ? sessions[0] : null;
+  }
+
+  /**
+   * Get connections for a specific session
+   */
+  getSessionConnections(sessionId: string): any[] {
+    return Array.from(this.connectionIdentities.values())
+      .filter((conn: any) => conn.sessionId === sessionId);
+  }
+
+  /**
+   * Stop a session and cleanup
+   */
+  async stopSession(sessionId: string, options: {
+    force?: boolean;
+    saveArtifacts?: boolean;
+    reason?: string;
+  } = {}): Promise<{ success: boolean; error?: string }> {
+    try {
+      const session = this.sessions.get(sessionId);
+      if (!session) {
+        return { success: false, error: `Session ${sessionId} not found` };
+      }
+
+      // Mark session as inactive
+      session.isActive = false;
+      session.lastActive = new Date();
+
+      // Close connections if force stop
+      if (options.force) {
+        const connections = this.getSessionConnections(sessionId);
+        for (const conn of connections) {
+          this.connectionIdentities.delete(conn.connectionId);
+        }
+      }
+
+      // Save artifacts if requested
+      if (options.saveArtifacts) {
+        // TODO: Implement artifact saving logic
+        this.log(`💾 Artifacts saved for session ${sessionId}`, 'info');
+      }
+
+      this.log(`🛑 Session ${sessionId} stopped. Reason: ${options.reason || 'Manual'}`, 'info');
+      
+      return { success: true };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to stop session ${sessionId}: ${errorMessage}`, 'error');
+      return { success: false, error: errorMessage };
+    }
+  }
+
+  /**
+   * Emit session events for other systems to observe
+   */
+  emitSessionEvent(event: {
+    type: 'session_created' | 'session_joined' | 'session_stopped' | 'session_forked';
+    sessionId: string;
+    timestamp: Date;
+    metadata?: any;
+  }): void {
+    // Emit to event system for other daemons/commands to observe
+    this.log(`📡 Session event: ${event.type} for ${event.sessionId}`, 'info');
+    
+    // TODO: Integrate with proper event system when available
+    // EventBus.emit('session', event);
+  }
+
+  /**
    * Handle session creation
    */
   private async handleCreateSession(data: any): Promise<DaemonResponse> {
@@ -227,13 +471,13 @@ export class SessionManagerDaemon extends BaseDaemon {
     }
 
     try {
-      const sessionId = await this.createSession(type, owner, options);
+      const session = await this.createSession({ type, owner, ...options });
       
       return {
         success: true,
         data: {
-          sessionId,
-          session: this.sessions.get(sessionId),
+          sessionId: session.id,
+          session,
           message: 'Session created successfully'
         }
       };
@@ -268,7 +512,9 @@ export class SessionManagerDaemon extends BaseDaemon {
     }
 
     try {
-      const sessionId = await this.createSession(identity.type, identity.name, {
+      const session = await this.createSession({
+        type: identity.type as SessionType,
+        owner: identity.name,
         ...options,
         sessionContext: identity.sessionContext
       });
@@ -276,8 +522,8 @@ export class SessionManagerDaemon extends BaseDaemon {
       return {
         success: true,
         data: {
-          sessionId,
-          session: this.sessions.get(sessionId),
+          sessionId: session.id,
+          session,
           identity,
           message: 'Session created for connection'
         }
@@ -470,16 +716,18 @@ export class SessionManagerDaemon extends BaseDaemon {
 
   // Core session management methods (simplified versions of the previous SessionManager)
   
-  private async createSession(
-    type: BrowserSession['type'],
-    owner: string,
-    options: {
-      autoCleanup?: boolean;
-      cleanupAfterMs?: number;
-      url?: string;
-      sessionContext?: string;
-    } = {}
-  ): Promise<string> {
+  private async createSession(options: {
+    type: BrowserSession['type'];
+    owner: string;
+    context?: string;
+    starter?: string;
+    identity?: { name: string; user: string };
+    autoCleanup?: boolean;
+    cleanupAfterMs?: number;
+    url?: string;
+    sessionContext?: string;
+  }): Promise<BrowserSession> {
+    const { type, owner } = options;
     const sessionId = this.generateSessionId(type, owner, options.sessionContext);
     const storageDir = await this.createSessionStorage(type, owner, sessionId, options.sessionContext);
 
@@ -494,7 +742,10 @@ export class SessionManagerDaemon extends BaseDaemon {
       
       artifacts: {
         storageDir,
-        logs: { server: [], client: [] },
+        logs: { 
+          server: [`${storageDir}/logs/server.log`], 
+          client: [`${storageDir}/logs/browser.log`]
+        },
         screenshots: [],
         files: [],
         recordings: [],
@@ -522,7 +773,7 @@ export class SessionManagerDaemon extends BaseDaemon {
       }
     });
     
-    return sessionId;
+    return session;
   }
 
   private async addArtifact(
@@ -696,6 +947,22 @@ export class SessionManagerDaemon extends BaseDaemon {
     await fs.writeFile(
       path.join(sessionPath, 'session-info.json'), 
       JSON.stringify(metadata, null, 2)
+    );
+    
+    // Create initial log files with session start timestamp
+    const sessionStartTime = new Date().toISOString();
+    const sessionStartMessage = `# Continuum Session Log\n# Session: ${sessionId}\n# Created: ${sessionStartTime}\n# Type: ${type}\n# Owner: ${owner}\n${sessionContext ? `# Context: ${sessionContext}\n` : ''}#\n# Session started at ${sessionStartTime}\n\n`;
+    
+    // Create browser.log
+    await fs.writeFile(
+      path.join(sessionPath, 'logs', 'browser.log'),
+      sessionStartMessage + `[${sessionStartTime}] Browser log initialized for session ${sessionId}\n`
+    );
+    
+    // Create server.log  
+    await fs.writeFile(
+      path.join(sessionPath, 'logs', 'server.log'),
+      sessionStartMessage + `[${sessionStartTime}] Server log initialized for session ${sessionId}\n`
     );
     
     return sessionPath;

@@ -57,8 +57,8 @@ export class ContinuumDirectoryDaemon extends BaseDaemon {
   
   private continuumRoot: string;
   private directoryPolicies: Map<string, any> = new Map();
-  private _statsCache: DirectoryStats | null = null;
-  private _statsCacheExpiry: Date | null = null;
+  private __statsCache: DirectoryStats | null = null;
+  private __statsCacheExpiry: Date | null = null;
 
   constructor(continuumRoot: string = '.continuum') {
     super();

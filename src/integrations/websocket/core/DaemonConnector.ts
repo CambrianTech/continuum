@@ -69,13 +69,8 @@ export class DaemonConnector extends EventEmitter {
           console.log(`❌ [DYNAMIC COMMAND] Available commands: ${Array.from(commands.keys()).join(', ')}`);
           return {
             success: false,
-            error: `Command ${command} not found in discovered commands`,
-            processor: 'dynamic-command-discovery',
-            debug: {
-              requestedCommand: command,
-              availableCommands: Array.from(commands.keys()),
-              totalCommandsFound: commands.size
-            }
+            error: `Command ${command} not found in discovered commands. Available: [${Array.from(commands.keys()).join(', ')}] (${commands.size} total)`,
+            processor: 'dynamic-command-discovery'
           };
         }
         
@@ -104,14 +99,8 @@ export class DaemonConnector extends EventEmitter {
             console.log(`❌ [DYNAMIC COMMAND] Command class or execute method missing`);
             return {
               success: false,
-              error: `Command ${command} does not have execute method`,
-              processor: 'dynamic-command-discovery',
-              debug: {
-                commandInfo,
-                moduleExports: Object.keys(commandModule),
-                classFound: !!CommandClass,
-                executeFound: !!(CommandClass && CommandClass.execute)
-              }
+              error: `Command ${command} does not have execute method. Module exports: [${Object.keys(commandModule).join(', ')}]`,
+              processor: 'dynamic-command-discovery'
             };
           }
           
@@ -133,12 +122,7 @@ export class DaemonConnector extends EventEmitter {
           return {
             success: false,
             error: `Failed to execute ${command}: ${errorMessage}`,
-            processor: 'dynamic-command-discovery',
-            debug: {
-              commandInfo,
-              error: errorMessage,
-              stack: error instanceof Error ? error.stack : undefined
-            }
+            processor: 'dynamic-command-discovery'
           };
         }
       },
@@ -289,12 +273,7 @@ export class DaemonConnector extends EventEmitter {
       return {
         success: false,
         error: 'Not connected to TypeScript command system',
-        processor: 'daemon-connector-disconnected',
-        debug: {
-          connected: this.connection.connected,
-          processorAvailable: !!this.commandProcessor,
-          connectionAttempts: this.connection.connectionAttempts
-        }
+        processor: 'daemon-connector-disconnected'
       };
     }
 
@@ -311,11 +290,7 @@ export class DaemonConnector extends EventEmitter {
       return {
         success: false,
         error: errorMessage,
-        processor: 'daemon-connector-error',
-        debug: {
-          error: errorMessage,
-          stack: error instanceof Error ? error.stack : undefined
-        }
+        processor: 'daemon-connector-error'
       };
     }
   }

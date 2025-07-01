@@ -74,8 +74,15 @@ export class DatabaseDaemon extends RequestResponseDaemon {
   private tables: Map<string, Map<string, DatabaseRecord>> = new Map();
   private indexes: Map<string, Map<string, Set<string>>> = new Map();
 
+  public readonly name = 'database';
+  public readonly version = '1.0.0';
+
   constructor() {
-    super('database', '1.0.0');
+    super();
+  }
+
+  getRequestHandlers(): RequestHandlerMap {
+    return this.defineRequestHandlers();
   }
 
   protected defineRequestHandlers(): RequestHandlerMap {

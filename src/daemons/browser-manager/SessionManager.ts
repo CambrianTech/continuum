@@ -513,13 +513,6 @@ export class SessionManager {
     const filename = this.generateArtifactFilename(artifact.type, artifact.source, timestamp);
     const fullPath = path.join(session.artifacts.storageDir, filename);
 
-    // Store artifact reference
-    const _fullArtifact: SessionArtifact = {
-      ...artifact,
-      timestamp,
-      path: fullPath
-    };
-
     // Add to appropriate category
     switch (artifact.type) {
       case 'log':

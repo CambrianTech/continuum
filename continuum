@@ -52,5 +52,23 @@ if [ -z "$CONTINUUM_DIR" ]; then
     exit 1
 fi
 
+# Found continuum directory, check if recompilation needed
+echo "🚀 Starting Continuum from: $CONTINUUM_DIR"
 cd "$CONTINUUM_DIR"
+
+# Check if TypeScript compilation is needed
+if [ -f "tsconfig.json" ] && command -v npx >/dev/null 2>&1; then
+    echo "🔧 Checking TypeScript compilation..."
+    if ! npx tsc --noEmit --project . >/dev/null 2>&1; then
+        echo "⚠️  TypeScript compilation issues detected"
+        echo "🔧 Running: npx tsc --noEmit --project . to check errors"
+        npx tsc --noEmit --project .
+        echo ""
+        echo "💡 You may want to fix compilation errors before running"
+        echo "🚀 Continuing with launch anyway..."
+    else
+        echo "✅ TypeScript compilation clean"
+    fi
+fi
+
 npm run launch
