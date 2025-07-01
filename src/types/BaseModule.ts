@@ -160,12 +160,17 @@ export class BaseModule {
     const validation = await this.validate();
     const duration = Date.now() - startTime;
 
-    const details: TestDetail[] = Object.entries(validation.checks).map(([name, passed]) => ({
-      name: `validation-${name}`,
-      passed,
-      duration: duration / Object.keys(validation.checks).length,
-      error: passed ? undefined : `Check failed: ${name}`
-    }));
+    const details: TestDetail[] = Object.entries(validation.checks).map(([name, passed]) => {
+      const detail: TestDetail = {
+        name: `validation-${name}`,
+        passed,
+        duration: duration / Object.keys(validation.checks).length
+      };
+      if (!passed) {
+        detail.error = `Check failed: ${name}`;
+      }
+      return detail;
+    });
 
     return {
       testType: TestType.Validation,
@@ -196,12 +201,15 @@ export class BaseModule {
       const startTime = Date.now();
       try {
         const passed = await test();
-        details.push({
+        const detail: TestDetail = {
           name,
           passed,
-          duration: Date.now() - startTime,
-          error: passed ? undefined : `Test failed: ${name}`
-        });
+          duration: Date.now() - startTime
+        };
+        if (!passed) {
+          detail.error = `Test failed: ${name}`;
+        }
+        details.push(detail);
         if (passed) successful++;
       } catch (error) {
         details.push({

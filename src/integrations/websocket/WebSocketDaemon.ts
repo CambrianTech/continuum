@@ -515,10 +515,10 @@ export class WebSocketDaemon extends BaseDaemon {
     this.log(`🔍 DEBUG: Registered daemons: ${Array.from(this.registeredDaemons.keys()).join(', ')}`);
     
     if (daemon && daemon.handleMessage) {
-      this.log(`🔍 DEBUG: Calling handleMessage with:`, JSON.stringify(message));
+      this.log(`🔍 DEBUG: Calling handleMessage with: ${JSON.stringify(message)}`, 'debug');
       try {
         const result = await daemon.handleMessage(message);
-        this.log(`🔍 DEBUG: Got response:`, JSON.stringify(result));
+        this.log(`🔍 DEBUG: Got response: ${JSON.stringify(result)}`, 'debug');
         return result;
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);

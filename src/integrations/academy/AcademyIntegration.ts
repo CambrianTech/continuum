@@ -63,8 +63,12 @@ export class AcademyIntegration extends BaseDaemon {
     // Initialize daemons
     this.academyDaemon = new AcademyDaemon();
     this.personaDaemon = new PersonaDaemon({
+      id: 'academy-persona',
       name: 'academy-persona',
+      modelProvider: 'local',
       modelConfig: { model: 'default' },
+      capabilities: ['training', 'evaluation'],
+      sessionDirectory: '.continuum/academy/sessions',
       loraAdapters: []
     });
     this.databaseDaemon = new DatabaseDaemon();

@@ -88,7 +88,8 @@ export class ContinuumSystem extends EventEmitter {
         console.log(`[${daemonReadyTime}] ✅ ${name} daemon ready`);
       } catch (error) {
         const errorTime = new Date().toISOString();
-        console.error(`[${errorTime}] 💥 ${name} daemon FAILED:`, error.message);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`[${errorTime}] 💥 ${name} daemon FAILED:`, errorMessage);
         throw error;
       }
     }
@@ -107,6 +108,9 @@ export class ContinuumSystem extends EventEmitter {
     console.log('🌐 Browser interface: http://localhost:9000');
     console.log('🔌 WebSocket API: ws://localhost:9000');
     console.log('');
+    
+    // Clear any ports that might be in use before running self-tests
+    await this.clearPorts();
     
     // Run self-tests to validate everything works
     await this.runSelfTests();
@@ -182,7 +186,8 @@ export class ContinuumSystem extends EventEmitter {
       }
     } catch (error) {
       // lsof might fail if no processes found - that's actually good
-      if (!error.message.includes('No such file or directory')) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (!errorMessage.includes('No such file or directory')) {
         throw error;
       }
     }
@@ -460,7 +465,8 @@ export class ContinuumSystem extends EventEmitter {
         console.log(`[${daemonStoppedTime}] ✅ ${name} stopped cleanly`);
       } catch (error) {
         const errorTime = new Date().toISOString();
-        console.error(`[${errorTime}] ⚠️  ${name} stop error: ${error.message}`);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`[${errorTime}] ⚠️  ${name} stop error: ${errorMessage}`);
       }
     }
     
