@@ -19,21 +19,36 @@ export class MessageRouter extends EventEmitter {
     clientId: string,
     daemonConnector: DaemonConnector
   ): Promise<WebSocketMessage | null> {
+    console.log(`🔍 [ROUTE DEBUG] Incoming message from ${clientId}`);
+    console.log(`🔍 [ROUTE DEBUG] Message type: ${message.type}`);
+    console.log(`🔍 [ROUTE DEBUG] Message data:`, message.data);
+    console.log(`🔍 [ROUTE DEBUG] Request ID: ${message.requestId}`);
+    
     const messageType = message.type;
     const handler = this.handlers.get(messageType);
+    
+    console.log(`🔍 [ROUTE DEBUG] Looking for handler: ${messageType}`);
+    console.log(`🔍 [ROUTE DEBUG] Available handlers:`, Array.from(this.handlers.keys()));
 
     if (!handler) {
-      console.log(`🔄 Unknown message type: ${messageType}`);
+      console.log(`❌ [ROUTE DEBUG] No handler found for: ${messageType}`);
       return {
         type: 'error',
-        data: { error: `Unknown message type: ${messageType}` },
+        data: { 
+          error: `Unknown message type: ${messageType}`,
+          availableTypes: Array.from(this.handlers.keys())
+        },
         timestamp: new Date().toISOString(),
         clientId
       };
     }
 
+    console.log(`✅ [ROUTE DEBUG] Handler found, executing...`);
     try {
       const result = await handler(message.data, clientId, daemonConnector);
+      console.log(`✅ [ROUTE DEBUG] Handler completed successfully`);
+      console.log(`✅ [ROUTE DEBUG] Result:`, result);
+      
       return {
         type: `${messageType}_response`,
         data: result,
@@ -42,10 +57,14 @@ export class MessageRouter extends EventEmitter {
         requestId: message.requestId
       };
     } catch (error) {
-      console.error(`❌ Handler error for ${messageType}:`, error);
+      console.error(`❌ [ROUTE DEBUG] Handler error for ${messageType}:`, error);
       return {
         type: 'error',
-        data: { error: error instanceof Error ? error.message : String(error) },
+        data: { 
+          error: error instanceof Error ? error.message : String(error),
+          messageType,
+          stack: error instanceof Error ? error.stack : undefined
+        },
         timestamp: new Date().toISOString(),
         clientId,
         requestId: message.requestId
@@ -91,38 +110,93 @@ export class MessageRouter extends EventEmitter {
 
     // Command execution handler
     this.registerHandler('execute_command', async (data: CommandRequest, clientId: string, daemonConnector: DaemonConnector) => {
-      console.log(`⚡ Executing command: ${data.command}`);
+      console.log(`🔍 [COMMAND DEBUG] Starting command execution`);
+      console.log(`🔍 [COMMAND DEBUG] Command: ${data.command}`);
+      console.log(`🔍 [COMMAND DEBUG] Params: ${data.params}`);
+      console.log(`🔍 [COMMAND DEBUG] Client ID: ${clientId}`);
+      console.log(`🔍 [COMMAND DEBUG] Request ID: ${data.requestId}`);
       
-      if (!daemonConnector.isConnected()) {
+      // Check daemon connection with detailed logging
+      const isConnected = daemonConnector.isConnected();
+      console.log(`🔍 [COMMAND DEBUG] Daemon connected: ${isConnected}`);
+      
+      if (!isConnected) {
+        console.log(`❌ [COMMAND DEBUG] FAILURE: TypeScript daemon not connected`);
         return {
           command: data.command,
           params: data.params,
           result: {
             success: false,
             error: 'TypeScript daemon not connected',
-            processor: 'websocket-no-daemon'
+            processor: 'websocket-no-daemon',
+            debug: {
+              step: 'daemon_connection_check',
+              daemonConnected: false,
+              timestamp: new Date().toISOString()
+            }
           }
         };
       }
 
-      const startTime = Date.now();
-      const result = await daemonConnector.executeCommand(
-        data.command,
-        this.parseParams(data.params),
-        { clientId, requestId: data.requestId }
-      );
-      const duration = Date.now() - startTime;
+      console.log(`🔍 [COMMAND DEBUG] Daemon connected, parsing params...`);
+      const parsedParams = this.parseParams(data.params);
+      console.log(`🔍 [COMMAND DEBUG] Parsed params:`, parsedParams);
 
-      return {
-        command: data.command,
-        params: data.params,
-        result: {
-          ...result,
-          duration,
-          processor: 'typescript-daemon'
-        },
-        requestId: data.requestId
-      };
+      console.log(`🔍 [COMMAND DEBUG] Sending to daemon connector...`);
+      const startTime = Date.now();
+      
+      try {
+        const result = await daemonConnector.executeCommand(
+          data.command,
+          parsedParams,
+          { clientId, requestId: data.requestId }
+        );
+        const duration = Date.now() - startTime;
+        
+        console.log(`✅ [COMMAND DEBUG] Command completed in ${duration}ms`);
+        console.log(`✅ [COMMAND DEBUG] Result:`, result);
+
+        return {
+          command: data.command,
+          params: data.params,
+          result: {
+            ...result,
+            duration,
+            processor: 'typescript-daemon',
+            debug: {
+              step: 'command_completed',
+              duration,
+              timestamp: new Date().toISOString()
+            }
+          },
+          requestId: data.requestId
+        };
+      } catch (error) {
+        const duration = Date.now() - startTime;
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        
+        console.log(`❌ [COMMAND DEBUG] Command failed after ${duration}ms`);
+        console.log(`❌ [COMMAND DEBUG] Error:`, error);
+        
+        return {
+          command: data.command,
+          params: data.params,
+          result: {
+            success: false,
+            error: errorMessage,
+            duration,
+            processor: 'typescript-daemon-error',
+            debug: {
+              step: 'command_error',
+              duration,
+              error: errorMessage,
+              stack: error instanceof Error ? error.stack : undefined,
+              timestamp: new Date().toISOString()
+            }
+          },
+          requestId: data.requestId
+        };
+      }
     });
 
     // Client initialization handler with version checking
