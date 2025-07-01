@@ -35,7 +35,13 @@ export class SessionPathsCommand extends BaseCommand {
           required: false,
           enum: ['object', 'array', 'shell']
         }
-      }
+      },
+      examples: [
+        {
+          description: 'Get session log paths',
+          command: 'session-paths --sessionId=my-session --pathType=logs'
+        }
+      ]
     };
   }
 

@@ -64,7 +64,13 @@ export class SessionCreateCommand extends BaseCommand {
           description: 'Hours before auto-cleanup',
           required: false
         }
-      }
+      },
+      examples: [
+        {
+          description: 'Create development session',
+          command: 'session-create --starter=system --name=dev-session'
+        }
+      ]
     };
   }
 
