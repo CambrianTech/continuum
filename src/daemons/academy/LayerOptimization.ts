@@ -4,17 +4,7 @@
  * Combines layers, prunes ineffective ones, optimizes composition based on Academy performance data
  */
 
-import { LoRAComposition } from './CapabilitySynthesis.js';
-
-// TODO: Define LoRALayer interface when CapabilitySynthesis is complete
-interface LoRALayer {
-  layer_id: string;
-  name: string;
-  domain: string;
-  rank: number;
-  alpha: number;
-  performance_metrics: any;
-}
+import { LoRALayer, LoRAComposition } from './types/index.js';
 
 export interface OptimizationMetrics {
   performance_benchmarks: PerformanceBenchmark[];
@@ -280,37 +270,45 @@ export class LayerOptimization {
    * Create merged layer using various algorithms
    */
   private async createMergedLayer(layers: LoRALayer[], algorithm: string): Promise<LoRALayer> {
-    const mergedId = `merged_${layers.map(l => l.source_id.slice(0, 4)).join('_')}_${Date.now()}`;
+    const mergedId = `merged_${layers.map(l => (l.source_id || l.layer_id).slice(0, 4)).join('_')}_${Date.now()}`;
 
     switch (algorithm) {
       case 'weighted_average':
         return {
+          layer_id: mergedId,
           source_id: mergedId,
+          layer_type: 'optimized_merge',
           domain: this.findCommonDomain(layers) || 'multi_domain',
           rank: Math.round(layers.reduce((sum, layer) => sum + layer.rank, 0) / layers.length),
           alpha: Math.round(layers.reduce((sum, layer) => sum + layer.alpha, 0) / layers.length),
-          weight: layers.reduce((sum, layer) => sum + layer.weight, 0) / layers.length,
+          target_modules: this.mergeTargetModules(layers),
+          weight: layers.reduce((sum, layer) => sum + (layer.weight || 0), 0) / layers.length,
           position: 'core'
         };
 
       case 'selective_merge':
         // Keep the strongest characteristics from each layer
         const bestLayer = layers.reduce((best, current) => 
-          current.weight > best.weight ? current : best
+          (current.weight || 0) > (best.weight || 0) ? current : best
         );
         return {
+          layer_id: mergedId,
           source_id: mergedId,
+          layer_type: 'selective_merge',
           domain: bestLayer.domain,
           rank: Math.max(...layers.map(l => l.rank)),
           alpha: Math.max(...layers.map(l => l.alpha)),
-          weight: Math.max(...layers.map(l => l.weight)),
+          target_modules: this.mergeTargetModules(layers),
+          weight: Math.max(...layers.map(l => l.weight || 0)),
           position: 'core'
         };
 
       case 'combine_weights':
         // Add weights together for stronger combined layer
         return {
+          layer_id: mergedId,
           source_id: mergedId,
+          layer_type: 'weight_combination',
           domain: this.findCommonDomain(layers) || 'multi_domain',
           rank: Math.min(64, layers.reduce((sum, layer) => sum + layer.rank, 0)), // Cap at 64
           alpha: Math.min(32, layers.reduce((sum, layer) => sum + layer.alpha, 0)), // Cap at 32
@@ -321,6 +319,17 @@ export class LayerOptimization {
       default:
         return layers[0]; // Fallback to first layer
     }
+  }
+
+  /**
+   * Merge target modules from multiple layers
+   */
+  private mergeTargetModules(layers: LoRALayer[]): string[] {
+    const allModules = new Set<string>();
+    layers.forEach(layer => {
+      layer.target_modules.forEach(module => allModules.add(module));
+    });
+    return Array.from(allModules);
   }
 
   /**
