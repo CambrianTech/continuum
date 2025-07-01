@@ -13,6 +13,101 @@ export abstract class BaseWidget extends HTMLElement {
   protected cssPath: string = ''; // Override in child classes
   protected isCollapsed: boolean = false; // Track collapse state
 
+  /**
+   * Widget reports its own base path for asset resolution
+   * Override in child classes to specify the widget's directory
+   */
+  static getBasePath(): string {
+    return '/src/ui/components/shared';
+  }
+  
+  /**
+   * Widget declares its own CSS files (BaseWidget CSS included automatically)
+   * Override in child classes to specify additional CSS files needed
+   */
+  static getOwnCSS(): string[] {
+    return []; // Child widgets override this
+  }
+  
+  /**
+   * Widget declares its own HTML files (optional)
+   * Override in child classes to specify HTML template files
+   */
+  static getOwnHTML(): string[] {
+    return []; // Child widgets can override this
+  }
+  
+  /**
+   * Get all CSS assets including base widget CSS
+   */
+  static getCSSAssets(): string[] {
+    const baseCSS = ['/src/ui/components/shared/BaseWidget.css'];
+    const ownCSS = this.getOwnCSS().map(css => `${this.getBasePath()}/${css}`);
+    return [...baseCSS, ...ownCSS];
+  }
+  
+  /**
+   * Load HTML templates if widget declares any
+   */
+  protected async loadHTMLTemplates(): Promise<string> {
+    const constructor = this.constructor as typeof BaseWidget;
+    const basePath = constructor.getBasePath();
+    const htmlFiles = constructor.getOwnHTML();
+    
+    if (htmlFiles.length === 0) {
+      return this.renderOwnContent(); // Fallback to code-based content
+    }
+    
+    try {
+      const htmlPromises = htmlFiles.map(file => 
+        fetch(`${basePath}/${file}`).then(r => r.text())
+      );
+      
+      const htmlContents = await Promise.all(htmlPromises);
+      return htmlContents.join('\n');
+      
+    } catch (error) {
+      console.warn(`Failed to load HTML templates for ${constructor.name}:`, error);
+      return this.renderOwnContent(); // Fallback to code-based content
+    }
+  }
+
+  /**
+   * Widget declares its own HTML content (fallback when no HTML files)
+   * Override in child classes to specify widget-specific content
+   */
+  protected renderOwnContent(): string {
+    return '<p>Base widget - override renderOwnContent() or declare getOwnHTML()</p>';
+  }
+  
+  /**
+   * Base widget HTML structure - includes collapse, header, content
+   */
+  protected renderBaseHTML(): string {
+    return `
+      <div class="widget-container">
+        <div class="widget-header" data-action="toggle-collapse">
+          <div class="widget-title-row">
+            <span class="widget-icon">${this.widgetIcon}</span>
+            <span class="widget-title">${this.widgetTitle}</span>
+            <span class="collapse-toggle">${this.isCollapsed ? '▶' : '▼'}</span>
+          </div>
+        </div>
+        <div class="widget-content ${this.isCollapsed ? 'collapsed' : ''}">
+          ${this.renderOwnContent()}
+        </div>
+      </div>
+    `;
+  }
+  
+  /**
+   * Get widget-relative asset path
+   */
+  protected getAssetPath(relativePath: string): string {
+    const basePath = (this.constructor as typeof BaseWidget).getBasePath();
+    return `${basePath}/${relativePath}`;
+  }
+
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
@@ -69,15 +164,30 @@ export abstract class BaseWidget extends HTMLElement {
    * Load CSS for the widget - now uses bundled CSS
    */
   async loadCSS(): Promise<string> {
-    // CSS is now bundled with the widget - return bundled styles
-    return this.getBundledCSS();
+    // Load CSS based on declared assets
+    const constructor = this.constructor as typeof BaseWidget;
+    const basePath = constructor.getBasePath();
+    const cssAssets = constructor.getCSSAssets();
+    
+    try {
+      const cssPromises = cssAssets.map(asset => 
+        fetch(`${basePath}/${asset}`).then(r => r.text())
+      );
+      
+      const cssContents = await Promise.all(cssPromises);
+      return cssContents.join('\n');
+      
+    } catch (error) {
+      console.warn(`Failed to load CSS assets for ${constructor.name}:`, error);
+      return this.getDefaultBaseCSS();
+    }
   }
 
   /**
-   * Get bundled CSS - override in child classes to provide their CSS
+   * Get bundled CSS - legacy method, now uses declared assets
    */
-  getBundledCSS(): string {
-    return this.getDefaultBaseCSS();
+  getBundledCSS(): string | Promise<string> {
+    return this.loadCSS();
   }
 
   /**
