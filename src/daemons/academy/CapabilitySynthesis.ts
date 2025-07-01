@@ -576,7 +576,14 @@ export class CapabilitySynthesis {
       synthesis_strategy: 'exact_match',
       confidence: 0.95,
       component_personas: [],
-      lora_composition: { primary_layers: [], bridge_layers: [], novel_layers: [], composition_algorithm: 'direct' },
+      lora_composition: { 
+        primary_layers: [], 
+        bridge_layers: [], 
+        novel_layers: [], 
+        composition_algorithm: 'direct',
+        total_rank: 0,
+        compression_efficiency: 1.0
+      },
       estimated_performance: { overall_score: 0.9, domain_scores: {}, confidence_interval: [0.85, 0.95] },
       creation_time_estimate: 1000,
       resource_requirements: { compute_hours: 0.1, memory_gb: 2, storage_gb: 1, network_bandwidth_mbps: 10 }
@@ -589,7 +596,14 @@ export class CapabilitySynthesis {
       synthesis_strategy: 'fine_tune_required',
       confidence: 0.7,
       component_personas: [],
-      lora_composition: { primary_layers: [], bridge_layers: [], novel_layers: [], composition_algorithm: 'adaptive' },
+      lora_composition: { 
+        primary_layers: [], 
+        bridge_layers: [], 
+        novel_layers: [], 
+        composition_algorithm: 'adaptive',
+        total_rank: 32,
+        compression_efficiency: 0.75
+      },
       estimated_performance: { overall_score: 0.75, domain_scores: {}, confidence_interval: [0.65, 0.85] },
       creation_time_estimate: 60000,
       resource_requirements: { compute_hours: 2, memory_gb: 8, storage_gb: 5, network_bandwidth_mbps: 50 }
@@ -602,7 +616,14 @@ export class CapabilitySynthesis {
       synthesis_strategy: 'novel_creation',
       confidence: 0.3,
       component_personas: [],
-      lora_composition: { primary_layers: [], bridge_layers: [], novel_layers: [], composition_algorithm: 'experimental' },
+      lora_composition: { 
+        primary_layers: [], 
+        bridge_layers: [], 
+        novel_layers: [], 
+        composition_algorithm: 'experimental',
+        total_rank: 64,
+        compression_efficiency: 0.5
+      },
       estimated_performance: { overall_score: 0.5, domain_scores: {}, confidence_interval: [0.3, 0.7] },
       creation_time_estimate: 300000,
       resource_requirements: { compute_hours: 10, memory_gb: 16, storage_gb: 20, network_bandwidth_mbps: 100 }

@@ -210,25 +210,82 @@ export class FormulaAnalyzer {
     console.log('TODO: Implement bifurcation analysis for:', formula.name);
     return [0.1, 0.5]; 
   }
-  private static analyzeGradientFlow(formula: TrainingFormula): string { return 'smooth_descent'; }
-  private static assessMinimaAvoidance(formula: TrainingFormula): number { return 0.7; }
-  private static calculateExplorationBalance(formula: TrainingFormula): number { return 0.6; }
-  private static analyzeDimensionalityEffects(formula: TrainingFormula): string { return 'curse_mitigation'; }
-  private static analyzeDistanceMetrics(formula: TrainingFormula): string { return 'euclidean_with_weighting'; }
-  private static assessTopologyPreservation(formula: TrainingFormula): number { return 0.8; }
-  private static assessIntrinsicMotivation(formula: TrainingFormula): number { return 0.7; }
-  private static analyzeChallengeResponse(formula: TrainingFormula): string { return 'adaptive_challenge'; }
-  private static analyzeMasteryProgression(formula: TrainingFormula): string { return 'spiral_mastery'; }
-  private static estimateWorkingMemoryUsage(formula: TrainingFormula): number { return 0.6; }
-  private static analyzeAttentionAllocation(formula: TrainingFormula): string { return 'adaptive_attention'; }
-  private static assessFatigueManagement(formula: TrainingFormula): number { return 0.7; }
-  private static analyzeCollaborationIncentives(formula: TrainingFormula): number { return 0.8; }
-  private static assessCompetitionStress(formula: TrainingFormula): number { return 0.3; }
-  private static analyzePeerLearningEffects(formula: TrainingFormula): number { return 0.8; }
-  private static calculateLandscapeRoughness(formula: TrainingFormula): number { return 0.4; }
-  private static identifyConvergenceBasins(formula: TrainingFormula): string[] { return ['global_optimum', 'local_optimum_1']; }
-  private static analyzeEscapeMechanisms(formula: TrainingFormula): string[] { return ['noise_injection', 'restart_cycles']; }
-  private static analyzeTradeOffs(formula: TrainingFormula): string[] { return ['speed_vs_stability', 'exploration_vs_exploitation']; }
+  private static analyzeGradientFlow(formula: TrainingFormula): string { 
+    console.log('TODO: Implement gradient flow analysis for:', formula.name); 
+    return 'smooth_descent'; 
+  }
+  private static assessMinimaAvoidance(formula: TrainingFormula): number { 
+    console.log('TODO: Implement minima avoidance assessment for:', formula.name); 
+    return 0.7; 
+  }
+  private static calculateExplorationBalance(formula: TrainingFormula): number { 
+    console.log('TODO: Implement exploration balance calculation for:', formula.name); 
+    return 0.6; 
+  }
+  private static analyzeDimensionalityEffects(formula: TrainingFormula): string { 
+    console.log('TODO: Implement dimensionality effects analysis for:', formula.name); 
+    return 'curse_mitigation'; 
+  }
+  private static analyzeDistanceMetrics(formula: TrainingFormula): string { 
+    console.log('TODO: Implement distance metrics analysis for:', formula.name); 
+    return 'euclidean_with_weighting'; 
+  }
+  private static assessTopologyPreservation(formula: TrainingFormula): number { 
+    console.log('TODO: Implement topology preservation assessment for:', formula.name); 
+    return 0.8; 
+  }
+  private static assessIntrinsicMotivation(formula: TrainingFormula): number { 
+    console.log('TODO: Implement intrinsic motivation assessment for:', formula.name); 
+    return 0.7; 
+  }
+  private static analyzeChallengeResponse(formula: TrainingFormula): string { 
+    console.log('TODO: Implement challenge response analysis for:', formula.name); 
+    return 'adaptive_challenge'; 
+  }
+  private static analyzeMasteryProgression(formula: TrainingFormula): string { 
+    console.log('TODO: Implement mastery progression analysis for:', formula.name); 
+    return 'spiral_mastery'; 
+  }
+  private static estimateWorkingMemoryUsage(formula: TrainingFormula): number { 
+    console.log('TODO: Implement working memory usage estimation for:', formula.name); 
+    return 0.6; 
+  }
+  private static analyzeAttentionAllocation(formula: TrainingFormula): string { 
+    console.log('TODO: Implement attention allocation analysis for:', formula.name); 
+    return 'adaptive_attention'; 
+  }
+  private static assessFatigueManagement(formula: TrainingFormula): number { 
+    console.log('TODO: Implement fatigue management assessment for:', formula.name); 
+    return 0.7; 
+  }
+  private static analyzeCollaborationIncentives(formula: TrainingFormula): number { 
+    console.log('TODO: Implement collaboration incentives analysis for:', formula.name); 
+    return 0.8; 
+  }
+  private static assessCompetitionStress(formula: TrainingFormula): number { 
+    console.log('TODO: Implement competition stress assessment for:', formula.name); 
+    return 0.3; 
+  }
+  private static analyzePeerLearningEffects(formula: TrainingFormula): number { 
+    console.log('TODO: Implement peer learning effects analysis for:', formula.name); 
+    return 0.8; 
+  }
+  private static calculateLandscapeRoughness(formula: TrainingFormula): number { 
+    console.log('TODO: Implement landscape roughness calculation for:', formula.name); 
+    return 0.4; 
+  }
+  private static identifyConvergenceBasins(formula: TrainingFormula): string[] { 
+    console.log('TODO: Implement convergence basins identification for:', formula.name); 
+    return ['global_optimum', 'local_optimum_1']; 
+  }
+  private static analyzeEscapeMechanisms(formula: TrainingFormula): string[] { 
+    console.log('TODO: Implement escape mechanisms analysis for:', formula.name); 
+    return ['noise_injection', 'restart_cycles']; 
+  }
+  private static analyzeTradeOffs(formula: TrainingFormula): string[] { 
+    console.log('TODO: Implement trade-offs analysis for:', formula.name); 
+    return ['speed_vs_stability', 'exploration_vs_exploitation']; 
+  }
 }
 
 /**
@@ -373,6 +430,8 @@ export class FormulaMaster {
   }
 
   private async analyzeTrainingProblem(request: FormulaRequest): Promise<ProblemAnalysis> {
+    console.log('TODO: Use knowledgeBase for problem analysis:', this.knowledgeBase.getDomainKnowledge ? 'available' : 'not available');
+    
     return {
       complexity_level: this.assessProblemComplexity(request),
       domain_characteristics: this.analyzeDomainCharacteristics(request.target_domain),
@@ -418,6 +477,7 @@ export class FormulaMaster {
 
   private calculateConfidence(formula: TrainingFormula, request: FormulaRequest): number {
     // Calculate confidence based on persona's experience and problem match
+    console.log('TODO: Use formula complexity in confidence calculation for:', formula.name);
     let confidence = this.persona.formula_generation_capability;
     
     // Adjust based on domain experience
@@ -448,22 +508,43 @@ export class FormulaMaster {
   }
 
   // Placeholder implementations for complex analysis methods
-  private assessProblemComplexity(request: FormulaRequest): string { return 'medium'; }
-  private analyzeDomainCharacteristics(domain: string): any { return { type: 'technical', complexity: 'medium' }; }
-  private analyzeStudentProfile(profile: any): any { return { learning_efficiency: 0.7 }; }
-  private analyzeConstraints(constraints: string[]): any { return { time_pressure: 'medium' }; }
-  private analyzeSuccessMetrics(metrics: string[]): any { return { quantifiable: true }; }
-  private analyzeContextualFactors(context: any): any { return { vector_space_density: 'medium' }; }
+  private assessProblemComplexity(request: FormulaRequest): string { 
+    console.log('TODO: Implement problem complexity assessment for:', request.target_domain); 
+    return 'medium'; 
+  }
+  private analyzeDomainCharacteristics(domain: string): any { 
+    console.log('TODO: Implement domain characteristics analysis for:', domain); 
+    return { type: 'technical', complexity: 'medium' }; 
+  }
+  private analyzeStudentProfile(profile: any): any { 
+    console.log('TODO: Implement student profile analysis for:', profile.learning_style || 'unknown'); 
+    return { learning_efficiency: 0.7 }; 
+  }
+  private analyzeConstraints(constraints: string[]): any { 
+    console.log('TODO: Implement constraints analysis for:', constraints.length, 'constraints'); 
+    return { time_pressure: 'medium' }; 
+  }
+  private analyzeSuccessMetrics(metrics: string[]): any { 
+    console.log('TODO: Implement success metrics analysis for:', metrics.length, 'metrics'); 
+    return { quantifiable: true }; 
+  }
+  private analyzeContextualFactors(context: any): any { 
+    console.log('TODO: Implement contextual factors analysis for:', context.environment || 'unknown'); 
+    return { vector_space_density: 'medium' }; 
+  }
   
   private async generateAdversarialFormula(request: FormulaRequest, analysis: ProblemAnalysis): Promise<TrainingFormula> {
+    console.log('TODO: Use analysis in adversarial formula generation:', analysis.complexity_level);
     return this.formulaGenerator.generateFormula(request);
   }
   
   private async generateCollaborativeFormula(request: FormulaRequest, analysis: ProblemAnalysis): Promise<TrainingFormula> {
+    console.log('TODO: Use analysis in collaborative formula generation:', analysis.complexity_level);
     return this.formulaGenerator.generateFormula(request);
   }
   
   private async generateEvolutionaryFormula(request: FormulaRequest, analysis: ProblemAnalysis): Promise<TrainingFormula> {
+    console.log('TODO: Use analysis in evolutionary formula generation:', analysis.complexity_level);
     return this.formulaGenerator.generateFormula(request);
   }
   
