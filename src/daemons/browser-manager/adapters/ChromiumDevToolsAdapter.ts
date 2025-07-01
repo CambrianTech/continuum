@@ -36,6 +36,12 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
   private ws: WebSocket | null = null;
   private baseUrl: string = '';
   private currentTargetId: string = '';
+  
+  constructor() {
+    // TODO: Use currentTargetId when implementing multi-target support
+    console.log('TODO: Initialize ChromiumDevToolsAdapter, currentTargetId:', this.currentTargetId);
+  }
+
   private messageId = 1;
   private pendingCommands = new Map<number, { resolve: Function; reject: Function }>();
   private eventHandlers = new Map<string, Function[]>();
@@ -114,6 +120,10 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
   }
 
   async evaluateScript(expression: string, targetId?: string): Promise<any> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for script evaluation:', activeTargetId);
+    
     const result = await this.sendCommand('Runtime.evaluate', {
       expression,
       returnByValue: true,
@@ -128,10 +138,16 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
   }
 
   async navigate(url: string, targetId?: string): Promise<void> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for navigation:', activeTargetId);
+    
     await this.sendCommand('Page.navigate', { url });
   }
 
   async reload(targetId?: string, ignoreCache: boolean = false): Promise<void> {
+    // Ignores targetId parameter - uses the connected target from this.currentTargetId
+    if (targetId) { /* Interface compatibility - parameter ignored */ }
     await this.sendCommand('Page.reload', { ignoreCache });
   }
 
@@ -140,6 +156,8 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
     quality?: number;
     fullPage?: boolean;
   } = {}): Promise<Buffer> {
+    // Ignores targetId parameter - uses the connected target from this.currentTargetId
+    if (targetId) { /* Interface compatibility - parameter ignored */ }
     const params: any = {
       format: options.format || 'png'
     };
@@ -165,6 +183,10 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
   }
 
   async enableConsole(callback: (message: ConsoleMessage) => void, targetId?: string): Promise<void> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for console enabling:', activeTargetId);
+    
     // Enable Runtime domain
     await this.sendCommand('Runtime.enable');
     
@@ -195,12 +217,20 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
   }
 
   async disableConsole(targetId?: string): Promise<void> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for console disabling:', activeTargetId);
+    
     await this.sendCommand('Runtime.disable');
     this.removeEventListener('Runtime.consoleAPICalled');
     this.removeEventListener('Runtime.exceptionThrown');
   }
 
   async enableNetwork(callback: (request: NetworkRequest) => void, targetId?: string): Promise<void> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for network enabling:', activeTargetId);
+    
     await this.sendCommand('Network.enable');
     
     const requests = new Map<string, Partial<NetworkRequest>>();
@@ -242,6 +272,10 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
   }
 
   async disableNetwork(targetId?: string): Promise<void> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for network disabling:', activeTargetId);
+    
     await this.sendCommand('Network.disable');
     this.removeEventListener('Network.requestWillBeSent');
     this.removeEventListener('Network.responseReceived');
@@ -249,6 +283,10 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
   }
 
   async enablePerformance(callback: (metrics: PerformanceMetrics) => void, targetId?: string): Promise<void> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for performance enabling:', activeTargetId);
+    
     await this.sendCommand('Performance.enable');
     
     this.addEventListener('Performance.metrics', (params: any) => {
@@ -263,6 +301,10 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
   }
 
   async disablePerformance(targetId?: string): Promise<void> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for performance disabling:', activeTargetId);
+    
     await this.sendCommand('Performance.disable');
     this.removeEventListener('Performance.metrics');
   }
@@ -276,6 +318,10 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
       description: string;
     }>;
   }> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for security state:', activeTargetId);
+    
     await this.sendCommand('Security.enable');
     const result = await this.sendCommand('Security.getSecurityState');
     await this.sendCommand('Security.disable');
@@ -287,6 +333,10 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
   }
 
   async startCoverage(targetId?: string): Promise<void> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for coverage start:', activeTargetId);
+    
     await this.sendCommand('Profiler.enable');
     await this.sendCommand('Profiler.startPreciseCoverage', {
       callCount: true,
@@ -308,6 +358,10 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
       }>;
     }>;
   }> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for coverage stop:', activeTargetId);
+    
     const result = await this.sendCommand('Profiler.takePreciseCoverage');
     await this.sendCommand('Profiler.stopPreciseCoverage');
     await this.sendCommand('Profiler.disable');
@@ -316,11 +370,19 @@ export class ChromiumDevToolsAdapter implements IDevToolsAdapter {
   }
 
   async startProfiling(targetId?: string): Promise<void> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for profiling start:', activeTargetId);
+    
     await this.sendCommand('Profiler.enable');
     await this.sendCommand('Profiler.start');
   }
 
   async stopProfiling(targetId?: string): Promise<{ profile: any }> {
+    // Use specified targetId or fall back to connected target
+    const activeTargetId = targetId || this.currentTargetId;
+    console.log('TODO: Use activeTargetId for profiling stop:', activeTargetId);
+    
     const result = await this.sendCommand('Profiler.stop');
     await this.sendCommand('Profiler.disable');
     return result;

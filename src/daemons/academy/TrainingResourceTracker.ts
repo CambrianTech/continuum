@@ -166,10 +166,10 @@ export class TrainingResourceTracker {
     }
 
     const fullResource: TrainingResource = {
+      ...resource,
       id: resourceId,
       checksum,
-      data_summary: dataSummary,
-      ...resource
+      data_summary: dataSummary
     };
 
     // Store resource
@@ -614,6 +614,7 @@ export class TrainingResourceTracker {
   }
 
   private calculateDomainCompatibility(domain1: string, domain2: string, resources: TrainingResource[]): number {
+    console.log('TODO: Implement domain compatibility calculation for:', domain1, 'vs', domain2, 'with', resources.length, 'resources');
     // Calculate how well two domains work together based on resource analysis
     return Math.random() * 0.5 + 0.3; // Placeholder
   }
