@@ -32,14 +32,16 @@ export class UniversalWidgetAssetTester {
     const results: AssetTestResult[] = [];
     
     // Test CSS assets
-    const cssAssets = WidgetClass.getCSSAssets();
+    const allAssets = await WidgetClass.getWidgetAssets();
+    const cssAssets = allAssets.filter(asset => asset.endsWith('.css'));
     for (const cssPath of cssAssets) {
       const result = await this.testAsset(WidgetClass.name, 'css', cssPath);
       results.push(result);
     }
     
     // Test HTML assets
-    const htmlAssets = WidgetClass.getOwnHTML();
+    const allFiles = await WidgetClass.getWidgetFiles();
+    const htmlAssets = allFiles.filter(file => file.endsWith('.html'));
     const basePath = WidgetClass.getBasePath();
     for (const htmlFile of htmlAssets) {
       const htmlPath = `${basePath}/${htmlFile}`;

@@ -107,11 +107,13 @@ export class InteractivePersona extends BaseWidget {
   private setupPersonaEventListeners(): void {
     // Listen for user interactions that personas should know about
     document.addEventListener('widget:screenshot', (e) => {
-      this.notifyPersona('user-screenshot', e.detail);
+      const customEvent = e as CustomEvent;
+      this.notifyPersona('user-screenshot', customEvent.detail);
     });
 
     document.addEventListener('widget:refresh', (e) => {
-      this.notifyPersona('user-refresh', e.detail);
+      const customEvent = e as CustomEvent;
+      this.notifyPersona('user-refresh', customEvent.detail);
     });
 
     // Listen for menu clicks, navigation, etc.
