@@ -19,6 +19,92 @@
 
 **Philosophy**: New AI personas should understand the entire system within minutes by reading the bootloader docs, then dive into specific modules where all context lives in the file headers. No external documentation archaeology required.
 
+## 🔍 **JTAG AUTONOMOUS DEBUGGING METHODOLOGY**
+
+**"Real-time visibility enables autonomous problem solving through systematic log correlation"**
+
+### **🎯 The JTAG Breakthrough: Console Capture + Server Logs**
+
+**CRITICAL DISCOVERY**: The combination of browser console forwarding and server daemon logs creates **complete system visibility** that enables truly autonomous debugging without human intervention.
+
+**Core Components:**
+- **PORTAL BRIDGE**: Browser console logs forwarded to server via WebSocket commands
+- **Server Daemon Logs**: Real-time process and command execution logging
+- **Correlation Engine**: Cross-reference client and server logs for root cause analysis
+
+### **📋 Systematic Debugging Protocol**
+
+**Step 1: Monitor Connection Health**
+```
+Watch for patterns:
+✅ WebSocket connection established → System healthy
+❌ Connection closed (1006) → Server crashed, needs restart  
+⚠️ Command timeouts → Daemon communication broken
+```
+
+**Step 2: Trace Command Flow**
+```
+Browser logs: "Command 'discover_widgets' timed out"
+Server logs: "✅ Command completed: discover_widgets (0ms)"
+→ ANALYSIS: Command succeeds but returns empty result {}
+→ ROOT CAUSE: Implementation issue, not communication issue
+```
+
+**Step 3: Use Logs to Find Source Files**
+```
+Error: "discover_widgets returning {}"
+Search: find src -name "*.ts" -exec grep -l "discover_widgets" {} \;
+Result: src/commands/ui/discover-widgets/DiscoverWidgetsCommand.ts
+→ DIRECT PATH TO PROBLEM SOURCE
+```
+
+### **🚀 Real-World Example: Widget Discovery Debugging**
+
+**Problem Identification (via JTAG logs):**
+```
+PORTAL BRIDGE [console-complete-capture]: [WARN] Server widget discovery failed: {}
+PORTAL BRIDGE [console-complete-capture]: [LOG] Widget discovery complete - 0 widgets processed
+```
+
+**Systematic Investigation:**
+1. **Connection Check**: WebSocket healthy ✅
+2. **Command Execution**: discover_widgets command completing ✅  
+3. **Data Flow**: Command returns `{}` instead of widget paths ❌
+4. **Source Location**: Found in `/commands/ui/discover-widgets/DiscoverWidgetsCommand.ts`
+
+**Root Cause Analysis:**
+- Browser expects: `{"/dist/ui/components/Chat/ChatWidget.js": true}`
+- Command returns: `{}` (empty object)
+- Server can't find widget files in expected locations
+
+### **🛠️ Autonomous Problem-Solving Workflow**
+
+**Pattern Recognition:**
+1. **Timeout Patterns** → Connection/startup issues → Restart system
+2. **Empty Result Patterns** → Logic/implementation issues → Fix source code  
+3. **File Not Found Patterns** → Build/deployment issues → Check build process
+4. **Crash Patterns** → Resource/stability issues → Add error handling
+
+**Self-Healing Capabilities:**
+- **Auto-restart** on connection failures
+- **Dynamic discovery** of available resources
+- **Fallback systems** when primary systems fail
+- **Progressive debugging** from symptoms to root cause
+
+### **🎓 Learning from Each Debug Session**
+
+**Documentation Pattern:**
+- Record **symptom** → **log pattern** → **root cause** → **solution** mappings
+- Build **pattern library** for faster future debugging
+- Create **automated checks** for common failure modes
+
+**Autonomous Improvement:**
+- Each debug session **teaches the system** about its own failure modes
+- JTAG logs become **training data** for autonomous problem resolution
+- System becomes **self-aware** of its health and issues
+
+**BREAKTHROUGH INSIGHT**: With complete log visibility, AI can debug complex distributed systems autonomously by **correlating symptoms across multiple layers** and **systematically tracing problems to their source**.
+
 ## 🚀 **GENERALIZED INHERITANCE ARCHITECTURE (BREAKTHROUGH)**
 
 **"Pattern recognition enables systematic boilerplate elimination through intermediate parent classes"**
