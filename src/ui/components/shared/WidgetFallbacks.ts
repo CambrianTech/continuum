@@ -43,6 +43,7 @@ export class WidgetFallbackElement extends HTMLElement {
       <style>${css}</style>
       ${html}
     `;
+    }
   }
 
   private generateFallbackHTML(): string {
