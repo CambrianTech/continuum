@@ -1,0 +1,8 @@
+{
+  "name": "@continuum/browser-console-command",
+  "version": "1.0.0",
+  "description": "Browser console interaction command with session integration",
+  "main": "BrowserConsoleCommand.js",
+  "type": "module",
+  "keywords": ["browser", "console", "session", "logging", "devtools", "monitoring"]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "@continuum/js-execute-command",
+  "version": "1.0.0",
+  "description": "JavaScript execution command with session logging integration",
+  "main": "JSExecuteCommand.js",
+  "type": "module",
+  "keywords": ["javascript", "browser", "execution", "session", "logging", "devtools"]
+}

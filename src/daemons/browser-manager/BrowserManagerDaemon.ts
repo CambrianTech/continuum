@@ -151,6 +151,11 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     this.sessionManager.registerBrowser(browser);
     this.sessionManager.addSession(browser.id, sessionId);
     
+    // Start console logging for this session if browser has debug port
+    if (browser.debugPort && browser.devToolsUrl) {
+      await this.startSessionConsoleLogging(sessionId, browser.devToolsUrl);
+    }
+    
     this.log(`✅ Created new browser ${browser.id} (${browser.type}) on port ${browser.debugPort}`);
     
     return {
@@ -304,5 +309,23 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       return port;
     }
     throw new Error('No available ports for browser debugging');
+  }
+
+  /**
+   * Start console logging for a session via the session manager
+   */
+  private async startSessionConsoleLogging(sessionId: string, devToolsUrl: string): Promise<void> {
+    try {
+      // TODO: This should use proper daemon messaging instead of direct calls
+      // For now, we'll implement this pattern that works with the current architecture
+      this.log(`🔌 Requesting console logging for session ${sessionId}: ${devToolsUrl}`);
+      
+      // In a proper implementation, this would send a message to the session manager daemon
+      // For now, we'll log the request and let Layer 7 implement the actual communication
+      this.log(`📝 Console logging request: session=${sessionId}, url=${devToolsUrl}`, 'debug');
+      
+    } catch (error) {
+      this.log(`⚠️ Failed to start console logging for session ${sessionId}: ${error}`, 'warn');
+    }
   }
 }
