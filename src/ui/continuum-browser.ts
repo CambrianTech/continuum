@@ -982,7 +982,7 @@ continuum.connect().then(async () => {
       const serverHealth = await response.json();
       console.log('🏥 Server health:', serverHealth.status);
     } catch (error) {
-      console.log('🏥 Could not forward health report to server:', error.message);
+      console.log('🏥 Could not forward health report to server:', error instanceof Error ? error.message : String(error));
     }
   } catch (error) {
     console.error('🏥 Auto health validation failed:', error);
