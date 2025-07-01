@@ -117,6 +117,7 @@ export class LoRADiscovery {
     // Check for required files
     const requiredFiles = ['adapter.json'];
     const optionalFiles = ['weights.safetensors', 'config.json', 'training_log.jsonl'];
+    console.log('TODO: Implement optional file validation for:', optionalFiles.length, 'files');
     
     for (const file of requiredFiles) {
       const filePath = path.join(adapterPath, file);

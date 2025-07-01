@@ -27,7 +27,7 @@ export interface PersonaGenome {
 
   // BEHAVIORAL DNA
   behavior: {
-    response_templates: ResponseTemplate[];   // How it responds to situations
+    response_templates: ResponseType[];   // How it responds to situations // TODO: Create ResponseTemplate interface
     adaptation_algorithms: AdaptationRule[]; // How it learns and changes
     error_handling_strategies: ErrorStrategy[]; // How it deals with mistakes
     collaboration_protocols: CollaborationProtocol[]; // How it works with others
@@ -239,6 +239,16 @@ export class PersonaGenomeBuilder {
       domain_expertise: [],
       skill_graph: { nodes: [], edges: [], clusters: [], pathways: [] },
       // ... etc
+    };
+  }
+
+  private static async analyzeBehavioralPatterns(history: TrainingSession[]): Promise<any> {
+    console.log('TODO: Implement behavioral pattern analysis for:', history.length, 'sessions');
+    return {
+      communication_style: {},
+      decision_patterns: {},
+      learning_style: {},
+      interaction_preferences: {}
     };
   }
 

@@ -560,6 +560,7 @@ export class TrainingResourceTracker {
 
   // More complex analysis methods would be implemented here...
   private analyzeSynthesisPotential(resources: TrainingResource[], capabilities: string[]): SynthesisPotential {
+    console.log('TODO: Implement synthesis potential analysis for:', resources.length, 'resources and', capabilities.length, 'capabilities');
     return {
       combinable_resources: [],
       novel_synthesis_opportunities: [],
@@ -568,10 +569,12 @@ export class TrainingResourceTracker {
   }
 
   private identifyResourceGaps(resources: TrainingResource[], domains: string[], capabilities: string[]): ResourceGap[] {
+    console.log('TODO: Implement resource gap identification for:', resources.length, 'resources,', domains.length, 'domains,', capabilities.length, 'capabilities');
     return [];
   }
 
   private generateCompositionSuggestions(resources: TrainingResource[], capabilities: string[]): CompositionSuggestion[] {
+    console.log('TODO: Implement composition suggestions for:', resources.length, 'resources and', capabilities.length, 'capabilities');
     return [];
   }
 
