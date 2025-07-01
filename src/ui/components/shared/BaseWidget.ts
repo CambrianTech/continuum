@@ -77,8 +77,9 @@ export abstract class BaseWidget extends HTMLElement {
     }
     
     try {
+      const constructor = this.constructor as typeof BaseWidget;
       const htmlPromises = htmlFiles.map(file => 
-        fetch(`${basePath}/${file}`).then(r => r.text())
+        fetch(`${constructor.getBasePath()}/${file}`).then(r => r.text())
       );
       
       const htmlContents = await Promise.all(htmlPromises);
@@ -132,10 +133,13 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   async connectedCallback() {
-    console.log(`🎛️ ${this.widgetName}: Connecting to DOM`);
+    console.log(`🎛️ ${this.widgetName}: connectedCallback() triggered - connecting to DOM`);
     this.widgetConnected = true;
+    console.log(`🎛️ ${this.widgetName}: About to call initializeWidget()`);
     await this.initializeWidget();
+    console.log(`🎛️ ${this.widgetName}: About to call render()`);
     await this.render();
+    console.log(`🎛️ ${this.widgetName}: connectedCallback() complete`);
   }
 
   /**
@@ -156,7 +160,9 @@ export abstract class BaseWidget extends HTMLElement {
    */
   async render(): Promise<void> {
     try {
+      console.log(`🎨 ${this.widgetName}: Starting render() - about to loadCSS()`);
       const css = await this.loadCSS();
+      console.log(`🎨 ${this.widgetName}: CSS loaded, length: ${css.length} chars`);
       const html = this.renderContent();
 
       this.shadowRoot.innerHTML = `
@@ -190,8 +196,10 @@ export abstract class BaseWidget extends HTMLElement {
     const allCSSAssets = [...baseCSS, ...cssFiles];
     
     try {
+      console.log(`🎨 ${constructor.name}: Attempting to load CSS files:`, allCSSAssets);
       const cssPromises = allCSSAssets.map(async (assetPath) => {
         try {
+          console.log(`🎨 ${constructor.name}: Fetching CSS: ${assetPath}`);
           const response = await fetch(assetPath);
           if (!response.ok) {
             console.warn(`Failed to load CSS asset ${assetPath}: HTTP ${response.status}`);
