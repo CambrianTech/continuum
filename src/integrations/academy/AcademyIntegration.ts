@@ -4,6 +4,8 @@
  * Hierarchical Architecture: integrations → daemons → commands → drivers → subsystems
  */
 
+import { BaseDaemon } from '../../daemons/base/BaseDaemon.js';
+import { DaemonMessage, DaemonResponse } from '../../daemons/base/DaemonProtocol.js';
 import { AcademyDaemon } from '../../daemons/academy/AcademyDaemon.js';
 import { PersonaDaemon } from '../../daemons/persona/PersonaDaemon.js';
 import { DatabaseDaemon } from '../../daemons/database/DatabaseDaemon.js';
@@ -36,7 +38,10 @@ export interface IntegrationStatus {
  * - Local training capabilities
  * - Future P2P networking
  */
-export class AcademyIntegration {
+export class AcademyIntegration extends BaseDaemon {
+  public readonly name = 'academy-integration';
+  public readonly version = '1.0.0';
+  
   private config: AcademyIntegrationConfig;
   private academyDaemon: AcademyDaemon;
   private personaDaemon: PersonaDaemon;
@@ -44,6 +49,7 @@ export class AcademyIntegration {
   private isInitialized: boolean = false;
 
   constructor(config: Partial<AcademyIntegrationConfig> = {}) {
+    super();
     this.config = {
       local_mode: true,
       p2p_enabled: false,
@@ -56,7 +62,11 @@ export class AcademyIntegration {
 
     // Initialize daemons
     this.academyDaemon = new AcademyDaemon();
-    this.personaDaemon = new PersonaDaemon();
+    this.personaDaemon = new PersonaDaemon({
+      name: 'academy-persona',
+      modelConfig: { model: 'default' },
+      loraAdapters: []
+    });
     this.databaseDaemon = new DatabaseDaemon();
   }
 
@@ -158,10 +168,7 @@ export class AcademyIntegration {
       // Check local trainer
       if (status.academy_daemon === 'running') {
         try {
-          const academyStatus = await this.academyDaemon.handleMessage({
-            type: 'get_comprehensive_status',
-            data: {}
-          });
+          const academyStatus = await this.sendMessage('academy', 'get_comprehensive_status', {});
           
           if (academyStatus.success) {
             status.local_trainer = 'operational';
@@ -208,10 +215,7 @@ export class AcademyIntegration {
     console.log(`🎯 Starting training session for ${params.student_persona}`);
 
     try {
-      const result = await this.academyDaemon.handleMessage({
-        type: 'start_evolution_session',
-        data: params
-      });
+      const result = await this.sendMessage('academy', 'start_evolution_session', params);
 
       if (!result.success) {
         throw new Error(result.error || 'Training session failed to start');
@@ -243,10 +247,7 @@ export class AcademyIntegration {
     console.log(`🧬 Spawning persona: ${params.persona_name}`);
 
     try {
-      const result = await this.academyDaemon.handleMessage({
-        type: 'spawn_persona',
-        data: params
-      });
+      const result = await this.sendMessage('academy', 'spawn_persona', params);
 
       if (!result.success) {
         throw new Error(result.error || 'Persona spawning failed');
@@ -271,13 +272,10 @@ export class AcademyIntegration {
 
     try {
       const [academyResult, integrationStatus] = await Promise.all([
-        this.academyDaemon.handleMessage({
-          type: 'get_comprehensive_status',
-          data: {
-            include_p2p: this.config.p2p_enabled,
-            include_vector_space: true,
-            include_adversarial: true
-          }
+        this.sendMessage('academy', 'get_comprehensive_status', {
+          include_p2p: this.config.p2p_enabled,
+          include_vector_space: true,
+          include_adversarial: true
         }),
         this.getIntegrationStatus()
       ]);
@@ -299,10 +297,7 @@ export class AcademyIntegration {
   private async isDaemonHealthy(daemon: any): Promise<boolean> {
     try {
       // Basic health check - daemon should respond to capabilities request
-      const response = await daemon.handleMessage({
-        type: 'get_capabilities',
-        data: {}
-      });
+      const response = await this.sendMessage(daemon.name, 'get_capabilities', {});
       return response.success === true;
     } catch {
       return false;
@@ -327,6 +322,69 @@ export class AcademyIntegration {
       if (this.databaseDaemon) await this.databaseDaemon.stop();
     } catch (error) {
       console.warn('Database daemon cleanup warning:', error);
+    }
+  }
+
+  /**
+   * Start the Academy Integration daemon
+   */
+  protected async onStart(): Promise<void> {
+    await this.initialize();
+  }
+
+  /**
+   * Stop the Academy Integration daemon
+   */
+  protected async onStop(): Promise<void> {
+    await this.cleanup();
+  }
+
+  /**
+   * Get comprehensive Academy status
+   */
+  public async getComprehensiveStatus(): Promise<any> {
+    const [academyResult, integrationStatus] = await Promise.all([
+      this.sendMessage('academy', 'get_comprehensive_status', {
+        include_p2p: this.config.p2p_enabled,
+        include_vector_space: true,
+        include_adversarial: true
+      }),
+      this.getIntegrationStatus()
+    ]);
+
+    return {
+      academy: academyResult.data,
+      integration: integrationStatus,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  /**
+   * Handle daemon messages
+   */
+  public async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
+    try {
+      switch (message.type) {
+        case 'get_integration_status':
+          const status = await this.getIntegrationStatus();
+          return { success: true, data: status };
+          
+        case 'get_comprehensive_status':
+          const comprehensive = await this.getComprehensiveStatus();
+          return { success: true, data: comprehensive };
+          
+        default:
+          return {
+            success: false,
+            error: `Unknown message type: ${message.type}`
+          };
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `AcademyIntegration error: ${errorMessage}`
+      };
     }
   }
 

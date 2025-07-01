@@ -140,7 +140,8 @@ export class RendererDaemon extends MessageRoutedDaemon {
       // Determine content type and how to serve
       if (filePath.endsWith('.ts')) {
         // Compile TypeScript files on-the-fly
-        const _version = await this.versionService.getCurrentVersion(); // TODO: Use version in compilation
+        // TODO: Use version in compilation
+        // const _version = await this.versionService.getCurrentVersion();
         const tsContent = fs.readFileSync(filePath, 'utf-8');
         const compiledJS = await this.tsCompiler.compileWidgetComponent(tsContent, filePath);
         

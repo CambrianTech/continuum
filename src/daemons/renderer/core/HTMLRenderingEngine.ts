@@ -52,7 +52,8 @@ export class HTMLRenderingEngine {
   }
 
   private generateScriptInjection(options: RenderOptions): string {
-    const _apiPath = this.getApiPath(); // TODO: Use API path in script injection
+    // TODO: Use API path in script injection
+    // const _apiPath = this.getApiPath();
     
     return `
     <!-- Dynamically injected by HTMLRenderingEngine -->
@@ -65,7 +66,7 @@ export class HTMLRenderingEngine {
   // Widget imports are now handled by continuum-browser.js bundle
   // This eliminates the async Promise rendering issue
 
-  private getApiPath(): string {
+  private _getApiPath(): string { // TODO: Implement API path usage
     // Smart context detection like RendererDaemon
     const searchDir = __dirname;
     for (let i = 0; i < 10; i++) {

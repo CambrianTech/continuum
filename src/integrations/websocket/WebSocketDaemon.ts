@@ -220,7 +220,7 @@ export class WebSocketDaemon extends BaseDaemon {
   private async serveFileFromFilesystem(pathname: string, req: any, res: any): Promise<void> {
     const fs = await import('fs');
     const path = await import('path');
-    const { fileURLToPath } = await import('url');
+    // const { fileURLToPath } = await import('url'); // TODO: Use for ES module path resolution
     
     try {
       // CONSISTENT PATH RESOLUTION: Same as working-server.ts
