@@ -61,7 +61,7 @@ export class SessionStatsCommand extends BaseCommand {
         };
       }
 
-      let result = {
+      let result: any = {
         overview: statsResponse.data,
         timestamp: new Date().toISOString()
       };
@@ -149,7 +149,7 @@ export class SessionStatsCommand extends BaseCommand {
       storage: {
         totalSessions: sessions.length,
         uniqueOwners: new Set(sessions.map(s => s.owner)).size,
-        storageDirectories: sessions.map(s => s.artifacts?.storageDir).filter(Boolean)
+        storageDirectories: sessions.map(s => s.storage?.storageDir || s.artifacts?.storageDir).filter(Boolean)
       }
     };
   }

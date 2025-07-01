@@ -120,6 +120,28 @@ export class EmotionCommand extends BaseCommand {
     }
   }
 
+  /**
+   * Create typed error result
+   */
+  public static createErrorResult(message: string): EmotionResult {
+    return {
+      success: false,
+      message,
+      error: message
+    };
+  }
+
+  /**
+   * Create typed success result
+   */
+  public static createSuccessResult(message: string, data: { emotion: string; config: EmotionConfig; timestamp: string; }): EmotionResult {
+    return {
+      success: true,
+      message,
+      data
+    };
+  }
+
 
 }
 

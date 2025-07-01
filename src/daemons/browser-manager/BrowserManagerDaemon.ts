@@ -334,10 +334,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       this.log(`🔌 Starting console logging for session ${sessionId}: ${devToolsUrl}`);
       
       // Get session info from session manager daemon via messaging
-      const sessionInfoResponse = await this.sendMessage('session-manager', {
-        type: 'get_session_info',
-        data: { sessionId }
-      });
+      const sessionInfoResponse = await this.sendMessage('session-manager', 'get_session_info', { sessionId });
       
       if (!sessionInfoResponse.success) {
         this.log(`⚠️ Could not get session info for ${sessionId}: ${sessionInfoResponse.error}`, 'warn');

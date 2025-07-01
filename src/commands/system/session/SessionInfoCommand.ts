@@ -77,16 +77,16 @@ export class SessionInfoCommand extends BaseCommand {
         
         // Storage info
         storage: {
-          directory: includePaths ? session.artifacts.storageDir : this.getRelativePath(session.artifacts.storageDir),
+          directory: includePaths ? session.storage?.storageDir || session.artifacts?.storageDir || '' : this.getRelativePath(session.storage?.storageDir || session.artifacts?.storageDir || ''),
           logs: {
-            browser: includePaths ? `${session.artifacts.storageDir}/logs/browser.log` : 'logs/browser.log',
-            server: includePaths ? `${session.artifacts.storageDir}/logs/server.log` : 'logs/server.log'
+            browser: includePaths ? `${session.storage?.storageDir || session.artifacts?.storageDir || ''}/logs/browser.log` : 'logs/browser.log',
+            server: includePaths ? `${session.storage?.storageDir || session.artifacts?.storageDir || ''}/logs/server.log` : 'logs/server.log'
           },
           directories: {
-            screenshots: includePaths ? `${session.artifacts.storageDir}/screenshots` : 'screenshots/',
-            files: includePaths ? `${session.artifacts.storageDir}/files` : 'files/',
-            recordings: includePaths ? `${session.artifacts.storageDir}/recordings` : 'recordings/',
-            devtools: includePaths ? `${session.artifacts.storageDir}/devtools` : 'devtools/'
+            screenshots: includePaths ? `${session.storage?.storageDir || session.artifacts?.storageDir || ''}/screenshots` : 'screenshots/',
+            files: includePaths ? `${session.storage?.storageDir || session.artifacts?.storageDir || ''}/files` : 'files/',
+            recordings: includePaths ? `${session.storage?.storageDir || session.artifacts?.storageDir || ''}/recordings` : 'recordings/',
+            devtools: includePaths ? `${session.storage?.storageDir || session.artifacts?.storageDir || ''}/devtools` : 'devtools/'
           }
         },
 
@@ -103,7 +103,7 @@ export class SessionInfoCommand extends BaseCommand {
 
       // Include artifact counts if requested
       if (includeArtifacts) {
-        sessionInfo.artifacts = {
+        (sessionInfo as any).artifacts = {
           logs: {
             server: session.storage?.logs?.server ? 1 : 0,
             client: session.storage?.logs?.browser ? 1 : 0
@@ -111,7 +111,7 @@ export class SessionInfoCommand extends BaseCommand {
           screenshots: session.storage?.directories?.screenshots ? 1 : 0,
           files: session.storage?.directories?.files ? 1 : 0,
           recordings: session.storage?.directories?.recordings ? 1 : 0,
-          devtools: session.artifacts.devtools?.length || 0
+          devtools: session.storage?.directories?.devtools ? 1 : 0
         };
       }
 

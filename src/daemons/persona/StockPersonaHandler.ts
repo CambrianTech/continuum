@@ -15,7 +15,7 @@ export interface StockPersonaConfig {
 
 export class StockPersonaHandler {
   private personas = new Map<string, StockPersonaConfig>();
-  private apiClient: any; // Your API client
+  private _apiClient: any; // TODO: Implement API client integration
 
   constructor() {
     this.initializeStockPersonas();

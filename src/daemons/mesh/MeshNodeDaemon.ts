@@ -13,7 +13,7 @@
  */
 
 import { BaseDaemon } from '../base/BaseDaemon.js';
-import { DaemonResponse } from '../base/types.js';
+import { DaemonResponse, DaemonMessage } from '../base/DaemonProtocol.js';
 import crypto from 'crypto';
 import { EventEmitter } from 'events';
 
@@ -63,6 +63,9 @@ interface MeshBootstrapConfig {
 }
 
 export class MeshNodeDaemon extends BaseDaemon {
+  public readonly name = 'mesh-node';
+  public readonly version = '1.0.0';
+  
   private config: MeshBootstrapConfig;
   private peers = new Map<string, MeshNode>();
   private skills = new Map<string, LoRASkill>();
@@ -72,7 +75,7 @@ export class MeshNodeDaemon extends BaseDaemon {
   private replicationInterval?: NodeJS.Timeout;
 
   constructor(config?: Partial<MeshBootstrapConfig>) {
-    super('mesh-node');
+    super();
     
     this.config = {
       nodeId: crypto.randomUUID(),
@@ -88,7 +91,7 @@ export class MeshNodeDaemon extends BaseDaemon {
     };
   }
 
-  async onStart(): Promise<DaemonResponse> {
+  async onStart(): Promise<void> {
     try {
       this.log('🌐 Starting Mesh Node Daemon...', 'info');
       
@@ -105,24 +108,14 @@ export class MeshNodeDaemon extends BaseDaemon {
       this.setupEventHandlers();
       
       this.log(`✅ Mesh Node ${this.config.nodeId} active on port ${this.config.port}`, 'info');
-      
-      return {
-        success: true,
-        data: {
-          nodeId: this.config.nodeId,
-          port: this.config.port,
-          peersConnected: this.peers.size,
-          skillsAvailable: this.skills.size
-        }
-      };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.log(`❌ Mesh Node startup failed: ${errorMessage}`, 'error');
-      return { success: false, error: errorMessage };
+      throw error;
     }
   }
 
-  async onStop(): Promise<DaemonResponse> {
+  async onStop(): Promise<void> {
     try {
       this.log('🔄 Stopping Mesh Node Daemon...', 'info');
       
@@ -135,10 +128,10 @@ export class MeshNodeDaemon extends BaseDaemon {
       if (this.replicationInterval) clearInterval(this.replicationInterval);
       
       this.log('✅ Mesh Node Daemon stopped gracefully', 'info');
-      return { success: true };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return { success: false, error: errorMessage };
+      this.log(`❌ Mesh Node shutdown error: ${errorMessage}`, 'error');
+      throw error;
     }
   }
 
@@ -199,7 +192,7 @@ export class MeshNodeDaemon extends BaseDaemon {
     if (this.peers.size >= this.config.maxPeers) return;
     
     // Ask each peer for their peer list
-    for (const [peerId, peer] of this.peers) {
+    for (const [peerId, _peer] of this.peers) {
       try {
         // TODO: Request peer list from each connected peer
         // const peerList = await this.requestPeerList(peerId);
@@ -454,6 +447,44 @@ export class MeshNodeDaemon extends BaseDaemon {
     } catch (error) {
       this.log(`❌ Failed to acquire skill ${skillHash}: ${error}`, 'error');
       return false;
+    }
+  }
+
+  /**
+   * Handle daemon messages
+   */
+  public async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
+    try {
+      switch (message.type) {
+        case 'mesh_status':
+          return {
+            success: true,
+            data: {
+              nodeId: this.config.nodeId,
+              peers: this.peers.size,
+              skills: this.skills.size,
+              status: 'active'
+            }
+          };
+        
+        case 'mesh_peers':
+          return {
+            success: true,
+            data: { peers: Array.from(this.peers.values()) }
+          };
+          
+        default:
+          return {
+            success: false,
+            error: `Unknown message type: ${message.type}`
+          };
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `MeshNodeDaemon error: ${errorMessage}`
+      };
     }
   }
 }

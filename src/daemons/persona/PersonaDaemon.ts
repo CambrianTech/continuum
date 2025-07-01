@@ -47,7 +47,8 @@
  * - Event pipe management needs memory leak prevention
  */
 
-import { RequestResponseDaemon, RequestHandler, RequestHandlerMap } from '../base/RequestResponseDaemon.js';
+import { RequestResponseDaemon, RequestHandlerMap } from '../base/RequestResponseDaemon.js';
+// import { RequestHandler } from '../base/RequestResponseDaemon.js'; // TODO: Implement request handling
 import { DaemonResponse } from '../base/DaemonProtocol.js';
 import { EventEmitter } from 'events';
 
