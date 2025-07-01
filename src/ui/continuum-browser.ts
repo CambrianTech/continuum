@@ -319,49 +319,60 @@ class ContinuumBrowserAPI implements ContinuumAPI {
   async discoverAndLoadWidgets(): Promise<void> {
     console.log('🔍 Loading core widgets...');
     
-    // First, register widget fallbacks so custom elements have default behavior
-    try {
-      console.log('🔧 Registering widget fallbacks...');
-      await import('./components/shared/WidgetFallbacks.js');
-      await import('./components/shared/WidgetServerControls.js');
-      await import('./components/shared/InteractivePersona.js');
-      console.log('✅ Widget fallbacks registered');
-    } catch (error) {
-      console.warn('⚠️ Failed to load widget fallbacks:', error);
-    }
-    
-    // Load core widgets directly since they're needed for the UI
+    // Load core widgets first using Promise.all for parallel loading
     const coreWidgets = [
       './components/Sidebar/SidebarWidget.js',
       './components/Chat/ChatWidget.js'
     ];
     
-    let loadedCount = 0;
-    for (const widgetPath of coreWidgets) {
+    const widgetPromises = coreWidgets.map(async (widgetPath) => {
       try {
         console.log(`📦 Loading core widget: ${widgetPath}`);
         await import(widgetPath);
-        loadedCount++;
         console.log(`✅ Successfully loaded: ${widgetPath}`);
+        return { path: widgetPath, success: true };
       } catch (error) {
         console.warn(`⚠️ Failed to load core widget ${widgetPath}:`, error);
-        // Core widgets failing is important to log
-        console.error('Core widget error details:', error);
+        return { path: widgetPath, success: false, error };
       }
+    });
+    
+    // Wait for all core widgets to load
+    const results = await Promise.all(widgetPromises);
+    const loadedCount = results.filter(r => r.success).length;
+    
+    console.log(`✅ Core widgets loaded: ${loadedCount}/${coreWidgets.length}`);
+    
+    // Now register widget fallbacks AFTER widgets are loaded
+    try {
+      console.log('🔧 Registering widget fallbacks...');
+      await Promise.all([
+        import('./components/shared/WidgetFallbacks.js'),
+        import('./components/shared/WidgetServerControls.js'),
+        import('./components/shared/InteractivePersona.js')
+      ]);
+      console.log('✅ Widget fallbacks registered');
+    } catch (error) {
+      console.warn('⚠️ Failed to load widget fallbacks:', error);
     }
     
     // Try dynamic discovery as backup
     try {
       const widgetPaths = await this.discoverWidgetPaths();
-      for (const path of widgetPaths) {
+      const discoveryPromises = widgetPaths.map(async (path) => {
         try {
           console.log(`📦 Loading discovered widget: ${path}`);
           await import(path);
-          loadedCount++;
+          return { path, success: true };
         } catch (error) {
           console.warn(`⚠️ Failed to load discovered widget ${path}:`, error);
+          return { path, success: false, error };
         }
-      }
+      });
+      
+      const discoveryResults = await Promise.all(discoveryPromises);
+      const discoveredCount = discoveryResults.filter(r => r.success).length;
+      console.log(`✅ Discovery widgets loaded: ${discoveredCount}/${widgetPaths.length}`);
     } catch (error) {
       console.warn('⚠️ Dynamic widget discovery failed:', error);
     }

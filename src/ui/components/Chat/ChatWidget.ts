@@ -34,16 +34,6 @@ export class ChatWidget extends BaseWidget {
   private currentRoomId: string = 'general';
   private isLoadingHistory: boolean = false;
 
-  /**
-   * ChatWidget reports its own base path and assets
-   */
-  static getBasePath(): string {
-    return '/src/ui/components/Chat';
-  }
-  
-  static getOwnCSS(): string[] {
-    return ['ChatWidget.css'];
-  }
 
   constructor() {
     super();
@@ -112,7 +102,10 @@ export class ChatWidget extends BaseWidget {
 
   private setupContinuumListeners(): void {
     if (!this.getContinuumAPI()) {
-      setTimeout(() => this.setupContinuumListeners(), 1000);
+      // Listen for API ready event instead of polling
+      window.addEventListener('continuum:ready', () => {
+        this.setupContinuumListeners();
+      }, { once: true });
       return;
     }
 

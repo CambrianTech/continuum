@@ -4,6 +4,13 @@
   "description": "Chat widget for real-time messaging and AI interaction",
   "main": "ChatWidget.ts",
   "type": "module",
+  "files": [
+    "ChatWidget.ts",
+    "ChatWidget.css",
+    "chat-icon.svg",
+    "notification.mp3",
+    "emoji-sprites.png"
+  ],
   "continuum": {
     "type": "widget",
     "componentName": "chat-widget",

@@ -11,16 +11,6 @@ export class SidebarWidget extends BaseWidget {
     private startWidth: number = 0;
     private currentRoom: string = 'general';
 
-    /**
-     * SidebarWidget reports its own base path and assets
-     */
-    static getBasePath(): string {
-        return '/src/ui/components/Sidebar';
-    }
-    
-    static getOwnCSS(): string[] {
-        return ['SidebarWidget.css'];
-    }
 
     constructor() {
         super();

@@ -14,45 +14,63 @@ export abstract class BaseWidget extends HTMLElement {
   protected isCollapsed: boolean = false; // Track collapse state
 
   /**
-   * Widget reports its own base path for asset resolution
-   * Override in child classes to specify the widget's directory
+   * Widget base path - automatically determined from class name
+   * No need to override in child classes - path calculated dynamically
    */
   static getBasePath(): string {
-    return '/src/ui/components/shared';
+    // Extract widget directory from class name: ChatWidget -> Chat, SidebarWidget -> Sidebar
+    const className = this.name.replace('Widget', '');
+    
+    // Special case for shared components
+    if (className === 'Base' || className === 'Interactive' || this.name.includes('BaseWidget')) {
+      return '/dist/ui/components/shared';
+    }
+    
+    // All other widgets: /dist/ui/components/{WidgetName}
+    return `/dist/ui/components/${className}`;
   }
   
   /**
-   * Widget declares its own CSS files (BaseWidget CSS included automatically)
-   * Override in child classes to specify additional CSS files needed
+   * Get widget files from package.json - replaces manual CSS/HTML declarations
+   * Reads the 'files' array from widget's package.json automatically
    */
-  static getOwnCSS(): string[] {
-    return []; // Child widgets override this
+  static async getWidgetFiles(): Promise<string[]> {
+    try {
+      const basePath = this.getBasePath().replace('/dist/', '/src/'); // Read from source
+      const packagePath = `${basePath}/package.json`;
+      
+      const response = await fetch(packagePath);
+      if (!response.ok) {
+        console.warn(`📦 No package.json found for ${this.name} at ${packagePath}`);
+        return [];
+      }
+      
+      const packageData = await response.json();
+      return packageData.files || [];
+    } catch (error) {
+      console.warn(`📦 Failed to read package.json for ${this.name}:`, error);
+      return [];
+    }
   }
   
   /**
-   * Widget declares its own HTML files (optional)
-   * Override in child classes to specify HTML template files
+   * Get all widget assets (except .ts files) - reads from package.json
+   * Simple route: widget path + whatever package.json declares
    */
-  static getOwnHTML(): string[] {
-    return []; // Child widgets can override this
+  static async getWidgetAssets(): Promise<string[]> {
+    const widgetFiles = await this.getWidgetFiles();
+    const assets = widgetFiles.filter(file => !file.endsWith('.ts')); // Serve everything except TypeScript
+    return assets.map(file => `${this.getBasePath()}/${file}`);
   }
-  
-  /**
-   * Get all CSS assets including base widget CSS
-   */
-  static getCSSAssets(): string[] {
-    const baseCSS = ['/src/ui/components/shared/BaseWidget.css'];
-    const ownCSS = this.getOwnCSS().map(css => `${this.getBasePath()}/${css}`);
-    return [...baseCSS, ...ownCSS];
-  }
+
   
   /**
    * Load HTML templates if widget declares any
    */
   protected async loadHTMLTemplates(): Promise<string> {
     const constructor = this.constructor as typeof BaseWidget;
-    const basePath = constructor.getBasePath();
-    const htmlFiles = constructor.getOwnHTML();
+    const assets = await constructor.getWidgetAssets();
+    const htmlFiles = assets.filter(asset => asset.endsWith('.html'));
     
     if (htmlFiles.length === 0) {
       return this.renderOwnContent(); // Fallback to code-based content
@@ -161,15 +179,18 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   /**
-   * Load CSS for the widget - now uses bundled CSS
+   * Load CSS for the widget - reads from package.json files array
    */
   async loadCSS(): Promise<string> {
-    // Load CSS based on declared assets with proper error handling
+    // Load BaseWidget CSS + any CSS files declared in package.json
     const constructor = this.constructor as typeof BaseWidget;
-    const cssAssets = constructor.getCSSAssets();
+    const baseCSS = ['/dist/ui/components/shared/BaseWidget.css'];
+    const widgetAssets = await constructor.getWidgetAssets();
+    const cssFiles = widgetAssets.filter(asset => asset.endsWith('.css'));
+    const allCSSAssets = [...baseCSS, ...cssFiles];
     
     try {
-      const cssPromises = cssAssets.map(async (assetPath) => {
+      const cssPromises = allCSSAssets.map(async (assetPath) => {
         try {
           const response = await fetch(assetPath);
           if (!response.ok) {
@@ -186,7 +207,7 @@ export abstract class BaseWidget extends HTMLElement {
       const cssContents = await Promise.all(cssPromises);
       const combinedCSS = cssContents.join('\n');
       
-      console.log(`✅ ${constructor.name}: Loaded ${cssAssets.length} CSS assets`);
+      console.log(`✅ ${constructor.name}: Loaded ${allCSSAssets.length} CSS assets`);
       return combinedCSS;
       
     } catch (error) {

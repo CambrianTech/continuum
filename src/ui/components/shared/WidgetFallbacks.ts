@@ -209,6 +209,15 @@ export class WidgetFallbackElement extends HTMLElement {
   }
 
   private logWarning() {
+    // Check if widget is actually registered as a custom element
+    const isWidgetRegistered = customElements.get(this.config.tagName);
+    
+    if (isWidgetRegistered) {
+      // Widget is registered, this is a false positive - don't log warning
+      console.log(`✅ Widget "${this.config.tagName}" is properly registered`);
+      return;
+    }
+    
     const message = `⚠️ Widget "${this.config.tagName}" not loaded: ${this.config.expectedFile} missing`;
     const details = {
       tagName: this.config.tagName,
