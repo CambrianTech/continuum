@@ -38,7 +38,8 @@ export class WidgetFallbackElement extends HTMLElement {
     const html = this.config.customHTML ? this.config.customHTML(this.warningMessage) : this.generateFallbackHTML();
     const css = this.config.customCSS ? this.config.customCSS() : this.generateFallbackCSS();
     
-    this.shadowRoot.innerHTML = `
+    if (this.shadowRoot) {
+      this.shadowRoot.innerHTML = `
       <style>${css}</style>
       ${html}
     `;
