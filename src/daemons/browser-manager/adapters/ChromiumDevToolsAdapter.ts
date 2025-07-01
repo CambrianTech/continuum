@@ -18,7 +18,7 @@ import {
   NetworkRequest, 
   PerformanceMetrics,
   DevToolsCapabilities 
-} from './IDevToolsAdapter';
+} from '../types/index.js';
 import { WebSocket } from 'ws';
 
 export class ChromiumDevToolsAdapter implements IDevToolsAdapter {

@@ -312,7 +312,8 @@ export class LayerOptimization {
           domain: this.findCommonDomain(layers) || 'multi_domain',
           rank: Math.min(64, layers.reduce((sum, layer) => sum + layer.rank, 0)), // Cap at 64
           alpha: Math.min(32, layers.reduce((sum, layer) => sum + layer.alpha, 0)), // Cap at 32
-          weight: Math.min(1.0, layers.reduce((sum, layer) => sum + layer.weight, 0)), // Cap at 1.0
+          target_modules: this.mergeTargetModules(layers),
+          weight: Math.min(1.0, layers.reduce((sum, layer) => sum + (layer.weight || 0), 0)), // Cap at 1.0
           position: 'core'
         };
 
