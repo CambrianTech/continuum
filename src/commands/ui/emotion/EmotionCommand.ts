@@ -41,7 +41,7 @@ export class EmotionCommand extends BaseCommand {
 
       // Type-safe emotion validation
       if (!this.isValidEmotion(feeling)) {
-        return this.createErrorResult(
+        return this.createEmotionErrorResult(
           `Unknown emotion: ${feeling}. Available emotions: ${VALID_EMOTIONS.join(', ')}`
         );
       }
@@ -70,7 +70,7 @@ export class EmotionCommand extends BaseCommand {
         await this.updateContinuonStatus(context.continuonStatus, feeling as ValidEmotion, emotionConfig);
       }
 
-      return this.createSuccessResult(
+      return this.createEmotionSuccessResult(
         `Emotion '${feeling}' expressed successfully`,
         {
           emotion: feeling,
@@ -82,7 +82,7 @@ export class EmotionCommand extends BaseCommand {
     } catch (error) {
       console.error('❌ Emotion Command Error:', error);
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return this.createErrorResult(`Emotion command failed: ${errorMessage}`);
+      return this.createEmotionErrorResult(`Emotion command failed: ${errorMessage}`);
     }
   }
 
@@ -121,24 +121,26 @@ export class EmotionCommand extends BaseCommand {
   }
 
   /**
-   * Create typed error result
+   * Create typed error result using base class
    */
-  public static createErrorResult(message: string): EmotionResult {
+  private static createEmotionErrorResult(message: string): EmotionResult {
+    const baseResult = super.createErrorResult(message, message);
     return {
-      success: false,
-      message,
-      error: message
+      success: baseResult.success,
+      message: baseResult.message || message,
+      error: baseResult.error
     };
   }
 
   /**
-   * Create typed success result
+   * Create typed success result using base class
    */
-  public static createSuccessResult(message: string, data: { emotion: string; config: EmotionConfig; timestamp: string; }): EmotionResult {
+  private static createEmotionSuccessResult(message: string, data: { emotion: string; config: EmotionConfig; timestamp: string; }): EmotionResult {
+    const baseResult = super.createSuccessResult(message, data);
     return {
-      success: true,
-      message,
-      data
+      success: baseResult.success,
+      message: baseResult.message || message,
+      data: baseResult.data
     };
   }
 
