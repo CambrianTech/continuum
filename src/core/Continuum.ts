@@ -304,9 +304,15 @@ export class Continuum {
       process.exit(0);
     });
     
-    // Keep process alive
-    console.log('🔄 System running - press Ctrl+C to stop');
-    setInterval(() => {}, 30000);
+    // Exit cleanly after successful launch
+    console.log('✅ Continuum launched successfully');
+    console.log('🌐 Browser interface: http://localhost:9000');
+    console.log('🔄 Daemons running in background');
+    
+    // Give user control back
+    setTimeout(() => {
+      process.exit(0);
+    }, 1000);
   }
 }
 
