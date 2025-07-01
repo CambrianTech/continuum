@@ -161,9 +161,12 @@ export abstract class CommandWidget extends BaseWidget {
           step: stepNumber,
           command: step.command,
           success: result.success,
-          data: result.data,
-          error: result.error
+          data: result.data
         };
+        
+        if (result.error !== undefined) {
+          stepResult.error = result.error;
+        }
 
         results.push(stepResult);
 

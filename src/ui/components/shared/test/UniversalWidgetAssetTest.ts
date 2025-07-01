@@ -88,15 +88,20 @@ export class UniversalWidgetAssetTester {
         console.error(`❌ ${assetPath} - HTTP ${response.status}`);
       }
       
-      return {
+      const result: any = {
         widget: widgetName,
         assetType,
         assetPath,
         status: response.status,
         success,
-        size,
-        error: success ? undefined : `HTTP ${response.status}`
+        size
       };
+      
+      if (!success) {
+        result.error = `HTTP ${response.status}`;
+      }
+      
+      return result;
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -109,7 +114,7 @@ export class UniversalWidgetAssetTester {
         status: 0,
         success: false,
         error: errorMessage
-      };
+      } as any;
     }
   }
   

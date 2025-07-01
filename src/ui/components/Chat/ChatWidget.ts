@@ -418,11 +418,11 @@ export class ChatWidget extends BaseWidget {
     });
 
     // Handle user clicks (personas, AI models, etc.)
-    universalUserSystem.on('persona:interaction-requested', (data) => {
+    universalUserSystem.on('persona:interaction-requested', (data: any) => {
       this.startConversationWithUser(data.personaId, data.personaName, 'persona');
     });
 
-    universalUserSystem.on('ai-model:conversation-requested', (data) => {
+    universalUserSystem.on('ai-model:conversation-requested', (data: any) => {
       this.startConversationWithUser(data.modelId, data.modelName, 'ai-model');
     });
   }

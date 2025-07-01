@@ -117,7 +117,7 @@ export abstract class DataDisplayWidget<T extends DataItem> extends BaseWidget {
     }
   }
 
-  protected setupEventListeners(): void {
+  setupEventListeners(): void {
     // Handle item selection
     this.shadowRoot?.addEventListener('click', (e) => {
       const target = e.target as HTMLElement;
@@ -159,7 +159,7 @@ export abstract class DataDisplayWidget<T extends DataItem> extends BaseWidget {
   }
 
   // Standard template structure
-  protected renderContent(): string {
+  renderContent(): string {
     return `
       <div class="data-display-container">
         <div class="header">
