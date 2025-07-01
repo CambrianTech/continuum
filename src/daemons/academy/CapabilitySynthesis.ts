@@ -6,6 +6,7 @@
  */
 
 import { LoRADiscovery, LoRAMetadata } from './LoRADiscovery.js';
+import { LoRALayer, LoRAComposition } from './types/index.js';
 
 export interface CapabilityRequest {
   target_domains: string[];              // ['biophysics', 'geology', 'quantum_chemistry']
@@ -715,14 +716,7 @@ interface DomainIntersection {
   novelty_factor: number;
 }
 
-interface LoRALayer {
-  source_id: string;
-  domain: string;
-  rank: number;
-  alpha: number;
-  weight: number;
-  position: 'core' | 'bridge';
-}
+// LoRALayer interface now imported from PersonaGenome.js
 
 interface NovelLayer {
   target_domain: string;
