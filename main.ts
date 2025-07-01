@@ -46,7 +46,14 @@ async function main() {
 
   try {
     await system.start();
-    console.log('🔄 System running - press Ctrl+C to stop');
+    console.log('✅ Continuum launched successfully');
+    console.log('🌐 Browser interface: http://localhost:9000');  
+    console.log('🔄 Daemons running in background');
+    
+    // Exit cleanly - daemons continue independently
+    setTimeout(() => {
+      process.exit(0);
+    }, 2000);
   } catch (error) {
     console.error('💥 System startup failed:', error);
     process.exit(1);
