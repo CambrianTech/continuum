@@ -98,7 +98,7 @@ export class BrowserConsoleCommand extends BaseCommand {
           return await this.executeConsoleScript(sessionId, options.script);
           
         case 'monitor':
-          return await this.monitorConsole(sessionId, filter, options.follow);
+          return await this.monitorConsole(sessionId, filter, options.follow || false);
           
         default:
           return {
