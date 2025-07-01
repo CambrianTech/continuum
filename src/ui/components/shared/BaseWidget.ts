@@ -164,18 +164,30 @@ export abstract class BaseWidget extends HTMLElement {
    * Load CSS for the widget - now uses bundled CSS
    */
   async loadCSS(): Promise<string> {
-    // Load CSS based on declared assets
+    // Load CSS based on declared assets with proper error handling
     const constructor = this.constructor as typeof BaseWidget;
-    const basePath = constructor.getBasePath();
     const cssAssets = constructor.getCSSAssets();
     
     try {
-      const cssPromises = cssAssets.map(asset => 
-        fetch(`${basePath}/${asset}`).then(r => r.text())
-      );
+      const cssPromises = cssAssets.map(async (assetPath) => {
+        try {
+          const response = await fetch(assetPath);
+          if (!response.ok) {
+            console.warn(`Failed to load CSS asset ${assetPath}: HTTP ${response.status}`);
+            return '/* CSS asset failed to load */';
+          }
+          return await response.text();
+        } catch (error) {
+          console.warn(`Failed to fetch CSS asset ${assetPath}:`, error);
+          return '/* CSS asset failed to load */';
+        }
+      });
       
       const cssContents = await Promise.all(cssPromises);
-      return cssContents.join('\n');
+      const combinedCSS = cssContents.join('\n');
+      
+      console.log(`✅ ${constructor.name}: Loaded ${cssAssets.length} CSS assets`);
+      return combinedCSS;
       
     } catch (error) {
       console.warn(`Failed to load CSS assets for ${constructor.name}:`, error);
@@ -270,6 +282,52 @@ export abstract class BaseWidget extends HTMLElement {
     if (this.widgetConnected) {
       await this.render();
     }
+  }
+
+  /**
+   * Server Control Events - Like onclick but for server actions
+   * Widgets can trigger server-side actions via simple event dispatch
+   * Uses centralized WidgetServerControls system
+   */
+  
+  /**
+   * Take screenshot of this widget (server control event)
+   */
+  protected triggerScreenshot(options: any = {}): void {
+    this.dispatchEvent(new CustomEvent('widget:screenshot', {
+      detail: options,
+      bubbles: true
+    }));
+  }
+
+  /**
+   * Refresh this widget from server (server control event) 
+   */
+  protected triggerRefresh(options: any = {}): void {
+    this.dispatchEvent(new CustomEvent('widget:refresh', {
+      detail: options,
+      bubbles: true
+    }));
+  }
+
+  /**
+   * Export widget data (server control event)
+   */
+  protected triggerExport(format: string = 'json', options: any = {}): void {
+    this.dispatchEvent(new CustomEvent('widget:export', {
+      detail: { format, ...options },
+      bubbles: true
+    }));
+  }
+
+  /**
+   * Validate widget state (server control event)
+   */
+  protected triggerValidate(options: any = {}): void {
+    this.dispatchEvent(new CustomEvent('widget:validate', {
+      detail: options,
+      bubbles: true
+    }));
   }
 
   /**

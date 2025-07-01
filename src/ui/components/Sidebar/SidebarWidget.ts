@@ -4,7 +4,6 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget.js';
-// CSS will be loaded dynamically via fetch
 
 export class SidebarWidget extends BaseWidget {
     private isResizing: boolean = false;
@@ -28,18 +27,18 @@ export class SidebarWidget extends BaseWidget {
         this.widgetName = 'Sidebar';
         this.widgetIcon = '📋';
         this.widgetTitle = 'Application Sidebar';
-        // CSS is now bundled, no external path needed
+        // CSS loaded via declarative asset system
     }
 
 
     protected async initializeWidget(): Promise<void> {
-        this.setupResizeHandlers();
-        this.setupRoomSwitching();
+        // Widget initialization after DOM is ready
         this.loadChildWidgets();
     }
 
     setupEventListeners(): void {
-        // Event listeners are set up in setupResizeHandlers and setupRoomSwitching
+        this.setupResizeHandlers();
+        this.setupRoomSwitching();
         console.log(`🎛️ ${this.widgetName}: Event listeners initialized`);
     }
 

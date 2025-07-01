@@ -323,6 +323,7 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     try {
       console.log('🔧 Registering widget fallbacks...');
       await import('./components/shared/WidgetFallbacks.js');
+      await import('./components/shared/WidgetServerControls.js');
       console.log('✅ Widget fallbacks registered');
     } catch (error) {
       console.warn('⚠️ Failed to load widget fallbacks:', error);
