@@ -6,7 +6,7 @@
  */
 
 import { LoRADiscovery, LoRAMetadata } from './LoRADiscovery.js';
-import { LoRALayer, LoRAComposition } from './types/index.js';
+import { LoRALayer } from './types/index.js';
 
 export interface CapabilityRequest {
   target_domains: string[];              // ['biophysics', 'geology', 'quantum_chemistry']
@@ -368,20 +368,26 @@ export class CapabilitySynthesis {
       if (component.relevance_score > 0.7) {
         // High relevance = primary capability
         primaryLayers.push({
+          layer_id: `primary_${component.id}`,
           source_id: component.id,
+          layer_type: 'primary',
           domain: component.contribution_domains[0],
           rank: 32, // Standard rank for primary layers
           alpha: 16,
+          target_modules: ['attention', 'ffn'],
           weight: component.relevance_score,
           position: 'core'
         });
       } else if (component.relevance_score > 0.4) {
         // Medium relevance = bridging capability
         bridgeLayers.push({
+          layer_id: `bridge_${component.id}`,
           source_id: component.id,
+          layer_type: 'bridge',
           domain: component.contribution_domains[0],
           rank: 16, // Lower rank for bridge layers
           alpha: 8,
+          target_modules: ['attention'],
           weight: component.relevance_score * 0.7,
           position: 'bridge'
         });

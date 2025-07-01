@@ -9,7 +9,8 @@
 
 import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon.js';
 import { DaemonResponse } from '../base/DaemonProtocol.js';
-import { BrowserType, BrowserRequest, BrowserFilters } from './types/index.js';
+import { BrowserType, BrowserRequest } from './types/index.js';
+// BrowserFilters unused in this file
 import { BrowserLauncher } from './modules/BrowserLauncher.js';
 import { BrowserSessionManager } from './modules/BrowserSessionManager.js';
 import { ChromeBrowserModule } from './modules/ChromeBrowserModule.js';
@@ -227,7 +228,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   /**
    * Destroy browser instance
    */
-  private async destroyBrowser(request: BrowserRequest): Promise<DaemonResponse> {
+  private async destroyBrowser(_request: BrowserRequest): Promise<DaemonResponse> {
     // TODO: Implement browser destruction
     return { success: true, data: { message: 'Browser destroy not implemented' } };
   }
@@ -260,7 +261,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   /**
    * Optimize browser resources
    */
-  private async optimizeResources(request: BrowserRequest): Promise<DaemonResponse> {
+  private async optimizeResources(_request: BrowserRequest): Promise<DaemonResponse> {
     const cleanedBrowsers = this.sessionManager.cleanupIdleBrowsers();
     
     return {

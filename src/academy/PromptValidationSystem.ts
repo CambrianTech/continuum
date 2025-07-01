@@ -4,7 +4,7 @@
  * Tests command syntax, parameters, and expected outcomes
  */
 
-import { UniversalWidgetAssetTester } from '../ui/components/shared/test/UniversalWidgetAssetTest.js';
+// import { UniversalWidgetAssetTester } from '../ui/components/shared/test/UniversalWidgetAssetTest.js';
 
 export interface CommandSyntaxRule {
   command: string;
@@ -233,7 +233,6 @@ export class PromptValidationSystem {
 
   private isExampleEquivalent(prompt: string, example: string): boolean {
     // Check if prompt contains equivalent examples with different parameter values
-    const _baseCommand = example.split(' ')[0]; // Prefix with _ to indicate intentionally unused
     const paramPattern = example.replace(/--\w+=[^\s]+/g, '--\\w+=[^\\s]+');
     const regex = new RegExp(paramPattern, 'i');
     
@@ -250,8 +249,7 @@ export class PromptValidationSystem {
         return;
       }
       
-      // Test widget asset accuracy
-      const _assetTester = new UniversalWidgetAssetTester(this.baseUrl); // Available for future use
+      // Test widget asset accuracy available via UniversalWidgetAssetTester if needed
       
       // If prompt mentions specific widgets, verify they exist
       const widgetMentions = this.extractWidgetMentions(prompt);

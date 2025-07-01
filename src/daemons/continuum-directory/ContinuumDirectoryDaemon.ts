@@ -503,6 +503,9 @@ export class ContinuumDirectoryDaemon extends BaseDaemon {
   private async getArtifactDirectoryPath(context: any): Promise<string> {
     const { sessionId, artifactType } = context;
     const sessionPath = await this.findSessionPath(sessionId);
+    if (!sessionPath) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
     return path.join(sessionPath, this.getArtifactSubdirectory(artifactType));
   }
 

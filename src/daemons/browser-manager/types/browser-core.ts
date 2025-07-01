@@ -8,13 +8,15 @@ export enum BrowserType {
   FIREFOX = 'firefox',
   SAFARI = 'safari',
   EDGE = 'edge',
-  CHROMIUM = 'chromium'
+  CHROMIUM = 'chromium',
+  OPERA = 'opera'
 }
 
 export type BrowserStatus = 'launching' | 'ready' | 'error' | 'closing' | 'closed';
 
 export interface BrowserConfig {
   type: BrowserType;
+  browserType?: BrowserType; // Alias for compatibility
   headless?: boolean;
   devtools?: boolean;
   userDataDir?: string;
@@ -22,6 +24,9 @@ export interface BrowserConfig {
   args?: string[];
   env?: Record<string, string>;
   timeout?: number;
+  purpose?: string; // Browser usage purpose
+  requirements?: { devtools?: boolean; [key: string]: any }; // Browser requirements
+  resources?: { [key: string]: any }; // Browser resource configuration
 }
 
 export interface SimpleBrowserConfig {

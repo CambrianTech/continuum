@@ -10,6 +10,7 @@ export interface BrowserRequest {
   url?: string;
   options?: BrowserConfig;
   sessionId?: string;
+  filters?: BrowserFilters;
 }
 
 export interface BrowserConnection {
@@ -29,7 +30,9 @@ export interface ManagedBrowser {
   type: BrowserType;
   pid: number;
   debugPort: number;
+  port?: number; // Additional port property
   status: BrowserStatus;
+  state?: any; // Browser state
   devToolsUrl?: string;
   launchedAt: Date;
   lastActivity: Date;

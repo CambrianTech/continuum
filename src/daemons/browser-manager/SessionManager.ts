@@ -14,7 +14,7 @@ import * as path from 'path';
 
 export interface BrowserSession {
   id: string;
-  type: 'persona' | 'portal' | 'git-hook' | 'development' | 'test';
+  type: 'persona' | 'portal' | 'git-hook' | 'development' | 'test' | 'user' | 'validation';
   owner: string; // persona name, 'portal', 'git-hook', etc.
   created: Date;
   lastActive: Date;

@@ -9,7 +9,7 @@
  * - Human mentoring and guidance
  */
 
-import { ChatWidget } from './ChatWidget.js';
+import { ChatWidget } from '../../../Chat/ChatWidget.js';
 import { CommandWidget } from '../../../intermediate/command-widget/CommandWidget.js';
 
 interface TrainingContext {
@@ -34,7 +34,19 @@ interface TrainingMetrics {
   total_training_time: number;
 }
 
-interface AcademyMessage extends ChatMessage {
+interface Message {
+  id: string;
+  type: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: Date;
+  status?: 'sending' | 'sent' | 'error';
+  metadata?: {
+    agent?: string;
+    persona?: string;
+  };
+}
+
+interface AcademyMessage extends Message {
   academy_type?: 'training_challenge' | 'peer_knowledge' | 'formula_insight' | 'progress_update' | 'mentor_guidance';
   challenge_id?: string;
   knowledge_source?: string;
@@ -217,13 +229,15 @@ export class AcademyChatWidget extends ChatWidget implements CommandWidget {
     if (this.isAcademyMessage(message)) {
       this.displayAcademyMessage(message as AcademyMessage);
     } else {
-      super.displayMessage(message);
+      // Use real ChatWidget API - addMessage instead of displayMessage
+      this.addMessage(message);
     }
   }
 
   private displayAcademyMessage(message: AcademyMessage): void {
     const messageElement = this.createAcademyMessageElement(message);
-    this.messagesContainer?.appendChild(messageElement);
+    const messagesContainer = this.shadowRoot?.querySelector('.messages');
+    messagesContainer?.appendChild(messageElement);
     
     // Handle special Academy message types
     switch (message.academy_type) {
