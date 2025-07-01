@@ -1,32 +1,56 @@
-#!/usr/bin/env tsx
-/**
- * Continuum CLI - Simple wrapper around the Continuum OS
- * Auto-healing system via import
- */
+#!/bin/bash
+# Continuum CLI - Works for both repo users and npm global installs
 
-import Continuum from './src/core/Continuum.ts';
-
-async function main() {
-  const continuum = new Continuum();
-  
-  // Auto-healing connection - will start system if needed
-  await continuum.connect();
-  
-  // Keep alive for CLI usage
-  continuum.keepAlive();
+find_continuum_dir() {
+    # Method 1: Check if we're in a continuum repo
+    local current_dir="$PWD"
+    while [ "$current_dir" != "/" ]; do
+        if [ -f "$current_dir/package.json" ] && grep -q '"name": "continuum"' "$current_dir/package.json" 2>/dev/null; then
+            echo "$current_dir"
+            return 0
+        fi
+        current_dir="$(dirname "$current_dir")"
+    done
+    
+    # Method 2: Resolve script location (for npm global install)
+    local script_path="$0"
+    if [ -L "$script_path" ]; then
+        script_path="$(readlink "$script_path")"
+        # For npm global installs, the actual path might be relative to the symlink
+        if [[ "$script_path" == "../"* ]]; then
+            local symlink_dir="$(dirname "$0")"
+            script_path="$(cd "$symlink_dir" && cd "$script_path" && pwd)" 2>/dev/null || script_path="$0"
+        fi
+    fi
+    local script_dir="$(dirname "$script_path")"
+    if [ -f "$script_dir/package.json" ] && grep -q '"name": "continuum"' "$script_dir/package.json" 2>/dev/null; then
+        echo "$script_dir"
+        return 0
+    fi
+    
+    # Method 2b: Check npm global module path
+    local npm_global_root="$(npm root -g 2>/dev/null)/continuum"
+    if [ -f "$npm_global_root/package.json" ] && grep -q '"name": "continuum"' "$npm_global_root/package.json" 2>/dev/null; then
+        echo "$npm_global_root"
+        return 0
+    fi
+    
+    # Method 3: Check common locations
+    local home_continuum="$HOME/continuum"
+    if [ -f "$home_continuum/package.json" ] && grep -q '"name": "continuum"' "$home_continuum/package.json" 2>/dev/null; then
+        echo "$home_continuum"
+        return 0
+    fi
+    
+    return 1
 }
 
-// Execute if run directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch(error => {
-    console.error('❌ Continuum failed:', error);
-    process.exit(1);
-  });
-}
+CONTINUUM_DIR="$(find_continuum_dir)"
+if [ -z "$CONTINUUM_DIR" ]; then
+    echo "❌ Could not find continuum installation"
+    echo "Make sure you're in a continuum repo or have continuum installed globally"
+    exit 1
+fi
 
-// Export for import usage (auto-healing on import)
-export default async function() {
-  const continuum = new Continuum();
-  await continuum.connect(); // Auto-heal
-  return continuum;
-}
+cd "$CONTINUUM_DIR"
+npm run launch

@@ -67,7 +67,8 @@ class ContinuumBrowserAPI implements ContinuumAPI {
 
     // Override ALL console methods to capture everything
     console.log = (...args: any[]) => {
-      originalConsole.log.apply(console, args);
+      const timestamp = `[${(Date.now() % 100000)/1000}s]`;
+      originalConsole.log.apply(console, [timestamp, ...args]);
       this.forwardConsoleLog('log', args);
     };
 
@@ -77,12 +78,14 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     };
 
     console.warn = (...args: any[]) => {
-      originalConsole.warn.apply(console, args);
+      const timestamp = `[${(Date.now() % 100000)/1000}s]`;
+      originalConsole.warn.apply(console, [timestamp, ...args]);
       this.forwardConsoleLog('warn', args);
     };
 
     console.error = (...args: any[]) => {
-      originalConsole.error.apply(console, args);
+      const timestamp = `[${(Date.now() % 100000)/1000}s]`;
+      originalConsole.error.apply(console, [timestamp, ...args]);
       errorCount++;
       (window as any).continuumErrorCount = errorCount;
       this.forwardConsoleLog('error', args);

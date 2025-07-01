@@ -7,6 +7,7 @@ import { BaseDaemon } from '../../daemons/base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../../daemons/base/DaemonProtocol';
 import { RouteManager } from './core/RouteManager';
 import { WebSocketManager } from './core/WebSocketManager';
+import { PortManager } from './core/PortManager';
 import { createServer } from 'http';
 
 export interface ServerConfig {
@@ -21,6 +22,7 @@ export class WebSocketDaemon extends BaseDaemon {
 
   private routeManager: RouteManager;
   private wsManager: WebSocketManager;
+  private portManager: PortManager;
   private httpServer: any = null;
   private config: Required<ServerConfig>;
   private registeredDaemons = new Map<string, any>();
@@ -36,6 +38,7 @@ export class WebSocketDaemon extends BaseDaemon {
 
     this.routeManager = new RouteManager((daemonName, message) => this.sendMessageToDaemon(daemonName, message));
     this.wsManager = new WebSocketManager();
+    this.portManager = new PortManager(this.config.port, this.config.host);
     
     // Set up WebSocket event handling
     this.wsManager.onMessage = (connectionId: string, data: any) => {
@@ -54,24 +57,46 @@ export class WebSocketDaemon extends BaseDaemon {
   protected async onStart(): Promise<void> {
     this.log(`🌐 Starting pure router on ${this.config.host}:${this.config.port}`);
     
+    // Check for existing healthy instance
+    if (await this.portManager.isPortHealthy()) {
+      this.log(`✅ Healthy instance already running on port ${this.config.port}`);
+      return; // Let the existing instance handle everything
+    }
+    
     // Start HTTP server for routing
     this.httpServer = createServer(async (req, res) => {
       await this.handleHttpRequest(req, res);
     });
 
-    // Start HTTP server first with proper error handling
+    // Start HTTP server with intelligent port conflict handling
     return new Promise<void>((resolve, reject) => {
       this.httpServer.listen(this.config.port, this.config.host, () => {
         this.log(`✅ Pure router ready on ${this.config.host}:${this.config.port}`);
         resolve();
       });
       
-      this.httpServer.on('error', (error) => {
-        this.log(`❌ HTTP server failed to start: ${error.message}`, 'error');
-        reject(error);
+      this.httpServer.on('error', async (error: any) => {
+        if (error.code === 'EADDRINUSE') {
+          this.log(`🔄 Port conflict detected - attempting resolution...`);
+          
+          if (await this.portManager.resolvePortConflict()) {
+            // Retry after cleanup
+            setTimeout(() => {
+              this.httpServer.listen(this.config.port, this.config.host, () => {
+                this.log(`✅ Pure router ready on ${this.config.host}:${this.config.port} (after cleanup)`);
+                resolve();
+              });
+            }, 1000);
+          } else {
+            this.log(`❌ Could not resolve port conflict`, 'error');
+            reject(error);
+          }
+        } else {
+          this.log(`❌ HTTP server failed to start: ${error.message}`, 'error');
+          reject(error);
+        }
       });
     }).then(async () => {
-
       // Attach WebSocket server to the HTTP server
       await this.wsManager.start(this.httpServer);
     });

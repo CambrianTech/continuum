@@ -57,8 +57,8 @@ export class ContinuumDirectoryDaemon extends BaseDaemon {
   
   private continuumRoot: string;
   private directoryPolicies: Map<string, any> = new Map();
-  private statsCache: DirectoryStats | null = null;
-  private statsCacheExpiry: Date | null = null;
+  private _statsCache: DirectoryStats | null = null;
+  private _statsCacheExpiry: Date | null = null;
 
   constructor(continuumRoot: string = '.continuum') {
     super();
@@ -621,7 +621,7 @@ export class ContinuumDirectoryDaemon extends BaseDaemon {
     };
   }
 
-  private async cleanupOldSessions(maxAge: number, dryRun: boolean): Promise<any> {
+  private async cleanupOldSessions(_maxAge: number, _dryRun: boolean): Promise<any> {
     // Implementation would find and clean old sessions
     return {
       sessionsFound: 0,
@@ -631,7 +631,7 @@ export class ContinuumDirectoryDaemon extends BaseDaemon {
     };
   }
 
-  private async organizeArtifacts(strategy: string, sessionId?: string): Promise<any> {
+  private async organizeArtifacts(strategy: string, _sessionId?: string): Promise<any> {
     // Future: AI will learn optimal organization patterns
     return {
       strategy,
@@ -658,7 +658,7 @@ export class ContinuumDirectoryDaemon extends BaseDaemon {
     }
   }
 
-  private async estimateDirectorySize(dirPath: string): Promise<string> {
+  private async estimateDirectorySize(_dirPath: string): Promise<string> {
     // Simplified - real implementation would calculate actual size
     return '< 1MB';
   }
