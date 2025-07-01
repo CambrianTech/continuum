@@ -57,7 +57,10 @@ export class ChatWidget extends BaseWidget {
   private async initializeChat(): Promise<void> {
     console.log(`💬 Chat: Initializing chat for room: ${this.currentRoomId}`);
     
-    await this.loadRoomHistory();
+    // Load history in background - don't block initialization
+    this.loadRoomHistory().catch(error => {
+      console.warn(`💬 Chat: History loading failed (non-blocking):`, error);
+    });
     
     if (this.messages.length === 0) {
       this.addMessage({
@@ -404,8 +407,10 @@ export class ChatWidget extends BaseWidget {
    * Setup Universal User System - all users have same interface & privileges
    */
   private setupUniversalUserSystem(): void {
-    // Initialize AI model names (ask them what they want to be called)
-    universalUserSystem.initializeAIModelNames();
+    // Initialize AI model names in background - don't block widget loading
+    universalUserSystem.initializeAIModelNames().catch(error => {
+      console.warn(`💬 Chat: AI model initialization failed (non-blocking):`, error);
+    });
     
     // Listen for user updates to refresh UI
     universalUserSystem.on('user:updated', () => {

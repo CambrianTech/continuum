@@ -48,7 +48,7 @@
  * - Data archiving for long-term storage efficiency
  */
 
-import { RequestResponseDaemon, RequestHandler, RequestHandlerMap } from '../base/RequestResponseDaemon.js';
+import { RequestResponseDaemon, RequestHandlerMap } from '../base/RequestResponseDaemon.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -294,7 +294,7 @@ export class DatabaseDaemon extends RequestResponseDaemon {
     };
   }
 
-  private async handleListTables(params: any): Promise<any> {
+  private async handleListTables(_params: any): Promise<any> {
     const tables = Array.from(this.tables.keys());
     
     return {
@@ -455,7 +455,7 @@ export class DatabaseDaemon extends RequestResponseDaemon {
   /**
    * Delegate to ContinuumDirectoryDaemon for directory management
    */
-  private async delegateToContinuumDirectoryDaemon(operation: string, params: any): Promise<any> {
+  private async delegateToContinuumDirectoryDaemon(operation: string, _params: any): Promise<any> {
     // TODO: Implement actual daemon delegation via message bus
     // For now, return fallback responses to keep system working
     
