@@ -89,7 +89,7 @@ export class BrowserSessionManager {
   /**
    * Calculate optimal placement strategy for a new session
    */
-  calculatePlacement(sessionId: string, requirements: any): SessionPlacementStrategy {
+  calculatePlacement(_sessionId: string, requirements: any): SessionPlacementStrategy {
     // DevTools sessions always get new browser (isolation needed)
     if (requirements?.devtools) {
       return {
@@ -142,7 +142,7 @@ export class BrowserSessionManager {
   /**
    * Add a session to a browser
    */
-  addSession(browserId: string, sessionId: string): boolean {
+  addSession(browserId: string, _sessionId: string): boolean {
     const browser = this.browsers.get(browserId);
     if (!browser) return false;
 
@@ -156,7 +156,7 @@ export class BrowserSessionManager {
   /**
    * Remove a session from a browser
    */
-  removeSession(browserId: string, sessionId: string): boolean {
+  removeSession(browserId: string, _sessionId: string): boolean {
     const browser = this.browsers.get(browserId);
     if (!browser) return false;
 

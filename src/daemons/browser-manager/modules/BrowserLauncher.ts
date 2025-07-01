@@ -110,11 +110,10 @@ export class BrowserLauncher {
         
         browserProcess.unref();
         
-        return {
+        const result: any = {
           process: null, // System handles the browser process
           pid: browserProcess.pid || Math.random() * 10000,
           debugPort: 0, // No DevTools for system default
-          devToolsUrl: undefined,
           capabilities: {
             supportsConsole: false,
             supportsNetwork: false,
@@ -125,6 +124,8 @@ export class BrowserLauncher {
             supportsSecurityAnalysis: false
           }
         };
+        
+        return result;
       },
       async waitForReady(): Promise<void> {
         // For system default, just wait a moment for browser to start
@@ -159,7 +160,7 @@ export class BrowserLauncher {
       pid: result.pid,
       debugPort: result.debugPort,
       status: 'launching',
-      devToolsUrl: result.devToolsUrl,
+      devToolsUrl: result.devToolsUrl || `http://localhost:${result.debugPort}`,
       launchedAt: new Date(),
       lastActivity: new Date(),
       config: {} as BrowserConfig

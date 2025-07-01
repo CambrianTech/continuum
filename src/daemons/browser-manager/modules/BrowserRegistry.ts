@@ -3,7 +3,13 @@
  * Handles browser discovery, module initialization, and intelligent browser selection
  */
 
-import { BrowserType, BrowserConfig, BrowserPurpose } from '../types/index.js';
+import { BrowserType, BrowserConfig } from '../types/index.js';
+// TODO: BrowserPurpose needs to be defined in types
+enum BrowserPurpose {
+  AUTOMATION = 'automation',
+  DEVELOPMENT = 'development', 
+  USER = 'user'
+}
 import { IBrowserModule } from './IBrowserModule';
 import { ChromeBrowserModule } from './ChromeBrowserModule';
 
@@ -96,7 +102,7 @@ export class BrowserRegistry {
       case BrowserPurpose.DEVELOPMENT:
         // Development uses default browser (user's choice) unless DevTools specifically required
         // This respects user's browser preference (Opera GX in this case)
-        defaultBrowser = config.requirements.devtools ? BrowserType.CHROME : this.getSystemDefaultBrowser();
+        defaultBrowser = config.requirements?.devtools ? BrowserType.CHROME : this.getSystemDefaultBrowser();
         break;
         
       case BrowserPurpose.USER:
@@ -106,7 +112,7 @@ export class BrowserRegistry {
         break;
     }
     
-    console.log(`Intelligent browser selection: ${defaultBrowser} for ${config.purpose} (devtools: ${config.requirements.devtools})`);
+    console.log(`Intelligent browser selection: ${defaultBrowser} for ${config.purpose} (devtools: ${config.requirements?.devtools})`);
     return defaultBrowser;
   }
 

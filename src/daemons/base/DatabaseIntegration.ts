@@ -88,25 +88,35 @@ export class DatabaseIntegration {
    * Save data to collection
    */
   async save(collection: string, key: string, data: any, metadata?: Record<string, any>): Promise<DatabaseResponse> {
-    return this.delegateToDatabaseDaemon({
+    const operation: any = {
       operation: 'save',
       collection,
       key,
-      data,
-      options: { metadata }
-    });
+      data
+    };
+    
+    if (metadata) {
+      operation.options = { metadata };
+    }
+    
+    return this.delegateToDatabaseDaemon(operation);
   }
 
   /**
    * Query data from collection
    */
   async query(collection: string, query: any, options?: DatabaseOptions): Promise<DatabaseResponse> {
-    return this.delegateToDatabaseDaemon({
+    const operation: any = {
       operation: 'query',
       collection,
-      query,
-      options
-    });
+      query
+    };
+    
+    if (options) {
+      operation.options = options;
+    }
+    
+    return this.delegateToDatabaseDaemon(operation);
   }
 
   /**
@@ -135,11 +145,16 @@ export class DatabaseIntegration {
    * List all items in collection
    */
   async list(collection: string, options?: DatabaseOptions): Promise<DatabaseResponse> {
-    return this.delegateToDatabaseDaemon({
+    const operation: any = {
       operation: 'list',
-      collection,
-      options
-    });
+      collection
+    };
+    
+    if (options) {
+      operation.options = options;
+    }
+    
+    return this.delegateToDatabaseDaemon(operation);
   }
 
   /**
