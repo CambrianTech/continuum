@@ -4,6 +4,11 @@
   "description": "Sidebar widget for navigation and system status",
   "main": "SidebarWidget.ts",
   "type": "module",
+  "files": [
+    "SidebarWidget.ts",
+    "SidebarWidget.css",
+    "sidebar-icon.svg"
+  ],
   "continuum": {
     "type": "widget",
     "componentName": "continuum-sidebar",
