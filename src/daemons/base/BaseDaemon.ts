@@ -194,9 +194,10 @@ export abstract class BaseDaemon extends EventEmitter {
    */
   protected log(message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info'): void {
     const timestamp = new Date().toISOString();
-    const logMessage = `[${timestamp}] [${this.name}:${this.processId}] ${level.toUpperCase()}: ${message}`;
+    const safeLevel = typeof level === 'string' ? level : 'info';
+    const logMessage = `[${timestamp}] [${this.name}:${this.processId}] ${safeLevel.toUpperCase()}: ${message}`;
     
-    switch (level) {
+    switch (safeLevel) {
       case 'error':
         console.error(logMessage);
         break;

@@ -1,0 +1,19 @@
+{
+  "name": "@continuum/continuon-widget",
+  "version": "1.0.0",
+  "description": "Continuon widget for system visualization and control",
+  "main": "ContinuonWidget.ts",
+  "type": "module",
+  "continuum": {
+    "type": "widget",
+    "componentName": "continuon-widget",
+    "widgetName": "ContinuonWidget",
+    "category": "system",
+    "dependencies": ["continuum-api"],
+    "capabilities": ["visualization", "control", "system-status"]
+  },
+  "scripts": {
+    "test": "npx tsx test/unit/ContinuonWidget.test.ts",
+    "test:integration": "npx tsx test/integration/ContinuonWidget.integration.test.ts"
+  }
+}

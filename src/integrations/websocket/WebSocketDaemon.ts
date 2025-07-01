@@ -59,13 +59,22 @@ export class WebSocketDaemon extends BaseDaemon {
       await this.handleHttpRequest(req, res);
     });
 
-    // Start HTTP server first
-    this.httpServer.listen(this.config.port, this.config.host, () => {
-      this.log(`✅ Pure router ready - knows nothing about content, only routes`);
-    });
+    // Start HTTP server first with proper error handling
+    return new Promise<void>((resolve, reject) => {
+      this.httpServer.listen(this.config.port, this.config.host, () => {
+        this.log(`✅ Pure router ready on ${this.config.host}:${this.config.port}`);
+        resolve();
+      });
+      
+      this.httpServer.on('error', (error) => {
+        this.log(`❌ HTTP server failed to start: ${error.message}`, 'error');
+        reject(error);
+      });
+    }).then(async () => {
 
-    // Attach WebSocket server to the HTTP server
-    await this.wsManager.start(this.httpServer);
+      // Attach WebSocket server to the HTTP server
+      await this.wsManager.start(this.httpServer);
+    });
   }
 
   protected async onStop(): Promise<void> {
@@ -124,24 +133,192 @@ export class WebSocketDaemon extends BaseDaemon {
     const pathname = url.pathname;
 
     try {
-      // Pure routing - delegate to registered handlers
-      const handled = await this.routeManager.handleRequest(pathname, req, res);
-      
-      if (!handled) {
-        // No route found - simple 404
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
-        res.end('Not Found');
-        this.log(`❌ No route for: ${pathname}`);
+      // EARLY ROUTING: Simple endpoints bypass complex command system
+      if (pathname === '/api/health') {
+        // Direct health check - no command routing needed (supports GET and POST)
+        const healthData = {
+          status: 'healthy',
+          timestamp: new Date().toISOString(),
+          daemons: Array.from(this.registeredDaemons.keys()),
+          connections: this.wsManager.getConnectionCount()
+        };
+        
+        if (req.method === 'POST') {
+          // Handle POST from browser health validation
+          let body = '';
+          req.on('data', (chunk: any) => body += chunk);
+          req.on('end', () => {
+            try {
+              const clientData = JSON.parse(body);
+              this.log(`🏥 Client health report received:`, clientData.source || 'unknown');
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ...healthData, clientReport: 'received' }));
+            } catch (error) {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify(healthData));
+            }
+          });
+        } else {
+          // Handle GET requests
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(healthData));
+        }
+        
+        this.log(`✅ Direct health check served (${req.method})`);
+        return;
+      } else if (pathname.startsWith('/api/')) {
+        // Route other API calls to command daemons
+        const handled = await this.routeManager.handleRequest(pathname, req, res);
+        if (!handled) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('API endpoint not found');
+          this.log(`❌ No API route for: ${pathname}`);
+        } else {
+          this.log(`✅ API routed: ${pathname}`);
+        }
       } else {
-        this.log(`✅ Routed: ${pathname}`);
+        // DEFAULT: Serve files directly from filesystem
+        await this.serveFileFromFilesystem(pathname, req, res);
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ Routing error for ${pathname}: ${errorMessage}`, 'error');
+      const errorStack = error instanceof Error ? error.stack : 'No stack trace';
+      this.log(`🚨🚨🚨 REQUEST CRASH for ${pathname}:`, 'error');
+      this.log(`Error: ${errorMessage}`, 'error');
+      this.log(`Stack: ${errorStack}`, 'error');
       
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('Internal Server Error');
     }
+  }
+
+  private async serveFileFromFilesystem(pathname: string, req: any, res: any): Promise<void> {
+    const fs = await import('fs');
+    const path = await import('path');
+    const { fileURLToPath } = await import('url');
+    
+    try {
+      // CONSISTENT PATH RESOLUTION: Same as working-server.ts
+      // Always serve from current working directory (repo root or npm package root)
+      const projectRoot = process.cwd();
+      
+      this.log(`🔍 DEBUG: Project root: ${projectRoot}, serving: ${pathname}`);
+      
+      // Handle special routes
+      if (pathname === '/') {
+        // Route main page to renderer daemon for HTML generation
+        const handled = await this.routeManager.handleRequest(pathname, req, res);
+        if (handled) {
+          this.log(`✅ HTML routed: ${pathname}`);
+          return;
+        }
+      }
+      
+      // Build file path
+      const filePath = path.join(projectRoot, pathname);
+      
+      this.log(`🔍 DEBUG: Full file path: ${filePath}`);
+      this.log(`🔍 DEBUG: File exists check: ${fs.existsSync(filePath)}`);
+      
+      // Security check
+      if (!filePath.startsWith(projectRoot)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain' });
+        res.end('Access denied');
+        this.log(`❌ Security check failed: ${filePath} not in ${projectRoot}`);
+        return;
+      }
+      
+      // Check if file exists
+      if (!fs.existsSync(filePath)) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('File not found');
+        this.log(`❌ File not found: ${pathname} (full path: ${filePath})`);
+        return;
+      }
+      
+      // ALWAYS COMPILE TYPESCRIPT ON-THE-FLY - NO STATIC FILES
+      if (filePath.endsWith('.js')) {
+        // Look for corresponding .ts file and compile it
+        const tsFilePath = filePath.replace('.js', '.ts');
+        if (fs.existsSync(tsFilePath)) {
+          await this.compileAndServeTypeScript(tsFilePath, res);
+          this.log(`✅ TypeScript compiled on-demand: ${pathname} -> ${path.basename(tsFilePath)}`);
+        } else {
+          // Fallback to static .js if no .ts exists
+          const content = fs.readFileSync(filePath);
+          res.writeHead(200, { 
+            'Content-Type': 'application/javascript',
+            'Cache-Control': 'no-cache, no-store, must-revalidate'
+          });
+          res.end(content);
+          this.log(`✅ Static JS served: ${pathname}`);
+        }
+      } else if (filePath.endsWith('.ts')) {
+        // Direct TypeScript compilation
+        await this.compileAndServeTypeScript(filePath, res);
+        this.log(`✅ TypeScript compiled: ${pathname}`);
+      } else {
+        // Other static files
+        const content = fs.readFileSync(filePath);
+        const contentType = this.getContentType(filePath);
+        
+        res.writeHead(200, { 
+          'Content-Type': contentType,
+          'Cache-Control': 'no-cache, no-store, must-revalidate'
+        });
+        res.end(content);
+        this.log(`✅ Static file served: ${pathname}`);
+      }
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end(`File serving error: ${errorMessage}`);
+      this.log(`❌ File serving failed for ${pathname}: ${errorMessage}`, 'error');
+    }
+  }
+
+  private async compileAndServeTypeScript(filePath: string, res: any): Promise<void> {
+    const fs = await import('fs');
+    const ts = await import('typescript');
+    
+    try {
+      const tsContent = fs.readFileSync(filePath, 'utf-8');
+      
+      // Simple TypeScript compilation for browser
+      const result = ts.transpile(tsContent, {
+        target: ts.ScriptTarget.ES2020,
+        module: ts.ModuleKind.ES2020,
+        moduleResolution: ts.ModuleResolutionKind.NodeJs,
+        strict: false,
+        skipLibCheck: true
+      });
+      
+      res.writeHead(200, { 
+        'Content-Type': 'application/javascript',
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
+      });
+      res.end(result);
+      this.log(`✅ TypeScript compiled and served: ${filePath}`);
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end(`TypeScript compilation error: ${errorMessage}`);
+      this.log(`❌ TypeScript compilation failed: ${errorMessage}`, 'error');
+    }
+  }
+
+  private getContentType(filePath: string): string {
+    if (filePath.endsWith('.js')) return 'application/javascript';
+    if (filePath.endsWith('.ts')) return 'application/javascript';
+    if (filePath.endsWith('.css')) return 'text/css';
+    if (filePath.endsWith('.html')) return 'text/html';
+    if (filePath.endsWith('.json')) return 'application/json';
+    if (filePath.endsWith('.png')) return 'image/png';
+    if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) return 'image/jpeg';
+    if (filePath.endsWith('.svg')) return 'image/svg+xml';
+    return 'text/plain';
   }
 
   private handleWebSocketMessage(connectionId: string, data: any): void {
@@ -309,9 +486,22 @@ export class WebSocketDaemon extends BaseDaemon {
     // For now, we'll use a simple direct call if the daemon is registered
     const daemon = this.registeredDaemons.get(daemonName);
     
+    this.log(`🔍 DEBUG: Looking for daemon '${daemonName}', found: ${!!daemon}, hasHandleMessage: ${daemon?.handleMessage ? 'yes' : 'no'}`);
+    this.log(`🔍 DEBUG: Registered daemons: ${Array.from(this.registeredDaemons.keys()).join(', ')}`);
+    
     if (daemon && daemon.handleMessage) {
-      return await daemon.handleMessage(message);
+      this.log(`🔍 DEBUG: Calling handleMessage with:`, JSON.stringify(message));
+      try {
+        const result = await daemon.handleMessage(message);
+        this.log(`🔍 DEBUG: Got response:`, JSON.stringify(result));
+        return result;
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.log(`❌ DEBUG: handleMessage threw error: ${errorMessage}`, 'error');
+        throw error;
+      }
     } else {
+      this.log(`❌ DEBUG: Daemon ${daemonName} not found or doesn't support messaging`, 'error');
       throw new Error(`Daemon ${daemonName} not found or doesn't support messaging`);
     }
   }

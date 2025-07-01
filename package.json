@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2213",
+  "version": "0.2.2248",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -14,7 +14,8 @@
     "install:global": "node scripts/install.js",
     "postinstall": "lerna run prepare",
     "launch": "npx tsx launch.ts",
-    "start": "node increment-version.js && npx tsx launch.ts --mode=system",
+    "start": "npx tsx working-server.ts",
+    "start:full": "node increment-version.js && npx tsx launch.ts --mode=system",
     "dev": "npx tsx launch.ts --mode=dev",
     "test-all": "npx tsx launch.ts --mode=test",
     "test-widgets": "npx tsx launch.ts --mode=test-widgets",
@@ -24,7 +25,8 @@
     "build:ui": "tsc --project tsconfig.ui.json",
     "dev:browser": "npm run build:browser-ts -- --watch",
     "dev:ui": "npm run build:ui-components -- --watch",
-    "test": "npx tsx src/system/testing/test/universal-layer-runner.ts",
+    "test": "npx tsx simple-http-test.ts",
+    "test:full": "npx tsx src/system/testing/test/universal-layer-runner.ts",
     "test:layer": "npx tsx src/system/testing/test/universal-layer-runner.ts --layer=",
     "test:widgets": "npx tsx src/testing/ModularTestRunner.ts widget",
     "test:daemons": "npx tsx src/testing/ModularTestRunner.ts daemon",

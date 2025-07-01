@@ -29,29 +29,73 @@ export class ContinuumSystem extends EventEmitter {
     this.daemons.set('command-processor', new CommandProcessorDaemon());
     this.daemons.set('browser-manager', new BrowserManagerDaemon());
   }
+  
+  private getPackageInfo(): { version: string; name: string } {
+    try {
+      const fs = require('fs');
+      const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+      return { version: pkg.version, name: pkg.name };
+    } catch (error) {
+      return { version: 'unknown', name: 'continuum' };
+    }
+  }
+  
+  private handleDaemonStopped(name: string): void {
+    const stopTime = new Date().toISOString();
+    console.log(`[${stopTime}] 🛑 DAEMON STOPPED: ${name}`);
+    this.readyDaemons.delete(name);
+  }
+  
+  private handleDaemonError(name: string, error: any): void {
+    const errorTime = new Date().toISOString();
+    console.error(`[${errorTime}] 🚨 DAEMON ERROR: ${name} - ${error.message}`);
+    console.error(`[${errorTime}] 📋 Stack trace:`, error.stack);
+  }
 
   async start(): Promise<void> {
-    console.log('🌟 Continuum System Starting');
-    console.log('============================');
+    const startTime = new Date().toISOString();
+    const pkg = this.getPackageInfo();
+    
+    console.log('╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗');
+    console.log('║ 🌟 CONTINUUM SYSTEM STARTUP                                                                                          ║');
+    console.log(`║ Version: ${pkg.version.padEnd(20)} Start Time: ${startTime.padEnd(30)} Process: ${process.pid.toString().padEnd(15)} ║`);
+    console.log('╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣');
+    console.log('║ 📋 Daemon Launch Sequence:                                                                                          ║');
+    console.log('║   1. continuum-directory → 2. session-manager → 3. websocket → 4. renderer → 5. command-processor → 6. browser   ║');
+    console.log('╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝');
+    console.log('');
     
     // Clear any existing port conflicts (temporarily disabled for debugging)
     // await this.clearPorts();
     
-    // Set up daemon event listeners
+    // Set up daemon event listeners with detailed logging
     for (const [name, daemon] of this.daemons) {
       daemon.on('started', () => this.handleDaemonReady(name));
       daemon.on('failed', (error: any) => this.handleDaemonFailed(name, error));
+      daemon.on('stopped', () => this.handleDaemonStopped(name));
+      daemon.on('error', (error: any) => this.handleDaemonError(name, error));
     }
     
-    // Start all daemons
+    // Start all daemons with comprehensive logging
     console.log('🚀 Starting daemons...');
     for (const [name, daemon] of this.daemons) {
-      console.log(`🚀 Starting ${name} daemon...`);
-      await daemon.start();
+      const daemonStartTime = new Date().toISOString();
+      console.log(`[${daemonStartTime}] 🚀 Starting ${name} daemon...`);
+      
+      try {
+        await daemon.start();
+        const daemonReadyTime = new Date().toISOString();
+        console.log(`[${daemonReadyTime}] ✅ ${name} daemon ready`);
+      } catch (error) {
+        const errorTime = new Date().toISOString();
+        console.error(`[${errorTime}] 💥 ${name} daemon FAILED:`, error.message);
+        throw error;
+      }
     }
     
     // Wait for ALL daemons to be ready
-    console.log('⏳ Waiting for all daemons to be ready...');
+    const waitTime = new Date().toISOString();
+    console.log(`[${waitTime}] ⏳ Waiting for all daemons to be ready...`);
     await this.waitForSystemReady();
     
     // Set up inter-daemon communication
@@ -171,16 +215,23 @@ export class ContinuumSystem extends EventEmitter {
   }
 
   private handleDaemonReady(name: string): void {
-    console.log(`✅ ${name} daemon ready`);
+    const readyTime = new Date().toISOString();
+    console.log(`[${readyTime}] ✅ DAEMON READY: ${name} (${this.readyDaemons.size + 1}/${this.daemons.size})`);
     this.readyDaemons.add(name);
     
     if (this.readyDaemons.size === this.daemons.size) {
+      const allReadyTime = new Date().toISOString();
+      console.log(`[${allReadyTime}] 🎉 ALL DAEMONS READY - System operational!`);
       this.emit('all-daemons-ready');
     }
   }
 
   private handleDaemonFailed(name: string, error: any): void {
-    console.log(`❌ ${name} daemon failed:`, error);
+    const failTime = new Date().toISOString();
+    console.error(`[${failTime}] 💥 DAEMON FAILED: ${name}`);
+    console.error(`[${failTime}] 📋 Error: ${error.message}`);
+    console.error(`[${failTime}] 📋 Stack: ${error.stack}`);
+    console.error(`[${failTime}] 📊 System status: ${this.readyDaemons.size}/${this.daemons.size} daemons ready`);
     this.emit('daemon-failed', { name, error });
   }
 
@@ -195,13 +246,8 @@ export class ContinuumSystem extends EventEmitter {
     webSocketDaemon.registerDaemon(rendererDaemon);
     webSocketDaemon.registerDaemon(commandProcessorDaemon);
     
-    // Register HTTP routes  
+    // Register only the main UI route - let renderer daemon handle everything else dynamically
     webSocketDaemon.registerRouteHandler('/', 'renderer', 'render_ui');
-    webSocketDaemon.registerRouteHandler('/src/ui/continuum-browser.js', 'renderer', 'render_ui_components');
-    webSocketDaemon.registerRouteHandler('/dist/api.js', 'renderer', 'render_api');
-    
-    // Register wildcard route for all UI components (dynamic discovery)
-    webSocketDaemon.registerRouteHandler('/src/ui/components/*', 'renderer', 'serve_ui_component');
     
     console.log('✅ Inter-daemon communication established');
   }
@@ -330,14 +376,32 @@ export class ContinuumSystem extends EventEmitter {
   }
 
   async stop(): Promise<void> {
-    console.log('🛑 Stopping Continuum System...');
+    const shutdownStartTime = new Date().toISOString();
+    const pkg = this.getPackageInfo();
+    
+    console.log('');
+    console.log('╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗');
+    console.log('║ 🛑 CONTINUUM SYSTEM SHUTDOWN                                                                                         ║');
+    console.log(`║ Version: ${pkg.version.padEnd(20)} Shutdown Time: ${shutdownStartTime.padEnd(25)} Process: ${process.pid.toString().padEnd(15)} ║`);
+    console.log('╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝');
     
     for (const [name, daemon] of this.daemons) {
-      console.log(`🛑 Stopping ${name}...`);
-      await daemon.stop();
+      const daemonStopTime = new Date().toISOString();
+      console.log(`[${daemonStopTime}] 🛑 Stopping ${name}...`);
+      
+      try {
+        await daemon.stop();
+        const daemonStoppedTime = new Date().toISOString();
+        console.log(`[${daemonStoppedTime}] ✅ ${name} stopped cleanly`);
+      } catch (error) {
+        const errorTime = new Date().toISOString();
+        console.error(`[${errorTime}] ⚠️  ${name} stop error: ${error.message}`);
+      }
     }
     
-    console.log('✅ System stopped');
+    const shutdownCompleteTime = new Date().toISOString();
+    console.log(`[${shutdownCompleteTime}] ✅ SYSTEM SHUTDOWN COMPLETE`);
+    console.log('');
   }
 }
 

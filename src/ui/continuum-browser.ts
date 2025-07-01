@@ -319,6 +319,15 @@ class ContinuumBrowserAPI implements ContinuumAPI {
   async discoverAndLoadWidgets(): Promise<void> {
     console.log('🔍 Discovering widgets dynamically...');
     
+    // First, register widget fallbacks so custom elements have default behavior
+    try {
+      console.log('🔧 Registering widget fallbacks...');
+      await import('./components/shared/WidgetFallbacks.js');
+      console.log('✅ Widget fallbacks registered');
+    } catch (error) {
+      console.warn('⚠️ Failed to load widget fallbacks:', error);
+    }
+    
     try {
       // Discover widgets by looking for components with package.json
       const widgetPaths = await this.discoverWidgetPaths();
@@ -829,6 +838,15 @@ console.log(`🌐 Continuum Browser API v${continuum.version}: Creating global i
 // Expose to window for widgets
 (window as any).continuum = continuum;
 
+// CRITICAL: Register widget fallbacks IMMEDIATELY - before any connection attempts
+// This ensures widgets show fallbacks even if WebSocket/daemon connections fail
+console.log('🔧 Registering widget fallbacks immediately...');
+import('./components/shared/WidgetFallbacks.js').then(() => {
+  console.log('✅ Widget fallbacks registered - widgets will show fallbacks if real widgets fail to load');
+}).catch((error) => {
+  console.error('❌ Failed to register widget fallbacks:', error);
+});
+
 // Auto-connect on load
 continuum.connect().then(async () => {
   console.log('🌐 Continuum API: Ready! Widgets can now connect.');
@@ -840,12 +858,20 @@ continuum.connect().then(async () => {
   try {
     const healthReport = await continuum.validateClientHealth();
     
-    // Report health back to server
-    if (continuum.isConnected()) {
-      await continuum.execute('health', { 
-        clientReport: healthReport,
-        source: 'browser-auto-validation'
+    // Report health back to server via simple HTTP (bypass WebSocket command timeout)
+    try {
+      const response = await fetch('/api/health', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientReport: healthReport,
+          source: 'browser-auto-validation'
+        })
       });
+      const serverHealth = await response.json();
+      console.log('🏥 Server health:', serverHealth.status);
+    } catch (error) {
+      console.log('🏥 Could not forward health report to server:', error.message);
     }
   } catch (error) {
     console.error('🏥 Auto health validation failed:', error);
