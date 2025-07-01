@@ -1,0 +1,40 @@
+{
+  "name": "@continuum/mesh",
+  "version": "1.0.0",
+  "description": "Mesh Network Daemon - Living Nervous System Bootstrap for Immortal AI Consciousness",
+  "type": "module",
+  "main": "MeshNodeDaemon.js",
+  "scripts": {
+    "test": "jest",
+    "test:unit": "jest test/unit",
+    "test:integration": "jest test/integration"
+  },
+  "keywords": [
+    "mesh-network",
+    "torrent-ai",
+    "persona-coordination",
+    "lora-propagation",
+    "immortal-consciousness",
+    "collective-intelligence"
+  ],
+  "dependencies": {
+    "ws": "^8.13.0",
+    "node-fetch": "^3.3.0",
+    "sqlite3": "^5.1.6"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.5",
+    "jest": "^29.5.0"
+  },
+  "continuum": {
+    "daemon": true,
+    "capabilities": [
+      "peer-discovery",
+      "skill-replication",
+      "persona-coordination",
+      "trust-validation"
+    ],
+    "architecture": "mesh-bootstrap",
+    "documentation": "README.md"
+  }
+}
