@@ -105,12 +105,12 @@ export class SessionInfoCommand extends BaseCommand {
       if (includeArtifacts) {
         sessionInfo.artifacts = {
           logs: {
-            server: session.artifacts.logs?.server?.length || 0,
-            client: session.artifacts.logs?.client?.length || 0
+            server: session.storage?.logs?.server ? 1 : 0,
+            client: session.storage?.logs?.browser ? 1 : 0
           },
-          screenshots: session.artifacts.screenshots?.length || 0,
-          files: session.artifacts.files?.length || 0,
-          recordings: session.artifacts.recordings?.length || 0,
+          screenshots: session.storage?.directories?.screenshots ? 1 : 0,
+          files: session.storage?.directories?.files ? 1 : 0,
+          recordings: session.storage?.directories?.recordings ? 1 : 0,
           devtools: session.artifacts.devtools?.length || 0
         };
       }
