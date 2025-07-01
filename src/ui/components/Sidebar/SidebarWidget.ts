@@ -156,10 +156,23 @@ export class SidebarWidget extends BaseWidget {
             </div>
             
             <div class="sidebar-content">
+                <!-- Interactive Personas -->
+                <div class="personas-section">
+                    <div class="section-header">
+                        <span class="section-icon">🤖</span>
+                        <span class="section-title">AI Personas</span>
+                        <span class="section-count">3 active</span>
+                    </div>
+                    <div class="personas-list">
+                        <interactive-persona data-persona="designer"></interactive-persona>
+                        <interactive-persona data-persona="developer"></interactive-persona>
+                        <interactive-persona data-persona="tester"></interactive-persona>
+                    </div>
+                </div>
+                
                 <!-- Child Widgets -->
                 <active-projects></active-projects>
                 <user-selector></user-selector>
-                <saved-personas title="Saved Personas"></saved-personas>
             </div>
         `;
     }

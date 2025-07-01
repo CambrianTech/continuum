@@ -324,6 +324,7 @@ class ContinuumBrowserAPI implements ContinuumAPI {
       console.log('🔧 Registering widget fallbacks...');
       await import('./components/shared/WidgetFallbacks.js');
       await import('./components/shared/WidgetServerControls.js');
+      await import('./components/shared/InteractivePersona.js');
       console.log('✅ Widget fallbacks registered');
     } catch (error) {
       console.warn('⚠️ Failed to load widget fallbacks:', error);

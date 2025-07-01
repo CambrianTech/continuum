@@ -4,6 +4,7 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget.js';
+import { universalUserSystem } from '../shared/UniversalUserSystem.js';
 
 interface Message {
   id: string;
@@ -57,6 +58,7 @@ export class ChatWidget extends BaseWidget {
     await this.initializeChat();
     this.setupContinuumListeners();
     this.setupServerControlListeners();
+    this.setupUniversalUserSystem();
   }
 
   private async initializeChat(): Promise<void> {
@@ -174,26 +176,7 @@ export class ChatWidget extends BaseWidget {
         <div class="connected-bar">
           <span class="connected-label">CONNECTED:</span>
           <div class="connected-users">
-            <div class="user-badge">
-              <span class="user-avatar">👤</span>
-              <span class="user-name">YOU</span>
-              <span class="user-status online"></span>
-            </div>
-            <div class="user-badge">
-              <span class="user-avatar">🤖</span>
-              <span class="user-name">Claude Code</span>
-              <span class="user-status online"></span>
-            </div>
-            <div class="user-badge">
-              <span class="user-avatar">🔄</span>
-              <span class="user-name">Auto Route</span>
-              <span class="user-status online"></span>
-            </div>
-            <div class="user-badge">
-              <span class="user-avatar">🛡️</span>
-              <span class="user-name">Protocol Sheriff</span>
-              <span class="user-status online"></span>
-            </div>
+            ${universalUserSystem.generateConnectedUsersHTML()}
           </div>
         </div>
         
@@ -316,6 +299,20 @@ export class ChatWidget extends BaseWidget {
         }
       });
     });
+
+    // Handle clicks on connected users (personas, AI models, etc.)
+    this.shadowRoot?.querySelectorAll('.user-badge.clickable').forEach(badge => {
+      badge.addEventListener('click', (e: Event) => {
+        const target = e.currentTarget as HTMLElement;
+        const userId = target.dataset.userId;
+        if (userId) {
+          universalUserSystem.handleUserClick(userId, {
+            source: 'chat-widget',
+            currentRoom: this.currentRoomId
+          });
+        }
+      });
+    });
   }
 
   private autoResizeTextarea(textarea: HTMLTextAreaElement): void {
@@ -405,6 +402,62 @@ export class ChatWidget extends BaseWidget {
       input.focus();
       this.autoResizeTextarea(input);
     }
+  }
+
+  /**
+   * Setup Universal User System - all users have same interface & privileges
+   */
+  private setupUniversalUserSystem(): void {
+    // Initialize AI model names (ask them what they want to be called)
+    universalUserSystem.initializeAIModelNames();
+    
+    // Listen for user updates to refresh UI
+    universalUserSystem.on('user:updated', () => {
+      this.render(); // Refresh connected users display
+    });
+
+    // Handle user clicks (personas, AI models, etc.)
+    universalUserSystem.on('persona:interaction-requested', (data) => {
+      this.startConversationWithUser(data.personaId, data.personaName, 'persona');
+    });
+
+    universalUserSystem.on('ai-model:conversation-requested', (data) => {
+      this.startConversationWithUser(data.modelId, data.modelName, 'ai-model');
+    });
+  }
+
+  /**
+   * Start conversation with any user type - same interface for all
+   */
+  private async startConversationWithUser(userId: string, userName: string, userType: string): Promise<void> {
+    this.addMessage({
+      id: this.generateMessageId(),
+      type: 'system',
+      content: `💬 Starting direct conversation with ${userName}. They have the same privileges and command access as everyone else.`,
+      timestamp: new Date()
+    });
+
+    // Set chat focus to this specific user
+    this.setConversationFocus(userId, userName);
+  }
+
+  /**
+   * Set conversation focus to specific user
+   */
+  private setConversationFocus(userId: string, userName: string): void {
+    // Update UI to show we're in focused conversation
+    const input = this.shadowRoot?.querySelector('#messageInput') as HTMLTextAreaElement;
+    if (input) {
+      input.placeholder = `Message ${userName} directly...`;
+      input.dataset.focusedUser = userId;
+    }
+
+    this.addMessage({
+      id: this.generateMessageId(),
+      type: 'system',
+      content: `🎯 Conversation focused on ${userName}. Your messages will go directly to them. They can use all commands like screenshot, validate, export, etc.`,
+      timestamp: new Date()
+    });
   }
 
   /**
