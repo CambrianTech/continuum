@@ -23,7 +23,13 @@ export class SessionStatsCommand extends BaseCommand {
           required: false,
           enum: ['type', 'owner', 'starter', 'active']
         }
-      }
+      },
+      examples: [
+        {
+          description: 'Get detailed session statistics',
+          command: 'session-stats --includeDetails=true --groupBy=type'
+        }
+      ]
     };
   }
 

@@ -27,7 +27,13 @@ export class SessionInfoCommand extends BaseCommand {
           description: 'Include full file paths',
           required: false
         }
-      }
+      },
+      examples: [
+        {
+          description: 'Get session info with artifacts',
+          command: 'session-info --sessionId=my-session --includeArtifacts=true'
+        }
+      ]
     };
   }
 

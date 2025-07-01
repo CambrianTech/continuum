@@ -29,7 +29,13 @@ export class SessionListCommand extends BaseCommand {
           required: false,
           enum: ['table', 'json', 'summary']
         }
-      }
+      },
+      examples: [
+        {
+          description: 'List all active sessions',
+          command: 'session-list --format=table'
+        }
+      ]
     };
   }
 
