@@ -91,6 +91,68 @@ PORTAL BRIDGE [console-complete-capture]: [LOG] Widget discovery complete - 0 wi
 - **Fallback systems** when primary systems fail
 - **Progressive debugging** from symptoms to root cause
 
+### **🎯 JTAG Success Case: Widget Discovery Fix (2025-07-01)**
+
+**Problem Symptom:**
+```
+PORTAL BRIDGE [console-complete-capture]: [WARN] Server widget discovery failed: {}
+PORTAL BRIDGE [console-complete-capture]: [LOG] Widget discovery complete - 0 widgets processed
+```
+
+**JTAG Diagnostic Process:**
+1. **Server logs**: `✅ Command completed: discover_widgets (30ms)` - Command succeeds
+2. **Browser logs**: `Command 'discover_widgets' timed out` - Result not received
+3. **Source analysis**: Found widget paths pointing to `/src/` instead of `/dist/`
+4. **File verification**: Confirmed widget `.js` files exist in `/dist/ui/components/`
+
+**Root Cause Identified:**
+- `WidgetDiscovery.generateWidgetPaths()` returned `/src/ui/components/...` paths  
+- Browser tried to load non-existent `/src/` TypeScript files
+- Should load compiled `/dist/ui/components/...` JavaScript files
+
+**Solution Applied:**
+```typescript
+// BEFORE: /src/ui/components/${w.name}/${w.widgetFile.replace('.ts', '.js')}
+// AFTER:  /dist/ui/components/${w.name}/${w.widgetFile.replace('.ts', '.js')}
+```
+
+**JTAG Validation:**
+```
+BEFORE: ⚠️ Server widget discovery failed: {}
+AFTER:  ✅ Widget loading complete - 2 widgets loaded
+        🎨 Widget system ready - widgets dynamically discovered
+```
+
+**Communication Issue Discovered:**
+- Server: `✅ Command completed: discover_widgets (33ms)`
+- Browser: `Command 'discover_widgets' timed out`
+- **Analysis**: Command completes but result not reaching browser properly
+- **Status**: Partial fix achieved, communication layer needs investigation
+
+### **🚀 JTAG Timeout Elimination Success (2025-07-01)**
+
+**Problem Identified:**
+- Race condition: Fallback warnings triggered before widgets loaded
+- `setTimeout` polling for API readiness (flaky, non-deterministic)
+- Widget paths pointing to `/src/` instead of `/dist/` (fixed earlier)
+
+**Solutions Applied:**
+1. **Fixed widget discovery paths**: `/src/ui/components/` → `/dist/ui/components/`
+2. **Eliminated setTimeout polling**: Replaced with event-driven `continuum:ready` listener
+3. **Added Promise.all coordination**: Parallel widget loading with proper wait
+4. **Improved fallback timing**: Check `customElements.get()` for actual registration
+
+**JTAG Validation:**
+```
+BEFORE: ⚠️ Widget "chat-widget" not loaded: /dist/ui/components/Chat/ChatWidget.js missing (FALSE POSITIVE)
+AFTER:  ✅ Widget loading complete - 2 widgets loaded (ACCURATE STATUS)
+```
+
+**Browser Cache Issue:**
+- **Problem**: Changes require browser refresh to take effect
+- **Solution**: Hard refresh (Cmd+Shift+R) or disable cache in DevTools
+- **Status**: Widget files successfully served, timing coordination improved
+
 ### **🎓 Learning from Each Debug Session**
 
 **Documentation Pattern:**

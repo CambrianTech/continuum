@@ -19,13 +19,6 @@ export class InteractivePersona extends BaseWidget {
   private persona: PersonaState;
   private isInteracting: boolean = false;
 
-  static getBasePath(): string {
-    return '/src/ui/components/shared';
-  }
-
-  static getOwnCSS(): string[] {
-    return ['InteractivePersona.css'];
-  }
 
   constructor(personaData: PersonaState) {
     super();
