@@ -219,9 +219,10 @@ export class SelfValidatingModule {
   // REMOVED: _validateStructure() - deprecated legacy method
   // Modern replacement: Use module.validate() from object-oriented validation system
   
-  /**
-   * Test if a file exists
-   */
+  // REMOVED: Legacy test helpers - deprecated with _validateStructure()
+  // Modern replacement: module.validate() handles all validation internally
+  
+  /*
   private static async testFileExists(
     modulePath: string, 
     fileName: string, 
