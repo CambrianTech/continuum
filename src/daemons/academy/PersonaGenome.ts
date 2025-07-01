@@ -303,7 +303,51 @@ export class PersonaGenomeMatcher {
 }
 
 // Additional supporting types would be defined here...
+export interface CommunicationStyle {
+  formality_level: number;
+  verbosity_preference: number;
+  explanation_depth: number;
+  humor_usage: number;
+  technical_terminology: number;
+}
+
+export interface DecisionFramework {
+  risk_tolerance: number;
+  speed_vs_accuracy: number;
+  collaboration_preference: number;
+  evidence_requirements: number;
+  uncertainty_handling: string;
+}
+
+export interface PatternLibrary {
+  recognized_patterns: Pattern[];
+  pattern_hierarchies: PatternHierarchy[];
+  cross_domain_patterns: CrossDomainPattern[];
+}
+
+export interface MentalModel {
+  model_id: string;
+  domain: string;
+  conceptual_framework: ConceptualFramework;
+  predictive_accuracy: number;
+  confidence_level: number;
+}
+
+export interface KnowledgeGap {
+  gap_id: string;
+  domain: string;
+  gap_description: string;
+  severity: number;
+  acquisition_difficulty: number;
+}
+
 export interface CapabilityRequirement { capability: string; minimum_level: number; }
 export interface DomainRequirement { domain: string; depth_required: number; }
 export interface BehavioralRequirement { pattern: string; compatibility_level: number; }
 export interface SubstrateConstraint { requirement: string; flexibility: number; }
+
+// Supporting interfaces for the above
+export interface Pattern { id: string; name: string; description: string; }
+export interface PatternHierarchy { parent: string; children: string[]; }
+export interface CrossDomainPattern { pattern_id: string; domains: string[]; }
+export interface ConceptualFramework { concepts: string[]; relationships: string[]; }
