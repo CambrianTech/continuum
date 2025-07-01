@@ -50,7 +50,17 @@ export class SessionConnectCommand extends BaseCommand {
           description: 'Enable automatic cleanup for new sessions',
           required: false
         }
-      }
+      },
+      examples: [
+        {
+          description: 'Connect to default session',
+          command: 'session-connect'
+        },
+        {
+          description: 'Connect with custom preferences',
+          command: 'session-connect --name=my-session --starter=user'
+        }
+      ]
     };
   }
 

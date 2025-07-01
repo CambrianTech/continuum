@@ -62,15 +62,11 @@ export class JSExecuteCommand extends BaseCommand {
       examples: [
         {
           description: 'Execute simple JavaScript with UUID tracking',
-          input: { script: 'console.log("Hello from session!")' }
+          command: 'js-execute --script="console.log(\'Hello from session!\')"'
         },
         {
           description: 'Execute with custom session and no UUID',
-          input: { 
-            script: 'document.title = "Test Page"',
-            sessionId: 'my-session-123',
-            generateUUID: false
-          }
+          command: 'js-execute --script="document.title = \'Test Page\'" --sessionId=my-session-123 --generateUUID=false'
         }
       ]
     };
@@ -198,7 +194,7 @@ export class JSExecuteCommand extends BaseCommand {
   /**
    * Execute JavaScript in browser via DevTools
    */
-  private async executeInBrowser(script: string, options: {
+  private async executeInBrowser(_script: string, _options: {
     sessionId?: string;
     timeout: number;
     waitForResult: boolean;
