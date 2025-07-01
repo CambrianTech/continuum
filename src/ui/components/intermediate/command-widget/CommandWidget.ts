@@ -10,7 +10,7 @@
  * - PersonaWidget (persona management commands)
  */
 
-import { BaseWidget } from '../../core/base-widget/BaseWidget.js';
+import { BaseWidget } from '../../shared/BaseWidget.js';
 
 export interface CommandResult {
   success: boolean;
@@ -32,6 +32,14 @@ export abstract class CommandWidget extends BaseWidget {
   protected commandHistory: CommandHistoryEntry[] = [];
   protected activeCommands: Set<string> = new Set();
   protected lastCommandResult: CommandResult | null = null;
+
+  /**
+   * Simple logging method for CommandWidget subclasses
+   */
+  protected log(message: string, level: 'info' | 'error' | 'warn' = 'info'): void {
+    const prefix = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : 'ℹ️';
+    console.log(`${prefix} ${this.widgetName}: ${message}`);
+  }
 
   /**
    * Enhanced command execution with comprehensive error handling

@@ -55,7 +55,7 @@ export class WidgetServerControls {
           widgetId: widgetId,
           selector: widgetElement.tagName.toLowerCase(),
           includeContext: true,
-          ...event.detail
+          ...customEvent.detail
         });
         
         // Notify widget of completion via custom event
@@ -99,7 +99,7 @@ export class WidgetServerControls {
           target: 'widget',
           widgetId: widgetId,
           preserveState: event.detail?.preserveState || true,
-          ...event.detail
+          ...customEvent.detail
         });
         
         widgetElement.dispatchEvent(new CustomEvent('widget:refresh-complete', {
@@ -134,7 +134,7 @@ export class WidgetServerControls {
           target: 'widget',
           widgetId: widgetId,
           format: event.detail?.format || 'json',
-          ...event.detail
+          ...customEvent.detail
         });
         
         widgetElement.dispatchEvent(new CustomEvent('widget:export-complete', {
@@ -170,7 +170,7 @@ export class WidgetServerControls {
           widgetId: widgetId,
           validateAssets: true,
           validateContent: true,
-          ...event.detail
+          ...customEvent.detail
         });
         
         widgetElement.dispatchEvent(new CustomEvent('widget:validate-complete', {

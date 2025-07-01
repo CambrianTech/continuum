@@ -22,7 +22,9 @@ export class WidgetFallbackElement extends HTMLElement {
   constructor(config: WidgetFallbackConfig, warning?: string) {
     super();
     this.config = config;
-    this.warningMessage = warning;
+    if (warning !== undefined) {
+      this.warningMessage = warning;
+    }
     this.attachShadow({ mode: 'open' });
   }
 
