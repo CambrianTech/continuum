@@ -4,7 +4,6 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget.js';
-// CSS will be loaded dynamically via fetch
 
 interface Message {
   id: string;
@@ -50,14 +49,14 @@ export class ChatWidget extends BaseWidget {
     this.widgetName = 'ChatWidget';
     this.widgetIcon = '💬';
     this.widgetTitle = 'Chat';
-    // CSS is now bundled, no external path needed
+    // CSS loaded via declarative asset system
   }
 
 
   protected async initializeWidget(): Promise<void> {
-    await this.loadCSS();
     await this.initializeChat();
     this.setupContinuumListeners();
+    this.setupServerControlListeners();
   }
 
   private async initializeChat(): Promise<void> {
@@ -388,6 +387,12 @@ export class ChatWidget extends BaseWidget {
   }
 
   private handleQuickAction(action: string): void {
+    if (action === 'screenshot') {
+      // Server control event - like onclick but triggers server-side action
+      this.triggerScreenshot({ includeContext: true });
+      return;
+    }
+
     const quickMessages: Record<string, string> = {
       help: 'Help me understand how to use Continuum',
       status: 'Show me the system status',
@@ -400,6 +405,43 @@ export class ChatWidget extends BaseWidget {
       input.focus();
       this.autoResizeTextarea(input);
     }
+  }
+
+  /**
+   * Setup server control event listeners - handle callbacks from server
+   */
+  private setupServerControlListeners(): void {
+    // Listen for screenshot completion
+    this.addEventListener('widget:screenshot-complete', (event: CustomEvent) => {
+      const { success, result, error } = event.detail;
+      
+      if (success) {
+        this.addMessage({
+          id: this.generateMessageId(),
+          type: 'system',
+          content: `📸 Screenshot captured: ${result.filename || 'screenshot.png'}`,
+          timestamp: new Date()
+        });
+      } else {
+        this.addMessage({
+          id: this.generateMessageId(),
+          type: 'system',
+          content: `❌ Screenshot failed: ${error}`,
+          timestamp: new Date()
+        });
+      }
+    });
+
+    // Listen for refresh completion
+    this.addEventListener('widget:refresh-complete', (event: CustomEvent) => {
+      const { success, error } = event.detail;
+      
+      if (success) {
+        console.log('✅ ChatWidget refreshed successfully');
+      } else {
+        console.error('❌ ChatWidget refresh failed:', error);
+      }
+    });
   }
 
   private addMessage(message: Message): void {

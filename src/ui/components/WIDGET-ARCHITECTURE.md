@@ -87,13 +87,82 @@ export class ProjectWidget extends BaseWidget {
 }
 ```
 
-## Event-Driven Architecture
+## Event-Driven Server Controls
 
-### Frontend → Backend Communication
-Widgets emit custom events that automatically route to backend handlers via the RendererDaemon.
+### Server Control Events - Like onclick but for Server Actions
+Widgets can trigger server-side actions using simple event dispatch - no complex API calls needed.
 
 ```typescript
-// Frontend: Emit custom widget event
+// Widget triggers server action (like onclick but server-side)
+handleScreenshotClick() {
+  this.triggerScreenshot({ includeContext: true });
+}
+
+// Widget listens for server callback
+setupServerControlListeners() {
+  this.addEventListener('widget:screenshot-complete', (event) => {
+    const { success, result } = event.detail;
+    if (success) {
+      this.showMessage(`📸 Screenshot: ${result.filename}`);
+    }
+  });
+}
+```
+
+### Universal Server Controls Available to All Widgets
+- **`triggerScreenshot(options)`** - Take screenshot of widget or page
+- **`triggerRefresh(options)`** - Refresh widget from server
+- **`triggerExport(format, options)`** - Export widget data  
+- **`triggerValidate(options)`** - Validate widget state
+
+### Universal Observation & Orchestration Layer
+The event and command subsystem becomes a **universal observation point** where any system component can monitor and respond to widget interactions:
+
+```typescript
+// Widget emits server control event
+this.triggerScreenshot({ widgetId: 'chat-widget', context: 'user-demo' });
+
+// ↓ Event flows through universal system ↓
+
+// 1. WidgetServerControls routes to command system
+// 2. Personas can observe: "User took screenshot of chat"
+// 3. Academy system learns: "Screenshot pattern in chat context"
+// 4. Monitoring observes: "Widget interaction frequency"
+// 5. AI agents react: "Interesting, user exploring chat features"
+// 6. Command executes: Screenshot taken with full context
+// 7. Results broadcast: All observers get completion notification
+```
+
+### Multi-Observer Architecture
+```typescript
+// Personas observe widget events for learning
+PersonaObserver.on('widget:screenshot', (event) => {
+  this.learnUserPattern('screenshot', event.detail);
+  this.updateUserPreferences(event.widgetId, 'visual-documentation');
+});
+
+// Academy system observes for training data
+AcademySystem.on('widget:*', (event) => {
+  this.recordInteractionPattern(event.type, event.detail);
+  this.generateTrainingExample(event);
+});
+
+// Monitoring observes for system health
+SystemMonitor.on('widget:*', (event) => {
+  this.trackWidgetUsage(event.widgetId);
+  this.measureResponseTime(event.timestamp);
+});
+
+// AI Agents observe for contextual assistance
+AIAgent.on('widget:screenshot', (event) => {
+  this.offerHelpBasedOnAction('documentation', event.detail);
+  this.suggestRelatedFeatures(event.widgetId);
+});
+```
+
+### Backend Communication (Future)
+```typescript
+// Frontend → Backend Communication  
 this.dispatchEvent(new CustomEvent('project:archive', {
   detail: { projectId: this.projectId, reason: 'user_request' }
 }));
