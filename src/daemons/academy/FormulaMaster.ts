@@ -430,7 +430,7 @@ export class FormulaMaster {
   }
 
   private async analyzeTrainingProblem(request: FormulaRequest): Promise<ProblemAnalysis> {
-    console.log('TODO: Use knowledgeBase for problem analysis:', this.knowledgeBase.getDomainKnowledge ? 'available' : 'not available');
+    console.log('TODO: Use knowledgeBase for problem analysis:', this.knowledgeBase ? 'available' : 'not available');
     
     return {
       complexity_level: this.assessProblemComplexity(request),
@@ -590,27 +590,27 @@ export class FormulaMaster {
     console.log('TODO: Implement LoRA optimization explanation for:', lora.rank || 'unknown rank'); 
     return 'Dynamic rank adjustment based on capacity'; 
   }
-  private explainVectorExploration(exploration: any): string { return 'Curiosity-driven exploration with exploitation balance'; }
-  private explainP2PIntegration(p2p: any): string { return 'Collaborative learning with competitive elements'; }
+  private explainVectorExploration(_exploration: any): string { return 'Curiosity-driven exploration with exploitation balance'; }
+  private explainP2PIntegration(_p2p: any): string { return 'Collaborative learning with competitive elements'; }
   
-  private assessFormulaConfidence(formula: TrainingFormula): number { return 0.85; }
-  private generateUsageRecommendations(formula: TrainingFormula): string[] { 
+  private assessFormulaConfidence(_formula: TrainingFormula): number { return 0.85; }
+  private generateUsageRecommendations(_formula: TrainingFormula): string[] { 
     return ['Monitor for convergence plateaus', 'Adjust exploration radius if needed']; 
   }
   
-  private analyzeFormulaPerformance(formula: TrainingFormula, outcomes: any[]): any { 
+  private analyzeFormulaPerformance(_formula: TrainingFormula, _outcomes: any[]): any { 
     return { strengths: ['fast_convergence'], weaknesses: ['limited_exploration'] }; 
   }
   
-  private async createImprovementPlan(formula: TrainingFormula, analysis: any, requirements?: any): Promise<any> {
+  private async createImprovementPlan(_formula: TrainingFormula, _analysis: any, _requirements?: any): Promise<any> {
     return { focus_areas: ['exploration_enhancement'], priority: 'high' };
   }
   
-  private async applyImprovements(formula: TrainingFormula, plan: any): Promise<TrainingFormula> {
-    return this.formulaGenerator.generateImprovedFormula(formula, {} as FormulaRequest);
+  private async applyImprovements(_formula: TrainingFormula, _plan: any): Promise<TrainingFormula> {
+    return this.formulaGenerator.generateImprovedFormula(_formula, {} as FormulaRequest);
   }
   
-  private async updatePersonaKnowledge(original: TrainingFormula, improved: TrainingFormula, analysis: any): Promise<void> {
+  private async updatePersonaKnowledge(_original: TrainingFormula, _improved: TrainingFormula, _analysis: any): Promise<void> {
     console.log('📚 Formula Master updated knowledge base');
   }
 }
@@ -618,15 +618,19 @@ export class FormulaMaster {
 // Supporting types and classes
 
 export class FormulaKnowledgeBase {
-  private patterns: Map<string, any> = new Map();
   
-  recordSuccessPattern(pattern: any): void {
+  recordSuccessPattern(_pattern: any): void {
     // Record successful formula patterns
   }
   
-  queryPatterns(criteria: any): any[] {
+  queryPatterns(_criteria: any): any[] {
     // Query knowledge base for relevant patterns
     return [];
+  }
+  
+  getDomainKnowledge(domain: string): any {
+    // Get domain-specific knowledge
+    return { domain, patterns: [], insights: [] };
   }
 }
 

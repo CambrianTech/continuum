@@ -19,16 +19,21 @@ export class DaemonMessageUtils {
     priority?: 'low' | 'normal' | 'high' | 'critical';
     correlationId?: string;
   }): DaemonMessage {
-    return {
+    const message: DaemonMessage = {
       id: params.id,
       from: params.from,
       to: params.to,
       type: params.type,
       data: params.data,
       timestamp: new Date(),
-      priority: params.priority || 'normal',
-      correlationId: params.correlationId
+      priority: params.priority || 'normal'
     };
+    
+    if (params.correlationId) {
+      message.correlationId = params.correlationId;
+    }
+    
+    return message;
   }
 
   /**

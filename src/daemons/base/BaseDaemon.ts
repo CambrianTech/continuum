@@ -20,8 +20,8 @@ export abstract class BaseDaemon extends EventEmitter {
   private lastHeartbeat?: Date;
   private processId: number = process.pid;
   private heartbeatInterval: NodeJS.Timeout | undefined;
-  private startPromise?: Promise<void>;
-  private stopPromise?: Promise<void>;
+  private startPromise: Promise<void> | null = null;
+  private stopPromise: Promise<void> | null = null;
   private signalHandlers: { [key: string]: any } = {};
   
   constructor() {
@@ -50,7 +50,7 @@ export abstract class BaseDaemon extends EventEmitter {
     try {
       await this.startPromise;
     } finally {
-      this.startPromise = undefined;
+      this.startPromise = null;
     }
   }
 
@@ -95,7 +95,7 @@ export abstract class BaseDaemon extends EventEmitter {
     try {
       await this.stopPromise;
     } finally {
-      this.stopPromise = undefined;
+      this.stopPromise = null;
     }
   }
 

@@ -10,8 +10,19 @@ import { ValueSystem, ThinkingPattern, CommunicationStyle, DecisionFramework } f
 import { DomainExpertise, SkillGraph, ExperienceMemory, PatternLibrary, MentalModel, KnowledgeGap } from './persona-knowledge.js';
 import { ResponseType, AdaptationRule, ErrorStrategy, CollaborationProtocol, GoalPursuit, AttentionMechanism } from './persona-behavior.js';
 import { TrainingSession, PersonaAncestry, Mutation, SelectionPressure, EmergentProperty, FitnessMetrics } from './persona-evolution.js';
-import { LoRAStack, ModelArchitecture, ComputeProfile, MemoryStructure, ExecutionEnv, InterfaceProtocol } from './persona-substrate.js';
-import { CreationAlgorithm, DependencyTree, InitStep, ValidationTest, BreedingProfile, MutationPotential } from './persona-reproduction.js';
+import { ModelArchitecture, ComputeProfile, MemoryStructure, ExecutionEnv, InterfaceProtocol } from './persona-substrate.js';
+// TODO: LoRAStack interface needs to be defined in persona-substrate.ts
+interface LoRAStack {
+  layers: any[];
+  configuration: Record<string, any>;
+}
+
+import { CreationAlgorithm, DependencyTree, InitStep, ValidationTest, BreedingProfile } from './persona-reproduction.js';
+// TODO: MutationPotential interface needs to be defined in persona-reproduction.ts
+interface MutationPotential {
+  mutation_rate: number;
+  potential_domains: string[];
+}
 
 /**
  * PersonaGenome - The complete specification for persona creation

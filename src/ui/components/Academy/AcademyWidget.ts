@@ -525,10 +525,10 @@ export class AcademyWidget extends BaseWidget {
         p2p_seed: true
       });
 
-      this.log('Persona spawning initiated:', result);
+      console.log('🎓 Academy: Persona spawning initiated:', result);
       await this.loadAcademyStatus();
     } catch (error) {
-      this.log('Failed to spawn persona:', error);
+      console.error('🎓 Academy: Failed to spawn persona:', error);
     }
   }
 
@@ -546,10 +546,10 @@ export class AcademyWidget extends BaseWidget {
         vector_exploration: true
       });
 
-      this.log('Training session started:', result);
+      console.log('🎓 Academy: Training session started:', result);
       await this.loadAcademyStatus();
     } catch (error) {
-      this.log('Failed to start training:', error);
+      console.error('🎓 Academy: Failed to start training:', error);
     }
   }
 
@@ -557,7 +557,7 @@ export class AcademyWidget extends BaseWidget {
     const persona = this.personas.find(p => p.persona_id === personaId);
     if (persona) {
       // This could integrate with PersonaWidget or open a detail modal
-      this.log('Persona details:', persona);
+      console.log('🎓 Academy: Persona details:', persona);
       alert(`Persona: ${persona.persona_name}\nGeneration: ${persona.generation}\nCapabilities: ${persona.capabilities.join(', ')}`);
     }
   }
@@ -578,10 +578,10 @@ export class AcademyWidget extends BaseWidget {
         this.personas = statusResult.data.persona_status || [];
         this.render();
       } else {
-        this.log('Failed to load Academy status:', statusResult.error);
+        console.error('🎓 Academy: Failed to load Academy status:', statusResult.error);
       }
     } catch (error) {
-      this.log('Error loading Academy status:', error);
+      console.error('🎓 Academy: Error loading Academy status:', error);
     }
   }
 
@@ -597,7 +597,7 @@ export class AcademyWidget extends BaseWidget {
       clearInterval(this.updateInterval);
       this.updateInterval = null;
     }
-    super.destroy();
+    // BaseWidget doesn't have destroy method
   }
 }
 

@@ -242,7 +242,7 @@ export class LayerOptimization {
     algorithm: string
   ): Promise<{ success: boolean; composition: LoRAComposition; merged_layer_id: string }> {
     
-    const targetLayers = composition.primary_layers.filter(layer => layerIds.includes(layer.source_id));
+    const targetLayers = composition.primary_layers.filter(layer => layer.source_id && layerIds.includes(layer.source_id));
     if (targetLayers.length < 2) {
       return { success: false, composition, merged_layer_id: '' };
     }
@@ -254,7 +254,7 @@ export class LayerOptimization {
     const newComposition = {
       ...composition,
       primary_layers: [
-        ...composition.primary_layers.filter(layer => !layerIds.includes(layer.source_id)),
+        ...composition.primary_layers.filter(layer => !layer.source_id || !layerIds.includes(layer.source_id)),
         mergedLayer
       ]
     };
@@ -262,7 +262,7 @@ export class LayerOptimization {
     return {
       success: true,
       composition: newComposition,
-      merged_layer_id: mergedLayer.source_id
+      merged_layer_id: mergedLayer.source_id || mergedLayer.layer_id
     };
   }
 
@@ -353,7 +353,7 @@ export class LayerOptimization {
         optimizedLayers[i] = { ...layer, rank: optimalRank };
         steps.push({
           type: 'rank_optimization',
-          target_layers: [layer.source_id],
+          target_layers: [layer.source_id || layer.layer_id],
           algorithm: 'benchmark_driven',
           compression_gained: layer.rank > optimalRank ? layer.rank / optimalRank : 1.0,
           performance_impact: 0.01, // Minimal impact expected
@@ -487,7 +487,7 @@ export class LayerOptimization {
     console.log('TODO: Implement real layer utilization analysis using benchmarks:', benchmarks.length);
     // Analyze how much each layer is actually contributing
     return composition.primary_layers.map(layer => ({
-      layer_id: layer.source_id,
+      layer_id: layer.source_id || layer.layer_id,
       activation_frequency: 0.7 + Math.random() * 0.3,
       contribution_strength: 0.5 + Math.random() * 0.4,
       redundancy_score: Math.random() * 0.6,
@@ -496,7 +496,7 @@ export class LayerOptimization {
     }));
   }
 
-  private async analyzeRedundancy(composition: LoRAComposition, utilization: LayerUtilization[]): Promise<RedundancyAnalysis> {
+  private async analyzeRedundancy(_composition: LoRAComposition, _utilization: LayerUtilization[]): Promise<RedundancyAnalysis> {
     // Placeholder - would do sophisticated redundancy analysis
     return {
       redundant_pairs: [],
@@ -506,21 +506,21 @@ export class LayerOptimization {
     };
   }
 
-  private async identifyCompressionOpportunities(composition: LoRAComposition, redundancy: RedundancyAnalysis): Promise<CompressionOpportunity[]> {
+  private async identifyCompressionOpportunities(_composition: LoRAComposition, _redundancy: RedundancyAnalysis): Promise<CompressionOpportunity[]> {
     // Placeholder - would identify specific compression opportunities
     return [];
   }
 
   // More placeholder methods...
-  private async executePruningOptimizations(composition: LoRAComposition, utilization: LayerUtilization[], threshold: number): Promise<{ composition: LoRAComposition; steps: OptimizationStep[] }> {
+  private async executePruningOptimizations(composition: LoRAComposition, _utilization: LayerUtilization[], _threshold: number): Promise<{ composition: LoRAComposition; steps: OptimizationStep[] }> {
     return { composition, steps: [] };
   }
 
-  private async optimizeLayerOrder(composition: LoRAComposition, benchmarks: PerformanceBenchmark[]): Promise<{ composition: LoRAComposition; steps: OptimizationStep[] }> {
+  private async optimizeLayerOrder(composition: LoRAComposition, _benchmarks: PerformanceBenchmark[]): Promise<{ composition: LoRAComposition; steps: OptimizationStep[] }> {
     return { composition, steps: [] };
   }
 
-  private calculateOptimizationImpact(original: LoRAComposition, optimized: LoRAComposition): OptimizationImpact {
+  private calculateOptimizationImpact(_original: LoRAComposition, _optimized: LoRAComposition): OptimizationImpact {
     return {
       compression_gained: 0.2,
       performance_change: 0.05,
@@ -592,4 +592,4 @@ interface PruningCandidate {
   performance_impact: number;
 }
 
-export { OptimizationGoals, OptimizedComposition, OptimizationStep, OptimizationRecord };
+export type { OptimizationGoals, OptimizedComposition, OptimizationStep, OptimizationRecord };

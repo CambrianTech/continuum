@@ -10,9 +10,9 @@ import {
   PersonaGenomeQuery,
   CapabilityRequirement,
   ValueSystem,
-  DomainRequirement,
   BehavioralRequirement,
   SubstrateConstraint
+  // DomainRequirement unused
 } from './types/index.js';
 
 // PersonaGenome interface and all supporting types now imported from types.ts
@@ -78,7 +78,7 @@ export class PersonaGenomeBuilder {
     console.log('🧬 Recreating persona from genome...');
     
     // 1. Validate prerequisites
-    await this.validatePrerequisites(genome.reproduction.prerequisite_check);
+    await this.validatePrerequisites(genome.reproduction.creation_algorithm.prerequisite_check);
     
     // 2. Execute assembly steps
     for (const step of genome.reproduction.creation_algorithm.assembly_steps) {
@@ -172,7 +172,7 @@ export class PersonaGenomeBuilder {
     console.log('TODO: Implement prerequisite validation for:', checks.length, 'checks');
   }
 
-  private static async executeAssemblyStep(step: any, genome: PersonaGenome): Promise<void> {
+  private static async executeAssemblyStep(step: any, _genome: PersonaGenome): Promise<void> {
     console.log('TODO: Implement assembly step execution for:', step.step_name, 'with genome');
   }
 
@@ -214,22 +214,22 @@ export class PersonaGenomeMatcher {
     return compatibility / 4; // Average 0-1 score
   }
 
-  private static scoreValueAlignment(compatibleSystems: ValueSystem[], candidateSystem: ValueSystem): number {
+  private static scoreValueAlignment(compatibleSystems: ValueSystem[], _candidateSystem: ValueSystem): number {
     console.log('TODO: Implement value alignment scoring for:', compatibleSystems.length, 'systems vs candidate system');
     return 0.8; // Placeholder
   }
 
-  private static scoreCapabilityMatch(requirements: CapabilityRequirement[], knowledge: any): number {
+  private static scoreCapabilityMatch(requirements: CapabilityRequirement[], _knowledge: any): number {
     console.log('TODO: Implement capability matching for:', requirements.length, 'requirements vs knowledge');
     return 0.7; // Placeholder
   }
 
-  private static scoreBehavioralFit(requirements: BehavioralRequirement[], behavior: any): number {
+  private static scoreBehavioralFit(requirements: BehavioralRequirement[], _behavior: any): number {
     console.log('TODO: Implement behavioral fit scoring for:', requirements.length, 'requirements vs behavior');
     return 0.6; // Placeholder
   }
 
-  private static scoreSubstrateCompatibility(constraints: SubstrateConstraint[], substrate: any): number {
+  private static scoreSubstrateCompatibility(constraints: SubstrateConstraint[], _substrate: any): number {
     console.log('TODO: Implement substrate compatibility for:', constraints.length, 'constraints vs substrate');
     return 0.9; // Placeholder
   }

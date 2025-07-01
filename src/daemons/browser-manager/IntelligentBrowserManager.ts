@@ -182,8 +182,8 @@ export class IntelligentBrowserManager extends SafeBrowserManager {
    * Detect Windows browsers
    */
   private async detectWindowsBrowsers(): Promise<void> {
-    const { exec } = await import('child_process');
-    const { promisify } = await import('util');
+    // const { exec } = await import('child_process');
+    // const { promisify } = await import('util');
     // const execAsync = promisify(exec); // TODO: Implement Windows browser detection
 
     // Common Windows browser paths
@@ -243,8 +243,8 @@ export class IntelligentBrowserManager extends SafeBrowserManager {
       
       if (platform === 'darwin') {
         // macOS: get default browser
-        const { exec } = await import('child_process');
-        const { promisify } = await import('util');
+        // const { exec } = await import('child_process');
+        // const { promisify } = await import('util');
         // const execAsync = promisify(exec); // TODO: Implement macOS browser detection
         
         // TODO: Implement macOS default browser detection

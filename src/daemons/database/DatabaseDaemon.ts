@@ -388,7 +388,7 @@ export class DatabaseDaemon extends RequestResponseDaemon {
     
     try {
       const data = JSON.parse(await fs.readFile(filePath, 'utf-8'));
-      const tableData = new Map(Object.entries(data));
+      const tableData = new Map(Object.entries(data)) as Map<string, DatabaseRecord>;
       this.tables.set(table, tableData);
       
       // Rebuild indexes

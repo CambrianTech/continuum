@@ -6,7 +6,7 @@
  */
 
 import { OptimizationRecord, PerformanceBenchmark } from './LayerOptimization.js';
-import { PersonaGenome } from './PersonaGenome.js';
+import { PersonaGenome } from './types/persona-genome.js';
 import { LoRAComposition } from './CapabilitySynthesis.js';
 import { GlobalPersonaIdentity, GlobalLoRALayerIdentity } from './GlobalIdentitySystem.js';
 import { AcademyDatabaseClient } from './database/AcademyDatabaseClient.js';
