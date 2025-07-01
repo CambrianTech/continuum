@@ -36,10 +36,13 @@ export class ChatWidget extends BaseWidget {
 
 
   constructor() {
+    console.log('🏗️ ChatWidget: Constructor called, about to call super()');
     super();
+    console.log('🏗️ ChatWidget: super() completed, setting properties');
     this.widgetName = 'ChatWidget';
     this.widgetIcon = '💬';
     this.widgetTitle = 'Chat';
+    console.log('🏗️ ChatWidget: Constructor complete');
     // CSS loaded via declarative asset system
   }
 
