@@ -8,7 +8,9 @@ import { BrowserType, BrowserConfig } from '../types/index.js';
 enum BrowserPurpose {
   AUTOMATION = 'automation',
   DEVELOPMENT = 'development', 
-  USER = 'user'
+  USER = 'user',
+  TESTING = 'testing',
+  INTEGRATION_TEST = 'integration_test'
 }
 import { IBrowserModule } from './IBrowserModule';
 import { ChromeBrowserModule } from './ChromeBrowserModule';

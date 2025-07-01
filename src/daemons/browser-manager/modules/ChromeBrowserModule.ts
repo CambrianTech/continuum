@@ -9,8 +9,8 @@
  * - Process monitoring and health checks
  */
 
-import { IBrowserModule, DevToolsCapabilities, BrowserLaunchResult, TabManagementAPI } from './IBrowserModule';
-import { BrowserConfig, ManagedBrowser, BrowserType } from '../types/index.js';
+import { IBrowserModule, TabManagementAPI } from './IBrowserModule';
+import { BrowserConfig, ManagedBrowser, BrowserType, DevToolsCapabilities, BrowserLaunchResult } from '../types/index.js';
 
 // Define missing enums locally for now
 enum BrowserVisibility {
@@ -25,18 +25,18 @@ enum BrowserIsolation {
   DEDICATED = 'dedicated'
 }
 import { ChromiumDevToolsAdapter } from '../adapters/ChromiumDevToolsAdapter';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn } from 'child_process';
 
 export class ChromeBrowserModule implements IBrowserModule {
   readonly browserType = BrowserType.CHROME;
   readonly capabilities: DevToolsCapabilities = {
-    protocol: 'chrome-devtools',
-    supportsHeadless: true,
-    supportsRemoteDebugging: true,
-    supportsAutomation: true,
-    supportsExtensions: true,
-    defaultPort: 9222,
-    portRange: [9222, 9299]
+    supportsConsole: true,
+    supportsNetwork: true,
+    supportsPerformance: true,
+    supportsScreenshot: true,
+    supportsProfiling: true,
+    supportsCodeCoverage: true,
+    supportsSecurityAnalysis: true
   };
 
   private devToolsAdapters = new Map<string, ChromiumDevToolsAdapter>();
@@ -110,7 +110,7 @@ export class ChromeBrowserModule implements IBrowserModule {
     ];
 
     // DevTools specific arguments
-    if (config.requirements.devtools) {
+    if (config.requirements?.devtools) {
       args.push(
         '--auto-open-devtools-for-tabs',
         '--disable-features=VizDisplayCompositor'
@@ -118,7 +118,7 @@ export class ChromeBrowserModule implements IBrowserModule {
     }
 
     // Isolation configuration
-    switch (config.requirements.isolation) {
+    switch (config.requirements?.isolation) {
       case BrowserIsolation.SANDBOXED:
         args.push('--no-sandbox', '--disable-setuid-sandbox');
         break;
@@ -131,7 +131,7 @@ export class ChromeBrowserModule implements IBrowserModule {
     }
 
     // Visibility configuration
-    switch (config.requirements.visibility) {
+    switch (config.requirements?.visibility) {
       case BrowserVisibility.HIDDEN:
         args.push('--headless=new');
         break;
@@ -144,12 +144,12 @@ export class ChromeBrowserModule implements IBrowserModule {
     }
 
     // Resource limits
-    if (config.resources.memoryLimit) {
-      args.push(`--max_old_space_size=${config.resources.memoryLimit}`);
+    if (config.resources?.memoryLimit) {
+      args.push(`--max_old_space_size=${config.resources?.memoryLimit}`);
     }
 
     // Extensions support
-    if (!config.requirements.extensions) {
+    if (!config.requirements?.extensions) {
       args.push('--disable-extensions');
     }
 
