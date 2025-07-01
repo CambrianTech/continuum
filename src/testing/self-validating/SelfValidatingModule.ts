@@ -244,85 +244,11 @@ export class SelfValidatingModule {
     }
   }
   
-  /**
-   * Test if a directory exists
-   */
-  private static async testDirectoryExists(
-    modulePath: string, 
-    dirName: string, 
-    description: string
-  ): Promise<StructureTestResult> {
-    try {
-      const stat = await fs.stat(path.join(modulePath, dirName));
-      const isDirectory = stat.isDirectory();
-      return {
-        requirement: `${description} (${dirName}/)`,
-        met: isDirectory,
-        details: isDirectory ? `Directory exists: ${dirName}` : `Path exists but is not a directory: ${dirName}`
-      };
-    } catch {
-      return {
-        requirement: `${description} (${dirName}/)`,
-        met: false,
-        details: `Missing directory: ${dirName}`
-      };
-    }
-  }
+  // REMOVED: testDirectoryExists() - unused legacy helper for deprecated _validateStructure()
+  // REMOVED: testMethodExists() - unused legacy helper for deprecated _validateStructure()  
+  // REMOVED: getMainImplementationFile() - unused legacy helper for deprecated _validateCapabilities()
   
-  /**
-   * Test if a method exists in a file
-   */
-  private static async testMethodExists(
-    modulePath: string, 
-    fileName: string, 
-    methodSignature: string, 
-    description: string
-  ): Promise<StructureTestResult> {
-    try {
-      const content = await fs.readFile(path.join(modulePath, fileName), 'utf-8');
-      const hasMethod = content.includes(methodSignature);
-      return {
-        requirement: `${description} (${methodSignature})`,
-        met: hasMethod,
-        details: hasMethod ? `Method found: ${methodSignature}` : `Missing method: ${methodSignature}`
-      };
-    } catch {
-      return {
-        requirement: `${description} (${methodSignature})`,
-        met: false,
-        details: `Cannot check method - file missing: ${fileName}`
-      };
-    }
-  }
-  
-  /**
-   * Get the main implementation file for a module
-   */
-  private static async getMainImplementationFile(modulePath: string, config: ContinuumConfig): Promise<string> {
-    const moduleType = ContinuumPackageUtils.getModuleType(config);
-    const moduleId = ContinuumPackageUtils.getModuleId(config);
-    
-    // Convert module ID to PascalCase filename
-    const pascalName = moduleId.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('');
-    
-    const possibleFiles = [
-      `${pascalName}${moduleType.charAt(0).toUpperCase() + moduleType.slice(1)}.ts`,
-      `${pascalName}.ts`,
-      path.basename(modulePath) + '.ts',
-      'index.ts'
-    ];
-    
-    for (const fileName of possibleFiles) {
-      try {
-        await fs.access(path.join(modulePath, fileName));
-        return path.join(modulePath, fileName);
-      } catch {
-        // Try next file
-      }
-    }
-    
-    throw new Error(`No main implementation file found. Tried: ${possibleFiles.join(', ')}`);
-  }
+  // Modern replacement: All validation is handled through module.validate() method
   
   /**
    * Generate a test file that validates this module

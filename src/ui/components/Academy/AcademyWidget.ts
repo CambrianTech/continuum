@@ -310,10 +310,13 @@ export class AcademyWidget extends BaseWidget {
     `;
   }
 
-  render(): void {
-    if (!this.container) return;
+  async render(): Promise<void> {
+    // Call parent render first to set up CSS and shadow DOM
+    await super.render();
+  }
 
-    this.container.innerHTML = `
+  renderContent(): string {
+    return `
       <div class="academy-header">
         <div class="academy-title">
           <span>${this.widgetIcon}</span>
@@ -339,8 +342,6 @@ export class AcademyWidget extends BaseWidget {
         <button class="academy-button" data-action="refresh">Refresh</button>
       </div>
     `;
-
-    this.setupEventListeners();
   }
 
   private renderCurrentView(): string {
@@ -464,12 +465,12 @@ export class AcademyWidget extends BaseWidget {
     `;
   }
 
-  private setupEventListeners(): void {
-    if (!this.container) return;
+  setupEventListeners(): void {
+    if (!this.shadowRoot) return;
 
     // View tab switching
-    this.container.querySelectorAll('.view-tab').forEach(tab => {
-      tab.addEventListener('click', (e) => {
+    this.shadowRoot.querySelectorAll('.view-tab').forEach((tab: Element) => {
+      tab.addEventListener('click', (e: Event) => {
         const target = e.target as HTMLElement;
         const view = target.getAttribute('data-view') as any;
         if (view) {
@@ -480,8 +481,8 @@ export class AcademyWidget extends BaseWidget {
     });
 
     // Action buttons
-    this.container.querySelectorAll('.academy-button').forEach(button => {
-      button.addEventListener('click', (e) => {
+    this.shadowRoot.querySelectorAll('.academy-button').forEach((button: Element) => {
+      button.addEventListener('click', (e: Event) => {
         const target = e.target as HTMLElement;
         const action = target.getAttribute('data-action');
         this.handleAction(action);
@@ -489,8 +490,8 @@ export class AcademyWidget extends BaseWidget {
     });
 
     // Persona cards
-    this.container.querySelectorAll('.persona-card').forEach(card => {
-      card.addEventListener('click', (e) => {
+    this.shadowRoot.querySelectorAll('.persona-card').forEach((card: Element) => {
+      card.addEventListener('click', (e: Event) => {
         const target = e.target as HTMLElement;
         const personaId = target.getAttribute('data-persona-id');
         if (personaId) {
@@ -591,6 +592,7 @@ export class AcademyWidget extends BaseWidget {
       this.loadAcademyStatus();
     }, 5000);
   }
+
 
   destroy(): void {
     if (this.updateInterval) {
