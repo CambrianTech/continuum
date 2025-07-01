@@ -8,7 +8,7 @@
  * - Manage browser arguments and environment
  */
 
-import { BrowserType, BrowserConfig, BrowserLaunchResult } from '../types/index.js';
+import { BrowserType, BrowserConfig, BrowserLaunchResult, BrowserStatus } from '../types/index.js';
 import { IBrowserModule } from './IBrowserModule.js';
 
 export class BrowserLauncher {
@@ -159,7 +159,7 @@ export class BrowserLauncher {
       type: module.browserType,
       pid: result.pid,
       debugPort: result.debugPort,
-      status: 'launching',
+      status: BrowserStatus.LAUNCHING,
       devToolsUrl: result.devToolsUrl || `http://localhost:${result.debugPort}`,
       launchedAt: new Date(),
       lastActivity: new Date(),

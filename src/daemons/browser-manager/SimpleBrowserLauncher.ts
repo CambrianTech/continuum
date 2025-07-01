@@ -132,8 +132,7 @@ export class SimpleBrowserLauncher {
         // Otherwise, use system default (respects user's Opera GX choice)
         const result = await this.launchDefault(config);
         return {
-            ...result,
-            devToolsPort: undefined
+            ...result
         };
     }
 }

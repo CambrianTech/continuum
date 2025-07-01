@@ -135,7 +135,7 @@ export class SessionManager {
 
     return await this.createSession(identity.type, identity.name, {
       ...options,
-      sessionContext: identity.sessionContext
+      ...(identity.sessionContext && { sessionContext: identity.sessionContext })
     });
   }
 
@@ -364,7 +364,7 @@ export class SessionManager {
     const fullPath = path.join(session.artifacts.storageDir, filename);
 
     // Store artifact reference
-    const fullArtifact: SessionArtifact = {
+    const _fullArtifact: SessionArtifact = {
       ...artifact,
       timestamp,
       path: fullPath
@@ -594,7 +594,7 @@ export class SessionManager {
   /**
    * Build browser command for session
    */
-  private buildBrowserCommand(session: BrowserSession, options: Record<string, any>): { cmd: string; args: string[] } {
+  private buildBrowserCommand(session: BrowserSession, _options: Record<string, any>): { cmd: string; args: string[] } {
     const platform = process.platform;
     
     // Platform-specific browser launch with session isolation
