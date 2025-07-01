@@ -203,7 +203,7 @@ export class BrowserSessionManager {
   /**
    * Check if a browser is a user browser (vs automation/testing)
    */
-  private isUserBrowser(browser: ManagedBrowser): boolean {
+  private isUserBrowser(_browser: ManagedBrowser): boolean {
     // This would check browser.config.purpose in real implementation
     // For now, assume all browsers are user browsers
     return true;
@@ -212,7 +212,7 @@ export class BrowserSessionManager {
   /**
    * Get session count for a browser
    */
-  private getSessionCount(browser: ManagedBrowser): number {
+  private getSessionCount(_browser: ManagedBrowser): number {
     // In real implementation, would return browser.sessions.size
     // For now, return a reasonable estimate
     return Math.floor(Math.random() * 5);

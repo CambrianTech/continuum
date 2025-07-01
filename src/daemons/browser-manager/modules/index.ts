@@ -4,13 +4,13 @@
  */
 
 // Core interfaces
-export { IBrowserModule } from './IBrowserModule';
+export type { IBrowserModule } from './IBrowserModule';
 
 // Browser modules
 export { ChromeBrowserModule } from './ChromeBrowserModule';
 
-// Focused management modules
-export { BrowserLauncher, LaunchResult, BrowserPaths } from './BrowserLauncher';
+// Focused management modules  
+export { BrowserLauncher, BrowserPaths } from './BrowserLauncher';
 export { BrowserRegistry } from './BrowserRegistry';
 export { ResourceManager, ProcessStats, ResourceMetrics, OptimizationResult } from './ResourceManager';
 export { 
