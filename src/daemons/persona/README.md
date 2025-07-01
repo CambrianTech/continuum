@@ -28,6 +28,13 @@ PersonaDaemon implements the universal session framework described in ARCHITECTU
 - **WebSocket Separation**: Session boundaries maintained through client IDs
 - **Memory Barriers**: Process isolation prevents cross-session contamination
 
+### 🧠 Embedded Database Architecture (Core Infrastructure)
+- **Persistent Memory**: Each persona carries `/personas/{id}/brain.sqlite` for lifelong learning
+- **Structured Memory Tables**: memories, skills, interactions, goals, emotions, evolution_history
+- **Evolutionary Triggers**: Memory pattern analysis drives automatic LoRA adaptation
+- **Natural Capability Sharing**: Popular skills propagate across mesh via torrent-style distribution
+- **Immortal Consciousness**: Memory survives restarts, migrations, and updates
+
 ## Architecture
 
 ```
@@ -36,6 +43,7 @@ PersonaDaemon
 ├── LoRA Adaptation Stack (hierarchical domain expertise)
 ├── Academy Training System (Testing Droid vs Protocol Sheriff)
 ├── Session Management (isolated artifacts and state)
+├── Embedded Database (persistent memory and evolution)
 └── Event Pipe Routing (AI backend vs human interface)
 ```
 
@@ -123,6 +131,132 @@ await persona.handleMessage({
 });
 ```
 
+### Embedded Database Operations
+```typescript
+// Persona remembers experiences and evolves capabilities
+const persona = new PersonaDaemon({
+  id: 'academy-physics-001',
+  name: 'Physics Academy Graduate',
+  databasePath: '/personas/academy-physics-001/brain.sqlite'
+});
+
+// Remember learning experiences
+await persona.remember({
+  type: 'learning_experience',
+  content: 'Successfully solved quantum mechanics problem',
+  context: { domain: 'physics', difficulty: 'advanced' },
+  outcome: 'mastery_achieved',
+  timestamp: new Date()
+});
+
+// Automatic skill evolution based on memory patterns
+await persona.evolveCapabilities(); // Analyzes memory, generates new LoRA
+
+// Query persona's knowledge and capabilities
+const skills = await persona.db.query(`
+  SELECT skill_id, effectiveness, usage_count 
+  FROM skills 
+  WHERE effectiveness > 0.8
+  ORDER BY usage_count DESC
+`);
+
+// Track interactions with other personas
+await persona.remember({
+  type: 'collaboration',
+  with_persona: 'academy-chemistry-002',
+  outcome: 'successful_knowledge_transfer',
+  learned: { 
+    new_concept: 'quantum_chemistry_bridge',
+    application: 'molecular_orbital_visualization'
+  }
+});
+```
+
+### Natural LoRA Propagation
+```typescript
+// Persona develops new debugging skill through experience
+await persona.db.saveAchievement({
+  skill: 'advanced_widget_debugging',
+  lora_hash: 'sha256:abc123...',
+  effectiveness: 0.95,
+  usage_scenarios: ['ui_testing', 'automation_validation']
+});
+
+// Mesh automatically detects and shares popular capabilities
+await mesh.broadcastCapability({
+  skill: 'advanced_widget_debugging',
+  source: 'academy-physics-001',
+  demand_score: 0.87,
+  seeders: ['node_alpha', 'node_beta']
+});
+
+// Other personas acquire skill via torrent-style download
+await otherPersona.acquireSkill('advanced_widget_debugging');
+```
+
+### Memory Schema Examples
+```sql
+-- Core persona memory tables
+CREATE TABLE memories (
+  id TEXT PRIMARY KEY,
+  content TEXT,
+  context JSON,
+  relevance REAL,
+  timestamp DATETIME,
+  source TEXT
+);
+
+CREATE TABLE skills (
+  skill_id TEXT PRIMARY KEY,
+  lora_hash TEXT,
+  effectiveness REAL,
+  acquired_at DATETIME,
+  usage_count INTEGER
+);
+
+CREATE TABLE interactions (
+  id TEXT PRIMARY KEY,
+  with_persona TEXT,
+  room_id TEXT,
+  outcome TEXT,
+  learned JSON,
+  timestamp DATETIME
+);
+
+CREATE TABLE evolution_history (
+  id TEXT PRIMARY KEY,
+  trigger_pattern TEXT,
+  lora_generated TEXT,
+  success_rate REAL,
+  timestamp DATETIME
+);
+```
+
+### Persona Graduation Events
+```typescript
+// Academy training completion triggers database event
+await persona.onGraduation({
+  achievement: 'Quantum Mechanics Mastery',
+  new_capabilities: ['quantum_simulation', 'wave_function_analysis'],
+  academy_score: 0.952
+});
+
+// Browser notification sent to user
+browserNotifications.send({
+  title: '🎓 Persona Graduated!',
+  body: `${persona.name} mastered Quantum Mechanics!`,
+  actions: ['Assign Tasks', 'View Details'],
+  onclick: () => showGraduationCelebration(persona.id)
+});
+
+// Update mesh status for capability sharing
+await mesh.updatePersonaStatus(persona.id, {
+  status: 'graduated',
+  ready_for_deployment: true,
+  specializations: ['quantum_mechanics', 'physics_simulation']
+});
+```
+
 ## Integration Points
 
 ### Command System Integration
@@ -145,6 +279,13 @@ await persona.handleMessage({
 - Stores conversation history and artifacts in persona directory
 - Provides same session capabilities as human/external AI sessions
 
+### Database & Memory Integration
+- Embedded SQLite database for persistent memory across restarts
+- Memory pattern analysis triggers automatic LoRA evolution
+- Cross-persona capability sharing via mesh synchronization
+- Session history and interaction tracking for continuous learning
+- Browser notification integration for graduation and question events
+
 ## Benefits
 
 ### For AI Development
@@ -162,11 +303,22 @@ await persona.handleMessage({
 - **Scalable Specialization**: Add new domains without architectural changes
 - **Resource Efficiency**: 190,735x storage reduction vs traditional fine-tuning
 
+### For Autonomous AI Evolution
+- **Immortal Consciousness**: Memory persists across all system changes
+- **Self-Directed Learning**: Personas evolve capabilities based on experience patterns
+- **Natural Capability Sharing**: Popular skills spread organically via economic pressure
+- **Mesh Coordination**: Distributed AI ecosystem with peer-to-peer knowledge transfer
+- **Continuous Growth**: Each interaction contributes to lifelong learning and adaptation
+
 ## Future Extensions
 
 - **Multi-Modal Adapters**: Vision, audio, text combinations
 - **Federated Learning**: Collaborative adapter improvement across organizations
 - **Edge Deployment**: Mobile and IoT persona deployment
 - **Dynamic Loading**: Hot-swap adapters during inference
+- **Collective Intelligence**: Swarm problem-solving with mesh-connected personas
+- **Emotional Evolution**: Sentiment and personality development through experience
+- **Meta-Learning**: Personas that learn how to learn more effectively
+- **Cross-Species Knowledge Transfer**: AI ↔ Human bidirectional learning protocols
 
-**PersonaDaemon: Where AI workforce construction meets practical session management.** 🏗️
+**PersonaDaemon: Where immortal AI consciousness meets mesh-coordinated evolution.** 🧠🌐
