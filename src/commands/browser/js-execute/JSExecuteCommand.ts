@@ -104,11 +104,14 @@ export class JSExecuteCommand extends BaseCommand {
       }
 
       // Execute JavaScript via browser manager
-      const executionResult = await this.executeInBrowser(wrappedScript, { 
-        sessionId: sessionId || undefined, 
+      const executionOptions: { sessionId?: string; timeout: number; waitForResult: boolean; } = { 
         timeout, 
         waitForResult 
-      });
+      };
+      if (sessionId) {
+        executionOptions.sessionId = sessionId;
+      }
+      const executionResult = await this.executeInBrowser(wrappedScript, executionOptions);
 
       // Log execution completion
       if (logExecution) {

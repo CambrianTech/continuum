@@ -52,7 +52,7 @@ export class HTMLRenderingEngine {
   }
 
   private generateScriptInjection(options: RenderOptions): string {
-    const apiPath = this.getApiPath();
+    const _apiPath = this.getApiPath(); // TODO: Use API path in script injection
     
     return `
     <!-- Dynamically injected by HTMLRenderingEngine -->

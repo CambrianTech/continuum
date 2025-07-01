@@ -117,7 +117,7 @@ export class SessionPathsCommand extends BaseCommand {
       }
 
       const session = infoResponse.data.session;
-      const storageDir = session.artifacts.storageDir;
+      const storageDir = session.storage?.storageDir || session.artifacts?.storageDir || '';
 
       // Build paths object
       const allPaths = {
