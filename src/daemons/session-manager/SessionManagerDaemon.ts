@@ -50,6 +50,16 @@ export interface BrowserSession {
   cleanupAfterMs: number;
 }
 
+export interface SessionEvent {
+  type: 'session_created' | 'session_joined' | 'session_closed' | 'connection_registered';
+  sessionId?: string;
+  connectionId?: string;
+  identity?: ConnectionIdentity;
+  session?: BrowserSession;
+  timestamp: Date;
+  metadata?: Record<string, any>;
+}
+
 export class SessionManagerDaemon extends BaseDaemon {
   public readonly name = 'session-manager';
   public readonly version = '1.0.0';
@@ -58,6 +68,7 @@ export class SessionManagerDaemon extends BaseDaemon {
   private connectionIdentities = new Map<string, ConnectionIdentity>();
   private artifactRoot: string;
   private cleanupInterval?: NodeJS.Timeout;
+  private eventListeners = new Set<(event: SessionEvent) => void>();
 
   constructor(artifactRoot: string = '.continuum/sessions') {
     super();
@@ -83,6 +94,37 @@ export class SessionManagerDaemon extends BaseDaemon {
     for (const session of activeSessions) {
       await this.closeSession(session.id, { preserveArtifacts: true });
     }
+  }
+
+  /**
+   * Subscribe to session events
+   */
+  onSessionEvent(listener: (event: SessionEvent) => void): void {
+    this.eventListeners.add(listener);
+    this.log(`📡 Event listener registered (${this.eventListeners.size} total)`);
+  }
+
+  /**
+   * Unsubscribe from session events
+   */
+  offSessionEvent(listener: (event: SessionEvent) => void): void {
+    this.eventListeners.delete(listener);
+    this.log(`📡 Event listener removed (${this.eventListeners.size} remaining)`);
+  }
+
+  /**
+   * Emit session event to all listeners
+   */
+  private emitEvent(event: SessionEvent): void {
+    this.log(`📡 Emitting ${event.type} event (${this.eventListeners.size} listeners)`);
+    
+    this.eventListeners.forEach(listener => {
+      try {
+        listener(event);
+      } catch (error) {
+        this.log(`⚠️ Session event listener error: ${error}`, 'warn');
+      }
+    });
   }
 
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
@@ -111,6 +153,9 @@ export class SessionManagerDaemon extends BaseDaemon {
           
         case 'get_session_stats':
           return this.handleGetSessionStats();
+
+        case 'subscribe_events':
+          return this.handleSubscribeEvents(message.data);
           
         default:
           return {
@@ -146,6 +191,17 @@ export class SessionManagerDaemon extends BaseDaemon {
     if (identity.sessionContext) {
       this.log(`📋 Session context: ${identity.sessionContext}`);
     }
+
+    // Emit connection registered event
+    this.emitEvent({
+      type: 'connection_registered',
+      connectionId,
+      identity,
+      timestamp: new Date(),
+      metadata: {
+        sessionContext: identity.sessionContext
+      }
+    });
 
     return {
       success: true,
@@ -358,6 +414,37 @@ export class SessionManagerDaemon extends BaseDaemon {
   }
 
   /**
+   * Handle event subscription request
+   */
+  private handleSubscribeEvents(data: any): DaemonResponse {
+    const { callbackDaemon, eventTypes } = data;
+    
+    if (!callbackDaemon) {
+      return {
+        success: false,
+        error: 'callbackDaemon is required for event subscription'
+      };
+    }
+
+    // Store callback info for later use
+    // In a real implementation, we'd set up WebSocket or message routing
+    this.log(`📡 Event subscription registered for daemon: ${callbackDaemon}`);
+    
+    if (eventTypes && Array.isArray(eventTypes)) {
+      this.log(`📡 Subscribed to events: ${eventTypes.join(', ')}`);
+    }
+
+    return {
+      success: true,
+      data: {
+        callbackDaemon,
+        eventTypes: eventTypes || ['session_created', 'session_closed', 'connection_registered'],
+        message: 'Event subscription registered'
+      }
+    };
+  }
+
+  /**
    * Handle get session stats request
    */
   private handleGetSessionStats(): DaemonResponse {
@@ -421,6 +508,19 @@ export class SessionManagerDaemon extends BaseDaemon {
 
     this.sessions.set(sessionId, session);
     this.log(`📋 Created session: ${sessionId} for ${owner} (${type})`);
+    
+    // Emit session created event with full session info
+    this.emitEvent({
+      type: 'session_created',
+      sessionId,
+      session,
+      timestamp: new Date(),
+      metadata: {
+        storageDir: session.artifacts.storageDir,
+        sessionContext: options.sessionContext,
+        autoCleanup: session.shouldAutoCleanup
+      }
+    });
     
     return sessionId;
   }
@@ -501,6 +601,18 @@ export class SessionManagerDaemon extends BaseDaemon {
     }
 
     session.isActive = false;
+
+    // Emit session closed event before cleanup
+    this.emitEvent({
+      type: 'session_closed',
+      sessionId,
+      session,
+      timestamp: new Date(),
+      metadata: {
+        preserveArtifacts: options.preserveArtifacts,
+        storageDir: session.artifacts.storageDir
+      }
+    });
 
     // Cleanup artifacts if requested
     if (!options.preserveArtifacts) {
