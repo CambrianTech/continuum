@@ -60,31 +60,65 @@ export class DaemonConnector extends EventEmitter {
     return {
       initialized: true,
       executeCommand: async (command: string, params: any, context: any): Promise<CommandResult> => {
-        console.log(`🚀 Routing ${command} to discovered command system`);
+        console.log(`🔍 [DYNAMIC COMMAND] Execute command: ${command}`);
+        console.log(`🔍 [DYNAMIC COMMAND] Available commands:`, Array.from(commands.keys()));
         
         const commandInfo = commands.get(command);
         if (!commandInfo) {
+          console.log(`❌ [DYNAMIC COMMAND] Command not found: ${command}`);
+          console.log(`❌ [DYNAMIC COMMAND] Available commands: ${Array.from(commands.keys()).join(', ')}`);
           return {
             success: false,
             error: `Command ${command} not found in discovered commands`,
-            processor: 'dynamic-command-discovery'
+            processor: 'dynamic-command-discovery',
+            debug: {
+              requestedCommand: command,
+              availableCommands: Array.from(commands.keys()),
+              totalCommandsFound: commands.size
+            }
           };
         }
         
+        console.log(`✅ [DYNAMIC COMMAND] Command info found:`, commandInfo);
+        
         try {
-          // Dynamic import of the command
+          console.log(`🔍 [DYNAMIC COMMAND] Importing command module: ${commandInfo.path}`);
+          
+          // Check if compiled .js file exists
+          const fs = await import('fs');
+          if (!fs.existsSync(commandInfo.path)) {
+            console.log(`⚠️ [DYNAMIC COMMAND] Compiled file not found: ${commandInfo.path}`);
+            throw new Error(`Compiled command file not found: ${commandInfo.path}`);
+          }
+          
+          // Dynamic import of the compiled command
           const commandModule = await import(commandInfo.path);
+          console.log(`✅ [DYNAMIC COMMAND] Module imported successfully`);
+          console.log(`🔍 [DYNAMIC COMMAND] Module exports:`, Object.keys(commandModule));
+          
           const CommandClass = commandModule[commandInfo.className];
+          console.log(`🔍 [DYNAMIC COMMAND] Command class:`, !!CommandClass);
+          console.log(`🔍 [DYNAMIC COMMAND] Command execute method:`, !!(CommandClass && CommandClass.execute));
           
           if (!CommandClass || !CommandClass.execute) {
+            console.log(`❌ [DYNAMIC COMMAND] Command class or execute method missing`);
             return {
               success: false,
               error: `Command ${command} does not have execute method`,
-              processor: 'dynamic-command-discovery'
+              processor: 'dynamic-command-discovery',
+              debug: {
+                commandInfo,
+                moduleExports: Object.keys(commandModule),
+                classFound: !!CommandClass,
+                executeFound: !!(CommandClass && CommandClass.execute)
+              }
             };
           }
           
+          console.log(`🔍 [DYNAMIC COMMAND] Executing command with params:`, params);
           const result = await CommandClass.execute(params, context);
+          console.log(`✅ [DYNAMIC COMMAND] Command executed successfully:`, result);
+          
           return {
             success: result.success,
             processor: 'dynamic-command-discovery',
@@ -94,10 +128,17 @@ export class DaemonConnector extends EventEmitter {
           
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
+          console.log(`❌ [DYNAMIC COMMAND] Command execution failed: ${errorMessage}`);
+          console.log(`❌ [DYNAMIC COMMAND] Error details:`, error);
           return {
             success: false,
             error: `Failed to execute ${command}: ${errorMessage}`,
-            processor: 'dynamic-command-discovery'
+            processor: 'dynamic-command-discovery',
+            debug: {
+              commandInfo,
+              error: errorMessage,
+              stack: error instanceof Error ? error.stack : undefined
+            }
           };
         }
       },
@@ -158,15 +199,20 @@ export class DaemonConnector extends EventEmitter {
             );
             
             if (commandFile) {
-              const commandPath = path.resolve(dirPath, commandFile);
+              // TypeScript compilation flattens directory structure
+              // src/commands/core/health/HealthCommand.ts → dist/health/HealthCommand.js
               const className = commandFile.replace('.ts', '');
+              const commandCategory = path.basename(dirPath); // e.g., "health", "console"
+              const jsPath = path.resolve(process.cwd(), 'dist', commandCategory, `${className}.js`);
+              const tsPath = path.resolve(dirPath, commandFile);
               
               commands.set(commandName, {
                 name: commandName,
-                path: commandPath,
+                path: jsPath, // Use compiled .js file
                 className: className,
                 module: moduleName,
-                directory: dirPath
+                directory: dirPath,
+                originalTsPath: tsPath // Keep original for reference
               });
               
               console.log(`📋 Discovered command: ${commandName} → ${className}`);
@@ -231,22 +277,45 @@ export class DaemonConnector extends EventEmitter {
   }
 
   async executeCommand(command: string, params: any, context: any): Promise<CommandResult> {
+    console.log(`🔍 [DAEMON CONNECTOR] Execute command request received`);
+    console.log(`🔍 [DAEMON CONNECTOR] Command: ${command}`);
+    console.log(`🔍 [DAEMON CONNECTOR] Params:`, params);
+    console.log(`🔍 [DAEMON CONNECTOR] Context:`, context);
+    console.log(`🔍 [DAEMON CONNECTOR] Connection status: ${this.connection.connected}`);
+    console.log(`🔍 [DAEMON CONNECTOR] Command processor available: ${!!this.commandProcessor}`);
+
     if (!this.connection.connected || !this.commandProcessor) {
+      console.log(`❌ [DAEMON CONNECTOR] Not connected to command system`);
       return {
         success: false,
         error: 'Not connected to TypeScript command system',
-        processor: 'daemon-connector-disconnected'
+        processor: 'daemon-connector-disconnected',
+        debug: {
+          connected: this.connection.connected,
+          processorAvailable: !!this.commandProcessor,
+          connectionAttempts: this.connection.connectionAttempts
+        }
       };
     }
 
+    console.log(`🔍 [DAEMON CONNECTOR] Delegating to command processor...`);
     try {
-      return await this.commandProcessor.executeCommand(command, params, context);
+      const result = await this.commandProcessor.executeCommand(command, params, context);
+      console.log(`✅ [DAEMON CONNECTOR] Command executed successfully`);
+      console.log(`✅ [DAEMON CONNECTOR] Result:`, result);
+      return result;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      console.log(`❌ [DAEMON CONNECTOR] Command execution failed: ${errorMessage}`);
+      console.log(`❌ [DAEMON CONNECTOR] Error details:`, error);
       return {
         success: false,
         error: errorMessage,
-        processor: 'daemon-connector-error'
+        processor: 'daemon-connector-error',
+        debug: {
+          error: errorMessage,
+          stack: error instanceof Error ? error.stack : undefined
+        }
       };
     }
   }
