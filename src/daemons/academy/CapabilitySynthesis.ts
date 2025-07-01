@@ -527,6 +527,37 @@ export class CapabilitySynthesis {
     return Math.random() * 0.8; // Placeholder
   }
 
+  // TODO: Implement missing assessment methods
+  private assessAdaptationPotential(persona: any, analysis: CapabilityAnalysis): number {
+    console.log('TODO: Implement adaptation potential assessment for:', persona.id, analysis);
+    return 0.7; // Placeholder
+  }
+
+  private estimateResourceCost(persona: any): number {
+    console.log('TODO: Implement resource cost estimation for:', persona.id);
+    return 50; // Placeholder cost
+  }
+
+  private assessAdapterAdaptation(adapter: any, analysis: CapabilityAnalysis): number {
+    console.log('TODO: Implement adapter adaptation assessment for:', adapter.id, analysis);
+    return 0.6; // Placeholder
+  }
+
+  private assessCompositionViability(analysis: CapabilityAnalysis, candidates: ComponentCandidate[]): any {
+    console.log('TODO: Implement composition viability assessment for:', candidates.length, 'components', analysis);
+    return {
+      viable: true,
+      components: candidates.slice(0, 3),
+      confidence: 0.8,
+      time_estimate: 24
+    }; // Placeholder
+  }
+
+  private assessFineTuningViability(gaps: any[], analysis: CapabilityAnalysis): number {
+    console.log('TODO: Implement fine-tuning viability assessment for:', gaps.length, 'gaps', analysis);
+    return 0.75; // Placeholder
+  }
+
   // ... many more implementation methods would follow
 }
 
