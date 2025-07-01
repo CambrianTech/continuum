@@ -39,9 +39,10 @@ export class WidgetServerControls {
   /**
    * Handle widget screenshot events
    */
-  private async handleScreenshotEvent(event: CustomEvent): Promise<void> {
+  private async handleScreenshotEvent(event: Event): Promise<void> {
+    const customEvent = event as CustomEvent;
     try {
-      console.log('📸 Server Control: Widget screenshot requested', event.detail);
+      console.log('📸 Server Control: Widget screenshot requested', customEvent.detail);
       
       const widgetElement = event.target as HTMLElement;
       const widgetId = widgetElement.tagName.toLowerCase();
@@ -84,9 +85,10 @@ export class WidgetServerControls {
   /**
    * Handle widget refresh events
    */
-  private async handleRefreshEvent(event: CustomEvent): Promise<void> {
+  private async handleRefreshEvent(event: Event): Promise<void> {
+    const customEvent = event as CustomEvent;
     try {
-      console.log('🔄 Server Control: Widget refresh requested', event.detail);
+      console.log('🔄 Server Control: Widget refresh requested', customEvent.detail);
       
       const widgetElement = event.target as HTMLElement;
       const widgetId = widgetElement.tagName.toLowerCase();

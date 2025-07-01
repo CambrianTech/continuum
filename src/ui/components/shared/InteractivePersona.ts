@@ -252,9 +252,10 @@ export class InteractivePersona extends BaseWidget {
     this.render();
   }
 
-  private handleStatusChange(event: CustomEvent): void {
+  private handleStatusChange(event: Event): void {
+    const customEvent = event as CustomEvent;
     // Real-time persona status updates
-    const { status, task, mood } = event.detail;
+    const { status, task, mood } = customEvent.detail;
     
     this.persona.status = status;
     this.persona.currentTask = task;
