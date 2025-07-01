@@ -82,10 +82,10 @@ async function main() {
     
     console.log('╚═════════════════════════════════════════════════════════════════════════════════════╝\n');
     
-    // Exit cleanly - daemons continue independently
-    setTimeout(() => {
-      process.exit(0);
-    }, 2000);
+    // Keep process running - daemons need the parent process
+    // setTimeout(() => {
+    //   process.exit(0);
+    // }, 2000);
   } catch (error) {
     console.error('💥 System startup failed:', error);
     process.exit(1);
