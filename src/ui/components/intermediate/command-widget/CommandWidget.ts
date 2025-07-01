@@ -326,10 +326,10 @@ export abstract class CommandWidget extends BaseWidget {
 
     return this.executeCommandSequence(steps, {
       stepDelay: 1000, // 1 second between steps
-      onSuccess: (result) => {
+      onSuccess: (_result) => {
         this.showCommandFeedback(`🎉 Academy training workflow completed for ${personaName}`, 'success');
       },
-      onError: (result) => {
+      onError: (_result) => {
         this.showCommandFeedback(`❌ Academy training workflow failed for ${personaName}`, 'error');
       }
     });

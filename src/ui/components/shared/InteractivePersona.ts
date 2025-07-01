@@ -149,7 +149,7 @@ export class InteractivePersona extends BaseWidget {
     }
   }
 
-  private async handleAskPersona(event: Event): Promise<void> {
+  private async handleAskPersona(_event: Event): Promise<void> {
     // Trigger server control to start conversation with specific persona
     this.dispatchEvent(new CustomEvent('persona:start-conversation', {
       detail: {
@@ -165,7 +165,7 @@ export class InteractivePersona extends BaseWidget {
     this.showPersonaFeedback(`💬 Starting conversation with ${this.persona.name}...`);
   }
 
-  private async handleAssignTask(event: Event): Promise<void> {
+  private async handleAssignTask(_event: Event): Promise<void> {
     // Open task assignment interface
     this.dispatchEvent(new CustomEvent('persona:assign-task', {
       detail: {
@@ -179,7 +179,7 @@ export class InteractivePersona extends BaseWidget {
     this.showPersonaFeedback(`📋 Task assignment mode for ${this.persona.name}`);
   }
 
-  private async handleFeedbackMode(event: Event): Promise<void> {
+  private async handleFeedbackMode(_event: Event): Promise<void> {
     // Show feedback input area
     const feedbackArea = this.shadowRoot?.querySelector('.persona-feedback-area') as HTMLElement;
     if (feedbackArea) {
@@ -237,9 +237,10 @@ export class InteractivePersona extends BaseWidget {
     }));
   }
 
-  private handlePersonaResponse(event: CustomEvent): void {
+  private handlePersonaResponse(event: Event): void {
+    const customEvent = event as CustomEvent;
     // Handle real-time responses from persona
-    const { response, type } = event.detail;
+    const { response, type } = customEvent.detail;
     
     if (type === 'thinking') {
       this.persona.status = 'thinking';

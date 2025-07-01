@@ -430,7 +430,7 @@ export class ChatWidget extends BaseWidget {
   /**
    * Start conversation with any user type - same interface for all
    */
-  private async startConversationWithUser(userId: string, userName: string, userType: string): Promise<void> {
+  private async startConversationWithUser(userId: string, userName: string, _userType: string): Promise<void> {
     this.addMessage({
       id: this.generateMessageId(),
       type: 'system',
@@ -466,8 +466,9 @@ export class ChatWidget extends BaseWidget {
    */
   private setupServerControlListeners(): void {
     // Listen for screenshot completion
-    this.addEventListener('widget:screenshot-complete', (event: CustomEvent) => {
-      const { success, result, error } = event.detail;
+    this.addEventListener('widget:screenshot-complete', (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const { success, result, error } = customEvent.detail;
       
       if (success) {
         this.addMessage({
@@ -487,8 +488,9 @@ export class ChatWidget extends BaseWidget {
     });
 
     // Listen for refresh completion
-    this.addEventListener('widget:refresh-complete', (event: CustomEvent) => {
-      const { success, error } = event.detail;
+    this.addEventListener('widget:refresh-complete', (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const { success, error } = customEvent.detail;
       
       if (success) {
         console.log('✅ ChatWidget refreshed successfully');
