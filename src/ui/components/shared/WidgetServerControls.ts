@@ -98,7 +98,7 @@ export class WidgetServerControls {
         const result = await continuum.execute('reload', {
           target: 'widget',
           widgetId: widgetId,
-          preserveState: event.detail?.preserveState || true,
+          preserveState: customEvent.detail?.preserveState || true,
           ...customEvent.detail
         });
         
@@ -121,9 +121,10 @@ export class WidgetServerControls {
   /**
    * Handle widget export events
    */
-  private async handleExportEvent(event: CustomEvent): Promise<void> {
+  private async handleExportEvent(event: Event): Promise<void> {
+    const customEvent = event as CustomEvent;
     try {
-      console.log('💾 Server Control: Widget export requested', event.detail);
+      console.log('💾 Server Control: Widget export requested', customEvent.detail);
       
       const widgetElement = event.target as HTMLElement;
       const widgetId = widgetElement.tagName.toLowerCase();
@@ -133,7 +134,7 @@ export class WidgetServerControls {
         const result = await continuum.execute('export', {
           target: 'widget',
           widgetId: widgetId,
-          format: event.detail?.format || 'json',
+          format: customEvent.detail?.format || 'json',
           ...customEvent.detail
         });
         
@@ -156,9 +157,10 @@ export class WidgetServerControls {
   /**
    * Handle widget validation events
    */
-  private async handleValidateEvent(event: CustomEvent): Promise<void> {
+  private async handleValidateEvent(event: Event): Promise<void> {
+    const customEvent = event as CustomEvent;
     try {
-      console.log('✅ Server Control: Widget validation requested', event.detail);
+      console.log('✅ Server Control: Widget validation requested', customEvent.detail);
       
       const widgetElement = event.target as HTMLElement;
       const widgetId = widgetElement.tagName.toLowerCase();
