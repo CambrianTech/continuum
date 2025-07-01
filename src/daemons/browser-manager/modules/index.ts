@@ -10,16 +10,11 @@ export type { IBrowserModule } from './IBrowserModule';
 export { ChromeBrowserModule } from './ChromeBrowserModule';
 
 // Focused management modules  
-export { BrowserLauncher, BrowserPaths } from './BrowserLauncher';
+export { BrowserLauncher } from './BrowserLauncher';
 export { BrowserRegistry } from './BrowserRegistry';
-export { ResourceManager, ProcessStats, ResourceMetrics, OptimizationResult } from './ResourceManager';
-export { 
-  SessionManager, 
-  PlacementStrategy, 
-  SessionState 
-} from './SessionManager';
-export { 
-  PortManager, 
-  PortAllocation, 
-  PortConflictResolution 
-} from './PortManager';
+export { ResourceManager } from './ResourceManager';
+export type { ProcessStats, ResourceMetrics, OptimizationResult } from './ResourceManager';
+export { SessionManager } from './SessionManager';
+export type { PlacementStrategy, SessionState } from './SessionManager';
+export { PortManager } from './PortManager';
+export type { PortAllocation, PortConflictResolution } from './PortManager';

@@ -226,12 +226,13 @@ export class PortManager {
    * Mark port as allocated
    */
   private markPortAllocated(port: number, purpose: string, browserId?: string): void {
-    this.allocatedPorts.set(port, {
+    const allocation = {
       port,
       allocated: new Date(),
       purpose,
-      browserId
-    });
+      ...(browserId !== undefined && { browserId })
+    };
+    this.allocatedPorts.set(port, allocation);
   }
 
   /**

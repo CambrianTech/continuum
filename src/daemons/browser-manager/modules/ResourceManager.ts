@@ -3,7 +3,7 @@
  * Handles memory/CPU tracking, performance optimization, and resource cleanup
  */
 
-import { DaemonManagedBrowser } from '../types/index.js';
+import { ManagedBrowser } from '../types/index.js';
 
 export interface ProcessStats {
   memory: number;
@@ -28,9 +28,9 @@ export interface OptimizationResult {
 
 export class ResourceManager {
   private monitorInterval: NodeJS.Timeout | null = null;
-  private browsers: Map<string, DaemonManagedBrowser>;
+  private browsers: Map<string, ManagedBrowser>;
 
-  constructor(browsers: Map<string, DaemonManagedBrowser>) {
+  constructor(browsers: Map<string, ManagedBrowser>) {
     this.browsers = browsers;
   }
 
@@ -75,7 +75,7 @@ export class ResourceManager {
   /**
    * Update resource usage for a specific browser
    */
-  async updateBrowserResourceUsage(browser: DaemonManagedBrowser): Promise<void> {
+  async updateBrowserResourceUsage(browser: ManagedBrowser): Promise<void> {
     try {
       // Get process stats
       const stats = await this.getProcessStats(browser.pid);
@@ -207,7 +207,7 @@ export class ResourceManager {
   /**
    * Check if browser is idle
    */
-  isIdle(browser: DaemonManagedBrowser): boolean {
+  isIdle(browser: ManagedBrowser): boolean {
     const idleThreshold = 5 * 60 * 1000; // 5 minutes
     return Date.now() - browser.lastActivity.getTime() > idleThreshold &&
            browser.sessions.size === 0;
@@ -216,7 +216,7 @@ export class ResourceManager {
   /**
    * Check if browser can be closed
    */
-  canClose(browser: DaemonManagedBrowser): boolean {
+  canClose(browser: ManagedBrowser): boolean {
     return browser.config.requirements.persistence === 'ephemeral';
   }
 
