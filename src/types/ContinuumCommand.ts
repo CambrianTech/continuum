@@ -2,7 +2,7 @@
  * Command Module - Extends BaseModule with command-specific validation
  */
 
-import { BaseModule, ValidationResult, MigrationResult, TestType, TestResult } from './BaseModule.js';
+import { BaseModule, ValidationResult, MigrationResult, TestType, TestResult, TestDetail } from './BaseModule.js';
 import { ContinuumCommandConfig } from './ContinuumPackage.js';
 
 export class ContinuumCommand extends BaseModule {
