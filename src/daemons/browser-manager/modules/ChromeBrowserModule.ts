@@ -10,7 +10,20 @@
  */
 
 import { IBrowserModule, DevToolsCapabilities, BrowserLaunchResult, TabManagementAPI } from './IBrowserModule';
-import { BrowserConfig, ManagedBrowser, BrowserType, BrowserVisibility, BrowserIsolation } from '../BrowserManagerDaemon';
+import { BrowserConfig, ManagedBrowser, BrowserType } from '../types/index.js';
+
+// Define missing enums locally for now
+enum BrowserVisibility {
+  HIDDEN = 'hidden',
+  MINIMIZED = 'minimized',
+  VISIBLE = 'visible'
+}
+
+enum BrowserIsolation {
+  SHARED = 'shared',
+  SANDBOXED = 'sandboxed',
+  DEDICATED = 'dedicated'
+}
 import { ChromiumDevToolsAdapter } from '../adapters/ChromiumDevToolsAdapter';
 import { spawn, ChildProcess } from 'child_process';
 

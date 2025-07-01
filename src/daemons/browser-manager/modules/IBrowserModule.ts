@@ -8,25 +8,15 @@
  * - Platform-specific capabilities
  */
 
-import { BrowserConfig, ManagedBrowser, BrowserType } from '../BrowserManagerDaemon';
+import { 
+  BrowserConfig, 
+  ManagedBrowser, 
+  BrowserType, 
+  DevToolsCapabilities,
+  BrowserLaunchResult
+} from '../types/index.js';
 
-export interface DevToolsCapabilities {
-  protocol: 'chrome-devtools' | 'safari-inspector' | 'firefox-marionette' | 'edge-devtools';
-  supportsHeadless: boolean;
-  supportsRemoteDebugging: boolean;
-  supportsAutomation: boolean;
-  supportsExtensions: boolean;
-  defaultPort: number;
-  portRange: [number, number];
-}
-
-export interface BrowserLaunchResult {
-  process: any; // Child process
-  pid: number;
-  debugPort: number;
-  devToolsUrl?: string;
-  capabilities: DevToolsCapabilities;
-}
+// BrowserLaunchResult now imported from shared types
 
 export interface TabManagementAPI {
   createTab(url: string): Promise<string>; // Returns tab ID
