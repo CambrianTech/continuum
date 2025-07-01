@@ -12,6 +12,7 @@
 
 import { BaseDaemon } from '../base/BaseDaemon.js';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol.js';
+import { SessionConsoleLogger } from './modules/SessionConsoleLogger.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -71,6 +72,7 @@ export class SessionManagerDaemon extends BaseDaemon {
   private artifactRoot: string;
   private cleanupInterval?: NodeJS.Timeout;
   private eventListeners = new Set<(event: SessionEvent) => void>();
+  private consoleLoggers = new Map<string, SessionConsoleLogger>(); // sessionId -> logger
 
   constructor(artifactRoot: string = '.continuum/sessions') {
     super();
@@ -90,6 +92,17 @@ export class SessionManagerDaemon extends BaseDaemon {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
     }
+    
+    // Stop all console loggers
+    for (const [sessionId, logger] of this.consoleLoggers) {
+      try {
+        await logger.stopLogging();
+        this.log(`🔌 Stopped console logging for session ${sessionId}`);
+      } catch (error) {
+        this.log(`⚠️ Error stopping console logger for ${sessionId}: ${error}`, 'warn');
+      }
+    }
+    this.consoleLoggers.clear();
     
     // Close all active sessions gracefully
     const activeSessions = Array.from(this.sessions.values()).filter(s => s.isActive);
@@ -158,6 +171,12 @@ export class SessionManagerDaemon extends BaseDaemon {
 
         case 'subscribe_events':
           return this.handleSubscribeEvents(message.data);
+          
+        case 'start_console_logging':
+          return await this.handleStartConsoleLogging(message.data);
+          
+        case 'stop_console_logging':
+          return await this.handleStopConsoleLogging(message.data);
           
         default:
           return {
@@ -709,9 +728,121 @@ export class SessionManagerDaemon extends BaseDaemon {
         active: activeSessions.length,
         inactive: allSessions.length - activeSessions.length,
         byType: statsByType,
-        connections: this.connectionIdentities.size
+        connections: this.connectionIdentities.size,
+        consoleLoggers: this.consoleLoggers.size
       }
     };
+  }
+
+  /**
+   * Handle start console logging request
+   */
+  private async handleStartConsoleLogging(data: any): Promise<DaemonResponse> {
+    const { sessionId, debugUrl, targetId } = data;
+    
+    if (!sessionId || !debugUrl) {
+      return {
+        success: false,
+        error: 'sessionId and debugUrl are required'
+      };
+    }
+
+    try {
+      const session = this.sessions.get(sessionId);
+      if (!session) {
+        return {
+          success: false,
+          error: `Session ${sessionId} not found`
+        };
+      }
+
+      // Check if console logging is already active for this session
+      if (this.consoleLoggers.has(sessionId)) {
+        return {
+          success: true,
+          data: {
+            message: `Console logging already active for session ${sessionId}`,
+            sessionId,
+            debugUrl
+          }
+        };
+      }
+
+      // Create and configure console logger
+      const logger = new SessionConsoleLogger();
+      const browserLogPath = session.artifacts.logs.client[0];
+      logger.setSessionLogPath(browserLogPath);
+
+      // Start logging
+      await logger.startLogging(debugUrl, targetId);
+      this.consoleLoggers.set(sessionId, logger);
+
+      this.log(`🔌 Started console logging for session ${sessionId}: ${debugUrl}`);
+
+      return {
+        success: true,
+        data: {
+          sessionId,
+          debugUrl,
+          logPath: browserLogPath,
+          message: 'Console logging started successfully'
+        }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to start console logging for ${sessionId}: ${errorMessage}`, 'error');
+      return {
+        success: false,
+        error: `Failed to start console logging: ${errorMessage}`
+      };
+    }
+  }
+
+  /**
+   * Handle stop console logging request
+   */
+  private async handleStopConsoleLogging(data: any): Promise<DaemonResponse> {
+    const { sessionId } = data;
+    
+    if (!sessionId) {
+      return {
+        success: false,
+        error: 'sessionId is required'
+      };
+    }
+
+    try {
+      const logger = this.consoleLoggers.get(sessionId);
+      if (!logger) {
+        return {
+          success: true,
+          data: {
+            message: `No console logging active for session ${sessionId}`,
+            sessionId
+          }
+        };
+      }
+
+      await logger.stopLogging();
+      this.consoleLoggers.delete(sessionId);
+
+      this.log(`🔌 Stopped console logging for session ${sessionId}`);
+
+      return {
+        success: true,
+        data: {
+          sessionId,
+          message: 'Console logging stopped successfully'
+        }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to stop console logging for ${sessionId}: ${errorMessage}`, 'error');
+      return {
+        success: false,
+        error: `Failed to stop console logging: ${errorMessage}`
+      };
+    }
   }
 
   // Core session management methods (simplified versions of the previous SessionManager)
@@ -831,6 +962,18 @@ export class SessionManagerDaemon extends BaseDaemon {
     }
 
     this.log(`🔒 Closing session: ${sessionId}`);
+
+    // Stop console logging if active
+    const logger = this.consoleLoggers.get(sessionId);
+    if (logger) {
+      try {
+        await logger.stopLogging();
+        this.consoleLoggers.delete(sessionId);
+        this.log(`🔌 Stopped console logging for session ${sessionId}`);
+      } catch (error) {
+        this.log(`⚠️ Error stopping console logger: ${error}`, 'warn');
+      }
+    }
 
     // Close any tracked processes
     if (session.processes.browser?.pid) {
