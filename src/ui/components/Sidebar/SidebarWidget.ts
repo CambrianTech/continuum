@@ -4,14 +4,24 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget.js';
-import baseCSS from '../shared/BaseWidget.css';
-import sidebarCSS from './SidebarWidget.css';
+// CSS will be loaded dynamically via fetch
 
 export class SidebarWidget extends BaseWidget {
     private isResizing: boolean = false;
     private startX: number = 0;
     private startWidth: number = 0;
     private currentRoom: string = 'general';
+
+    /**
+     * SidebarWidget reports its own base path and assets
+     */
+    static getBasePath(): string {
+        return '/src/ui/components/Sidebar';
+    }
+    
+    static getOwnCSS(): string[] {
+        return ['SidebarWidget.css'];
+    }
 
     constructor() {
         super();
@@ -21,9 +31,6 @@ export class SidebarWidget extends BaseWidget {
         // CSS is now bundled, no external path needed
     }
 
-    getBundledCSS(): string {
-        return baseCSS + '\n' + sidebarCSS;
-    }
 
     protected async initializeWidget(): Promise<void> {
         this.setupResizeHandlers();

@@ -4,8 +4,7 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget.js';
-import baseCSS from '../shared/BaseWidget.css';
-import chatCSS from './ChatWidget.css';
+// CSS will be loaded dynamically via fetch
 
 interface Message {
   id: string;
@@ -35,6 +34,17 @@ export class ChatWidget extends BaseWidget {
   private currentRoomId: string = 'general';
   private isLoadingHistory: boolean = false;
 
+  /**
+   * ChatWidget reports its own base path and assets
+   */
+  static getBasePath(): string {
+    return '/src/ui/components/Chat';
+  }
+  
+  static getOwnCSS(): string[] {
+    return ['ChatWidget.css'];
+  }
+
   constructor() {
     super();
     this.widgetName = 'ChatWidget';
@@ -43,9 +53,6 @@ export class ChatWidget extends BaseWidget {
     // CSS is now bundled, no external path needed
   }
 
-  getBundledCSS(): string {
-    return baseCSS + '\n' + chatCSS;
-  }
 
   protected async initializeWidget(): Promise<void> {
     await this.loadCSS();

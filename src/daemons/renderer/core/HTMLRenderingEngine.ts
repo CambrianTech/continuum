@@ -53,12 +53,83 @@ export class HTMLRenderingEngine {
 
   private generateScriptInjection(options: RenderOptions): string {
     const apiPath = this.getApiPath();
+    
+    // Auto-generate widget imports based on custom elements in template
+    const widgetImports = this.generateWidgetImports();
+    
     return `
     <!-- Dynamically injected by HTMLRenderingEngine -->
     <script>
         window.__CONTINUUM_VERSION__ = '${options.version}';
     </script>
-    <script type="module" src="/dist/ui/continuum-browser.js"></script>`;
+    <script type="module" src="/dist/ui/continuum-browser.js"></script>
+    
+    <!-- Auto-generated widget imports -->
+    <script type="module">
+        ${widgetImports}
+    </script>`;
+  }
+  
+  private async generateWidgetImports(): Promise<string> {
+    // Scan the HTML template for custom elements
+    const customElements = this.findCustomElementsInTemplate();
+    
+    let imports = '';
+    for (const elementTag of customElements) {
+      const widgetPath = this.getWidgetPathFromTag(elementTag);
+      if (widgetPath) {
+        imports += `
+        try {
+          const widget = await import('${widgetPath}');
+          console.log('✅ ${elementTag} widget loaded and registered');
+        } catch (error) {
+          console.error('❌ ${elementTag} widget failed to load:', error);
+        }`;
+      }
+    }
+    
+    return imports;
+  }
+  
+  private findCustomElementsInTemplate(): string[] {
+    // TODO: Actually parse the HTML template to find custom elements
+    // For now, return the known elements from main-ui.html
+    return ['continuum-sidebar', 'chat-widget'];
+  }
+  
+  private async getWidgetPathFromTag(tag: string): Promise<string | null> {
+    try {
+      // Use the DiscoverWidgetsCommand to find the actual widget paths
+      const { WidgetDiscovery } = await import('../../ui/components/shared/WidgetDiscovery.js');
+      const discovery = new WidgetDiscovery();
+      const { compliant, nonCompliant } = await discovery.validateAllWidgets();
+      
+      // Find widget by its custom element name
+      const allWidgets = [...compliant, ...nonCompliant];
+      const widget = allWidgets.find(w => {
+        // TODO: Widget metadata should include custom element tag name
+        // For now, derive from widget name
+        return this.deriveTagFromWidgetName(w.name) === tag;
+      });
+      
+      if (widget) {
+        return `/src/ui/components/${widget.name}/${widget.widgetFile}`;
+      }
+      
+      return null;
+    } catch (error) {
+      console.warn('Failed to discover widget path for', tag, error);
+      return null;
+    }
+  }
+  
+  private deriveTagFromWidgetName(widgetName: string): string {
+    // Convert widget names to custom element tags
+    const nameToTag = {
+      'Sidebar': 'continuum-sidebar',
+      'Chat': 'chat-widget'
+    };
+    return nameToTag[widgetName as keyof typeof nameToTag] || widgetName.toLowerCase();
   }
 
   private getApiPath(): string {

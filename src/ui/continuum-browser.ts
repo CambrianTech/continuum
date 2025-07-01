@@ -317,7 +317,7 @@ class ContinuumBrowserAPI implements ContinuumAPI {
   }
   
   async discoverAndLoadWidgets(): Promise<void> {
-    console.log('🔍 Discovering widgets dynamically...');
+    console.log('🔍 Loading core widgets...');
     
     // First, register widget fallbacks so custom elements have default behavior
     try {
@@ -328,24 +328,43 @@ class ContinuumBrowserAPI implements ContinuumAPI {
       console.warn('⚠️ Failed to load widget fallbacks:', error);
     }
     
+    // Load core widgets directly since they're needed for the UI
+    const coreWidgets = [
+      './components/Sidebar/SidebarWidget.js',
+      './components/Chat/ChatWidget.js'
+    ];
+    
+    let loadedCount = 0;
+    for (const widgetPath of coreWidgets) {
+      try {
+        console.log(`📦 Loading core widget: ${widgetPath}`);
+        await import(widgetPath);
+        loadedCount++;
+        console.log(`✅ Successfully loaded: ${widgetPath}`);
+      } catch (error) {
+        console.warn(`⚠️ Failed to load core widget ${widgetPath}:`, error);
+        // Core widgets failing is important to log
+        console.error('Core widget error details:', error);
+      }
+    }
+    
+    // Try dynamic discovery as backup
     try {
-      // Discover widgets by looking for components with package.json
       const widgetPaths = await this.discoverWidgetPaths();
-      
-      // Load each widget dynamically
       for (const path of widgetPaths) {
         try {
-          console.log(`📦 Loading widget: ${path}`);
+          console.log(`📦 Loading discovered widget: ${path}`);
           await import(path);
+          loadedCount++;
         } catch (error) {
-          console.warn(`⚠️ Failed to load widget ${path}:`, error);
+          console.warn(`⚠️ Failed to load discovered widget ${path}:`, error);
         }
       }
-      
-      console.log(`✅ Widget discovery complete - ${widgetPaths.length} widgets processed`);
     } catch (error) {
-      console.error('❌ Widget discovery failed:', error);
+      console.warn('⚠️ Dynamic widget discovery failed:', error);
     }
+    
+    console.log(`✅ Widget loading complete - ${loadedCount} widgets loaded`);
   }
   
   private async discoverWidgetPaths(): Promise<string[]> {
