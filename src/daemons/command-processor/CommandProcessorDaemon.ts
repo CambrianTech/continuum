@@ -85,7 +85,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
   private readonly executionHistory: CommandExecution[] = [];
   private readonly phaseOmegaEnabled = true;
   private monitoringInterval: NodeJS.Timeout | undefined;
-  private commandConnector: DaemonConnector;
+  private commandConnector!: DaemonConnector;
 
   protected async onStart(): Promise<void> {
     // Initialize command discovery

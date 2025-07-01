@@ -27,7 +27,7 @@ export interface CommandContext {
 
 export interface CommandResult<T = any> {
   success: boolean;
-  message: string;
+  message?: string | undefined;
   data?: T | undefined;
   error?: string | undefined;
   timestamp?: string | undefined;

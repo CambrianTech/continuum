@@ -84,8 +84,15 @@ export class ChatRoomDaemon extends RequestResponseDaemon {
   private participants: Map<string, Set<RoomParticipant>> = new Map();
   private messageHistory: Map<string, ChatMessage[]> = new Map();
 
+  public readonly name = 'chatroom';
+  public readonly version = '1.0.0';
+
   constructor() {
-    super('chatroom', '1.0.0');
+    super();
+  }
+
+  getRequestHandlers(): RequestHandlerMap {
+    return this.defineRequestHandlers();
   }
 
   protected defineRequestHandlers(): RequestHandlerMap {

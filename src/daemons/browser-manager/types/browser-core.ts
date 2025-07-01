@@ -4,6 +4,9 @@
 
 import { DevToolsCapabilities } from './devtools.js';
 
+// Re-export for external use
+export type { DevToolsCapabilities };
+
 export enum BrowserType {
   DEFAULT = 'default',
   CHROME = 'chrome',

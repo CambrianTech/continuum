@@ -5,6 +5,7 @@
 
 import { EventEmitter } from 'events';
 import { DaemonMessage, DaemonResponse, DaemonStatus } from './DaemonProtocol';
+import * as fs from 'fs/promises';
 
 export abstract class BaseDaemon extends EventEmitter {
   public abstract readonly name: string;
@@ -23,6 +24,9 @@ export abstract class BaseDaemon extends EventEmitter {
   private startPromise: Promise<void> | null = null;
   private stopPromise: Promise<void> | null = null;
   private signalHandlers: { [key: string]: any } = {};
+  
+  // Session-specific logging support
+  private sessionLogPath: string | null = null;
   
   constructor() {
     super();
@@ -190,13 +194,32 @@ export abstract class BaseDaemon extends EventEmitter {
   }
 
   /**
-   * Log message with daemon context
+   * Set session-specific log file path for live logging
+   */
+  setSessionLogPath(logFilePath: string): void {
+    this.sessionLogPath = logFilePath;
+    this.log(`Session logging enabled: ${logFilePath}`);
+  }
+
+  /**
+   * Clear session-specific logging
+   */
+  clearSessionLogPath(): void {
+    if (this.sessionLogPath) {
+      this.log(`Session logging disabled: ${this.sessionLogPath}`);
+      this.sessionLogPath = null;
+    }
+  }
+
+  /**
+   * Log message with daemon context - writes to both console and session log
    */
   protected log(message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info'): void {
     const timestamp = new Date().toISOString();
     const safeLevel = typeof level === 'string' ? level : 'info';
     const logMessage = `[${timestamp}] [${this.name}:${this.processId}] ${safeLevel.toUpperCase()}: ${message}`;
     
+    // Console output (existing behavior)
     switch (safeLevel) {
       case 'error':
         console.error(logMessage);
@@ -211,8 +234,29 @@ export abstract class BaseDaemon extends EventEmitter {
         console.log(logMessage);
     }
 
+    // Session-specific log file (NEW: live logging)
+    if (this.sessionLogPath) {
+      this.writeToSessionLog(logMessage).catch(error => {
+        console.error(`Failed to write to session log: ${error.message}`);
+      });
+    }
+
     // Emit log event for external log aggregation
     this.emit('log', { level, message, timestamp });
+  }
+
+  /**
+   * Write log message to session-specific log file
+   */
+  private async writeToSessionLog(logMessage: string): Promise<void> {
+    if (!this.sessionLogPath) return;
+    
+    try {
+      await fs.appendFile(this.sessionLogPath, logMessage + '\n');
+    } catch (error) {
+      // Don't log to session file if there's an error (would cause recursion)
+      console.error(`Session log write failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**

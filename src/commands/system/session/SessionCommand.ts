@@ -5,7 +5,7 @@
  */
 
 import { BaseCommand } from '../../core/base-command/BaseCommand';
-import { CommandDefinition, CommandResult } from '../../core/base-command/types';
+import { CommandDefinition, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class SessionCommand extends BaseCommand {
   static getDefinition(): CommandDefinition {
@@ -13,7 +13,12 @@ export class SessionCommand extends BaseCommand {
       name: 'session',
       description: 'Query and manage Continuum sessions',
       category: 'system',
-      parameters: {}
+      parameters: {},
+      examples: [
+        { description: 'List all sessions', command: 'session --action=list' },
+        { description: 'Get current session', command: 'session --action=current' },
+        { description: 'Get session info', command: 'session --action=info --sessionId=abc123' }
+      ]
     };
   }
 
@@ -26,6 +31,7 @@ export class SessionCommand extends BaseCommand {
       if (!sessionManager) {
         return {
           success: false,
+          message: 'Session manager not available',
           error: 'Session manager not available'
         };
       }
@@ -42,31 +48,32 @@ export class SessionCommand extends BaseCommand {
           
         case 'join':
           if (!sessionId) {
-            return { success: false, error: 'sessionId required for join action' };
+            return { success: false, message: 'sessionId required for join action', error: 'sessionId required for join action' };
           }
           return this.handleJoin(sessionManager, sessionId, context);
           
         case 'create':
           if (!identity) {
-            return { success: false, error: 'identity required for create action' };
+            return { success: false, message: 'identity required for create action', error: 'identity required for create action' };
           }
           return this.handleCreate(sessionManager, identity);
           
         case 'close':
           if (!sessionId) {
-            return { success: false, error: 'sessionId required for close action' };
+            return { success: false, message: 'sessionId required for close action', error: 'sessionId required for close action' };
           }
           return this.handleClose(sessionManager, sessionId);
           
         case 'info':
           if (!sessionId) {
-            return { success: false, error: 'sessionId required for info action' };
+            return { success: false, message: 'sessionId required for info action', error: 'sessionId required for info action' };
           }
           return this.handleInfo(sessionManager, sessionId);
           
         default:
           return {
             success: false,
+            message: `Unknown action: ${action}`,
             error: `Unknown action: ${action}`
           };
       }
@@ -74,6 +81,7 @@ export class SessionCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Session command failed: ${errorMessage}`,
         error: `Session command failed: ${errorMessage}`
       };
     }
@@ -106,12 +114,14 @@ export class SessionCommand extends BaseCommand {
       if (!response.success) {
         return {
           success: false,
+          message: response.error || 'Failed to list sessions',
           error: response.error || 'Failed to list sessions'
         };
       }
 
       return {
         success: true,
+        message: `Found ${response.data.total} sessions`,
         data: {
           sessions: response.data.sessions.map((session: any) => ({
             id: session.id,
@@ -129,6 +139,7 @@ export class SessionCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Failed to list sessions: ${errorMessage}`,
         error: `Failed to list sessions: ${errorMessage}`
       };
     }
@@ -138,12 +149,12 @@ export class SessionCommand extends BaseCommand {
     // Get current session from connection context
     const connectionId = context?.connectionId;
     if (!connectionId) {
-      return { success: false, error: 'No connection context available' };
+      return { success: false, message: 'No connection context available', error: 'No connection context available' };
     }
 
     const identity = sessionManager.getConnectionIdentity(connectionId);
     if (!identity) {
-      return { success: false, error: 'Connection not identified' };
+      return { success: false, message: 'Connection not identified', error: 'Connection not identified' };
     }
 
     // Find current active session for this connection
@@ -154,11 +165,12 @@ export class SessionCommand extends BaseCommand {
     });
 
     if (!currentSession) {
-      return { success: false, error: 'No current session found' };
+      return { success: false, message: 'No current session found', error: 'No current session found' };
     }
 
     return {
       success: true,
+      message: `Current session: ${currentSession.id}`,
       data: {
         session: {
           id: currentSession.id,
@@ -180,12 +192,14 @@ export class SessionCommand extends BaseCommand {
     if (!latestSession) {
       return {
         success: false,
+        message: 'No sessions found matching filter criteria',
         error: 'No sessions found matching filter criteria'
       };
     }
 
     return {
       success: true,
+      message: `Latest session: ${latestSession.id}`,
       data: {
         session: {
           id: latestSession.id,
@@ -204,7 +218,7 @@ export class SessionCommand extends BaseCommand {
   private static async handleJoin(sessionManager: any, sessionId: string, context: any): Promise<CommandResult> {
     const connectionId = context?.connectionId;
     if (!connectionId) {
-      return { success: false, error: 'No connection context available' };
+      return { success: false, message: 'No connection context available', error: 'No connection context available' };
     }
 
     try {
@@ -212,6 +226,7 @@ export class SessionCommand extends BaseCommand {
       
       return {
         success: true,
+        message: `Successfully joined session ${sessionId}`,
         data: {
           sessionId: joinedSessionId,
           action: 'joined',
@@ -222,6 +237,7 @@ export class SessionCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Failed to join session: ${errorMessage}`,
         error: `Failed to join session: ${errorMessage}`
       };
     }
@@ -233,6 +249,7 @@ export class SessionCommand extends BaseCommand {
       
       return {
         success: true,
+        message: `Successfully created session ${sessionId}`,
         data: {
           sessionId,
           action: 'created',
@@ -243,6 +260,7 @@ export class SessionCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Failed to create session: ${errorMessage}`,
         error: `Failed to create session: ${errorMessage}`
       };
     }
@@ -254,6 +272,7 @@ export class SessionCommand extends BaseCommand {
       
       return {
         success: true,
+        message: `Successfully closed session ${sessionId}`,
         data: {
           sessionId,
           action: 'closed',
@@ -264,6 +283,7 @@ export class SessionCommand extends BaseCommand {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
+        message: `Failed to close session: ${errorMessage}`,
         error: `Failed to close session: ${errorMessage}`
       };
     }
@@ -275,12 +295,14 @@ export class SessionCommand extends BaseCommand {
     if (!session) {
       return {
         success: false,
+        message: `Session ${sessionId} not found`,
         error: `Session ${sessionId} not found`
       };
     }
 
     return {
       success: true,
+      message: `Session info: ${sessionId}`,
       data: {
         session: {
           id: session.id,
