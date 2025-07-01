@@ -3,7 +3,7 @@
  * Handles session creation, tracking, browser reuse decisions, and session cleanup
  */
 
-import { BrowserConfig, DaemonManagedBrowser, BrowserPurpose } from '../types/index.js';
+import { BrowserConfig, ManagedBrowser, BrowserPurpose } from '../types/index.js';
 
 export interface PlacementStrategy {
   type: 'reuse' | 'add-tab' | 'create';
@@ -21,10 +21,10 @@ export interface SessionState {
 }
 
 export class SessionManager {
-  private browsers: Map<string, DaemonManagedBrowser>;
+  private browsers: Map<string, ManagedBrowser>;
   private sessions = new Map<string, SessionState>();
 
-  constructor(browsers: Map<string, DaemonManagedBrowser>) {
+  constructor(browsers: Map<string, ManagedBrowser>) {
     this.browsers = browsers;
   }
 
@@ -112,7 +112,7 @@ export class SessionManager {
   /**
    * Find existing browser for session/URL combination
    */
-  findExistingBrowser(sessionId: string, url: string): DaemonManagedBrowser | null {
+  findExistingBrowser(sessionId: string, url: string): ManagedBrowser | null {
     for (const browser of this.browsers.values()) {
       if (browser.sessions.has(sessionId) && browser.state === 'ready') {
         return browser;
@@ -124,7 +124,7 @@ export class SessionManager {
   /**
    * Determine if refreshing existing browser is sufficient
    */
-  shouldRefreshExisting(browser: DaemonManagedBrowser, newConfig: any): boolean {
+  shouldRefreshExisting(browser: ManagedBrowser, newConfig: any): boolean {
     // Refresh if same requirements and browser is healthy
     const devToolsMatch = (browser.config.requirements.devtools || false) === (newConfig?.requirements?.devtools || false);
     const browserHealthy = browser.state === 'ready' && browser.resources.cpu < 80;
@@ -218,7 +218,7 @@ export class SessionManager {
   /**
    * Find compatible browser for config
    */
-  private findCompatibleBrowser(config: BrowserConfig): DaemonManagedBrowser | null {
+  private findCompatibleBrowser(config: BrowserConfig): ManagedBrowser | null {
     for (const browser of this.browsers.values()) {
       if (this.isCompatible(browser, config)) {
         return browser;
@@ -230,7 +230,7 @@ export class SessionManager {
   /**
    * Check if browser is compatible with config
    */
-  private isCompatible(browser: DaemonManagedBrowser, config: BrowserConfig): boolean {
+  private isCompatible(browser: ManagedBrowser, config: BrowserConfig): boolean {
     // Check if browser can handle this session
     return browser.config.requirements.isolation === 'shared' &&
            browser.sessions.size < this.getMaxTabsPerBrowser() &&
@@ -241,7 +241,7 @@ export class SessionManager {
   /**
    * Find least used browser
    */
-  private findLeastUsedBrowser(): DaemonManagedBrowser | null {
+  private findLeastUsedBrowser(): ManagedBrowser | null {
     return Array.from(this.browsers.values())
       .sort((a, b) => a.sessions.size - b.sessions.size)[0] || null;
   }

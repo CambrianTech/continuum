@@ -11,7 +11,7 @@
  */
 
 import { BaseCommand } from '../core/base-command/BaseCommand.js';
-import { CommandDefinition, CommandResult } from '../core/base-command/types.js';
+import { CommandDefinition, CommandResult } from '../core/base-command/BaseCommand.js';
 import { AutonomyContractManager } from '../../daemons/mesh/AutonomyContract.js';
 import path from 'path';
 import fs from 'fs/promises';
@@ -379,7 +379,7 @@ export class PersonaMemoryCommand extends BaseCommand {
   /**
    * Perform actual database optimization
    */
-  private async performDatabaseOptimization(dbPath: string): Promise<string[]> {
+  private async performDatabaseOptimization(_dbPath: string): Promise<string[]> {
     // TODO: Implement actual SQLite optimization
     // For now, simulate optimization operations
     const operations = [
@@ -399,7 +399,7 @@ export class PersonaMemoryCommand extends BaseCommand {
   /**
    * Perform backup to mesh node
    */
-  private async performBackup(dbPath: string, destination: string, personaId: string): Promise<{
+  private async performBackup(_dbPath: string, destination: string, _personaId: string): Promise<{
     success: boolean;
     destination: string;
     backupId?: string;
@@ -430,7 +430,7 @@ export class PersonaMemoryCommand extends BaseCommand {
   /**
    * Perform migration to target node
    */
-  private async performMigration(personaId: string, targetNode: string): Promise<{
+  private async performMigration(_personaId: string, _targetNode: string): Promise<{
     success: boolean;
     error?: string;
   }> {
