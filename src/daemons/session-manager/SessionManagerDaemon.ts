@@ -157,6 +157,9 @@ export class SessionManagerDaemon extends BaseDaemon {
         case 'get_session':
           return this.handleGetSession(message.data);
           
+        case 'get_session_info':
+          return this.handleGetSessionInfo(message.data);
+          
         case 'list_sessions':
           return this.handleListSessions(message.data);
           
@@ -581,6 +584,44 @@ export class SessionManagerDaemon extends BaseDaemon {
     return {
       success: true,
       data: { session }
+    };
+  }
+
+  /**
+   * Handle get session info request (for console logging integration)
+   */
+  private handleGetSessionInfo(data: any): DaemonResponse {
+    const { sessionId } = data;
+    
+    if (!sessionId) {
+      return {
+        success: false,
+        error: 'sessionId is required'
+      };
+    }
+
+    const session = this.sessions.get(sessionId);
+    
+    if (!session) {
+      return {
+        success: false,
+        error: `Session ${sessionId} not found`
+      };
+    }
+
+    // Return session artifacts and key info for browser integration
+    return {
+      success: true,
+      data: {
+        sessionId: session.id,
+        type: session.type,
+        owner: session.owner,
+        isActive: session.isActive,
+        artifacts: session.artifacts,
+        storageDir: session.artifacts.storageDir,
+        created: session.created,
+        lastActive: session.lastActive
+      }
     };
   }
 
