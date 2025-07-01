@@ -402,70 +402,8 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     
     console.log(`✅ Widget loading complete - ${loadedCount} widgets loaded`);
     
-    // Actually instantiate and add widgets to the DOM after all imports complete
-    console.log('🎨 Creating widget instances...');
-    await this.createWidgetInstances();
-  }
-  
-  private async createWidgetInstances(): Promise<void> {
-    console.log('🎨 Instantiating core widgets...');
-    
-    // Create widget container if it doesn't exist
-    let widgetContainer = document.getElementById('widget-container');
-    if (!widgetContainer) {
-      widgetContainer = document.createElement('div');
-      widgetContainer.id = 'widget-container';
-      widgetContainer.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        width: 400px;
-        height: 600px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        z-index: 1000;
-      `;
-      document.body.appendChild(widgetContainer);
-    }
-    
-    // Wait for custom elements to be ready and create widgets using Promise.all
-    const widgetConfigs = [
-      { tag: 'chat-widget', name: 'ChatWidget' },
-      { tag: 'sidebar-widget', name: 'SidebarWidget' }
-    ];
-    
-    const widgetPromises = widgetConfigs.map(async ({ tag, name }) => {
-      try {
-        // Wait for custom element to be defined
-        await customElements.whenDefined(tag);
-        
-        // Create and append widget
-        const widget = document.createElement(tag);
-        widget.style.cssText = 'height: 300px; border-radius: 8px; overflow: hidden; margin-bottom: 10px;';
-        widgetContainer.appendChild(widget);
-        console.log(`✅ ${name} instantiated and added to DOM`);
-        return { tag, success: true };
-      } catch (error) {
-        console.warn(`⚠️ Failed to create ${name}:`, error);
-        return { tag, success: false, error };
-      }
-    });
-    
-    const instantiationResults = await Promise.allSettled(widgetPromises);
-    const successfulWidgets = instantiationResults.filter((r, i) => {
-      if (r.status === 'fulfilled' && r.value.success) {
-        return true;
-      } else {
-        const widgetName = widgetConfigs[i].name;
-        console.warn(`⚠️ Widget instantiation failed for ${widgetName}:`, r.status === 'rejected' ? r.reason : r.value.error);
-        return false;
-      }
-    }).length;
-    
-    console.log(`✅ Widget instantiation: ${successfulWidgets}/${widgetConfigs.length} successful`);
-    
-    console.log('🎨 Widget instantiation complete');
+    // Widgets are already instantiated in the HTML - no need to create duplicates
+    console.log('🎨 Widgets ready (instantiated via HTML)');
   }
   
   private async discoverWidgetPaths(): Promise<string[]> {
