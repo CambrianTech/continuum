@@ -7,6 +7,27 @@
 
 import { ContinuumSystem } from './src/system/startup/ContinuumSystemStartup';
 
+// CRASH DETECTION - Log exactly what kills the system
+process.on('uncaughtException', (error) => {
+  console.error('🚨🚨🚨 UNCAUGHT EXCEPTION - SYSTEM DYING:');
+  console.error('Error:', error.message);
+  console.error('Stack:', error.stack);
+  console.error('Time:', new Date().toISOString());
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🚨🚨🚨 UNHANDLED PROMISE REJECTION - SYSTEM DYING:');
+  console.error('Reason:', reason);
+  console.error('Promise:', promise);
+  console.error('Time:', new Date().toISOString());
+  process.exit(1);
+});
+
+process.on('exit', (code) => {
+  console.log(`🛑 Process exiting with code: ${code} at ${new Date().toISOString()}`);
+});
+
 async function main() {
   const system = new ContinuumSystem();
   

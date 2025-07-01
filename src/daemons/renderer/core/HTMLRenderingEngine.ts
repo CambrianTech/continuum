@@ -58,8 +58,7 @@ export class HTMLRenderingEngine {
     <script>
         window.__CONTINUUM_VERSION__ = '${options.version}';
     </script>
-    <script type="module" src="/src/ui/continuum-browser.js"></script>
-    <script type="module" src="${apiPath}"></script>`;
+    <script type="module" src="/dist/ui/continuum-browser.js"></script>`;
   }
 
   private getApiPath(): string {

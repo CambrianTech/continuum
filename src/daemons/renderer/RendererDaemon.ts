@@ -70,9 +70,9 @@ export class RendererDaemon extends MessageRoutedDaemon {
         // Register routes through WebSocket messages
         const routeRegistrations = [
           { pattern: '/', handler: 'render_ui' },
-          { pattern: '/src/ui/continuum.js', handler: 'render_api' },
-          { pattern: '/dist/api.js', handler: 'render_api' },
-          { pattern: '/node_modules/continuum/dist/api.js', handler: 'render_api' }
+          { pattern: '/src/*', handler: 'serve_file' },
+          { pattern: '/dist/*', handler: 'serve_file' },
+          { pattern: '/node_modules/*', handler: 'serve_file' }
         ];
 
         const registrationMessage = {
@@ -96,6 +96,103 @@ export class RendererDaemon extends MessageRoutedDaemon {
 
   protected async onStop(): Promise<void> {
     this.log('🛑 Stopping Renderer Daemon...');
+  }
+
+  private async serveFileFromPath(pathname: string): Promise<DaemonResponse> {
+    const fs = await import('fs');
+    const path = await import('path');
+    const { fileURLToPath } = await import('url');
+    
+    try {
+      // Find project root
+      const __dirname = path.dirname(fileURLToPath(import.meta.url));
+      let projectRoot = __dirname;
+      
+      // Search up for package.json to find project root
+      for (let i = 0; i < 10; i++) {
+        if (fs.existsSync(path.join(projectRoot, 'package.json'))) {
+          break;
+        }
+        const parent = path.dirname(projectRoot);
+        if (parent === projectRoot) break;
+        projectRoot = parent;
+      }
+      
+      // Build file path from URL pathname
+      const filePath = path.join(projectRoot, pathname);
+      
+      // Security check - ensure we're serving from project directory
+      if (!filePath.startsWith(projectRoot)) {
+        return {
+          success: false,
+          error: 'Access denied - path outside project'
+        };
+      }
+      
+      // Check if file exists
+      if (!fs.existsSync(filePath)) {
+        return {
+          success: false,
+          error: `File not found: ${pathname}`
+        };
+      }
+      
+      // Determine content type and how to serve
+      if (filePath.endsWith('.ts')) {
+        // Compile TypeScript files on-the-fly
+        const version = await this.versionService.getCurrentVersion();
+        const tsContent = fs.readFileSync(filePath, 'utf-8');
+        const compiledJS = await this.tsCompiler.compileWidgetComponent(tsContent, filePath);
+        
+        return {
+          success: true,
+          data: {
+            contentType: 'application/javascript',
+            content: compiledJS,
+            headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+          }
+        };
+      } else if (filePath.endsWith('.js')) {
+        // Serve JavaScript files directly
+        const content = fs.readFileSync(filePath, 'utf-8');
+        return {
+          success: true,
+          data: {
+            contentType: 'application/javascript',
+            content,
+            headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+          }
+        };
+      } else {
+        // Serve other files with appropriate content type
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const contentType = this.getContentType(filePath);
+        
+        return {
+          success: true,
+          data: {
+            contentType,
+            content,
+            headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+          }
+        };
+      }
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `Failed to serve ${pathname}: ${errorMessage}`
+      };
+    }
+  }
+  
+  private getContentType(filePath: string): string {
+    if (filePath.endsWith('.js')) return 'application/javascript';
+    if (filePath.endsWith('.css')) return 'text/css';
+    if (filePath.endsWith('.html')) return 'text/html';
+    if (filePath.endsWith('.json')) return 'application/json';
+    return 'text/plain';
   }
 
   private async getCapabilities(): Promise<DaemonResponse> {
@@ -176,17 +273,8 @@ export class RendererDaemon extends MessageRoutedDaemon {
             }
           };
 
-        case 'render_api':
-          const apiVersion = await this.versionService.getCurrentVersion();
-          const compiledJS = await this.tsCompiler.compileContinuumAPI({ version: apiVersion });
-          return {
-            success: true,
-            data: {
-              contentType: 'application/javascript',
-              content: compiledJS,
-              headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
-            }
-          };
+        case 'serve_file':
+          return await this.serveFileFromPath(pathname);
 
         case 'render_ui_components':
           // Serve the existing continuum-browser.js file

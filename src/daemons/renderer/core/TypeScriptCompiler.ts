@@ -23,6 +23,12 @@ export class TypeScriptCompiler {
     return this.compileTypeScript(tsSource, options);
   }
 
+  async compileBrowserScript(options: CompilationOptions): Promise<string> {
+    // Same as compileContinuumAPI - they both compile continuum-browser.ts
+    const tsSource = this.loadTypeScriptSource();
+    return this.compileTypeScript(tsSource, options);
+  }
+
   async compileWidgetComponent(source: string, _filePath: string): Promise<string> {
     // Compile widget TypeScript to JavaScript for browser
     const compilerOptions: ts.CompilerOptions = {

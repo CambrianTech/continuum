@@ -1,0 +1,19 @@
+{
+  "name": "@continuum/sidebar-widget",
+  "version": "1.0.0", 
+  "description": "Sidebar widget for navigation and system status",
+  "main": "SidebarWidget.ts",
+  "type": "module",
+  "continuum": {
+    "type": "widget",
+    "componentName": "continuum-sidebar",
+    "widgetName": "SidebarWidget", 
+    "category": "navigation",
+    "dependencies": ["continuum-api"],
+    "capabilities": ["navigation", "status", "system-info"]
+  },
+  "scripts": {
+    "test": "npx tsx test/unit/SidebarWidget.test.ts",
+    "test:integration": "npx tsx test/integration/SidebarWidget.integration.test.ts"
+  }
+}

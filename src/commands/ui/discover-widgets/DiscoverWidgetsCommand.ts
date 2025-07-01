@@ -30,8 +30,19 @@ export class DiscoverWidgetsCommand extends BaseCommand {
       const discovery = new WidgetDiscovery();
       const { compliant, nonCompliant } = await discovery.validateAllWidgets();
       
-      // Generate browser-accessible paths
-      const widgetPaths = discovery.generateWidgetPaths(compliant);
+      // Generate browser-accessible paths for ALL widgets with implementation files
+      // Include compliant widgets
+      const allWidgetsWithFiles = [...compliant];
+      
+      // Include non-compliant widgets that have implementation files (just missing tests)
+      for (const widget of nonCompliant) {
+        const hasImplementation = !widget.warnings.includes('No widget implementation file found');
+        if (hasImplementation) {
+          allWidgetsWithFiles.push(widget);
+        }
+      }
+      
+      const widgetPaths = discovery.generateWidgetPaths(allWidgetsWithFiles);
       
       // Log warnings for non-compliant widgets
       if (nonCompliant.length > 0) {
