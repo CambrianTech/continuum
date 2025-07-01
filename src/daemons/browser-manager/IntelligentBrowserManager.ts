@@ -301,7 +301,7 @@ export class IntelligentBrowserManager extends SafeBrowserManager {
   /**
    * Check if browser is already connected to target URL
    */
-  private async checkExistingBrowserConnection(url: string): Promise<boolean> {
+  private async checkExistingBrowserConnection(_url: string): Promise<boolean> {
     // Check our connection status
     const status = this.getConnectionStatus();
     if (status.isConnected) {

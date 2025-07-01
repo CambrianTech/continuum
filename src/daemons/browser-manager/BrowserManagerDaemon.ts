@@ -9,7 +9,7 @@
 
 import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon.js';
 import { DaemonResponse } from '../base/DaemonProtocol.js';
-import { BrowserType, BrowserRequest } from './types/index.js';
+import { BrowserType, BrowserRequest, BrowserConfig } from './types/index.js';
 // BrowserFilters unused in this file
 import { BrowserLauncher } from './modules/BrowserLauncher.js';
 import { BrowserSessionManager } from './modules/BrowserSessionManager.js';
@@ -131,7 +131,8 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     const debugPort = await this.allocatePort();
     
     // Launch browser using the launcher module
-    const launchResult = await this.launcher.launch(request.options || {}, debugPort);
+    const defaultConfig: BrowserConfig = { type: BrowserType.DEFAULT };
+    const launchResult = await this.launcher.launch(request.options || defaultConfig, debugPort);
     
     // Create managed browser record
     const browser = {
@@ -140,10 +141,10 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       pid: launchResult.pid,
       debugPort: launchResult.debugPort,
       status: 'ready' as const,
-      devToolsUrl: launchResult.devToolsUrl,
+      devToolsUrl: launchResult.devToolsUrl || `http://localhost:${debugPort}`,
       launchedAt: new Date(),
       lastActivity: new Date(),
-      config: request.options || {}
+      config: request.options || defaultConfig
     };
     
     // Register with session manager
