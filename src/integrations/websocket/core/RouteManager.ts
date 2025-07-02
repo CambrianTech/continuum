@@ -29,12 +29,26 @@ export class RouteManager {
       return true;
     }
 
-    // Pattern matching for wildcards
+    // Pattern matching for wildcards (excluding catch-all)
+    let catchAllHandler: RouteHandler | null = null;
+    
     for (const [pattern, handler] of this.routes) {
+      if (pattern === '*') {
+        // Save catch-all for last
+        catchAllHandler = handler;
+        continue;
+      }
+      
       if (this.matchesPattern(pathname, pattern)) {
         await this.forwardRequestToDaemon(handler, pathname, req, res);
         return true;
       }
+    }
+    
+    // Use catch-all if no other routes matched
+    if (catchAllHandler) {
+      await this.forwardRequestToDaemon(catchAllHandler, pathname, req, res);
+      return true;
     }
 
     return false; // No route found
@@ -49,10 +63,9 @@ export class RouteManager {
 
     try {
       const message = {
-        type: 'http_request',
+        type: handler.handlerName,
         data: {
           pathname,
-          handler: handler.handlerName,
           method: req.method,
           headers: req.headers,
           url: req.url
@@ -61,16 +74,26 @@ export class RouteManager {
 
       const response = await this.messageCallback(handler.daemonName, message);
       
-      if (response.success) {
-        const { contentType, content, headers } = response.data;
-        res.writeHead(200, { 
-          'Content-Type': contentType,
-          ...headers 
-        });
-        res.end(content);
+      if (response.success && response.data) {
+        // Handle different response formats
+        if (response.data.status && response.data.status !== 200) {
+          // Special status codes (304, 404, etc.)
+          res.writeHead(response.data.status, response.data.headers || {});
+          res.end(response.data.content || '');
+        } else {
+          // Normal 200 response
+          const headers = response.data.headers || {};
+          const contentType = response.data.contentType || headers['Content-Type'] || 'text/plain';
+          
+          res.writeHead(200, { 
+            'Content-Type': contentType,
+            ...headers 
+          });
+          res.end(response.data.content || '');
+        }
       } else {
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end(`Daemon error: ${response.error}`);
+        res.writeHead(response.data?.status || 500, { 'Content-Type': 'text/plain' });
+        res.end(response.error || 'Unknown error');
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -80,10 +103,19 @@ export class RouteManager {
   }
 
   private matchesPattern(pathname: string, pattern: string): boolean {
+    // Handle file extension patterns like *.css
+    if (pattern.startsWith('*.')) {
+      const extension = pattern.substring(1); // Get .css from *.css
+      return pathname.endsWith(extension);
+    }
+    
+    // Handle prefix patterns like /src/*
     if (pattern.endsWith('*')) {
       const prefix = pattern.slice(0, -1);
       return pathname.startsWith(prefix);
     }
+    
+    // Exact match
     return pathname === pattern;
   }
 

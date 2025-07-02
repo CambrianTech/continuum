@@ -743,10 +743,10 @@ class ContinuumBrowserAPI implements ContinuumAPI {
           clearTimeout(timeout);
           this.off('command_response', responseHandler);
           
-          if (data.result?.success) {
-            resolve(data.result);
+          if (data.success) {
+            resolve(data.data || { success: true });
           } else {
-            reject(new Error(data.result?.error || 'Command failed'));
+            reject(new Error(data.error || 'Command failed'));
           }
         }
       };

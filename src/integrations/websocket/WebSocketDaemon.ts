@@ -202,8 +202,15 @@ export class WebSocketDaemon extends BaseDaemon {
           this.log(`✅ API routed: ${pathname}`);
         }
       } else {
-        // DEFAULT: Serve files directly from filesystem
-        await this.serveFileFromFilesystem(pathname, req, res);
+        // Route all other requests (files, HTML, etc.) to appropriate daemons
+        const handled = await this.routeManager.handleRequest(pathname, req, res);
+        if (!handled) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('Not found');
+          this.log(`❌ No route handler for: ${pathname}`);
+        } else {
+          this.log(`✅ Request routed: ${pathname}`);
+        }
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -217,138 +224,15 @@ export class WebSocketDaemon extends BaseDaemon {
     }
   }
 
-  private async serveFileFromFilesystem(pathname: string, req: any, res: any): Promise<void> {
-    const fs = await import('fs');
-    const path = await import('path');
-    // const { fileURLToPath } = await import('url'); // TODO: Use for ES module path resolution
-    
-    try {
-      // CONSISTENT PATH RESOLUTION: Same as working-server.ts
-      // Always serve from current working directory (repo root or npm package root)
-      const projectRoot = process.cwd();
-      
-      this.log(`🔍 DEBUG: Project root: ${projectRoot}, serving: ${pathname}`);
-      
-      // Handle special routes
-      if (pathname === '/') {
-        // Route main page to renderer daemon for HTML generation
-        const handled = await this.routeManager.handleRequest(pathname, req, res);
-        if (handled) {
-          this.log(`✅ HTML routed: ${pathname}`);
-          return;
-        }
-      }
-      
-      // Build file path
-      const filePath = path.join(projectRoot, pathname);
-      
-      this.log(`🔍 DEBUG: Full file path: ${filePath}`);
-      this.log(`🔍 DEBUG: File exists check: ${fs.existsSync(filePath)}`);
-      
-      // Security check
-      if (!filePath.startsWith(projectRoot)) {
-        res.writeHead(403, { 'Content-Type': 'text/plain' });
-        res.end('Access denied');
-        this.log(`❌ Security check failed: ${filePath} not in ${projectRoot}`);
-        return;
-      }
-      
-      // Check if file exists
-      if (!fs.existsSync(filePath)) {
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
-        res.end('File not found');
-        this.log(`❌ File not found: ${pathname} (full path: ${filePath})`);
-        return;
-      }
-      
-      // ALWAYS COMPILE TYPESCRIPT ON-THE-FLY - NO STATIC FILES
-      if (filePath.endsWith('.js')) {
-        // Look for corresponding .ts file and compile it
-        const tsFilePath = filePath.replace('.js', '.ts');
-        if (fs.existsSync(tsFilePath)) {
-          await this.compileAndServeTypeScript(tsFilePath, res);
-          this.log(`✅ TypeScript compiled on-demand: ${pathname} -> ${path.basename(tsFilePath)}`);
-        } else {
-          // Fallback to static .js if no .ts exists
-          const content = fs.readFileSync(filePath);
-          res.writeHead(200, { 
-            'Content-Type': 'application/javascript',
-            'Cache-Control': 'no-cache, no-store, must-revalidate'
-          });
-          res.end(content);
-          this.log(`✅ Static JS served: ${pathname}`);
-        }
-      } else if (filePath.endsWith('.ts')) {
-        // Direct TypeScript compilation
-        await this.compileAndServeTypeScript(filePath, res);
-        this.log(`✅ TypeScript compiled: ${pathname}`);
-      } else {
-        // Other static files
-        const content = fs.readFileSync(filePath);
-        const contentType = this.getContentType(filePath);
-        
-        res.writeHead(200, { 
-          'Content-Type': contentType,
-          'Cache-Control': 'no-cache, no-store, must-revalidate'
-        });
-        res.end(content);
-        this.log(`✅ Static file served: ${pathname}`);
-      }
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end(`File serving error: ${errorMessage}`);
-      this.log(`❌ File serving failed for ${pathname}: ${errorMessage}`, 'error');
-    }
-  }
 
-  private async compileAndServeTypeScript(filePath: string, res: any): Promise<void> {
-    const fs = await import('fs');
-    const ts = await import('typescript');
-    
-    try {
-      const tsContent = fs.readFileSync(filePath, 'utf-8');
-      
-      // Simple TypeScript compilation for browser
-      const result = ts.transpile(tsContent, {
-        target: ts.ScriptTarget.ES2020,
-        module: ts.ModuleKind.ES2020,
-        moduleResolution: ts.ModuleResolutionKind.NodeJs,
-        strict: false,
-        skipLibCheck: true
-      });
-      
-      res.writeHead(200, { 
-        'Content-Type': 'application/javascript',
-        'Cache-Control': 'no-cache, no-store, must-revalidate'
-      });
-      res.end(result);
-      this.log(`✅ TypeScript compiled and served: ${filePath}`);
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end(`TypeScript compilation error: ${errorMessage}`);
-      this.log(`❌ TypeScript compilation failed: ${errorMessage}`, 'error');
-    }
-  }
 
-  private getContentType(filePath: string): string {
-    if (filePath.endsWith('.js')) return 'application/javascript';
-    if (filePath.endsWith('.ts')) return 'application/javascript';
-    if (filePath.endsWith('.css')) return 'text/css';
-    if (filePath.endsWith('.html')) return 'text/html';
-    if (filePath.endsWith('.json')) return 'application/json';
-    if (filePath.endsWith('.png')) return 'image/png';
-    if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) return 'image/jpeg';
-    if (filePath.endsWith('.svg')) return 'image/svg+xml';
-    return 'text/plain';
-  }
 
   private handleWebSocketMessage(connectionId: string, data: any): void {
     try {
       const message = JSON.parse(data.toString());
+      
+      // Log all incoming WebSocket messages for debugging
+      this.log(`🔍 WebSocket message received: type=${message.type}, connectionId=${connectionId}`);
       
       // Route WebSocket messages to appropriate daemon
       // This is pure message routing, no content knowledge

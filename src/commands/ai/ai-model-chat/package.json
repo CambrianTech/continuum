@@ -1,0 +1,16 @@
+{
+  "name": "@continuum/ai-model-chat-command",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "AiModelChatCommand.ts",
+  "continuum": {
+    "type": "command",
+    "commandName": "ai-model:chat",
+    "category": "ai"
+  },
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "jest --testMatch='**/test/unit/**/*.test.ts'",
+    "test:integration": "jest --testMatch='**/test/integration/**/*.test.ts'"
+  }
+}
