@@ -1,0 +1,32 @@
+{
+  "name": "@continuum/static-file-daemon",
+  "version": "1.0.0",
+  "description": "Daemon responsible for serving all static files including CSS, JS, images, and compiling TypeScript on-demand",
+  "main": "StaticFileDaemon.ts",
+  "type": "module",
+  "continuum": {
+    "type": "daemon",
+    "category": "core",
+    "routes": [
+      "*.css",
+      "*.js", 
+      "*.html",
+      "*.json",
+      "/src/*",
+      "/dist/*",
+      "/static/*"
+    ],
+    "capabilities": [
+      "file-serving",
+      "typescript-compilation",
+      "caching",
+      "content-type-detection"
+    ],
+    "dependencies": ["base-daemon"]
+  },
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx tsx test/unit/StaticFileDaemon.test.ts",
+    "test:integration": "npx tsx test/integration/StaticFileDaemon.integration.test.ts"
+  }
+}

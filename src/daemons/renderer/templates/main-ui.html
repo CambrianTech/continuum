@@ -38,6 +38,17 @@
         <chat-widget></chat-widget>
     </div>
     
+    <!-- Load widget modules -->
+    <script type="module">
+        // Import widget modules to register custom elements
+        import('/src/ui/components/Sidebar/SidebarWidget.js').catch(err => 
+            console.error('Failed to load SidebarWidget:', err)
+        );
+        import('/src/ui/components/Chat/ChatWidget.js').catch(err => 
+            console.error('Failed to load ChatWidget:', err)
+        );
+    </script>
+    
     <!-- All scripts injected dynamically by RendererDaemon -->
 </body>
 </html>

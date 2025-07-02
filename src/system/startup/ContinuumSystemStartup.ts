@@ -11,6 +11,7 @@ import { CommandProcessorDaemon } from '../../daemons/command-processor/CommandP
 import { BrowserManagerDaemon } from '../../daemons/browser-manager/BrowserManagerDaemon';
 import { SessionManagerDaemon } from '../../daemons/session-manager/SessionManagerDaemon';
 import { ContinuumDirectoryDaemon } from '../../daemons/continuum-directory/ContinuumDirectoryDaemon';
+import { StaticFileDaemon } from '../../daemons/static-file/StaticFileDaemon';
 import { DaemonMessage } from '../../daemons/base/DaemonProtocol';
 import { DaemonMessageUtils } from '../../daemons/base/DaemonMessageUtils';
 
@@ -24,6 +25,7 @@ export class ContinuumSystem extends EventEmitter {
     // Create daemons in dependency order
     this.daemons.set('continuum-directory', new ContinuumDirectoryDaemon());
     this.daemons.set('session-manager', new SessionManagerDaemon());
+    this.daemons.set('static-file', new StaticFileDaemon());
     this.daemons.set('websocket', new WebSocketDaemon());
     this.daemons.set('renderer', new RendererDaemon());
     this.daemons.set('command-processor', new CommandProcessorDaemon());
@@ -61,7 +63,7 @@ export class ContinuumSystem extends EventEmitter {
     console.log(`║ Version: ${pkg.version.padEnd(20)} Start Time: ${startTime.padEnd(30)} Process: ${process.pid.toString().padEnd(15)} ║`);
     console.log('╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣');
     console.log('║ 📋 Daemon Launch Sequence:                                                                                          ║');
-    console.log('║   1. continuum-directory → 2. session-manager → 3. websocket → 4. renderer → 5. command-processor → 6. browser   ║');
+    console.log('║   1. continuum-directory → 2. session-manager → 3. static-file → 4. websocket → 5. renderer → 6. command-processor → 7. browser   ║');
     console.log('╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝');
     console.log('');
     
@@ -246,13 +248,21 @@ export class ContinuumSystem extends EventEmitter {
     const webSocketDaemon = this.daemons.get('websocket');
     const rendererDaemon = this.daemons.get('renderer');
     const commandProcessorDaemon = this.daemons.get('command-processor');
+    const staticFileDaemon = this.daemons.get('static-file');
     
     // Register daemons with WebSocket daemon for message routing
     webSocketDaemon.registerDaemon(rendererDaemon);
     webSocketDaemon.registerDaemon(commandProcessorDaemon);
+    webSocketDaemon.registerDaemon(staticFileDaemon);
     
-    // Register only the main UI route - let renderer daemon handle everything else dynamically
-    webSocketDaemon.registerRouteHandler('/', 'renderer', 'render_ui');
+    // Register static file routes first (they take precedence)
+    staticFileDaemon.registerWithWebSocketDaemon(webSocketDaemon);
+    
+    // Register API routes for command processor
+    webSocketDaemon.registerRouteHandler('/api/*', 'command-processor', 'handle_api');
+    
+    // Register catch-all route for renderer daemon (handles everything else)
+    webSocketDaemon.registerRouteHandler('*', 'renderer', 'http_request');
     
     console.log('✅ Inter-daemon communication established');
   }

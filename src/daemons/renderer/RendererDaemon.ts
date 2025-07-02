@@ -98,103 +98,6 @@ export class RendererDaemon extends MessageRoutedDaemon {
     this.log('🛑 Stopping Renderer Daemon...');
   }
 
-  private async serveFileFromPath(pathname: string): Promise<DaemonResponse> {
-    const fs = await import('fs');
-    const path = await import('path');
-    const { fileURLToPath } = await import('url');
-    
-    try {
-      // Find project root
-      const __dirname = path.dirname(fileURLToPath(import.meta.url));
-      let projectRoot = __dirname;
-      
-      // Search up for package.json to find project root
-      for (let i = 0; i < 10; i++) {
-        if (fs.existsSync(path.join(projectRoot, 'package.json'))) {
-          break;
-        }
-        const parent = path.dirname(projectRoot);
-        if (parent === projectRoot) break;
-        projectRoot = parent;
-      }
-      
-      // Build file path from URL pathname
-      const filePath = path.join(projectRoot, pathname);
-      
-      // Security check - ensure we're serving from project directory
-      if (!filePath.startsWith(projectRoot)) {
-        return {
-          success: false,
-          error: 'Access denied - path outside project'
-        };
-      }
-      
-      // Check if file exists
-      if (!fs.existsSync(filePath)) {
-        return {
-          success: false,
-          error: `File not found: ${pathname}`
-        };
-      }
-      
-      // Determine content type and how to serve
-      if (filePath.endsWith('.ts')) {
-        // Compile TypeScript files on-the-fly
-        // TODO: Use version in compilation
-        // const _version = await this.versionService.getCurrentVersion();
-        const tsContent = fs.readFileSync(filePath, 'utf-8');
-        const compiledJS = await this.tsCompiler.compileWidgetComponent(tsContent, filePath);
-        
-        return {
-          success: true,
-          data: {
-            contentType: 'application/javascript',
-            content: compiledJS,
-            headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
-          }
-        };
-      } else if (filePath.endsWith('.js')) {
-        // Serve JavaScript files directly
-        const content = fs.readFileSync(filePath, 'utf-8');
-        return {
-          success: true,
-          data: {
-            contentType: 'application/javascript',
-            content,
-            headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
-          }
-        };
-      } else {
-        // Serve other files with appropriate content type
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const contentType = this.getContentType(filePath);
-        
-        return {
-          success: true,
-          data: {
-            contentType,
-            content,
-            headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
-          }
-        };
-      }
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        success: false,
-        error: `Failed to serve ${pathname}: ${errorMessage}`
-      };
-    }
-  }
-  
-  private getContentType(filePath: string): string {
-    if (filePath.endsWith('.js')) return 'application/javascript';
-    if (filePath.endsWith('.css')) return 'text/css';
-    if (filePath.endsWith('.html')) return 'text/html';
-    if (filePath.endsWith('.json')) return 'application/json';
-    return 'text/plain';
-  }
 
   private async getCapabilities(): Promise<DaemonResponse> {
     return {
@@ -261,6 +164,20 @@ export class RendererDaemon extends MessageRoutedDaemon {
     const { pathname, handler } = data;
     
     try {
+      // Default to rendering UI for root path
+      if (pathname === '/' || !handler) {
+        const version = await this.versionService.getCurrentVersion();
+        const html = await this.htmlEngine.renderMainUI({ version });
+        return {
+          success: true,
+          data: {
+            contentType: 'text/html',
+            content: html,
+            headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+          }
+        };
+      }
+      
       switch (handler) {
         case 'render_ui':
           const version = await this.versionService.getCurrentVersion();
@@ -275,7 +192,11 @@ export class RendererDaemon extends MessageRoutedDaemon {
           };
 
         case 'serve_file':
-          return await this.serveFileFromPath(pathname);
+          // File serving is now handled by StaticFileDaemon
+          return {
+            success: false,
+            error: 'File serving moved to StaticFileDaemon'
+          };
 
         case 'render_ui_components':
           // Serve the existing continuum-browser.js file
