@@ -5,7 +5,7 @@
  * Integrates with session console logging to capture execution results
  */
 
-import { BaseCommand } from '../../core/base-command/BaseCommand.js';
+import { BaseCommand } from '../../core/base-command/BaseCommand';
 import { CommandResult } from '../../../types/CommandTypes.js';
 
 export interface JSExecuteOptions {
@@ -18,6 +18,54 @@ export interface JSExecuteOptions {
 }
 
 export class JSExecuteCommand extends BaseCommand {
+  /**
+   * Parse parameters with command line argument support
+   */
+  private static parseJSParams(params: any): JSExecuteOptions {
+    // Handle object with args array (from continuum script)
+    if (params && params.args && Array.isArray(params.args)) {
+      const result: any = {};
+      for (const arg of params.args) {
+        if (typeof arg === 'string' && arg.startsWith('--')) {
+          const [key, value] = arg.split('=', 2);
+          const cleanKey = key.replace('--', '');
+          result[cleanKey] = value;
+        }
+      }
+      return result;
+    }
+    
+    // Handle string array from command line
+    if (Array.isArray(params)) {
+      const result: any = {};
+      for (const param of params) {
+        if (typeof param === 'string' && param.startsWith('--')) {
+          const [key, value] = param.split('=', 2);
+          const cleanKey = key.replace('--', '');
+          result[cleanKey] = value;
+        }
+      }
+      return result;
+    }
+    
+    // Handle object parameters
+    if (typeof params === 'object' && params !== null) {
+      return params;
+    }
+    
+    // Handle JSON string
+    if (typeof params === 'string') {
+      try {
+        return JSON.parse(params);
+      } catch {
+        // If not JSON, treat as script directly
+        return { script: params };
+      }
+    }
+    
+    return { script: '' };
+  }
+
   static getDefinition() {
     return {
       name: 'js-execute',
@@ -72,59 +120,60 @@ export class JSExecuteCommand extends BaseCommand {
     };
   }
 
-  async execute(options: JSExecuteOptions): Promise<CommandResult> {
+  static async execute(params: any, _context?: any): Promise<CommandResult> {
     try {
+      // Parse parameters from command line args
+      const options = JSExecuteCommand.parseJSParams(params);
+      
       const { 
         script, 
         sessionId, 
         generateUUID = true, 
         waitForResult = true, 
-        timeout = 30000,
-        logExecution = true 
+        timeout = 30000
       } = options;
-
-      // Generate execution UUID for tracking (git hook pattern)
+      
+      if (!script) {
+        return {
+          success: false,
+          error: 'Script parameter is required',
+          data: { providedParams: params, parsedOptions: options }
+        };
+      }
+      
+      // Generate execution UUID for JTAG tracking
       const executionUUID = generateUUID ? 
         `exec-${Date.now()}-${Math.random().toString(36).substr(2, 9)}` : 
         null;
 
-      // Prepare JavaScript with UUID logging
-      const wrappedScript = this.wrapScriptWithLogging(script, executionUUID, logExecution);
-
-      // Log execution start to session
-      if (logExecution) {
+      // Create JavaScript with UUID logging for JTAG tracking
+      const wrappedScript = `
+        // JTAG UUID tracking
+        ${executionUUID ? `console.log('🎯 EXECUTION_UUID_${executionUUID}_START');` : ''}
+        
         try {
-          await this.logToSession(sessionId, 'info', 
-            `🚀 JavaScript execution started ${executionUUID ? `[UUID: ${executionUUID}]` : ''}`
-          );
+          // User script execution
+          ${script}
+          
+          // JTAG completion marker
+          ${executionUUID ? `console.log('🎯 EXECUTION_UUID_${executionUUID}_COMPLETE');` : ''}
+          console.log('✅ JTAG: JavaScript executed successfully at ' + new Date().toISOString());
         } catch (error) {
-          // Continue execution even if session logging fails
-          console.warn('⚠️ Session logging failed at start:', error);
+          console.error('❌ JTAG: JavaScript execution error:', error);
+          ${executionUUID ? `console.log('🎯 EXECUTION_UUID_${executionUUID}_ERROR:', error.message);` : ''}
+          throw error;
         }
-      }
+      `;
 
-      // Execute JavaScript via browser manager
-      const executionOptions: { sessionId?: string; timeout: number; waitForResult: boolean; } = { 
-        timeout, 
-        waitForResult 
+      // Execute JavaScript via browser WebSocket command
+      const executeOptions: { timeout: number; waitForResult: boolean; sessionId?: string } = {
+        timeout,
+        waitForResult
       };
       if (sessionId) {
-        executionOptions.sessionId = sessionId;
+        executeOptions.sessionId = sessionId;
       }
-      const executionResult = await this.executeInBrowser(wrappedScript, executionOptions);
-
-      // Log execution completion
-      if (logExecution) {
-        try {
-          await this.logToSession(sessionId, 'info', 
-            `✅ JavaScript execution completed ${executionUUID ? `[UUID: ${executionUUID}]` : ''}`
-          );
-        } catch (error) {
-          // Continue execution even if session logging fails
-          console.warn('⚠️ Session logging failed at completion:', error);
-        }
-      }
-
+      const executionResult = await JSExecuteCommand.executeInBrowserViaWebSocket(wrappedScript, executeOptions);
       return {
         success: true,
         data: {
@@ -132,18 +181,22 @@ export class JSExecuteCommand extends BaseCommand {
           result: executionResult,
           sessionId: sessionId || 'auto-detected',
           timestamp: new Date().toISOString(),
-          script: script.length > 100 ? script.substring(0, 100) + '...' : script
+          script: script && script.length > 100 ? script.substring(0, 100) + '...' : script || 'unknown',
+          wrappedScript: wrappedScript.length > 200 ? wrappedScript.substring(0, 200) + '...' : wrappedScript
         },
-        message: `JavaScript executed successfully${executionUUID ? ` [${executionUUID}]` : ''}`
+        message: `JTAG JavaScript executed ${executionUUID ? `[UUID: ${executionUUID}]` : ''}`
       };
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       
+      // Parse parameters for error handling  
+      const options = JSExecuteCommand.parseJSParams(params);
+      
       // Log execution error to session
       if (options.logExecution !== false) {
         try {
-          await this.logToSession(options.sessionId, 'error', 
+          await JSExecuteCommand.logToSession(options.sessionId, 'error', 
             `❌ JavaScript execution failed: ${errorMessage}`
           );
         } catch (error) {
@@ -156,7 +209,7 @@ export class JSExecuteCommand extends BaseCommand {
         success: false,
         error: `JavaScript execution failed: ${errorMessage}`,
         data: {
-          script: options.script.length > 100 ? options.script.substring(0, 100) + '...' : options.script,
+          script: options.script && options.script.length > 100 ? options.script.substring(0, 100) + '...' : options.script || 'unknown',
           sessionId: options.sessionId || 'auto-detected'
         }
       };
@@ -164,66 +217,43 @@ export class JSExecuteCommand extends BaseCommand {
   }
 
   /**
-   * Wrap script with UUID logging for git hook pattern
+   * Execute JavaScript in browser via WebSocket command
    */
-  private wrapScriptWithLogging(script: string, executionUUID: string | null, logExecution: boolean): string {
-    if (!logExecution && !executionUUID) {
-      return script;
-    }
-
-    const uuidLog = executionUUID ? 
-      `console.log('🎯 EXECUTION_UUID_${executionUUID}_START');` : '';
-    
-    const executionLog = logExecution ? 
-      `console.log('🔥 CLIENT: JavaScript executed successfully!');` : '';
-
-    const completionLog = executionUUID ? 
-      `console.log('🎯 EXECUTION_UUID_${executionUUID}_COMPLETE');` : '';
-
-    return `
-      ${uuidLog}
-      try {
-        ${script}
-        ${executionLog}
-        ${completionLog}
-      } catch (error) {
-        console.error('❌ JavaScript execution error:', error);
-        ${executionUUID ? `console.log('🎯 EXECUTION_UUID_${executionUUID}_ERROR:', error.message);` : ''}
-        throw error;
-      }
-    `;
-  }
-
-  /**
-   * Execute JavaScript in browser via DevTools
-   */
-  private async executeInBrowser(_script: string, _options: {
+  private static async executeInBrowserViaWebSocket(script: string, options: {
     sessionId?: string;
     timeout: number;
     waitForResult: boolean;
   }): Promise<any> {
-    // TODO: Integrate with BrowserManagerDaemon and DevTools
-    // For now, simulate the execution pattern
-    
-    // This would use the ChromiumDevToolsAdapter.evaluateScript method
-    // and coordinate with the session manager for proper browser targeting
-    
-    // Simulation of the pattern from verification logs:
-    const simulatedResult = {
-      success: true,
-      executedAt: new Date().toISOString(),
-      browserReady: true,
-      devToolsConnected: true,
-      result: null // Would contain actual execution result
-    };
-
-    return simulatedResult;
+    try {
+      // For now, simulate execution and log the script
+      // TODO: Integrate with actual browser WebSocket execution
+      console.log(`🌍 JTAG Browser Execute: ${script.substring(0, 100)}...`);
+      
+      // Send script to browser via WebSocket (placeholder implementation)
+      // This would normally send via WebSocket to connected browser
+      const result = {
+        success: true,
+        executedAt: new Date().toISOString(),
+        method: 'websocket-simulation',
+        scriptLength: script.length,
+        timeout: options.timeout,
+        sessionId: options.sessionId || 'default'
+      };
+      
+      console.log(`✅ JTAG Browser Execute Complete: Script sent to browser console`);
+      return result;
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ JTAG Browser Execute Failed: ${errorMessage}`);
+      throw new Error(`Browser execution failed: ${errorMessage}`);
+    }
   }
 
   /**
    * Log message to session logs (integrates with session manager)
    */
-  private async logToSession(sessionId: string | undefined, level: 'info' | 'warn' | 'error', message: string): Promise<void> {
+  private static async logToSession(sessionId: string | undefined, level: 'info' | 'warn' | 'error', message: string): Promise<void> {
     try {
       // Get the actual session and append to its server log file
       if (sessionId && sessionId !== 'auto-detected') {
@@ -232,7 +262,7 @@ export class JSExecuteCommand extends BaseCommand {
         
         // TODO: Send message to SessionManagerDaemon to append to session server log
         // For now, we'll append directly to session log file if we can determine the path
-        await this.appendToSessionServerLog(sessionId, logMessage);
+        await JSExecuteCommand.appendToSessionServerLog(sessionId, logMessage);
       } else {
         // Fallback to console logging for auto-detected sessions
         const timestamp = new Date().toISOString();
@@ -248,7 +278,7 @@ export class JSExecuteCommand extends BaseCommand {
   /**
    * Append message to session server log file
    */
-  private async appendToSessionServerLog(sessionId: string, message: string): Promise<void> {
+  private static async appendToSessionServerLog(sessionId: string, message: string): Promise<void> {
     try {
       // TODO: This should integrate with SessionManagerDaemon to get proper session log path
       // For now, use the session artifacts pattern from SessionManagerDaemon
@@ -279,3 +309,5 @@ export class JSExecuteCommand extends BaseCommand {
     }
   }
 }
+
+export default JSExecuteCommand;

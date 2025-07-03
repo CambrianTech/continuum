@@ -76,8 +76,9 @@ export class DaemonConnector extends EventEmitter {
           const unregister = tsxModule.register();
           
           try {
-            // Import TypeScript file directly
-            const commandModule = await import(commandInfo.originalTsPath);
+            // Import TypeScript file directly using file:// URL for absolute paths
+            const fileUrl = `file://${commandInfo.originalTsPath}`;
+            const commandModule = await import(fileUrl);
             
             const CommandClass = commandModule[commandInfo.className];
             
@@ -123,7 +124,8 @@ export class DaemonConnector extends EventEmitter {
           const unregister = tsxModule.register();
           
           try {
-            const commandModule = await import(commandInfo.originalTsPath);
+            const fileUrl = `file://${commandInfo.originalTsPath}`;
+            const commandModule = await import(fileUrl);
             const CommandClass = commandModule[commandInfo.className];
             return CommandClass?.getDefinition ? CommandClass.getDefinition() : null;
           } finally {
@@ -178,21 +180,22 @@ export class DaemonConnector extends EventEmitter {
             );
             
             if (commandFile) {
-              // TypeScript compilation flattens directory structure
-              // src/commands/core/health/HealthCommand.ts → dist/health/HealthCommand.js
               const className = commandFile.replace('.ts', '');
-              const commandCategory = path.basename(dirPath); // e.g., "health", "console"
-              const jsPath = path.resolve(process.cwd(), 'dist', commandCategory, `${className}.js`);
               const tsPath = path.resolve(dirPath, commandFile);
               
+              // Use TypeScript path directly with tsx loader instead of compiled JS
               commands.set(commandName, {
                 name: commandName,
-                path: jsPath, // Use compiled .js file
                 className: className,
                 module: moduleName,
                 directory: dirPath,
-                originalTsPath: tsPath // Keep original for reference
+                originalTsPath: tsPath,
+                // For debugging
+                packagePath,
+                packageJson
               });
+              
+              console.log(`  ✅ Found command: ${commandName} -> ${className} at ${tsPath}`);
             }
           }
         } catch (error) {

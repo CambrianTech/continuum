@@ -858,6 +858,9 @@ class ContinuumBrowserAPI implements ContinuumAPI {
         console.log(`🌐 Continuum API: Session ID assigned: ${this.sessionId}`);
         console.log(`🔌 Session type: ${message.data?.devtools ? 'DevTools enabled' : 'Standard'}`);
         
+        // Discover and log available commands for both client and server visibility
+        this.discoverAndLogAvailableCommands();
+        
         // Flush any queued console messages now that we have sessionId
         this.flushMessageQueue();
         
@@ -935,6 +938,56 @@ class ContinuumBrowserAPI implements ContinuumAPI {
         });
       }
     }, delay);
+  }
+
+  /**
+   * Discover and log available commands for JTAG visibility
+   */
+  private async discoverAndLogAvailableCommands(): Promise<void> {
+    try {
+      console.log('🔍 Discovering available commands for session...');
+      
+      // Try to get command list from server
+      const response = await this.execute('help', {});
+      
+      if (response && response.commands) {
+        console.log(`📋 Available Commands (${response.commands.length} total):`);
+        
+        // Group commands by category for better readability
+        const commandsByCategory: Record<string, string[]> = {};
+        
+        for (const cmd of response.commands) {
+          const category = cmd.category || 'general';
+          if (!commandsByCategory[category]) {
+            commandsByCategory[category] = [];
+          }
+          commandsByCategory[category].push(cmd.name);
+        }
+        
+        // Log commands by category
+        for (const [category, commands] of Object.entries(commandsByCategory)) {
+          console.log(`  ${category}: ${commands.join(', ')}`);
+        }
+        
+      } else {
+        // Fallback: try common commands to see what's available
+        console.log('📋 Testing common commands...');
+        const testCommands = ['health', 'help', 'js-execute', 'browserjs', 'screenshot', 'console'];
+        
+        for (const cmd of testCommands) {
+          try {
+            // Quick test - don't wait for full execution
+            setTimeout(() => this.execute(cmd, {}).catch(() => {}), 100);
+          } catch {
+            // Ignore errors, just testing availability
+          }
+        }
+      }
+      
+    } catch (error) {
+      console.log('⚠️ Could not discover commands:', error instanceof Error ? error.message : String(error));
+      console.log('💡 Commands will be discovered as they are used');
+    }
   }
 }
 

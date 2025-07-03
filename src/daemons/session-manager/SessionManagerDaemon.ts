@@ -10,9 +10,9 @@
  * - Enable forensic analysis of session failures
  */
 
-import { BaseDaemon } from '../base/BaseDaemon.js';
-import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol.js';
-import { SessionConsoleLogger } from './modules/SessionConsoleLogger.js';
+import { BaseDaemon } from '../base/BaseDaemon';
+import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import { SessionConsoleLogger } from './modules/SessionConsoleLogger';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 

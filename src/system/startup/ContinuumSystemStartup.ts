@@ -280,8 +280,8 @@ export class ContinuumSystem extends EventEmitter {
     // Register static file routes first (they take precedence)
     staticFileDaemon.registerWithWebSocketDaemon(webSocketDaemon);
     
-    // Register API routes for command processor
-    webSocketDaemon.registerRouteHandler('/api/*', 'command-processor', 'handle_api');
+    // Register specific command endpoints only - CommandProcessorDaemon registers its own endpoints
+    webSocketDaemon.registerRouteHandler('/api/commands/*', 'command-processor', 'handle_api');
     
     // Register catch-all route for renderer daemon (handles everything else)
     webSocketDaemon.registerRouteHandler('*', 'renderer', 'http_request');

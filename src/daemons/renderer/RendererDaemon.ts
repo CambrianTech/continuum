@@ -179,7 +179,7 @@ export class RendererDaemon extends MessageRoutedDaemon {
       }
       
       switch (handler) {
-        case 'render_ui':
+        case 'render_ui': {
           const version = await this.versionService.getCurrentVersion();
           const html = await this.htmlEngine.renderMainUI({ version });
           return {
@@ -190,15 +190,9 @@ export class RendererDaemon extends MessageRoutedDaemon {
               headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
             }
           };
+        }
 
-        case 'serve_file':
-          // File serving is now handled by StaticFileDaemon
-          return {
-            success: false,
-            error: 'File serving moved to StaticFileDaemon'
-          };
-
-        case 'render_ui_components':
+        case 'render_ui_components': {
           // Serve the existing continuum-browser.js file
           const fs = await import('fs');
           const path = await import('path');
@@ -223,9 +217,11 @@ export class RendererDaemon extends MessageRoutedDaemon {
               error: 'continuum-browser.js not found - run build first'
             };
           }
+        }
 
         case 'serve_ui_component':
-          // Serve widget files dynamically based on pathname
+         {
+           // Serve widget files dynamically based on pathname
           const fs2 = await import('fs');
           const path2 = await import('path');
           const { fileURLToPath: fileURLToPath2 } = await import('url');
@@ -270,7 +266,7 @@ export class RendererDaemon extends MessageRoutedDaemon {
             success: false,
             error: `Component not found: ${pathname}`
           };
-
+        }
         default:
           return {
             success: false,
