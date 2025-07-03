@@ -94,7 +94,7 @@ export class SessionManagerDaemon extends BaseDaemon {
     }
     
     // Stop all console loggers
-    for (const [sessionId, logger] of this.consoleLoggers) {
+    for (const [sessionId, logger] of Array.from(this.consoleLoggers.entries())) {
       try {
         await logger.stopLogging();
         this.log(`🔌 Stopped console logging for session ${sessionId}`);
@@ -1249,7 +1249,7 @@ export class SessionManagerDaemon extends BaseDaemon {
   private startCleanupMonitoring(): void {
     this.cleanupInterval = setInterval(async () => {
       const now = Date.now();
-      for (const [sessionId, session] of this.sessions) {
+      for (const [sessionId, session] of Array.from(this.sessions.entries())) {
         if (!session.shouldAutoCleanup || !session.isActive) continue;
         
         const age = now - session.lastActive.getTime();

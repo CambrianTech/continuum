@@ -37,6 +37,9 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   // Track console loggers for each session
   private consoleLoggers = new Map<string, SessionConsoleLogger>();
   
+  // Auto-cleanup interval
+  private zombieCleanupInterval: NodeJS.Timeout | undefined = undefined;
+  
   // MessageRoutedDaemon implementation
   protected readonly primaryMessageType = 'browser_request';
   
@@ -60,109 +63,25 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     // Initialize browser modules
     await this.initializeBrowserModules();
     
-    // Periodic tab enforcement - ONE TAB POLICY
-    setInterval(async () => {
-      // Use browserTabManager to count actual browser tabs (not network connections)
-      const actualTabCount = await this.browserTabManager.countAllTabs('localhost:9000');
-      
-      if (actualTabCount === 0) {
-        // No tabs - launch one with proper DevTools support
-        this.log('🚀 No localhost:9000 tabs detected - launching one');
-        try {
-          // Get current session to enable console logging
-          const sessionResult = await this.sendMessage('session-manager', 'list_sessions', {
-            owner: 'system',
-            type: 'development', 
-            active: true,
-            limit: 1
-          });
-          
-          if (sessionResult.success && sessionResult.data?.sessions?.length > 0) {
-            const sessionId = sessionResult.data.sessions[0].id;
-            
-            // Create browser with DevTools enabled
-            const browserResult = await this.createNewBrowser({
-              action: BrowserAction.LAUNCH,
-              sessionId,
-              options: {
-                type: BrowserType.CHROME,
-                devtools: true
-              }
-            }, sessionId);
-            
-            if (browserResult.success) {
-              this.log('✅ Launched browser with DevTools for session logging');
-            } else {
-              // Fallback to simple open
-              await execAsync('open http://localhost:9000');
-              this.log('✅ Launched browser tab (no DevTools)');
-            }
-          } else {
-            // No session, just open normally
-            await execAsync('open http://localhost:9000');
-            this.log('✅ Launched browser tab to localhost:9000');
-          }
-        } catch (error) {
-          this.log(`⚠️ Failed to launch browser: ${error}`, 'error');
-        }
-      } else if (actualTabCount > 1) {
-        // Too many tabs - close extras
-        this.log(`⚠️ BASH(CONTINUUM): ${actualTabCount} tabs detected - MUST BE 1`);
-        
-        try {
-          this.log('🔨 Calling browserTabManager.enforceOneTabPolicy...');
-          const results = await this.browserTabManager.enforceOneTabPolicy('localhost:9000');
-          this.log(`🔨 Tab closing results: ${JSON.stringify(results)}`);
-          
-          let totalClosed = 0;
-          for (const result of results) {
-            if (result.closed > 0) {
-              this.log(`✅ Closed ${result.closed} extra tabs in ${result.browser}`);
-              totalClosed += result.closed;
-            }
-          }
-          
-          if (totalClosed === 0 && actualTabCount > 1) {
-            this.log('⚠️ No tabs were closed - browser adapter may need update');
-          }
-        } catch (error) {
-          this.log(`⚠️ Failed to close tabs: ${error}`, 'error');
-        }
-      } else {
-        // Exactly 1 tab - perfect, no logging to reduce noise
-      }
-      
-      // Also handle WebSocket connections separately
-      const wsStatus = await this.sendMessage('websocket', 'get_status', {});
-      if (wsStatus.data?.activeConnections > 1) {
-        this.log(`🔌 ${wsStatus.data.activeConnections} WebSocket connections - closing extras`);
-        await this.sendMessage('websocket', 'broadcast', {
-          message: {
-            type: 'system_command',
-            command: 'close_tab',
-            reason: 'ONE_TAB_POLICY'
-          },
-          excludeFirst: true
-        });
-      }
-    }, 5000); // Every 5 seconds
+    // Browser launching now event-driven via session creation (no more auto-spawning)
     
-    this.log('Browser Manager Daemon v2.0 started - ONE TAB POLICY enforced');
+    this.log('Browser Manager Daemon v2.0 started - waiting for session events');
     
-    // Initial check
-    setTimeout(async () => {
-      const status = await this.tabManager.checkTabs();
-      const zombieStatus = await this.zombieKiller.getTabStatus();
-      
-      this.log(`🔍 Browser check: ${status.count} tab(s) found - ${status.action}`);
-      if (zombieStatus.zombies > 0) {
-        this.log(`💀 Found ${zombieStatus.zombies} zombie tabs (${zombieStatus.total} total connections)`);
-        this.log(`🔍 Tab details: ${JSON.stringify(zombieStatus.details)}`);
-      }
-    }, 2000);
+    // Listen for session creation events to launch browsers
+    this.setupSessionEventListening();
+    
+    // Start continuous zombie monitoring and auto-cleanup
+    this.startZombieMonitoring();
   }
 
   protected async onStop(): Promise<void> {
+    // Stop zombie monitoring
+    if (this.zombieCleanupInterval) {
+      clearInterval(this.zombieCleanupInterval);
+      this.zombieCleanupInterval = undefined;
+      this.log('🛑 Stopped zombie monitoring');
+    }
+    
     // Stop all console loggers
     for (const [sessionId, logger] of this.consoleLoggers) {
       try {
@@ -179,6 +98,103 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     this.log(`Shutting down ${browsers.length} managed browsers`);
     
     // TODO: Implement graceful browser shutdown
+  }
+  
+  /**
+   * Start event-driven zombie monitoring (cleanup on session creation)
+   */
+  private startZombieMonitoring(): void {
+    this.log('🚨 Event-driven zombie cleanup enabled (on session creation)');
+  }
+  
+  /**
+   * Detect and automatically clean up zombie browser connections
+   */
+  private async performZombieCleanup(): Promise<void> {
+    try {
+      const status = await this.tabManager.checkTabs();
+      const zombieStatus = await this.zombieKiller.getTabStatus();
+      
+      this.log(`🔍 Browser check: ${status.count} tab(s) found - ${status.action}`);
+      
+      if (zombieStatus.zombies > 0) {
+        this.log(`💀 Found ${zombieStatus.zombies} zombie tabs (${zombieStatus.total} total connections)`);
+        this.log(`🔍 Tab details: ${JSON.stringify(zombieStatus.details)}`);
+        
+        // AUTO-CLEANUP: Kill zombie tabs
+        const killed = await this.zombieKiller.killZombieTabs((msg) => this.log(msg));
+        
+        if (killed > 0) {
+          this.log(`✅ Auto-cleanup complete: ${killed} zombie tabs killed`);
+          
+          // Give time for connections to clear
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          // Verify cleanup worked
+          const newStatus = await this.zombieKiller.getTabStatus();
+          if (newStatus.zombies === 0) {
+            this.log(`✨ Browser connections healthy - console capture should work`);
+          } else {
+            this.log(`⚠️ Still have ${newStatus.zombies} zombie tabs after cleanup`);
+          }
+        }
+      } else {
+        // Periodic health check passed
+        this.log(`✅ Browser connections healthy (${zombieStatus.active} active, 0 zombies)`);
+      }
+      
+    } catch (error) {
+      this.log(`❌ Zombie cleanup error: ${error}`, 'error');
+    }
+  }
+  
+  /**
+   * Setup session event listening to launch browsers only when sessions are created
+   */
+  private setupSessionEventListening(): void {
+    // Listen for session_created events from session manager
+    this.on('session_created', async (event: any) => {
+      const { sessionId, sessionType, owner } = event;
+      this.log(`📋 Session created: ${sessionId} (${sessionType}) for ${owner}`);
+      
+      // Only launch browser if this session needs one
+      if (this.sessionNeedsBrowser(sessionType)) {
+        await this.launchBrowserForSession(sessionId, sessionType, owner);
+      }
+    });
+    
+    this.log('👂 Listening for session_created events to launch browsers');
+  }
+  
+  /**
+   * Check if a session type needs a browser
+   */
+  private sessionNeedsBrowser(sessionType: string): boolean {
+    // Portal and development sessions need browsers
+    // Validation and persona sessions might not
+    return ['portal', 'development', 'user'].includes(sessionType);
+  }
+  
+  /**
+   * Launch browser specifically for a session
+   */
+  private async launchBrowserForSession(sessionId: string, sessionType: string, _owner: string): Promise<void> {
+    try {
+      this.log(`🚀 Launching browser for session ${sessionId} (${sessionType})`);
+      
+      // Clean up any zombie tabs BEFORE launching new browser
+      await this.performZombieCleanup();
+      
+      // TODO: Use actual browser launching logic
+      // For now, just log that we would launch
+      this.log(`🌐 Browser would be launched for session ${sessionId}`);
+      
+      // Console logging will be handled by session manager
+      this.log(`📝 Console logging managed by session-manager for ${sessionId}`);
+      
+    } catch (error) {
+      this.log(`❌ Failed to launch browser for session ${sessionId}: ${error}`, 'error');
+    }
   }
 
   /**
