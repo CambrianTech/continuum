@@ -86,6 +86,22 @@ export class SessionManagerDaemon extends BaseDaemon {
     this.log('✅ Session Manager ready for coordination');
   }
 
+  /**
+   * Get message types this daemon handles
+   */
+  getMessageTypes(): string[] {
+    return [
+      'create_session',
+      'create_session_for_connection', 
+      'get_session',
+      'get_session_info',
+      'list_sessions',
+      'add_artifact',
+      'close_session',
+      'register_connection_identity'
+    ];
+  }
+
   protected async onStop(): Promise<void> {
     this.log('🛑 Stopping Session Manager...');
     

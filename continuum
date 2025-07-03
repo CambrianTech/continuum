@@ -35,8 +35,15 @@ connect() {
 # Main command handler
 case "$1" in
     "")
-        # No args - connect and open browser
+        # No args - connect, create session, and open browser
         connect
+        
+        # Create session for this connection
+        echo "📋 Creating session..."
+        curl -s -X POST http://localhost:9000/api/commands/session-create \
+            -H "Content-Type: application/json" \
+            -d '{"args":["--type=development", "--owner=system"]}' > /dev/null 2>&1 || echo "⚠️ Session creation failed"
+        
         open http://localhost:9000 2>/dev/null || echo "🌐 Open http://localhost:9000"
         ;;
     stop)

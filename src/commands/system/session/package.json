@@ -13,6 +13,17 @@
     "session-paths",
     "session-stats"
   ],
+  "continuum": {
+    "commands": [
+      "session",
+      "session-list", 
+      "session-info",
+      "session-create",
+      "session-connect",
+      "session-paths",
+      "session-stats"
+    ]
+  },
   "dependencies": {
     "@continuum/base-command": "^1.0.0"
   }
