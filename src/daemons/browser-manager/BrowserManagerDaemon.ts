@@ -66,11 +66,42 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       const actualTabCount = await this.browserTabManager.countAllTabs('localhost:9000');
       
       if (actualTabCount === 0) {
-        // No tabs - launch one
+        // No tabs - launch one with proper DevTools support
         this.log('🚀 No localhost:9000 tabs detected - launching one');
         try {
-          await execAsync('open http://localhost:9000');
-          this.log('✅ Launched browser tab to localhost:9000');
+          // Get current session to enable console logging
+          const sessionResult = await this.sendMessage('session-manager', 'list_sessions', {
+            owner: 'system',
+            type: 'development', 
+            active: true,
+            limit: 1
+          });
+          
+          if (sessionResult.success && sessionResult.data?.sessions?.length > 0) {
+            const sessionId = sessionResult.data.sessions[0].id;
+            
+            // Create browser with DevTools enabled
+            const browserResult = await this.createNewBrowser({
+              action: BrowserAction.LAUNCH,
+              sessionId,
+              options: {
+                type: BrowserType.CHROME,
+                devtools: true
+              }
+            }, sessionId);
+            
+            if (browserResult.success) {
+              this.log('✅ Launched browser with DevTools for session logging');
+            } else {
+              // Fallback to simple open
+              await execAsync('open http://localhost:9000');
+              this.log('✅ Launched browser tab (no DevTools)');
+            }
+          } else {
+            // No session, just open normally
+            await execAsync('open http://localhost:9000');
+            this.log('✅ Launched browser tab to localhost:9000');
+          }
         } catch (error) {
           this.log(`⚠️ Failed to launch browser: ${error}`, 'error');
         }

@@ -181,6 +181,9 @@ export class SessionManagerDaemon extends BaseDaemon {
         case 'stop_console_logging':
           return await this.handleStopConsoleLogging(message.data);
           
+        case 'enable_server_logging':
+          return await this.handleEnableServerLogging(message.data);
+          
         default:
           return {
             success: false,
@@ -326,6 +329,35 @@ export class SessionManagerDaemon extends BaseDaemon {
 
       if (!session) {
         return { success: false, error: 'Failed to get or create session' };
+      }
+      
+      // Automatically enable server logging for ALL sessions
+      if (action === 'created_new' || action === 'forked_from') {
+        try {
+          const serverLogPath = session.artifacts.logs.server[0];
+          
+          // Configure THIS daemon to log to the session file
+          this.setSessionLogPath(serverLogPath);
+          
+          // Send message to all other daemons to enable session logging
+          const daemonTypes = ['websocket', 'renderer', 'command-processor', 'browser-manager', 'continuum-directory', 'static-file'];
+          
+          for (const daemonType of daemonTypes) {
+            try {
+              await this.sendMessage(daemonType, 'set_session_log', {
+                sessionId: session.id,
+                logPath: serverLogPath
+              });
+            } catch (error) {
+              // Log but don't fail - daemon might not be running
+              this.log(`⚠️ Could not enable logging for ${daemonType}: ${error}`, 'warn');
+            }
+          }
+          
+          this.log(`🔌 Enabled server logging for session ${session.id}: ${serverLogPath}`);
+        } catch (error) {
+          this.log(`⚠️ Failed to enable server logging: ${error}`, 'warn');
+        }
       }
 
       // Orchestrate what needs to be launched based on capabilities
@@ -882,6 +914,69 @@ export class SessionManagerDaemon extends BaseDaemon {
       return {
         success: false,
         error: `Failed to stop console logging: ${errorMessage}`
+      };
+    }
+  }
+
+  /**
+   * Handle enable server logging request - configures all daemons to write to session server log
+   */
+  private async handleEnableServerLogging(data: any): Promise<DaemonResponse> {
+    const { sessionId } = data;
+    
+    if (!sessionId) {
+      return {
+        success: false,
+        error: 'sessionId is required'
+      };
+    }
+
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return {
+        success: false,
+        error: `Session ${sessionId} not found`
+      };
+    }
+
+    try {
+      const serverLogPath = session.artifacts.logs.server[0];
+      
+      // Configure THIS daemon to log to the session file
+      this.setSessionLogPath(serverLogPath);
+      
+      // Send message to all other daemons to enable session logging
+      const daemonTypes = ['websocket', 'renderer', 'command-processor', 'browser-manager', 'continuum-directory', 'static-file'];
+      const enableResults = [];
+      
+      for (const daemonType of daemonTypes) {
+        try {
+          const result = await this.sendMessage(daemonType, 'set_session_log', {
+            sessionId,
+            logPath: serverLogPath
+          });
+          enableResults.push({ daemon: daemonType, success: result.success });
+        } catch (error) {
+          enableResults.push({ daemon: daemonType, success: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      
+      this.log(`🔌 Enabled server logging for session ${sessionId}: ${serverLogPath}`);
+      
+      return {
+        success: true,
+        data: {
+          sessionId,
+          serverLogPath,
+          enabledDaemons: enableResults.filter(r => r.success).map(r => r.daemon),
+          failedDaemons: enableResults.filter(r => !r.success)
+        }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `Failed to enable server logging: ${errorMessage}`
       };
     }
   }
