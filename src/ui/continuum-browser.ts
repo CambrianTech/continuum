@@ -42,6 +42,8 @@ class ContinuumBrowserAPI implements ContinuumAPI {
   private sessionId: string | null = null;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
+  private consoleQueue: any[] = [];
+  private consoleProcessing = false;
   private reconnectDelay = 1000;
 
   constructor() {
@@ -65,6 +67,9 @@ class ContinuumBrowserAPI implements ContinuumAPI {
       group: console.group,
       groupEnd: console.groupEnd
     };
+    
+    // Store original console globally for queue error handling
+    (window as any).__originalConsole__ = originalConsole;
     
     let errorCount = 0;
 
@@ -209,21 +214,8 @@ class ContinuumBrowserAPI implements ContinuumAPI {
           sessionId: this.sessionId  // Include sessionId for logging to session files
         };
 
-        if (this.isConnected()) {
-          this.execute('console', consoleCommand).catch(() => {
-            // Fail silently to avoid infinite loops
-          });
-        } else {
-          // Queue console messages when not connected
-          this.messageQueue.push({
-            type: 'execute_command',
-            data: {
-              command: 'console',
-              params: JSON.stringify(consoleCommand),
-              requestId: `console_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-            }
-          });
-        }
+        // Queue console commands to prevent overwhelming the server
+        this.queueConsoleCommand(consoleCommand);
       }
     } catch (error) {
       // Fail silently to avoid error loops
@@ -988,6 +980,64 @@ class ContinuumBrowserAPI implements ContinuumAPI {
       console.log('⚠️ Could not discover commands:', error instanceof Error ? error.message : String(error));
       console.log('💡 Commands will be discovered as they are used');
     }
+  }
+
+  /**
+   * Queue console commands with rate limiting to prevent overwhelming server
+   */
+  private queueConsoleCommand(consoleCommand: any): void {
+    this.consoleQueue.push(consoleCommand);
+    
+    if (!this.consoleProcessing) {
+      this.processConsoleQueue();
+    }
+  }
+
+  /**
+   * Process console command queue with rate limiting
+   */
+  private async processConsoleQueue(): Promise<void> {
+    if (this.consoleProcessing || this.consoleQueue.length === 0) {
+      return;
+    }
+
+    this.consoleProcessing = true;
+
+    while (this.consoleQueue.length > 0) {
+      const consoleCommand = this.consoleQueue.shift();
+      
+      if (this.isConnected()) {
+        try {
+          // Execute console command with shorter timeout for faster failure
+          await this.execute('console', consoleCommand);
+        } catch (error) {
+          // Log failed console forwards to original console to avoid loops
+          // Use setTimeout to prevent blocking the queue processing
+          setTimeout(() => {
+            const originalConsole = (window as any).__originalConsole__ || console;
+            originalConsole.warn('⚠️ Console forward failed:', error);
+          }, 0);
+        }
+        
+        // Rate limit: wait 50ms between console commands to prevent overwhelming
+        if (this.consoleQueue.length > 0) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      } else {
+        // If not connected, add to message queue
+        this.messageQueue.push({
+          type: 'execute_command',
+          data: {
+            command: 'console',
+            params: JSON.stringify(consoleCommand),
+            requestId: `console_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+          }
+        });
+        break; // Stop processing until connected
+      }
+    }
+
+    this.consoleProcessing = false;
   }
 }
 
