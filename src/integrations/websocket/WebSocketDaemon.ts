@@ -314,7 +314,9 @@ export class WebSocketDaemon extends BaseDaemon {
             parameters: parsedParams,
             context: {
               connectionId: connectionId,
-              websocket: true,
+              websocket: {
+                registeredDaemons: this.registeredDaemons
+              },
               requestId: requestId,
               sessionId: sessionId // Include sessionId in context
             }

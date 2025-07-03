@@ -168,24 +168,69 @@ export class DaemonConnector extends EventEmitter {
           const packageContent = await fs.readFile(packagePath, 'utf-8');
           const packageJson = JSON.parse(packageContent);
           
-          // Check if this is a command module
-          const commandName = packageJson.continuum?.commandName || packageJson.continuum?.core;
-          if (commandName) {
+          // Check if this is a command module - support multiple formats
+          const commandNames = [];
+          
+          // Support different package.json formats
+          if (packageJson.continuum?.commandName) {
+            commandNames.push(packageJson.continuum.commandName);
+          }
+          if (packageJson.continuum?.core) {
+            commandNames.push(packageJson.continuum.core);
+          }
+          if (packageJson.continuum?.command) {
+            commandNames.push(packageJson.continuum.command);
+          }
+          if (packageJson.continuum?.commands && Array.isArray(packageJson.continuum.commands)) {
+            commandNames.push(...packageJson.continuum.commands);
+          }
+          
+          // Find the TypeScript implementation
+          const files = await fs.readdir(dirPath);
+          const commandFiles = files.filter(file => 
+            file.includes('Command.ts') && !file.includes('.test.ts')
+          );
+          
+          if (commandNames.length > 0 && commandFiles.length > 0) {
             const moduleName = packageJson.name;
             
-            // Find the TypeScript implementation
-            const files = await fs.readdir(dirPath);
-            const commandFile = files.find(file => 
-              file.includes('Command.ts') && !file.includes('.test.ts')
-            );
-            
-            if (commandFile) {
+            // For directories with multiple command files, try to match them to command names
+            for (const commandFile of commandFiles) {
               const className = commandFile.replace('.ts', '');
               const tsPath = path.resolve(dirPath, commandFile);
               
-              // Use TypeScript path directly with tsx loader instead of compiled JS
-              commands.set(commandName, {
-                name: commandName,
+              // Try to determine which command name this file implements
+              let bestMatchCommandName = commandNames[0]; // default to first command name
+              let bestMatchScore = 0;
+              
+              // Look for better matches based on file name - prioritize exact matches
+              for (const cmdName of commandNames) {
+                const cmdFileBase = cmdName.replace(/-/g, '').toLowerCase();
+                const classFileBase = className.replace(/Command$/, '').toLowerCase();
+                let score = 0;
+                
+                // Direct match: session-create -> SessionCreate (highest priority)
+                if (classFileBase === cmdFileBase) {
+                  score = 100;
+                }
+                // Special case: SessionCreateCommand should match session-create
+                else if (className.toLowerCase().includes(cmdName.replace(/-/g, '').toLowerCase())) {
+                  score = 90;
+                }
+                // Contains match: SessionCreateCommand -> session-create
+                else if (classFileBase.includes(cmdFileBase) || cmdFileBase.includes(classFileBase)) {
+                  score = 50;
+                }
+                
+                // Use the best match
+                if (score > bestMatchScore) {
+                  bestMatchScore = score;
+                  bestMatchCommandName = cmdName;
+                }
+              }
+              
+              commands.set(bestMatchCommandName, {
+                name: bestMatchCommandName,
                 className: className,
                 module: moduleName,
                 directory: dirPath,
@@ -195,7 +240,7 @@ export class DaemonConnector extends EventEmitter {
                 packageJson
               });
               
-              console.log(`  ✅ Found command: ${commandName} -> ${className} at ${tsPath}`);
+              console.log(`  ✅ Found command: ${bestMatchCommandName} -> ${className} at ${tsPath}`);
             }
           }
         } catch (error) {
@@ -221,21 +266,34 @@ export class DaemonConnector extends EventEmitter {
   /**
    * Recursively find all directories that might contain commands
    */
-  private async findCommandDirectories(baseDir: string): Promise<string[]> {
+  private async findCommandDirectories(baseDir: string, maxDepth: number = 3, currentDepth: number = 0): Promise<string[]> {
     const directories: string[] = [];
     const fs = await import('fs/promises');
     const path = await import('path');
+    
+    // Prevent infinite loops with depth limit
+    if (currentDepth >= maxDepth) {
+      return directories;
+    }
     
     try {
       const entries = await fs.readdir(baseDir, { withFileTypes: true });
       
       for (const entry of entries) {
         if (entry.isDirectory()) {
+          // Skip common problematic directories
+          if (entry.name.startsWith('.') || 
+              entry.name === 'node_modules' || 
+              entry.name === 'dist' || 
+              entry.name === 'build') {
+            continue;
+          }
+          
           const fullPath = path.join(baseDir, entry.name);
           directories.push(fullPath);
           
-          // Recursively search subdirectories
-          const subDirs = await this.findCommandDirectories(fullPath);
+          // Recursively search subdirectories with depth tracking
+          const subDirs = await this.findCommandDirectories(fullPath, maxDepth, currentDepth + 1);
           directories.push(...subDirs);
         }
       }

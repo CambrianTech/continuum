@@ -127,6 +127,9 @@ export class CommandProcessorDaemon extends BaseDaemon {
     const availableCommands = this.commandConnector.getAvailableCommands();
     this.log(`✅ Command Processor started with ${availableCommands.length} discovered commands: ${availableCommands.join(', ')}`);
     
+    // JTAG Observability: Listen for session events to log available commands
+    this.setupSessionCommandLogging(availableCommands);
+    
     // Listen for session_created events to log available commands for new sessions
     this.on('session_created', (event: any) => {
       this.logDiscoveredCommandsForSession(event);
@@ -669,6 +672,83 @@ export class CommandProcessorDaemon extends BaseDaemon {
       if (this.executionTraces.length > 500) {
         this.executionTraces = this.executionTraces.slice(-500);
       }
+    }
+  }
+
+  /**
+   * JTAG Observability: Setup session-based command logging
+   * Both client and server should know what commands are available
+   */
+  private setupSessionCommandLogging(availableCommands: string[]): void {
+    this.log('📋 JTAG Observability: Setting up session-based command logging');
+    
+    // Listen for session_created events to log available commands
+    this.on('session_created', (event: any) => {
+      this.logCommandsForNewSession(event, availableCommands);
+    });
+  }
+
+  /**
+   * Log all available commands when a new session is created
+   * This helps with JTAG feedback loop and debugging
+   */
+  private logCommandsForNewSession(event: any, availableCommands: string[]): void {
+    const sessionId = event.sessionId || event.data?.sessionId || 'unknown-session';
+    const sessionType = event.sessionType || event.data?.type || 'unknown-type';
+    
+    this.log(`🎯 SESSION CREATED [${sessionId}] - AVAILABLE COMMANDS (${availableCommands.length}):`);
+    this.log(`📋 Session Type: ${sessionType}`);
+    this.log(`🗂️  Server Commands: ${availableCommands.join(', ')}`);
+    
+    // For JTAG observability, also log critical command categories
+    const commandCategories = this.categorizeCommands(availableCommands);
+    this.log(`📊 Command Categories: ${Object.keys(commandCategories).map(cat => `${cat}(${commandCategories[cat].length})`).join(', ')}`);
+    
+    // Log to JTAG trace if enabled
+    this.addJtagLog('info', `Session ${sessionId} created with ${availableCommands.length} available commands`, {
+      sessionId,
+      sessionType,
+      availableCommands,
+      commandCategories
+    });
+  }
+
+  /**
+   * Categorize commands for better observability
+   */
+  private categorizeCommands(commands: string[]): Record<string, string[]> {
+    const categories: Record<string, string[]> = {
+      session: [],
+      ai: [],
+      file: [],
+      system: [],
+      browser: [],
+      other: []
+    };
+
+    for (const cmd of commands) {
+      if (cmd.includes('session')) categories.session.push(cmd);
+      else if (cmd.includes('ai') || cmd.includes('model')) categories.ai.push(cmd);
+      else if (cmd.includes('file') || cmd.includes('read') || cmd.includes('write')) categories.file.push(cmd);
+      else if (cmd.includes('system') || cmd.includes('health') || cmd.includes('status')) categories.system.push(cmd);
+      else if (cmd.includes('browser') || cmd.includes('js-execute')) categories.browser.push(cmd);
+      else categories.other.push(cmd);
+    }
+
+    return categories;
+  }
+
+  private addJtagLog(level: string, message: string, context?: any): void {
+    this.jtagLogs.push({
+      timestamp: new Date(),
+      level,
+      message,
+      context
+    });
+    
+    // Keep last 1000 logs to prevent memory growth
+    if (this.jtagLogs.length > 1000) {
+      this.jtagLogs = this.jtagLogs.slice(-1000);
     }
   }
 }
