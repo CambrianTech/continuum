@@ -104,6 +104,11 @@ export class CommandProcessorDaemon extends BaseDaemon {
     
     const availableCommands = this.commandConnector.getAvailableCommands();
     this.log(`✅ Command Processor started with ${availableCommands.length} discovered commands: ${availableCommands.join(', ')}`);
+    
+    // Listen for session_created events to log available commands for new sessions
+    this.on('session_created', (event: any) => {
+      this.logDiscoveredCommandsForSession(event);
+    });
   }
 
   protected async onStop(): Promise<void> {
@@ -163,7 +168,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
       
       case 'handle_api':
         // Handle HTTP API requests
-        const { pathname, method, headers, url } = message.data;
+        const { pathname, method, url } = message.data;
         const pathParts = pathname.split('/').filter(Boolean);
         if (pathParts[0] === 'api' && pathParts[1] === 'commands' && pathParts[2]) {
           const command = pathParts[2];
@@ -530,6 +535,42 @@ export class CommandProcessorDaemon extends BaseDaemon {
 
   private generateExecutionId(): string {
     return `exec-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 8)}`;
+  }
+
+  /**
+   * Log discovered commands when a new session is created
+   */
+  private logDiscoveredCommandsForSession(event: any): void {
+    const { sessionId, sessionType, owner } = event;
+    const availableCommands = this.commandConnector?.getAvailableCommands() || [];
+    
+    this.log(`📚 NEW SESSION COMMAND DISCOVERY for ${sessionType} session ${sessionId} (owner: ${owner}):`);
+    this.log(`📋 ${availableCommands.length} commands available:`);
+    
+    // Log commands in groups for readability
+    const commandsByCategory: Record<string, string[]> = {};
+    
+    // Group commands by category (before the colon or by first word)
+    for (const cmd of availableCommands) {
+      let category = 'general';
+      if (cmd.includes(':')) {
+        category = cmd.split(':')[0];
+      } else if (cmd.includes('_')) {
+        category = cmd.split('_')[0];
+      }
+      
+      if (!commandsByCategory[category]) {
+        commandsByCategory[category] = [];
+      }
+      commandsByCategory[category].push(cmd);
+    }
+    
+    // Log by category
+    for (const [category, commands] of Object.entries(commandsByCategory)) {
+      this.log(`  ${category}: ${commands.join(', ')}`);
+    }
+    
+    this.log(`🎯 Session ${sessionId} ready with full command access`);
   }
 }
 

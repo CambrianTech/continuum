@@ -15,8 +15,8 @@ connect() {
         fi
         
         # Start the main daemon (which manages all other daemons)
-        cd "$continuum_dir"
-        nohup tsx main.ts > /dev/null 2>&1 &
+        # Use absolute path instead of cd to avoid directory issues
+        nohup tsx "$continuum_dir/main.ts" > /dev/null 2>&1 &
         local pid=$!
         echo "✅ Started daemon manager (PID: $pid)"
         
@@ -42,16 +42,20 @@ case "$1" in
     stop)
         # Stop all daemons
         echo "🛑 Stopping Continuum daemons..."
-        curl -X POST http://localhost:9000/api/shutdown 2>/dev/null || pkill -f "tsx.*main.ts"
+        pkill -f "tsx.*main.ts"
+        sleep 1
         echo "✅ Daemons stopped"
         ;;
     restart)
         # Restart daemons
         echo "🔄 Restarting Continuum daemons..."
-        # Stop
-        curl -X POST http://localhost:9000/api/shutdown 2>/dev/null || pkill -f "tsx.*main.ts"
-        sleep 1
-        # Start
+        # Stop existing daemons if they're running
+        if pgrep -f "tsx.*main.ts" > /dev/null 2>&1; then
+            echo "🛑 Stopping existing daemons..."
+            pkill -f "tsx.*main.ts"
+            sleep 2
+        fi
+        # Start fresh
         connect
         ;;
     status)
