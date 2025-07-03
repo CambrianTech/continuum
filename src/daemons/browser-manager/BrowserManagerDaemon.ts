@@ -15,6 +15,13 @@ import { BrowserLauncher } from './modules/BrowserLauncher.js';
 import { BrowserSessionManager } from './modules/BrowserSessionManager.js';
 import { ChromeBrowserModule } from './modules/ChromeBrowserModule.js';
 import { SessionConsoleLogger } from '../session-manager/modules/SessionConsoleLogger.js';
+import { SimpleTabManager } from './modules/SimpleTabManager.js';
+import { ZombieTabKiller } from './modules/ZombieTabKiller.js';
+import { BrowserTabManager } from './modules/BrowserTabAdapter.js';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 export class BrowserManagerDaemon extends MessageRoutedDaemon {
   public readonly name = 'browser-manager';
@@ -22,6 +29,10 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
 
   private launcher = new BrowserLauncher();
   private sessionManager = new BrowserSessionManager();
+  // private hasActiveBrowser = false; // TODO: Remove if not needed
+  private tabManager = new SimpleTabManager();
+  private zombieKiller = new ZombieTabKiller();
+  private browserTabManager = new BrowserTabManager();
   
   // Track console loggers for each session
   private consoleLoggers = new Map<string, SessionConsoleLogger>();
@@ -49,7 +60,75 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     // Initialize browser modules
     await this.initializeBrowserModules();
     
-    this.log('Browser Manager Daemon v2.0 started - modular architecture');
+    // Periodic tab enforcement - ONE TAB POLICY
+    setInterval(async () => {
+      // Use browserTabManager to count actual browser tabs (not network connections)
+      const actualTabCount = await this.browserTabManager.countAllTabs('localhost:9000');
+      
+      if (actualTabCount === 0) {
+        // No tabs - launch one
+        this.log('🚀 No localhost:9000 tabs detected - launching one');
+        try {
+          await execAsync('open http://localhost:9000');
+          this.log('✅ Launched browser tab to localhost:9000');
+        } catch (error) {
+          this.log(`⚠️ Failed to launch browser: ${error}`, 'error');
+        }
+      } else if (actualTabCount > 1) {
+        // Too many tabs - close extras
+        this.log(`⚠️ BASH(CONTINUUM): ${actualTabCount} tabs detected - MUST BE 1`);
+        
+        try {
+          this.log('🔨 Calling browserTabManager.enforceOneTabPolicy...');
+          const results = await this.browserTabManager.enforceOneTabPolicy('localhost:9000');
+          this.log(`🔨 Tab closing results: ${JSON.stringify(results)}`);
+          
+          let totalClosed = 0;
+          for (const result of results) {
+            if (result.closed > 0) {
+              this.log(`✅ Closed ${result.closed} extra tabs in ${result.browser}`);
+              totalClosed += result.closed;
+            }
+          }
+          
+          if (totalClosed === 0 && actualTabCount > 1) {
+            this.log('⚠️ No tabs were closed - browser adapter may need update');
+          }
+        } catch (error) {
+          this.log(`⚠️ Failed to close tabs: ${error}`, 'error');
+        }
+      } else {
+        // Exactly 1 tab - perfect, no logging to reduce noise
+      }
+      
+      // Also handle WebSocket connections separately
+      const wsStatus = await this.sendMessage('websocket', 'get_status', {});
+      if (wsStatus.data?.activeConnections > 1) {
+        this.log(`🔌 ${wsStatus.data.activeConnections} WebSocket connections - closing extras`);
+        await this.sendMessage('websocket', 'broadcast', {
+          message: {
+            type: 'system_command',
+            command: 'close_tab',
+            reason: 'ONE_TAB_POLICY'
+          },
+          excludeFirst: true
+        });
+      }
+    }, 5000); // Every 5 seconds
+    
+    this.log('Browser Manager Daemon v2.0 started - ONE TAB POLICY enforced');
+    
+    // Initial check
+    setTimeout(async () => {
+      const status = await this.tabManager.checkTabs();
+      const zombieStatus = await this.zombieKiller.getTabStatus();
+      
+      this.log(`🔍 Browser check: ${status.count} tab(s) found - ${status.action}`);
+      if (zombieStatus.zombies > 0) {
+        this.log(`💀 Found ${zombieStatus.zombies} zombie tabs (${zombieStatus.total} total connections)`);
+        this.log(`🔍 Tab details: ${JSON.stringify(zombieStatus.details)}`);
+      }
+    }, 2000);
   }
 
   protected async onStop(): Promise<void> {
@@ -364,6 +443,41 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.log(`❌ Failed to start console logging for session ${sessionId}: ${errorMessage}`, 'error');
+    }
+  }
+  
+  /**
+   * Simple tab consolidation - just check WebSocket connections and close extras
+   */
+  private async checkAndConsolidateTabs(): Promise<void> {
+    try {
+      // Ask WebSocket daemon how many connections we have
+      const wsStatus = await this.sendMessage('websocket', 'get_status', {});
+      
+      if (wsStatus.success && wsStatus.data) {
+        const connectionCount = wsStatus.data.activeConnections || 0;
+        
+        if (connectionCount > 1) {
+          this.log(`⚠️ Detected ${connectionCount} WebSocket connections (tabs) - consolidating to 1`);
+          
+          // Simple approach: reload all but the first tab to close them
+          // The first tab will remain, others will get a reload command that closes them
+          const consolidateResponse = await this.sendMessage('websocket', 'consolidate_connections', {
+            keepFirst: true
+          });
+          
+          if (consolidateResponse.success) {
+            this.log(`✅ Tab consolidation complete - kept 1 primary tab`);
+          }
+        } else if (connectionCount === 1) {
+          // Perfect - just one tab
+        } else if (connectionCount === 0) {
+          this.log(`📊 No active tabs detected - ready to launch when needed`);
+        }
+      }
+    } catch (error) {
+      // Simple approach - if we can't check, just continue
+      this.log(`⚠️ Could not check tab status: ${error}`, 'debug');
     }
   }
 }

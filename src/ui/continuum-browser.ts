@@ -844,6 +844,20 @@ class ContinuumBrowserAPI implements ContinuumAPI {
         window.location.reload();
         return;
       }
+      
+      // Handle system commands (like closing duplicate tabs)
+      if (message.type === 'system_command') {
+        if (message.command === 'close_tab' && message.reason === 'ONE_TAB_POLICY') {
+          console.log(`⚠️ ${message.message || 'Closing duplicate tab'}`);
+          // Close this tab
+          window.close();
+          // If window.close() doesn't work (some browsers block it), navigate away
+          setTimeout(() => {
+            window.location.href = 'about:blank';
+          }, 100);
+        }
+        return;
+      }
 
       // Handle other message types - only emit as command_response if it has requestId
       if (message.data && message.data.requestId) {

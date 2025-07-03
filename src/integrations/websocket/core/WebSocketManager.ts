@@ -27,6 +27,39 @@ export class WebSocketManager {
     
     this.server.on('connection', (ws, req) => {
       const connectionId = this.generateConnectionId();
+      const userAgent = req.headers['user-agent'] || '';
+      
+      // ONE TAB POLICY: If this is a browser connection and we already have browser connections, close the old ones
+      if (userAgent.includes('Mozilla') || userAgent.includes('Chrome') || userAgent.includes('Safari')) {
+        const existingBrowserConnections = Array.from(this.connections.entries())
+          .filter(([_, conn]) => {
+            const ua = conn.metadata.userAgent || '';
+            return ua.includes('Mozilla') || ua.includes('Chrome') || ua.includes('Safari');
+          });
+        
+        if (existingBrowserConnections.length > 0) {
+          console.log(`⚠️ ONE TAB POLICY: Closing ${existingBrowserConnections.length} existing browser tabs`);
+          
+          // Close all existing browser connections
+          for (const [oldId, oldConn] of existingBrowserConnections) {
+            console.log(`❌ Closing duplicate tab: ${oldId}`);
+            
+            // Send message to close the tab
+            if (oldConn.ws.readyState === WebSocket.OPEN) {
+              oldConn.ws.send(JSON.stringify({
+                type: 'system_command',
+                command: 'close_tab',
+                reason: 'ONE_TAB_POLICY',
+                message: 'New tab connected - closing this duplicate tab'
+              }));
+              
+              // Close the WebSocket
+              setTimeout(() => oldConn.ws.close(), 100);
+            }
+          }
+        }
+      }
+      
       const connection: WebSocketConnection = {
         id: connectionId,
         ws,
@@ -106,6 +139,22 @@ export class WebSocketManager {
 
   getConnectionCount(): number {
     return this.connections.size;
+  }
+  
+  getAllConnectionIds(): string[] {
+    return Array.from(this.connections.keys());
+  }
+  
+  getConnection(connectionId: string): WebSocketConnection | undefined {
+    return this.connections.get(connectionId);
+  }
+  
+  closeConnection(connectionId: string): void {
+    const connection = this.connections.get(connectionId);
+    if (connection && connection.ws.readyState === WebSocket.OPEN) {
+      connection.ws.close();
+    }
+    this.connections.delete(connectionId);
   }
 
   private generateConnectionId(): string {
