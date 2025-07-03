@@ -572,8 +572,8 @@ export class AcademyDaemon extends BaseDaemon {
   }
 }
 
-// Main execution when run directly
-if (require.main === module) {
+// Main execution when run directly (ES module style)
+if (process.argv[1] && process.argv[1].endsWith('AcademyDaemon.ts')) {
   const daemon = new AcademyDaemon();
   
   process.on('SIGINT', async () => {

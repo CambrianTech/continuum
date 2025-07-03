@@ -104,20 +104,12 @@ export class BrowserSessionManager {
     if (compatibleBrowsers.length > 0) {
       const browser = compatibleBrowsers[0];
       
-      // Decide between reuse and add-tab based on session count
-      if (this.getSessionCount(browser) < 3) {
-        return {
-          type: 'add-tab',
-          browserId: browser.id,
-          reasoning: `Adding tab to existing browser with ${this.getSessionCount(browser)} sessions`
-        };
-      } else {
-        return {
-          type: 'reuse',
-          browserId: browser.id,
-          reasoning: 'Reusing existing browser (refreshing current tab)'
-        };
-      }
+      // ALWAYS reuse existing tab - never add more tabs
+      return {
+        type: 'reuse',
+        browserId: browser.id,
+        reasoning: 'Reusing existing browser tab (ONE TAB POLICY)'
+      };
     }
 
     // Check resource constraints

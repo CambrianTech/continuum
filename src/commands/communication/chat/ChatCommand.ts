@@ -68,32 +68,91 @@ export class ChatCommand extends DirectCommand {
   }
 
   /**
-   * Delegate to ChatRoomDaemon via internal message bus
+   * Delegate to ChatRoomDaemon via WebSocket message routing
    */
   private async delegateToChatRoomDaemon(operation: string, params: any): Promise<any> {
-    // TODO: Implement actual daemon delegation via message bus
-    // For now, return fallback responses to keep system working
+    // Use WebSocket to communicate with ChatRoomDaemon
+    // This is how daemons communicate in the Continuum architecture
     
-    switch (operation) {
-      case 'send_message':
-        return {
-          message_id: `msg_${Date.now()}`,
-          message: {
-            content: params.content,
-            sender_id: params.sender_id,
-            room_id: params.room_id,
-            timestamp: new Date().toISOString()
+    try {
+      // Import WebSocket client
+      const WebSocket = (await import('ws')).default;
+      
+      // Connect to local WebSocket daemon
+      const ws = new WebSocket('ws://localhost:9000');
+      
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          ws.close();
+          reject(new Error('ChatRoomDaemon request timeout'));
+        }, 5000);
+        
+        ws.on('open', () => {
+          // Send message to ChatRoomDaemon
+          const message = {
+            id: `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            from: 'chat-command',
+            to: 'chatroom',
+            type: operation,
+            timestamp: new Date(),
+            data: params
+          };
+          
+          ws.send(JSON.stringify(message));
+        });
+        
+        ws.on('message', (data: any) => {
+          clearTimeout(timeout);
+          try {
+            const response = JSON.parse(data.toString());
+            ws.close();
+            
+            if (response.success) {
+              resolve(response.data);
+            } else {
+              reject(new Error(response.error || 'ChatRoomDaemon operation failed'));
+            }
+          } catch (error) {
+            ws.close();
+            reject(error);
           }
-        };
-      case 'list_rooms':
-        return {
-          rooms: [
-            { id: 'default', name: 'General Chat', participant_count: 1 },
-            { id: 'system', name: 'System Messages', participant_count: 0 }
-          ]
-        };
-      default:
-        throw new Error(`Unknown ChatRoomDaemon operation: ${operation}`);
+        });
+        
+        ws.on('error', (error) => {
+          clearTimeout(timeout);
+          ws.close();
+          reject(error);
+        });
+      });
+      
+    } catch (error) {
+      // Fallback if WebSocket communication fails
+      console.error('ChatRoomDaemon communication failed:', error);
+      
+      // Return fallback responses to keep system working
+      switch (operation) {
+        case 'send_message':
+          return {
+            message_id: `msg_${Date.now()}`,
+            message: {
+              content: params.content,
+              sender_id: params.sender_id,
+              room_id: params.room_id,
+              timestamp: new Date().toISOString()
+            }
+          };
+        case 'list_rooms':
+          return {
+            rooms: [
+              { id: 'general', name: 'General Chat', participant_count: 1 },
+              { id: 'academy', name: 'Academy', participant_count: 0 },
+              { id: 'projects', name: 'Projects', participant_count: 0 },
+              { id: 'development', name: 'Development', participant_count: 0 }
+            ]
+          };
+        default:
+          throw new Error(`Unknown ChatRoomDaemon operation: ${operation}`);
+      }
     }
   }
 }

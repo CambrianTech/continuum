@@ -12,6 +12,9 @@ import { BrowserManagerDaemon } from '../../daemons/browser-manager/BrowserManag
 import { SessionManagerDaemon } from '../../daemons/session-manager/SessionManagerDaemon';
 import { ContinuumDirectoryDaemon } from '../../daemons/continuum-directory/ContinuumDirectoryDaemon';
 import { StaticFileDaemon } from '../../daemons/static-file/StaticFileDaemon';
+import { AcademyDaemon } from '../../daemons/academy/AcademyDaemon';
+import { PersonaDaemon } from '../../daemons/persona/PersonaDaemon';
+import { ChatRoomDaemon } from '../../daemons/chatroom/ChatRoomDaemon';
 import { DaemonMessage } from '../../daemons/base/DaemonProtocol';
 import { DaemonMessageUtils } from '../../daemons/base/DaemonMessageUtils';
 
@@ -29,6 +32,10 @@ export class ContinuumSystem extends EventEmitter {
     this.daemons.set('websocket', new WebSocketDaemon());
     this.daemons.set('renderer', new RendererDaemon());
     this.daemons.set('command-processor', new CommandProcessorDaemon());
+    this.daemons.set('chatroom', new ChatRoomDaemon());
+    // PersonaDaemon needs special handling - it's created per persona, not as a system daemon
+    // this.daemons.set('persona', new PersonaDaemon());
+    this.daemons.set('academy', new AcademyDaemon());
     this.daemons.set('browser-manager', new BrowserManagerDaemon());
   }
   
@@ -63,9 +70,17 @@ export class ContinuumSystem extends EventEmitter {
     console.log(`║ Version: ${pkg.version.padEnd(20)} Start Time: ${startTime.padEnd(30)} Process: ${process.pid.toString().padEnd(15)} ║`);
     console.log('╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣');
     console.log('║ 📋 Daemon Launch Sequence:                                                                                          ║');
-    console.log('║   1. continuum-directory → 2. session-manager → 3. static-file → 4. websocket → 5. renderer → 6. command-processor → 7. browser   ║');
+    console.log('║   1. continuum-directory → 2. session-manager → 3. static-file → 4. websocket → 5. renderer → 6. command-processor → 7. academy → 8. browser ║');
     console.log('╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝');
     console.log('');
+    
+    // Check if server is already running BEFORE we start
+    const serverAlreadyRunning = await this.isServerRunning();
+    if (serverAlreadyRunning) {
+      console.log('⚠️  Server already running on port 9000');
+      console.log('✅ Reusing existing instance (ONE TAB POLICY)');
+      process.exit(0);
+    }
     
     // Clear any existing port conflicts (temporarily disabled for debugging)
     // await this.clearPorts();
@@ -249,11 +264,15 @@ export class ContinuumSystem extends EventEmitter {
     const rendererDaemon = this.daemons.get('renderer');
     const commandProcessorDaemon = this.daemons.get('command-processor');
     const staticFileDaemon = this.daemons.get('static-file');
+    const chatRoomDaemon = this.daemons.get('chatroom');
+    const academyDaemon = this.daemons.get('academy');
     
     // Register daemons with WebSocket daemon for message routing
     webSocketDaemon.registerDaemon(rendererDaemon);
     webSocketDaemon.registerDaemon(commandProcessorDaemon);
     webSocketDaemon.registerDaemon(staticFileDaemon);
+    webSocketDaemon.registerDaemon(chatRoomDaemon);
+    webSocketDaemon.registerDaemon(academyDaemon);
     
     // Register static file routes first (they take precedence)
     staticFileDaemon.registerWithWebSocketDaemon(webSocketDaemon);
@@ -265,6 +284,7 @@ export class ContinuumSystem extends EventEmitter {
     webSocketDaemon.registerRouteHandler('*', 'renderer', 'http_request');
     
     console.log('✅ Inter-daemon communication established');
+    console.log('🤖 AI autonomy infrastructure ready: ChatRoom + Persona + Academy daemons online');
   }
 
   private async runSelfTests(): Promise<void> {
@@ -302,8 +322,8 @@ export class ContinuumSystem extends EventEmitter {
         });
       });
       
-      // Self-tests passed - auto-launch browser with smart tab management
-      await this.launchBrowserAutomatically();
+      // Let browser manager handle tab management
+      console.log('🌐 Browser manager will handle tab management');
       
     } catch (error) {
       console.log('⚠️  Self-test failed:', error);
@@ -313,7 +333,8 @@ export class ContinuumSystem extends EventEmitter {
 
   private async launchBrowserAutomatically(): Promise<void> {
     try {
-      console.log('🌐 Creating session and launching browser...');
+      // FIRST: Check if there's already a tab open to localhost:9000
+      const existingTabs = await this.checkExistingTabs();
       
       const sessionManager = this.daemons.get('session-manager');
       const browserManager = this.daemons.get('browser-manager');
@@ -323,6 +344,39 @@ export class ContinuumSystem extends EventEmitter {
         console.log('💡 You can manually open: http://localhost:9000');
         return;
       }
+      
+      if (existingTabs > 0) {
+        console.log(`🌐 Found ${existingTabs} existing tab(s) to localhost:9000`);
+        console.log('✅ Reusing existing browser tab (ONE TAB POLICY)');
+        
+        // Still create a session, but don't launch a new browser
+        const sessionRequest = DaemonMessageUtils.createSessionMessage({
+          id: DaemonMessageUtils.generateMessageId('session'),
+          from: 'system',
+          sessionType: 'development',
+          owner: 'system',
+          options: {
+            autoCleanup: false,
+            devtools: true,
+            context: 'system-startup',
+            existingTab: true
+          }
+        });
+
+        const sessionResponse = await sessionManager.handleMessage(sessionRequest);
+        
+        if (sessionResponse.success) {
+          console.log('✅ Session created for existing browser tab');
+          const session = sessionResponse.data.session;
+          if (session && session.artifacts && session.artifacts.logs.server[0]) {
+            this.setupSessionLogging(session.artifacts.logs.server[0]);
+          }
+        }
+        
+        return; // Don't launch a new browser
+      }
+      
+      console.log('🌐 No existing tabs found - creating session and launching browser...');
 
       // 1. Create development session with .continuum directory management
       const sessionRequest = DaemonMessageUtils.createSessionMessage({
@@ -393,6 +447,41 @@ export class ContinuumSystem extends EventEmitter {
     } catch (error) {
       console.log('⚠️  Browser auto-launch error:', error);
       console.log('💡 You can manually open: http://localhost:9000');
+    }
+  }
+
+  /**
+   * Check if server is already running
+   */
+  private async isServerRunning(): Promise<boolean> {
+    try {
+      const response = await fetch('http://localhost:9000/api/status');
+      return response.ok;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
+   * Check if there are already tabs open to localhost:9000
+   */
+  private async checkExistingTabs(): Promise<number> {
+    try {
+      // Simple check: Can we connect to the WebSocket?
+      const response = await fetch('http://localhost:9000/api/status');
+      if (response.ok) {
+        // Server is up, check WebSocket connections
+        const wsResponse = await fetch('http://localhost:9000/api/connections');
+        if (wsResponse.ok) {
+          const data = await wsResponse.json();
+          return data.activeConnections || 1; // At least 1 if server responds
+        }
+        return 1; // Server up = at least 1 tab
+      }
+      return 0;
+    } catch (error) {
+      // Can't connect = no tabs
+      return 0;
     }
   }
 

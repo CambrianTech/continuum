@@ -71,4 +71,30 @@ if [ -f "tsconfig.json" ] && command -v npx >/dev/null 2>&1; then
     fi
 fi
 
+# Check if continuum is already running
+EXISTING_PID=$(pgrep -f "tsx.*launch.ts" | head -1)
+
+if [ ! -z "$EXISTING_PID" ]; then
+    echo "✅ Continuum is already running (PID: $EXISTING_PID)"
+    
+    # If no arguments, just focus existing tab
+    if [ $# -eq 0 ]; then
+        # Try to focus existing tab
+        if command -v osascript >/dev/null 2>&1; then
+            osascript -e 'tell application "Opera GX" to activate' 2>/dev/null || \
+            osascript -e 'tell application "Opera" to activate' 2>/dev/null || \
+            osascript -e 'tell application "Google Chrome" to activate' 2>/dev/null || \
+            osascript -e 'tell application "Safari" to activate' 2>/dev/null
+        fi
+        open http://localhost:9000 2>/dev/null || echo "🌐 Open http://localhost:9000 in your browser"
+        exit 0
+    else
+        # Pass commands to running instance
+        echo "📡 Sending command to running instance..."
+        npm run "$@"
+        exit $?
+    fi
+fi
+
+# Not running, start it
 npm run launch

@@ -246,6 +246,12 @@ export class WebSocketDaemon extends BaseDaemon {
         const response = this.handleRouteRegistration(message);
         // TODO: Send response back to daemon
         this.log(`📨 Route registration: ${response.success ? 'success' : 'failed'}`);
+      } else if (message.to) {
+        // Route message to specific daemon if 'to' field is present
+        this.log(`📨 Routing message to daemon: ${message.to}`);
+        this.routeMessageToDaemon(connectionId, message).catch(error => {
+          this.log(`❌ Failed to route message to daemon: ${error}`, 'error');
+        });
       } else {
         this.log(`📨 Unknown WebSocket message type: ${message.type}`);
       }
@@ -412,6 +418,70 @@ export class WebSocketDaemon extends BaseDaemon {
     } else {
       this.log(`❌ DEBUG: Daemon ${daemonName} not found or doesn't support messaging`, 'error');
       throw new Error(`Daemon ${daemonName} not found or doesn't support messaging`);
+    }
+  }
+
+  /**
+   * Route a WebSocket message to a specific daemon
+   */
+  private async routeMessageToDaemon(connectionId: string, message: any): Promise<void> {
+    try {
+      const targetDaemon = message.to;
+      const daemon = this.registeredDaemons.get(targetDaemon);
+      
+      if (!daemon) {
+        this.log(`❌ Target daemon not found: ${targetDaemon}`, 'error');
+        
+        // Send error response back to client
+        const errorResponse = {
+          id: message.id,
+          from: targetDaemon,
+          to: message.from,
+          type: 'error',
+          success: false,
+          error: `Daemon ${targetDaemon} not found`,
+          timestamp: new Date().toISOString()
+        };
+        
+        this.wsManager.sendToConnection(connectionId, errorResponse);
+        return;
+      }
+      
+      // Forward message to daemon
+      const response = await daemon.handleMessage(message);
+      
+      // Send response back to WebSocket client
+      const wsResponse = {
+        id: message.id,
+        from: targetDaemon,
+        to: message.from,
+        type: response.success ? 'response' : 'error',
+        success: response.success,
+        data: response.data,
+        error: response.error,
+        timestamp: new Date().toISOString()
+      };
+      
+      this.wsManager.sendToConnection(connectionId, wsResponse);
+      
+      this.log(`✅ Message routed to ${targetDaemon}: ${response.success ? 'success' : 'failed'}`);
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Error routing message to daemon: ${errorMessage}`, 'error');
+      
+      // Send error response to client
+      const errorResponse = {
+        id: message.id,
+        from: message.to,
+        to: message.from,
+        type: 'error',
+        success: false,
+        error: errorMessage,
+        timestamp: new Date().toISOString()
+      };
+      
+      this.wsManager.sendToConnection(connectionId, errorResponse);
     }
   }
 
