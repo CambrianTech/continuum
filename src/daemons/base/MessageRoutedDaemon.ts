@@ -30,6 +30,11 @@ export abstract class MessageRoutedDaemon extends BaseDaemon {
 
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
     try {
+      // Handle built-in message types first
+      if (message.type === 'set_session_log') {
+        return this.handleSetSessionLog(message.data);
+      }
+      
       // Handle primary routed message type
       if (message.type === this.primaryMessageType) {
         return await this.handleRoutedMessage(message.data);
@@ -93,5 +98,41 @@ export abstract class MessageRoutedDaemon extends BaseDaemon {
    */
   protected getSupportedRoutes(): string[] {
     return Object.keys(this.getRouteMap());
+  }
+  
+  /**
+   * Handle built-in set_session_log message
+   */
+  private handleSetSessionLog(data: any): DaemonResponse {
+    const { sessionId, logPath } = data;
+    
+    if (!logPath) {
+      return {
+        success: false,
+        error: 'logPath is required for set_session_log'
+      };
+    }
+    
+    try {
+      // Use the BaseDaemon method to set session log path
+      this.setSessionLogPath(logPath);
+      this.log(`📝 Session logging enabled for ${sessionId}: ${logPath}`);
+      
+      return {
+        success: true,
+        data: {
+          sessionId,
+          logPath,
+          daemon: this.name,
+          message: 'Session logging enabled'
+        }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `Failed to set session log: ${errorMessage}`
+      };
+    }
   }
 }

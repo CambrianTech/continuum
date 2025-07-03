@@ -19,7 +19,9 @@ find_continuum_dir() {
         # For npm global installs, the actual path might be relative to the symlink
         if [[ "$script_path" == "../"* ]]; then
             local symlink_dir="$(dirname "$0")"
-            script_path="$(cd "$symlink_dir" && cd "$script_path" && pwd)" 2>/dev/null || script_path="$0"
+            local target_dir="$(dirname "$script_path")"
+            local target_file="$(basename "$script_path")"
+            script_path="$(cd "$symlink_dir" && cd "$target_dir" && pwd)/$target_file" 2>/dev/null || script_path="$0"
         fi
     fi
     local script_dir="$(dirname "$script_path")"
