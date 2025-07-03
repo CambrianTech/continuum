@@ -13,10 +13,10 @@ import { SessionManagerDaemon } from '../../daemons/session-manager/SessionManag
 import { ContinuumDirectoryDaemon } from '../../daemons/continuum-directory/ContinuumDirectoryDaemon';
 import { StaticFileDaemon } from '../../daemons/static-file/StaticFileDaemon';
 import { AcademyDaemon } from '../../daemons/academy/AcademyDaemon';
-import { PersonaDaemon } from '../../daemons/persona/PersonaDaemon';
+// import { PersonaDaemon } from '../../daemons/persona/PersonaDaemon';
 import { ChatRoomDaemon } from '../../daemons/chatroom/ChatRoomDaemon';
-import { DaemonMessage } from '../../daemons/base/DaemonProtocol';
-import { DaemonMessageUtils } from '../../daemons/base/DaemonMessageUtils';
+// import { DaemonMessage } from '../../daemons/base/DaemonProtocol';
+// import { DaemonMessageUtils } from '../../daemons/base/DaemonMessageUtils';
 
 export class ContinuumSystem extends EventEmitter {
   private daemons = new Map();
@@ -331,125 +331,6 @@ export class ContinuumSystem extends EventEmitter {
     }
   }
 
-  private async launchBrowserAutomatically(): Promise<void> {
-    try {
-      // FIRST: Check if there's already a tab open to localhost:9000
-      const existingTabs = await this.checkExistingTabs();
-      
-      const sessionManager = this.daemons.get('session-manager');
-      const browserManager = this.daemons.get('browser-manager');
-      
-      if (!sessionManager || !browserManager) {
-        console.log('⚠️  Session or Browser manager not available');
-        console.log('💡 You can manually open: http://localhost:9000');
-        return;
-      }
-      
-      if (existingTabs > 0) {
-        console.log(`🌐 Found ${existingTabs} existing tab(s) to localhost:9000`);
-        console.log('✅ Reusing existing browser tab (ONE TAB POLICY)');
-        
-        // Still create a session, but don't launch a new browser
-        const sessionRequest = DaemonMessageUtils.createSessionMessage({
-          id: DaemonMessageUtils.generateMessageId('session'),
-          from: 'system',
-          sessionType: 'development',
-          owner: 'system',
-          options: {
-            autoCleanup: false,
-            devtools: true,
-            context: 'system-startup',
-            existingTab: true
-          }
-        });
-
-        const sessionResponse = await sessionManager.handleMessage(sessionRequest);
-        
-        if (sessionResponse.success) {
-          console.log('✅ Session created for existing browser tab');
-          const session = sessionResponse.data.session;
-          if (session && session.artifacts && session.artifacts.logs.server[0]) {
-            this.setupSessionLogging(session.artifacts.logs.server[0]);
-          }
-        }
-        
-        return; // Don't launch a new browser
-      }
-      
-      console.log('🌐 No existing tabs found - creating session and launching browser...');
-
-      // 1. Create development session with .continuum directory management
-      const sessionRequest = DaemonMessageUtils.createSessionMessage({
-        id: DaemonMessageUtils.generateMessageId('session'),
-        from: 'system',
-        sessionType: 'development',
-        owner: 'system',
-        options: {
-          autoCleanup: false,
-          devtools: true,
-          context: 'system-startup'
-        }
-      });
-
-      const sessionResponse = await sessionManager.handleMessage(sessionRequest);
-      
-      if (!sessionResponse.success) {
-        console.log('⚠️  Session creation failed:', sessionResponse.error);
-        console.log('💡 You can manually open: http://localhost:9000');
-        return;
-      }
-
-      // Enable live session logging for all daemons
-      const session = sessionResponse.data.session;
-      if (session && session.artifacts && session.artifacts.logs.server[0]) {
-        this.setupSessionLogging(session.artifacts.logs.server[0]);
-      }
-
-      // 2. Launch browser using session information
-      const sessionData = sessionResponse.data;
-      const browserRequest: DaemonMessage = {
-        id: 'launch-browser',
-        from: 'system',
-        to: 'browser-manager',
-        type: 'create_browser',
-        timestamp: new Date(),
-        data: {
-          sessionId: sessionData.sessionId,
-          url: 'http://localhost:9000',
-          config: {
-            purpose: 'development',
-            requirements: {
-              devtools: true,
-              isolation: 'dedicated',
-              visibility: 'visible',
-              persistence: 'session'
-            },
-            resources: {
-              priority: 'high'
-            }
-          }
-        }
-      };
-
-      const browserResponse = await browserManager.handleMessage(browserRequest);
-      
-      if (browserResponse.success) {
-        console.log('✅ Session created and browser launched');
-        console.log(`📁 Session artifacts: ${sessionData.artifactDir}`);
-        console.log('🔗 DevTools integration enabled');
-        console.log('📋 Smart tab management active');
-        console.log('🌐 Browser interface: http://localhost:9000');
-      } else {
-        console.log('⚠️  Browser launch failed:', browserResponse.error);
-        console.log('💡 You can manually open: http://localhost:9000');
-      }
-      
-    } catch (error) {
-      console.log('⚠️  Browser auto-launch error:', error);
-      console.log('💡 You can manually open: http://localhost:9000');
-    }
-  }
-
   /**
    * Check if server is already running
    */
@@ -464,41 +345,43 @@ export class ContinuumSystem extends EventEmitter {
 
   /**
    * Check if there are already tabs open to localhost:9000
+   * @deprecated - Not used, browser manager handles this
    */
-  private async checkExistingTabs(): Promise<number> {
-    try {
-      // Simple check: Can we connect to the WebSocket?
-      const response = await fetch('http://localhost:9000/api/status');
-      if (response.ok) {
-        // Server is up, check WebSocket connections
-        const wsResponse = await fetch('http://localhost:9000/api/connections');
-        if (wsResponse.ok) {
-          const data = await wsResponse.json();
-          return data.activeConnections || 1; // At least 1 if server responds
-        }
-        return 1; // Server up = at least 1 tab
-      }
-      return 0;
-    } catch (error) {
-      // Can't connect = no tabs
-      return 0;
-    }
-  }
+  // private async checkExistingTabs(): Promise<number> {
+  //   try {
+  //     // Simple check: Can we connect to the WebSocket?
+  //     const response = await fetch('http://localhost:9000/api/status');
+  //     if (response.ok) {
+  //       // Server is up, check WebSocket connections
+  //       const wsResponse = await fetch('http://localhost:9000/api/connections');
+  //       if (wsResponse.ok) {
+  //         const data = await wsResponse.json();
+  //         return data.activeConnections || 1; // At least 1 if server responds
+  //       }
+  //       return 1; // Server up = at least 1 tab
+  //     }
+  //     return 0;
+  //   } catch (error) {
+  //     // Can't connect = no tabs
+  //     return 0;
+  //   }
+  // }
 
   /**
    * Setup session-specific logging for all daemons
+   * @deprecated - Not used currently
    */
-  private setupSessionLogging(serverLogPath: string): void {
-    console.log(`📝 Setting up live session logging: ${serverLogPath}`);
-    
-    // Configure all daemons to write to the session log file
-    for (const [daemonName, daemon] of this.daemons) {
-      if (daemon && typeof daemon.setSessionLogPath === 'function') {
-        daemon.setSessionLogPath(serverLogPath);
-        console.log(`✅ ${daemonName} daemon logging to session file`);
-      }
-    }
-  }
+  // private setupSessionLogging(serverLogPath: string): void {
+  //   console.log(`📝 Setting up live session logging: ${serverLogPath}`);
+  //   
+  //   // Configure all daemons to write to the session log file
+  //   for (const [daemonName, daemon] of this.daemons) {
+  //     if (daemon && typeof daemon.setSessionLogPath === 'function') {
+  //       daemon.setSessionLogPath(serverLogPath);
+  //       console.log(`✅ ${daemonName} daemon logging to session file`);
+  //     }
+  //   }
+  // }
 
   async getCurrentSessionInfo(): Promise<any> {
     // Use the new connection orchestration instead of direct session access
