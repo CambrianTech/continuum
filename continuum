@@ -1,102 +1,106 @@
 #!/bin/bash
-# Continuum CLI - Works for both repo users and npm global installs
+# Continuum CLI - Connects to daemon system
 
-find_continuum_dir() {
-    # Method 1: Check if we're in a continuum repo
-    local current_dir="$PWD"
-    while [ "$current_dir" != "/" ]; do
-        if [ -f "$current_dir/package.json" ] && grep -q '"name": "continuum"' "$current_dir/package.json" 2>/dev/null; then
-            echo "$current_dir"
-            return 0
+# Connection function that starts daemon manager if needed
+connect() {
+    # Check if main daemon is running
+    if ! curl -s http://localhost:9000/api/health > /dev/null 2>&1; then
+        echo "🚀 Starting Continuum daemon manager..."
+        
+        # Find continuum installation
+        local continuum_dir="/Volumes/FlashGordon/cambrian/continuum"
+        if [ ! -f "$continuum_dir/main.ts" ]; then
+            echo "❌ Could not find Continuum installation at $continuum_dir"
+            exit 1
         fi
-        current_dir="$(dirname "$current_dir")"
-    done
-    
-    # Method 2: Resolve script location (for npm global install)
-    local script_path="$0"
-    if [ -L "$script_path" ]; then
-        script_path="$(readlink "$script_path")"
-        # For npm global installs, the actual path might be relative to the symlink
-        if [[ "$script_path" == "../"* ]]; then
-            local symlink_dir="$(dirname "$0")"
-            local target_dir="$(dirname "$script_path")"
-            local target_file="$(basename "$script_path")"
-            script_path="$(cd "$symlink_dir" && cd "$target_dir" && pwd)/$target_file" 2>/dev/null || script_path="$0"
-        fi
+        
+        # Start the main daemon (which manages all other daemons)
+        cd "$continuum_dir"
+        nohup tsx main.ts > /dev/null 2>&1 &
+        local pid=$!
+        echo "✅ Started daemon manager (PID: $pid)"
+        
+        # Wait for it to be ready
+        echo "⏳ Waiting for daemons to start..."
+        for i in {1..30}; do
+            if curl -s http://localhost:9000/api/health > /dev/null 2>&1; then
+                echo "✅ Continuum daemons ready"
+                break
+            fi
+            sleep 1
+        done
     fi
-    local script_dir="$(dirname "$script_path")"
-    if [ -f "$script_dir/package.json" ] && grep -q '"name": "continuum"' "$script_dir/package.json" 2>/dev/null; then
-        echo "$script_dir"
-        return 0
-    fi
-    
-    # Method 2b: Check npm global module path
-    local npm_global_root="$(npm root -g 2>/dev/null)/continuum"
-    if [ -f "$npm_global_root/package.json" ] && grep -q '"name": "continuum"' "$npm_global_root/package.json" 2>/dev/null; then
-        echo "$npm_global_root"
-        return 0
-    fi
-    
-    # Method 3: Check common locations
-    local home_continuum="$HOME/continuum"
-    if [ -f "$home_continuum/package.json" ] && grep -q '"name": "continuum"' "$home_continuum/package.json" 2>/dev/null; then
-        echo "$home_continuum"
-        return 0
-    fi
-    
-    return 1
 }
 
-CONTINUUM_DIR="$(find_continuum_dir)"
-if [ -z "$CONTINUUM_DIR" ]; then
-    echo "❌ Could not find continuum installation"
-    echo "Make sure you're in a continuum repo or have continuum installed globally"
-    exit 1
-fi
-
-# Found continuum directory, check if recompilation needed
-echo "🚀 Starting Continuum from: $CONTINUUM_DIR"
-cd "$CONTINUUM_DIR"
-
-# Check if TypeScript compilation is needed
-if [ -f "tsconfig.json" ] && command -v npx >/dev/null 2>&1; then
-    echo "🔧 Checking TypeScript compilation..."
-    if ! npx tsc --noEmit --project . >/dev/null 2>&1; then
-        echo "⚠️  TypeScript compilation issues detected"
-        echo "🔧 Running: npx tsc --noEmit --project . to check errors"
-        npx tsc --noEmit --project .
-        echo ""
-        echo "💡 You may want to fix compilation errors before running"
-        echo "🚀 Continuing with launch anyway..."
-    else
-        echo "✅ TypeScript compilation clean"
-    fi
-fi
-
-# Check if continuum is already running
-EXISTING_PID=$(pgrep -f "tsx.*launch.ts" | head -1)
-
-if [ ! -z "$EXISTING_PID" ]; then
-    echo "✅ Continuum is already running (PID: $EXISTING_PID)"
-    
-    # If no arguments, just focus existing tab
-    if [ $# -eq 0 ]; then
-        # Try to focus existing tab
-        if command -v osascript >/dev/null 2>&1; then
-            osascript -e 'tell application "Opera GX" to activate' 2>/dev/null || \
-            osascript -e 'tell application "Opera" to activate' 2>/dev/null || \
-            osascript -e 'tell application "Google Chrome" to activate' 2>/dev/null || \
-            osascript -e 'tell application "Safari" to activate' 2>/dev/null
+# Main command handler
+case "$1" in
+    "")
+        # No args - connect and open browser
+        connect
+        open http://localhost:9000 2>/dev/null || echo "🌐 Open http://localhost:9000"
+        ;;
+    stop)
+        # Stop all daemons
+        echo "🛑 Stopping Continuum daemons..."
+        curl -X POST http://localhost:9000/api/shutdown 2>/dev/null || pkill -f "tsx.*main.ts"
+        echo "✅ Daemons stopped"
+        ;;
+    restart)
+        # Restart daemons
+        echo "🔄 Restarting Continuum daemons..."
+        # Stop
+        curl -X POST http://localhost:9000/api/shutdown 2>/dev/null || pkill -f "tsx.*main.ts"
+        sleep 1
+        # Start
+        connect
+        ;;
+    status)
+        # Check daemon status
+        if curl -s http://localhost:9000/api/health > /dev/null 2>&1; then
+            echo "✅ Continuum daemons running"
+            curl -s http://localhost:9000/api/status | jq . 2>/dev/null || curl -s http://localhost:9000/api/status
+        else
+            echo "❌ Continuum daemons not running"
         fi
-        open http://localhost:9000 2>/dev/null || echo "🌐 Open http://localhost:9000 in your browser"
-        exit 0
-    else
-        # Pass commands to running instance
-        echo "📡 Sending command to running instance..."
-        npm run "$@"
-        exit $?
-    fi
-fi
-
-# Not running, start it
-npm run launch
+        ;;
+    logs)
+        # Show daemon logs
+        connect
+        # Subscribe to log stream via WebSocket
+        echo "📋 Connecting to daemon logs..."
+        echo "Press CTRL+C to disconnect"
+        wscat -c ws://localhost:9000 -x '{"type":"subscribe","events":["log"]}'
+        ;;
+    *)
+        # Execute command via daemon system
+        connect
+        # Build args array for JSON
+        args_json=""
+        for arg in "${@:2}"; do
+            if [ -n "$args_json" ]; then
+                args_json="$args_json,"
+            fi
+            # Escape quotes in arg
+            escaped_arg=$(echo "$arg" | sed 's/"/\\"/g')
+            args_json="$args_json\"$escaped_arg\""
+        done
+        
+        # Send command to daemon system
+        response=$(curl -s -X POST http://localhost:9000/api/commands/$1 \
+            -H "Content-Type: application/json" \
+            -d "{\"args\":[$args_json]}")
+        
+        if [ $? -eq 0 ]; then
+            # Extract the result from the response
+            result=$(echo "$response" | jq -r '.data.result // .result // .output // .data // .' 2>/dev/null)
+            if [ "$result" != "null" ] && [ -n "$result" ]; then
+                echo "$result" | jq . 2>/dev/null || echo "$result"
+            else
+                echo "$response"
+            fi
+        else
+            echo "❌ Command failed"
+            exit 1
+        fi
+        ;;
+esac

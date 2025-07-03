@@ -88,13 +88,22 @@ export class CommandProcessorDaemon extends BaseDaemon {
   private commandConnector!: DaemonConnector;
 
   protected async onStart(): Promise<void> {
+    this.log('🚀 Initializing command discovery...');
+    
     // Initialize command discovery
     this.commandConnector = new DaemonConnector();
-    await this.commandConnector.connect();
+    const connected = await this.commandConnector.connect();
+    
+    if (!connected) {
+      this.log('❌ Failed to connect command discovery system', 'error');
+      throw new Error('Command discovery system failed to initialize');
+    }
     
     await this.registerCoreImplementations();
     this.startExecutionMonitoring();
-    this.log('Command Processor Daemon started with TypeScript architecture and command discovery');
+    
+    const availableCommands = this.commandConnector.getAvailableCommands();
+    this.log(`✅ Command Processor started with ${availableCommands.length} discovered commands: ${availableCommands.join(', ')}`);
   }
 
   protected async onStop(): Promise<void> {
@@ -142,6 +151,33 @@ export class CommandProcessorDaemon extends BaseDaemon {
     switch (message.type) {
       case 'command.execute':
         return await this.executeCommand(message.data as TypedCommandRequest);
+      
+      case 'execute_command':
+        // Handle from WebSocket/CLI
+        const { command, args } = message.data;
+        return await this.executeCommand({
+          command,
+          parameters: args || [],
+          context: { source: message.data.source || 'cli' },
+        });
+      
+      case 'handle_api':
+        // Handle HTTP API requests
+        const { pathname, method, headers, url } = message.data;
+        const pathParts = pathname.split('/').filter(Boolean);
+        if (pathParts[0] === 'api' && pathParts[1] === 'commands' && pathParts[2]) {
+          const command = pathParts[2];
+          // Parse body from request if needed
+          return await this.executeCommand({
+            command,
+            parameters: message.data.body?.args || [],
+            context: { source: 'http', method, url }
+          });
+        }
+        return {
+          success: false,
+          error: `Invalid API path: ${pathname}`
+        };
       
       case 'command.get_implementations':
         return await this.getCommandImplementations(message.data as { command: string });

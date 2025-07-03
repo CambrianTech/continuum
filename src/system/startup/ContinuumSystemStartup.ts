@@ -119,6 +119,9 @@ export class ContinuumSystem extends EventEmitter {
     // Set up inter-daemon communication
     await this.setupInterDaemonCommunication();
     
+    // Set up session logging for all daemons
+    this.setupSessionLogging();
+    
     // System is now genuinely ready
     console.log('');
     console.log('✅ System ready and operational');
@@ -382,6 +385,32 @@ export class ContinuumSystem extends EventEmitter {
   //     }
   //   }
   // }
+
+  private setupSessionLogging(): void {
+    const sessionManager = this.daemons.get('session-manager');
+    if (!sessionManager) {
+      console.log('⚠️ SessionManagerDaemon not available for session logging setup');
+      return;
+    }
+
+    // Listen for session creation events
+    sessionManager.on('session_created', (event: any) => {
+      if (event.serverLogPath) {
+        console.log(`📝 Enabling server logging for all daemons: ${event.serverLogPath}`);
+        
+        // Enable logging for all daemons
+        for (const [name, daemon] of this.daemons) {
+          try {
+            daemon.setSessionLogPath(event.serverLogPath);
+            // Log daemon startup to session log
+            daemon.log(`✅ ${name} daemon session logging enabled`, 'info');
+          } catch (error) {
+            console.log(`⚠️ Failed to enable logging for ${name}: ${error}`);
+          }
+        }
+      }
+    });
+  }
 
   async getCurrentSessionInfo(): Promise<any> {
     // Use the new connection orchestration instead of direct session access

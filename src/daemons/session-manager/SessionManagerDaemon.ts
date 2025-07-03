@@ -339,20 +339,13 @@ export class SessionManagerDaemon extends BaseDaemon {
           // Configure THIS daemon to log to the session file
           this.setSessionLogPath(serverLogPath);
           
-          // Send message to all other daemons to enable session logging
-          const daemonTypes = ['websocket', 'renderer', 'command-processor', 'browser-manager', 'continuum-directory', 'static-file'];
-          
-          for (const daemonType of daemonTypes) {
-            try {
-              await this.sendMessage(daemonType, 'set_session_log', {
-                sessionId: session.id,
-                logPath: serverLogPath
-              });
-            } catch (error) {
-              // Log but don't fail - daemon might not be running
-              this.log(`⚠️ Could not enable logging for ${daemonType}: ${error}`, 'warn');
-            }
-          }
+          // Emit session_created event with server log path for other daemons
+          this.emit('session_created', { 
+            sessionId: session.id, 
+            serverLogPath,
+            sessionType: session.type,
+            owner: session.owner
+          });
           
           this.log(`🔌 Enabled server logging for session ${session.id}: ${serverLogPath}`);
         } catch (error) {
