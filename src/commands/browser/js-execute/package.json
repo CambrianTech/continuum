@@ -2,7 +2,24 @@
   "name": "@continuum/js-execute-command",
   "version": "1.0.0",
   "description": "JavaScript execution command with session logging integration",
-  "main": "JSExecuteCommand.js",
+  "main": "JSExecuteCommand.ts",
   "type": "module",
-  "keywords": ["javascript", "browser", "execution", "session", "logging", "devtools"]
+  "continuum": {
+    "core": "js-execute",
+    "category": "Browser",
+    "capabilities": [
+      "javascript-execution",
+      "session-logging",
+      "uuid-tracking"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": ["javascript", "browser", "execution", "session", "logging", "devtools"],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

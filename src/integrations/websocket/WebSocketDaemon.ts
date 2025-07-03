@@ -191,6 +191,24 @@ export class WebSocketDaemon extends BaseDaemon {
         
         this.log(`✅ Direct health check served (${req.method})`);
         return;
+      } else if (pathname === '/api/status') {
+        // Direct status check - comprehensive system info
+        const statusData = {
+          status: 'running',
+          timestamp: new Date().toISOString(),
+          daemons: Array.from(this.registeredDaemons.keys()).map(name => ({
+            name,
+            status: 'running' // TODO: Get actual daemon status
+          })),
+          routes: this.routeManager.getRegisteredRoutes(),
+          connections: this.wsManager.getConnectionCount(),
+          version: '2.0.0'
+        };
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(statusData));
+        this.log(`✅ Direct status check served (${req.method})`);
+        return;
       } else if (pathname.startsWith('/api/')) {
         // Route other API calls to command daemons
         const handled = await this.routeManager.handleRequest(pathname, req, res);
