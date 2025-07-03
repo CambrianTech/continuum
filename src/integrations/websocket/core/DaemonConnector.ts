@@ -70,9 +70,10 @@ export class DaemonConnector extends EventEmitter {
         }
         
         try {
-          // Use tsx-loader to execute TypeScript directly
-          const { register } = await import('tsx/cjs/api');
-          const unregister = register();
+          // Use dynamic import for tsx-loader
+          // @ts-ignore - tsx module resolution issue
+          const tsxModule = await import('tsx/cjs/api');
+          const unregister = tsxModule.register();
           
           try {
             // Import TypeScript file directly
@@ -116,10 +117,20 @@ export class DaemonConnector extends EventEmitter {
         if (!commandInfo) return null;
         
         try {
-          const commandModule = await import(commandInfo.path);
-          const CommandClass = commandModule[commandInfo.className];
-          return CommandClass.getDefinition ? CommandClass.getDefinition() : null;
-        } catch {
+          // Use dynamic import for tsx-loader
+          // @ts-ignore - tsx module resolution issue
+          const tsxModule = await import('tsx/cjs/api');
+          const unregister = tsxModule.register();
+          
+          try {
+            const commandModule = await import(commandInfo.originalTsPath);
+            const CommandClass = commandModule[commandInfo.className];
+            return CommandClass?.getDefinition ? CommandClass.getDefinition() : null;
+          } finally {
+            unregister();
+          }
+        } catch (error) {
+          console.warn(`Failed to get definition for ${command}:`, error instanceof Error ? error.message : String(error));
           return null;
         }
       }

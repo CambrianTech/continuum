@@ -32,6 +32,24 @@
 - **Server Daemon Logs**: Real-time process and command execution logging
 - **Correlation Engine**: Cross-reference client and server logs for root cause analysis
 
+### **✅ JTAG IMPLEMENTATION SUCCESS (2025-07-03)**
+
+**Complete Visibility Achieved:**
+- **Server logs**: All daemon activity logged to session `.continuum/sessions/*/logs/server.log`
+- **Browser logs**: Console capture system forwarding ALL browser activity
+- **Session-based**: Automatic logging for every session, no manual activation needed
+- **Command discovery**: 24 commands discovered, implementations loading dynamically
+
+**Key Achievement**: We can now see browser errors like:
+```
+[91.273s] 💬 Chat: Failed to load history: Error: Command 'chat_history' timed out
+[91.275s] Failed to send message to gpt-4o: Error: Command 'ai-model:chat' timed out
+[91.279s] 🏥 Server health: healthy
+[91.331s] ⚠️ Server widget discovery failed: Error: Command 'discover_widgets' timed out
+```
+
+This visibility enables debugging complex distributed issues across the browser-server boundary.
+
 ### **📋 Systematic Debugging Protocol**
 
 **Step 1: Monitor Connection Health**

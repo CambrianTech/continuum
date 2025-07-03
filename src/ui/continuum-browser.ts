@@ -39,14 +39,17 @@ class ContinuumBrowserAPI implements ContinuumAPI {
   private eventHandlers = new Map<string, ((data: any) => void)[]>();
   private messageQueue: any[] = [];
   private clientId: string | null = null;
+  private sessionId: string | null = null;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
 
   constructor() {
     this.version = (window as any).__CONTINUUM_VERSION__ || 'unknown';
-    console.log(`🌐 Continuum Browser API v${this.version}: Initializing...`);
+    // Don't use console.log before setting up capture
     this.setupConsoleErrorCapture();
+    // Now we can use console.log safely
+    console.log(`🌐 Continuum Browser API v${this.version}: Initializing...`);
   }
 
   private setupConsoleErrorCapture(): void {
@@ -141,12 +144,13 @@ class ContinuumBrowserAPI implements ContinuumAPI {
       }]);
     });
 
-    console.log('🚨 Console error capture initialized - all errors will forward to development portal');
+    originalConsole.log('🚨 Console error capture initialized - all errors will forward to development portal');
   }
 
   private forwardConsoleLog(type: string, args: any[]): void {
     try {
-      if (this.isConnected()) {
+      // Always capture console logs, queue if not connected
+      if (true) {  // Remove connection check - we'll queue messages if needed
         // Capture EVERYTHING - full data structures, stack traces, source locations
         const stackTrace = new Error().stack;
         const sourceLocation = this.getSourceLocation(stackTrace);
@@ -196,15 +200,30 @@ class ContinuumBrowserAPI implements ContinuumAPI {
           } : {})
         };
 
-        // Forward everything to development portal
-        this.execute('console', {
-          action: 'browser_console',
-          message: `[${type.toUpperCase()}] ${consoleData.message}`,
+        // Forward everything to development portal with sessionId
+        const consoleCommand = {
+          action: type,  // Use the actual console method type (log, error, warn, etc)
+          message: consoleData.message,
           source: 'console-complete-capture',
-          data: consoleData
-        }).catch(() => {
-          // Fail silently to avoid infinite loops
-        });
+          data: consoleData,
+          sessionId: this.sessionId  // Include sessionId for logging to session files
+        };
+
+        if (this.isConnected()) {
+          this.execute('console', consoleCommand).catch(() => {
+            // Fail silently to avoid infinite loops
+          });
+        } else {
+          // Queue console messages when not connected
+          this.messageQueue.push({
+            type: 'execute_command',
+            data: {
+              command: 'console',
+              params: JSON.stringify(consoleCommand),
+              requestId: `console_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+            }
+          });
+        }
       }
     } catch (error) {
       // Fail silently to avoid error loops
@@ -759,7 +778,8 @@ class ContinuumBrowserAPI implements ContinuumAPI {
         data: {
           command,
           params: typeof params === 'string' ? params : JSON.stringify(params),
-          requestId
+          requestId,
+          sessionId: this.sessionId
         }
       });
     });
@@ -809,7 +829,8 @@ class ContinuumBrowserAPI implements ContinuumAPI {
       this.ws.send(JSON.stringify({
         ...message,
         timestamp: new Date().toISOString(),
-        clientId: this.clientId
+        clientId: this.clientId,
+        sessionId: this.sessionId
       }));
     } else {
       // Queue message for when connection is ready
@@ -828,6 +849,20 @@ class ContinuumBrowserAPI implements ContinuumAPI {
         
         // Send queued messages
         this.flushMessageQueue();
+        return;
+      }
+
+      // Handle session_ready message - store sessionId for console logging
+      if (message.type === 'session_ready') {
+        this.sessionId = message.data?.sessionId;
+        console.log(`🌐 Continuum API: Session ID assigned: ${this.sessionId}`);
+        console.log(`🔌 Session type: ${message.data?.devtools ? 'DevTools enabled' : 'Standard'}`);
+        
+        // Flush any queued console messages now that we have sessionId
+        this.flushMessageQueue();
+        
+        // Emit session ready event for widgets
+        this.emit('session_ready', message.data);
         return;
       }
 

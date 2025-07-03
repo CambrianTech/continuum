@@ -53,6 +53,9 @@ export class ConsoleCommand extends DirectCommand {
     try {
       const { action, message, source, data } = params;
       
+      // DEBUG: Log all console commands received
+      console.log(`[ConsoleCommand] Received: action=${action}, source=${source}, message=${message?.substring(0, 100)}...`);
+      
       if (!action || !message) {
         return this.createErrorResult('Console forwarding requires action and message parameters');
       }
@@ -68,8 +71,7 @@ export class ConsoleCommand extends DirectCommand {
         environment: 'browser'
       };
 
-      // TODO: Forward to actual development portal
-      // For now, log to server console for JTAG development
+      // Format console output
       const iconMap: Record<string, string> = {
         'log': '📝',
         'error': '❌', 
@@ -79,9 +81,40 @@ export class ConsoleCommand extends DirectCommand {
       };
       const icon = iconMap[action as string] || '📝';
 
+      // Log to server console (always)
       console.log(`${icon} PORTAL BRIDGE [${source}]: ${message}`);
       if (data && Object.keys(data).length > 0) {
         console.log(`   Data:`, data);
+      }
+
+      // Write to current session's browser log
+      // TODO: Get sessionId properly from context when WebSocket integration is fixed
+      try {
+        // Find the current session directory
+        const fs = await import('fs/promises');
+        const path = await import('path');
+        const sessionBase = '.continuum/sessions/user/system';
+        
+        // Get the most recent session directory
+        const dirs = await fs.readdir(sessionBase);
+        if (dirs.length > 0) {
+          // Sort by creation time (embedded in session ID)
+          const latestSession = dirs.sort().reverse()[0];
+          const browserLogPath = path.join(sessionBase, latestSession, 'logs', 'browser.log');
+          
+          // Format log entry for session file
+          const logEntry = `[${timestamp}] ${icon} BROWSER CONSOLE [${source}]: ${message}`;
+          
+          // Write to session browser log
+          await fs.appendFile(browserLogPath, logEntry + '\n');
+          
+          // Add data on separate line if present
+          if (data && Object.keys(data).length > 0) {
+            await fs.appendFile(browserLogPath, `   Data: ${JSON.stringify(data)}\n`);
+          }
+        }
+      } catch (error) {
+        console.warn(`⚠️ Failed to write to session browser log: ${error instanceof Error ? error.message : String(error)}`);
       }
 
       return this.createSuccessResult(
@@ -89,7 +122,8 @@ export class ConsoleCommand extends DirectCommand {
         {
           forwarded: true,
           timestamp,
-          consoleEntry
+          consoleEntry,
+          sessionLogged: false
         }
       );
       

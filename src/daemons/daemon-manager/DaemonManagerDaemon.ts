@@ -66,7 +66,7 @@ export class DaemonManagerDaemon extends BaseDaemon {
     this.log('🚀 Daemon Manager starting - I will manage all other daemons');
     
     // Start all daemons in order
-    for (const [name, daemon] of this.daemons) {
+    for (const [name, _daemon] of this.daemons) {
       await this.startDaemon(name);
     }
     
@@ -94,7 +94,7 @@ export class DaemonManagerDaemon extends BaseDaemon {
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
     switch (message.type) {
       case 'status':
-        return this.getStatus();
+        return this.getDaemonStatuses();
       
       case 'restart_daemon':
         return this.restartDaemon(message.data.daemon);
@@ -157,7 +157,7 @@ export class DaemonManagerDaemon extends BaseDaemon {
       // Handle exit
       daemon.process.on('exit', (code) => {
         daemon.status = 'stopped';
-        daemon.process = undefined;
+        delete daemon.process;
         
         if (code !== 0) {
           this.log(`❌ ${name} daemon crashed with code ${code}`, 'error');
@@ -219,7 +219,7 @@ export class DaemonManagerDaemon extends BaseDaemon {
     });
     
     daemon.status = 'stopped';
-    daemon.process = undefined;
+    delete daemon.process;
     
     this.log(`✅ ${name} daemon stopped`);
     
@@ -271,7 +271,7 @@ export class DaemonManagerDaemon extends BaseDaemon {
             // Process is dead
             this.log(`⚠️ ${name} daemon died unexpectedly`, 'warn');
             daemon.status = 'stopped';
-            daemon.process = undefined;
+            delete daemon.process;
             this.handleDaemonCrash(name);
           }
         }
@@ -279,7 +279,7 @@ export class DaemonManagerDaemon extends BaseDaemon {
     }, 10000);
   }
   
-  private getStatus(): DaemonResponse {
+  private getDaemonStatuses(): DaemonResponse {
     const status: Record<string, any> = {};
     
     for (const [name, daemon] of this.daemons) {

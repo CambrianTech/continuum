@@ -11,7 +11,7 @@
  *        npm exec tsx src/system/testing/test/universal-layer-runner.ts --layer=2
  */
 
-import { AllWidgetsTestRunner } from '../../../ui/components/test/AllWidgetsTest.js';
+import { AllWidgetsTestRunner } from '../../../ui/components/test/AllWidgetsTest';
 import * as path from 'path';
 import * as fs from 'fs';
 

@@ -271,6 +271,7 @@ export class WebSocketDaemon extends BaseDaemon {
         const commandName = commandData.command;
         const commandParams = commandData.params;
         const requestId = commandData.requestId;
+        const sessionId = commandData.sessionId; // Get sessionId from browser
         
         // Parse parameters (they might be JSON string from browser)
         let parsedParams = {};
@@ -296,7 +297,8 @@ export class WebSocketDaemon extends BaseDaemon {
             context: {
               connectionId: connectionId,
               websocket: true,
-              requestId: requestId
+              requestId: requestId,
+              sessionId: sessionId // Include sessionId in context
             }
           }
         };
