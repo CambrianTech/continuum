@@ -107,7 +107,7 @@ export class MessageHandler extends EventEmitter {
   /**
    * Handle route registration from daemons
    */
-  private async handleRouteRegistration(connectionId: string, message: any): Promise<void> {
+  private async handleRouteRegistration(connectionId: string, _message: any): Promise<void> {
     // This would typically update the HTTP route table
     // For now, just acknowledge the registration
     

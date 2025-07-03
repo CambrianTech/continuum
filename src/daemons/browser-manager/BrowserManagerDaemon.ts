@@ -445,39 +445,4 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       this.log(`❌ Failed to start console logging for session ${sessionId}: ${errorMessage}`, 'error');
     }
   }
-  
-  /**
-   * Simple tab consolidation - just check WebSocket connections and close extras
-   */
-  private async checkAndConsolidateTabs(): Promise<void> {
-    try {
-      // Ask WebSocket daemon how many connections we have
-      const wsStatus = await this.sendMessage('websocket', 'get_status', {});
-      
-      if (wsStatus.success && wsStatus.data) {
-        const connectionCount = wsStatus.data.activeConnections || 0;
-        
-        if (connectionCount > 1) {
-          this.log(`⚠️ Detected ${connectionCount} WebSocket connections (tabs) - consolidating to 1`);
-          
-          // Simple approach: reload all but the first tab to close them
-          // The first tab will remain, others will get a reload command that closes them
-          const consolidateResponse = await this.sendMessage('websocket', 'consolidate_connections', {
-            keepFirst: true
-          });
-          
-          if (consolidateResponse.success) {
-            this.log(`✅ Tab consolidation complete - kept 1 primary tab`);
-          }
-        } else if (connectionCount === 1) {
-          // Perfect - just one tab
-        } else if (connectionCount === 0) {
-          this.log(`📊 No active tabs detected - ready to launch when needed`);
-        }
-      }
-    } catch (error) {
-      // Simple approach - if we can't check, just continue
-      this.log(`⚠️ Could not check tab status: ${error}`, 'debug');
-    }
-  }
 }
