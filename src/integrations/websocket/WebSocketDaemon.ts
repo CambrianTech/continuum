@@ -26,6 +26,7 @@ export class WebSocketDaemon extends BaseDaemon {
   private httpServer: any = null;
   private config: Required<ServerConfig>;
   private registeredDaemons = new Map<string, any>();
+  private connectionSessions = new Map<string, string>(); // connectionId -> sessionId
 
   constructor(config: ServerConfig = {}) {
     super();
@@ -259,6 +260,11 @@ export class WebSocketDaemon extends BaseDaemon {
         this.routeCommandToProcessor(connectionId, message).catch(error => {
           this.log(`❌ Failed to route command: ${error}`, 'error');
         });
+      } else if (message.type === 'console_log' || message.type === 'browser_console') {
+        // Handle browser console messages and write to session browser.log
+        this.handleBrowserConsoleMessage(connectionId, message).catch(error => {
+          this.log(`❌ Failed to handle console message: ${error}`, 'error');
+        });
       } else if (message.type === 'register_http_routes') {
         // Handle route registration from daemons via WebSocket
         const response = this.handleRouteRegistration(message);
@@ -289,7 +295,7 @@ export class WebSocketDaemon extends BaseDaemon {
         const commandName = commandData.command;
         const commandParams = commandData.params;
         const requestId = commandData.requestId;
-        const sessionId = commandData.sessionId; // Get sessionId from browser
+        const sessionId = this.getSessionIdForConnection(connectionId) || commandData.sessionId; // Get sessionId from connection mapping first
         
         // Parse parameters (they might be JSON string from browser)
         let parsedParams = {};
@@ -517,12 +523,30 @@ export class WebSocketDaemon extends BaseDaemon {
       
       this.log(`🔌 New ${connectionType.type} connection: ${connectionId}`);
       
-      // 2. Check if this connection needs a browser session
+      // 2. UNIVERSAL SESSION CREATION - ANY connection gets a session
+      const session = await this.createUniversalSession(connectionId, connectionType);
+      if (session) {
+        this.log(`✅ Session created for ${connectionType.type} connection: ${session.sessionId}`);
+        this.log(`📝 Server logs: ${session.logPaths.server}`);
+        this.log(`🌐 Browser logs: ${session.logPaths.browser}`);
+        this.log(`📸 Screenshots: ${session.directories.screenshots}`);
+        
+        // Emit session created event for JTAG observability
+        this.emit('session_created', {
+          sessionId: session.sessionId,
+          sessionType: session.type,
+          connectionId: connectionId,
+          connectionType: connectionType.type,
+          logPaths: session.logPaths
+        });
+      }
+      
+      // 3. Check if this connection needs a browser window
       if (this.shouldCreateBrowserSession(connectionType)) {
         await this.ensureBrowserSession(connectionId, connectionType);
       }
       
-      // 3. Handle DevTools mode for git hooks and portal connections
+      // 4. Handle DevTools mode for git hooks and portal connections
       if (connectionType.needsDevTools) {
         await this.setupDevToolsMode(connectionId, connectionType);
       }
@@ -534,12 +558,217 @@ export class WebSocketDaemon extends BaseDaemon {
   }
 
   /**
+   * UNIVERSAL SESSION CREATION - Create session for ANY connection type
+   * This implements "thin client anywhere" - all connections get sessions
+   */
+  private async createUniversalSession(connectionId: string, connectionType: any): Promise<any> {
+    try {
+      const sessionManager = this.registeredDaemons.get('session-manager');
+      if (!sessionManager) {
+        this.log('⚠️ Session manager not available for universal session creation', 'warn');
+        return null;
+      }
+
+      // Determine session parameters based on connection type
+      const sessionParams = this.getSessionParamsForConnection(connectionType, connectionId);
+      
+      // Create session via session-manager daemon
+      const sessionMessage = {
+        id: `create-${Date.now()}`,
+        from: 'websocket-daemon',
+        to: 'session-manager',
+        type: 'create_session',
+        timestamp: new Date(),
+        data: sessionParams
+      };
+
+      const response = await sessionManager.handleMessage(sessionMessage);
+      
+      if (!response.success) {
+        this.log(`❌ Universal session creation failed: ${response.error}`, 'error');
+        return null;
+      }
+
+      const session = response.data.session;
+      this.log(`✅ Universal session created: ${session.id} for ${connectionType.type} connection`);
+      
+      // Enable session logging for ALL daemons - this is critical for JTAG observability
+      const serverLogPath = `${session.artifacts.storageDir}/logs/server.log`;
+      this.enableSessionLoggingForAllDaemons(serverLogPath, session.id);
+      
+      // Store the connection-to-session mapping for browser console logging
+      this.connectionSessions.set(connectionId, session.id);
+      
+      return {
+        sessionId: session.id,
+        type: session.type,
+        owner: session.owner,
+        logPaths: {
+          server: serverLogPath,
+          browser: `${session.artifacts.storageDir}/logs/browser.log`
+        },
+        directories: {
+          screenshots: `${session.artifacts.storageDir}/screenshots`,
+          files: `${session.artifacts.storageDir}/files`
+        }
+      };
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Universal session creation error: ${errorMessage}`, 'error');
+      return null;
+    }
+  }
+
+  /**
+   * Enable session logging for all registered daemons
+   * This ensures JTAG observability - all daemon activity goes to session logs
+   */
+  private enableSessionLoggingForAllDaemons(serverLogPath: string, sessionId: string): void {
+    this.log(`📝 Enabling session logging for all daemons: ${serverLogPath}`);
+    
+    // Enable logging for all registered daemons
+    for (const [name, daemon] of this.registeredDaemons) {
+      try {
+        if (daemon && typeof daemon.setSessionLogPath === 'function') {
+          daemon.setSessionLogPath(serverLogPath);
+          this.log(`✅ Session logging enabled for ${name} daemon`);
+          
+          // Log daemon startup to session log for JTAG observability
+          daemon.log(`✅ ${name} daemon session logging enabled for session ${sessionId}`, 'info');
+        } else {
+          this.log(`⚠️ Daemon ${name} does not support session logging`, 'warn');
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.log(`⚠️ Failed to enable logging for ${name}: ${errorMessage}`, 'warn');
+      }
+    }
+    
+    // Also enable logging for this daemon (WebSocketDaemon)
+    try {
+      this.setSessionLogPath(serverLogPath);
+      this.log(`✅ WebSocket daemon session logging enabled for session ${sessionId}`, 'info');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`⚠️ Failed to enable WebSocket daemon logging: ${errorMessage}`, 'warn');
+    }
+  }
+
+  /**
+   * Get session parameters based on connection type
+   */
+  private getSessionParamsForConnection(connectionType: any, connectionId: string): any {
+    const baseParams = {
+      type: 'development', // Default type
+      owner: 'system',
+      options: {
+        autoCleanup: true,
+        cleanupAfterMs: 2 * 60 * 60 * 1000, // 2 hours
+        connectionId: connectionId
+      }
+    };
+
+    // Customize based on connection type
+    switch (connectionType.type) {
+      case 'user-browser':
+        return { ...baseParams, type: 'development', owner: 'user' };
+      case 'portal':
+        return { ...baseParams, type: 'portal', owner: 'ai-assistant' };
+      case 'git-hook':
+        return { ...baseParams, type: 'git-hook', owner: 'automation' };
+      case 'api-client':
+        return { ...baseParams, type: 'development', owner: 'api' };
+      default:
+        return baseParams;
+    }
+  }
+
+  /**
+   * Handle browser console messages and write them to session browser.log
+   * This enables browser console capture via WebSocket instead of DevTools
+   */
+  private async handleBrowserConsoleMessage(connectionId: string, message: any): Promise<void> {
+    try {
+      // Get the session ID for this connection
+      const sessionId = this.getSessionIdForConnection(connectionId);
+      if (!sessionId) {
+        this.log(`⚠️ No session found for connection ${connectionId} - cannot log console message`, 'warn');
+        return;
+      }
+
+      // Get session manager to find browser log path
+      const sessionManager = this.registeredDaemons.get('session-manager');
+      if (!sessionManager) {
+        this.log(`⚠️ Session manager not available for console logging`, 'warn');
+        return;
+      }
+
+      // Get session info to find browser log path
+      const sessionInfo = await sessionManager.handleMessage({
+        type: 'get_session_info',
+        data: { sessionId: sessionId }
+      });
+
+      if (!sessionInfo.success) {
+        this.log(`⚠️ Could not get session info for console logging: ${sessionInfo.error}`, 'warn');
+        return;
+      }
+
+      const browserLogPath = sessionInfo.data?.artifacts?.logs?.client?.[0];
+      if (!browserLogPath) {
+        this.log(`⚠️ No browser log path found for session ${sessionId}`, 'warn');
+        return;
+      }
+
+      // Format the console message for logging
+      const timestamp = new Date().toISOString();
+      const logEntry = `[${timestamp}] Console Message from ${connectionId}:\n   Type: ${message.data?.level || 'log'}\n   Message: ${message.data?.message || JSON.stringify(message.data)}\n   Data: ${JSON.stringify(message.data)}\n`;
+
+      // Write to browser log file
+      await this.writeToBrowserLog(browserLogPath, logEntry);
+      
+      this.log(`📝 Browser console message logged to ${browserLogPath}`);
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to handle browser console message: ${errorMessage}`, 'error');
+    }
+  }
+
+  /**
+   * Write console message to browser log file
+   */
+  private async writeToBrowserLog(logPath: string, content: string): Promise<void> {
+    try {
+      const fs = await import('fs/promises');
+      await fs.appendFile(logPath, content);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to write to browser log ${logPath}: ${errorMessage}`, 'error');
+    }
+  }
+
+  /**
+   * Get session ID for a connection using the stored mapping
+   */
+  private getSessionIdForConnection(connectionId: string): string | null {
+    return this.connectionSessions.get(connectionId) || null;
+  }
+
+  /**
    * Handle connection closure - cleanup sessions if needed
    */
   private async handleConnectionClosed(connectionId: string): Promise<void> {
     try {
-      // Could add session cleanup logic here if needed
-      this.log(`🔌 Connection ${connectionId} closed - session cleanup handled by SessionManager`);
+      // Clean up connection-to-session mapping
+      const sessionId = this.connectionSessions.get(connectionId);
+      if (sessionId) {
+        this.connectionSessions.delete(connectionId);
+        this.log(`🔌 Connection ${connectionId} closed - removed session mapping for ${sessionId}`);
+      } else {
+        this.log(`🔌 Connection ${connectionId} closed - no session mapping found`);
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.log(`⚠️  Error handling connection closure for ${connectionId}: ${errorMessage}`, 'error');
