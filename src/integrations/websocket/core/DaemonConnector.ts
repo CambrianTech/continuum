@@ -70,33 +70,35 @@ export class DaemonConnector extends EventEmitter {
         }
         
         try {
-          // Check if compiled .js file exists
-          const fs = await import('fs');
-          if (!fs.existsSync(commandInfo.path)) {
-            throw new Error(`Compiled command file not found: ${commandInfo.path}`);
-          }
+          // Use tsx-loader to execute TypeScript directly
+          const { register } = await import('tsx/cjs/api');
+          const unregister = register();
           
-          // Dynamic import of the compiled command
-          const commandModule = await import(commandInfo.path);
-          
-          const CommandClass = commandModule[commandInfo.className];
-          
-          if (!CommandClass || !CommandClass.execute) {
+          try {
+            // Import TypeScript file directly
+            const commandModule = await import(commandInfo.originalTsPath);
+            
+            const CommandClass = commandModule[commandInfo.className];
+            
+            if (!CommandClass || !CommandClass.execute) {
+              return {
+                success: false,
+                error: `Command ${command} does not have execute method. Module exports: [${Object.keys(commandModule).join(', ')}]`,
+                processor: 'dynamic-command-discovery'
+              };
+            }
+            
+            const result = await CommandClass.execute(params, context);
+            
             return {
-              success: false,
-              error: `Command ${command} does not have execute method. Module exports: [${Object.keys(commandModule).join(', ')}]`,
-              processor: 'dynamic-command-discovery'
+              success: result.success,
+              processor: 'dynamic-command-discovery',
+              ...(result.data !== undefined && { data: result.data }),
+              ...(result.error !== undefined && { error: result.error })
             };
+          } finally {
+            unregister();
           }
-          
-          const result = await CommandClass.execute(params, context);
-          
-          return {
-            success: result.success,
-            processor: 'dynamic-command-discovery',
-            ...(result.data !== undefined && { data: result.data }),
-            ...(result.error !== undefined && { error: result.error })
-          };
           
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
@@ -188,6 +190,12 @@ export class DaemonConnector extends EventEmitter {
       }
       
       console.log(`✅ Command discovery complete: ${commands.size} commands found`);
+      if (commands.size > 0) {
+        console.log('📋 Discovered commands:');
+        for (const [name, info] of commands) {
+          console.log(`  - ${name}: ${info.className} (${info.directory})`);
+        }
+      }
       return commands;
       
     } catch (error) {

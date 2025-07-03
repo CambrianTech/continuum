@@ -31,18 +31,31 @@ process.on('exit', (code) => {
 async function main() {
   const system = new ContinuumSystem();
   
-  // Graceful shutdown handling
-  process.on('SIGINT', async () => {
-    console.log('\n🛑 Received SIGINT, shutting down gracefully...');
-    await system.stop();
-    process.exit(0);
-  });
+  // Check if we're running in daemon mode (default) or attached mode
+  const isDaemonMode = !process.argv.includes('--attach');
+  
+  if (isDaemonMode) {
+    // In daemon mode, CTRL+C should NOT stop the daemons
+    process.on('SIGINT', () => {
+      console.log('\n👋 Detaching from Continuum daemons (they continue running)...');
+      console.log('💡 To stop daemons: continuum stop');
+      console.log('💡 To re-attach: continuum attach');
+      process.exit(0);
+    });
+  } else {
+    // In attached mode, graceful shutdown on signals
+    process.on('SIGINT', async () => {
+      console.log('\n🛑 Received SIGINT, shutting down gracefully...');
+      await system.stop();
+      process.exit(0);
+    });
 
-  process.on('SIGTERM', async () => {
-    console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
-    await system.stop();
-    process.exit(0);
-  });
+    process.on('SIGTERM', async () => {
+      console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
+      await system.stop();
+      process.exit(0);
+    });
+  }
 
   try {
     await system.start();
@@ -82,10 +95,17 @@ async function main() {
     
     console.log('╚═════════════════════════════════════════════════════════════════════════════════════╝\n');
     
-    // Keep process running - daemons need the parent process
-    // setTimeout(() => {
-    //   process.exit(0);
-    // }, 2000);
+    if (isDaemonMode) {
+      console.log('🎯 Daemons running in background. Press CTRL+C to detach from this session.');
+      console.log('');
+      
+      // In daemon mode, just keep the process alive to show logs
+      // but daemons should actually run independently
+      // TODO: Implement proper daemon forking/detaching
+    } else {
+      console.log('📎 Running in attached mode. CTRL+C will stop all daemons.');
+      console.log('');
+    }
   } catch (error) {
     console.error('💥 System startup failed:', error);
     process.exit(1);

@@ -62,13 +62,20 @@ export class RouteManager {
     }
 
     try {
+      // Parse request body if it's a POST/PUT request
+      let body: any = null;
+      if (req.method === 'POST' || req.method === 'PUT') {
+        body = await this.parseRequestBody(req);
+      }
+
       const message = {
         type: handler.handlerName,
         data: {
           pathname,
           method: req.method,
           headers: req.headers,
-          url: req.url
+          url: req.url,
+          body
         }
       };
 
@@ -121,5 +128,29 @@ export class RouteManager {
 
   getRegisteredRoutes(): string[] {
     return Array.from(this.routes.keys());
+  }
+
+  private parseRequestBody(req: any): Promise<any> {
+    return new Promise((resolve, reject) => {
+      let body = '';
+      req.on('data', (chunk: any) => {
+        body += chunk.toString();
+      });
+      req.on('end', () => {
+        if (!body) {
+          resolve(null);
+          return;
+        }
+        try {
+          // Try to parse as JSON
+          const parsed = JSON.parse(body);
+          resolve(parsed);
+        } catch {
+          // If not JSON, return raw body
+          resolve(body);
+        }
+      });
+      req.on('error', reject);
+    });
   }
 }
