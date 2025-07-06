@@ -323,23 +323,28 @@ export class SessionManagerDaemon extends BaseDaemon {
           return { success: false, error: `Session ${sessionPreference} not found` };
         }
       } else {
-        // Default: find or create current session
+        // Default: find or create SHARED session (not owner-specific)
+        // Look for the shared development session that everyone uses
         session = this.getLatestSession({
-          owner,
-          type,
+          type: 'development',
           active: true
+          // Note: removed owner filter to find shared session
         });
 
         if (!session) {
+          // Create the shared session with a well-known owner
           session = await this.createSession({
-            type,
-            owner,
-            context,
+            type: 'development',
+            owner: 'shared', // Shared session owned by 'shared' not specific user
+            context: 'development',
             starter: source,
-            identity: { name: owner, user: owner }
+            identity: { name: 'shared-session', user: 'shared' }
           });
           action = 'created_new';
           newLogFiles = true;
+          this.log(`✨ Created new shared development session: ${session.id}`);
+        } else {
+          this.log(`🔄 Joining existing shared development session: ${session.id}`);
         }
       }
 

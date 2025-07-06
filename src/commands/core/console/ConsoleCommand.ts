@@ -88,55 +88,62 @@ export class ConsoleCommand extends DirectCommand {
         console.log(`   Data:`, data);
       }
 
-      // Write to ALL active session browser logs (fix for inconsistent sessionId routing)
+      // Write to specific session browser log only (session affinity)
       let sessionLogged = false;
       try {
+        // Get sessionId from context (passed from WebSocketDaemon connection mapping)
+        // Context structure: _context can have sessionId directly or nested in context
+        const sessionId = _context?.sessionId || _context?.context?.sessionId;
+        
+        if (!sessionId) {
+          console.warn(`⚠️ No sessionId in context - cannot determine which session to log to`);
+          return this.createSuccessResult('Console message forwarded to server console only', {
+            forwarded: true,
+            timestamp,
+            consoleEntry,
+            sessionLogged: false,
+            warning: 'No session context - logged to server console only'
+          });
+        }
+
         const fs = await import('fs/promises');
         
         // Format log entry for session file
         const logEntry = `[${timestamp}] ${icon} BROWSER CONSOLE [${source}]: ${message}`;
         
-        // Find ALL active session directories and write to them
+        // Try to find the specific session's browser log
         const sessionBasePaths = [
           '.continuum/sessions/user/user',
           '.continuum/sessions/user/system'
         ];
         
-        let loggedToAnySession = false;
         for (const basePath of sessionBasePaths) {
+          const browserLogPath = `${basePath}/${sessionId}/logs/browser.log`;
           try {
-            const sessions = await fs.readdir(basePath);
-            for (const sessionDir of sessions) {
-              const browserLogPath = `${basePath}/${sessionDir}/logs/browser.log`;
-              try {
-                // Check if browser.log exists
-                await fs.access(browserLogPath);
-                
-                // Write to this session's browser log
-                await fs.appendFile(browserLogPath, logEntry + '\n');
-                
-                // Add data on separate line if present
-                if (data && Object.keys(data).length > 0) {
-                  await fs.appendFile(browserLogPath, `   Data: ${JSON.stringify(data)}\n`);
-                }
-                
-                loggedToAnySession = true;
-              } catch {
-                // This session's browser.log doesn't exist or isn't accessible, skip it
-              }
+            // Check if this specific session's browser.log exists
+            await fs.access(browserLogPath);
+            
+            // Write to this session's browser log only
+            await fs.appendFile(browserLogPath, logEntry + '\n');
+            
+            // Add data on separate line if present
+            if (data && Object.keys(data).length > 0) {
+              await fs.appendFile(browserLogPath, `   Data: ${JSON.stringify(data)}\n`);
             }
+            
+            sessionLogged = true;
+            break; // Found the session, stop looking
           } catch {
-            // This base path doesn't exist, skip it
+            // This session path doesn't exist, try next base path
           }
         }
         
-        if (loggedToAnySession) {
-          sessionLogged = true;
-        } else {
-          console.warn(`⚠️ No active sessions found - console message not logged to any browser.log files`);
+        if (!sessionLogged) {
+          console.warn(`⚠️ Session ${sessionId} browser.log not found - console message not logged to session file`);
         }
+        
       } catch (error) {
-        console.warn(`⚠️ Failed to write to session browser logs: ${error instanceof Error ? error.message : String(error)}`);
+        console.warn(`⚠️ Failed to write to session browser log: ${error instanceof Error ? error.message : String(error)}`);
       }
 
       return this.createSuccessResult(

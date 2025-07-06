@@ -14,19 +14,51 @@ export class ConnectCommand extends DirectCommand {
       name: 'connect',
       category: 'kernel',
       icon: '🔌',
-      description: 'Connect to daemon system and return session information',
-      parameters: {},
+      description: 'Connect to daemon system with session management',
+      parameters: {
+        sessionId: {
+          type: 'string',
+          description: 'Specific session ID to connect to',
+          optional: true
+        },
+        sessionType: {
+          type: 'string',
+          description: 'Type of session (development, persona, etc.)',
+          optional: true,
+          default: 'development'
+        },
+        owner: {
+          type: 'string',
+          description: 'Session owner (user, system, etc.)',
+          optional: true,
+          default: 'user'
+        },
+        forceNew: {
+          type: 'boolean',
+          description: 'Force create new session instead of reusing existing',
+          optional: true,
+          default: false
+        }
+      },
       examples: [
         { 
-          description: 'Connect to daemon system', 
+          description: 'Connect to shared development session', 
           command: `{}` 
+        },
+        { 
+          description: 'Connect to specific session', 
+          command: `{"sessionId": "development-system-abc123"}` 
+        },
+        { 
+          description: 'Create new persona session', 
+          command: `{"sessionType": "persona", "owner": "alice", "forceNew": true}` 
         }
       ],
-      usage: 'Thin client entry point - returns session info for display'
+      usage: 'Thin client entry point with session affinity - like web session cookies'
     };
   }
 
-  protected static async executeOperation(_params: any = {}, context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, context?: CommandContext): Promise<CommandResult> {
     try {
       // Get session manager daemon through proper WebSocket context
       const sessionManagerDaemon = context?.websocket?.registeredDaemons?.get('session-manager');
@@ -35,14 +67,30 @@ export class ConnectCommand extends DirectCommand {
         return this.createErrorResult('SessionManagerDaemon not available in context - system not properly initialized');
       }
 
-      // Get the current active session from session manager
+      // Extract session parameters from the request
+      const sessionId = params.sessionId || '';
+      const sessionType = params.sessionType || 'development';
+      const owner = params.owner || 'user';
+      const forceNew = params.forceNew || false;
+      
+      // Determine session preference based on parameters
+      let sessionPreference: string;
+      if (forceNew) {
+        sessionPreference = 'new';
+      } else if (sessionId) {
+        sessionPreference = sessionId;
+      } else {
+        sessionPreference = 'current'; // Default to shared session
+      }
+
+      // Connect to session manager with parameters
       const sessionResult = await sessionManagerDaemon.handleConnect({
         source: 'continuum-cli',
-        owner: 'system',
-        sessionPreference: 'current',
+        owner: owner,
+        sessionPreference: sessionPreference,
         capabilities: ['browser', 'commands', 'screenshots'],
         context: 'development',
-        type: 'development'
+        type: sessionType
       });
       
       if (!sessionResult.success) {
