@@ -313,7 +313,7 @@ class UniversalLayerTesting {
               try {
                 // Run vitest on this specific file
                 const { execSync } = await import('child_process');
-                const result = execSync(`npx vitest --run ${testPath}`, {
+                execSync(`npx vitest --run ${testPath}`, {
                   stdio: 'pipe',
                   cwd: this.rootDir,
                   timeout: 30000 // 30 second timeout per test

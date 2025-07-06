@@ -70,6 +70,11 @@ export class DaemonConnector extends EventEmitter {
         }
         
         try {
+          // DEBUG: Log command execution attempt
+          console.log(`🔍 [DaemonConnector] Attempting to execute: ${command}`);
+          console.log(`🔍 [DaemonConnector] Command file: ${commandInfo.originalTsPath}`);
+          console.log(`🔍 [DaemonConnector] Class name: ${commandInfo.className}`);
+          
           // Use dynamic import for tsx-loader
           // @ts-ignore - tsx module resolution issue
           const tsxModule = await import('tsx/cjs/api');
@@ -78,9 +83,13 @@ export class DaemonConnector extends EventEmitter {
           try {
             // Import TypeScript file directly using file:// URL for absolute paths
             const fileUrl = `file://${commandInfo.originalTsPath}`;
+            console.log(`🔍 [DaemonConnector] Importing: ${fileUrl}`);
             const commandModule = await import(fileUrl);
+            console.log(`🔍 [DaemonConnector] Module exports: [${Object.keys(commandModule).join(', ')}]`);
             
             const CommandClass = commandModule[commandInfo.className];
+            console.log(`🔍 [DaemonConnector] CommandClass found: ${!!CommandClass}`);
+            console.log(`🔍 [DaemonConnector] Execute method: ${!!CommandClass?.execute}`);
             
             if (!CommandClass || !CommandClass.execute) {
               return {
@@ -90,7 +99,10 @@ export class DaemonConnector extends EventEmitter {
               };
             }
             
+            console.log(`🔍 [DaemonConnector] Calling ${commandInfo.className}.execute() with params:`, params);
+            console.log(`🔍 [DaemonConnector] Context being passed:`, JSON.stringify(context, null, 2));
             const result = await CommandClass.execute(params, context);
+            console.log(`🔍 [DaemonConnector] Result:`, result);
             
             return {
               success: result.success,

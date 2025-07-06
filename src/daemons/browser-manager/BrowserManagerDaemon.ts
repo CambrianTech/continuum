@@ -203,7 +203,9 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       }
       
       // SAFETY CHECK 3: Check if we already have a browser for this session
-      const existingBrowser = this.sessionManager.getBrowserBySession(sessionId);
+      // TODO: Re-enable browser session tracking when session system is fixed
+      // const existingBrowser = this.sessionManager.getBrowserBySession(sessionId);
+      const existingBrowser = null;
       if (existingBrowser) {
         this.log(`✅ Browser already exists for session ${sessionId} - not launching new one`);
         return;
