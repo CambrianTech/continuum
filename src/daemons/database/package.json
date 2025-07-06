@@ -5,6 +5,8 @@
   "main": "DatabaseDaemon.ts",
   "type": "module",
   "continuum": {
+    "type": "daemon",
+    "priority": 60,
     "daemon": "database",
     "category": "Storage",
     "capabilities": [

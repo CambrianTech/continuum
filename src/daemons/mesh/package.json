@@ -27,6 +27,8 @@
     "jest": "^29.5.0"
   },
   "continuum": {
+    "type": "daemon",
+    "priority": 95,
     "daemon": true,
     "capabilities": [
       "peer-discovery",

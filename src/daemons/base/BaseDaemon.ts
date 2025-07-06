@@ -14,6 +14,16 @@ export abstract class BaseDaemon extends EventEmitter {
   public abstract readonly name: string;
   public abstract readonly version: string;
   
+  /**
+   * Static metadata for daemon discovery
+   * Daemons can override this to provide custom configuration
+   */
+  static readonly metadata = {
+    autoStart: true,
+    priority: 50,
+    dependencies: [] as string[]
+  };
+  
   // Abstract lifecycle methods that subclasses must implement
   protected abstract onStart(): Promise<void>;
   protected abstract onStop(): Promise<void>;
