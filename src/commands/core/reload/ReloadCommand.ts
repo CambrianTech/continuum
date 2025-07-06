@@ -47,7 +47,10 @@ export class ReloadCommand extends BaseCommand {
       category: 'core',
       icon: '🔄',
       description: 'Reload browser page or refresh system components',
-      parameters: { target: 'string', force: 'boolean' },
+      parameters: { 
+        target: { type: 'string' as const, description: 'Target to reload (page|browser|daemon|component|system)' },
+        force: { type: 'boolean' as const, description: 'Force reload clearing all caches', required: false }
+      },
       examples: [
         {
           description: 'Reload the current page',
@@ -71,7 +74,7 @@ export class ReloadCommand extends BaseCommand {
   }
 
   static async execute(params: any): Promise<CommandResult> {
-    const parsedParams = this.parseParams(params);
+    const parsedParams = this.parseParams(params) as any;
     const target = parsedParams.target || parsedParams._?.[0] || 'page';
     const options = { ...parsedParams };
     

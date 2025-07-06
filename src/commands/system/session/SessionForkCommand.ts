@@ -12,20 +12,19 @@ export class SessionForkCommand extends BaseCommand {
       category: 'system',
       parameters: {
         sessionId: {
-          type: 'string',
+          type: 'string' as const,
           description: 'Session ID to fork from',
           required: true
         },
         newOwner: {
-          type: 'string', 
+          type: 'string' as const, 
           description: 'Owner of the new forked session',
           required: false
         },
         type: {
-          type: 'string',
-          description: 'Type of the new session',
-          required: false,
-          enum: ['development', 'testing', 'production', 'persona']
+          type: 'string' as const,
+          description: 'Type of the new session (development, testing, production, persona)',
+          required: false
         }
       },
       examples: [
@@ -80,8 +79,9 @@ export class SessionForkCommand extends BaseCommand {
 
   private static async getSessionManager(context: CommandContext): Promise<any> {
     // Try to get session manager daemon from WebSocket daemon's registered daemons
-    if (context?.websocket?.registeredDaemons) {
-      const sessionManagerDaemon = context.websocket.registeredDaemons.get('session-manager');
+    if (context?.websocket && typeof context.websocket === 'object' && 'registeredDaemons' in context.websocket) {
+      const websocketWithDaemons = context.websocket as any;
+      const sessionManagerDaemon = websocketWithDaemons.registeredDaemons?.get('session-manager');
       return sessionManagerDaemon || null;
     }
     

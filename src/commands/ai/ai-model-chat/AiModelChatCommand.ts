@@ -2,8 +2,8 @@
  * AI Model Chat Command - Send messages to AI models
  */
 
-import { BaseCommand } from '../../core/base-command/BaseCommand.js';
-import { CommandDefinition, CommandResult } from '../../../types/CommandTypes.js';
+import { BaseCommand } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, CommandResult } from '../../../types/CommandTypes';
 
 export class AiModelChatCommand extends BaseCommand {
   static getDefinition(): CommandDefinition {

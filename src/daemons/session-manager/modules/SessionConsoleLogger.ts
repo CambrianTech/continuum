@@ -3,8 +3,8 @@
  * Integrates DevTools Protocol with session management for live logging
  */
 
-import { ChromiumDevToolsAdapter } from '../../browser-manager/adapters/ChromiumDevToolsAdapter.js';
-import { ConsoleMessage } from '../../browser-manager/types/index.js';
+import { ChromiumDevToolsAdapter } from '../../browser-manager/adapters/ChromiumDevToolsAdapter';
+import { ConsoleMessage } from '../../browser-manager/types/index';
 import * as fs from 'fs/promises';
 
 export class SessionConsoleLogger {

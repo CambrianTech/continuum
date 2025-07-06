@@ -4,7 +4,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { MigrationResult } from './BaseModule.js';
+import { MigrationResult } from './BaseModule';
 
 export class ModuleMigration {
   protected modulePath: string;

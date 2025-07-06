@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { BaseModule } from '../BaseModule.js';
+import { BaseModule } from '../BaseModule';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 

@@ -27,13 +27,13 @@ export class FileAppendCommand extends BaseFileCommand {
       icon: '📝',
       description: 'Append content to files with session management',
       parameters: {
-        content: 'string',
-        filename: 'string',
-        sessionId: 'string?',
-        artifactType: 'string?',
-        directory: 'string?',
-        encoding: 'string?',
-        newline: 'boolean?'
+        content: { type: 'string' as const, description: 'Content to append to the file' },
+        filename: { type: 'string' as const, description: 'Name of the file to append to' },
+        sessionId: { type: 'string' as const, description: 'Session ID for file organization', required: false },
+        artifactType: { type: 'string' as const, description: 'Type of artifact (screenshot|log|recording|file|devtools|metadata)', required: false },
+        directory: { type: 'string' as const, description: 'Directory override for file location', required: false },
+        encoding: { type: 'string' as const, description: 'Text encoding for the file', required: false },
+        newline: { type: 'boolean' as const, description: 'Add newline before content', required: false }
       },
       examples: [
         { description: 'Append to log', command: 'file_append --content="ERROR: Connection failed" --filename="app.log" --artifactType="log"' },

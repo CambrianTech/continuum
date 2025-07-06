@@ -6,18 +6,18 @@
  * and cross-system compatibility in the Academy mesh network.
  */
 
-import { ValueSystem, ThinkingPattern, CommunicationStyle, DecisionFramework } from './persona-identity.js';
-import { DomainExpertise, SkillGraph, ExperienceMemory, PatternLibrary, MentalModel, KnowledgeGap } from './persona-knowledge.js';
-import { ResponseType, AdaptationRule, ErrorStrategy, CollaborationProtocol, GoalPursuit, AttentionMechanism } from './persona-behavior.js';
-import { TrainingSession, PersonaAncestry, Mutation, SelectionPressure, EmergentProperty, FitnessMetrics } from './persona-evolution.js';
-import { ModelArchitecture, ComputeProfile, MemoryStructure, ExecutionEnv, InterfaceProtocol } from './persona-substrate.js';
+import { ValueSystem, ThinkingPattern, CommunicationStyle, DecisionFramework } from './persona-identity';
+import { DomainExpertise, SkillGraph, ExperienceMemory, PatternLibrary, MentalModel, KnowledgeGap } from './persona-knowledge';
+import { ResponseType, AdaptationRule, ErrorStrategy, CollaborationProtocol, GoalPursuit, AttentionMechanism } from './persona-behavior';
+import { TrainingSession, PersonaAncestry, Mutation, SelectionPressure, EmergentProperty, FitnessMetrics } from './persona-evolution';
+import { ModelArchitecture, ComputeProfile, MemoryStructure, ExecutionEnv, InterfaceProtocol } from './persona-substrate';
 // TODO: LoRAStack interface needs to be defined in persona-substrate.ts
 interface LoRAStack {
   layers: any[];
   configuration: Record<string, any>;
 }
 
-import { CreationAlgorithm, DependencyTree, InitStep, ValidationTest, BreedingProfile } from './persona-reproduction.js';
+import { CreationAlgorithm, DependencyTree, InitStep, ValidationTest, BreedingProfile } from './persona-reproduction';
 // TODO: MutationPotential interface needs to be defined in persona-reproduction.ts
 interface MutationPotential {
   mutation_rate: number;

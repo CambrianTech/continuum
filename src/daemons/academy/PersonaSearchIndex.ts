@@ -4,7 +4,7 @@
  * Designed for local search now, P2P mesh queries later
  */
 
-import { LoRADiscovery, LoRAMetadata } from './LoRADiscovery.js';
+import { LoRADiscovery, LoRAMetadata } from './LoRADiscovery';
 
 export interface PersonaCapability {
   id: string;

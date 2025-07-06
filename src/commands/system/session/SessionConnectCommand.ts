@@ -14,21 +14,19 @@ export class SessionConnectCommand extends BaseCommand {
       category: 'system',
       parameters: {
         name: {
-          type: 'string',
+          type: 'string' as const,
           description: 'User/connection name',
           required: true
         },
         starter: {
-          type: 'string',
-          description: 'Connection type',
-          required: false,
-          enum: ['cli', 'portal', 'persona', 'git-hook', 'api', 'test']
+          type: 'string' as const,
+          description: 'Connection type (cli, portal, persona, git-hook, api, test)',
+          required: false
         },
         type: {
-          type: 'string',
-          description: 'Session type preference',
-          required: false,
-          enum: ['development', 'debugging', 'testing', 'automation', 'collaboration']
+          type: 'string' as const,
+          description: 'Session type preference (development, debugging, testing, automation, collaboration)',
+          required: false
         },
         project: {
           type: 'string',

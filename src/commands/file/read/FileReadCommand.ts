@@ -26,13 +26,13 @@ export class FileReadCommand extends BaseFileCommand {
       icon: '📖',
       description: 'Read files with session management - equivalent to cat',
       parameters: {
-        filename: 'string',
-        sessionId: 'string?',
-        artifactType: 'string?',
-        directory: 'string?',
-        encoding: 'string?',
-        lines: 'number?',
-        offset: 'number?'
+        filename: { type: 'string' as const, description: 'Name of the file to read' },
+        sessionId: { type: 'string' as const, description: 'Session ID for file organization', required: false },
+        artifactType: { type: 'string' as const, description: 'Type of artifact (screenshot|log|recording|file|devtools|metadata)', required: false },
+        directory: { type: 'string' as const, description: 'Directory override for file location', required: false },
+        encoding: { type: 'string' as const, description: 'Text encoding for the file', required: false },
+        lines: { type: 'number' as const, description: 'Limit number of lines to read', required: false },
+        offset: { type: 'number' as const, description: 'Start reading from line offset', required: false }
       },
       examples: [
         { description: 'Read log file', command: 'file_read --filename="app.log" --artifactType="log"' },

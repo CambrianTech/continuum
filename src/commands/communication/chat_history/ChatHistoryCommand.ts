@@ -2,8 +2,8 @@
  * Chat History Command - Retrieve chat room message history
  */
 
-import { BaseCommand } from '../../core/base-command/BaseCommand.js';
-import { CommandDefinition, CommandResult } from '../../../types/CommandTypes.js';
+import { BaseCommand } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, CommandResult } from '../../../types/CommandTypes';
 
 export class ChatHistoryCommand extends BaseCommand {
   static getDefinition(): CommandDefinition {

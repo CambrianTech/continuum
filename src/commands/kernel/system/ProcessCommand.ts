@@ -55,10 +55,10 @@ export class ProcessCommand extends BaseCommand {
       description: 'Low-level process management for system operations',
       category: 'kernel',
       parameters: {
-        subcommand: 'string',
-        filter: 'ProcessFilter',
-        pid: 'number',
-        signal: 'string'
+        subcommand: { type: 'string' as const, description: 'Process operation to perform (list|find|spawn|kill|monitor|ports|tree|cleanup)' },
+        filter: { type: 'object' as const, description: 'Filter criteria for process operations', required: false },
+        pid: { type: 'number' as const, description: 'Process ID for operations like kill, monitor, tree', required: false },
+        signal: { type: 'string' as const, description: 'Signal to send when killing process (TERM, KILL, etc.)', required: false }
       },
       examples: [
         { description: 'List all processes', command: '{"subcommand": "list"}' },

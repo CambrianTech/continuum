@@ -10,8 +10,8 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from '@jest/globals';
-import { StaticFileDaemon } from '../../StaticFileDaemon.js';
-import { DaemonMessage } from '../../../core/base-daemon/types.js';
+import { StaticFileDaemon } from '../../StaticFileDaemon';
+import { DaemonMessage } from '../../../base/DaemonProtocol';
 import path from 'path';
 import fs from 'fs/promises';
 

@@ -5,8 +5,8 @@
  * Delegates to SessionManagerDaemon for actual session management
  */
 
-import { DaemonCommand } from '../../core/daemon-command/DaemonCommand.js';
-import { CommandDefinition, CommandContext } from '../../core/base-command/BaseCommand.js';
+import { DaemonCommand } from '../../core/daemon-command/DaemonCommand';
+import { CommandDefinition, CommandContext } from '../../core/base-command/BaseCommand';
 
 export class ConnectCommand extends DaemonCommand {
   static getDefinition(): CommandDefinition {
@@ -17,26 +17,26 @@ export class ConnectCommand extends DaemonCommand {
       description: 'Connect to daemon system with session management',
       parameters: {
         sessionId: {
-          type: 'string',
+          type: 'string' as const,
           description: 'Specific session ID to connect to',
-          optional: true
+          required: false
         },
         sessionType: {
-          type: 'string',
+          type: 'string' as const,
           description: 'Type of session (development, persona, etc.)',
-          optional: true,
+          required: false,
           default: 'development'
         },
         owner: {
-          type: 'string',
+          type: 'string' as const,
           description: 'Session owner (user, system, etc.)',
-          optional: true,
+          required: false,
           default: 'user'
         },
         forceNew: {
-          type: 'boolean',
+          type: 'boolean' as const,
           description: 'Force create new session instead of reusing existing',
-          optional: true,
+          required: false,
           default: false
         }
       },

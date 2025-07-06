@@ -158,14 +158,19 @@ export class DaemonMessageUtils {
    * Validate daemon message structure
    */
   static validateMessage(message: unknown): message is DaemonMessage {
+    if (typeof message !== 'object' || message === null) {
+      return false;
+    }
+    
+    const msg = message as Record<string, unknown>;
+    
     return (
-      typeof message === 'object' &&
-      typeof message.id === 'string' &&
-      typeof message.from === 'string' &&
-      typeof message.to === 'string' &&
-      typeof message.type === 'string' &&
-      message.data !== undefined &&
-      message.timestamp instanceof Date
+      typeof msg.id === 'string' &&
+      typeof msg.from === 'string' &&
+      typeof msg.to === 'string' &&
+      typeof msg.type === 'string' &&
+      msg.data !== undefined &&
+      msg.timestamp instanceof Date
     );
   }
 }

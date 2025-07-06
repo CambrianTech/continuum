@@ -15,7 +15,7 @@
  * - Timeout and failure recovery across network boundaries
  */
 
-import { BaseCommand, CommandResult, CommandContext } from '../base-command/BaseCommand.js';
+import { BaseCommand, CommandResult, CommandContext } from '../base-command/BaseCommand';
 
 export interface RemoteExecutionRequest {
   command: string;

@@ -5,7 +5,7 @@
  * for session-specific browser.log files
  */
 
-import { SessionConsoleLogger } from './SessionConsoleLogger.js';
+import { SessionConsoleLogger } from './SessionConsoleLogger';
 
 export interface ConsoleLoggingRequest {
   sessionId: string;

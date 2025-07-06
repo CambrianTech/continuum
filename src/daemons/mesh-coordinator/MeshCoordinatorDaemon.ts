@@ -609,7 +609,7 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
         type: 'immediate-use',
         message: `Found ${analysis.availableComponents.length} existing components that match your needs`,
         components: analysis.availableComponents.slice(0, 3),
-        estimatedQuality: analysis.estimatedQuality
+        priority: analysis.estimatedQuality > 0.8 ? 'high' : 'medium'
       });
     }
     
@@ -617,7 +617,7 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
       recommendations.push({
         type: 'synthesis-opportunity',
         message: `Can synthesize missing capabilities: ${analysis.missingCapabilities.join(', ')}`,
-        strategy: analysis.synthesisStrategy,
+        priority: 'medium',
         estimatedCost: analysis.estimatedCost,
         estimatedTime: `${Math.ceil(analysis.estimatedTime / 3600)} hours`
       });
@@ -627,8 +627,8 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
       recommendations.push({
         type: 'collaboration-invite',
         message: 'Consider collaborative improvement to enhance quality',
-        benefits: ['Higher accuracy', 'Shared costs', 'Peer validation'],
-        estimatedParticipants: analysis.synthesisStrategy.resources.participants
+        priority: 'low',
+        benefits: ['Higher accuracy', 'Shared costs', 'Peer validation']
       });
     }
     

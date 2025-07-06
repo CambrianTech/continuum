@@ -4,8 +4,8 @@
  * CRITICAL SYSTEM COMMAND - Required for basic chat functionality
  */
 
-import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand.js';
+import { DirectCommand } from '../../core/direct-command/DirectCommand';
+import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class ChatCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {

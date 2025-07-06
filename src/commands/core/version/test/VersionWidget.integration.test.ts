@@ -10,7 +10,7 @@
  * - Dynamic: Version updates when server version changes
  */
 
-import { VersionCommand } from '../VersionCommand.js';
+import { VersionCommand } from '../VersionCommand';
 
 describe('Version Widget Cross-Boundary Integration', () => {
   let originalWindowVersion: any;

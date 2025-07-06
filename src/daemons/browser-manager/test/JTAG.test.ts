@@ -5,7 +5,7 @@
  * Tests screenshot capture, DOM inspection, visual regression detection
  */
 
-import { BrowserManagerDaemon } from '../BrowserManagerDaemon.js';
+import { BrowserManagerDaemon } from '../BrowserManagerDaemon';
 
 describe('JTAG Visual Validation', () => {
   let browserManager: BrowserManagerDaemon;

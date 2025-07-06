@@ -10,7 +10,13 @@ export const emotionDefinition: CommandDefinition = {
   description: 'Express emotions through continuon visual animations',
   icon: '💚',
   category: 'ui',
-  parameters: { feeling: 'string', intensity: 'string', duration: 'number', persist: 'boolean', target: 'string' },
+  parameters: { 
+    feeling: { type: 'string' as const, description: 'Emotion to express (love|joy|excitement|thinking|curious|proud|error|success)' },
+    intensity: { type: 'string' as const, description: 'Intensity of the emotion (subtle|medium|strong)', required: false },
+    duration: { type: 'number' as const, description: 'Duration in milliseconds', required: false },
+    persist: { type: 'boolean' as const, description: 'Whether the emotion should persist', required: false },
+    target: { type: 'string' as const, description: 'CSS selector for the target element', required: false }
+  },
   usage: 'emotion --params \'{"feeling": "love|joy|excitement|thinking|curious", "intensity": "medium", "duration": 3000}\'',
   examples: [
     { description: 'Express love emotion', command: 'emotion --params \'{"feeling": "love"}\'' },

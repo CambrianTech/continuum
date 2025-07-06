@@ -12,8 +12,8 @@
  * where skills propagate naturally via economic pressure and demand.
  */
 
-import { BaseDaemon } from '../base/BaseDaemon.js';
-import { DaemonResponse, DaemonMessage } from '../base/DaemonProtocol.js';
+import { BaseDaemon } from '../base/BaseDaemon';
+import { DaemonResponse, DaemonMessage } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
 import crypto from 'crypto';
 import { EventEmitter } from 'events';
@@ -72,9 +72,9 @@ export class MeshNodeDaemon extends BaseDaemon {
   private peers = new Map<string, MeshNode>();
   private skills = new Map<string, LoRASkill>();
   private eventBus = new EventEmitter();
-  private discoveryInterval?: NodeJS.Timeout;
-  private healthCheckInterval?: NodeJS.Timeout;
-  private replicationInterval?: NodeJS.Timeout;
+  private discoveryInterval?: ReturnType<typeof setInterval>;
+  private healthCheckInterval?: ReturnType<typeof setInterval>;
+  private replicationInterval?: ReturnType<typeof setInterval>;
 
   constructor(config?: Partial<MeshBootstrapConfig>) {
     super();
@@ -194,7 +194,7 @@ export class MeshNodeDaemon extends BaseDaemon {
     if (this.peers.size >= this.config.maxPeers) return;
     
     // Ask each peer for their peer list
-    for (const [peerId, _peer] of this.peers) {
+    for (const [peerId] of this.peers) {
       try {
         // TODO: Request peer list from each connected peer
         // const peerList = await this.requestPeerList(peerId);
@@ -221,7 +221,7 @@ export class MeshNodeDaemon extends BaseDaemon {
             // TODO: Ping peer to check if still alive
             // await this.pingPeer(peerId);
             peer.lastSeen = new Date();
-          } catch (error) {
+          } catch {
             this.log(`❌ Peer ${peerId} appears offline, removing`, 'warn');
             this.peers.delete(peerId);
           }
@@ -350,7 +350,7 @@ export class MeshNodeDaemon extends BaseDaemon {
   /**
    * Handle persona graduation - advertise new capabilities
    */
-  private async handlePersonaGraduation(event: any): Promise<void> {
+  private async handlePersonaGraduation(event: { personaId: string; achievement: string; newCapabilities?: string[] }): Promise<void> {
     this.log(`🎓 Persona graduated: ${event.personaId} - ${event.achievement}`, 'info');
     
     // Extract new skills and advertise to mesh
@@ -364,7 +364,7 @@ export class MeshNodeDaemon extends BaseDaemon {
   /**
    * Handle skill demand increase - prioritize replication
    */
-  private async handleSkillDemandIncrease(event: any): Promise<void> {
+  private async handleSkillDemandIncrease(event: { skillHash: string; newDemandScore: number }): Promise<void> {
     const { skillHash, newDemandScore } = event;
     const skill = this.skills.get(skillHash);
     
@@ -382,7 +382,7 @@ export class MeshNodeDaemon extends BaseDaemon {
   /**
    * Handle peer trust score updates
    */
-  private async handleTrustUpdate(event: any): Promise<void> {
+  private async handleTrustUpdate(event: { peerId: string; newTrustScore: number; reason: string }): Promise<void> {
     const { peerId, newTrustScore, reason } = event;
     const peer = this.peers.get(peerId);
     

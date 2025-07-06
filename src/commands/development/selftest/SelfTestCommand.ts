@@ -21,7 +21,7 @@ export class SelfTestCommand extends BaseCommand {
       category: 'development',
       icon: '🔧',
       description: 'Run system health checks (placeholder - needs modern implementation)',
-      parameters: { verbose: 'boolean' },
+      parameters: { verbose: { type: 'boolean' as const, description: 'Enable verbose output for tests', required: false } },
       examples: [
         { description: 'Basic system test', command: 'selftest' },
         { description: 'Verbose system test', command: 'selftest --verbose' }

@@ -7,7 +7,7 @@
  * - Fork from existing session
  */
 
-import { BrowserSession, SessionType } from '../SessionManagerDaemon.js';
+import { BrowserSession, SessionType } from '../SessionManagerDaemon';
 
 export interface ConnectionRequest {
   source: string;

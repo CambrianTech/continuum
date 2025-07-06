@@ -14,26 +14,24 @@ export class SessionPathsCommand extends BaseCommand {
       category: 'system',
       parameters: {
         sessionId: {
-          type: 'string',
+          type: 'string' as const,
           description: 'Session ID to get paths for',
           required: false
         },
         owner: {
-          type: 'string',
+          type: 'string' as const,
           description: 'Get paths for latest session by owner',
           required: false
         },
         pathType: {
-          type: 'string',
-          description: 'Specific path type to return',
-          required: false,
-          enum: ['logs', 'screenshots', 'files', 'recordings', 'devtools', 'all']
+          type: 'string' as const,
+          description: 'Specific path type to return (logs, screenshots, files, recordings, devtools, all)',
+          required: false
         },
         format: {
-          type: 'string',
-          description: 'Output format',
-          required: false,
-          enum: ['object', 'array', 'shell']
+          type: 'string' as const,
+          description: 'Output format (object, array, shell)',
+          required: false
         }
       },
       examples: [

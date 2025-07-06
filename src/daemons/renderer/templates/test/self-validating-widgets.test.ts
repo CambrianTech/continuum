@@ -65,7 +65,7 @@ describe('Self-Validating Widgets', () => {
 
   describe('Template Consistency via Widget Self-Validation', () => {
     test('chat widget requirements match its HTML template', async () => {
-      const chatWidgetCode = await fs.readFile(join(templatesDir, 'chat-widget.ts'), 'utf-8');
+      // const chatWidgetCode = await fs.readFile(join(templatesDir, 'chat-widget.ts'), 'utf-8');
       const chatWidgetHTML = await fs.readFile(join(templatesDir, 'chat-widget.html'), 'utf-8');
       
       // Extract required IDs from TypeScript (simplified parsing)

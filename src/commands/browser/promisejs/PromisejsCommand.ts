@@ -3,8 +3,8 @@
  * TODO: Implement promise-based JavaScript execution in browser
  */
 
-import { RemoteCommand, RemoteExecutionRequest, RemoteExecutionResponse } from '../../core/remote-command/RemoteCommand.js';
-import { CommandDefinition } from '../../core/base-command/BaseCommand.js';
+import { RemoteCommand, RemoteExecutionRequest, RemoteExecutionResponse } from '../../core/remote-command/RemoteCommand';
+import { CommandDefinition } from '../../core/base-command/BaseCommand';
 
 export class PromisejsCommand extends RemoteCommand {
   static getDefinition(): CommandDefinition {
@@ -13,7 +13,7 @@ export class PromisejsCommand extends RemoteCommand {
       category: 'Browser',
       icon: '⚡',
       description: 'Promise-based JavaScript execution in browser (stub implementation)',
-      parameters: { script: 'string' },
+      parameters: { script: { type: 'string' as const, description: 'JavaScript script to execute as a Promise' } },
       examples: [
         { description: 'Execute promise script', command: '{"script": "Promise.resolve(document.title)"}' }
       ],

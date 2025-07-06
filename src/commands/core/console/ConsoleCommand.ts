@@ -5,8 +5,8 @@
  * browser console logs, errors, and health reports back to the AI portal
  */
 
-import { DirectCommand } from '../direct-command/DirectCommand.js';
-import { CommandResult, CommandContext, CommandDefinition } from '../base-command/BaseCommand.js';
+import { DirectCommand } from '../direct-command/DirectCommand';
+import { CommandResult, CommandContext, CommandDefinition } from '../base-command/BaseCommand';
 
 export class ConsoleCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
@@ -98,7 +98,7 @@ export class ConsoleCommand extends DirectCommand {
         console.log(`🔍 CONSOLE_COMMAND_DEBUG: params:`, JSON.stringify(params, null, 2));
         
         // Get sessionId from context (passed from WebSocketDaemon/CommandProcessor)
-        const sessionId = _context?.sessionId;
+        let sessionId = _context?.sessionId;
         
         // If no sessionId provided, use the current/default shared development session
         if (!sessionId) {

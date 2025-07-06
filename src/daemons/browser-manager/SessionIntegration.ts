@@ -5,7 +5,7 @@
  * Does not duplicate functionality - uses existing session infrastructure
  */
 
-import { IntelligentBrowserManager, LaunchContext } from './IntelligentBrowserManager.js';
+import { IntelligentBrowserManager, LaunchContext } from './IntelligentBrowserManager';
 
 export interface ExistingSessionInfo {
   sessionId: string;

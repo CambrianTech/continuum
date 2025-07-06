@@ -6,7 +6,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { ContinuumConfig, ContinuumPackageUtils, PackageJson } from './ContinuumPackage.js';
+import { ContinuumConfig, ContinuumPackageUtils, PackageJson } from './ContinuumPackage';
 
 export interface ValidationResult {
   isValid: boolean;

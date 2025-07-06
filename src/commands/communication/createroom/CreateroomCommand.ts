@@ -4,8 +4,8 @@
  * CRITICAL SYSTEM COMMAND - Required for basic system functionality
  */
 
-import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand.js';
+import { DirectCommand } from '../../core/direct-command/DirectCommand';
+import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class CreateroomCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {

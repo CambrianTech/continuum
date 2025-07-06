@@ -86,7 +86,11 @@ export class ScreenshotCommand extends RemoteCommand {
         category: 'Browser',
         icon: '📸',
         description: 'Capture browser screenshot with advanced targeting',
-        parameters: { selector: 'string', filename: 'string', subdirectory: 'string' },
+        parameters: { 
+          selector: { type: 'string' as const, description: 'CSS selector to target for screenshot' },
+          filename: { type: 'string' as const, description: 'Output filename for the screenshot' },
+          subdirectory: { type: 'string' as const, description: 'Subdirectory to save the screenshot in' }
+        },
         examples: [
           { description: 'Save to file', command: `{"filename": "homepage.png", "destination": "${ScreenshotDestination.FILE}"}` },
           { description: 'Return bytes only', command: `{"selector": ".main-content", "destination": "${ScreenshotDestination.BYTES}"}` }

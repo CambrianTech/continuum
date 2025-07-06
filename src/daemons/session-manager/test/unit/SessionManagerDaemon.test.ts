@@ -5,7 +5,7 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
-import { SessionManagerDaemon } from '../../SessionManagerDaemon.js';
+import { SessionManagerDaemon } from '../../SessionManagerDaemon';
 
 describe('SessionManagerDaemon Unit Tests', () => {
   let daemon: SessionManagerDaemon;

@@ -3,8 +3,8 @@
  * TODO: Implement browser navigation and control functionality
  */
 
-import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
-import { CommandDefinition, CommandResult, CommandContext } from '../../core/base-command/BaseCommand.js';
+import { DirectCommand } from '../../core/direct-command/DirectCommand';
+import { CommandDefinition, CommandResult, CommandContext } from '../../core/base-command/BaseCommand';
 
 export class BrowserCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
@@ -13,7 +13,7 @@ export class BrowserCommand extends DirectCommand {
       category: 'Browser',
       icon: '🌐',
       description: 'Browser navigation and control (stub implementation)',
-      parameters: { url: 'string' },
+      parameters: { url: { type: 'string' as const, description: 'URL to navigate to' } },
       examples: [
         { description: 'Navigate to URL', command: '{"url": "https://example.com"}' }
       ],

@@ -5,11 +5,11 @@
  * Knows about LoRA, personas, optimization - database client doesn't
  */
 
-import { OptimizationRecord, PerformanceBenchmark } from './LayerOptimization.js';
-import { PersonaGenome } from './types/persona-genome.js';
-import { LoRAComposition } from './CapabilitySynthesis.js';
-import { GlobalPersonaIdentity, GlobalLoRALayerIdentity } from './GlobalIdentitySystem.js';
-import { AcademyDatabaseClient } from './database/AcademyDatabaseClient.js';
+import { OptimizationRecord, PerformanceBenchmark } from './LayerOptimization';
+import { PersonaGenome } from './types/persona-genome';
+import { LoRAComposition } from './CapabilitySynthesis';
+import { GlobalPersonaIdentity, GlobalLoRALayerIdentity } from './GlobalIdentitySystem';
+import { AcademyDatabaseClient } from './database/AcademyDatabaseClient';
 
 export interface AcademyDatabaseConfig {
   base_path: string;                    // Base directory for Academy data

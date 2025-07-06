@@ -4,8 +4,8 @@
  * Initiates vector space evolution loops with adversarial training
  */
 
-import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand.js';
+import { DirectCommand } from '../../core/direct-command/DirectCommand';
+import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class AcademyTrainCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
@@ -78,7 +78,7 @@ export class AcademyTrainCommand extends DirectCommand {
     // For now, return fallback responses to keep system working
     
     switch (operation) {
-      case 'start_evolution_session':
+      case 'start_evolution_session': {
         const sessionId = `academy_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         return {
           session_id: sessionId,
@@ -103,6 +103,7 @@ export class AcademyTrainCommand extends DirectCommand {
             selection_pressure: 'moderate'
           }
         };
+      }
       default:
         throw new Error(`Unknown AcademyDaemon operation: ${operation}`);
     }

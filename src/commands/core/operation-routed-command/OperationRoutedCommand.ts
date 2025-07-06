@@ -36,7 +36,7 @@ export abstract class OperationRoutedCommand extends BaseCommand {
    * Extract operation from parameters using common patterns
    */
   protected static extractOperation(params: any): string {
-    const parsedParams = this.parseParams(params);
+    const parsedParams = this.parseParams(params) as any;
     
     // Try multiple common patterns for operation specification
     return parsedParams.operation || 
@@ -62,7 +62,7 @@ export abstract class OperationRoutedCommand extends BaseCommand {
       }
 
       // Pass the full parsed params to the handler
-      const parsedParams = this.parseParams(params);
+      const parsedParams = this.parseParams(params) as any;
       return await handler.call(this, parsedParams, context);
       
     } catch (error) {

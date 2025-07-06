@@ -49,10 +49,16 @@ interface DatabaseDaemon {
 export class DatabaseIntegration {
   private databaseDaemon: DatabaseDaemon;
   private collectionPrefix: string;
+  private daemonId: string;
 
-  constructor(databaseDaemon: DatabaseDaemon, collectionPrefix: string) {
+  constructor(databaseDaemon: DatabaseDaemon, collectionPrefix: string, daemonId: string = 'database-integration') {
     this.databaseDaemon = databaseDaemon;
     this.collectionPrefix = collectionPrefix;
+    this.daemonId = daemonId;
+  }
+
+  private generateMessageId(): string {
+    return `db_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
   }
 
   /**
@@ -76,8 +82,10 @@ export class DatabaseIntegration {
         metadata: {
           operation_id: `${operation.operation}_${Date.now()}`,
           timestamp: new Date(),
-          file_path: result.data?.file_path,
-          collection: fullCollectionName
+          collection: fullCollectionName,
+          ...(((result.data as Record<string, unknown>)?.file_path as string | undefined) && {
+            file_path: (result.data as Record<string, unknown>)?.file_path as string
+          })
         }
       };
 
@@ -180,6 +188,10 @@ export class DatabaseIntegration {
     switch (operation.operation) {
       case 'save':
         return {
+          id: this.generateMessageId(),
+          from: this.daemonId,
+          to: 'database',
+          timestamp: new Date(),
           type: 'save_data',
           data: {
             collection: fullCollectionName,
@@ -191,6 +203,10 @@ export class DatabaseIntegration {
 
       case 'query':
         return {
+          id: this.generateMessageId(),
+          from: this.daemonId,
+          to: 'database',
+          timestamp: new Date(),
           type: 'query_data',
           data: {
             collection: fullCollectionName,
@@ -203,6 +219,10 @@ export class DatabaseIntegration {
 
       case 'load':
         return {
+          id: this.generateMessageId(),
+          from: this.daemonId,
+          to: 'database',
+          timestamp: new Date(),
           type: 'load_data',
           data: {
             collection: fullCollectionName,
@@ -212,6 +232,10 @@ export class DatabaseIntegration {
 
       case 'delete':
         return {
+          id: this.generateMessageId(),
+          from: this.daemonId,
+          to: 'database',
+          timestamp: new Date(),
           type: 'delete_data',
           data: {
             collection: fullCollectionName,
@@ -221,6 +245,10 @@ export class DatabaseIntegration {
 
       case 'list':
         return {
+          id: this.generateMessageId(),
+          from: this.daemonId,
+          to: 'database',
+          timestamp: new Date(),
           type: 'list_data',
           data: {
             collection: fullCollectionName,
@@ -231,6 +259,10 @@ export class DatabaseIntegration {
 
       case 'backup':
         return {
+          id: this.generateMessageId(),
+          from: this.daemonId,
+          to: 'database',
+          timestamp: new Date(),
           type: 'backup_collection',
           data: {
             collection: fullCollectionName,

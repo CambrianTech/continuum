@@ -2,8 +2,8 @@
  * Restart Command - Restart the Continuum daemon system
  */
 
-import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand.js';
+import { DirectCommand } from '../../core/direct-command/DirectCommand';
+import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class RestartCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {

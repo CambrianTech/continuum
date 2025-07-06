@@ -47,9 +47,9 @@
  * - Event pipe management needs memory leak prevention
  */
 
-import { RequestResponseDaemon, RequestHandlerMap } from '../base/RequestResponseDaemon.js';
+import { RequestResponseDaemon, RequestHandlerMap } from '../base/RequestResponseDaemon';
 // import { RequestHandler } from '../base/RequestResponseDaemon.js'; // TODO: Implement request handling
-import { DaemonResponse } from '../base/DaemonProtocol.js';
+import { DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
 import { EventEmitter } from 'events';
 
@@ -124,7 +124,7 @@ export class PersonaDaemon extends RequestResponseDaemon {
     return {
       'execute_command': this.executeCommand.bind(this),
       'chat_message': this.processChatMessage.bind(this),
-      'academy_training': this.handleAcademyTraining.bind(this),
+      'academy_training': (data: unknown) => this.handleAcademyTraining(data as TrainingData),
       'lora_adaptation': this.handleLoRAAdaptation.bind(this),
       'get_status': this.getPersonaStatus.bind(this)
     };

@@ -5,7 +5,7 @@
  * and specify which daemon handles the operation.
  */
 
-import { BaseCommand, CommandResult, CommandContext } from '../base-command/BaseCommand.js';
+import { BaseCommand, CommandResult, CommandContext } from '../base-command/BaseCommand';
 
 export interface DaemonRequest {
   targetDaemon: string;

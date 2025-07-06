@@ -10,7 +10,7 @@
  * - Development workflow integration
  */
 
-import { IntelligentBrowserManager, LaunchContext, DevToolsOptions } from '../IntelligentBrowserManager.js';
+import { IntelligentBrowserManager, LaunchContext, DevToolsOptions } from '../IntelligentBrowserManager';
 
 describe('IntelligentBrowserManager - Real-World Scenarios', () => {
   let browserManager: IntelligentBrowserManager;

@@ -2,8 +2,8 @@
  * Start Command - Start the Continuum daemon system
  */
 
-import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand.js';
+import { DirectCommand } from '../../core/direct-command/DirectCommand';
+import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class StartCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {

@@ -5,7 +5,7 @@
  * Tests the smart browser launching and connection awareness
  */
 
-import { BrowserManagerDaemon } from '../BrowserManagerDaemon.js';
+import { BrowserManagerDaemon } from '../BrowserManagerDaemon';
 
 describe('Browser Connection Process', () => {
   let browserManager: BrowserManagerDaemon;

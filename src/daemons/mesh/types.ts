@@ -70,7 +70,7 @@ export interface EconomicSignal {
 export interface MeshEvent {
   type: 'persona:graduated' | 'skill:evolved' | 'peer:discovered' | 'trust:updated';
   source: string;
-  data: any;
+  data: Record<string, unknown>;
   timestamp: Date;
   signature?: string;
 }
@@ -114,7 +114,7 @@ export interface PersonaDB {
 export interface MemoryRecord {
   id: string;
   content: string;
-  context: Record<string, any>;
+  context: Record<string, unknown>;
   relevance: number;
   timestamp: Date;
   source: 'experience' | 'collaboration' | 'evolution';
@@ -134,7 +134,7 @@ export interface InteractionRecord {
   with_persona: string;
   room_id: string;
   outcome: 'successful' | 'failed' | 'learning';
-  learned: Record<string, any>;
+  learned: Record<string, unknown>;
   timestamp: Date;
 }
 

@@ -86,7 +86,7 @@ export interface ContractViolation {
 export interface AutonomyRequest {
   personaId: string;
   requestType: 'memory-increase' | 'migration' | 'skill-evolution' | 'collaboration';
-  details: any;
+  details: Record<string, unknown>;
   justification: string;
   timestamp: Date;
 }

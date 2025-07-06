@@ -19,7 +19,7 @@ export class VersionService {
       const packageData = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
       this.cachedVersion = packageData.version || '1.0.0';
       return this.cachedVersion!;
-    } catch (error) {
+    } catch {
       console.warn('Could not load version from package.json, using default');
       this.cachedVersion = '1.0.0';
       return this.cachedVersion;

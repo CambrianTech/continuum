@@ -6,7 +6,7 @@
  */
 
 import { BaseCommand } from '../../core/base-command/BaseCommand';
-import { CommandResult } from '../../../types/CommandTypes.js';
+import { CommandResult } from '../../../types/CommandTypes';
 
 export interface JSExecuteOptions {
   script: string;
