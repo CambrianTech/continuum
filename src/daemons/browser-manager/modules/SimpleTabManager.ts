@@ -15,21 +15,24 @@ export class SimpleTabManager {
     try {
       // Method 1: Look for browsers connected to port 9000 (not just ESTABLISHED)
       const { stdout: browserConnections } = await execAsync(
-        `lsof -i :9000 | grep -v LISTEN | grep -v node | wc -l`
+        `lsof -i :9000 | grep -v LISTEN | grep -v node | grep -v COMMAND`
       );
-      const browserCount = parseInt(browserConnections.trim()) || 0;
+      const browserLines = browserConnections.trim().split('\n').filter(line => line.length > 0);
+      const browserCount = browserLines.length;
       
       // Method 2: Check netstat for all connections to 9000
       const { stdout: netstatConnections } = await execAsync(
-        `netstat -an | grep "9000" | grep -v LISTEN | wc -l`
+        `netstat -an | grep "9000" | grep -v LISTEN | grep -v TIME_WAIT`
       );
-      const netstatCount = parseInt(netstatConnections.trim()) || 0;
+      const netstatLines = netstatConnections.trim().split('\n').filter(line => line.length > 0);
+      const netstatCount = netstatLines.length;
       
       // Method 3: Count established WebSocket connections
       const { stdout: wsConnections } = await execAsync(
-        `lsof -i :9000 | grep ESTABLISHED | grep -v node | wc -l`
+        `lsof -i :9000 | grep ESTABLISHED | grep -v node | grep -v COMMAND`
       );
-      const wsCount = parseInt(wsConnections.trim()) || 0;
+      const wsLines = wsConnections.trim().split('\n').filter(line => line.length > 0);
+      const wsCount = wsLines.length;
       
       // Take the maximum - any of these could indicate tabs
       const maxCount = Math.max(browserCount, netstatCount, wsCount);

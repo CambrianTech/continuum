@@ -28,84 +28,39 @@ export class ConnectCommand extends DirectCommand {
 
   protected static async executeOperation(_params: any = {}, context?: CommandContext): Promise<CommandResult> {
     try {
-      // Get the actual current session information from the session manager
-      // The session should have been created when the client connected
-      
-      // Try to get the session info from the WebSocket context or session manager
-      let sessionInfo: any = null;
-      
-      // Check if we have access to the session manager daemon through context
+      // Get session manager daemon through proper WebSocket context
       const sessionManagerDaemon = context?.websocket?.registeredDaemons?.get('session-manager');
       
-      if (sessionManagerDaemon) {
-        // Get the current active session
-        const sessionResult = await sessionManagerDaemon.handleConnect({
-          source: 'continuum-cli',
-          owner: 'system',
-          sessionPreference: 'current',
-          capabilities: ['browser', 'commands', 'screenshots'],
-          context: 'development',
-          type: 'development'
-        });
-        
-        if (sessionResult.success) {
-          sessionInfo = {
-            sessionId: sessionResult.data.sessionId,
-            action: sessionResult.data.action,
-            launched: sessionResult.data.launched,
-            logPaths: sessionResult.data.logs,
-            directories: {
-              screenshots: sessionResult.data.screenshots
-            },
-            interface: sessionResult.data.interface,
-            commands: sessionResult.data.commands
-          };
-        }
+      if (!sessionManagerDaemon) {
+        return this.createErrorResult('SessionManagerDaemon not available in context - system not properly initialized');
       }
+
+      // Get the current active session from session manager
+      const sessionResult = await sessionManagerDaemon.handleConnect({
+        source: 'continuum-cli',
+        owner: 'system',
+        sessionPreference: 'current',
+        capabilities: ['browser', 'commands', 'screenshots'],
+        context: 'development',
+        type: 'development'
+      });
       
-      // Fallback: Find the most recent session directory if daemon access failed
-      if (!sessionInfo) {
-        const fs = await import('fs/promises');
-        const path = await import('path');
-        
-        try {
-          // Look for the most recent session in user/system
-          const sessionBasePath = '.continuum/sessions/user/system';
-          const sessions = await fs.readdir(sessionBasePath);
-          
-          if (sessions.length > 0) {
-            // Get the most recent session (sessions are timestamped)
-            const mostRecentSession = sessions.sort().pop();
-            const sessionPath = path.join(sessionBasePath, mostRecentSession!);
-            
-            sessionInfo = {
-              sessionId: mostRecentSession,
-              action: 'joined_existing',
-              launched: true,
-              logPaths: {
-                browser: `${sessionPath}/logs/browser.log`,
-                server: `${sessionPath}/logs/server.log`
-              },
-              directories: {
-                screenshots: `${sessionPath}/screenshots`
-              },
-              interface: 'http://localhost:9000',
-              commands: {
-                info: `continuum session-info ${mostRecentSession}`,
-                stop: `continuum session-stop ${mostRecentSession}`
-              }
-            };
-          }
-        } catch (error) {
-          // Final fallback if filesystem access fails
-          console.warn('Could not access session directory:', error);
-        }
+      if (!sessionResult.success) {
+        return this.createErrorResult(`Session manager connection failed: ${sessionResult.error}`);
       }
-      
-      // If we still don't have session info, return error
-      if (!sessionInfo) {
-        return this.createErrorResult('No active session found and could not create one');
-      }
+
+      // Transform session manager response to ConnectCommand format
+      const sessionInfo = {
+        sessionId: sessionResult.data.sessionId,
+        action: sessionResult.data.action,
+        launched: sessionResult.data.launched.browser || sessionResult.data.launched.webserver, // Convert object to boolean
+        logPaths: sessionResult.data.logs,
+        directories: {
+          screenshots: sessionResult.data.screenshots
+        },
+        interface: sessionResult.data.interface,
+        commands: sessionResult.data.commands
+      };
 
       return this.createSuccessResult(
         `Connected to development session ${sessionInfo.sessionId}`,

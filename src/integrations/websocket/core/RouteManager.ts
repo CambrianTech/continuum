@@ -93,12 +93,12 @@ export class RouteManager {
           let contentType: string;
           
           if (response.data && response.data.content) {
-            // Response already formatted for HTTP
+            // Response already formatted for HTTP (like static files)
             content = response.data.content;
             contentType = response.data.contentType || 'text/plain';
           } else {
-            // Command result - convert to JSON
-            content = JSON.stringify(response, null, 2);
+            // Command result - return just the data, not the wrapper
+            content = JSON.stringify(response.data, null, 2);
             contentType = 'application/json';
           }
           
