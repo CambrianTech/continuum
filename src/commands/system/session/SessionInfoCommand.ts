@@ -136,9 +136,14 @@ export class SessionInfoCommand extends BaseCommand {
   }
 
   private static getRelativePath(fullPath: string): string {
-    const cwd = process.cwd();
-    if (fullPath.startsWith(cwd)) {
-      return fullPath.substring(cwd.length + 1);
+    try {
+      const cwd = process.cwd();
+      if (fullPath.startsWith(cwd)) {
+        return fullPath.substring(cwd.length + 1);
+      }
+    } catch (error) {
+      // If we can't get current working directory, return the full path
+      // This should be rare now that BaseDaemon ensures valid working directories
     }
     return fullPath;
   }

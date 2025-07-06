@@ -28,6 +28,7 @@ process.on('exit', (code) => {
   console.log(`🛑 Process exiting with code: ${code} at ${new Date().toISOString()}`);
 });
 
+
 async function main() {
   const system = new ContinuumSystem();
   
@@ -70,7 +71,7 @@ async function main() {
     console.log('║  🔄 Status:     Daemons running in background                                      ║');
     console.log('╠═════════════════════════════════════════════════════════════════════════════════════╣');
     
-    // Session orchestration successful - remove debug output
+    console.log('╠═════════════════════════════════════════════════════════════════════════════════════╣');
     
     if (sessionInfo && sessionInfo.success) {
       const session = sessionInfo.data.session;
@@ -91,6 +92,7 @@ async function main() {
     } else {
       console.log('║  📋 Sessions:   Managed by session-manager daemon                                  ║');
       console.log('║  💡 Use:        session-paths --owner=$(whoami) for log locations                  ║');
+      console.log('║  🗂️  Default:    .continuum/sessions/user/$(whoami)/                               ║');
     }
     
     console.log('╚═════════════════════════════════════════════════════════════════════════════════════╝\n');

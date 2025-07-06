@@ -1,114 +1,83 @@
 #!/bin/bash
-# Continuum CLI - Connects to daemon system
+# Continuum CLI - Thin client that connects to daemon system
 
-# Connection function that starts daemon manager if needed
-connect() {
-    # Check if main daemon is running
-    if ! curl -s http://localhost:9000/api/health > /dev/null 2>&1; then
-        echo "🚀 Starting Continuum daemon manager..."
-        
-        # Find continuum installation
-        local continuum_dir="/Volumes/FlashGordon/cambrian/continuum"
-        if [ ! -f "$continuum_dir/main.ts" ]; then
-            echo "❌ Could not find Continuum installation at $continuum_dir"
-            exit 1
-        fi
-        
-        # Start the main daemon (which manages all other daemons)
-        # Use absolute path instead of cd to avoid directory issues
-        nohup tsx "$continuum_dir/main.ts" > /dev/null 2>&1 &
-        local pid=$!
-        echo "✅ Started daemon manager (PID: $pid)"
-        
-        # Wait for it to be ready
-        echo "⏳ Waiting for daemons to start..."
-        for i in {1..30}; do
-            if curl -s http://localhost:9000/api/health > /dev/null 2>&1; then
-                echo "✅ Continuum daemons ready"
-                break
-            fi
-            sleep 1
-        done
-    fi
+# Get command from argument (default to connect)
+COMMAND="${1:-connect}"
+
+# Function to check if daemon is running
+daemon_running() {
+  curl -s http://localhost:9000/api/health > /dev/null 2>&1
 }
 
-# Main command handler
-case "$1" in
-    "")
-        # No args - connect, create session, and open browser
-        connect
-        
-        # Session will be created automatically when browser connects
-        echo "🌐 Opening browser - session will be created automatically..."
-        
-        open http://localhost:9000 2>/dev/null || echo "🌐 Open http://localhost:9000"
-        ;;
-    stop)
-        # Stop all daemons
-        echo "🛑 Stopping Continuum daemons..."
-        pkill -f "tsx.*main.ts"
-        sleep 1
-        echo "✅ Daemons stopped"
-        ;;
-    restart)
-        # Restart daemons
-        echo "🔄 Restarting Continuum daemons..."
-        # Stop existing daemons if they're running
-        if pgrep -f "tsx.*main.ts" > /dev/null 2>&1; then
-            echo "🛑 Stopping existing daemons..."
-            pkill -f "tsx.*main.ts"
-            sleep 2
-        fi
-        # Start fresh
-        connect
-        ;;
-    status)
-        # Check daemon status
-        if curl -s http://localhost:9000/api/health > /dev/null 2>&1; then
-            echo "✅ Continuum daemons running"
-            curl -s http://localhost:9000/api/status | jq . 2>/dev/null || curl -s http://localhost:9000/api/status
-        else
-            echo "❌ Continuum daemons not running"
-        fi
-        ;;
-    logs)
-        # Show daemon logs
-        connect
-        # Subscribe to log stream via WebSocket
-        echo "📋 Connecting to daemon logs..."
-        echo "Press CTRL+C to disconnect"
-        wscat -c ws://localhost:9000 -x '{"type":"subscribe","events":["log"]}'
-        ;;
-    *)
-        # Execute command via daemon system
-        connect
-        # Build args array for JSON
-        args_json=""
-        for arg in "${@:2}"; do
-            if [ -n "$args_json" ]; then
-                args_json="$args_json,"
-            fi
-            # Escape quotes in arg
-            escaped_arg=$(echo "$arg" | sed 's/"/\\"/g')
-            args_json="$args_json\"$escaped_arg\""
-        done
-        
-        # Send command to daemon system
-        response=$(curl -s -X POST http://localhost:9000/api/commands/$1 \
-            -H "Content-Type: application/json" \
-            -d "{\"args\":[$args_json]}")
-        
-        if [ $? -eq 0 ]; then
-            # Extract the result from the response
-            result=$(echo "$response" | jq -r '.data.result // .result // .output // .data // .' 2>/dev/null)
-            if [ "$result" != "null" ] && [ -n "$result" ]; then
-                echo "$result" | jq . 2>/dev/null || echo "$result"
-            else
-                echo "$response"
-            fi
-        else
-            echo "❌ Command failed"
-            exit 1
-        fi
-        ;;
+# Function to start daemon system
+start_daemon() {
+  # Find continuum installation - resolve relative to script location
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  CONTINUUM_DIR="$SCRIPT_DIR"
+  
+  if [ ! -f "$CONTINUUM_DIR/main.ts" ]; then
+    echo "❌ Continuum installation not found at $CONTINUUM_DIR"
+    exit 1
+  fi
+  
+  echo "🚀 Starting Continuum daemon system..."
+  cd "$CONTINUUM_DIR" && nohup tsx main.ts > /dev/null 2>&1 &
+  
+  # Wait for daemon OS to be ready
+  for i in {1..30}; do
+    if daemon_running; then
+      echo "✅ Daemon system started"
+      return 0
+    fi
+    sleep 1
+  done
+  
+  echo "❌ Failed to start daemon system"
+  return 1
+}
+
+# Function to stop daemon system
+stop_daemon() {
+  echo "🛑 Stopping Continuum daemon system..."
+  pkill -f "tsx main.ts" 2>/dev/null || true
+  sleep 2
+  echo "✅ Daemon system stopped"
+}
+
+# Handle explicit daemon management commands 
+case "$COMMAND" in
+  "start")
+    if daemon_running; then
+      echo "✅ Continuum daemons already running at http://localhost:9000"
+    else
+      start_daemon
+    fi
+    exit 0
+    ;;
+  "stop")
+    if daemon_running; then
+      stop_daemon
+    else
+      echo "✅ Continuum daemons already stopped"
+    fi
+    exit 0
+    ;;
+  "restart")
+    if daemon_running; then
+      stop_daemon
+    fi
+    start_daemon
+    exit 0
+    ;;
 esac
+
+# For all other commands (including connect), ensure daemon is running and call via API
+if ! daemon_running; then
+  echo "🚀 Auto-starting Continuum daemon system..."
+  start_daemon || exit 1
+fi
+
+# Call command via API
+curl -s -X POST "http://localhost:9000/api/commands/$COMMAND" \
+  -H "Content-Type: application/json" \
+  -d '{"args": []}'

@@ -195,13 +195,16 @@ export class CommandProcessorDaemon extends BaseDaemon {
   }
 
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
+    console.log(`🔍 CommandProcessor: Received message type: ${message.type}, from: ${message.from}`);
     // DYNAMIC ENDPOINT ROUTER - handles any registered message type
     return await this.routeMessage(message);
   }
   
   private async routeMessage(message: DaemonMessage): Promise<DaemonResponse> {
+    console.log(`🔍 CommandProcessor: Routing message, extracting command info...`);
     // Extract command info from any message format
     const commandInfo = this.extractCommandFromMessage(message);
+    console.log(`🔍 CommandProcessor: Extracted command: ${commandInfo.command}, success: ${commandInfo.success}`);
     
     if (!commandInfo.success) {
       return commandInfo;
@@ -250,14 +253,19 @@ export class CommandProcessorDaemon extends BaseDaemon {
         const { pathname } = message.data;
         const pathParts = pathname.split('/').filter(Boolean);
         if (pathParts[0] === 'api' && pathParts[1] === 'commands' && pathParts[2]) {
+          // Handle both formats: body.args (WebSocket) or body directly (HTTP API)
+          let parameters = message.data.body?.args || message.data.body || [];
+          
           return {
             success: true,
             command: pathParts[2],
-            parameters: message.data.body?.args || [],
+            parameters: parameters,
             context: { 
               source: 'http', 
               method: message.data.method, 
-              url: message.data.url 
+              url: message.data.url,
+              // Include websocket context for daemon access (passed from WebSocketDaemon)
+              websocket: (message.data as any).context?.websocket || null
             }
           };
         }

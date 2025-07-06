@@ -15,6 +15,70 @@ interface DaemonConfig {
 }
 
 export class SimpleDaemonStarter {
+  private getSafeWorkingDirectory(): string {
+    const fs = require('fs');
+    const path = require('path');
+    
+    try {
+      // First try: current working directory if it exists and has continuum
+      try {
+        const cwd = process.cwd();
+        if (fs.existsSync(cwd)) {
+          const packagePath = path.join(cwd, 'package.json');
+          if (fs.existsSync(packagePath)) {
+            const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+            if (pkg.name === 'continuum') {
+              return cwd;
+            }
+          }
+        }
+      } catch {
+        // process.cwd() failed, continue to next method
+      }
+      
+      // Second try: Find continuum by walking up from __dirname
+      let searchDir = __dirname;
+      while (searchDir !== path.dirname(searchDir)) {
+        const packagePath = path.join(searchDir, 'package.json');
+        if (fs.existsSync(packagePath)) {
+          try {
+            const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+            if (pkg.name === 'continuum') {
+              return searchDir;
+            }
+          } catch {
+            // Skip invalid package.json files
+          }
+        }
+        searchDir = path.dirname(searchDir);
+      }
+      
+      // Third try: resolved path from __dirname (for development)
+      const devRoot = path.resolve(__dirname, '../..');
+      if (fs.existsSync(devRoot)) {
+        const packagePath = path.join(devRoot, 'package.json');
+        if (fs.existsSync(packagePath)) {
+          try {
+            const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+            if (pkg.name === 'continuum') {
+              return devRoot;
+            }
+          } catch {
+            // Not continuum directory
+          }
+        }
+      }
+      
+      // Last resort: use home directory and log warning
+      console.warn('⚠️ Could not find continuum project root, using home directory');
+      return require('os').homedir();
+    } catch (error) {
+      // Ultimate fallback
+      console.warn('⚠️ Directory resolution failed, using home directory');
+      return require('os').homedir();
+    }
+  }
+
   private daemons: DaemonConfig[] = [
     {
       name: 'WebSocket',
@@ -67,10 +131,13 @@ export class SimpleDaemonStarter {
   private async startDaemon(daemon: DaemonConfig): Promise<void> {
     console.log(`🚀 Starting ${daemon.name}...`);
     
+    // Get a safe working directory
+    const safeCwd = this.getSafeWorkingDirectory();
+    
     const childProcess = spawn('npx', ['tsx', daemon.script], {
       stdio: 'pipe',
       detached: false,
-      cwd: process.cwd()
+      cwd: safeCwd
     });
     
     daemon.process = childProcess;

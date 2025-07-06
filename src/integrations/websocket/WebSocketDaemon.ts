@@ -433,9 +433,20 @@ export class WebSocketDaemon extends BaseDaemon {
     this.log(`🔍 DEBUG: Registered daemons: ${Array.from(this.registeredDaemons.keys()).join(', ')}`);
     
     if (daemon && daemon.handleMessage) {
-      this.log(`🔍 DEBUG: Calling handleMessage with: ${JSON.stringify(message)}`, 'debug');
+      // Inject websocket context for daemon access
+      const messageWithContext = {
+        ...message,
+        context: {
+          ...message.context,
+          websocket: {
+            registeredDaemons: this.registeredDaemons
+          }
+        }
+      };
+      
+      this.log(`🔍 DEBUG: Calling handleMessage with: ${JSON.stringify(messageWithContext)}`, 'debug');
       try {
-        const result = await daemon.handleMessage(message);
+        const result = await daemon.handleMessage(messageWithContext);
         this.log(`🔍 DEBUG: Got response: ${JSON.stringify(result)}`, 'debug');
         return result;
       } catch (error) {

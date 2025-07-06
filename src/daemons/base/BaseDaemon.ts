@@ -30,7 +30,53 @@ export abstract class BaseDaemon extends EventEmitter {
   
   constructor() {
     super();
+    this.ensureValidWorkingDirectory();
     this.setupSignalHandlers();
+  }
+
+  /**
+   * Ensure daemon starts in the continuum project root
+   * Prevents "getcwd: cannot access parent directories" errors
+   */
+  private ensureValidWorkingDirectory(): void {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      
+      // Find continuum root by walking up from __dirname (don't use process.cwd())
+      let searchDir = __dirname;
+      let continuumRoot = null;
+      
+      while (searchDir !== path.dirname(searchDir)) {
+        const packagePath = path.join(searchDir, 'package.json');
+        if (fs.existsSync(packagePath)) {
+          try {
+            const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+            if (pkg.name === 'continuum') {
+              continuumRoot = searchDir;
+              break;
+            }
+          } catch {
+            // Skip invalid package.json files
+          }
+        }
+        searchDir = path.dirname(searchDir);
+      }
+      
+      // Change to continuum root if found
+      if (continuumRoot && fs.existsSync(continuumRoot)) {
+        process.chdir(continuumRoot);
+      } else {
+        // Fallback: use the resolved path from __dirname
+        const fallbackRoot = path.resolve(__dirname, '../../../..');
+        if (fs.existsSync(fallbackRoot)) {
+          process.chdir(fallbackRoot);
+        }
+      }
+    } catch (error) {
+      // Don't log anything - avoid any operations that might fail
+      // Just let the daemon start from wherever it is
+    }
   }
 
   /**
