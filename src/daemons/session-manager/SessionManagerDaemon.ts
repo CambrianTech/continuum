@@ -14,6 +14,8 @@ import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { SessionConsoleLogger } from './modules/SessionConsoleLogger';
 import { SessionRequest } from '../../types/SessionParameters';
+import { SessionConnectResponse } from '../../types/SessionConnectResponse';
+import { DAEMON_EVENT_BUS } from '../base/DaemonEventBus';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -159,7 +161,7 @@ export class SessionManagerDaemon extends BaseDaemon {
     });
   }
 
-  protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
+  protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse<any>> {
     try {
       switch (message.type) {
         case 'register_connection_identity':
@@ -200,6 +202,9 @@ export class SessionManagerDaemon extends BaseDaemon {
           
         case 'enable_server_logging':
           return await this.handleEnableServerLogging(message.data);
+          
+        case 'session.connect':
+          return await this.handleConnect(message.data);
           
         default:
           return {
@@ -260,31 +265,7 @@ export class SessionManagerDaemon extends BaseDaemon {
   /**
    * Handle intelligent connection orchestration
    */
-  async handleConnect(connectParams: SessionRequest): Promise<{
-    success: boolean;
-    data?: {
-      sessionId: string;
-      action: 'joined_existing' | 'created_new' | 'forked_from';
-      launched: {
-        browser: boolean;
-        webserver: boolean;
-        newLogFiles: boolean;
-      };
-      logs: {
-        browser: string;
-        server: string;
-      };
-      interface: string;
-      screenshots: string;
-      commands: {
-        otherClients: string;
-        stop: string;
-        fork: string;
-        info: string;
-      };
-    };
-    error?: string;
-  }> {
+  async handleConnect(connectParams: SessionRequest): Promise<DaemonResponse<SessionConnectResponse>> {
     // Debug: Log the actual parameters received
     this.log(`🔍 handleConnect called with: ${JSON.stringify(connectParams)}`, 'info');
     
@@ -359,8 +340,8 @@ export class SessionManagerDaemon extends BaseDaemon {
           // Configure THIS daemon to log to the session file
           this.setSessionLogPath(serverLogPath);
           
-          // Emit session_created event with server log path for other daemons
-          this.emit('session_created', { 
+          // Emit session_created event on global bus for other daemons
+          DAEMON_EVENT_BUS.emitEvent('session_created', { 
             sessionId: session.id, 
             serverLogPath,
             sessionType: session.type,
@@ -372,8 +353,8 @@ export class SessionManagerDaemon extends BaseDaemon {
           this.log(`⚠️ Failed to enable server logging: ${error}`, 'warn');
         }
       } else if (action === 'joined_existing') {
-        // Emit session_joined event for existing sessions to ensure browser management
-        this.emit('session_joined', { 
+        // Emit session_joined event on global bus for existing sessions to ensure browser management
+        DAEMON_EVENT_BUS.emitEvent('session_joined', { 
           sessionId: session.id, 
           sessionType: session.type,
           owner: session.owner,
@@ -390,26 +371,38 @@ export class SessionManagerDaemon extends BaseDaemon {
         newLogFiles
       };
 
-      // Return session info struct with orchestration details
+      // Get version from package.json
+      let version = 'unknown';
+      try {
+        const packageJson = await import('../../../package.json');
+        version = packageJson.version || 'unknown';
+      } catch (error) {
+        // Fallback to unknown
+      }
+      
+      // Construct strongly typed response
+      const response: SessionConnectResponse = {
+        version,
+        sessionId: session.id,
+        action,
+        launched,
+        logs: {
+          browser: session.artifacts.logs.client[0] || `${session.artifacts.storageDir}/logs/browser.log`,
+          server: session.artifacts.logs.server[0] || `${session.artifacts.storageDir}/logs/server.log`
+        },
+        interface: 'http://localhost:9000',
+        screenshots: `${session.artifacts.storageDir}/screenshots`,
+        commands: {
+          otherClients: `continuum session-clients ${session.id}`,
+          stop: `continuum session-stop ${session.id}`,
+          fork: `continuum session-fork ${session.id}`,
+          info: `continuum session-info ${session.id}`
+        }
+      };
+      
       return {
         success: true,
-        data: {
-          sessionId: session.id,
-          action,
-          launched,
-          logs: {
-            browser: session.artifacts.logs.client[0] || `${session.artifacts.storageDir}/logs/browser.log`,
-            server: session.artifacts.logs.server[0] || `${session.artifacts.storageDir}/logs/server.log`
-          },
-          interface: 'http://localhost:9000',
-          screenshots: `${session.artifacts.storageDir}/screenshots`,
-          commands: {
-            otherClients: `continuum session-clients ${session.id}`,
-            stop: `continuum session-stop ${session.id}`,
-            fork: `continuum session-fork ${session.id}`,
-            info: `continuum session-info ${session.id}`
-          }
-        }
+        data: response
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

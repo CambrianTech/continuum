@@ -17,6 +17,7 @@ import { ChromeBrowserModule } from './modules/ChromeBrowserModule.js';
 import { SessionConsoleLogger } from '../session-manager/modules/SessionConsoleLogger.js';
 import { SimpleTabManager } from './modules/SimpleTabManager.js';
 import { ZombieTabKiller } from './modules/ZombieTabKiller.js';
+import { DAEMON_EVENT_BUS } from '../base/DaemonEventBus.js';
 // import { BrowserTabManager } from './modules/BrowserTabAdapter.js'; // TODO: Remove if not used
 
 export class BrowserManagerDaemon extends MessageRoutedDaemon {
@@ -152,7 +153,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
    */
   private setupSessionEventListening(): void {
     // Listen for session_created events from session manager
-    this.on('session_created', async (event: any) => {
+    DAEMON_EVENT_BUS.onEvent('session_created', async (event) => {
       const { sessionId, sessionType, owner } = event;
       this.log(`📋 Session created: ${sessionId} (${sessionType}) for ${owner}`);
       
@@ -163,7 +164,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     });
     
     // Listen for session_joined events - ensure browser exists if needed
-    this.on('session_joined', async (event: any) => {
+    DAEMON_EVENT_BUS.onEvent('session_joined', async (event) => {
       const { sessionId, sessionType, owner } = event;
       this.log(`📋 Session joined: ${sessionId} (${sessionType}) for ${owner} - ensuring browser exists`);
       

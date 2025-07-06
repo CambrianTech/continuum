@@ -5,6 +5,9 @@
 
 import { EventEmitter } from 'events';
 import { DaemonMessage, DaemonResponse, DaemonStatus } from './DaemonProtocol';
+
+// Global daemon registry for inter-daemon communication
+export const DAEMON_REGISTRY = new Map<string, BaseDaemon>();
 import * as fs from 'fs/promises';
 
 export abstract class BaseDaemon extends EventEmitter {
@@ -107,6 +110,9 @@ export abstract class BaseDaemon extends EventEmitter {
   private async _performStart(): Promise<void> {
     this.status = DaemonStatus.STARTING;
     this.startTime = new Date();
+    
+    // Register daemon in global registry for inter-daemon communication
+    DAEMON_REGISTRY.set(this.name, this);
     
     this.log(`Starting daemon ${this.name} v${this.version}`);
     
@@ -382,15 +388,29 @@ export abstract class BaseDaemon extends EventEmitter {
   }
 
   /**
-   * Send message via IPC (implementation depends on Continuum OS message bus)
+   * Send message via IPC using daemon registry
    */
   private async sendViaIPC(message: DaemonMessage): Promise<DaemonResponse> {
-    // This would interface with Continuum OS's IPC system
-    // For now, return a success response
-    return {
-      success: true,
-      data: `Message sent from ${this.name} to ${message.to}`
-    };
+    const targetDaemon = DAEMON_REGISTRY.get(message.to);
+    
+    if (!targetDaemon) {
+      return {
+        success: false,
+        error: `Target daemon '${message.to}' not found in registry. Available daemons: ${Array.from(DAEMON_REGISTRY.keys()).join(', ')}`
+      };
+    }
+    
+    try {
+      // Call the target daemon's handleMessage method directly
+      const response = await targetDaemon.handleMessage(message);
+      return response;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `IPC error: ${errorMessage}`
+      };
+    }
   }
 }
 

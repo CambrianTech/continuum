@@ -14,9 +14,9 @@ export interface DaemonMessage {
   correlationId?: string;
 }
 
-export interface DaemonResponse {
+export interface DaemonResponse<T = any> {
   success: boolean;
-  data?: any;
+  data?: T;
   error?: string;
   messageId?: string;
   processingTime?: number;
