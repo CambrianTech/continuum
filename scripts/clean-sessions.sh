@@ -74,5 +74,16 @@ echo -e "${YELLOW}🧹 Cleaning orphaned logs...${NC}"
 find .continuum -name "*.log" -type f -mmin +$((KEEP_HOURS * 60)) -not -path "*sessions*" -delete 2>/dev/null || true
 echo -e "${GREEN}✅ Orphaned logs cleaned${NC}"
 
+# If we deleted all sessions, kill ALL continuum processes to ensure clean state
+if [ "$DELETE_ALL" = true ]; then
+    echo -e "${YELLOW}🔄 Stopping all Continuum processes for clean state...${NC}"
+    # Kill ALL continuum-related processes
+    pkill -f "tsx.*main\.ts|node.*main\.ts|continuum|esbuild.*service" 2>/dev/null || true
+    # Also kill any orphaned node processes on port 9000
+    lsof -ti:9000 | xargs kill -9 2>/dev/null || true
+    sleep 2
+    echo -e "${GREEN}✅ All processes stopped - clean state achieved${NC}"
+fi
+
 echo -e "${BLUE}=============================${NC}"
 echo -e "${GREEN}🎉 Session cleanup complete!${NC}"
