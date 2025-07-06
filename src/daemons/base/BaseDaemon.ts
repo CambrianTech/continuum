@@ -4,11 +4,13 @@
  */
 
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
+import * as path from 'path';
 import { DaemonMessage, DaemonResponse, DaemonStatus } from './DaemonProtocol';
 
 // Global daemon registry for inter-daemon communication
 export const DAEMON_REGISTRY = new Map<string, BaseDaemon>();
-import * as fs from 'fs/promises';
 
 export abstract class BaseDaemon extends EventEmitter {
   public abstract readonly name: string;
@@ -33,7 +35,7 @@ export abstract class BaseDaemon extends EventEmitter {
   private startTime?: Date;
   private lastHeartbeat?: Date;
   private processId: number = process.pid;
-  private heartbeatInterval: NodeJS.Timeout | undefined;
+  private heartbeatInterval: ReturnType<typeof setInterval> | undefined;
   private startPromise: Promise<void> | null = null;
   private stopPromise: Promise<void> | null = null;
   private signalHandlers: { [key: string]: (...args: unknown[]) => void } = {};
@@ -53,8 +55,7 @@ export abstract class BaseDaemon extends EventEmitter {
    */
   private ensureValidWorkingDirectory(): void {
     try {
-      const fs = require('fs');
-      const path = require('path');
+      // fs and path are already imported at the top
       
       // Find continuum root by walking up from __dirname (don't use process.cwd())
       let searchDir = __dirname;
@@ -86,7 +87,7 @@ export abstract class BaseDaemon extends EventEmitter {
           process.chdir(fallbackRoot);
         }
       }
-    } catch (error) {
+    } catch {
       // Don't log anything - avoid any operations that might fail
       // Just let the daemon start from wherever it is
     }
@@ -314,7 +315,7 @@ export abstract class BaseDaemon extends EventEmitter {
     if (!this.sessionLogPath) return;
     
     try {
-      await fs.appendFile(this.sessionLogPath, logMessage + '\n');
+      await fsPromises.appendFile(this.sessionLogPath, logMessage + '\n');
     } catch (error) {
       // Don't log to session file if there's an error (would cause recursion)
       console.error(`Session log write failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -434,6 +435,6 @@ export interface DaemonStatusInfo {
   startTime?: Date;
   lastHeartbeat?: Date;
   uptime: number;
-  memoryUsage: NodeJS.MemoryUsage;
-  cpuUsage: NodeJS.CpuUsage;
+  memoryUsage: ReturnType<typeof process.memoryUsage>;
+  cpuUsage: ReturnType<typeof process.cpuUsage>;
 }

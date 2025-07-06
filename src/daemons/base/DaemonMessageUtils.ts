@@ -15,7 +15,7 @@ export class DaemonMessageUtils {
     from: string;
     to: string;
     type: string;
-    data: any;
+    data: unknown;
     priority?: 'low' | 'normal' | 'high' | 'critical';
     correlationId?: string;
   }): DaemonMessage {
@@ -44,7 +44,7 @@ export class DaemonMessageUtils {
     from: string;
     sessionType: string;
     owner: string;
-    options?: any;
+    options?: Record<string, unknown>;
   }): DaemonMessage {
     return this.createMessage({
       id: params.id,
@@ -67,7 +67,18 @@ export class DaemonMessageUtils {
     from: string;
     sessionId: string;
     url: string;
-    config?: any;
+    config?: {
+      purpose?: string;
+      requirements?: {
+        devtools?: boolean;
+        isolation?: string;
+        visibility?: string;
+        persistence?: string;
+      };
+      resources?: {
+        priority?: string;
+      };
+    };
   }): DaemonMessage {
     return this.createMessage({
       id: params.id,
@@ -100,7 +111,7 @@ export class DaemonMessageUtils {
     id: string;
     from: string;
     operation: string;
-    data: any;
+    data: unknown;
   }): DaemonMessage {
     return this.createMessage({
       id: params.id,
@@ -118,8 +129,8 @@ export class DaemonMessageUtils {
     id: string;
     from: string;
     command: string;
-    parameters?: any;
-    context?: any;
+    parameters?: Record<string, unknown>;
+    context?: Record<string, unknown>;
   }): DaemonMessage {
     return this.createMessage({
       id: params.id,
@@ -146,7 +157,7 @@ export class DaemonMessageUtils {
   /**
    * Validate daemon message structure
    */
-  static validateMessage(message: any): message is DaemonMessage {
+  static validateMessage(message: unknown): message is DaemonMessage {
     return (
       typeof message === 'object' &&
       typeof message.id === 'string' &&

@@ -5,12 +5,14 @@
  * Provides consistent interface to DatabaseDaemon for all subsystems
  */
 
+import { DaemonMessage } from './DaemonProtocol';
+
 export interface DatabaseOperation {
   operation: string;
   collection: string;
   key?: string;
-  data?: any;
-  query?: any;
+  data?: Record<string, unknown>;
+  query?: Record<string, unknown>;
   options?: DatabaseOptions;
 }
 
@@ -18,13 +20,13 @@ export interface DatabaseOptions {
   limit?: number;
   offset?: number;
   sort?: Record<string, 'asc' | 'desc'>;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   ttl?: number; // Time to live in seconds
 }
 
 export interface DatabaseResponse {
   success: boolean;
-  data?: any;
+  data?: unknown;
   error?: string;
   metadata?: {
     operation_id: string;
@@ -40,11 +42,15 @@ export interface DatabaseResponse {
  * Provides consistent database delegation patterns for all daemons
  * Use this instead of implementing database logic directly
  */
+interface DatabaseDaemon {
+  handleMessage(message: DaemonMessage): Promise<DatabaseResponse>;
+}
+
 export class DatabaseIntegration {
-  private databaseDaemon: any;
+  private databaseDaemon: DatabaseDaemon;
   private collectionPrefix: string;
 
-  constructor(databaseDaemon: any, collectionPrefix: string) {
+  constructor(databaseDaemon: DatabaseDaemon, collectionPrefix: string) {
     this.databaseDaemon = databaseDaemon;
     this.collectionPrefix = collectionPrefix;
   }
@@ -87,8 +93,8 @@ export class DatabaseIntegration {
   /**
    * Save data to collection
    */
-  async save(collection: string, key: string, data: any, metadata?: Record<string, any>): Promise<DatabaseResponse> {
-    const operation: any = {
+  async save(collection: string, key: string, data: Record<string, unknown>, metadata?: Record<string, unknown>): Promise<DatabaseResponse> {
+    const operation: DatabaseOperation = {
       operation: 'save',
       collection,
       key,
@@ -105,8 +111,8 @@ export class DatabaseIntegration {
   /**
    * Query data from collection
    */
-  async query(collection: string, query: any, options?: DatabaseOptions): Promise<DatabaseResponse> {
-    const operation: any = {
+  async query(collection: string, query: Record<string, unknown>, options?: DatabaseOptions): Promise<DatabaseResponse> {
+    const operation: DatabaseOperation = {
       operation: 'query',
       collection,
       query
@@ -145,7 +151,7 @@ export class DatabaseIntegration {
    * List all items in collection
    */
   async list(collection: string, options?: DatabaseOptions): Promise<DatabaseResponse> {
-    const operation: any = {
+    const operation: DatabaseOperation = {
       operation: 'list',
       collection
     };
@@ -170,7 +176,7 @@ export class DatabaseIntegration {
 
   // Private helper methods
 
-  private buildDatabaseMessage(operation: DatabaseOperation, fullCollectionName: string): any {
+  private buildDatabaseMessage(operation: DatabaseOperation, fullCollectionName: string): DaemonMessage {
     switch (operation.operation) {
       case 'save':
         return {
@@ -243,14 +249,19 @@ export class DatabaseIntegration {
  * Consolidates ChatRoomDaemon database patterns
  */
 export class ChatDatabaseIntegration extends DatabaseIntegration {
-  constructor(databaseDaemon: any) {
+  constructor(databaseDaemon: DatabaseDaemon) {
     super(databaseDaemon, 'chat');
   }
 
   /**
    * Save chat room
    */
-  async saveRoom(room: any): Promise<DatabaseResponse> {
+  async saveRoom(room: {
+    id: string;
+    name: string;
+    participants?: { size: number };
+    created_at: Date;
+  }): Promise<DatabaseResponse> {
     return this.save('rooms', room.id, room, {
       type: 'chat_room',
       name: room.name,
@@ -262,7 +273,12 @@ export class ChatDatabaseIntegration extends DatabaseIntegration {
   /**
    * Save chat message
    */
-  async saveMessage(message: any): Promise<DatabaseResponse> {
+  async saveMessage(message: {
+    id: string;
+    room_id: string;
+    sender_id: string;
+    timestamp: Date;
+  }): Promise<DatabaseResponse> {
     return this.save('messages', message.id, message, {
       type: 'chat_message',
       room_id: message.room_id,
@@ -303,14 +319,22 @@ export class ChatDatabaseIntegration extends DatabaseIntegration {
  * Consolidates AcademyDaemon database patterns
  */
 export class AcademyDatabaseIntegration extends DatabaseIntegration {
-  constructor(databaseDaemon: any) {
+  constructor(databaseDaemon: DatabaseDaemon) {
     super(databaseDaemon, 'academy');
   }
 
   /**
    * Save optimization record
    */
-  async saveOptimizationRecord(record: any): Promise<DatabaseResponse> {
+  async saveOptimizationRecord(record: {
+    id: string;
+    timestamp: Date;
+    impact_metrics?: {
+      compression_gained?: number;
+      performance_change?: number;
+    };
+    optimization_steps?: unknown[];
+  }): Promise<DatabaseResponse> {
     return this.save('optimization_records', record.id, record, {
       type: 'optimization_record',
       timestamp: record.timestamp,
@@ -323,13 +347,22 @@ export class AcademyDatabaseIntegration extends DatabaseIntegration {
   /**
    * Save persona genome
    */
-  async savePersonaGenome(personaId: string, genome: any, identity: any): Promise<DatabaseResponse> {
+  async savePersonaGenome(personaId: string, genome: {
+    knowledge?: {
+      domain_expertise?: Array<{ domain: string }>;
+    };
+  }, identity: {
+    uuid: string;
+    name: string;
+    creator_node: string;
+    derivation_type: string;
+  }): Promise<DatabaseResponse> {
     return this.save('persona_genomes', personaId, { genome, identity }, {
       type: 'persona_genome',
       uuid: identity.uuid,
       name: identity.name,
       creator_node: identity.creator_node,
-      domains: genome.knowledge?.domain_expertise?.map((d: any) => d.domain) || [],
+      domains: genome.knowledge?.domain_expertise?.map(d => d.domain) || [],
       derivation_type: identity.derivation_type
     });
   }
@@ -337,20 +370,33 @@ export class AcademyDatabaseIntegration extends DatabaseIntegration {
   /**
    * Save LoRA composition
    */
-  async saveLoRAComposition(compositionId: string, composition: any, layerIdentities: any[]): Promise<DatabaseResponse> {
+  async saveLoRAComposition(compositionId: string, composition: {
+    primary_layers?: unknown[];
+    total_rank: number;
+  }, layerIdentities: Array<{
+    domain: string;
+    uuid: string;
+  }>): Promise<DatabaseResponse> {
     return this.save('lora_compositions', compositionId, { composition, layer_identities: layerIdentities }, {
       type: 'lora_composition',
       primary_layers: composition.primary_layers?.length || 0,
       total_rank: composition.total_rank,
-      domains: [...new Set(layerIdentities.map((l: any) => l.domain))],
-      layer_uuids: layerIdentities.map((l: any) => l.uuid)
+      domains: [...new Set(layerIdentities.map(l => l.domain))],
+      layer_uuids: layerIdentities.map(l => l.uuid)
     });
   }
 
   /**
    * Save LoRA layer identity
    */
-  async saveLoRALayer(layer: any): Promise<DatabaseResponse> {
+  async saveLoRALayer(layer: {
+    uuid: string;
+    domain: string;
+    target_capability: string;
+    rank: number;
+    creator_node: string;
+    creation_prompt: string;
+  }): Promise<DatabaseResponse> {
     return this.save('lora_layers', layer.uuid, layer, {
       type: 'lora_layer',
       domain: layer.domain,
@@ -364,7 +410,13 @@ export class AcademyDatabaseIntegration extends DatabaseIntegration {
   /**
    * Save training resource
    */
-  async saveTrainingResource(resource: any): Promise<DatabaseResponse> {
+  async saveTrainingResource(resource: {
+    uuid: string;
+    resource_type: string;
+    domain_tags: string[];
+    quality_score: number;
+    size_bytes: number;
+  }): Promise<DatabaseResponse> {
     return this.save('training_resources', resource.uuid, resource, {
       type: 'training_resource',
       resource_type: resource.resource_type,
@@ -377,7 +429,14 @@ export class AcademyDatabaseIntegration extends DatabaseIntegration {
   /**
    * Save prompt-layer binding
    */
-  async savePromptBinding(binding: any): Promise<DatabaseResponse> {
+  async savePromptBinding(binding: {
+    layer_uuid: string;
+    target_behavior: string;
+    prompt_metadata?: {
+      effectiveness_score?: number;
+      domain_specificity?: number;
+    };
+  }): Promise<DatabaseResponse> {
     return this.save('prompt_bindings', binding.layer_uuid, binding, {
       type: 'prompt_binding',
       target_behavior: binding.target_behavior,
@@ -408,7 +467,7 @@ export class AcademyDatabaseIntegration extends DatabaseIntegration {
    * Query optimization history
    */
   async queryOptimizationHistory(dateRange?: { start: Date; end: Date }): Promise<DatabaseResponse> {
-    const query: any = {};
+    const query: Record<string, unknown> = {};
     
     if (dateRange) {
       query.timestamp = {
@@ -452,15 +511,15 @@ export class AcademyDatabaseIntegration extends DatabaseIntegration {
  * Factory for creating database integrations
  */
 export class DatabaseIntegrationFactory {
-  static createChatIntegration(databaseDaemon: any): ChatDatabaseIntegration {
+  static createChatIntegration(databaseDaemon: DatabaseDaemon): ChatDatabaseIntegration {
     return new ChatDatabaseIntegration(databaseDaemon);
   }
 
-  static createAcademyIntegration(databaseDaemon: any): AcademyDatabaseIntegration {
+  static createAcademyIntegration(databaseDaemon: DatabaseDaemon): AcademyDatabaseIntegration {
     return new AcademyDatabaseIntegration(databaseDaemon);
   }
 
-  static createCustomIntegration(databaseDaemon: any, prefix: string): DatabaseIntegration {
+  static createCustomIntegration(databaseDaemon: DatabaseDaemon, prefix: string): DatabaseIntegration {
     return new DatabaseIntegration(databaseDaemon, prefix);
   }
 }

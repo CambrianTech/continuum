@@ -34,8 +34,8 @@ class TestAsyncDaemon extends BaseDaemon {
   public readonly name = 'test-async';
   public readonly version = '1.0.0';
   
-  public intervalId: NodeJS.Timeout | null = null;
-  public timeoutId: NodeJS.Timeout | null = null;
+  public intervalId: ReturnType<typeof setInterval> | null = null;
+  public timeoutId: ReturnType<typeof setTimeout> | null = null;
   public promiseResolved = false;
   public cleanupCalled = false;
   public startupDelay = 0;
@@ -71,7 +71,7 @@ class TestAsyncDaemon extends BaseDaemon {
   
   // Simulate async operation that could hang
   public async performAsyncOperation(shouldHang = false): Promise<string> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve, _reject) => {
       if (shouldHang) {
         // Never resolve - simulates hanging operation
         return;
@@ -290,7 +290,7 @@ describe('BaseDaemon Async Dependency Tests', () => {
       try {
         await daemon.performAsyncOperation();
         throw new Error('Simulated error');
-      } catch (error) {
+      } catch {
         // Error occurred, but cleanup should still work
       }
       
@@ -344,7 +344,7 @@ describe('BaseDaemon Async Dependency Tests', () => {
       try {
         await daemon.performAsyncOperation();
         throw new Error('Async operation error');
-      } catch (error) {
+      } catch {
         // Error should not affect daemon state
       }
       

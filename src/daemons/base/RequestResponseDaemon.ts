@@ -7,15 +7,15 @@
  * 3. Return response
  */
 
-import { BaseDaemon } from './BaseDaemon.js';
-import { DaemonMessage, DaemonResponse } from './DaemonProtocol.js';
+import { BaseDaemon } from './BaseDaemon';
+import { DaemonMessage, DaemonResponse } from './DaemonProtocol';
 
-export interface RequestHandler {
-  (data: any): Promise<DaemonResponse>;
+export interface RequestHandler<T = unknown> {
+  (data: T): Promise<DaemonResponse>;
 }
 
 export interface RequestHandlerMap {
-  [messageType: string]: RequestHandler;
+  [messageType: string]: RequestHandler<unknown>;
 }
 
 export abstract class RequestResponseDaemon extends BaseDaemon {
@@ -57,7 +57,7 @@ export abstract class RequestResponseDaemon extends BaseDaemon {
   /**
    * Helper method to create a standard success response
    */
-  protected createSuccessResponse(data?: any): DaemonResponse {
+  protected createSuccessResponse(data?: unknown): DaemonResponse {
     return {
       success: true,
       data
