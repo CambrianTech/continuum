@@ -11,11 +11,12 @@ import { BaseDaemon } from '../../daemons/base/BaseDaemon';
 // Test daemon that listens and emits events
 class TestDaemon extends BaseDaemon {
   public receivedEvents: Array<{ event: string; data: any }> = [];
+  readonly name: string;
+  readonly version: string = '1.0.0';
   
   constructor(name: string) {
     super();
     this.name = name;
-    this.version = '1.0.0';
   }
   
   async onStart(): Promise<void> {
@@ -31,10 +32,18 @@ class TestDaemon extends BaseDaemon {
     DAEMON_EVENT_BUS.onEvent('browser_launched', (data) => {
       this.receivedEvents.push({ event: 'browser_launched', data });
     });
+    
+    DAEMON_EVENT_BUS.onEvent('browser_connected', (data) => {
+      this.receivedEvents.push({ event: 'browser_connected', data });
+    });
   }
   
   async onStop(): Promise<void> {
     // Cleanup
+  }
+  
+  async handleMessage(message: any): Promise<any> {
+    return { success: true };
   }
 }
 
@@ -157,8 +166,8 @@ describe('DaemonEventBus Integration Tests', () => {
   
   describe('Event Bus Isolation', () => {
     it('should use global singleton instance', () => {
-      // Create a new instance
-      const newBus = new DaemonEventBus();
+      // Get instance through getInstance method
+      const newBus = DaemonEventBus.getInstance();
       
       // It should be the same instance as DAEMON_EVENT_BUS
       assert.strictEqual(newBus, DAEMON_EVENT_BUS);

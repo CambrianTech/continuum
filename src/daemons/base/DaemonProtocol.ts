@@ -3,18 +3,18 @@
  * Defines the IPC protocol between daemons and the OS
  */
 
-export interface DaemonMessage {
+export interface DaemonMessage<T = unknown> {
   id: string;
   from: string;
   to: string;
   type: string;
-  data: any;
+  data: T;
   timestamp: Date;
   priority?: 'low' | 'normal' | 'high' | 'critical';
   correlationId?: string;
 }
 
-export interface DaemonResponse<T = any> {
+export interface DaemonResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;

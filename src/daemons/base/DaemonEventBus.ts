@@ -36,7 +36,14 @@ export interface DaemonEvents {
   
   'browser_launched': {
     sessionId: string;
-    pid: number;
+    browserPid: number;
+    url: string;
+  };
+  
+  'browser_connected': {
+    sessionId: string;
+    connectionId: string;
+    userAgent: string;
   };
   
   // Command events
@@ -49,7 +56,7 @@ export interface DaemonEvents {
   'command:complete': {
     command: string;
     executionId: string;
-    result: any;
+    result: unknown;
     duration: number;
   };
   

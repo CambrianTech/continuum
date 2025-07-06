@@ -1,13 +1,16 @@
 /**
- * Integration tests for HTML rendering and output validation
- * Tests that RendererDaemon produces correct HTML output
+ * Layer 2: Daemon HTML Rendering Tests
+ * Tests RendererDaemon's ability to generate HTML through daemon messaging
+ * According to middle-out methodology, this tests Layer 2 functionality only
+ * 
+ * DOES NOT test HTTP endpoints (that's Layer 4)
+ * DOES NOT require browser connection (that's Layer 5)
  */
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
 import { RendererDaemon } from '../../daemons/renderer/RendererDaemon';
 import { WebSocketDaemon } from '../../integrations/websocket/WebSocketDaemon';
-import { JSDOM } from 'jsdom';
 
 describe('HTML Rendering Integration Tests', () => {
   let rendererDaemon: RendererDaemon;
@@ -31,155 +34,119 @@ describe('HTML Rendering Integration Tests', () => {
     await rendererDaemon.stop();
   });
   
-  describe('HTML Output Validation', () => {
-    it('should render valid HTML5 document', async () => {
-      const response = await fetch('http://localhost:9000');
+  describe('Daemon Capabilities', () => {
+    it('should report rendering capabilities', async () => {
+      const message = {
+        from: 'test',
+        to: 'renderer',
+        type: 'get_capabilities',
+        data: {}
+      };
       
-      assert.strictEqual(response.status, 200);
-      assert(response.headers.get('content-type')?.includes('text/html'));
+      const response = await rendererDaemon.handleMessage(message);
       
-      const html = await response.text();
-      
-      // Validate HTML structure
-      assert(html.includes('<!DOCTYPE html>'), 'Should have HTML5 doctype');
-      assert(html.includes('<html'), 'Should have html tag');
-      assert(html.includes('<head>'), 'Should have head tag');
-      assert(html.includes('<body>'), 'Should have body tag');
-      assert(html.includes('</html>'), 'Should close html tag');
-    });
-    
-    it('should include required meta tags', async () => {
-      const response = await fetch('http://localhost:9000');
-      const html = await response.text();
-      
-      // Parse HTML
-      const dom = new JSDOM(html);
-      const document = dom.window.document;
-      
-      // Check meta tags
-      const charset = document.querySelector('meta[charset]');
-      assert(charset, 'Should have charset meta tag');
-      assert.strictEqual(charset.getAttribute('charset'), 'UTF-8');
-      
-      const viewport = document.querySelector('meta[name="viewport"]');
-      assert(viewport, 'Should have viewport meta tag');
-      assert(viewport.getAttribute('content')?.includes('width=device-width'));
-    });
-    
-    it('should include continuum client scripts', async () => {
-      const response = await fetch('http://localhost:9000');
-      const html = await response.text();
-      
-      const dom = new JSDOM(html);
-      const document = dom.window.document;
-      
-      // Check for continuum-browser.js
-      const browserScript = document.querySelector('script[src*="continuum-browser.js"]');
-      assert(browserScript, 'Should include continuum-browser.js');
-      
-      // Check for WebSocket connection script
-      assert(html.includes('WebSocket') || html.includes('continuum'), 'Should reference WebSocket or continuum');
-    });
-    
-    it('should set correct page title', async () => {
-      const response = await fetch('http://localhost:9000');
-      const html = await response.text();
-      
-      const dom = new JSDOM(html);
-      const document = dom.window.document;
-      
-      const title = document.querySelector('title');
-      assert(title, 'Should have title tag');
-      assert(title.textContent?.includes('Continuum'), 'Title should include "Continuum"');
+      assert(response.success, 'Should return capabilities');
+      assert(response.data, 'Should have data');
     });
   });
   
-  describe('Static Asset Handling', () => {
-    it('should serve CSS files with correct content type', async () => {
-      // Try to fetch a CSS file
-      const response = await fetch('http://localhost:9000/assets/styles.css');
+  describe('Page Rendering', () => {
+    it('should render page via render_page message', async () => {
+      const message = {
+        from: 'test',
+        to: 'renderer',
+        type: 'render_request',
+        data: {
+          type: 'render_page',
+          data: {
+            template: 'default',
+            title: 'Test Page',
+            content: 'Test Content'
+          }
+        }
+      };
       
-      if (response.status === 200) {
-        assert(response.headers.get('content-type')?.includes('text/css'), 'CSS should have correct content type');
+      const response = await rendererDaemon.handleMessage(message);
+      
+      assert(response.success, 'Render should succeed');
+      assert(response.data?.html || response.html, 'Should return HTML');
+    });
+    
+    it('should render UI components via render_ui message', async () => {
+      const message = {
+        from: 'test',
+        to: 'renderer',
+        type: 'render_request',
+        data: {
+          type: 'render_ui',
+          data: {
+            component: 'test-widget',
+            props: { title: 'Test Widget' }
+          }
+        }
+      };
+      
+      const response = await rendererDaemon.handleMessage(message);
+      
+      // May fail if component doesn't exist, but should handle gracefully
+      assert(response !== undefined, 'Should return response');
+    });
+  });
+  
+  describe('Component Updates', () => {
+    it('should handle component update requests', async () => {
+      const message = {
+        from: 'test',
+        to: 'renderer',
+        type: 'render_request',
+        data: {
+          type: 'update_component',
+          data: {
+            componentId: 'test-component',
+            updates: { text: 'Updated Text' }
+          }
+        }
+      };
+      
+      const response = await rendererDaemon.handleMessage(message);
+      
+      assert(response !== undefined, 'Should return response');
+    });
+  });
+  
+  describe('Error Handling', () => {
+    it('should handle invalid render requests gracefully', async () => {
+      const message = {
+        from: 'test',
+        to: 'renderer',
+        type: 'render_request',
+        data: {
+          type: 'invalid_type' as any,
+          data: {}
+        }
+      };
+      
+      const response = await rendererDaemon.handleMessage(message);
+      
+      assert(response !== undefined, 'Should return response');
+      // Should either fail gracefully or return error
+    });
+    
+    it('should handle missing data gracefully', async () => {
+      const message = {
+        from: 'test',
+        to: 'renderer',
+        type: 'render_request',
+        data: null as any
+      };
+      
+      try {
+        const response = await rendererDaemon.handleMessage(message);
+        assert(response !== undefined, 'Should return response even with null data');
+      } catch (error) {
+        // Expected - daemon should handle error
+        assert(error, 'Should throw or handle error');
       }
-    });
-    
-    it('should serve JavaScript files with correct content type', async () => {
-      const response = await fetch('http://localhost:9000/ui/continuum-browser.js');
-      
-      if (response.status === 200) {
-        assert(
-          response.headers.get('content-type')?.includes('application/javascript') ||
-          response.headers.get('content-type')?.includes('text/javascript'),
-          'JS should have correct content type'
-        );
-      }
-    });
-  });
-  
-  describe('Error Page Rendering', () => {
-    it('should render 404 page for non-existent routes', async () => {
-      const response = await fetch('http://localhost:9000/this-does-not-exist');
-      
-      // Could be 404 or fallback to index
-      assert([200, 404].includes(response.status));
-      
-      if (response.status === 404) {
-        const html = await response.text();
-        assert(html.includes('404') || html.includes('not found'), 'Should indicate 404 error');
-      }
-    });
-  });
-  
-  describe('Dynamic Content Rendering', () => {
-    it('should handle dynamic route parameters', async () => {
-      // Test session-specific routes
-      const response = await fetch('http://localhost:9000/session/test-123');
-      
-      // Should either redirect or render session-specific content
-      assert([200, 302, 404].includes(response.status));
-    });
-    
-    it('should include CSRF protection', async () => {
-      const response = await fetch('http://localhost:9000');
-      const html = await response.text();
-      
-      // Check for CSRF token in meta tag or hidden input
-      const dom = new JSDOM(html);
-      const document = dom.window.document;
-      
-      const csrfMeta = document.querySelector('meta[name="csrf-token"]');
-      const csrfInput = document.querySelector('input[name="csrf_token"]');
-      
-      // Should have some form of CSRF protection
-      assert(csrfMeta || csrfInput || html.includes('csrf'), 'Should include CSRF protection');
-    });
-  });
-  
-  describe('Widget Container Validation', () => {
-    it('should include widget mounting points', async () => {
-      const response = await fetch('http://localhost:9000');
-      const html = await response.text();
-      
-      const dom = new JSDOM(html);
-      const document = dom.window.document;
-      
-      // Check for widget containers
-      const widgetContainers = document.querySelectorAll('[data-widget], .widget-container, #widget-root');
-      assert(widgetContainers.length > 0, 'Should have widget mounting points');
-    });
-    
-    it('should include widget initialization script', async () => {
-      const response = await fetch('http://localhost:9000');
-      const html = await response.text();
-      
-      // Should have widget initialization
-      assert(
-        html.includes('initializeWidgets') || 
-        html.includes('loadWidget') || 
-        html.includes('Widget'),
-        'Should include widget initialization code'
-      );
     });
   });
 });

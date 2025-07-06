@@ -204,7 +204,7 @@ export class SessionManagerDaemon extends BaseDaemon {
           return await this.handleEnableServerLogging(message.data);
           
         case 'session.connect':
-          return await this.handleConnect(message.data);
+          return await this.handleConnect(message.data as SessionRequest);
           
         default:
           return {

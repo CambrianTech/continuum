@@ -10,6 +10,10 @@ import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 
+interface DaemonControlRequest {
+  daemon: string; // daemon name
+}
+
 interface DaemonConfig {
   name: string;
   module: string;
@@ -97,13 +101,13 @@ export class DaemonManagerDaemon extends BaseDaemon {
         return this.getDaemonStatuses();
       
       case 'restart_daemon':
-        return this.restartDaemon(message.data.daemon);
+        return this.restartDaemon((message.data as DaemonControlRequest).daemon);
       
       case 'stop_daemon':
-        return this.stopDaemon(message.data.daemon);
+        return this.stopDaemon((message.data as DaemonControlRequest).daemon);
       
       case 'start_daemon':
-        return this.startDaemon(message.data.daemon);
+        return this.startDaemon((message.data as DaemonControlRequest).daemon);
       
       default:
         return {

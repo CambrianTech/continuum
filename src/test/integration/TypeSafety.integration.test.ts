@@ -8,12 +8,15 @@ import assert from 'node:assert';
 import * as ts from 'typescript';
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'node:url';
 
 describe('Type Safety Integration Tests', () => {
   let projectRoot: string;
   
   before(() => {
-    projectRoot = path.resolve(__dirname, '../../../..');
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    projectRoot = path.resolve(__dirname, '../../..');
   });
   
   describe('TypeScript Strict Mode Compliance', () => {
@@ -220,10 +223,12 @@ describe('Type Safety Integration Tests', () => {
         
         const content = fs.readFileSync(filePath, 'utf-8');
         
-        // Should extend BaseDaemon
+        // Should extend BaseDaemon (directly or indirectly)
         assert(
-          content.includes('extends BaseDaemon'),
-          `${file} should extend BaseDaemon`
+          content.includes('extends BaseDaemon') || 
+          content.includes('extends MessageRoutedDaemon') ||
+          content.includes('extends DaemonBase'),
+          `${file} should extend BaseDaemon or a class that extends BaseDaemon`
         );
         
         // Should implement required methods
@@ -246,16 +251,23 @@ describe('Type Safety Integration Tests', () => {
         
         const content = fs.readFileSync(filePath, 'utf-8');
         
-        // Should extend BaseCommand or DaemonCommand
+        // Should extend BaseCommand, DaemonCommand, or DirectCommand
         assert(
-          content.includes('extends BaseCommand') || content.includes('extends DaemonCommand'),
-          `${file} should extend BaseCommand or DaemonCommand`
+          content.includes('extends BaseCommand') || 
+          content.includes('extends DaemonCommand') ||
+          content.includes('extends DirectCommand'),
+          `${file} should extend BaseCommand, DaemonCommand, or DirectCommand`
         );
         
-        // Should have static execute method
+        // Should have static execute method (or inherit it from base class)
+        // DaemonCommand and DirectCommand provide execute() in base class
+        const hasOwnExecute = content.includes('static async execute') || content.includes('static execute');
+        const extendsDaemonCommand = content.includes('extends DaemonCommand');
+        const extendsDirectCommand = content.includes('extends DirectCommand');
+        
         assert(
-          content.includes('static async execute') || content.includes('static execute'),
-          `${file} should have static execute method`
+          hasOwnExecute || extendsDaemonCommand || extendsDirectCommand,
+          `${file} should have static execute method or inherit it from DaemonCommand/DirectCommand`
         );
       });
     });

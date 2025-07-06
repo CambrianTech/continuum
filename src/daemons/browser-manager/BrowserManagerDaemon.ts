@@ -554,8 +554,8 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
         return;
       }
       
-      const sessionData = sessionInfoResponse.data;
-      const browserLogPath = sessionData.artifacts?.logs?.client?.[0];
+      const sessionData = sessionInfoResponse.data as any; // TODO: Add proper session type
+      const browserLogPath = sessionData?.artifacts?.logs?.client?.[0];
       
       if (!browserLogPath) {
         this.log(`⚠️ No browser log path found for session ${sessionId}`, 'warn');

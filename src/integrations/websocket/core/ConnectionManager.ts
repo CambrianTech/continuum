@@ -150,7 +150,7 @@ export class ConnectionManager extends EventEmitter {
         type: 'create_browser',
         timestamp: new Date(),
         data: {
-          sessionId: sessionData.sessionId,
+          sessionId: (sessionData as any).sessionId, // TODO: Add proper session data type
           url: `http://localhost:${this.port}`,
           config: {
             purpose: connectionType.context,
