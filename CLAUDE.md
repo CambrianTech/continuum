@@ -242,11 +242,21 @@ Created `/middle-out/development/integration-testing.md` with:
 
 ### 🎯 **GRADUAL ESLINT ENFORCEMENT (2025-07-06)**
 **Pre-commit hook now enforces clean code in stages**:
-- ✅ **Clean directories**: `src/daemons/base`, `src/test/integration`, `src/types`
-- 🚧 **In progress**: `src/commands` (after fixing 'any' types)
-- 📋 **Pending**: `src/daemons` (605 issues), `src/integrations`, `src/ui`
+- ✅ **Clean directories**: `src/daemons/base`, `src/commands/core/base-command`
+- 🚧 **In progress**: `src/daemons` (605 issues), `src/integrations` (43 issues)
+- 📋 **Pending**: `src/types` (37 issues), `src/test/integration` (50 issues), `src/ui`
 
 **Strategy**: Start with directories that already pass, gradually add more as they're cleaned up. This allows commits while enforcing quality on clean code.
+
+### 🔧 **BROWSER CONSOLE LOGGING FIX IMPLEMENTED (2025-07-06)**
+**WebSocket Session Event System**:
+- ✅ **Event hierarchy**: BaseEvent → DaemonEvent → WebSocketEvent → WebSocketConnectionEvent
+- ✅ **WebSocketDaemon emits** `websocket:connection_established` events
+- ✅ **SessionManagerDaemon listens** and sends `session_ready` messages
+- ✅ **Connection-to-session mapping** tracks which browser belongs to which session
+- ✅ **ConsoleCommand** gets sessionId from context for proper log routing
+
+**Result**: Browser console logs now properly route to session-specific log files instead of just server console.
 
 ## 🚨 **NEXT AI SESSION: CRITICAL PATH TO BROWSER LOGGING**
 

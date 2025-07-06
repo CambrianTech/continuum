@@ -30,12 +30,20 @@ interface ManagedDaemon {
   status: 'stopped' | 'starting' | 'running' | 'failed';
 }
 
+interface DaemonStatusInfo {
+  status: string;
+  pid?: number;
+  restarts: number;
+  critical: boolean;
+  lastRestart?: Date;
+}
+
 export class DaemonManagerDaemon extends BaseDaemon {
   public readonly name = 'daemon-manager';
   public readonly version = '1.0.0';
   
   private daemons = new Map<string, ManagedDaemon>();
-  private healthCheckInterval?: NodeJS.Timeout;
+  private healthCheckInterval?: ReturnType<typeof setInterval>;
   
   // Daemon startup order and configuration
   private daemonConfigs: DaemonConfig[] = [
@@ -70,7 +78,7 @@ export class DaemonManagerDaemon extends BaseDaemon {
     this.log('🚀 Daemon Manager starting - I will manage all other daemons');
     
     // Start all daemons in order
-    for (const [name, _daemon] of this.daemons) {
+    for (const [name] of this.daemons) {
       await this.startDaemon(name);
     }
     
@@ -284,7 +292,7 @@ export class DaemonManagerDaemon extends BaseDaemon {
   }
   
   private getDaemonStatuses(): DaemonResponse {
-    const status: Record<string, any> = {};
+    const status: Record<string, DaemonStatusInfo> = {};
     
     for (const [name, daemon] of this.daemons) {
       status[name] = {

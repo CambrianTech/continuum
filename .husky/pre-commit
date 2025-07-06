@@ -11,7 +11,12 @@ echo "🔍 Running ESLint checks on clean directories..."
 # List of directories that must pass ESLint
 CLEAN_DIRS=(
   "src/daemons/base"                # Core daemon infrastructure ✅
+  "src/daemons/daemon-manager"      # Master daemon controller ✅
+  "src/daemons/mesh-coordinator"    # Mesh coordination daemon ✅
   "src/commands/core/base-command"  # BaseCommand infrastructure ✅
+  # "src/daemons/static-file"      # TODO: 8 issues
+  # "src/daemons/mesh"             # TODO: 12 issues
+  # "src/daemons/renderer"         # TODO: 13 issues
   # "src/test/integration"         # TODO: 50 issues (imports with .js extensions)
   # "src/types"                    # TODO: 37 issues (any types)
   # "src/commands"                 # TODO: Add after fixing all command 'any' types
