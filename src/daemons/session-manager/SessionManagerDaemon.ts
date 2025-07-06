@@ -12,6 +12,8 @@
 
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import { DaemonType } from '../base/DaemonTypes';
+import { SystemEventType, MessageType } from '../base/EventTypes';
 import { SessionConsoleLogger } from './modules/SessionConsoleLogger';
 import { SessionRequest } from '../../types/SessionParameters';
 import { SessionConnectResponse } from '../../types/SessionConnectResponse';
@@ -69,6 +71,7 @@ export interface SessionEvent {
 export class SessionManagerDaemon extends BaseDaemon {
   public readonly name = 'session-manager';
   public readonly version = '1.0.0';
+  public readonly daemonType = DaemonType.SESSION_MANAGER;
   
   private sessions = new Map<string, BrowserSession>();
   private connectionIdentities = new Map<string, ConnectionIdentity>();
@@ -88,11 +91,11 @@ export class SessionManagerDaemon extends BaseDaemon {
     this.startCleanupMonitoring();
     
     // Listen for WebSocket connections with proper typing
-    DAEMON_EVENT_BUS.onEvent('websocket:connection_established', async (event) => {
+    DAEMON_EVENT_BUS.onEvent(SystemEventType.WEBSOCKET_CONNECTION_ESTABLISHED, async (event) => {
       await this.handleWebSocketConnection(event.connectionId, event.metadata);
     });
     
-    DAEMON_EVENT_BUS.onEvent('websocket:connection_closed', async (event) => {
+    DAEMON_EVENT_BUS.onEvent(SystemEventType.WEBSOCKET_CONNECTION_CLOSED, async (event) => {
       await this.handleWebSocketDisconnection(event.connectionId, event.reason);
     });
     
@@ -351,7 +354,7 @@ export class SessionManagerDaemon extends BaseDaemon {
           this.setSessionLogPath(serverLogPath);
           
           // Emit session_created event on global bus for other daemons
-          DAEMON_EVENT_BUS.emitEvent('session_created', { 
+          DAEMON_EVENT_BUS.emitEvent(SystemEventType.SESSION_CREATED, { 
             sessionId: session.id, 
             serverLogPath,
             sessionType: session.type,
@@ -364,7 +367,7 @@ export class SessionManagerDaemon extends BaseDaemon {
         }
       } else if (action === 'joined_existing') {
         // Emit session_joined event on global bus for existing sessions to ensure browser management
-        DAEMON_EVENT_BUS.emitEvent('session_joined', { 
+        DAEMON_EVENT_BUS.emitEvent(SystemEventType.SESSION_JOINED, { 
           sessionId: session.id, 
           sessionType: session.type,
           owner: session.owner,
@@ -972,12 +975,19 @@ export class SessionManagerDaemon extends BaseDaemon {
       this.setSessionLogPath(serverLogPath);
       
       // Send message to all other daemons to enable session logging
-      const daemonTypes = ['websocket', 'renderer', 'command-processor', 'browser-manager', 'continuum-directory', 'static-file'];
+      const daemonTypes: DaemonType[] = [
+        DaemonType.WEBSOCKET_SERVER,
+        DaemonType.RENDERER, 
+        DaemonType.COMMAND_PROCESSOR,
+        DaemonType.BROWSER_MANAGER,
+        DaemonType.CONTINUUM_DIRECTORY,
+        DaemonType.STATIC_FILE
+      ];
       const enableResults = [];
       
       for (const daemonType of daemonTypes) {
         try {
-          const result = await this.sendMessage(daemonType, 'set_session_log', {
+          const result = await this.sendMessage(daemonType, MessageType.SET_SESSION_LOG, {
             sessionId,
             logPath: serverLogPath
           });
@@ -1337,7 +1347,7 @@ export class SessionManagerDaemon extends BaseDaemon {
       const session = await this.createOrFindSession(connectionId, sessionType, metadata);
       
       // Send session_ready message to the connection via WebSocketDaemon
-      const response = await this.sendMessage('websocket', 'send_to_connection', {
+      const response = await this.sendMessage(DaemonType.WEBSOCKET_SERVER, MessageType.SEND_TO_CONNECTION, {
         connectionId,
         message: {
           type: 'session_ready',
@@ -1417,25 +1427,13 @@ export class SessionManagerDaemon extends BaseDaemon {
     }
     
     // Create new session
-    const sessionId = `${sessionType}-${connectionId.slice(0, 8)}-${Date.now()}`;
-    const result = await this.createSession({
+    const session = await this.createSession({
       type: sessionType,
       owner: sessionType === 'development' ? 'shared' : connectionId,
       starter: metadata.userAgent,
-      options: {
-        autoCleanup: sessionType !== 'development',
-        devtools: sessionType === 'portal' || sessionType === 'development'
-      }
+      autoCleanup: sessionType !== 'development',
+      context: 'websocket-connection'
     });
-    
-    if (!result.success || !result.data) {
-      throw new Error(`Failed to create session: ${result.error}`);
-    }
-    
-    const session = this.sessions.get(result.data.sessionId);
-    if (!session) {
-      throw new Error('Session created but not found');
-    }
     
     return session;
   }

@@ -5,6 +5,16 @@
  */
 
 import { EventEmitter } from 'events';
+import { 
+  SystemEventType,
+  WebSocketConnectionEstablishedPayload,
+  WebSocketConnectionClosedPayload,
+  SessionCreatedPayload,
+  SessionJoinedPayload,
+  SessionClosedPayload,
+  BrowserLaunchedPayload,
+  CommandExecutedPayload
+} from './EventTypes';
 
 // Base event interface that all events must extend
 export interface BaseEvent {
@@ -39,68 +49,75 @@ export interface SessionEvent extends DaemonEvent {
   sessionId: string;
 }
 
-// Define all valid daemon events with their payloads
+// Map event types to their strongly-typed payloads
 export interface DaemonEvents {
+  // WebSocket events
+  [SystemEventType.WEBSOCKET_CONNECTION_ESTABLISHED]: WebSocketConnectionEstablishedPayload;
+  [SystemEventType.WEBSOCKET_CONNECTION_CLOSED]: WebSocketConnectionClosedPayload;
+  [SystemEventType.WEBSOCKET_MESSAGE_RECEIVED]: {
+    connectionId: string;
+    message: unknown;
+  };
+  
   // Session events
-  'session_created': {
-    sessionId: string;
-    sessionType: string;
-    owner: string;
-    serverLogPath?: string;
-  };
-  
-  'session_joined': {
-    sessionId: string;
-    sessionType: string;
-    owner: string;
-    source: string;
-  };
-  
-  'session_stopped': {
-    sessionId: string;
-    reason: string;
-  };
-  
-  // WebSocket connection events
-  'websocket:connection_established': WebSocketConnectionEvent;
-  'websocket:connection_closed': WebSocketDisconnectionEvent;
-  
-  // Browser events
-  'browser_launch_requested': {
-    sessionId: string;
-    url: string;
-  };
-  
-  'browser_launched': {
-    sessionId: string;
-    browserPid: number;
-    url: string;
-  };
-  
-  'browser_connected': {
+  [SystemEventType.SESSION_CREATED]: SessionCreatedPayload;
+  [SystemEventType.SESSION_JOINED]: SessionJoinedPayload;
+  [SystemEventType.SESSION_CLOSED]: SessionClosedPayload;
+  [SystemEventType.SESSION_READY]: {
     sessionId: string;
     connectionId: string;
-    userAgent: string;
   };
   
-  // Command events
-  'command:start': {
-    command: string;
-    executionId: string;
+  // Browser events
+  [SystemEventType.BROWSER_LAUNCHED]: BrowserLaunchedPayload;
+  [SystemEventType.BROWSER_CLOSED]: {
+    sessionId: string;
+    pid?: number;
+  };
+  [SystemEventType.BROWSER_CONSOLE_LOG]: {
+    sessionId: string;
+    level: string;
+    message: string;
     timestamp: Date;
   };
   
-  'command:complete': {
-    command: string;
-    executionId: string;
-    result: unknown;
-    duration: number;
+  // Command events
+  [SystemEventType.COMMAND_EXECUTED]: CommandExecutedPayload;
+  [SystemEventType.COMMAND_FAILED]: {
+    commandName: string;
+    sessionId?: string;
+    error: string;
+  };
+  [SystemEventType.COMMAND_QUEUED]: {
+    commandName: string;
+    sessionId?: string;
+    queuePosition: number;
   };
   
-  'command:error': {
-    command: string;
-    executionId: string;
+  // Daemon events
+  [SystemEventType.DAEMON_STARTED]: {
+    daemonName: string;
+    daemonType: string;
+    pid: number;
+  };
+  [SystemEventType.DAEMON_STOPPED]: {
+    daemonName: string;
+    reason?: string;
+  };
+  [SystemEventType.DAEMON_ERROR]: {
+    daemonName: string;
     error: string;
+    fatal: boolean;
+  };
+  
+  // System events
+  [SystemEventType.SYSTEM_STARTUP]: {
+    version: string;
+    timestamp: Date;
+  };
+  [SystemEventType.SYSTEM_SHUTDOWN]: {
+    reason: string;
+    graceful: boolean;
   };
 }
 

@@ -14,6 +14,7 @@
 
 import { BaseDaemon } from '../base/BaseDaemon.js';
 import { DaemonResponse, DaemonMessage } from '../base/DaemonProtocol.js';
+import { DaemonType } from '../base/DaemonTypes';
 import crypto from 'crypto';
 import { EventEmitter } from 'events';
 
@@ -65,6 +66,7 @@ interface MeshBootstrapConfig {
 export class MeshNodeDaemon extends BaseDaemon {
   public readonly name = 'mesh-node';
   public readonly version = '1.0.0';
+  public readonly daemonType = DaemonType.MESH;
   
   private config: MeshBootstrapConfig;
   private peers = new Map<string, MeshNode>();

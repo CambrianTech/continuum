@@ -8,6 +8,7 @@ import {
   DaemonMessage, 
   DaemonResponse
 } from '../base/DaemonProtocol.js';
+import { DaemonType } from '../base/DaemonTypes';
 import { DaemonConnector } from '../../integrations/websocket/core/DaemonConnector';
 
 // Strongly typed command interfaces
@@ -71,6 +72,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
   public readonly name = 'command-processor';
   public readonly version = '2.0.0';
   public readonly id: string;
+  public readonly daemonType = DaemonType.COMMAND_PROCESSOR;
   public readonly config = {
     name: this.name,
     version: this.version,

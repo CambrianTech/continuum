@@ -8,6 +8,7 @@
 
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import { DaemonType } from '../base/DaemonTypes';
 import { EventEmitter } from 'events';
 
 // Core mesh interfaces
@@ -517,6 +518,7 @@ class SemanticDependencyResolver extends EventEmitter {
 export class MeshCoordinatorDaemon extends BaseDaemon {
   public readonly name = 'mesh-coordinator';
   public readonly version = '1.0.0';
+  public readonly daemonType = DaemonType.MESH_COORDINATOR;
 
   private semanticResolver: SemanticDependencyResolver;
   private meshNodes = new Map<string, MeshNode>();

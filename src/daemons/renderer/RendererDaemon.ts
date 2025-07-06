@@ -5,6 +5,7 @@
 
 import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon.js';
 import { DaemonResponse } from '../base/DaemonProtocol.js';
+import { DaemonType } from '../base/DaemonTypes';
 import { HTMLRenderingEngine } from './core/HTMLRenderingEngine';
 import { TypeScriptCompiler } from './core/TypeScriptCompiler';
 import { VersionService } from './core/VersionService';
@@ -26,6 +27,7 @@ export interface RenderResult {
 export class RendererDaemon extends MessageRoutedDaemon {
   public readonly name = 'renderer';
   public readonly version = '1.0.0';
+  public readonly daemonType = DaemonType.RENDERER;
 
   private htmlEngine: HTMLRenderingEngine;
   private tsCompiler: TypeScriptCompiler;

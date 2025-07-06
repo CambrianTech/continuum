@@ -49,6 +49,7 @@
  */
 
 import { RequestResponseDaemon, RequestHandlerMap } from '../base/RequestResponseDaemon.js';
+import { DaemonType } from '../base/DaemonTypes';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -76,6 +77,7 @@ export class DatabaseDaemon extends RequestResponseDaemon {
 
   public readonly name = 'database';
   public readonly version = '1.0.0';
+  public readonly daemonType = DaemonType.DATABASE;
 
   constructor() {
     super();
