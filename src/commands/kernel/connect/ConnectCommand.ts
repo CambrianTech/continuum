@@ -7,6 +7,7 @@
 
 import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
 import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand.js';
+import { SessionParameters, toSessionRequest } from '../../../types/SessionParameters';
 
 export class ConnectCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
@@ -67,31 +68,19 @@ export class ConnectCommand extends DirectCommand {
         return this.createErrorResult('SessionManagerDaemon not available in context - system not properly initialized');
       }
 
-      // Extract session parameters from the request
-      const sessionId = params.sessionId || '';
-      const sessionType = params.sessionType || 'development';
-      const owner = params.owner || 'user';
-      const forceNew = params.forceNew || false;
-      
-      // Determine session preference based on parameters
-      let sessionPreference: string;
-      if (forceNew) {
-        sessionPreference = 'new';
-      } else if (sessionId) {
-        sessionPreference = sessionId;
-      } else {
-        sessionPreference = 'current'; // Default to shared session
-      }
+      // Extract session parameters using consistent interface
+      const sessionParams: SessionParameters = {
+        sessionId: params.sessionId,
+        sessionType: params.sessionType,
+        owner: params.owner,
+        forceNew: params.forceNew
+      };
 
-      // Connect to session manager with parameters
-      const sessionResult = await sessionManagerDaemon.handleConnect({
-        source: 'continuum-cli',
-        owner: owner,
-        sessionPreference: sessionPreference,
-        capabilities: ['browser', 'commands', 'screenshots'],
-        context: 'development',
-        type: sessionType
-      });
+      // Convert to SessionRequest with defaults
+      const sessionRequest = toSessionRequest(sessionParams, 'continuum-cli');
+
+      // Explicitly request session creation/connection via SessionManagerDaemon
+      const sessionResult = await sessionManagerDaemon.handleConnect(sessionRequest);
       
       if (!sessionResult.success) {
         return this.createErrorResult(`Session manager connection failed: ${sessionResult.error}`);
@@ -107,7 +96,8 @@ export class ConnectCommand extends DirectCommand {
           screenshots: sessionResult.data.screenshots
         },
         interface: sessionResult.data.interface,
-        commands: sessionResult.data.commands
+        commands: sessionResult.data.commands,
+        projectDirectory: process.cwd() // Current working directory
       };
 
       return this.createSuccessResult(

@@ -26,7 +26,7 @@ export class WebSocketDaemon extends BaseDaemon {
   private httpServer: any = null;
   private config: Required<ServerConfig>;
   private registeredDaemons = new Map<string, any>();
-  private connectionSessions = new Map<string, string>(); // connectionId -> sessionId
+  // CONNECTION SESSION TRACKING REMOVED - pure router doesn't track sessions
 
   constructor(config: ServerConfig = {}) {
     super();
@@ -295,7 +295,7 @@ export class WebSocketDaemon extends BaseDaemon {
         const commandName = commandData.command;
         const commandParams = commandData.params;
         const requestId = commandData.requestId;
-        const sessionId = this.getSessionIdForConnection(connectionId) || commandData.sessionId; // Get sessionId from connection mapping first
+        const sessionId = commandData.sessionId; // Pure router - session comes from the command data
         
         // Parse parameters (they might be JSON string from browser)
         let parsedParams = {};
@@ -525,48 +525,24 @@ export class WebSocketDaemon extends BaseDaemon {
   }
 
   /**
-   * Handle new WebSocket connection - ensure browser session exists
+   * Handle new WebSocket connection - PURE ROUTING ONLY
    */
   private async handleNewConnection(connectionId: string, connection: any): Promise<void> {
     try {
-      // 1. Identify connection type from user-agent or URL patterns
-      const connectionType = this.identifyConnectionType(connection);
+      // PURE ROUTER - no session management, just log the connection
+      this.log(`🔌 New WebSocket connection: ${connectionId}`);
       
-      this.log(`🔌 New ${connectionType.type} connection: ${connectionId}`);
-      
-      // 2. UNIVERSAL SESSION CREATION - ANY connection gets a session
-      const session = await this.createUniversalSession(connectionId, connectionType);
-      if (session) {
-        this.log(`✅ Session created for ${connectionType.type} connection: ${session.sessionId}`);
-        this.log(`📝 Server logs: ${session.logPaths.server}`);
-        this.log(`🌐 Browser logs: ${session.logPaths.browser}`);
-        this.log(`📸 Screenshots: ${session.directories.screenshots}`);
-        
-        // Emit session created event for JTAG observability
-        this.emit('session_created', {
-          sessionId: session.sessionId,
-          sessionType: session.type,
-          connectionId: connectionId,
-          connectionType: connectionType.type,
-          logPaths: session.logPaths
-        });
-      }
-      
-      // 3. Check if this connection needs a browser window
-      if (this.shouldCreateBrowserSession(connectionType)) {
-        await this.ensureBrowserSession(connectionId, connectionType);
-      }
-      
-      // 4. Handle DevTools mode for git hooks and portal connections
-      if (connectionType.needsDevTools) {
-        await this.setupDevToolsMode(connectionId, connectionType);
-      }
+      // Connection is ready for message routing
+      this.log(`✅ Connection ready for routing`);
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.log(`❌ Failed to handle new connection ${connectionId}: ${errorMessage}`, 'error');
     }
   }
+
+  // SESSION MANAGEMENT REMOVED - WebSocketDaemon is now a pure router
+  // All session management is handled by SessionManagerDaemon
 
   /**
    * UNIVERSAL SESSION CREATION - Create session for ANY connection type
@@ -580,47 +556,48 @@ export class WebSocketDaemon extends BaseDaemon {
         return null;
       }
 
-      // Determine session parameters based on connection type
+      // Use the same shared session logic as ConnectCommand
+      // This ensures we reuse existing shared sessions instead of creating new ones
       const sessionParams = this.getSessionParamsForConnection(connectionType, connectionId);
       
-      // Create session via session-manager daemon
-      const sessionMessage = {
-        id: `create-${Date.now()}`,
-        from: 'websocket-daemon',
-        to: 'session-manager',
-        type: 'create_session',
-        timestamp: new Date(),
-        data: sessionParams
+      // Use handleConnect to get shared session behavior
+      const connectRequest = {
+        source: 'websocket-daemon',
+        sessionPreference: 'current', // Use shared session by default
+        sessionType: sessionParams.type,
+        owner: sessionParams.owner,
+        capabilities: ['browser', 'commands', 'screenshots'],
+        context: 'development'
       };
 
-      const response = await sessionManager.handleMessage(sessionMessage);
+      const response = await sessionManager.handleConnect(connectRequest);
       
       if (!response.success) {
         this.log(`❌ Universal session creation failed: ${response.error}`, 'error');
         return null;
       }
 
-      const session = response.data.session;
-      this.log(`✅ Universal session created: ${session.id} for ${connectionType.type} connection`);
+      const sessionData = response.data;
+      this.log(`✅ Universal session ${sessionData.action}: ${sessionData.sessionId} for ${connectionType.type} connection`);
       
       // Enable session logging for ALL daemons - this is critical for JTAG observability
-      const serverLogPath = `${session.artifacts.storageDir}/logs/server.log`;
-      this.enableSessionLoggingForAllDaemons(serverLogPath, session.id);
+      const serverLogPath = sessionData.logs.server;
+      this.enableSessionLoggingForAllDaemons(serverLogPath, sessionData.sessionId);
       
       // Store the connection-to-session mapping for browser console logging
-      this.connectionSessions.set(connectionId, session.id);
+      this.connectionSessions.set(connectionId, sessionData.sessionId);
       
       return {
-        sessionId: session.id,
-        type: session.type,
-        owner: session.owner,
+        sessionId: sessionData.sessionId,
+        type: 'development', // from handleConnect response
+        owner: 'shared', // from handleConnect response
         logPaths: {
           server: serverLogPath,
-          browser: `${session.artifacts.storageDir}/logs/browser.log`
+          browser: sessionData.logs.browser
         },
         directories: {
-          screenshots: `${session.artifacts.storageDir}/screenshots`,
-          files: `${session.artifacts.storageDir}/files`
+          screenshots: sessionData.screenshots,
+          files: sessionData.screenshots.replace('screenshots', 'files') // derive files path
         }
       };
 
@@ -672,7 +649,7 @@ export class WebSocketDaemon extends BaseDaemon {
   private getSessionParamsForConnection(connectionType: any, connectionId: string): any {
     const baseParams = {
       type: 'development', // Default type
-      owner: 'system',
+      owner: 'shared', // Default to shared sessions for all connections
       options: {
         autoCleanup: true,
         cleanupAfterMs: 2 * 60 * 60 * 1000, // 2 hours
@@ -683,7 +660,7 @@ export class WebSocketDaemon extends BaseDaemon {
     // Customize based on connection type
     switch (connectionType.type) {
       case 'user-browser':
-        return { ...baseParams, type: 'development', owner: 'user' };
+        return { ...baseParams, type: 'development', owner: 'shared' }; // Use shared session for browser connections
       case 'portal':
         return { ...baseParams, type: 'portal', owner: 'ai-assistant' };
       case 'git-hook':
@@ -691,7 +668,9 @@ export class WebSocketDaemon extends BaseDaemon {
       case 'api-client':
         return { ...baseParams, type: 'development', owner: 'api' };
       default:
-        return baseParams;
+        // Default to shared for any unrecognized connection type
+        this.log(`🔍 Unknown connection type: ${connectionType.type}, defaulting to shared session`, 'warn');
+        return baseParams; // baseParams now has owner: 'shared'
     }
   }
 
@@ -760,26 +739,15 @@ export class WebSocketDaemon extends BaseDaemon {
     }
   }
 
-  /**
-   * Get session ID for a connection using the stored mapping
-   */
-  private getSessionIdForConnection(connectionId: string): string | null {
-    return this.connectionSessions.get(connectionId) || null;
-  }
+  // SESSION MAPPING REMOVED - pure router doesn't track session connections
 
   /**
-   * Handle connection closure - cleanup sessions if needed
+   * Handle connection closure - PURE ROUTER CLEANUP
    */
   private async handleConnectionClosed(connectionId: string): Promise<void> {
     try {
-      // Clean up connection-to-session mapping
-      const sessionId = this.connectionSessions.get(connectionId);
-      if (sessionId) {
-        this.connectionSessions.delete(connectionId);
-        this.log(`🔌 Connection ${connectionId} closed - removed session mapping for ${sessionId}`);
-      } else {
-        this.log(`🔌 Connection ${connectionId} closed - no session mapping found`);
-      }
+      // Pure router - just log the disconnection
+      this.log(`🔌 Connection ${connectionId} closed`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.log(`⚠️  Error handling connection closure for ${connectionId}: ${errorMessage}`, 'error');

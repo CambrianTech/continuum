@@ -13,6 +13,7 @@
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { SessionConsoleLogger } from './modules/SessionConsoleLogger';
+import { SessionRequest } from '../../types/SessionParameters';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -259,14 +260,7 @@ export class SessionManagerDaemon extends BaseDaemon {
   /**
    * Handle intelligent connection orchestration
    */
-  async handleConnect(connectParams: {
-    source: string;
-    owner: string;
-    sessionPreference?: 'current' | 'new' | string;
-    capabilities?: string[];
-    context?: string;
-    type?: SessionType;
-  }): Promise<{
+  async handleConnect(connectParams: SessionRequest): Promise<{
     success: boolean;
     data?: {
       sessionId: string;
@@ -291,7 +285,12 @@ export class SessionManagerDaemon extends BaseDaemon {
     };
     error?: string;
   }> {
-    const { source, owner, sessionPreference = 'current', capabilities = [], context = 'development', type = 'development' } = connectParams;
+    // Debug: Log the actual parameters received
+    this.log(`🔍 handleConnect called with: ${JSON.stringify(connectParams)}`, 'info');
+    
+    const { source, owner = 'shared', sessionPreference = 'current', capabilities = [], context = 'development', sessionType = 'development' } = connectParams;
+    
+    this.log(`🔍 After destructuring: owner=${owner}, sessionPreference=${sessionPreference}, sessionType=${sessionType}`, 'info');
 
     try {
       let session: BrowserSession | null = null;
@@ -303,11 +302,11 @@ export class SessionManagerDaemon extends BaseDaemon {
         // Force new session or fork from existing
         if (sessionPreference.startsWith('fork:')) {
           const forkFromId = sessionPreference.split(':')[1];
-          session = await this.forkSession(forkFromId, { owner, type, context });
+          session = await this.forkSession(forkFromId, { owner, type: sessionType as BrowserSession['type'], context });
           action = 'forked_from';
         } else {
           session = await this.createSession({ 
-            type, 
+            type: sessionType as BrowserSession['type'], 
             owner, 
             context,
             starter: source,
@@ -326,7 +325,7 @@ export class SessionManagerDaemon extends BaseDaemon {
         // Default: find or create SHARED session (not owner-specific)
         // Look for the shared development session that everyone uses
         session = this.getLatestSession({
-          type: 'development',
+          type: sessionType as BrowserSession['type'],
           active: true
           // Note: removed owner filter to find shared session
         });
@@ -334,9 +333,9 @@ export class SessionManagerDaemon extends BaseDaemon {
         if (!session) {
           // Create the shared session with a well-known owner
           session = await this.createSession({
-            type: 'development',
+            type: sessionType as BrowserSession['type'],
             owner: 'shared', // Shared session owned by 'shared' not specific user
-            context: 'development',
+            context: context,
             starter: source,
             identity: { name: 'shared-session', user: 'shared' }
           });
@@ -1226,12 +1225,29 @@ export class SessionManagerDaemon extends BaseDaemon {
         sessionPath = path.join(this.artifactRoot, 'misc', sessionId);
     }
     
-    await fs.mkdir(sessionPath, { recursive: true });
+    // Debug: Log what we're trying to create
+    const absoluteSessionPath = path.resolve(sessionPath);
+    this.log(`📁 Creating session directory: ${sessionPath} (absolute: ${absoluteSessionPath})`, 'info');
+    this.log(`📂 Current working directory: ${process.cwd()}`, 'info');
+    
+    try {
+      await fs.mkdir(sessionPath, { recursive: true });
+      this.log(`✅ Successfully created session directory: ${sessionPath}`, 'info');
+    } catch (error) {
+      this.log(`❌ Failed to create session directory: ${error}`, 'error');
+      throw error;
+    }
     
     // Create subdirectories
     const subdirs = ['logs', 'screenshots', 'files', 'recordings', 'devtools'];
     for (const subdir of subdirs) {
-      await fs.mkdir(path.join(sessionPath, subdir), { recursive: true });
+      const subdirPath = path.join(sessionPath, subdir);
+      try {
+        await fs.mkdir(subdirPath, { recursive: true });
+        this.log(`✅ Created subdirectory: ${subdirPath}`, 'info');
+      } catch (error) {
+        this.log(`❌ Failed to create subdirectory ${subdirPath}: ${error}`, 'error');
+      }
     }
     
     // Create session metadata
