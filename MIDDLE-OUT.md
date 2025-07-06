@@ -50,6 +50,44 @@
 
 This visibility enables debugging complex distributed issues across the browser-server boundary.
 
+### **🔌 JTAG CONNECTION INFORMATION (CRITICAL FOR AUTONOMY)**
+
+**ConnectCommand provides real session infrastructure for autonomous debugging:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "session": {
+      "sessionId": "development-system-mcr60ted-b9s3p",
+      "action": "joined_existing", 
+      "launched": true,
+      "logPaths": {
+        "browser": ".continuum/sessions/user/system/development-system-mcr60ted-b9s3p/logs/browser.log",
+        "server": ".continuum/sessions/user/system/development-system-mcr60ted-b9s3p/logs/server.log"
+      },
+      "directories": {
+        "screenshots": ".continuum/sessions/user/system/development-system-mcr60ted-b9s3p/screenshots"
+      },
+      "interface": "http://localhost:9000",
+      "commands": {
+        "info": "continuum session-info development-system-mcr60ted-b9s3p",
+        "stop": "continuum session-stop development-system-mcr60ted-b9s3p"
+      }
+    }
+  }
+}
+```
+
+**Autonomous AI can now:**
+1. **Monitor real-time logs**: `tail -f ${logPaths.server}` for daemon activity
+2. **Capture browser behavior**: `tail -f ${logPaths.browser}` for console logs  
+3. **Take visual snapshots**: `screenshot ${directories.screenshots}/debug-${timestamp}.png`
+4. **Execute commands**: `curl ${interface}/api/commands/health` for system status
+5. **Manage sessions**: Use `${commands.info}` and `${commands.stop}` for lifecycle
+
+**No more blind development - complete system visibility achieved.**
+
 ### **📋 Systematic Debugging Protocol**
 
 **Step 1: Monitor Connection Health**
@@ -2318,6 +2356,38 @@ python python-client/ai-portal.py --cmd selftest
 ## 🚨 COMMON AI DEBUGGING MISTAKES (NEVER DO THESE!)
 
 **Following these anti-patterns will break your debugging session:**
+
+### **❌ MISTAKE -1: USING MOCK DATA INSTEAD OF REAL IMPLEMENTATION**
+**LIKE SEEING A FIRE IN THE FOREST NO ONE IS TENDING AND WALKING AWAY**
+
+```typescript
+// ❌ ILLEGAL: Mock data that confuses us later
+const sessionInfo = {
+  sessionId: `mock-session-${Date.now()}`,  // FAKE DATA!
+  logPaths: { browser: 'fake/path.log' }    // DOESN'T EXIST!
+};
+
+// ✅ REQUIRED: Real daemon integration
+const sessionManagerDaemon = context?.websocket?.registeredDaemons?.get('session-manager');
+const sessionResult = await sessionManagerDaemon.handleConnect({...});
+```
+
+**Why mocks are toxic:**
+- **False confidence**: Code appears to work but is broken
+- **Debugging confusion**: Real logs don't match mock paths
+- **Context exhaustion**: Later AI sessions waste time fixing "working" code
+- **JTAG failure**: Autonomous debugging requires real session information
+
+**ALSO ILLEGAL: Untended TODOs**
+```typescript
+// ❌ TOXIC: TODO that never gets done
+// TODO: Implement real session discovery later
+
+// ✅ REQUIRED: Implement now or don't write the code
+const sessionResult = await sessionManagerDaemon.handleConnect({...});
+```
+
+**Universal law: If you can't implement it properly now, don't implement it at all.**
 
 ### **❌ MISTAKE 0: WRITING LOGIC IN ENTRY POINTS INSTEAD OF USING COMMAND SYSTEM**
 **THE MOST DESTRUCTIVE ARCHITECTURAL VIOLATION - CAUSES COMPLEXITY EXPLOSION AND CONTEXT EXHAUSTION**
