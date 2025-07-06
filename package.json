@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2273",
+  "version": "0.2.2274",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -13,10 +13,10 @@
   "scripts": {
     "install:global": "node scripts/install.js",
     "postinstall": "lerna run prepare",
-    "launch": "npx tsx launch.ts",
+    "launch": "npm run build:browser-ts && npx tsx launch.ts",
     "start": "npx tsx working-server.ts",
-    "start:full": "node increment-version.js && npx tsx launch.ts --mode=system",
-    "dev": "npx tsx launch.ts --mode=dev",
+    "start:full": "npm run build:browser-ts && npx tsx launch.ts --mode=system",
+    "dev": "npm run build:browser-ts && npx tsx launch.ts --mode=dev",
     "test-all": "npx tsx launch.ts --mode=test",
     "test-widgets": "npx tsx launch.ts --mode=test-widgets",
     "compile": "npx tsx launch.ts --mode=compile",
