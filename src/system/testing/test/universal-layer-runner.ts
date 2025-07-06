@@ -249,11 +249,13 @@ class UniversalLayerTesting {
     // 🧅 LAYER 4: Integration Layer (Daemons + Commands)
     this.layers.push({
       name: 'Layer 4: System Integration',
-      description: 'Full daemon + command integration',
+      description: 'Full daemon + command integration + integration test suite',
       test: async () => {
         console.log('🧪 Testing Layer 4: System Integration...');
         
-        // Test if we can start the system (quick test)
+        let allPassed = true;
+        
+        // Test 1: System loading
         try {
           // Test main system can load
           const mainPath = path.resolve(this.rootDir, '../../../main.ts');
@@ -283,10 +285,67 @@ class UniversalLayerTesting {
           
         } catch (error) {
           console.error('  ❌ System integration test failed:', error);
-          return false;
+          allPassed = false;
         }
 
-        return true;
+        // Test 2: Run Integration Test Suite
+        try {
+          console.log('  🧪 Running Integration Test Suite...');
+          
+          // Discover and run integration tests
+          const integrationTestPaths = [
+            'src/test/integration/SharedSessionBrowserLaunch.integration.test.ts',
+            'src/daemons/browser-manager/test/integration/SafeBrowserLaunch.integration.test.ts',
+            'src/daemons/session-manager/test/integration/SessionManagerDaemon.integration.test.ts'
+          ];
+          
+          let integrationTestsFound = 0;
+          let integrationTestsPassed = 0;
+          
+          for (const testPath of integrationTestPaths) {
+            const fullPath = path.resolve(this.rootDir, testPath);
+            const fs = await import('fs');
+            
+            if (fs.existsSync(fullPath)) {
+              integrationTestsFound++;
+              console.log(`    📋 Found integration test: ${testPath}`);
+              
+              try {
+                // Run vitest on this specific file
+                const { execSync } = await import('child_process');
+                const result = execSync(`npx vitest --run ${testPath}`, {
+                  stdio: 'pipe',
+                  cwd: this.rootDir,
+                  timeout: 30000 // 30 second timeout per test
+                });
+                
+                console.log(`    ✅ Integration test passed: ${path.basename(testPath)}`);
+                integrationTestsPassed++;
+                
+              } catch (error: any) {
+                console.error(`    ❌ Integration test failed: ${path.basename(testPath)}`);
+                if (error.stdout) {
+                  console.error(`      Output: ${error.stdout.toString().slice(0, 200)}...`);
+                }
+                allPassed = false;
+              }
+            } else {
+              console.log(`    ⚠️  Integration test not found: ${testPath}`);
+            }
+          }
+          
+          console.log(`  📊 Integration Tests: ${integrationTestsPassed}/${integrationTestsFound} passed`);
+          
+          if (integrationTestsFound === 0) {
+            console.log('  ⚠️  No integration tests found - Layer 4 needs integration test coverage');
+          }
+          
+        } catch (error) {
+          console.error('  ❌ Integration test suite failed:', error);
+          allPassed = false;
+        }
+
+        return allPassed;
       }
     });
 
