@@ -32,10 +32,10 @@ interface ManagedDaemon {
 
 interface DaemonStatusInfo {
   status: string;
-  pid?: number;
+  pid: number | undefined;
   restarts: number;
   critical: boolean;
-  lastRestart?: Date;
+  lastRestart: Date | undefined;
 }
 
 export class DaemonManagerDaemon extends BaseDaemon {

@@ -80,12 +80,14 @@ export interface BenchmarkResults {
 }
 
 export interface Recommendation {
-  type: 'immediate-use' | 'fine-tuning' | 'new-development' | 'collaboration';
+  type: 'immediate-use' | 'fine-tuning' | 'new-development' | 'collaboration' | 'synthesis-opportunity' | 'collaboration-invite';
   message: string;
   priority: 'high' | 'medium' | 'low';
   resources?: string[];
   estimatedTime?: string;
-  components?: MeshCapability[];
+  components?: MeshCapability[] | ComponentMatch[];
+  benefits?: string[];
+  estimatedCost?: number;
 }
 
 export interface TrainingStrategy {

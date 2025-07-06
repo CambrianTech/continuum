@@ -60,7 +60,7 @@ export class WebSocketDaemon extends BaseDaemon {
     this.log(`🌐 Starting pure router on ${this.config.host}:${this.config.port}`);
     
     // Listen for session assignments from SessionManagerDaemon
-    const { DAEMON_EVENT_BUS } = await import('../base/DaemonEventBus');
+    const { DAEMON_EVENT_BUS } = await import('../../daemons/base/DaemonEventBus');
     DAEMON_EVENT_BUS.onEvent('session_created', (event) => {
       // We'll track sessions when they send messages
       this.log(`📋 Session created: ${event.sessionId}`);
@@ -588,7 +588,7 @@ export class WebSocketDaemon extends BaseDaemon {
       };
       
       // Emit event for other daemons (especially SessionManagerDaemon)
-      const { DAEMON_EVENT_BUS } = await import('../base/DaemonEventBus');
+      const { DAEMON_EVENT_BUS } = await import('../../daemons/base/DaemonEventBus');
       DAEMON_EVENT_BUS.emitEvent('websocket:connection_established', {
         timestamp: new Date(),
         source: this.name,
@@ -871,7 +871,7 @@ export class WebSocketDaemon extends BaseDaemon {
       this.connectionSessions.delete(connectionId);
       
       // Emit event for other daemons
-      const { DAEMON_EVENT_BUS } = await import('../base/DaemonEventBus');
+      const { DAEMON_EVENT_BUS } = await import('../../daemons/base/DaemonEventBus');
       DAEMON_EVENT_BUS.emitEvent('websocket:connection_closed', {
         timestamp: new Date(),
         source: this.name,
