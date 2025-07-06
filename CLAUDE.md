@@ -438,11 +438,13 @@ Reading CLAUDE.md provides immediate cognitive jump-start:
 - Modular documentation patterns
 
 Separation of concerns are critcal. If something is named "Browser Daemon", it means that no other daemon should be doing browser things.
-The Web socket and others are merely routers with other daemons subscribed to paths. HTML Renderer is the wildcard whereas the /api comes through 
-to the command processor and so on, but even these paths are UNKNOWN TO the Web socket daemon, because they're provided by the subscribers.
-This is probably still backwards, and will need to be fixed. Again. smart elegant systems.
-All session logic? a session daemon. Commands are also core. Do not code random shit in the root or wrong location.
-If I see you doing this I know you never read.
+
+For example:
+1. WebSocket Daemon should be a pure router - it knows nothing about content, only routes messages
+2. Browser Manager Daemon handles all browser things - launching, management, etc.
+3. Session Daemon handles all session logic
+4. Command Processor Daemon handles command execution
+5. Each daemon subscribes to paths and the WebSocket daemon routes to them
 
 DO NOT SKIP READING MIDDLE OUT!!! You will get lost and anger the developer
 
