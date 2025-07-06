@@ -51,13 +51,15 @@ export class ConsoleCommand extends DirectCommand {
 
   protected static async executeOperation(params: any = {}, _context?: CommandContext): Promise<CommandResult> {
     try {
+      // BROWSER LOGS FIX: Write to server log immediately to verify execution
+      console.log(`🎯 BROWSER LOG FIX: ConsoleCommand.executeOperation CALLED!`);
+      console.log(`🎯 Parameters received:`, params);
+      console.log(`🎯 Context sessionId:`, _context?.sessionId);
+      
       const { action, message, source, data } = params;
       
-      // DEBUG: Log all console commands received (uncomment for debugging)
-      // console.log(`[ConsoleCommand] Received: action=${action}, source=${source}, message=${message?.substring(0, 100)}...`);
-      // console.log(`[ConsoleCommand] Context sessionId: ${_context?.sessionId}, params sessionId: ${params.sessionId}`);
-      
       if (!action || !message) {
+        console.log(`🎯 MISSING PARAMS: action=${action}, message=${message}`);
         return this.createErrorResult('Console forwarding requires action and message parameters');
       }
 
@@ -91,6 +93,10 @@ export class ConsoleCommand extends DirectCommand {
       // Write to specific session browser log only (session affinity)
       let sessionLogged = false;
       try {
+        // DEBUG: Log actual context structure to understand what we're receiving
+        console.log(`🔍 CONSOLE_COMMAND_DEBUG: Full context received:`, JSON.stringify(_context, null, 2));
+        console.log(`🔍 CONSOLE_COMMAND_DEBUG: params:`, JSON.stringify(params, null, 2));
+        
         // Get sessionId from context (passed from WebSocketDaemon connection mapping)
         // Context structure: _context can have sessionId directly or nested in context
         const sessionId = _context?.sessionId || _context?.context?.sessionId;

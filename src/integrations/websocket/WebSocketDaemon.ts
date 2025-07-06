@@ -320,11 +320,11 @@ export class WebSocketDaemon extends BaseDaemon {
             parameters: parsedParams,
             context: {
               connectionId: connectionId,
+              sessionId: sessionId, // Pass session ID to command context
               websocket: {
                 registeredDaemons: this.registeredDaemons
               },
-              requestId: requestId,
-              sessionId: sessionId // Include sessionId in context
+              requestId: requestId
             }
           }
         };
@@ -336,7 +336,7 @@ export class WebSocketDaemon extends BaseDaemon {
         
         // Send response back to WebSocket client
         const wsResponse = {
-          type: 'command_response',
+          type: 'execute_command_response',
           requestId: requestId,
           command: commandName,
           success: response.success,
@@ -355,7 +355,7 @@ export class WebSocketDaemon extends BaseDaemon {
         
         // Send error response to client
         const errorResponse = {
-          type: 'command_response',
+          type: 'execute_command_response',
           requestId: message.data?.requestId,
           command: message.data?.command || 'unknown',
           success: false,
@@ -370,7 +370,7 @@ export class WebSocketDaemon extends BaseDaemon {
       
       // Send error response to client
       const errorResponse = {
-        type: 'command_response',
+        type: 'execute_command_response',
         requestId: message.data?.requestId,
         command: message.data?.command || 'unknown',
         success: false,
@@ -527,7 +527,7 @@ export class WebSocketDaemon extends BaseDaemon {
   /**
    * Handle new WebSocket connection - PURE ROUTING ONLY
    */
-  private async handleNewConnection(connectionId: string, connection: any): Promise<void> {
+  private async handleNewConnection(connectionId: string, _connection: any): Promise<void> {
     try {
       // PURE ROUTER - no session management, just log the connection
       this.log(`🔌 New WebSocket connection: ${connectionId}`);
@@ -544,11 +544,9 @@ export class WebSocketDaemon extends BaseDaemon {
   // SESSION MANAGEMENT REMOVED - WebSocketDaemon is now a pure router
   // All session management is handled by SessionManagerDaemon
 
-  /**
-   * UNIVERSAL SESSION CREATION - Create session for ANY connection type
-   * This implements "thin client anywhere" - all connections get sessions
-   */
-  private async createUniversalSession(connectionId: string, connectionType: any): Promise<any> {
+  // REMOVED: _createUniversalSession - disabled during session system cleanup
+  /*
+  private async _createUniversalSession(connectionId: string, connectionType: any): Promise<any> {
     try {
       const sessionManager = this.registeredDaemons.get('session-manager');
       if (!sessionManager) {
@@ -585,7 +583,8 @@ export class WebSocketDaemon extends BaseDaemon {
       this.enableSessionLoggingForAllDaemons(serverLogPath, sessionData.sessionId);
       
       // Store the connection-to-session mapping for browser console logging
-      this.connectionSessions.set(connectionId, sessionData.sessionId);
+      // TODO: Re-enable session tracking when session system is fixed
+      // this.connectionSessions.set(connectionId, sessionData.sessionId);
       
       return {
         sessionId: sessionData.sessionId,
@@ -612,7 +611,9 @@ export class WebSocketDaemon extends BaseDaemon {
    * Enable session logging for all registered daemons
    * This ensures JTAG observability - all daemon activity goes to session logs
    */
-  private enableSessionLoggingForAllDaemons(serverLogPath: string, sessionId: string): void {
+  // TODO: Re-enable when session system is restored
+  /*
+  private _enableSessionLoggingForAllDaemons(serverLogPath: string, sessionId: string): void {
     this.log(`📝 Enabling session logging for all daemons: ${serverLogPath}`);
     
     // Enable logging for all registered daemons
@@ -642,11 +643,14 @@ export class WebSocketDaemon extends BaseDaemon {
       this.log(`⚠️ Failed to enable WebSocket daemon logging: ${errorMessage}`, 'warn');
     }
   }
+  */
 
   /**
    * Get session parameters based on connection type
    */
-  private getSessionParamsForConnection(connectionType: any, connectionId: string): any {
+  // TODO: Re-enable when session system is restored  
+  /*
+  private _getSessionParamsForConnection(connectionType: any, connectionId: string): any {
     const baseParams = {
       type: 'development', // Default type
       owner: 'shared', // Default to shared sessions for all connections
@@ -673,6 +677,7 @@ export class WebSocketDaemon extends BaseDaemon {
         return baseParams; // baseParams now has owner: 'shared'
     }
   }
+  */
 
   /**
    * Handle browser console messages and write them to session browser.log
@@ -681,7 +686,9 @@ export class WebSocketDaemon extends BaseDaemon {
   private async handleBrowserConsoleMessage(connectionId: string, message: any): Promise<void> {
     try {
       // Get the session ID for this connection
-      const sessionId = this.getSessionIdForConnection(connectionId);
+      // TODO: Re-enable session ID lookup when session system is fixed
+      // const sessionId = this.getSessionIdForConnection(connectionId);
+      const sessionId = null;
       if (!sessionId) {
         this.log(`⚠️ No session found for connection ${connectionId} - cannot log console message`, 'warn');
         return;
@@ -753,146 +760,9 @@ export class WebSocketDaemon extends BaseDaemon {
       this.log(`⚠️  Error handling connection closure for ${connectionId}: ${errorMessage}`, 'error');
     }
   }
-
-  /**
-   * Identify connection type from metadata
-   */
-  private identifyConnectionType(connection: any): { type: string; needsDevTools: boolean; context: string } {
-    const userAgent = connection.metadata.userAgent || '';
-    const url = connection.metadata.url || '';
-    
-    // Git hook connections (often have specific user agents or URL patterns)
-    if (userAgent.includes('git') || url.includes('hook') || url.includes('ci')) {
-      return { type: 'git-hook', needsDevTools: true, context: 'automation' };
-    }
-    
-    // Portal connections (your development interface)
-    if (userAgent.includes('Portal') || url.includes('portal') || url.includes('dev')) {
-      return { type: 'portal', needsDevTools: true, context: 'development' };
-    }
-    
-    // Browser-based user connections
-    if (userAgent.includes('Chrome') || userAgent.includes('Firefox') || userAgent.includes('Safari')) {
-      return { type: 'user-browser', needsDevTools: false, context: 'user' };
-    }
-    
-    // Default to user connection
-    return { type: 'user', needsDevTools: false, context: 'user' };
-  }
-
-  /**
-   * Determine if connection type needs a browser session
-   */
-  private shouldCreateBrowserSession(connectionType: any): boolean {
-    // All user connections need browser sessions
-    // Git hooks and portal connections might need them for testing
-    return ['user', 'user-browser', 'portal'].includes(connectionType.type);
-  }
-
-  /**
-   * Ensure browser session exists for this connection
-   */
-  private async ensureBrowserSession(connectionId: string, connectionType: any): Promise<void> {
-    try {
-      const sessionManager = this.registeredDaemons.get('session-manager');
-      const browserManager = this.registeredDaemons.get('browser-manager');
-      
-      if (!sessionManager || !browserManager) {
-        this.log(`⚠️  Session or Browser manager not available for ${connectionId}`);
-        return;
-      }
-
-      // Create session for this connection
-      const sessionRequest = {
-        type: 'create_session',
-        data: {
-          sessionType: connectionType.context,
-          owner: connectionId,
-          connectionType: connectionType.type,
-          options: {
-            autoCleanup: true,
-            devtools: connectionType.needsDevTools,
-            context: connectionType.context
-          }
-        }
-      };
-
-      const sessionResponse = await sessionManager.handleMessage(sessionRequest);
-      
-      if (sessionResponse.success) {
-        const sessionData = sessionResponse.data;
-        
-        // Request smart browser management
-        const browserRequest = {
-          type: 'create_browser',
-          data: {
-            sessionId: sessionData.sessionId,
-            url: `http://localhost:${this.config.port}`,
-            config: {
-              purpose: connectionType.context,
-              requirements: {
-                devtools: connectionType.needsDevTools,
-                isolation: 'dedicated',
-                visibility: 'visible',
-                persistence: 'session'
-              },
-              resources: {
-                priority: connectionType.needsDevTools ? 'high' : 'normal'
-              }
-            }
-          }
-        };
-
-        const browserResponse = await browserManager.handleMessage(browserRequest);
-        
-        if (browserResponse.success) {
-          this.log(`✅ Browser session ready for ${connectionId}: ${browserResponse.data.action}`);
-          
-          // Send session info to client
-          this.wsManager.sendToConnection(connectionId, {
-            type: 'session_ready',
-            data: {
-              sessionId: sessionData.sessionId,
-              browserId: browserResponse.data.browserId,
-              devtools: connectionType.needsDevTools,
-              action: browserResponse.data.action
-            }
-          });
-        } else {
-          this.log(`❌ Browser session failed for ${connectionId}: ${browserResponse.error}`);
-        }
-      } else {
-        this.log(`❌ Session creation failed for ${connectionId}: ${sessionResponse.error}`);
-      }
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ Error ensuring browser session for ${connectionId}: ${errorMessage}`, 'error');
-    }
-  }
-
-  /**
-   * Setup DevTools mode with extra control port
-   */
-  private async setupDevToolsMode(connectionId: string, connectionType: any): Promise<void> {
-    // For git hooks and portal connections, set up debug mode with extra port
-    this.log(`🛠️  Setting up DevTools mode for ${connectionType.type} connection ${connectionId}`);
-    
-    // In real implementation:
-    // 1. Allocate debug port (e.g., 9001, 9002)
-    // 2. Launch browser with --remote-debugging-port
-    // 3. Send debug port info to client
-    
-    this.wsManager.sendToConnection(connectionId, {
-      type: 'devtools_ready',
-      data: {
-        debugPort: 9001, // Mock debug port
-        connectionType: connectionType.type,
-        capabilities: ['console', 'network', 'sources', 'performance']
-      }
-    });
-  }
 }
+
+// REMOVED: All session management methods - disabled during session system cleanup
 
 // Main execution (direct execution detection)
 if (process.argv[1] && process.argv[1].endsWith('WebSocketDaemon.ts')) {

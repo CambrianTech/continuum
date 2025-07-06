@@ -270,7 +270,9 @@ export class CommandProcessorDaemon extends BaseDaemon {
               method: message.data.method, 
               url: message.data.url,
               // Include websocket context for daemon access (passed from WebSocketDaemon)
-              websocket: message.context?.websocket || null
+              // TODO: Re-enable context websocket when message structure is fixed
+              // websocket: message.context?.websocket || null
+              websocket: null
             }
           };
         }
@@ -309,12 +311,17 @@ export class CommandProcessorDaemon extends BaseDaemon {
         }
         this.log(`✨ Pattern of Care validated: ${careValidation.careLevel} (${careValidation.score.toFixed(2)})`);
       }
+      
+      console.log(`🔍 [CommandProcessor] After Pattern of Care, continuing to selectImplementation for: ${request.command}`);
 
       // Select optimal implementation
+      console.log(`🔍 [CommandProcessor] About to call selectImplementation for: ${request.command}`);
       const implementation = await this.selectImplementation(request);
+      console.log(`🔍 [CommandProcessor] selectImplementation returned:`, implementation);
       if (!implementation) {
         // Emit command:error event and throw specific error for unknown commands
         const errorMsg = `Command '${request.command}' not found`;
+        console.log(`🔍 [CommandProcessor] No implementation found, throwing error: ${errorMsg}`);
         this.emit('command:error', { command: request.command, executionId, error: errorMsg });
         this.addJTAGLog('error', errorMsg, { executionId, command: request.command });
         throw new Error(errorMsg);
@@ -427,10 +434,16 @@ export class CommandProcessorDaemon extends BaseDaemon {
    * Select optimal implementation based on routing preferences
    */
   private async selectImplementation<T>(request: TypedCommandRequest<T>): Promise<CommandImplementation | null> {
+    console.log(`🔍 [CommandProcessor] selectImplementation for: ${request.command}`);
     const implementations = this.implementations.get(request.command) || [];
+    console.log(`🔍 [CommandProcessor] Found ${implementations.length} implementations for ${request.command}`);
     const availableImpls = implementations.filter(impl => impl.status === 'available');
+    console.log(`🔍 [CommandProcessor] ${availableImpls.length} available implementations`);
     
-    if (availableImpls.length === 0) return null;
+    if (availableImpls.length === 0) {
+      console.log(`🔍 [CommandProcessor] No implementations found for ${request.command}`);
+      return null;
+    }
 
     // Simple selection logic - could be enhanced with AI
     const routing = request.routing;
@@ -477,6 +490,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
   // Implementation-specific execution methods
   private async executeBrowserImplementation<T, R>(request: TypedCommandRequest<T>): Promise<R> {
     this.log(`🌐 Executing command via dynamic discovery: ${request.command}`);
+    console.log(`🔍 [CommandProcessor] executeBrowserImplementation called for: ${request.command}`);
     
     // Handle special test commands that might not be in the discovery system
     if (request.command === 'selftest') {
@@ -491,15 +505,19 @@ export class CommandProcessorDaemon extends BaseDaemon {
     }
     
     // Use the command connector to execute discovered commands
+    console.log(`🔍 [CommandProcessor] Checking command connector: connected=${this.commandConnector?.isConnected()}`);
     if (!this.commandConnector || !this.commandConnector.isConnected()) {
+      console.log(`🔍 [CommandProcessor] Command connector not available - throwing error`);
       throw new Error('Command discovery system not available');
     }
     
+    console.log(`🔍 [CommandProcessor] Calling commandConnector.executeCommand for: ${request.command}`);
     const result = await this.commandConnector.executeCommand(
       request.command,
       request.parameters,
       request.context
     );
+    console.log(`🔍 [CommandProcessor] Command connector result:`, result);
     
     if (result.success) {
       return result.data as R;
