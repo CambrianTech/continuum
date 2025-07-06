@@ -57,11 +57,18 @@ export interface ProvenanceChain {
   cryptographicHash: string;
 }
 
+export interface AuditChangeDetail {
+  field: string;
+  oldValue: string | number | boolean | null;
+  newValue: string | number | boolean | null;
+  metadata?: Record<string, string>;
+}
+
 export interface AuditEntry {
   timestamp: Date;
   actor: string;
   action: string;
-  changes: any;
+  changes: AuditChangeDetail[];
   signature: string;
 }
 
@@ -70,6 +77,23 @@ export interface BenchmarkResults {
   domainSpecific: Map<string, number>;
   adversarialTests: Map<string, number>;
   humanEvaluation: Map<string, number>;
+}
+
+export interface Recommendation {
+  type: 'immediate-use' | 'fine-tuning' | 'new-development' | 'collaboration';
+  message: string;
+  priority: 'high' | 'medium' | 'low';
+  resources?: string[];
+  estimatedTime?: string;
+  components?: MeshCapability[];
+}
+
+export interface TrainingStrategy {
+  approach: 'fine-tuning' | 'lora-adaptation' | 'full-training';
+  baseModel?: string;
+  datasets: string[];
+  estimatedTime: string;
+  computeRequirements: string;
 }
 
 export interface CapabilityRequest {
@@ -197,10 +221,10 @@ class SemanticDependencyResolver extends EventEmitter {
   private async findMeshCapabilities(tokens: string[]): Promise<MeshCapability[]> {
     const capabilities: MeshCapability[] = [];
     
-    for (const [_nodeId, node] of this.nodes) {
+    for (const node of this.nodes.values()) {
       if (node.status !== 'online') continue;
       
-      for (const [_packageName, loraPackage] of node.loraPackages) {
+      for (const loraPackage of node.loraPackages.values()) {
         const similarity = this.calculateSemanticSimilarity(tokens, loraPackage.capabilities);
         
         if (similarity > 0.3) { // Minimum similarity threshold
@@ -573,8 +597,8 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
   /**
    * Generate actionable recommendations
    */
-  private generateRecommendations(analysis: GapAnalysis, request: CapabilityRequest): any {
-    const recommendations = [];
+  private generateRecommendations(analysis: GapAnalysis, request: CapabilityRequest): Recommendation[] {
+    const recommendations: Recommendation[] = [];
     
     if (analysis.availableComponents.length > 0) {
       recommendations.push({
@@ -610,7 +634,7 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
   /**
    * Handle mesh discovery operations
    */
-  private async handleMeshDiscovery(_data: any): Promise<DaemonResponse> {
+  private async handleMeshDiscovery(_data: unknown): Promise<DaemonResponse> {
     // Implementation for mesh node discovery
     return { success: true, data: { nodes: Array.from(this.meshNodes.keys()) } };
   }
@@ -618,7 +642,7 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
   /**
    * Handle synthesis requests
    */
-  private async handleSynthesisRequest(_data: any): Promise<DaemonResponse> {
+  private async handleSynthesisRequest(_data: unknown): Promise<DaemonResponse> {
     // Implementation for coordinating LoRA synthesis
     return { success: true, data: { status: 'synthesis-queued' } };
   }
@@ -626,7 +650,7 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
   /**
    * Handle node status updates
    */
-  private async handleNodeStatus(_data: any): Promise<DaemonResponse> {
+  private async handleNodeStatus(_data: unknown): Promise<DaemonResponse> {
     // Implementation for node health monitoring
     return { success: true };
   }
