@@ -413,7 +413,7 @@ Reading CLAUDE.md provides immediate cognitive jump-start:
 - **End Goal**: Academy persona spawning, human-out-of-loop collaboration
 
 ### 🚀 **Autonomous Mechanic Verdict: BOOTLOADER SUCCESS**
-**Within minutes** of reading CLAUDE.md + MIDDLE-OUT.md, a fresh AI would know:
+**Within minutes** of reading CLAUDE.md + middle-out/README.md, a fresh AI would know:
 1. **What's working** (daemon ecosystem healthy)
 2. **What to fix next** (remaining 105 errors, systematic patterns)
 3. **How to fix it** (proven methodologies documented)
@@ -430,7 +430,7 @@ Reading CLAUDE.md provides immediate cognitive jump-start:
 
 ## **🏗️ MIDDLE-OUT ARCHITECTURE METHODOLOGY (LAW)**
 
-**📖 Complete methodology documented in [MIDDLE-OUT.md](MIDDLE-OUT.md)**
+**📖 Complete methodology documented in [Mmiddle-out/README.md](middle-out/README.md)**
 - Dual onion architecture (server + client)
 - Lambda global command infrastructure  
 - Docker-style layered dependencies

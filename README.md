@@ -131,7 +131,7 @@ localhost:9000 is broken. WebSocketDaemon (1193 lines) is doing RendererDaemon's
 - Memory pattern analysis and evolutionary triggers
 - Cross-persona collaboration and mesh coordination protocols
 
-### **🏗️ [MIDDLE-OUT.md](MIDDLE-OUT.md)** - Universal Development Methodology
+### **🏗️ [middle-out/README.md](middle-out/README.md)** - Universal Development Methodology
 - Dual onion architecture (server + client)
 - Layer-by-layer testing and validation approach
 - Modular documentation and self-contained modules
@@ -218,14 +218,14 @@ continuum stop        # Graceful shutdown
 
 ## 🏗️ Architecture
 
-## **📚 ESSENTIAL: [MIDDLE-OUT.md](MIDDLE-OUT.md) - Complete Architectural Blueprint**
+## **📚 ESSENTIAL: [middle-out/README.md](middle-out/README.md) - Complete Architectural Blueprint**
 
 **🧅 Dual Onion Architecture** - Server-side Core + Client-side Thin APIs  
 **🌐 Lambda Global Infrastructure** - Commands execute anywhere (local/cloud/quantum/robotics)  
 **📦 Docker-Style Dependencies** - LoRA-intelligent layer sharing and composition  
 **🔍 Dynamic Discovery** - Zero hardcoded command knowledge, infinite extensibility
 
-**READ MIDDLE-OUT.md for the complete vision and implementation patterns.**
+**READ middle-out/README.md for the complete vision and implementation patterns.**
 
 ### **Modular Command Bus**
 ```
