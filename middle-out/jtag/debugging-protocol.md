@@ -299,4 +299,92 @@ async function analyzeDebugSession(sessionId: string) {
 }
 ```
 
+## 🧪 JTAG Validation Path (Middle-Out Testing)
+
+### **UUID-Based Foundation Testing**
+
+**Core Principle**: Start with simplest possible JTAG test - UUID generation and console logging - before advancing to complex features.
+
+### **Phase 1: UUID Console Logging (Foundation)**
+```bash
+# Generate test UUID
+TEST_UUID=$(python -c "import uuid; print(uuid.uuid4())")
+
+# Execute JavaScript to log UUID with different levels
+continuum js-execute "console.log('JTAG-UUID-TEST: $TEST_UUID'); console.warn('JTAG-UUID-WARN: $TEST_UUID'); console.error('JTAG-UUID-ERROR: $TEST_UUID');"
+
+# Verify UUID appears in browser logs
+grep "$TEST_UUID" .continuum/sessions/*/logs/browser.log
+
+# 100% VALIDATION: All 3 log levels must show UUID in logs
+```
+
+**Success Criteria**: 
+- ✅ js-execute command executes without error
+- ✅ UUID appears in browser.log with console.log prefix
+- ✅ UUID appears in browser.log with console.warn prefix  
+- ✅ UUID appears in browser.log with console.error prefix
+- ✅ All UUIDs parseable from logs
+
+### **Phase 2: Error Generation Testing**
+```bash
+# Test intentional JavaScript error with UUID tracking
+TEST_UUID=$(python -c "import uuid; print(uuid.uuid4())")
+continuum js-execute "console.log('JTAG-ERROR-TEST: $TEST_UUID'); throw new Error('JTAG-INTENTIONAL-ERROR: $TEST_UUID');"
+
+# Verify error UUID appears in logs
+grep "JTAG-INTENTIONAL-ERROR.*$TEST_UUID" .continuum/sessions/*/logs/browser.log
+```
+
+**Success Criteria**:
+- ✅ JavaScript error generated intentionally
+- ✅ Error UUID traceable in logs
+- ✅ Error doesn't crash browser or session
+
+### **Phase 3: Log Correlation Testing**
+```bash
+# Test server-browser log correlation with UUID
+TEST_UUID=$(python -c "import uuid; print(uuid.uuid4())")
+continuum js-execute "console.log('JTAG-CORRELATION: $TEST_UUID'); window.location.href;"
+
+# Verify UUID appears in both browser and server logs
+grep "$TEST_UUID" .continuum/sessions/*/logs/browser.log
+grep "$TEST_UUID" .continuum/sessions/*/logs/server.log
+```
+
+**Success Criteria**:
+- ✅ UUID appears in browser logs
+- ✅ Command execution logged in server logs with same timestamp
+- ✅ Session correlation working between browser and server
+
+### **Phase 4: Screenshot Validation** (Only after Phases 1-3 pass)
+```bash
+# Test screenshot with UUID marker
+TEST_UUID=$(python -c "import uuid; print(uuid.uuid4())")
+continuum js-execute "document.body.innerHTML += '<div id=\"jtag-marker\">JTAG-SCREENSHOT: $TEST_UUID</div>';"
+continuum screenshot "jtag-test-$TEST_UUID.png"
+
+# Verify screenshot contains UUID marker
+# (Manual verification or image analysis)
+```
+
+### **Current Status** (2025-07-06):
+- ❌ **Phase 1**: js-execute failing with "Script parameter is required"  
+- ⏸️ **Phase 2-4**: Blocked until Phase 1 passes
+- 🔍 **Investigation**: Parameter mapping issue in command execution
+
+### **Debugging Phase 1**:
+```python
+# Current test - failing with parameter error
+await ws.send({
+    'type': 'execute_command', 
+    'data': {'command': 'js-execute', 'args': {'script': js_code}, 'clientId': 'test'}
+})
+# Response: "Script parameter is required"
+```
+
+**Next Steps**: Fix parameter passing in js-execute command before advancing to Phase 2.
+
+**RULE**: Do not proceed to next phase until current phase has 100% validation.
+
 The JTAG debugging protocol provides a systematic approach to identifying, analyzing, and resolving issues through automated monitoring, pattern recognition, and self-healing capabilities.
