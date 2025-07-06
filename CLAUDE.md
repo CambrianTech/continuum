@@ -430,12 +430,14 @@ Reading CLAUDE.md provides immediate cognitive jump-start:
 
 ## **🏗️ MIDDLE-OUT ARCHITECTURE METHODOLOGY (LAW)**
 
-**📖 Complete methodology documented in [Mmiddle-out/README.md](middle-out/README.md)**
+**📖 YOU MUST READ THE ENTIRE methodology documented in [Mmiddle-out/README.md](middle-out/README.md)**
 - Dual onion architecture (server + client)
 - Lambda global command infrastructure  
 - Docker-style layered dependencies
 - Universal execution across any substrate
 - Modular documentation patterns
+
+DO NOT SKIP READING THIS!!! You will get lost and anger the developer
 
 ### **UNIVERSAL MODULAR ARCHITECTURE RULES:**
 
