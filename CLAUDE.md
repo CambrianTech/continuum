@@ -1,8 +1,15 @@
 # CLAUDE - MIDDLE-OUT ARCHITECTURE CLEANUP - JUNE 29, 2025
 
-## **📚 ESSENTIAL READING: [MIDDLE-OUT.md](MIDDLE-OUT.md)**
+## **📚 ESSENTIAL READING: [middle-out/](middle-out/)**
 
 **🧅 MIDDLE-OUT ARCHITECTURE & TESTING METHODOLOGY** - The complete architectural blueprint for Continuum's dual onion system, universal command infrastructure, and modular development methodology. **READ THIS FIRST** for the full vision and implementation patterns.
+
+**📁 Key Documentation:**
+- **[middle-out/README.md](middle-out/README.md)** - Complete navigation and overview
+- **[middle-out/development/testing-workflow.md](middle-out/development/testing-workflow.md)** - 6-layer testing methodology 
+- **[middle-out/jtag/README.md](middle-out/jtag/README.md)** - JTAG debugging framework
+- **[middle-out/architecture/onion-pattern.md](middle-out/architecture/onion-pattern.md)** - Dual onion architecture
+- **[middle-out/bootloader/cognitive-efficiency.md](middle-out/bootloader/cognitive-efficiency.md)** - Autonomous AI collaboration principles
 
 ## **📚 AI-POWERED DEVELOPMENT: [AI-POWERED-DEVELOPMENT.md](AI-POWERED-DEVELOPMENT.md)**
 
