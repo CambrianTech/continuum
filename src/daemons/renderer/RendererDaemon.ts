@@ -3,8 +3,8 @@
  * Uses focused components: HTMLRenderingEngine, TypeScriptCompiler, VersionService
  */
 
-import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon.js';
-import { DaemonResponse } from '../base/DaemonProtocol.js';
+import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon';
+import { DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
 import { HTMLRenderingEngine } from './core/HTMLRenderingEngine';
 import { TypeScriptCompiler } from './core/TypeScriptCompiler';
@@ -12,7 +12,7 @@ import { VersionService } from './core/VersionService';
 
 export interface RenderRequest {
   readonly type: 'render_ui' | 'update_component' | 'render_page';
-  readonly data: Record<string, any>;
+  readonly data: Record<string, unknown>;
   readonly clientId?: string;
 }
 
@@ -38,16 +38,16 @@ export class RendererDaemon extends MessageRoutedDaemon {
   
   protected getRouteMap(): MessageRouteMap {
     return {
-      'render_ui': this.handleRenderUI.bind(this),
-      'update_component': this.handleUpdateComponent.bind(this),
-      'render_page': this.handleRenderPage.bind(this)
+      'render_ui': (data: unknown) => this.handleRenderUI(data as RenderRequest),
+      'update_component': (data: unknown) => this.handleUpdateComponent(data as RenderRequest),
+      'render_page': (data: unknown) => this.handleRenderPage(data as RenderRequest)
     };
   }
 
-  protected getAdditionalMessageHandlers(): { [messageType: string]: MessageRouteHandler } {
+  protected getAdditionalMessageHandlers(): { [messageType: string]: MessageRouteHandler<unknown> } {
     return {
-      'http_request': this.handleHttpRequest.bind(this),
-      'get_capabilities': this.getCapabilities.bind(this)
+      'http_request': (data: unknown) => this.handleHttpRequest(data as { pathname: string; handler: string }),
+      'get_capabilities': (_data: unknown) => this.getCapabilities()
     };
   }
 
@@ -64,8 +64,9 @@ export class RendererDaemon extends MessageRoutedDaemon {
   }
 
   public async registerRoutesWithWebSocket(): Promise<void> {
+    const WebSocket = (await import('ws')).default;
+    
     return new Promise((resolve, reject) => {
-      const WebSocket = require('ws');
       const ws = new WebSocket('ws://localhost:9000');
       
       ws.on('open', () => {
@@ -89,7 +90,7 @@ export class RendererDaemon extends MessageRoutedDaemon {
         resolve();
       });
 
-      ws.on('error', (error: any) => {
+      ws.on('error', (error: Error) => {
         this.log(`❌ Failed to register routes with WebSocket: ${error}`, 'error');
         reject(error);
       });
@@ -134,9 +135,10 @@ export class RendererDaemon extends MessageRoutedDaemon {
     try {
       const version = await this.versionService.getCurrentVersion();
       
+      const templatePath = request.data.templatePath as string | undefined;
       const html = await this.htmlEngine.renderMainUI({
         version,
-        templatePath: request.data.templatePath
+        ...(templatePath && { templatePath })
       });
 
       return {
@@ -162,7 +164,7 @@ export class RendererDaemon extends MessageRoutedDaemon {
     }
   }
 
-  private async handleHttpRequest(data: any): Promise<DaemonResponse> {
+  private async handleHttpRequest(data: { pathname: string; handler: string }): Promise<DaemonResponse> {
     const { pathname, handler } = data;
     
     try {
@@ -289,7 +291,7 @@ export class RendererDaemon extends MessageRoutedDaemon {
   /**
    * DEPRECATED: Use WebSocket message-based registration instead
    */
-  public registerWithWebSocketDaemon(_webSocketDaemon: any): void {
+  public registerWithWebSocketDaemon(_webSocketDaemon: unknown): void {
     this.log('⚠️  Direct registration deprecated - using WebSocket messages instead');
   }
 }

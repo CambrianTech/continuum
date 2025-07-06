@@ -10,7 +10,7 @@
  * - Works across all platforms (macOS, Windows, Linux)
  */
 
-import { SafeBrowserManager } from './SafeBrowserManager.js';
+import { SafeBrowserManager } from './SafeBrowserManager';
 
 export interface BrowserInfo {
   name: string;

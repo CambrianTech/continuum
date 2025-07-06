@@ -7,18 +7,18 @@
  * - Composed together for clean, testable functionality
  */
 
-import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon.js';
-import { DaemonResponse } from '../base/DaemonProtocol.js';
+import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon';
+import { DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
 import { BrowserType, BrowserRequest, BrowserConfig, BrowserStatus, BrowserAction, ManagedBrowser } from './types/index.js';
 // BrowserFilters unused in this file
-import { BrowserLauncher } from './modules/BrowserLauncher.js';
-import { BrowserSessionManager } from './modules/BrowserSessionManager.js';
-import { ChromeBrowserModule } from './modules/ChromeBrowserModule.js';
-import { SessionConsoleLogger } from '../session-manager/modules/SessionConsoleLogger.js';
-import { SimpleTabManager } from './modules/SimpleTabManager.js';
-import { ZombieTabKiller } from './modules/ZombieTabKiller.js';
-import { DAEMON_EVENT_BUS } from '../base/DaemonEventBus.js';
+import { BrowserLauncher } from './modules/BrowserLauncher';
+import { BrowserSessionManager } from './modules/BrowserSessionManager';
+import { ChromeBrowserModule } from './modules/ChromeBrowserModule';
+import { SessionConsoleLogger } from '../session-manager/modules/SessionConsoleLogger';
+import { SimpleTabManager } from './modules/SimpleTabManager';
+import { ZombieTabKiller } from './modules/ZombieTabKiller';
+import { DAEMON_EVENT_BUS } from '../base/DaemonEventBus';
 // import { BrowserTabManager } from './modules/BrowserTabAdapter.js'; // TODO: Remove if not used
 
 export class BrowserManagerDaemon extends MessageRoutedDaemon {
@@ -44,10 +44,10 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   
   protected getRouteMap(): MessageRouteMap {
     return {
-      'create': this.createBrowser.bind(this),
-      'destroy': this.destroyBrowser.bind(this),
-      'list': this.listBrowsers.bind(this),
-      'optimize': this.optimizeResources.bind(this)
+      'create': (data: unknown) => this.createBrowser(data as BrowserRequest),
+      'destroy': (data: unknown) => this.destroyBrowser(data as BrowserRequest),
+      'list': (data: unknown) => this.listBrowsers(data as BrowserRequest),
+      'optimize': (data: unknown) => this.optimizeResources(data as BrowserRequest)
     };
   }
 
@@ -155,7 +155,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
    */
   private setupSessionEventListening(): void {
     // Listen for session_created events from session manager
-    DAEMON_EVENT_BUS.onEvent('session_created', async (event) => {
+    DAEMON_EVENT_BUS.onEvent('session_created' as any, async (event: any) => {
       const { sessionId, sessionType, owner } = event;
       this.log(`📋 Session created: ${sessionId} (${sessionType}) for ${owner}`);
       
@@ -166,7 +166,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     });
     
     // Listen for session_joined events - ensure browser exists if needed
-    DAEMON_EVENT_BUS.onEvent('session_joined', async (event) => {
+    DAEMON_EVENT_BUS.onEvent('session_joined' as any, async (event: any) => {
       const { sessionId, sessionType, owner } = event;
       this.log(`📋 Session joined: ${sessionId} (${sessionType}) for ${owner} - ensuring browser exists`);
       

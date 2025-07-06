@@ -4,7 +4,7 @@
  * Implements TrainerAI vs LoraAgent locally for development and testing
  */
 
-import { LoRADiscovery, LoRAMetadata } from './LoRADiscovery.js';
+import { LoRADiscovery, LoRAMetadata } from './LoRADiscovery';
 // TODO: Import LayerInfo when needed
 // import { LayerInfo } from './LoRADiscovery.js';
 

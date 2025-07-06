@@ -111,8 +111,9 @@ export class SessionStopCommand extends BaseCommand {
 
   private static async getSessionManager(context: CommandContext): Promise<any> {
     // Try to get session manager daemon from WebSocket daemon's registered daemons
-    if (context?.websocket?.registeredDaemons) {
-      const sessionManagerDaemon = context.websocket.registeredDaemons.get('session-manager');
+    if (context?.websocket && typeof context.websocket === 'object' && 'registeredDaemons' in context.websocket) {
+      const websocketWithDaemons = context.websocket as any;
+      const sessionManagerDaemon = websocketWithDaemons.registeredDaemons?.get('session-manager');
       return sessionManagerDaemon || null;
     }
     

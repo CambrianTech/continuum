@@ -12,8 +12,8 @@
  * from usage, predicting storage needs, and automatically organizing old artifacts
  */
 
-import { BaseDaemon } from '../base/BaseDaemon.js';
-import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol.js';
+import { BaseDaemon } from '../base/BaseDaemon';
+import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
 import * as fs from 'fs/promises';
 import * as path from 'path';

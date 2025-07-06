@@ -10,6 +10,8 @@ import { promises as fs } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
+//TODO: if you are reading this, rewrite in typescript now
+
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const templatesDir = join(currentDir, '..', 'templates');
 

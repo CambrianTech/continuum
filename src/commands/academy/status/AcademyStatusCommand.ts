@@ -4,8 +4,8 @@
  * Provides real-time visibility into vector space evolution and P2P network health
  */
 
-import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand.js';
+import { DirectCommand } from '../../core/direct-command/DirectCommand';
+import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class AcademyStatusCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {

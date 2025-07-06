@@ -12,7 +12,7 @@
 
 // TODO: Add @types/uuid package for proper typing
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { v4: uuidv4, v5: uuidv5 } = require('uuid');
+const { v4: uuidv4, v5: uuidv5 } = require('uuid'); //use import here
 import * as crypto from 'crypto';
 
 // Global namespace UUIDs for different types of entities

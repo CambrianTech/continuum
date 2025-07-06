@@ -5,8 +5,8 @@
  * by finding, composing, and fine-tuning LoRA layers dynamically
  */
 
-import { LoRADiscovery, LoRAMetadata } from './LoRADiscovery.js';
-import { LoRALayer } from './types/index.js';
+import { LoRADiscovery, LoRAMetadata } from './LoRADiscovery';
+import { LoRALayer } from './types/index';
 
 export interface CapabilityRequest {
   target_domains: string[];              // ['biophysics', 'geology', 'quantum_chemistry']

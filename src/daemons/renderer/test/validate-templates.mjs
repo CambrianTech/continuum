@@ -4,6 +4,8 @@
  * Simple Node.js script to validate template files before daemon testing
  */
 
+//TODO: if you are reading this, rewrite in typescript now!
+
 import { promises as fs } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';

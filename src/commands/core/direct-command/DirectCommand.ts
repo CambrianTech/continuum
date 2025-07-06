@@ -7,7 +7,7 @@
  * 3. Standardized error handling and result formatting
  */
 
-import { BaseCommand, CommandResult, CommandContext } from '../base-command/BaseCommand.js';
+import { BaseCommand, CommandResult, CommandContext } from '../base-command/BaseCommand';
 
 export abstract class DirectCommand extends BaseCommand {
   /**

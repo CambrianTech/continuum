@@ -7,7 +7,7 @@ import { BaseDaemon } from '../base/BaseDaemon';
 import { 
   DaemonMessage, 
   DaemonResponse
-} from '../base/DaemonProtocol.js';
+} from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
 import { DaemonConnector } from '../../integrations/websocket/core/DaemonConnector';
 

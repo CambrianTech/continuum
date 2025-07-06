@@ -70,7 +70,10 @@ export class PreferencesCommand extends OperationRoutedCommand {
       category: 'core',
       icon: '⚙️',
       description: 'Manage user preferences and system configuration with type safety',
-      parameters: { operation: 'string', data: 'any' },
+      parameters: { 
+        operation: { type: 'string' as const, description: 'Operation to perform (get|set|list|reset|export|import)' },
+        data: { type: 'object' as const, description: 'Data for the operation (depends on operation type)' }
+      },
       examples: [
         {
           description: 'Get theme mode preference',

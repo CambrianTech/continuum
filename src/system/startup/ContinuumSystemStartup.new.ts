@@ -24,14 +24,14 @@ export class ContinuumSystem extends EventEmitter {
     const pkg = this.getPackageInfo();
     
     console.log('╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗');
-    console.log('║ 🌟 CONTINUUM SYSTEM STARTUP (Auto-Discovery)                                                                    ║');
-    console.log(`║ Version: ${pkg.version.padEnd(20)} Start Time: ${startTime}       Process: ${process.pid.toString().padEnd(10)} ║`);
+    console.log('║ 🌟 CONTINUUM SYSTEM STARTUP (Auto-Discovery)                                                                     ║');
+    console.log(`║ Version: ${pkg.version.padEnd(20)} Start Time: ${startTime}       Process: ${process.pid.toString().padEnd(10)}  ║`);
     console.log('╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣');
     
     // STEP 1: Discover all daemons
     console.log('║ 🔍 Discovering daemons...                                                                                        ║');
     const discoveredDaemons = await this.daemonDiscovery.discoverDaemons();
-    console.log(`║ ✅ Found ${discoveredDaemons.length} daemons                                                                    ║`);
+    console.log(`║ ✅ Found ${discoveredDaemons.length} daemons                                                                     ║`);
     
     // STEP 2: Sort by priority
     const sortedDaemons = discoveredDaemons.sort((a, b) => {

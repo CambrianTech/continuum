@@ -5,7 +5,7 @@
  * Tests all failure modes, edge cases, and safety mechanisms
  */
 
-import { SafeBrowserManager } from '../SafeBrowserManager.js';
+import { SafeBrowserManager } from '../SafeBrowserManager';
 
 describe('SafeBrowserManager - Critical Safety Tests', () => {
   let browserManager: SafeBrowserManager;

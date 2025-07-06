@@ -5,7 +5,7 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
-import { RendererDaemon } from '../../RendererDaemon.js';
+import { RendererDaemon } from '../../RendererDaemon';
 
 describe('RendererDaemon Unit Tests', () => {
   let daemon: RendererDaemon;

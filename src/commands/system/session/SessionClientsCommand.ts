@@ -12,15 +12,14 @@ export class SessionClientsCommand extends BaseCommand {
       category: 'system',
       parameters: {
         sessionId: {
-          type: 'string',
+          type: 'string' as const,
           description: 'Session ID (leave blank for current session)',
           required: false
         },
         format: {
-          type: 'string',
-          description: 'Output format',
-          required: false,
-          enum: ['table', 'json', 'simple']
+          type: 'string' as const,
+          description: 'Output format (table, json, simple)',
+          required: false
         }
       },
       examples: [
@@ -86,8 +85,9 @@ export class SessionClientsCommand extends BaseCommand {
 
   private static async getSessionManager(context: CommandContext): Promise<any> {
     // Try to get session manager daemon from WebSocket daemon's registered daemons
-    if (context?.websocket?.registeredDaemons) {
-      const sessionManagerDaemon = context.websocket.registeredDaemons.get('session-manager');
+    if (context?.websocket && typeof context.websocket === 'object' && 'registeredDaemons' in context.websocket) {
+      const websocketWithDaemons = context.websocket as any;
+      const sessionManagerDaemon = websocketWithDaemons.registeredDaemons?.get('session-manager');
       return sessionManagerDaemon || null;
     }
     

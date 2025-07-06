@@ -5,9 +5,11 @@
 
 import { BaseDaemon } from './BaseDaemon';
 import { DaemonMessage, DaemonResponse } from './DaemonProtocol';
+import { DaemonType } from './DaemonTypes';
 
 // Test daemon implementation
 class TestDaemon extends BaseDaemon {
+  public daemonType: DaemonType;
   public readonly name = 'test-daemon';
   public readonly version = '1.0.0';
   

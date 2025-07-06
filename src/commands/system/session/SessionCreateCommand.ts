@@ -13,21 +13,19 @@ export class SessionCreateCommand extends BaseCommand {
       category: 'system',
       parameters: {
         starter: {
-          type: 'string',
-          description: 'Who/what is starting this session',
-          required: true,
-          enum: ['cli', 'portal', 'persona', 'git-hook', 'api', 'test']
+          type: 'string' as const,
+          description: 'Who/what is starting this session (cli, portal, persona, git-hook, api, test)',
+          required: true
         },
         name: {
-          type: 'string',
+          type: 'string' as const,
           description: 'Session name (e.g., user name, project name)',
           required: true
         },
         type: {
-          type: 'string',
-          description: 'Session type',
-          required: false,
-          enum: ['development', 'debugging', 'testing', 'automation', 'collaboration']
+          type: 'string' as const,
+          description: 'Session type (development, debugging, testing, automation, collaboration)',
+          required: false
         },
         user: {
           type: 'string',

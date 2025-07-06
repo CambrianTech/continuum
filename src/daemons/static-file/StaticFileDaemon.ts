@@ -9,8 +9,8 @@
  * - Set correct content-types
  */
 
-import { BaseDaemon } from '../base/BaseDaemon.js';
-import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol.js';
+import { BaseDaemon } from '../base/BaseDaemon';
+import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -45,7 +45,7 @@ export class StaticFileDaemon extends BaseDaemon {
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
     switch (message.type) {
       case 'serve_file':
-        return this.serveFile(message.data);
+        return this.serveFile(message.data as { pathname: string; headers?: Record<string, string> });
       
       case 'get_status':
         return {
@@ -64,12 +64,12 @@ export class StaticFileDaemon extends BaseDaemon {
     }
   }
 
-  private async serveFile(data: any): Promise<DaemonResponse> {
+  private async serveFile(data: { pathname: string; headers?: Record<string, string> }): Promise<DaemonResponse> {
     try {
       const { pathname, headers = {} } = data;
       
       // Security: Clean and validate path
-      const cleanPath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
+      const cleanPath = path.normalize(pathname).replace(/^(\.\.[/\\])+/, '');
       const fullPath = path.join(this.projectRoot, cleanPath);
       
       // Security: Ensure path is within project root
@@ -163,7 +163,7 @@ export class StaticFileDaemon extends BaseDaemon {
     }
   }
 
-  private async compileTypeScript(tsPath: string): Promise<any> {
+  private async compileTypeScript(tsPath: string): Promise<{ success: boolean; content?: string; error?: string; data?: { status: number } }> {
     try {
       const source = fs.readFileSync(tsPath, 'utf8');
       
@@ -268,7 +268,7 @@ export class StaticFileDaemon extends BaseDaemon {
   /**
    * Register with WebSocketDaemon to handle file routes
    */
-  public registerWithWebSocketDaemon(wsDaemon: any): void {
+  public registerWithWebSocketDaemon(wsDaemon: { registerRouteHandler: (pattern: string, daemonName: string, messageType: string) => void }): void {
     // Register handlers for various file patterns
     wsDaemon.registerRouteHandler('*.css', this.name, 'serve_file');
     wsDaemon.registerRouteHandler('*.js', this.name, 'serve_file');

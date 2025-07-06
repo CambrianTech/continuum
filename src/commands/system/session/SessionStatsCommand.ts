@@ -13,15 +13,14 @@ export class SessionStatsCommand extends BaseCommand {
       category: 'system',
       parameters: {
         includeDetails: {
-          type: 'boolean',
+          type: 'boolean' as const,
           description: 'Include detailed session breakdown',
           required: false
         },
         groupBy: {
-          type: 'string',
-          description: 'Group statistics by field',
-          required: false,
-          enum: ['type', 'owner', 'starter', 'active']
+          type: 'string' as const,
+          description: 'Group statistics by field (type, owner, starter, active)',
+          required: false
         }
       },
       examples: [

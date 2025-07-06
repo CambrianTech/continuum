@@ -27,12 +27,12 @@ export class FileWriteCommand extends BaseFileCommand {
       icon: '💾',
       description: 'Write files to session-managed locations using ContinuumDirectoryDaemon',
       parameters: {
-        content: 'string|Buffer',
-        filename: 'string',
-        sessionId: 'string?',
-        artifactType: 'string?',
-        directory: 'string?',
-        encoding: 'string?'
+        content: { type: 'string' as const, description: 'Content to write to the file (string or Buffer)' },
+        filename: { type: 'string' as const, description: 'Name of the file to write' },
+        sessionId: { type: 'string' as const, description: 'Session ID for file organization', required: false },
+        artifactType: { type: 'string' as const, description: 'Type of artifact (screenshot|log|recording|file|devtools|metadata)', required: false },
+        directory: { type: 'string' as const, description: 'Directory override for file location', required: false },
+        encoding: { type: 'string' as const, description: 'Text encoding for the file', required: false }
       },
       examples: [
         { description: 'Write log file', command: 'file_write --content="log data" --filename="app.log" --artifactType="log"' },

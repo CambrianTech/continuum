@@ -5,10 +5,10 @@
  * package.json patterns, and implement their declared capabilities.
  */
 
-import { BaseCommand } from '../../core/base-command/BaseCommand.js';
-import { CommandResult, CommandContext } from '../../core/base-command/BaseCommand.js';
-import { ModuleComplianceFramework } from '../../../testing/module-compliance/ModuleComplianceFramework.js';
-import { SelfValidatingModule } from '../../../testing/self-validating/SelfValidatingModule.js';
+import { BaseCommand } from '../../core/base-command/BaseCommand';
+import { CommandResult, CommandContext } from '../../core/base-command/BaseCommand';
+import { ModuleComplianceFramework } from '../../../testing/module-compliance/ModuleComplianceFramework';
+import { SelfValidatingModule } from '../../../testing/self-validating/SelfValidatingModule';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -21,6 +21,28 @@ export interface ValidateSystemParams {
 }
 
 export class ValidateSystemCommand extends BaseCommand {
+  
+  static getDefinition() {
+    return {
+      name: 'validate-system',
+      category: 'testing',
+      icon: '🔍',
+      description: 'Validate all modules follow consistent structure and implement declared capabilities',
+      parameters: {
+        srcPath: { type: 'string' as const, description: 'Source path to validate', required: false },
+        generateTests: { type: 'boolean' as const, description: 'Generate self-validation tests', required: false },
+        generateReport: { type: 'boolean' as const, description: 'Generate detailed validation reports', required: false },
+        fixable: { type: 'boolean' as const, description: 'Show suggestions for fixing issues', required: false },
+        verbose: { type: 'boolean' as const, description: 'Show detailed validation results', required: false }
+      },
+      examples: [
+        { description: 'Validate all modules', command: 'validate-system' },
+        { description: 'Validate with reports', command: 'validate-system --generateReport=true --verbose=true' },
+        { description: 'Validate and show fixes', command: 'validate-system --fixable=true' }
+      ],
+      usage: 'validate-system [--srcPath=path] [--generateTests] [--generateReport] [--fixable] [--verbose]'
+    };
+  }
   
   static async execute(params: ValidateSystemParams, _context: CommandContext): Promise<CommandResult> {
     const srcPath = params.srcPath || './src';
@@ -331,54 +353,5 @@ export class ValidateSystemCommand extends BaseCommand {
     
     await scanDirectory(srcPath);
     return modules;
-  }
-  
-  static getDefinition() {
-    return {
-      name: 'validate-system',
-      description: 'Validates that all modules follow consistent structure and implement declared capabilities',
-      category: 'Testing',
-      parameters: {
-        srcPath: {
-          type: 'string',
-          description: 'Path to source directory (default: ./src)',
-          required: false
-        },
-        generateTests: {
-          type: 'boolean',
-          description: 'Generate self-validation tests for all modules',
-          required: false
-        },
-        generateReport: {
-          type: 'boolean',
-          description: 'Generate comprehensive validation reports',
-          required: false
-        },
-        fixable: {
-          type: 'boolean',
-          description: 'Show suggested fixes for common issues',
-          required: false
-        },
-        verbose: {
-          type: 'boolean',
-          description: 'Show detailed validation results',
-          required: false
-        }
-      },
-      examples: [
-        {
-          command: 'validate-system',
-          description: 'Basic system validation'
-        },
-        {
-          command: 'validate-system --generateTests --generateReport --verbose',
-          description: 'Full validation with test generation and reports'
-        },
-        {
-          command: 'validate-system --fixable',
-          description: 'Validation with suggested fixes'
-        }
-      ]
-    };
   }
 }

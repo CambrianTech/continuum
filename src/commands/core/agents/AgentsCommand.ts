@@ -2,8 +2,8 @@
  * Agents Command - List available AI agents/personas
  */
 
-import { DirectCommand } from '../direct-command/DirectCommand.js';
-import { CommandDefinition, CommandResult, CommandContext } from '../base-command/BaseCommand.js';
+import { DirectCommand } from '../direct-command/DirectCommand';
+import { CommandDefinition, CommandResult, CommandContext } from '../base-command/BaseCommand';
 
 export class AgentsCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {

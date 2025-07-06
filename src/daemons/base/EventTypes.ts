@@ -87,6 +87,8 @@ export function getEventCategory(eventType: SystemEventType): EventCategory {
  * Event payload interfaces - strongly typed event data
  */
 export interface WebSocketConnectionEstablishedPayload {
+  timestamp: Date;
+  source: string;
   connectionId: string;
   metadata: {
     userAgent: string;
@@ -96,6 +98,8 @@ export interface WebSocketConnectionEstablishedPayload {
 }
 
 export interface WebSocketConnectionClosedPayload {
+  timestamp: Date;
+  source: string;
   connectionId: string;
   reason?: string;
 }

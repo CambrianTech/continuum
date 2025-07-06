@@ -17,13 +17,12 @@
  * - Test full rendering pipeline end-to-end
  */
 
-import { RendererDaemon } from '../RendererDaemon';
+// import { RendererDaemon } from '../RendererDaemon';
 import { WebSocketDaemon } from '../../../integrations/websocket/WebSocketDaemon';
-import * as http from 'http';
 import { JSDOM } from 'jsdom';
 
 describe('HTML Generation Integration Tests', () => {
-  let rendererDaemon: RendererDaemon;
+  // let rendererDaemon: RendererDaemon;
   let webSocketDaemon: WebSocketDaemon;
   let testPort: number;
 
@@ -207,7 +206,7 @@ describe('HTML Generation Integration Tests', () => {
       expect(html).not.toContain('null');
       
       // Should be served with proper headers for WebSocket upgrade
-      const response = await fetch(`http://localhost:${testPort}/`, { method: 'HEAD' });
+      const response = await globalThis.fetch(`http://localhost:${testPort}/`, { method: 'HEAD' });
       expect(response.headers.get('connection')).not.toBe('close');
     });
   });
@@ -252,19 +251,19 @@ describe('HTML Generation Integration Tests', () => {
 
 // Helper functions
 async function fetchHTML(url: string): Promise<string> {
-  const response = await fetch(url);
+  const response = await globalThis.fetch(url);
   if (!response.ok) {
     throw new Error(`Failed to fetch HTML: ${response.status} ${response.statusText}`);
   }
   return await response.text();
 }
 
-async function fetchWithTimeout(url: string, timeoutMs: number = 5000): Promise<Response> {
-  const controller = new AbortController();
+async function fetchWithTimeout(url: string, timeoutMs: number = 5000): Promise<globalThis.Response> {
+  const controller = new globalThis.AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await globalThis.fetch(url, { signal: controller.signal });
     clearTimeout(timeout);
     return response;
   } catch (error) {

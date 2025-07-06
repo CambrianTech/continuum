@@ -40,7 +40,7 @@ export class PortManager {
       if (result.success) {
         // Find first available port
         for (const port of candidatePorts) {
-          const portData = result.data.portProcesses[port];
+          const portData = (result.data as any).portProcesses[port];
           if (!portData || portData.length === 0) {
             this.markPortAllocated(port, purpose, browserId);
             console.log(`🔌 Allocated port ${port} for ${purpose}`);
@@ -80,7 +80,7 @@ export class PortManager {
       });
       
       if (result.success) {
-        const portData = result.data.portProcesses[port];
+        const portData = (result.data as any).portProcesses[port];
         return !portData || portData.length === 0;
       }
       

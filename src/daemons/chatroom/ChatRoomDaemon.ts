@@ -48,7 +48,7 @@
  * - WebSocket connection pooling for large rooms
  */
 
-import { RequestResponseDaemon, RequestHandlerMap } from '../base/RequestResponseDaemon.js';
+import { RequestResponseDaemon, RequestHandlerMap } from '../base/RequestResponseDaemon';
 import { DaemonType } from '../base/DaemonTypes';
 
 // ChatRoom types and interfaces

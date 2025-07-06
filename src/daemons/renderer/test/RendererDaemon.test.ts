@@ -6,8 +6,8 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { RendererDaemon } from '../RendererDaemon';
 import * as http from 'http';
-import { promises as fs } from 'fs';
-import { join } from 'path';
+// import { promises as fs } from 'fs';
+// import { join } from 'path';
 
 describe('RendererDaemon', () => {
   let daemon: RendererDaemon;
@@ -255,7 +255,7 @@ function makeRequest(path: string, headers: Record<string, string> = {}): Promis
   headers: Record<string, string>;
   body: string;
 }> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve, _reject) => {
     const options = {
       hostname: 'localhost',
       port: 9001, // RendererDaemon static file server port

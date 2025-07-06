@@ -6,8 +6,8 @@
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
-import { LocalAcademyTrainer } from './LocalAcademyTrainer.js';
-import { LoRADiscovery } from './LoRADiscovery.js';
+import { LocalAcademyTrainer } from './LocalAcademyTrainer';
+import { LoRADiscovery } from './LoRADiscovery';
 
 export interface AcademyStatus {
   isActive: boolean;

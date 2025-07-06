@@ -2,8 +2,8 @@
  * Daemon Module - Extends BaseModule with daemon-specific validation
  */
 
-import { BaseModule, ValidationResult, MigrationResult } from './BaseModule.js';
-import { ContinuumDaemonConfig } from './ContinuumPackage.js';
+import { BaseModule, ValidationResult, MigrationResult } from './BaseModule';
+import { ContinuumDaemonConfig } from './ContinuumPackage';
 
 export class ContinuumDaemon extends BaseModule {
   

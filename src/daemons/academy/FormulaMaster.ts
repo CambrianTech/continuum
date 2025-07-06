@@ -5,7 +5,7 @@
  * and can generate formulas that other personas can't discover on their own.
  */
 
-import { FormulaGenerator, TrainingFormula, FormulaRequest } from './FormulaGeneration.js';
+import { FormulaGenerator, TrainingFormula, FormulaRequest } from './FormulaGeneration';
 
 export interface FormulaMasterPersona {
   id: string;

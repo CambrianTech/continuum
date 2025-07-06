@@ -47,7 +47,7 @@ export abstract class MessageRoutedDaemon extends BaseDaemon {
       
       // Handle primary routed message type
       if (message.type === this.primaryMessageType) {
-        return await this.handleRoutedMessage(message.data);
+        return await this.handleRoutedMessage(message.data as RouteMessage);
       }
       
       // Handle additional message types

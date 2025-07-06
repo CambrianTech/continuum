@@ -4,8 +4,8 @@
  * Delegates to DatabaseDaemon for data retrieval operations
  */
 
-import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand.js';
+import { DirectCommand } from '../../core/direct-command/DirectCommand';
+import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class DatabaseQueryCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {

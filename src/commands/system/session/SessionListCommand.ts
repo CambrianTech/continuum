@@ -13,21 +13,14 @@ export class SessionListCommand extends BaseCommand {
       category: 'system',
       parameters: {
         filter: {
-          type: 'object',
-          description: 'Filter criteria',
-          required: false,
-          properties: {
-            type: { type: 'string' },
-            owner: { type: 'string' },
-            active: { type: 'boolean' },
-            starter: { type: 'string' }
-          }
+          type: 'object' as const,
+          description: 'Filter criteria object with type, owner, active, starter properties',
+          required: false
         },
         format: {
-          type: 'string',
-          description: 'Output format',
-          required: false,
-          enum: ['table', 'json', 'summary']
+          type: 'string' as const,
+          description: 'Output format (table, json, summary)',
+          required: false
         }
       },
       examples: [
