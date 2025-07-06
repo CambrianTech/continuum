@@ -86,6 +86,16 @@ export class SessionManagerDaemon extends BaseDaemon {
     this.log('📋 Starting Session Manager Daemon...');
     await this.initializeDirectoryStructure();
     this.startCleanupMonitoring();
+    
+    // Listen for WebSocket connections with proper typing
+    DAEMON_EVENT_BUS.onEvent('websocket:connection_established', async (event) => {
+      await this.handleWebSocketConnection(event.connectionId, event.metadata);
+    });
+    
+    DAEMON_EVENT_BUS.onEvent('websocket:connection_closed', async (event) => {
+      await this.handleWebSocketDisconnection(event.connectionId, event.reason);
+    });
+    
     this.log('✅ Session Manager ready for coordination');
   }
 
@@ -1308,5 +1318,125 @@ export class SessionManagerDaemon extends BaseDaemon {
     } catch (error) {
       this.log(`⚠️ Failed to cleanup artifacts for ${session.id}: ${error}`, 'warn');
     }
+  }
+
+  /**
+   * Handle new WebSocket connection from WebSocketDaemon event
+   */
+  private async handleWebSocketConnection(
+    connectionId: string, 
+    metadata: { userAgent: string; url: string; headers: Record<string, string> }
+  ): Promise<void> {
+    try {
+      this.log(`🔌 Handling WebSocket connection: ${connectionId}`);
+      
+      // Determine session type based on connection metadata
+      const sessionType = this.determineSessionType(metadata);
+      
+      // Create or find appropriate session
+      const session = await this.createOrFindSession(connectionId, sessionType, metadata);
+      
+      // Send session_ready message to the connection via WebSocketDaemon
+      const response = await this.sendMessage('websocket', 'send_to_connection', {
+        connectionId,
+        message: {
+          type: 'session_ready',
+          data: {
+            sessionId: session.id,
+            sessionType: session.type,
+            devtools: session.type === 'portal' || session.type === 'development',
+            logPaths: session.artifacts.logs,
+            directories: {
+              storage: session.artifacts.storageDir,
+              logs: path.join(session.artifacts.storageDir, 'logs')
+            }
+          },
+          timestamp: new Date().toISOString()
+        }
+      });
+      
+      if (response.success) {
+        this.log(`✅ Sent session_ready to connection ${connectionId} for session ${session.id}`);
+      } else {
+        this.log(`❌ Failed to send session_ready: ${response.error}`, 'error');
+      }
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to handle WebSocket connection: ${errorMessage}`, 'error');
+    }
+  }
+
+  /**
+   * Handle WebSocket disconnection
+   */
+  private async handleWebSocketDisconnection(connectionId: string, reason?: string): Promise<void> {
+    this.log(`🔌 WebSocket disconnected: ${connectionId}${reason ? ` (${reason})` : ''}`);
+    // Sessions persist beyond connections, so we just log for now
+    // Could implement connection tracking per session if needed
+  }
+
+  /**
+   * Determine session type from connection metadata
+   */
+  private determineSessionType(metadata: { userAgent: string; url: string }): BrowserSession['type'] {
+    const { userAgent, url } = metadata;
+    
+    if (userAgent.includes('git') || url.includes('hook')) {
+      return 'git-hook';
+    }
+    if (userAgent.includes('Portal') || url.includes('portal')) {
+      return 'portal';
+    }
+    if (url.includes('test') || userAgent.includes('test')) {
+      return 'test';
+    }
+    
+    return 'development'; // Default for regular browser connections
+  }
+
+  /**
+   * Create or find an appropriate session for the connection
+   */
+  private async createOrFindSession(
+    connectionId: string,
+    sessionType: BrowserSession['type'],
+    metadata: { userAgent: string; url: string }
+  ): Promise<BrowserSession> {
+    // For development sessions, try to find an existing shared session
+    if (sessionType === 'development') {
+      const existingSessions = Array.from(this.sessions.values())
+        .filter(s => s.type === 'development' && s.isActive && s.owner === 'shared');
+      
+      if (existingSessions.length > 0) {
+        const session = existingSessions[0];
+        session.lastActive = new Date();
+        this.log(`♻️ Reusing existing development session: ${session.id}`);
+        return session;
+      }
+    }
+    
+    // Create new session
+    const sessionId = `${sessionType}-${connectionId.slice(0, 8)}-${Date.now()}`;
+    const result = await this.createSession({
+      type: sessionType,
+      owner: sessionType === 'development' ? 'shared' : connectionId,
+      starter: metadata.userAgent,
+      options: {
+        autoCleanup: sessionType !== 'development',
+        devtools: sessionType === 'portal' || sessionType === 'development'
+      }
+    });
+    
+    if (!result.success || !result.data) {
+      throw new Error(`Failed to create session: ${result.error}`);
+    }
+    
+    const session = this.sessions.get(result.data.sessionId);
+    if (!session) {
+      throw new Error('Session created but not found');
+    }
+    
+    return session;
   }
 }

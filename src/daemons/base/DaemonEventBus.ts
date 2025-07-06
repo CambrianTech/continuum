@@ -6,6 +6,39 @@
 
 import { EventEmitter } from 'events';
 
+// Base event interface that all events must extend
+export interface BaseEvent {
+  timestamp: Date;
+}
+
+// Daemon event extends base with source daemon
+export interface DaemonEvent extends BaseEvent {
+  source: string; // daemon name that emitted the event
+}
+
+// WebSocket-specific base event
+export interface WebSocketEvent extends DaemonEvent {
+  connectionId: string;
+}
+
+// Specific WebSocket event types
+export interface WebSocketConnectionEvent extends WebSocketEvent {
+  metadata: {
+    userAgent: string;
+    url: string;
+    headers: Record<string, string>;
+  };
+}
+
+export interface WebSocketDisconnectionEvent extends WebSocketEvent {
+  reason?: string;
+}
+
+// Session-specific base event
+export interface SessionEvent extends DaemonEvent {
+  sessionId: string;
+}
+
 // Define all valid daemon events with their payloads
 export interface DaemonEvents {
   // Session events
@@ -27,6 +60,10 @@ export interface DaemonEvents {
     sessionId: string;
     reason: string;
   };
+  
+  // WebSocket connection events
+  'websocket:connection_established': WebSocketConnectionEvent;
+  'websocket:connection_closed': WebSocketDisconnectionEvent;
   
   // Browser events
   'browser_launch_requested': {

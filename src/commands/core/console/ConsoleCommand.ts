@@ -97,9 +97,8 @@ export class ConsoleCommand extends DirectCommand {
         console.log(`🔍 CONSOLE_COMMAND_DEBUG: Full context received:`, JSON.stringify(_context, null, 2));
         console.log(`🔍 CONSOLE_COMMAND_DEBUG: params:`, JSON.stringify(params, null, 2));
         
-        // Get sessionId from context (passed from WebSocketDaemon connection mapping)
-        // Context structure: _context can have sessionId directly or nested in context
-        let sessionId = _context?.sessionId || _context?.context?.sessionId || params.sessionId;
+        // Get sessionId from context (passed from WebSocketDaemon/CommandProcessor)
+        const sessionId = _context?.sessionId;
         
         // If no sessionId provided, use the current/default shared development session
         if (!sessionId) {

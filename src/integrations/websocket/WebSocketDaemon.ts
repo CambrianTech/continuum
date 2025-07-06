@@ -26,7 +26,8 @@ export class WebSocketDaemon extends BaseDaemon {
   private httpServer: any = null;
   private config: Required<ServerConfig>;
   private registeredDaemons = new Map<string, any>();
-  // CONNECTION SESSION TRACKING REMOVED - pure router doesn't track sessions
+  // Track connection to session mapping for command context
+  private connectionSessions = new Map<string, string>(); // connectionId -> sessionId
 
   constructor(config: ServerConfig = {}) {
     super();
@@ -57,6 +58,13 @@ export class WebSocketDaemon extends BaseDaemon {
 
   protected async onStart(): Promise<void> {
     this.log(`🌐 Starting pure router on ${this.config.host}:${this.config.port}`);
+    
+    // Listen for session assignments from SessionManagerDaemon
+    const { DAEMON_EVENT_BUS } = await import('../base/DaemonEventBus');
+    DAEMON_EVENT_BUS.onEvent('session_created', (event) => {
+      // We'll track sessions when they send messages
+      this.log(`📋 Session created: ${event.sessionId}`);
+    });
     
     // Check for existing healthy instance
     if (await this.portManager.isPortHealthy()) {
@@ -130,6 +138,9 @@ export class WebSocketDaemon extends BaseDaemon {
             registered_daemons: Array.from(this.registeredDaemons.keys())
           }
         };
+
+      case 'send_to_connection':
+        return this.handleSendToConnection(message.data);
 
       default:
         return {
@@ -301,13 +312,14 @@ export class WebSocketDaemon extends BaseDaemon {
         const commandName = commandData.command;
         const commandParams = commandData.params;
         const requestId = commandData.requestId;
-        const sessionId = commandData.sessionId; // Pure router - session comes from the command data
+        
+        // Get sessionId from connection mapping
+        const sessionId = this.connectionSessions.get(connectionId);
         
         // 🔍 SESSION DEBUG: Log sessionId extraction process
         this.log(`🔍 [SESSION_DEBUG] routeCommandToProcessor extraction:`);
-        this.log(`🔍 [SESSION_DEBUG]   commandData.sessionId: ${commandData.sessionId || 'NOT_FOUND'}`);
-        this.log(`🔍 [SESSION_DEBUG]   extracted sessionId: ${sessionId || 'NOT_FOUND'}`);
-        this.log(`🔍 [SESSION_DEBUG]   commandData keys: ${Object.keys(commandData || {}).join(', ')}`);
+        this.log(`🔍 [SESSION_DEBUG]   connectionId: ${connectionId}`);
+        this.log(`🔍 [SESSION_DEBUG]   sessionId from mapping: ${sessionId || 'NOT_FOUND'}`);
         this.log(`🔍 [SESSION_DEBUG]   commandName: ${commandName}`);
         
         // Parse parameters (they might be JSON string from browser)
@@ -563,13 +575,29 @@ export class WebSocketDaemon extends BaseDaemon {
   /**
    * Handle new WebSocket connection - PURE ROUTING ONLY
    */
-  private async handleNewConnection(connectionId: string, _connection: any): Promise<void> {
+  private async handleNewConnection(connectionId: string, connection: any): Promise<void> {
     try {
       // PURE ROUTER - no session management, just log the connection
       this.log(`🔌 New WebSocket connection: ${connectionId}`);
       
+      // Extract connection metadata
+      const metadata = {
+        userAgent: connection.metadata?.userAgent || 'unknown',
+        url: connection.metadata?.url || '/',
+        headers: connection.metadata?.headers || {}
+      };
+      
+      // Emit event for other daemons (especially SessionManagerDaemon)
+      const { DAEMON_EVENT_BUS } = await import('../base/DaemonEventBus');
+      DAEMON_EVENT_BUS.emitEvent('websocket:connection_established', {
+        timestamp: new Date(),
+        source: this.name,
+        connectionId,
+        metadata
+      });
+      
       // Connection is ready for message routing
-      this.log(`✅ Connection ready for routing`);
+      this.log(`✅ Connection ready for routing - event emitted`);
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -785,12 +813,71 @@ export class WebSocketDaemon extends BaseDaemon {
   // SESSION MAPPING REMOVED - pure router doesn't track session connections
 
   /**
+   * Handle send_to_connection message from other daemons
+   */
+  private async handleSendToConnection(data: unknown): Promise<DaemonResponse> {
+    try {
+      const { connectionId, message } = data as { connectionId: string; message: unknown };
+      
+      if (!connectionId || !message) {
+        return {
+          success: false,
+          error: 'connectionId and message are required'
+        };
+      }
+      
+      // Send message to specific connection
+      const sent = this.wsManager.sendToConnection(connectionId, message);
+      
+      if (sent) {
+        this.log(`📤 Sent message to connection ${connectionId}`);
+        
+        // Track session assignment if this is a session_ready message
+        const msg = message as any;
+        if (msg.type === 'session_ready' && msg.data?.sessionId) {
+          this.connectionSessions.set(connectionId, msg.data.sessionId);
+          this.log(`🔗 Mapped connection ${connectionId} to session ${msg.data.sessionId}`);
+        }
+        
+        return {
+          success: true,
+          data: { sent: true }
+        };
+      } else {
+        return {
+          success: false,
+          error: `Connection ${connectionId} not found`
+        };
+      }
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `Failed to send to connection: ${errorMessage}`
+      };
+    }
+  }
+
+  /**
    * Handle connection closure - PURE ROUTER CLEANUP
    */
   private async handleConnectionClosed(connectionId: string): Promise<void> {
     try {
       // Pure router - just log the disconnection
       this.log(`🔌 Connection ${connectionId} closed`);
+      
+      // Clean up session mapping
+      this.connectionSessions.delete(connectionId);
+      
+      // Emit event for other daemons
+      const { DAEMON_EVENT_BUS } = await import('../base/DaemonEventBus');
+      DAEMON_EVENT_BUS.emitEvent('websocket:connection_closed', {
+        timestamp: new Date(),
+        source: this.name,
+        connectionId
+      });
+      
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.log(`⚠️  Error handling connection closure for ${connectionId}: ${errorMessage}`, 'error');
