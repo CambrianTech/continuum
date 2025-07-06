@@ -109,6 +109,10 @@ export class ChromeBrowserModule implements IBrowserModule {
       '--disable-ipc-flooding-protection'
     ];
 
+    // Add URL to open - default to localhost:9000 for Continuum
+    const url = config.url || 'http://localhost:9000';
+    args.push(url);
+
     // DevTools specific arguments
     if (config.requirements?.devtools) {
       args.push(
