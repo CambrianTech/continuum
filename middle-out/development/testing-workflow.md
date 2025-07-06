@@ -186,9 +186,74 @@ Every widget MUST have:
 
 **Auto-Discovery**: New widgets are automatically found and tested. No hard-coded lists.
 
+## 📋 Disabled Functionality Tracking (Critical)
+
+### **The Audit-Before-Test Principle**
+
+**Before testing any layer, audit what was disabled during compilation cleanup:**
+
+```bash
+# Find all TODO comments from recent fixes
+grep -r "TODO.*disabled\|TODO.*implement\|TODO.*track" src/ --include="*.ts"
+
+# Document each disabled feature with impact assessment:
+# 🚨 CRITICAL - Blocks core testing functionality
+# 🔴 HIGH - Reduces testing reliability  
+# 🟡 MEDIUM - Impacts debugging capabilities
+# 🟢 LOW - Quality of life only
+```
+
+### **Example: JTAG Session Management Audit**
+
+**CRITICAL FINDING**: During TypeScript compilation cleanup, session management was stubbed:
+
+```typescript
+// DISABLED in WebSocketDaemon.ts
+private getSessionParamsForConnection(connectionId: string): any {
+  // TODO: Implement session parameter mapping
+  return { sessionId: 'mock-session-' + connectionId }; // STUB!
+}
+```
+
+**Impact Assessment:**
+- 🚨 **CRITICAL** - JTAG cannot correlate browser + server logs
+- 🚨 **CRITICAL** - Session-based debugging impossible
+- 🚨 **CRITICAL** - Visual validation system compromised
+
+**Action Required:** Re-enable before Layer 4 testing (WebSocket + Session integration)
+
+### **Systematic Re-enablement Process**
+
+```typescript
+// Phase 1: Document what was disabled
+const disabledFeatures = auditTODOs();
+
+// Phase 2: Prioritize by testing impact  
+const criticalFeatures = disabledFeatures.filter(f => f.impact === 'CRITICAL');
+
+// Phase 3: Re-enable systematically by layer
+for (const feature of criticalFeatures) {
+  await reEnableFeature(feature);
+  await validateLayer(feature.layer);
+}
+```
+
 ## 🚨 Common Testing Mistakes (Never Do These!)
 
-### ❌ MISTAKE 1: Skipping Layer Order
+### ❌ MISTAKE 1: Testing Without Auditing Disabled Functionality
+
+```bash
+# ❌ WRONG: Start testing with unknown disabled features
+npm test
+
+# ✅ CORRECT: Audit first, then systematically re-enable
+echo "Phase 1: Audit disabled functionality"
+grep -r "TODO.*disabled" src/ > DISABLED-AUDIT.md
+echo "Phase 2: Prioritize by testing impact"
+echo "Phase 3: Re-enable critical features before testing"
+```
+
+### ❌ MISTAKE 2: Skipping Layer Order
 
 ```bash
 # ❌ WRONG: Jump to integration tests with broken compilation
@@ -262,5 +327,45 @@ src/[category]/[module]/
 5. **Move outward** - Next layer builds on solid foundation
 
 **NO SHORTCUTS. NO SKIPPING LAYERS. NO MYSTERY.**
+
+## 🎯 Real-World Example: JTAG Testing Preparation (2025-07-06)
+
+### **Situation**: Need to test JTAG debugger after compilation cleanup
+
+**Step 1: Layer Assessment**
+```bash
+# ✅ Layer 1 (Foundation): 0 compilation errors achieved
+npx tsc --noEmit --project .
+# Result: SUCCESS - Ready for testing
+
+# ❌ Layer 4 (Integration): Unknown disabled functionality  
+# Result: BLOCKED - Must audit before testing
+```
+
+**Step 2: Disabled Functionality Audit**
+```bash
+# Found critical WebSocket session management disabled:
+grep -r "TODO.*session" src/integrations/websocket/
+# Result: Session correlation STUBBED - JTAG will fail
+```
+
+**Step 3: Impact-Based Prioritization**
+- 🚨 **CRITICAL**: WebSocket session parameter mapping 
+- 🚨 **CRITICAL**: Session logging for JTAG observability
+- 🔴 **HIGH**: Browser session safety checks
+- 🟡 **MEDIUM**: Command context tracking
+
+**Step 4: Systematic Re-enablement**
+```bash
+# Phase 1: Re-enable critical functionality
+# Phase 2: Test each layer after re-enablement  
+# Phase 3: Validate JTAG functionality end-to-end
+```
+
+### **Key Insight**: 
+
+**Without the audit-before-test approach, JTAG testing would have produced false negatives** - appearing broken when functionality was simply disabled during compilation cleanup.
+
+**Middle-out methodology prevented wasted debugging time** by identifying root causes at the architectural level before symptom-level testing.
 
 This comprehensive testing workflow ensures systematic, reliable development with clear validation at each step. The middle-out methodology prevents cascade failures and builds confidence through proven patterns.
