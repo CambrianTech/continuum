@@ -5,6 +5,10 @@
   "main": "SessionManagerCore.ts",
   "type": "module",
   "continuum": {
+    "type": "daemon",
+    "className": "SessionManagerDaemon",
+    "priority": 20,
+    "autoStart": true,
     "core": "session_manager",
     "category": "Core",
     "capabilities": [

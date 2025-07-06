@@ -5,6 +5,8 @@
   "main": "CommandProcessorDaemon.ts",
   "type": "module",
   "continuum": {
+    "type": "daemon",
+    "priority": 30,
     "daemon": "command-processor",
     "category": "Core",
     "layer": 2,

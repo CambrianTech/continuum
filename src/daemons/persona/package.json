@@ -5,6 +5,8 @@
   "main": "PersonaCore.ts",
   "type": "module",
   "continuum": {
+    "type": "daemon",
+    "priority": 75,
     "core": "persona",
     "category": "Core",
     "capabilities": [

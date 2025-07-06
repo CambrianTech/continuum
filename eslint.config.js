@@ -52,11 +52,15 @@ export default [
     rules: {
       ...eslintJs.configs.recommended.rules,
       ...tseslint.configs.recommended.rules,
-      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-explicit-any': 'error', // Changed from 'warn' to 'error'
       '@typescript-eslint/no-unused-vars': ['warn', { 'argsIgnorePattern': '^_' }],
       '@typescript-eslint/explicit-module-boundary-types': 'off',
-      '@typescript-eslint/no-require-imports': 'off',
+      '@typescript-eslint/no-require-imports': 'error', // Changed from 'off' to 'error'
       'no-undef': 'error',
+      // Custom rules for proper module imports
+      'no-restricted-imports': ['error', {
+        'patterns': ['*.js', '*.jsx', '*.ts', '*.tsx'] // No file extensions in imports
+      }],
     }
   },
   

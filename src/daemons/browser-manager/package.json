@@ -5,6 +5,8 @@
   "main": "BrowserManagerDaemon.ts",
   "type": "module",
   "continuum": {
+    "type": "daemon",
+    "priority": 85,
     "core": "browser_manager",
     "category": "Core",
     "capabilities": [

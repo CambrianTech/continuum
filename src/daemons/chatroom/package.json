@@ -5,6 +5,8 @@
   "main": "ChatRoomDaemon.ts",
   "type": "module",
   "continuum": {
+    "type": "daemon",
+    "priority": 70,
     "daemon": "chatroom",
     "category": "Communication",
     "capabilities": [

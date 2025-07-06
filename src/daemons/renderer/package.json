@@ -5,6 +5,8 @@
   "main": "RendererCore.ts",
   "type": "module",
   "continuum": {
+    "type": "daemon",
+    "priority": 40,
     "core": "renderer",
     "category": "Core",
     "capabilities": [

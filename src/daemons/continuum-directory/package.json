@@ -5,6 +5,8 @@
   "main": "ContinuumDirectoryCore.ts",
   "type": "module",
   "continuum": {
+    "type": "daemon",
+    "priority": 15,
     "core": "continuum_directory",
     "category": "Core",
     "capabilities": [
