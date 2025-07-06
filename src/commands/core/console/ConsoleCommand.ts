@@ -55,7 +55,7 @@ export class ConsoleCommand extends DirectCommand {
       
       // DEBUG: Log all console commands received (uncomment for debugging)
       // console.log(`[ConsoleCommand] Received: action=${action}, source=${source}, message=${message?.substring(0, 100)}...`);
-      // console.log(`[ConsoleCommand] Context:`, JSON.stringify(_context, null, 2));
+      // console.log(`[ConsoleCommand] Context sessionId: ${_context?.sessionId}, params sessionId: ${params.sessionId}`);
       
       if (!action || !message) {
         return this.createErrorResult('Console forwarding requires action and message parameters');
@@ -88,33 +88,56 @@ export class ConsoleCommand extends DirectCommand {
         console.log(`   Data:`, data);
       }
 
-      // Write to current session's browser log using sessionId from context
+      // Write to ALL active session browser logs (fix for inconsistent sessionId routing)
       let sessionLogged = false;
       try {
-        const sessionId = _context?.sessionId || params.sessionId;
-        if (sessionId) {
-          const fs = await import('fs/promises');
-          
-          // Build path to session browser log
-          const sessionPath = `.continuum/sessions/user/user/${sessionId}/logs/browser.log`;
-          
-          // Format log entry for session file
-          const logEntry = `[${timestamp}] ${icon} BROWSER CONSOLE [${source}]: ${message}`;
-          
-          // Write to session browser log
-          await fs.appendFile(sessionPath, logEntry + '\n');
-          
-          // Add data on separate line if present
-          if (data && Object.keys(data).length > 0) {
-            await fs.appendFile(sessionPath, `   Data: ${JSON.stringify(data)}\n`);
+        const fs = await import('fs/promises');
+        const path = await import('path');
+        
+        // Format log entry for session file
+        const logEntry = `[${timestamp}] ${icon} BROWSER CONSOLE [${source}]: ${message}`;
+        
+        // Find ALL active session directories and write to them
+        const sessionBasePaths = [
+          '.continuum/sessions/user/user',
+          '.continuum/sessions/user/system'
+        ];
+        
+        let loggedToAnySession = false;
+        for (const basePath of sessionBasePaths) {
+          try {
+            const sessions = await fs.readdir(basePath);
+            for (const sessionDir of sessions) {
+              const browserLogPath = `${basePath}/${sessionDir}/logs/browser.log`;
+              try {
+                // Check if browser.log exists
+                await fs.access(browserLogPath);
+                
+                // Write to this session's browser log
+                await fs.appendFile(browserLogPath, logEntry + '\n');
+                
+                // Add data on separate line if present
+                if (data && Object.keys(data).length > 0) {
+                  await fs.appendFile(browserLogPath, `   Data: ${JSON.stringify(data)}\n`);
+                }
+                
+                loggedToAnySession = true;
+              } catch {
+                // This session's browser.log doesn't exist or isn't accessible, skip it
+              }
+            }
+          } catch {
+            // This base path doesn't exist, skip it
           }
-          
+        }
+        
+        if (loggedToAnySession) {
           sessionLogged = true;
         } else {
-          console.warn(`⚠️ No sessionId in context - cannot write to session browser log`);
+          console.warn(`⚠️ No active sessions found - console message not logged to any browser.log files`);
         }
       } catch (error) {
-        console.warn(`⚠️ Failed to write to session browser log: ${error instanceof Error ? error.message : String(error)}`);
+        console.warn(`⚠️ Failed to write to session browser logs: ${error instanceof Error ? error.message : String(error)}`);
       }
 
       return this.createSuccessResult(
