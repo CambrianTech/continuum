@@ -4,8 +4,8 @@
  * Runs unit, client, and integration tests for each widget
  */
 
-import { WidgetDiscovery, WidgetMetadata } from '../shared/WidgetDiscovery.js';
-import { BaseWidgetTest } from '../shared/WidgetTestTemplate.js';
+import { WidgetDiscovery, WidgetMetadata } from '../shared/WidgetDiscovery';
+import { BaseWidgetTest } from '../shared/WidgetTestTemplate';
 
 class WidgetImplementationTest extends BaseWidgetTest {
   private metadata: WidgetMetadata;
@@ -227,3 +227,6 @@ export class AllWidgetsTestRunner {
     }
   }
 }
+
+// Default export for module compatibility
+export default { AllWidgetsTestRunner };

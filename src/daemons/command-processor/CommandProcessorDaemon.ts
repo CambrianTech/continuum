@@ -196,6 +196,13 @@ export class CommandProcessorDaemon extends BaseDaemon {
 
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
     console.log(`🔍 CommandProcessor: Received message type: ${message.type}, from: ${message.from}`);
+    
+    // 🔍 SESSION DEBUG: Log full incoming message to CommandProcessor
+    console.log(`🔍 [SESSION_DEBUG] CommandProcessor.handleMessage:`);
+    console.log(`🔍 [SESSION_DEBUG]   message.data: ${JSON.stringify(message.data, null, 2)}`);
+    console.log(`🔍 [SESSION_DEBUG]   message.data.context: ${JSON.stringify(message.data?.context, null, 2)}`);
+    console.log(`🔍 [SESSION_DEBUG]   message.data.context.sessionId: ${message.data?.context?.sessionId || 'NOT_FOUND'}`);
+    
     // DYNAMIC ENDPOINT ROUTER - handles any registered message type
     return await this.routeMessage(message);
   }
@@ -228,11 +235,21 @@ export class CommandProcessorDaemon extends BaseDaemon {
     switch (message.type) {
       case 'command.execute':
         const directData = message.data as TypedCommandRequest;
+        
+        // 🔍 SESSION DEBUG: Log context extraction for command.execute
+        console.log(`🔍 [SESSION_DEBUG] extractCommandFromMessage - command.execute:`);
+        console.log(`🔍 [SESSION_DEBUG]   directData: ${JSON.stringify(directData, null, 2)}`);
+        console.log(`🔍 [SESSION_DEBUG]   directData.context: ${JSON.stringify(directData.context, null, 2)}`);
+        console.log(`🔍 [SESSION_DEBUG]   directData.context.sessionId: ${directData.context?.sessionId || 'NOT_FOUND'}`);
+        
+        const extractedContext = directData.context || {};
+        console.log(`🔍 [SESSION_DEBUG]   final extracted context: ${JSON.stringify(extractedContext, null, 2)}`);
+        
         return {
           success: true,
           command: directData.command,
           parameters: directData.parameters,
-          context: directData.context || {}
+          context: extractedContext
         };
 
       case 'execute_command':
@@ -270,9 +287,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
               method: message.data.method, 
               url: message.data.url,
               // Include websocket context for daemon access (passed from WebSocketDaemon)
-              // TODO: Re-enable context websocket when message structure is fixed
-              // websocket: message.context?.websocket || null
-              websocket: null
+              websocket: message.data?.context?.websocket || null
             }
           };
         }
