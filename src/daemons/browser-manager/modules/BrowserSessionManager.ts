@@ -218,15 +218,18 @@ export class BrowserSessionManager {
     const idleThreshold = 5 * 60 * 1000; // 5 minutes
     const now = Date.now();
 
-    for (const [id, browser] of this.browsers) {
-      const idleTime = now - browser.lastActivity.getTime();
-      const sessionCount = this.getSessionCount(browser);
-      
-      if (idleTime > idleThreshold && sessionCount === 0) {
-        this.browsers.delete(id);
-        cleanedIds.push(id);
+    Array.from(this.browsers.keys()).forEach((id) => {
+      const browser = this.browsers.get(id);
+      if (browser) {
+        const idleTime = now - browser.lastActivity.getTime();
+        const sessionCount = this.getSessionCount(browser);
+        
+        if (idleTime > idleThreshold && sessionCount === 0) {
+          this.browsers.delete(id);
+          cleanedIds.push(id);
+        }
       }
-    }
+    });
 
     return cleanedIds;
   }

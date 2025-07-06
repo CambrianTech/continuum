@@ -2,7 +2,7 @@
   "name": "browser-manager-core",
   "version": "1.0.0",
   "description": "browser-manager core for Continuum",
-  "main": "BrowserManagerCore.ts",
+  "main": "BrowserManagerDaemon.ts",
   "type": "module",
   "continuum": {
     "core": "browser_manager",

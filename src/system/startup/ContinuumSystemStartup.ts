@@ -390,6 +390,8 @@ export class ContinuumSystem extends EventEmitter {
 
   private setupSessionLogging(): void {
     const sessionManager = this.daemons.get('session-manager');
+    const browserManager = this.daemons.get('browser-manager');
+    
     if (!sessionManager) {
       console.log('⚠️ SessionManagerDaemon not available for session logging setup');
       return;
@@ -410,6 +412,19 @@ export class ContinuumSystem extends EventEmitter {
             console.log(`⚠️ Failed to enable logging for ${name}: ${error}`);
           }
         }
+      }
+      
+      // Forward session_created events to BrowserManagerDaemon
+      if (browserManager) {
+        browserManager.emit('session_created', event);
+      }
+    });
+    
+    // Listen for session joined events  
+    sessionManager.on('session_joined', (event: any) => {
+      // Forward session_joined events to BrowserManagerDaemon
+      if (browserManager) {
+        browserManager.emit('session_joined', event);
       }
     });
   }

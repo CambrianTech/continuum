@@ -367,6 +367,16 @@ export class SessionManagerDaemon extends BaseDaemon {
         } catch (error) {
           this.log(`⚠️ Failed to enable server logging: ${error}`, 'warn');
         }
+      } else if (action === 'joined_existing') {
+        // Emit session_joined event for existing sessions to ensure browser management
+        this.emit('session_joined', { 
+          sessionId: session.id, 
+          sessionType: session.type,
+          owner: session.owner,
+          source
+        });
+        
+        this.log(`📋 Emitted session_joined event for ${session.id} (${session.type})`);
       }
 
       // Orchestrate what needs to be launched based on capabilities

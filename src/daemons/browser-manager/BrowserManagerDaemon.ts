@@ -79,14 +79,17 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     }
     
     // Stop all console loggers
-    for (const [sessionId, logger] of this.consoleLoggers) {
-      try {
-        await logger.stopLogging();
-        this.log(`🔌 Stopped console logging for session ${sessionId}`);
-      } catch (error) {
-        this.log(`⚠️ Error stopping console logger for ${sessionId}: ${error}`, 'warn');
+    Array.from(this.consoleLoggers.keys()).forEach(async (sessionId) => {
+      const logger = this.consoleLoggers.get(sessionId);
+      if (logger) {
+        try {
+          await logger.stopLogging();
+          this.log(`🔌 Stopped console logging for session ${sessionId}`);
+        } catch (error) {
+          this.log(`⚠️ Error stopping console logger for ${sessionId}: ${error}`, 'warn');
+        }
       }
-    }
+    });
     this.consoleLoggers.clear();
     
     // Cleanup managed browsers
@@ -145,7 +148,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   }
   
   /**
-   * Setup session event listening to launch browsers only when sessions are created
+   * Setup session event listening to launch browsers when sessions are created OR joined
    */
   private setupSessionEventListening(): void {
     // Listen for session_created events from session manager
@@ -159,7 +162,18 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       }
     });
     
-    this.log('👂 Listening for session_created events to launch browsers');
+    // Listen for session_joined events to ensure browser is available
+    this.on('session_joined', async (event: any) => {
+      const { sessionId, sessionType, owner } = event;
+      this.log(`📋 Session joined: ${sessionId} (${sessionType}) for ${owner}`);
+      
+      // Only ensure browser if this session needs one
+      if (this.sessionNeedsBrowser(sessionType)) {
+        await this.ensureBrowserForSession(sessionId, sessionType, owner);
+      }
+    });
+    
+    this.log('👂 Listening for session_created and session_joined events to manage browsers');
   }
   
   /**
@@ -214,6 +228,49 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       
     } catch (error) {
       this.log(`❌ Failed to launch browser for session ${sessionId}: ${error}`, 'error');
+    }
+  }
+
+  /**
+   * Ensure browser is available for an existing session (joined_existing case)
+   */
+  private async ensureBrowserForSession(sessionId: string, sessionType: string, _owner: string): Promise<void> {
+    try {
+      this.log(`🔍 Ensuring browser availability for session ${sessionId} (${sessionType})`);
+      
+      // Clean up any zombie tabs first
+      await this.performZombieCleanup();
+      
+      // Check current tab status
+      const tabStatus = await this.tabManager.checkTabs();
+      this.log(`🌐 Current browser status: ${tabStatus.count} tab(s) - ${tabStatus.action}`);
+      
+      if (tabStatus.count === 0) {
+        // No tabs open - open one
+        this.log(`🚀 No browser tabs connected to localhost:9000 - ensuring one tab opens`);
+        await this.tabManager.ensureOneTab((msg: string) => this.log(msg));
+      } else if (tabStatus.count === 1) {
+        // Perfect - exactly one tab
+        this.log(`✅ Exactly 1 tab connected to localhost:9000 - ONE TAB POLICY satisfied`);
+      } else {
+        // Too many tabs - enforce ONE TAB POLICY
+        this.log(`⚠️ ${tabStatus.count} tabs connected to localhost:9000 - violates ONE TAB POLICY`);
+        this.log(`🧹 Running zombie cleanup to enforce ONE TAB POLICY`);
+        
+        // Run additional zombie cleanup cycle
+        await this.performZombieCleanup();
+        
+        // Check again after cleanup
+        const newStatus = await this.tabManager.checkTabs();
+        if (newStatus.count > 1) {
+          this.log(`⚠️ Still have ${newStatus.count} tabs after cleanup - manual intervention may be needed`);
+        } else {
+          this.log(`✅ ONE TAB POLICY restored: ${newStatus.count} tab(s) remaining`);
+        }
+      }
+      
+    } catch (error) {
+      this.log(`❌ Failed to ensure browser for session ${sessionId}: ${error}`, 'error');
     }
   }
 

@@ -265,7 +265,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
               method: message.data.method, 
               url: message.data.url,
               // Include websocket context for daemon access (passed from WebSocketDaemon)
-              websocket: (message.data as any).context?.websocket || null
+              websocket: message.context?.websocket || null
             }
           };
         }
