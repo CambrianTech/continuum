@@ -280,23 +280,29 @@ if ! daemon_running; then
 fi
 
 # Build request payload with session parameters
-request_data="{\"args\": []"
+request_data="{"
 
 # Add session parameters if provided
 if [ -n "$SESSION_ID" ]; then
-  request_data="$request_data, \"sessionId\": \"$SESSION_ID\""
+  request_data="$request_data\"sessionId\": \"$SESSION_ID\", "
 fi
 
 if [ -n "$SESSION_TYPE" ]; then
-  request_data="$request_data, \"sessionType\": \"$SESSION_TYPE\""
+  request_data="$request_data\"sessionType\": \"$SESSION_TYPE\", "
+else
+  request_data="$request_data\"sessionType\": \"development\", "
 fi
 
 if [ -n "$OWNER" ]; then
-  request_data="$request_data, \"owner\": \"$OWNER\""
+  request_data="$request_data\"owner\": \"$OWNER\", "
+else
+  request_data="$request_data\"owner\": \"shared\", "
 fi
 
 if [ -n "$FORCE_NEW" ]; then
-  request_data="$request_data, \"forceNew\": true"
+  request_data="$request_data\"forceNew\": true"
+else
+  request_data="$request_data\"forceNew\": false"
 fi
 
 request_data="$request_data}"
@@ -320,6 +326,11 @@ if [ "$COMMAND" = "connect" ]; then
         INTERFACE=$(echo "$response" | jq -r '.interface')
         BROWSER_LAUNCHED=$(echo "$response" | jq -r '.launched.browser')
         VERSION=$(echo "$response" | jq -r '.version // "unknown"')
+        SERVER_LOG=$(echo "$response" | jq -r '.logs.server // ""')
+        BROWSER_LOG=$(echo "$response" | jq -r '.logs.browser // ""')
+        
+        # Get current directory for full path display
+        PROJECT_DIR=$(pwd)
         
         # Show user-friendly output
         echo ""
@@ -327,6 +338,12 @@ if [ "$COMMAND" = "connect" ]; then
         echo "   Session: $SESSION_ID"
         echo "   Status:  $ACTION"
         echo "   URL:     $INTERFACE"
+        echo ""
+        echo "📂 Project: $PROJECT_DIR"
+        echo ""
+        echo "📋 Session Logs:"
+        echo "   Server:  tail -f $SERVER_LOG"
+        echo "   Browser: tail -f $BROWSER_LOG"
         echo ""
         
         # Check if browser should launch
