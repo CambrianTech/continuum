@@ -16,7 +16,7 @@
  * - Builds confidence for command execution in higher layers
  */
 
-import { BaseCommand, CommandDefinition, CommandContext, CommandResult } from '../../BaseCommand';
+import { BaseCommand, CommandContext } from '../../BaseCommand';
 import { PreferencesCommand } from '../../../preferences/PreferencesCommand';
 import { ReloadCommand } from '../../../reload/ReloadCommand';
 import { SelfTestCommand } from '../../../../development/selftest/SelfTestCommand';
@@ -239,7 +239,7 @@ describe('BaseCommand Integration Tests', () => {
         ReloadCommand.execute({ target: 'page' }, context)
       ]);
       
-      results.forEach((result, index) => {
+      results.forEach((result, _index) => {
         expect(result).toHaveProperty('success');
         expect(result).toHaveProperty('message');
         expect(result).toHaveProperty('timestamp');

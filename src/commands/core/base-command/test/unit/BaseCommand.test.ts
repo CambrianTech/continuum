@@ -33,7 +33,7 @@ class TestCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any, context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: unknown, context?: CommandContext): Promise<CommandResult> {
     this.logExecution('test', params, context);
     
     const { valid, missing } = this.validateRequired(params, ['message']);
@@ -66,7 +66,7 @@ describe('BaseCommand Foundation Tests', () => {
     test('should throw error when execute() not implemented', async () => {
       try {
         await BaseCommand.execute({});
-        fail('Expected execute() to throw an error');
+        throw new Error('Expected execute() to throw an error');
       } catch (error) {
         expect(error).toBeInstanceOf(Error);
         expect((error as Error).message).toBe('execute() must be implemented by subclass');

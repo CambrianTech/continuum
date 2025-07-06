@@ -3,12 +3,19 @@
  * Clean, typed foundation for all Continuum commands
  */
 
+export interface ParameterDefinition {
+  type: 'string' | 'number' | 'boolean' | 'array' | 'object';
+  description: string;
+  required?: boolean;
+  default?: unknown;
+}
+
 export interface CommandDefinition {
   name: string;
   category: string;
   icon?: string;
   description: string;
-  parameters: Record<string, any>;
+  parameters: Record<string, ParameterDefinition>;
   examples: Array<{
     description: string;
     command: string;
@@ -16,16 +23,29 @@ export interface CommandDefinition {
   usage?: string;
 }
 
-export interface CommandContext {
-  continuum?: any;
-  webSocketServer?: any;
-  continuonStatus?: any;
-  sessionId?: string;
-  userId?: string;
-  [key: string]: any;
+// Common types for context properties
+export interface WebSocketServer {
+  send: (message: unknown) => void;
+  broadcast: (message: unknown) => void;
+  clients: Set<unknown>;
 }
 
-export interface CommandResult<T = any> {
+export interface ContinuumInstance {
+  version: string;
+  config: Record<string, unknown>;
+  daemons: Map<string, unknown>;
+}
+
+export interface CommandContext {
+  continuum?: ContinuumInstance;
+  webSocketServer?: WebSocketServer;
+  continuonStatus?: Record<string, unknown>;
+  sessionId?: string;
+  userId?: string;
+  [key: string]: unknown;
+}
+
+export interface CommandResult<T = unknown> {
   success: boolean;
   message?: string | undefined;
   data?: T | undefined;
@@ -48,14 +68,14 @@ export abstract class BaseCommand {
   /**
    * Execute command - must be implemented by subclasses
    */
-  static execute(_params: any, _context?: CommandContext): Promise<CommandResult> {
+  static execute(_params: unknown, _context?: CommandContext): Promise<CommandResult> {
     throw new Error('execute() must be implemented by subclass');
   }
 
   /**
    * Parse parameters with type safety
    */
-  protected static parseParams<T = any>(params: any): T {
+  protected static parseParams<T = unknown>(params: unknown): T {
     if (typeof params === 'string') {
       try {
         return JSON.parse(params) as T;
@@ -70,7 +90,7 @@ export abstract class BaseCommand {
   /**
    * Create standardized success result
    */
-  protected static createSuccessResult<T = any>(
+  protected static createSuccessResult<T = unknown>(
     message: string, 
     data?: T
   ): CommandResult<T> {
@@ -101,13 +121,13 @@ export abstract class BaseCommand {
    * Validate required parameters
    */
   protected static validateRequired(
-    params: any, 
+    params: unknown, 
     requiredFields: string[]
   ): { valid: boolean; missing: string[] } {
     const missing: string[] = [];
     
     for (const field of requiredFields) {
-      if (params[field] === undefined || params[field] === null) {
+      if ((params as Record<string, unknown>)[field] === undefined || (params as Record<string, unknown>)[field] === null) {
         missing.push(field);
       }
     }
@@ -123,7 +143,7 @@ export abstract class BaseCommand {
    */
   protected static logExecution(
     commandName: string, 
-    params: any, 
+    params: unknown, 
     context?: CommandContext
   ): void {
     const sessionInfo = context?.sessionId ? ` [${context.sessionId}]` : '';
@@ -135,7 +155,7 @@ export abstract class BaseCommand {
    */
   protected static async broadcast(
     context: CommandContext | undefined,
-    message: any
+    message: unknown
   ): Promise<void> {
     if (context?.webSocketServer && typeof context.webSocketServer.broadcast === 'function') {
       try {
@@ -153,7 +173,7 @@ export abstract class BaseCommand {
   protected static async updateStatus(
     context: CommandContext | undefined,
     status: string,
-    data?: any
+    data?: unknown
   ): Promise<void> {
     if (context?.continuonStatus && typeof context.continuonStatus.update === 'function') {
       try {
