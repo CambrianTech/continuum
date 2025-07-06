@@ -10,6 +10,7 @@
 import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon';
 import { DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
+import { SystemEventType } from '../base/EventTypes';
 import { BrowserType, BrowserRequest, BrowserConfig, BrowserStatus, BrowserAction, ManagedBrowser } from './types/index.js';
 // BrowserFilters unused in this file
 import { BrowserLauncher } from './modules/BrowserLauncher';
@@ -154,8 +155,8 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
    * Setup session event listening to launch browsers when sessions are created OR joined
    */
   private setupSessionEventListening(): void {
-    // Listen for session_created events from session manager
-    DAEMON_EVENT_BUS.onEvent('session_created' as any, async (event: any) => {
+    // Listen for session_created events from session manager (using SystemEventType)
+    DAEMON_EVENT_BUS.onEvent(SystemEventType.SESSION_CREATED, async (event: any) => {
       const { sessionId, sessionType, owner } = event;
       this.log(`📋 Session created: ${sessionId} (${sessionType}) for ${owner}`);
       
@@ -165,8 +166,8 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       }
     });
     
-    // Listen for session_joined events - ensure browser exists if needed
-    DAEMON_EVENT_BUS.onEvent('session_joined' as any, async (event: any) => {
+    // Listen for session_joined events - ensure browser exists if needed (using SystemEventType)
+    DAEMON_EVENT_BUS.onEvent(SystemEventType.SESSION_JOINED, async (event: any) => {
       const { sessionId, sessionType, owner } = event;
       this.log(`📋 Session joined: ${sessionId} (${sessionType}) for ${owner} - ensuring browser exists`);
       
@@ -218,6 +219,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       const browserConfig: BrowserConfig = {
         type: BrowserType.DEFAULT,
         headless: false,
+        url: 'http://localhost:9000',
       };
       
       const launchResult = await this.launcher.launch(browserConfig, 0);

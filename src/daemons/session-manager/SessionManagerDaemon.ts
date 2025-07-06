@@ -1063,7 +1063,7 @@ export class SessionManagerDaemon extends BaseDaemon {
     this.sessions.set(sessionId, session);
     this.log(`📋 Created session: ${sessionId} for ${owner} (${type})`);
     
-    // Emit session created event with full session info
+    // Emit session created event with full session info (local event)
     this.emitEvent({
       type: 'session_created',
       sessionId,
@@ -1075,6 +1075,15 @@ export class SessionManagerDaemon extends BaseDaemon {
         autoCleanup: session.shouldAutoCleanup
       }
     });
+
+    // CORE EVENT: Emit to global daemon event bus for ALL session creation (any client)
+    DAEMON_EVENT_BUS.emitEvent(SystemEventType.SESSION_CREATED, { 
+      sessionId: session.id, 
+      sessionType: session.type,
+      owner: session.owner,
+      storageDir: session.artifacts.storageDir
+    });
+    this.log(`🌐 Emitted core SESSION_CREATED event for ${sessionId} (${type})`);
     
     return session;
   }
