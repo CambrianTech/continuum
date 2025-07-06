@@ -974,7 +974,7 @@ class NeuromorphicPersona {
 
 ## 📚 RELATED DOCUMENTATION
 
-- **[MIDDLE-OUT.md](MIDDLE-OUT.md)** - Complete architectural methodology and patterns
+- **[middle-out/README.md](middle-out/README.md)** - Complete architectural methodology and patterns
 - **[src/commands/README.md](src/commands/README.md)** - Detailed command system documentation  
 - **[src/daemons/README.md](src/daemons/README.md)** - Modern TypeScript daemon architecture
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical implementation details
