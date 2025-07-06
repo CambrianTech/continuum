@@ -11,6 +11,7 @@
 
 import { BaseDaemon } from '../base/BaseDaemon.js';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol.js';
+import { DaemonType } from '../base/DaemonTypes';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -19,6 +20,7 @@ import * as ts from 'typescript';
 export class StaticFileDaemon extends BaseDaemon {
   public readonly name = 'static-file';
   public readonly version = '1.0.0';
+  public readonly daemonType = DaemonType.STATIC_FILE;
   
   private projectRoot: string;
   private etagCache = new Map<string, string>();

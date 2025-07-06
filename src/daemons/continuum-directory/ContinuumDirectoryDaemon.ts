@@ -14,6 +14,7 @@
 
 import { BaseDaemon } from '../base/BaseDaemon.js';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol.js';
+import { DaemonType } from '../base/DaemonTypes';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -54,6 +55,7 @@ export interface DirectoryStats {
 export class ContinuumDirectoryDaemon extends BaseDaemon {
   public readonly name = 'continuum-directory';
   public readonly version = '1.0.0';
+  public readonly daemonType = DaemonType.CONTINUUM_DIRECTORY;
   
   private continuumRoot: string;
   private directoryPolicies: Map<string, any> = new Map();

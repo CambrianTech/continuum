@@ -6,6 +6,7 @@
 
 import { BaseDaemon } from '../../daemons/base/BaseDaemon.js';
 import { DaemonMessage, DaemonResponse } from '../../daemons/base/DaemonProtocol.js';
+import { DaemonType } from '../../daemons/base/DaemonTypes';
 import { AcademyDaemon } from '../../daemons/academy/AcademyDaemon.js';
 import { PersonaDaemon } from '../../daemons/persona/PersonaDaemon.js';
 import { DatabaseDaemon } from '../../daemons/database/DatabaseDaemon.js';
@@ -41,6 +42,7 @@ export interface IntegrationStatus {
 export class AcademyIntegration extends BaseDaemon {
   public readonly name = 'academy-integration';
   public readonly version = '1.0.0';
+  public readonly daemonType = DaemonType.ACADEMY;
   
   private config: AcademyIntegrationConfig;
   private academyDaemon: AcademyDaemon;
@@ -172,7 +174,7 @@ export class AcademyIntegration extends BaseDaemon {
       // Check local trainer
       if (status.academy_daemon === 'running') {
         try {
-          const academyStatus = await this.sendMessage('academy', 'get_comprehensive_status', {});
+          const academyStatus = await this.sendMessage(DaemonType.ACADEMY, 'get_comprehensive_status', {});
           
           if (academyStatus.success) {
             status.local_trainer = 'operational';
@@ -219,7 +221,7 @@ export class AcademyIntegration extends BaseDaemon {
     console.log(`🎯 Starting training session for ${params.student_persona}`);
 
     try {
-      const result = await this.sendMessage('academy', 'start_evolution_session', params);
+      const result = await this.sendMessage(DaemonType.ACADEMY, 'start_evolution_session', params);
 
       if (!result.success) {
         throw new Error(result.error || 'Training session failed to start');
@@ -252,7 +254,7 @@ export class AcademyIntegration extends BaseDaemon {
     console.log(`🧬 Spawning persona: ${params.persona_name}`);
 
     try {
-      const result = await this.sendMessage('academy', 'spawn_persona', params);
+      const result = await this.sendMessage(DaemonType.ACADEMY, 'spawn_persona', params);
 
       if (!result.success) {
         throw new Error(result.error || 'Persona spawning failed');
@@ -278,7 +280,7 @@ export class AcademyIntegration extends BaseDaemon {
 
     try {
       const [academyResult, integrationStatus] = await Promise.all([
-        this.sendMessage('academy', 'get_comprehensive_status', {
+        this.sendMessage(DaemonType.ACADEMY, 'get_comprehensive_status', {
           include_p2p: this.config.p2p_enabled,
           include_vector_space: true,
           include_adversarial: true
@@ -350,7 +352,7 @@ export class AcademyIntegration extends BaseDaemon {
    */
   public async getComprehensiveStatus(): Promise<any> {
     const [academyResult, integrationStatus] = await Promise.all([
-      this.sendMessage('academy', 'get_comprehensive_status', {
+      this.sendMessage(DaemonType.ACADEMY, 'get_comprehensive_status', {
         include_p2p: this.config.p2p_enabled,
         include_vector_space: true,
         include_adversarial: true

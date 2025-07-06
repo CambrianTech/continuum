@@ -7,6 +7,7 @@
 
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import { DaemonType } from '../base/DaemonTypes';
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 
@@ -41,6 +42,7 @@ interface DaemonStatusInfo {
 export class DaemonManagerDaemon extends BaseDaemon {
   public readonly name = 'daemon-manager';
   public readonly version = '1.0.0';
+  public readonly daemonType = DaemonType.DAEMON_MANAGER;
   
   private daemons = new Map<string, ManagedDaemon>();
   private healthCheckInterval?: ReturnType<typeof setInterval>;

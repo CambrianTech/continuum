@@ -49,6 +49,7 @@
  */
 
 import { RequestResponseDaemon, RequestHandlerMap } from '../base/RequestResponseDaemon.js';
+import { DaemonType } from '../base/DaemonTypes';
 
 // ChatRoom types and interfaces
 interface ChatRoom {
@@ -86,6 +87,7 @@ export class ChatRoomDaemon extends RequestResponseDaemon {
 
   public readonly name = 'chatroom';
   public readonly version = '1.0.0';
+  public readonly daemonType = DaemonType.CHATROOM;
 
   constructor() {
     super();

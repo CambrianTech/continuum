@@ -123,8 +123,9 @@ describe('Type Safety Integration Tests', () => {
       if (eventInterface) {
         const eventDefinitions = eventInterface[1];
         
-        // Each event should have a defined structure
-        assert(eventDefinitions.includes('sessionId:'), 'Events should have typed properties');
+        // Each event should have a defined structure with enum keys and typed payloads
+        assert(eventDefinitions.includes('SystemEventType.'), 'Events should use SystemEventType enum as keys');
+        assert(eventDefinitions.includes('Payload'), 'Events should use strongly typed payload interfaces');
         assert(!eventDefinitions.includes(': any'), 'Events should not use any type');
       }
     });

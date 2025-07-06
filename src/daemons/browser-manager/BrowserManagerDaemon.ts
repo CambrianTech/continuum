@@ -9,6 +9,7 @@
 
 import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon.js';
 import { DaemonResponse } from '../base/DaemonProtocol.js';
+import { DaemonType } from '../base/DaemonTypes';
 import { BrowserType, BrowserRequest, BrowserConfig, BrowserStatus, BrowserAction, ManagedBrowser } from './types/index.js';
 // BrowserFilters unused in this file
 import { BrowserLauncher } from './modules/BrowserLauncher.js';
@@ -23,6 +24,7 @@ import { DAEMON_EVENT_BUS } from '../base/DaemonEventBus.js';
 export class BrowserManagerDaemon extends MessageRoutedDaemon {
   public readonly name = 'browser-manager';
   public readonly version = '2.0.0';
+  public readonly daemonType = DaemonType.BROWSER_MANAGER;
 
   private launcher = new BrowserLauncher();
   private sessionManager = new BrowserSessionManager();
@@ -547,7 +549,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       this.log(`🔌 Starting console logging for session ${sessionId}: ${devToolsUrl}`);
       
       // Get session info from session manager daemon via messaging
-      const sessionInfoResponse = await this.sendMessage('session-manager', 'get_session_info', { sessionId });
+      const sessionInfoResponse = await this.sendMessage(DaemonType.SESSION_MANAGER, 'get_session_info', { sessionId });
       
       if (!sessionInfoResponse.success) {
         this.log(`⚠️ Could not get session info for ${sessionId}: ${sessionInfoResponse.error}`, 'warn');

@@ -130,6 +130,44 @@ Each layer builds on the previous – test failures cascade down:
 - ✅ Visible error logging
 - ✅ Autonomous development capability
 
+### **Strong Typing Standards - Cognitive Amplification**
+
+**Core Principle: Types eliminate runtime errors at compile time**
+
+**NEVER Use Magic Strings:**
+```typescript
+// ❌ BAD - Runtime errors waiting
+await this.sendMessage('websocket', 'send_to_connection', data);
+
+// ✅ GOOD - Compile-time safety
+await this.sendMessage(DaemonType.WEBSOCKET_SERVER, MessageType.SEND_TO_CONNECTION, data);
+```
+
+**Central Type Definitions:**
+- `src/daemons/base/DaemonTypes.ts` - All daemon identifiers
+- `src/daemons/base/EventTypes.ts` - All event names and payloads
+- `src/daemons/base/MessageTypes.ts` - All message types
+
+**Every Event Gets an Interface:**
+```typescript
+// Define payload interface
+export interface SessionJoinedPayload {
+  sessionId: string;
+  sessionType: string;
+  owner: string;
+  source: string;  // Required - compiler catches if missing
+}
+
+// Type-safe event bus enforces all properties
+DAEMON_EVENT_BUS.emitEvent(SystemEventType.SESSION_JOINED, payload);
+```
+
+**Benefits:**
+- 🧠 **No memorizing strings** - IDE autocomplete
+- 🐛 **Typos caught at compile** - Not runtime
+- 📚 **Self-documenting** - Enums show all options
+- 🔧 **Safe refactoring** - Change enum = all usages update
+
 ### **Evolutionary Architecture Approach**
 
 **Core Philosophy: Architecture emerges through systematic constraint resolution - not upfront design.**

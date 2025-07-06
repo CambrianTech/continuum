@@ -50,6 +50,7 @@
 import { RequestResponseDaemon, RequestHandlerMap } from '../base/RequestResponseDaemon.js';
 // import { RequestHandler } from '../base/RequestResponseDaemon.js'; // TODO: Implement request handling
 import { DaemonResponse } from '../base/DaemonProtocol.js';
+import { DaemonType } from '../base/DaemonTypes';
 import { EventEmitter } from 'events';
 
 // TODO: Replace 'any' types with proper interfaces throughout this file
@@ -109,6 +110,7 @@ export interface LoRAAdapter {
 export class PersonaDaemon extends RequestResponseDaemon {
   public readonly name: string;
   public readonly version: string = '1.0.0';
+  public readonly daemonType = DaemonType.PERSONA;
   
   private config: PersonaConfig;
   private academyConfig?: AcademyTrainingConfig;

@@ -5,6 +5,7 @@
 
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import { DaemonType } from '../base/DaemonTypes';
 import { LocalAcademyTrainer } from './LocalAcademyTrainer.js';
 import { LoRADiscovery } from './LoRADiscovery.js';
 
@@ -54,6 +55,7 @@ export interface TrainingSession {
 export class AcademyDaemon extends BaseDaemon {
   public readonly name = 'academy';
   public readonly version = '1.0.0';
+  public readonly daemonType = DaemonType.ACADEMY;
 
   private academyStatus: AcademyStatus = {
     isActive: false,

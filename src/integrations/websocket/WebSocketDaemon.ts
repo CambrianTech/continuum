@@ -5,6 +5,8 @@
 
 import { BaseDaemon } from '../../daemons/base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../../daemons/base/DaemonProtocol';
+import { DaemonType } from '../../daemons/base/DaemonTypes';
+import { SystemEventType } from '../../daemons/base/EventTypes';
 import { RouteManager } from './core/RouteManager';
 import { WebSocketManager } from './core/WebSocketManager';
 import { PortManager } from './core/PortManager';
@@ -19,6 +21,7 @@ export interface ServerConfig {
 export class WebSocketDaemon extends BaseDaemon {
   public readonly name = 'websocket-server';
   public readonly version = '1.0.0';
+  public readonly daemonType = DaemonType.WEBSOCKET_SERVER;
 
   private routeManager: RouteManager;
   private wsManager: WebSocketManager;
@@ -61,7 +64,7 @@ export class WebSocketDaemon extends BaseDaemon {
     
     // Listen for session assignments from SessionManagerDaemon
     const { DAEMON_EVENT_BUS } = await import('../../daemons/base/DaemonEventBus');
-    DAEMON_EVENT_BUS.onEvent('session_created', (event) => {
+    DAEMON_EVENT_BUS.onEvent(SystemEventType.SESSION_CREATED, (event) => {
       // We'll track sessions when they send messages
       this.log(`📋 Session created: ${event.sessionId}`);
     });
@@ -589,7 +592,7 @@ export class WebSocketDaemon extends BaseDaemon {
       
       // Emit event for other daemons (especially SessionManagerDaemon)
       const { DAEMON_EVENT_BUS } = await import('../../daemons/base/DaemonEventBus');
-      DAEMON_EVENT_BUS.emitEvent('websocket:connection_established', {
+      DAEMON_EVENT_BUS.emitEvent(SystemEventType.WEBSOCKET_CONNECTION_ESTABLISHED, {
         timestamp: new Date(),
         source: this.name,
         connectionId,
@@ -872,7 +875,7 @@ export class WebSocketDaemon extends BaseDaemon {
       
       // Emit event for other daemons
       const { DAEMON_EVENT_BUS } = await import('../../daemons/base/DaemonEventBus');
-      DAEMON_EVENT_BUS.emitEvent('websocket:connection_closed', {
+      DAEMON_EVENT_BUS.emitEvent(SystemEventType.WEBSOCKET_CONNECTION_CLOSED, {
         timestamp: new Date(),
         source: this.name,
         connectionId

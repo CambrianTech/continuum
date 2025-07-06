@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import { DaemonMessage, DaemonResponse, DaemonStatus } from './DaemonProtocol';
+import { DaemonType } from './DaemonTypes';
 
 // Global daemon registry for inter-daemon communication
 export const DAEMON_REGISTRY = new Map<string, BaseDaemon>();
@@ -15,6 +16,7 @@ export const DAEMON_REGISTRY = new Map<string, BaseDaemon>();
 export abstract class BaseDaemon extends EventEmitter {
   public abstract readonly name: string;
   public abstract readonly version: string;
+  public abstract readonly daemonType: DaemonType;
   
   /**
    * Static metadata for daemon discovery
@@ -242,7 +244,7 @@ export abstract class BaseDaemon extends EventEmitter {
   /**
    * Send message to another daemon or OS component
    */
-  protected async sendMessage(target: string, type: string, data: unknown): Promise<DaemonResponse> {
+  protected async sendMessage(target: DaemonType, type: string, data: unknown): Promise<DaemonResponse> {
     const message: DaemonMessage = {
       id: this.generateMessageId(),
       from: this.name,
