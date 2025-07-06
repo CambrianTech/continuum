@@ -12,7 +12,7 @@ export interface ValidationResult {
 
 export interface MessageResponse {
   success: boolean;
-  data?: any;
+  data?: unknown;
   error?: string;
   total?: number;
 }
