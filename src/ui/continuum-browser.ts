@@ -215,6 +215,13 @@ class ContinuumBrowserAPI implements ContinuumAPI {
           data: consoleData,
           sessionId: this.sessionId  // Include sessionId for logging to session files
         };
+        
+        // 🔍 SESSION DEBUG: Log what sessionId is being sent from browser
+        if (!this.sessionId) {
+          console.log(`🔍 [SESSION_DEBUG] Browser console sending with NULL sessionId - no session_ready message received yet`);
+        } else {
+          console.log(`🔍 [SESSION_DEBUG] Browser console sending with sessionId: ${this.sessionId}`);
+        }
 
         // Queue console commands to prevent overwhelming the server
         this.queueConsoleCommand(consoleCommand);
@@ -848,6 +855,8 @@ class ContinuumBrowserAPI implements ContinuumAPI {
 
       // Handle session_ready message - store sessionId for console logging
       if (message.type === 'session_ready') {
+        console.log(`🔍 [SESSION_DEBUG] Browser received session_ready message!`);
+        console.log(`🔍 [SESSION_DEBUG] message.data: ${JSON.stringify(message.data, null, 2)}`);
         this.sessionId = message.data?.sessionId;
         console.log(`🌐 Continuum API: Session ID assigned: ${this.sessionId}`);
         console.log(`🔌 Session type: ${message.data?.devtools ? 'DevTools enabled' : 'Standard'}`);

@@ -250,8 +250,14 @@ export class WebSocketDaemon extends BaseDaemon {
     try {
       const message = JSON.parse(data.toString());
       
-      // Log all incoming WebSocket messages for debugging
-      this.log(`🔍 WebSocket message received: type=${message.type}, connectionId=${connectionId}`);
+      // 🔍 SESSION DEBUG: Log full incoming message structure
+      this.log(`🔍 [SESSION_DEBUG] WebSocket message received:`);
+      this.log(`🔍 [SESSION_DEBUG]   type: ${message.type}`);
+      this.log(`🔍 [SESSION_DEBUG]   connectionId: ${connectionId}`);
+      this.log(`🔍 [SESSION_DEBUG]   message.data: ${JSON.stringify(message.data || {}, null, 2)}`);
+      this.log(`🔍 [SESSION_DEBUG]   message.sessionId: ${message.sessionId || 'NOT_FOUND'}`);
+      this.log(`🔍 [SESSION_DEBUG]   message.data.sessionId: ${message.data?.sessionId || 'NOT_FOUND'}`);
+      this.log(`🔍 [SESSION_DEBUG]   full message keys: ${Object.keys(message).join(', ')}`);
       
       // Route WebSocket messages to appropriate daemon
       // This is pure message routing, no content knowledge
@@ -297,6 +303,13 @@ export class WebSocketDaemon extends BaseDaemon {
         const requestId = commandData.requestId;
         const sessionId = commandData.sessionId; // Pure router - session comes from the command data
         
+        // 🔍 SESSION DEBUG: Log sessionId extraction process
+        this.log(`🔍 [SESSION_DEBUG] routeCommandToProcessor extraction:`);
+        this.log(`🔍 [SESSION_DEBUG]   commandData.sessionId: ${commandData.sessionId || 'NOT_FOUND'}`);
+        this.log(`🔍 [SESSION_DEBUG]   extracted sessionId: ${sessionId || 'NOT_FOUND'}`);
+        this.log(`🔍 [SESSION_DEBUG]   commandData keys: ${Object.keys(commandData || {}).join(', ')}`);
+        this.log(`🔍 [SESSION_DEBUG]   commandName: ${commandName}`);
+        
         // Parse parameters (they might be JSON string from browser)
         let parsedParams = {};
         if (commandParams) {
@@ -329,6 +342,11 @@ export class WebSocketDaemon extends BaseDaemon {
           }
         };
         
+        // 🔍 SESSION DEBUG: Log final message being sent to CommandProcessor  
+        this.log(`🔍 [SESSION_DEBUG] Final daemonMessage to CommandProcessor:`);
+        this.log(`🔍 [SESSION_DEBUG]   command: ${commandName}`);
+        this.log(`🔍 [SESSION_DEBUG]   context.sessionId: ${daemonMessage.data.context.sessionId || 'NOT_FOUND'}`);
+        this.log(`🔍 [SESSION_DEBUG]   context.connectionId: ${daemonMessage.data.context.connectionId}`);
         this.log(`🔄 Routing command "${commandName}" to command processor`);
         
         // Forward to command processor using standard daemon protocol

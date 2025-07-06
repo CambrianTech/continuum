@@ -111,13 +111,24 @@ export class RouteManager {
           res.end(content);
         }
       } else {
-        res.writeHead(response.data?.status || 500, { 'Content-Type': 'text/plain' });
-        res.end(response.error || 'Unknown error');
+        // Always return JSON for API errors to maintain consistent format
+        const errorResponse = {
+          success: false,
+          error: response.error || 'Unknown error',
+          timestamp: new Date().toISOString()
+        };
+        res.writeHead(response.data?.status || 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(errorResponse, null, 2));
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end(`Request forwarding error: ${errorMessage}`);
+      const errorResponse = {
+        success: false,
+        error: `Request forwarding error: ${errorMessage}`,
+        timestamp: new Date().toISOString()
+      };
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(errorResponse, null, 2));
     }
   }
 

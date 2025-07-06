@@ -493,6 +493,9 @@ For example:
 4. Command Processor Daemon handles command execution
 5. Each daemon subscribes to paths and the WebSocket daemon routes to them
 
+ TypeScript files should ALWAYS import without extensions. If you are seeing .js it's probably designed incorrectly. 
+ Don't just comment things out or ignore them. FIX THEM WHEN YOU FIND THEM. This is like leaving a small smoldering fire in a forest, and walking away.
+
 DO NOT SKIP READING MIDDLE OUT!!! You will get lost and anger the developer
 
 ### **UNIVERSAL MODULAR ARCHITECTURE RULES:**

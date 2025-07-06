@@ -4,7 +4,7 @@
  * Moved from root to proper module location
  */
 
-import { AllWidgetsTestRunner } from './AllWidgetsTest.js';
+import { AllWidgetsTestRunner } from './AllWidgetsTest';
 
 async function main() {
   const runner = new AllWidgetsTestRunner();
