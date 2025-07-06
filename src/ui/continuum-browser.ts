@@ -17,6 +17,8 @@
  * - Handles connection state changes with events
  */
 
+import packageJson from '../../package.json' with { type: 'json' };
+
 interface ContinuumAPI {
   readonly version: string;
   isConnected(): boolean;
@@ -47,7 +49,7 @@ class ContinuumBrowserAPI implements ContinuumAPI {
   private reconnectDelay = 1000;
 
   constructor() {
-    this.version = (window as any).__CONTINUUM_VERSION__ || 'unknown';
+    this.version = packageJson.version;
     // Don't use console.log before setting up capture
     this.setupConsoleErrorCapture();
     // Now we can use console.log safely
@@ -885,6 +887,26 @@ class ContinuumBrowserAPI implements ContinuumAPI {
           setTimeout(() => {
             window.location.href = 'about:blank';
           }, 100);
+        }
+        return;
+      }
+
+      // Handle JavaScript execution commands from js-execute
+      if (message.type === 'execute_javascript') {
+        try {
+          console.log(`🎯 Executing JavaScript from server: ${message.data?.script?.substring(0, 100)}...`);
+          
+          // Execute the JavaScript code directly
+          const script = message.data?.script;
+          if (script) {
+            // Use eval to execute the JavaScript - this will trigger console capture
+            eval(script);
+            console.log(`✅ JavaScript execution completed successfully`);
+          } else {
+            console.warn(`⚠️ No script provided in execute_javascript message`);
+          }
+        } catch (error) {
+          console.error(`❌ JavaScript execution failed:`, error);
         }
         return;
       }
