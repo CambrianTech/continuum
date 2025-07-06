@@ -5,6 +5,14 @@ npx tsc --noEmit --project . || {
     # Don't block commit for now - we're in active development
 }
 
+# TODO: Enable ESLint gradually as we clean up directories
+# For now, we rely on TypeSafety integration test which checks core files
+# echo "🔍 Running ESLint checks..."
+# npx eslint src/test/integration --ext .ts,.js || {
+#     echo "❌ ESLint found errors! Fix them before committing."
+#     exit 1
+# }
+
 # Run critical integration tests
 echo "🧪 Running core integration tests..."
 
