@@ -36,7 +36,7 @@ export abstract class BaseDaemon extends EventEmitter {
   private heartbeatInterval: NodeJS.Timeout | undefined;
   private startPromise: Promise<void> | null = null;
   private stopPromise: Promise<void> | null = null;
-  private signalHandlers: { [key: string]: any } = {};
+  private signalHandlers: { [key: string]: (...args: unknown[]) => void } = {};
   
   // Session-specific logging support
   private sessionLogPath: string | null = null;
@@ -241,7 +241,7 @@ export abstract class BaseDaemon extends EventEmitter {
   /**
    * Send message to another daemon or OS component
    */
-  protected async sendMessage(target: string, type: string, data: any): Promise<DaemonResponse> {
+  protected async sendMessage(target: string, type: string, data: unknown): Promise<DaemonResponse> {
     const message: DaemonMessage = {
       id: this.generateMessageId(),
       from: this.name,
@@ -354,13 +354,15 @@ export abstract class BaseDaemon extends EventEmitter {
       process.exit(0);
     };
 
-    this.signalHandlers['uncaughtException'] = (error: Error) => {
-      this.log(`Uncaught exception: ${error.message}`, 'error');
-      this.log(error.stack || '', 'error');
+    this.signalHandlers['uncaughtException'] = (error: unknown) => {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : '';
+      this.log(`Uncaught exception: ${errorMessage}`, 'error');
+      if (errorStack) this.log(errorStack, 'error');
       process.exit(1);
     };
 
-    this.signalHandlers['unhandledRejection'] = (reason: any) => {
+    this.signalHandlers['unhandledRejection'] = (reason: unknown) => {
       this.log(`Unhandled rejection: ${reason}`, 'error');
       process.exit(1);
     };

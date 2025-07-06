@@ -519,7 +519,7 @@ export class MeshCoordinatorDaemon extends BaseDaemon {
   async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
     switch (message.type) {
       case 'capability-request':
-        return await this.handleCapabilityRequest(message.data);
+        return await this.handleCapabilityRequest(message.data as CapabilityRequest);
       
       case 'mesh-discovery':
         return await this.handleMeshDiscovery(message.data);

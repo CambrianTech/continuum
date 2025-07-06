@@ -225,8 +225,9 @@ export class AcademyIntegration extends BaseDaemon {
         throw new Error(result.error || 'Training session failed to start');
       }
 
-      console.log(`✅ Training session started: ${result.data.session_id}`);
-      return result.data;
+      const sessionData = result.data as any; // TODO: Add proper training session type
+      console.log(`✅ Training session started: ${sessionData.session_id}`);
+      return sessionData;
 
     } catch (error) {
       console.error('❌ Training session failed:', error);
@@ -257,8 +258,9 @@ export class AcademyIntegration extends BaseDaemon {
         throw new Error(result.error || 'Persona spawning failed');
       }
 
-      console.log(`✅ Persona spawned: ${result.data.persona_id}`);
-      return result.data;
+      const personaData = result.data as any; // TODO: Add proper persona type
+      console.log(`✅ Persona spawned: ${personaData.persona_id}`);
+      return personaData;
 
     } catch (error) {
       console.error('❌ Persona spawning failed:', error);

@@ -84,16 +84,16 @@ export class ContinuumDirectoryDaemon extends BaseDaemon {
     try {
       switch (message.type) {
         case 'get_directory':
-          return await this.handleGetDirectory(message.data);
+          return await this.handleGetDirectory(message.data as DirectoryRequest);
           
         case 'create_session_directory':
-          return await this.handleCreateSessionDirectory(message.data);
+          return await this.handleCreateSessionDirectory(message.data as DirectoryRequest);
           
         case 'get_artifact_location':
-          return await this.handleGetArtifactLocation(message.data);
+          return await this.handleGetArtifactLocation(message.data as DirectoryRequest);
           
         case 'cleanup_old_sessions':
-          return await this.handleCleanupOldSessions(message.data);
+          return await this.handleCleanupOldSessions(message.data as any); // TODO: Add cleanup request type
           
         case 'get_directory_stats':
           return await this.handleGetDirectoryStats();

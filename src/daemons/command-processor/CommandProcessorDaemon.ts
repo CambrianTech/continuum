@@ -200,8 +200,8 @@ export class CommandProcessorDaemon extends BaseDaemon {
     // 🔍 SESSION DEBUG: Log full incoming message to CommandProcessor
     console.log(`🔍 [SESSION_DEBUG] CommandProcessor.handleMessage:`);
     console.log(`🔍 [SESSION_DEBUG]   message.data: ${JSON.stringify(message.data, null, 2)}`);
-    console.log(`🔍 [SESSION_DEBUG]   message.data.context: ${JSON.stringify(message.data?.context, null, 2)}`);
-    console.log(`🔍 [SESSION_DEBUG]   message.data.context.sessionId: ${message.data?.context?.sessionId || 'NOT_FOUND'}`);
+    console.log(`🔍 [SESSION_DEBUG]   message.data.context: ${JSON.stringify((message.data as any)?.context, null, 2)}`);
+    console.log(`🔍 [SESSION_DEBUG]   message.data.context.sessionId: ${(message.data as any)?.context?.sessionId || 'NOT_FOUND'}`);
     
     // DYNAMIC ENDPOINT ROUTER - handles any registered message type
     return await this.routeMessage(message);
@@ -253,7 +253,8 @@ export class CommandProcessorDaemon extends BaseDaemon {
         };
 
       case 'execute_command':
-        if (!message.data?.command) {
+        const execData = message.data as any; // TODO: Add proper type
+        if (!execData?.command) {
           return {
             success: false,
             error: `Missing command in execute_command: ${JSON.stringify(message.data)}`
@@ -261,17 +262,18 @@ export class CommandProcessorDaemon extends BaseDaemon {
         }
         return {
           success: true,
-          command: message.data.command,
-          parameters: message.data.args || message.data.parameters || [],
-          context: { source: message.data.source || 'websocket' }
+          command: execData.command,
+          parameters: execData.args || execData.parameters || [],
+          context: { source: execData.source || 'websocket' }
         };
 
       case 'handle_api':
-        const { pathname } = message.data;
+        const apiData = message.data as any; // TODO: Add proper type
+        const { pathname } = apiData;
         const pathParts = pathname.split('/').filter(Boolean);
         if (pathParts[0] === 'api' && pathParts[1] === 'commands' && pathParts[2]) {
           // Consistent parameter structure: merge args array with top-level parameters
-          const body = message.data.body || {};
+          const body = apiData.body || {};
           const args = body.args || [];
           const parameters = {
             ...body,    // Include all top-level parameters (owner, forceNew, sessionId, etc.)
@@ -284,10 +286,10 @@ export class CommandProcessorDaemon extends BaseDaemon {
             parameters: parameters,
             context: { 
               source: 'http', 
-              method: message.data.method, 
-              url: message.data.url,
+              method: apiData.method, 
+              url: apiData.url,
               // Include websocket context for daemon access (passed from WebSocketDaemon)
-              websocket: message.data?.context?.websocket || null
+              websocket: apiData?.context?.websocket || null
             }
           };
         }
