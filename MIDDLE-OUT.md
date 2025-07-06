@@ -2315,6 +2315,106 @@ python python-client/ai-portal.py --cmd selftest
 
 ---
 
+## 🚨 COMMON AI DEBUGGING MISTAKES (NEVER DO THESE!)
+
+**Following these anti-patterns will break your debugging session:**
+
+### **❌ MISTAKE 0: MODIFYING CODE WITHOUT UNDERSTANDING ARCHITECTURE** 
+**THE MOST DESTRUCTIVE MISTAKE - CAUSES SYSTEM-WIDE DAMAGE**
+
+```typescript
+// ❌ WRONG: Guessing method names and parameters
+const launchResult = await this.launcher.launchBrowser({  // launchBrowser() doesn't exist!
+  type: BrowserType.CHROME,
+  sessionId: sessionId  // Wrong parameter format!
+});
+
+// ❌ WRONG: Commenting out working code because it "annoys you"
+// TODO: Implement browser launching logic
+// this.performActualBrowserLaunch(); // <-- This was working code!
+
+// ❌ WRONG: Converting real implementations to TODOs
+// TODO: Fix this later (was working before you "fixed" it)
+
+// ✅ CORRECT: ALWAYS understand first
+// 1. Read the interface/type definitions
+// 2. Grep for existing method names  
+// 3. Check what parameters methods actually take
+// 4. Test small changes, don't rewrite entire systems
+```
+
+**MANDATORY STEPS BEFORE ANY CODE CHANGES:**
+1. **Read existing interfaces**: `grep -n "interface.*Browser\|class.*Browser" src/daemons/browser-manager/**/*.ts`
+2. **Check method signatures**: `grep -A 5 "async.*launch\|registerBrowser" src/daemons/browser-manager/**/*.ts`
+3. **Understand data flow**: Read MessageRoutedDaemon, understand how messages route to daemons
+4. **Test incrementally**: Make ONE small change, test it, then proceed
+
+**NEVER:**
+- Guess method names (`launchBrowser()` vs `launch()`)
+- Comment out working code to "fix" compilation errors
+- Turn working implementations into TODOs because they're complex
+- Rewrite entire systems without understanding the existing architecture
+
+### **❌ MISTAKE 1: Forgetting to Restart After Changes**
+```bash
+# ❌ WRONG: Make changes, test immediately
+edit CommandProcessorDaemon.ts
+curl http://localhost:9000/api/commands/health  # Uses old code!
+
+# ✅ CORRECT: Always restart after changes
+edit CommandProcessorDaemon.ts
+continuum stop && continuum  # Picks up new code
+curl http://localhost:9000/api/commands/health
+```
+
+### **❌ MISTAKE 2: Ignoring Actual Session Path Format**
+```bash
+# ❌ WRONG: Use simplified paths that don't exist
+continuum  # Says: "📋 Session logs will be available at: .continuum/sessions/user/joel/"
+tail .continuum/sessions/user/joel/development-*/logs/server.log  # Wrong format!
+
+# ✅ CORRECT: Use the actual session path format (relative paths only!)
+# Real format: .continuum/sessions/user/user/development-user-mcr2uk1l-o7rpi/logs/server.log
+ls .continuum/sessions/user/user/development-*/logs/server.log
+tail .continuum/sessions/user/user/development-*/logs/server.log
+```
+
+### **❌ MISTAKE 3: Creating Test Files Everywhere**
+```bash
+# ❌ WRONG: Create random test files
+write test-command-discovery.ts
+
+# ✅ CORRECT: Use existing module tests
+cd src/daemons/command-processor && npm run test
+```
+
+### **❌ MISTAKE 4: Skipping Console.log Debugging**
+```bash
+# ❌ WRONG: Guess what's wrong
+"The API hangs, let me check the code"
+
+# ✅ CORRECT: Add console.log, restart, check logs
+console.log(`🔍 Processing: ${message.type}`);
+continuum stop && continuum
+find .continuum -name "server.log" | head -1 | xargs tail -f
+```
+
+### **❌ MISTAKE 5: Breaking Layer Testing Order**
+```bash
+# ❌ WRONG: Jump to Layer 6 browser testing
+"Let me test end-to-end browser integration"
+
+# ✅ CORRECT: Follow MIDDLE-OUT layers systematically
+# Layer 1: Compilation clean ✅
+# Layer 2: Daemons running ✅  
+# Layer 3: Commands discovered ← Fix this first!
+# Layer 4: Integration working
+```
+
+**DEBUGGING LAW**: Always add console.log statements, restart continuum, then check the session logs!
+
+---
+
 ## 🎯 COGNITIVE LOAD REDUCTION PRINCIPLES
 
 ### 1. **Predictable Structure**
