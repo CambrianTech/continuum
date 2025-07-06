@@ -156,24 +156,24 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       const { sessionId, sessionType, owner } = event;
       this.log(`📋 Session created: ${sessionId} (${sessionType}) for ${owner}`);
       
-      // Only launch browser if this session needs one
+      // Only launch browser if this session needs one AND no browser exists
       if (this.sessionNeedsBrowser(sessionType)) {
-        await this.launchBrowserForSession(sessionId, sessionType, owner);
+        await this.safelyLaunchBrowserForSession(sessionId, sessionType, owner);
       }
     });
     
-    // Listen for session_joined events to ensure browser is available
+    // Listen for session_joined events - ensure browser exists if needed
     this.on('session_joined', async (event: any) => {
       const { sessionId, sessionType, owner } = event;
-      this.log(`📋 Session joined: ${sessionId} (${sessionType}) for ${owner}`);
+      this.log(`📋 Session joined: ${sessionId} (${sessionType}) for ${owner} - ensuring browser exists`);
       
-      // Only ensure browser if this session needs one
+      // For joined sessions, check if browser exists and launch if needed
       if (this.sessionNeedsBrowser(sessionType)) {
-        await this.ensureBrowserForSession(sessionId, sessionType, owner);
+        await this.ensureBrowserExistsForSession(sessionId, sessionType, owner);
       }
     });
     
-    this.log('👂 Listening for session_created and session_joined events to manage browsers');
+    this.log('👂 Listening for session events with SAFE browser management');
   }
   
   /**
@@ -186,32 +186,39 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   }
   
   /**
-   * Launch browser specifically for a session
+   * SAFELY launch browser for NEW session only (prevents runaway creation)
    */
-  private async launchBrowserForSession(sessionId: string, sessionType: string, _owner: string): Promise<void> {
+  private async safelyLaunchBrowserForSession(sessionId: string, sessionType: string, _owner: string): Promise<void> {
     try {
-      this.log(`🚀 Launching browser for session ${sessionId} (${sessionType})`);
+      this.log(`🚀 SAFELY launching browser for NEW session ${sessionId} (${sessionType})`);
       
-      // Clean up any zombie tabs BEFORE launching new browser
+      // SAFETY CHECK 1: Clean up zombies first
       await this.performZombieCleanup();
       
-      // Check if browser already has tabs open to localhost:9000
+      // SAFETY CHECK 2: Check if browser already exists
       const tabStatus = await this.tabManager.checkTabs();
       if (tabStatus.count > 0) {
-        this.log(`🌐 Browser already has ${tabStatus.count} tab(s) open to localhost:9000 - using existing connection`);
+        this.log(`✅ Browser already has ${tabStatus.count} tab(s) open to localhost:9000 - reusing existing`);
         return;
       }
       
-      // Launch browser for this session using BrowserLauncher
+      // SAFETY CHECK 3: Check if we already have a browser for this session
+      const existingBrowser = this.sessionManager.getBrowserBySession(sessionId);
+      if (existingBrowser) {
+        this.log(`✅ Browser already exists for session ${sessionId} - not launching new one`);
+        return;
+      }
+      
+      // Launch browser only if all safety checks pass
       const browserConfig: BrowserConfig = {
-        type: BrowserType.DEFAULT, // Use system default browser
+        type: BrowserType.DEFAULT,
         headless: false,
       };
       
       const launchResult = await this.launcher.launch(browserConfig, 0);
       this.log(`🌐 Browser launched successfully for session ${sessionId} (PID: ${launchResult.pid})`);
       
-      // Register this browser with session manager
+      // Register browser
       const managedBrowser: ManagedBrowser = {
         id: `browser-${sessionId}`,
         type: BrowserType.DEFAULT,
@@ -227,14 +234,14 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       this.sessionManager.registerBrowser(managedBrowser);
       
     } catch (error) {
-      this.log(`❌ Failed to launch browser for session ${sessionId}: ${error}`, 'error');
+      this.log(`❌ Failed to safely launch browser for session ${sessionId}: ${error}`, 'error');
     }
   }
 
   /**
-   * Ensure browser is available for an existing session (joined_existing case)
+   * SAFELY ensure browser exists for joined session (NO automatic launching)
    */
-  private async ensureBrowserForSession(sessionId: string, sessionType: string, _owner: string): Promise<void> {
+  private async ensureBrowserExistsForSession(sessionId: string, sessionType: string, _owner: string): Promise<void> {
     try {
       this.log(`🔍 Ensuring browser availability for session ${sessionId} (${sessionType})`);
       
@@ -246,8 +253,8 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       this.log(`🌐 Current browser status: ${tabStatus.count} tab(s) - ${tabStatus.action}`);
       
       if (tabStatus.count === 0) {
-        // No tabs open - open one
-        this.log(`🚀 No browser tabs connected to localhost:9000 - ensuring one tab opens`);
+        // SAFE: Only launch if NO tabs exist
+        this.log(`🚀 No browser tabs found - SAFELY launching one tab for session ${sessionId}`);
         await this.tabManager.ensureOneTab((msg: string) => this.log(msg));
       } else if (tabStatus.count === 1) {
         // Perfect - exactly one tab

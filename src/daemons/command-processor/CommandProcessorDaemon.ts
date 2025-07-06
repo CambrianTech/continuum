@@ -253,8 +253,13 @@ export class CommandProcessorDaemon extends BaseDaemon {
         const { pathname } = message.data;
         const pathParts = pathname.split('/').filter(Boolean);
         if (pathParts[0] === 'api' && pathParts[1] === 'commands' && pathParts[2]) {
-          // Handle both formats: body.args (WebSocket) or body directly (HTTP API)
-          let parameters = message.data.body?.args || message.data.body || [];
+          // Consistent parameter structure: merge args array with top-level parameters
+          const body = message.data.body || {};
+          const args = body.args || [];
+          const parameters = {
+            ...body,    // Include all top-level parameters (owner, forceNew, sessionId, etc.)
+            args: args  // Keep args array for commands that expect it
+          };
           
           return {
             success: true,
