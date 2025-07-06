@@ -7,24 +7,34 @@
  * 3. Call appropriate handler method
  */
 
-import { BaseDaemon } from './BaseDaemon.js';
-import { DaemonMessage, DaemonResponse } from './DaemonProtocol.js';
+import { BaseDaemon } from './BaseDaemon';
+import { DaemonMessage, DaemonResponse } from './DaemonProtocol';
 
-export interface MessageRouteHandler {
-  (data: any): Promise<DaemonResponse>;
+export interface RouteMessage {
+  type: string;
+  [key: string]: unknown;
 }
 
-export interface MessageRouteMap {
-  [routeType: string]: MessageRouteHandler;
+export interface SessionLogData {
+  sessionId?: string;
+  logPath?: string;
+}
+
+export interface MessageRouteHandler<T = unknown> {
+  (data: T): Promise<DaemonResponse>;
+}
+
+export interface MessageRouteMap<T = unknown> {
+  [routeType: string]: MessageRouteHandler<T>;
 }
 
 export abstract class MessageRoutedDaemon extends BaseDaemon {
   // Subclasses must define their primary message type and route map
   protected abstract readonly primaryMessageType: string;
-  protected abstract getRouteMap(): MessageRouteMap;
+  protected abstract getRouteMap(): MessageRouteMap<unknown>;
   
   // Optional: subclasses can override for additional message types
-  protected getAdditionalMessageHandlers(): { [messageType: string]: MessageRouteHandler } {
+  protected getAdditionalMessageHandlers(): { [messageType: string]: MessageRouteHandler<unknown> } {
     return {};
   }
 
@@ -63,8 +73,8 @@ export abstract class MessageRoutedDaemon extends BaseDaemon {
     }
   }
 
-  private async handleRoutedMessage(data: any): Promise<DaemonResponse> {
-    if (!data || !data.type) {
+  private async handleRoutedMessage(data: RouteMessage): Promise<DaemonResponse> {
+    if (!data.type) {
       return {
         success: false,
         error: `Missing route type in ${this.primaryMessageType} data`
@@ -103,8 +113,15 @@ export abstract class MessageRoutedDaemon extends BaseDaemon {
   /**
    * Handle built-in set_session_log message
    */
-  private handleSetSessionLog(data: any): DaemonResponse {
-    const { sessionId, logPath } = data;
+  private handleSetSessionLog(data: unknown): DaemonResponse {
+    if (!data || typeof data !== 'object') {
+      return {
+        success: false,
+        error: 'Invalid data for set_session_log'
+      };
+    }
+    
+    const { sessionId, logPath } = data as SessionLogData;
     
     if (!logPath) {
       return {

@@ -240,6 +240,14 @@ Created `/middle-out/development/integration-testing.md` with:
 
 **Key Insight**: Strong types + comprehensive tests = cognitive amplification. The compiler and test suite do the thinking, freeing brain for architecture.
 
+### 🎯 **GRADUAL ESLINT ENFORCEMENT (2025-07-06)**
+**Pre-commit hook now enforces clean code in stages**:
+- ✅ **Clean directories**: `src/daemons/base`, `src/test/integration`, `src/types`
+- 🚧 **In progress**: `src/commands` (after fixing 'any' types)
+- 📋 **Pending**: `src/daemons` (605 issues), `src/integrations`, `src/ui`
+
+**Strategy**: Start with directories that already pass, gradually add more as they're cleaned up. This allows commits while enforcing quality on clean code.
+
 ## 🚨 **NEXT AI SESSION: CRITICAL PATH TO BROWSER LOGGING**
 
 ### **Current State**:
