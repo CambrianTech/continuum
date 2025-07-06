@@ -88,4 +88,89 @@ This visibility enables debugging complex distributed issues across the browser-
 3. **Implement self-healing**: Automated error recovery mechanisms
 4. **DevTools integration**: Deep browser debugging capabilities
 
+## 🔗 Git Hook Integration (Critical for Autonomy)
+
+### **Session-Based Git Hook Architecture**
+
+**Goal**: Enable completely autonomous AI development with automated validation on every commit.
+
+**Current Status**: Git hook disabled during TypeScript redesign - needs session-based integration
+
+### **Target Architecture**:
+```bash
+Git Commit → Validation Session → JTAG Commands → Screenshots + Tests → Auto-validation Report
+```
+
+### **Implementation Plan**:
+
+**Phase 1: Session-Based Validation**
+```bash
+#!/bin/bash
+# .githooks/pre-commit (Session-Based)
+echo "🔍 Continuum pre-commit checks (Session-Based)..."
+
+# Create dedicated validation session
+SESSION_ID=$(continuum session-create validation-$(git rev-parse --short HEAD))
+echo "📝 Created validation session: $SESSION_ID"
+
+# Enable DevTools mode for complete JTAG visibility
+continuum session-exec $SESSION_ID "devtools-mode enable"
+
+# Run comprehensive test suite with session context
+if ! continuum session-exec $SESSION_ID "npm run test:full"; then
+    echo "❌ Tests failed, commit blocked"
+    continuum session-stop $SESSION_ID
+    exit 1
+fi
+
+# JTAG visual validation with screenshots
+continuum session-exec $SESSION_ID "screenshot commit-validation.png"
+continuum session-exec $SESSION_ID "screenshot --element=chat-widget chat-state.png"
+continuum session-exec $SESSION_ID "screenshot --element=sidebar-widget sidebar-state.png"
+
+# Validate JTAG command system health
+if ! continuum session-exec $SESSION_ID "health"; then
+    echo "❌ JTAG health check failed"
+    continuum session-stop $SESSION_ID
+    exit 1
+fi
+
+# Test browser console capture for JTAG debugging
+continuum session-exec $SESSION_ID "js-execute 'console.log(\"JTAG validation complete\")'"
+
+echo "✅ Session-based validation complete"
+continuum session-stop $SESSION_ID
+```
+
+**Phase 2: Autonomous Error Recovery**
+- If validation fails, JTAG automatically captures:
+  - Full browser screenshots
+  - Console error logs
+  - Server daemon logs
+  - Session correlation data
+- AI can analyze failure data and propose fixes
+- Automated retry with fixes applied
+
+**Phase 3: DevTools Integration**
+- Full browser DevTools access during validation
+- Network request monitoring
+- Performance profiling during tests
+- DOM inspection for UI validation
+
+### **Benefits for Autonomous AI Development**:
+
+1. **Complete Validation**: Every commit automatically validated with full JTAG visibility
+2. **Visual Evidence**: Screenshots prove UI functionality works
+3. **Session Isolation**: Each validation runs in clean session environment
+4. **Debugging Data**: Full JTAG logs available if validation fails
+5. **Autonomous Recovery**: AI can debug and fix issues using JTAG data
+
+### **Current Blockers**:
+- ❌ Command discovery system needs fixing (screenshot, js-execute not found)
+- ❌ Session management integration incomplete
+- ❌ DevTools mode not fully implemented
+- ❌ Git hook currently disabled
+
+**Once JTAG is fully working, this git hook will enable completely autonomous AI development with full validation confidence.**
+
 The JTAG framework represents a fundamental shift from reactive debugging to proactive system visibility, enabling truly autonomous development workflows.
