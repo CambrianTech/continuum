@@ -365,6 +365,24 @@ export class WebSocketDaemon extends BaseDaemon {
         
         this.wsManager.sendToConnection(connectionId, wsResponse);
         
+        // Special handling for connect command - send session_ready message
+        if (commandName === 'connect' && response.success && response.data?.session?.sessionId) {
+          const sessionReadyMessage = {
+            type: 'session_ready',
+            data: {
+              sessionId: response.data.session.sessionId,
+              sessionType: response.data.session.sessionType || 'development',
+              devtools: false,
+              logPaths: response.data.session.logs,
+              directories: response.data.session.directories
+            },
+            timestamp: new Date().toISOString()
+          };
+          
+          this.log(`📤 Sending session_ready message with sessionId: ${response.data.session.sessionId}`);
+          this.wsManager.sendToConnection(connectionId, sessionReadyMessage);
+        }
+        
         this.log(`✅ Command "${commandName}" ${response.success ? 'completed' : 'failed'}`);
         
       } catch (error) {

@@ -99,17 +99,46 @@ export class ConsoleCommand extends DirectCommand {
         
         // Get sessionId from context (passed from WebSocketDaemon connection mapping)
         // Context structure: _context can have sessionId directly or nested in context
-        const sessionId = _context?.sessionId || _context?.context?.sessionId;
+        let sessionId = _context?.sessionId || _context?.context?.sessionId || params.sessionId;
         
+        // If no sessionId provided, use the current/default shared development session
         if (!sessionId) {
-          console.warn(`⚠️ No sessionId in context - cannot determine which session to log to`);
-          return this.createSuccessResult('Console message forwarded to server console only', {
-            forwarded: true,
-            timestamp,
-            consoleEntry,
-            sessionLogged: false,
-            warning: 'No session context - logged to server console only'
-          });
+          // Try to find the most recent development session
+          try {
+            const { readdirSync, statSync } = await import('fs');
+            const { join } = await import('path');
+            
+            const sessionsPath = '.continuum/sessions/shared/development';
+            const sessionDirs = readdirSync(sessionsPath).filter(dir => {
+              const fullPath = join(sessionsPath, dir);
+              return statSync(fullPath).isDirectory() && dir.startsWith('development-shared-');
+            });
+            
+            if (sessionDirs.length > 0) {
+              // Sort by modification time to get the most recent
+              const sortedSessions = sessionDirs.sort((a, b) => {
+                const aTime = statSync(join(sessionsPath, a)).mtimeMs;
+                const bTime = statSync(join(sessionsPath, b)).mtimeMs;
+                return bTime - aTime; // Most recent first
+              });
+              
+              sessionId = sortedSessions[0];
+              console.log(`📝 No sessionId in context - using most recent shared session: ${sessionId}`);
+            }
+          } catch (error) {
+            console.log(`📝 Could not find existing sessions: ${error}`);
+          }
+          
+          // If still no session, we can't log to session files
+          if (!sessionId) {
+            console.log(`📝 No active session found - logging to server console only`);
+            return this.createSuccessResult('Console message forwarded to server console', {
+              forwarded: true,
+              timestamp,
+              consoleEntry,
+              sessionLogged: false
+            });
+          }
         }
 
         const fs = await import('fs/promises');
@@ -118,9 +147,12 @@ export class ConsoleCommand extends DirectCommand {
         const logEntry = `[${timestamp}] ${icon} BROWSER CONSOLE [${source}]: ${message}`;
         
         // Try to find the specific session's browser log
+        // Sessions are organized as: .continuum/sessions/{owner}/{type}/{sessionId}/
         const sessionBasePaths = [
-          '.continuum/sessions/user/user',
-          '.continuum/sessions/user/system'
+          '.continuum/sessions/shared/development',
+          '.continuum/sessions/user/development',
+          '.continuum/sessions/shared/persona',
+          '.continuum/sessions/user/persona'
         ];
         
         for (const basePath of sessionBasePaths) {

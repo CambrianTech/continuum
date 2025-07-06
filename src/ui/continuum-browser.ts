@@ -75,54 +75,55 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     
     let errorCount = 0;
 
-    // Override ALL console methods to capture everything
+    // Override ALL console methods to capture everything - SHOW IN DEVTOOLS + FORWARD
     console.log = (...args: any[]) => {
       const timestamp = `[${(Date.now() % 100000)/1000}s]`;
-      originalConsole.log.apply(console, [timestamp, ...args]);
+      // CRITICAL: Call on the ACTUAL console object, not originalConsole
+      originalConsole.log.apply(originalConsole, [timestamp, ...args]);
       this.forwardConsoleLog('log', args);
     };
 
     console.info = (...args: any[]) => {
-      originalConsole.info.apply(console, args);
+      originalConsole.info.call(originalConsole, ...args);
       this.forwardConsoleLog('info', args);
     };
 
     console.warn = (...args: any[]) => {
       const timestamp = `[${(Date.now() % 100000)/1000}s]`;
-      originalConsole.warn.apply(console, [timestamp, ...args]);
+      originalConsole.warn.call(originalConsole, timestamp, ...args);
       this.forwardConsoleLog('warn', args);
     };
 
     console.error = (...args: any[]) => {
       const timestamp = `[${(Date.now() % 100000)/1000}s]`;
-      originalConsole.error.apply(console, [timestamp, ...args]);
+      originalConsole.error.call(originalConsole, timestamp, ...args);
       errorCount++;
       (window as any).continuumErrorCount = errorCount;
       this.forwardConsoleLog('error', args);
     };
 
     console.debug = (...args: any[]) => {
-      originalConsole.debug.apply(console, args);
+      originalConsole.debug.call(originalConsole, ...args);
       this.forwardConsoleLog('debug', args);
     };
 
     console.trace = (...args: any[]) => {
-      originalConsole.trace.apply(console, args);
+      originalConsole.trace.call(originalConsole, ...args);
       this.forwardConsoleLog('trace', args);
     };
 
     console.table = (...args: any[]) => {
-      (originalConsole.table as any).apply(console, args);
+      (originalConsole.table as any).call(originalConsole, ...args);
       this.forwardConsoleLog('table', args);
     };
 
     console.group = (...args: any[]) => {
-      originalConsole.group.apply(console, args);
+      originalConsole.group.call(originalConsole, ...args);
       this.forwardConsoleLog('group', args);
     };
 
     console.groupEnd = () => {
-      originalConsole.groupEnd.apply(console);
+      originalConsole.groupEnd.call(originalConsole);
       this.forwardConsoleLog('groupEnd', []);
     };
 
@@ -545,7 +546,7 @@ class ContinuumBrowserAPI implements ContinuumAPI {
           reject(new Error('WebSocket connection timeout'));
         }, 5000);
 
-        this.ws.onopen = () => {
+        this.ws.onopen = async () => {
           clearTimeout(connectionTimeout);
           console.log('🌐 Continuum API: WebSocket connection established');
           this.connectionState = 'connected';
@@ -561,6 +562,19 @@ class ContinuumBrowserAPI implements ContinuumAPI {
               version: this.version
             }
           });
+
+          // Automatically send connect command to establish session
+          console.log('🔌 Sending connect command to establish session...');
+          try {
+            const connectResult = await this.execute('connect', {
+              sessionType: 'development',
+              owner: 'shared',
+              forceNew: false
+            });
+            console.log('🔌 Connect result:', connectResult);
+          } catch (error) {
+            console.error('❌ Failed to establish session:', error);
+          }
 
           this.emit('continuum:connected');
           resolve();
