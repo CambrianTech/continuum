@@ -2319,8 +2319,69 @@ python python-client/ai-portal.py --cmd selftest
 
 **Following these anti-patterns will break your debugging session:**
 
-### **❌ MISTAKE 0: MODIFYING CODE WITHOUT UNDERSTANDING ARCHITECTURE** 
-**THE MOST DESTRUCTIVE MISTAKE - CAUSES SYSTEM-WIDE DAMAGE**
+### **❌ MISTAKE 0: WRITING LOGIC IN ENTRY POINTS INSTEAD OF USING COMMAND SYSTEM**
+**THE MOST DESTRUCTIVE ARCHITECTURAL VIOLATION - CAUSES COMPLEXITY EXPLOSION AND CONTEXT EXHAUSTION**
+
+```bash
+# ❌ WRONG: Logic scattered in entry points
+case "$1" in
+    "stop")
+        echo "🛑 Stopping daemons..."
+        pkill -f "tsx.*main.ts"  # Logic in shell script!
+        ;;
+    "health") 
+        curl http://localhost:9000/api/health  # Logic in shell script!
+        ;;
+
+# ❌ WRONG: Entry points with complex logic
+def main():
+    if args.command == "stop":
+        # Complex shutdown logic here  # WRONG!
+    elif args.command == "health":
+        # Complex health check logic  # WRONG!
+
+# ✅ CORRECT: Thin clients that use command system
+case "$1" in
+    *)
+        # ALL commands go through the command system
+        continuum_command "$1" "$@"
+        ;;
+```
+
+**🔥 UNIVERSAL THIN CLIENT ARCHITECTURE LAW 🔥**
+```
+Entry Point → connect() → Daemon OS (if needed) → Command System → Result Display
+
+ALL ENTRY POINTS ARE THIN CLIENTS:
+- continuum script
+- python ai-portal.py  
+- browser status bar links
+- ANY client interface
+
+DAEMON OPERATING SYSTEM:
+- Daemons = always-running OS that thin clients talk to
+- connect() starts daemon OS if not running (first install, turned off, etc.)
+- System keeps daemons healthy and gracefully manages single running instance
+- Commands execute within the daemon OS context
+```
+
+**MANDATORY RULES:**
+1. **ALL user-invokable functionality** lives in `/src/commands/` - NO EXCEPTIONS
+   - Commands like: start, stop, health, session-create, screenshot, etc.
+   - NOT daemons (`/src/daemons/`) or widgets (`/src/ui/`) - those are infrastructure
+2. **Entry points** only call `connect()` and print results - NO LOGIC
+3. **Commands** handle stop, health, session management - NOT shell scripts  
+4. **Never** write case statements with logic in entry points
+5. **Never** duplicate functionality across multiple entry points
+
+**WHY THIS MATTERS FOR AI DEVELOPMENT:**
+- **Context preservation**: Logic centralized = easy to understand
+- **Consistency**: All clients behave identically 
+- **Maintainability**: One place to change behavior
+- **AI cognitive load**: Don't scatter logic across 50 files and burn through context
+
+### **❌ MISTAKE 1: MODIFYING CODE WITHOUT UNDERSTANDING ARCHITECTURE** 
+**SECONDARY BUT STILL DESTRUCTIVE**
 
 ```typescript
 // ❌ WRONG: Guessing method names and parameters
