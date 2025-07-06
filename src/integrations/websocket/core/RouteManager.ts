@@ -81,22 +81,34 @@ export class RouteManager {
 
       const response = await this.messageCallback(handler.daemonName, message);
       
-      if (response.success && response.data) {
+      if (response.success) {
         // Handle different response formats
-        if (response.data.status && response.data.status !== 200) {
+        if (response.data && response.data.status && response.data.status !== 200) {
           // Special status codes (304, 404, etc.)
           res.writeHead(response.data.status, response.data.headers || {});
           res.end(response.data.content || '');
         } else {
           // Normal 200 response
-          const headers = response.data.headers || {};
-          const contentType = response.data.contentType || headers['Content-Type'] || 'text/plain';
+          let content: string;
+          let contentType: string;
+          
+          if (response.data && response.data.content) {
+            // Response already formatted for HTTP
+            content = response.data.content;
+            contentType = response.data.contentType || 'text/plain';
+          } else {
+            // Command result - convert to JSON
+            content = JSON.stringify(response, null, 2);
+            contentType = 'application/json';
+          }
+          
+          const headers = response.data?.headers || {};
           
           res.writeHead(200, { 
             'Content-Type': contentType,
             ...headers 
           });
-          res.end(response.data.content || '');
+          res.end(content);
         }
       } else {
         res.writeHead(response.data?.status || 500, { 'Content-Type': 'text/plain' });

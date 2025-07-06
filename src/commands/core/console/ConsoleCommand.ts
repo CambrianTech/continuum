@@ -92,7 +92,6 @@ export class ConsoleCommand extends DirectCommand {
       let sessionLogged = false;
       try {
         const fs = await import('fs/promises');
-        const path = await import('path');
         
         // Format log entry for session file
         const logEntry = `[${timestamp}] ${icon} BROWSER CONSOLE [${source}]: ${message}`;

@@ -9,7 +9,7 @@
 
 import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../base/MessageRoutedDaemon.js';
 import { DaemonResponse } from '../base/DaemonProtocol.js';
-import { BrowserType, BrowserRequest, BrowserConfig, BrowserStatus, BrowserAction } from './types/index.js';
+import { BrowserType, BrowserRequest, BrowserConfig, BrowserStatus, BrowserAction, ManagedBrowser } from './types/index.js';
 // BrowserFilters unused in this file
 import { BrowserLauncher } from './modules/BrowserLauncher.js';
 import { BrowserSessionManager } from './modules/BrowserSessionManager.js';
@@ -17,11 +17,7 @@ import { ChromeBrowserModule } from './modules/ChromeBrowserModule.js';
 import { SessionConsoleLogger } from '../session-manager/modules/SessionConsoleLogger.js';
 import { SimpleTabManager } from './modules/SimpleTabManager.js';
 import { ZombieTabKiller } from './modules/ZombieTabKiller.js';
-import { BrowserTabManager } from './modules/BrowserTabAdapter.js';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-
-const execAsync = promisify(exec);
+// import { BrowserTabManager } from './modules/BrowserTabAdapter.js'; // TODO: Remove if not used
 
 export class BrowserManagerDaemon extends MessageRoutedDaemon {
   public readonly name = 'browser-manager';
@@ -32,7 +28,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   // private hasActiveBrowser = false; // TODO: Remove if not needed
   private tabManager = new SimpleTabManager();
   private zombieKiller = new ZombieTabKiller();
-  private browserTabManager = new BrowserTabManager();
+  // private _browserTabManager = new BrowserTabManager(); // TODO: Remove if not used
   
   // Track console loggers for each session
   private consoleLoggers = new Map<string, SessionConsoleLogger>();
@@ -185,12 +181,36 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       // Clean up any zombie tabs BEFORE launching new browser
       await this.performZombieCleanup();
       
-      // TODO: Use actual browser launching logic
-      // For now, just log that we would launch
-      this.log(`🌐 Browser would be launched for session ${sessionId}`);
+      // Check if browser already has tabs open to localhost:9000
+      const tabStatus = await this.tabManager.checkTabs();
+      if (tabStatus.count > 0) {
+        this.log(`🌐 Browser already has ${tabStatus.count} tab(s) open to localhost:9000 - using existing connection`);
+        return;
+      }
       
-      // Console logging will be handled by session manager
-      this.log(`📝 Console logging managed by session-manager for ${sessionId}`);
+      // Launch browser for this session using BrowserLauncher
+      const browserConfig: BrowserConfig = {
+        type: BrowserType.DEFAULT, // Use system default browser
+        headless: false,
+      };
+      
+      const launchResult = await this.launcher.launch(browserConfig, 0);
+      this.log(`🌐 Browser launched successfully for session ${sessionId} (PID: ${launchResult.pid})`);
+      
+      // Register this browser with session manager
+      const managedBrowser: ManagedBrowser = {
+        id: `browser-${sessionId}`,
+        type: BrowserType.DEFAULT,
+        pid: launchResult.pid,
+        debugPort: launchResult.debugPort || 0,
+        status: BrowserStatus.READY,
+        launchedAt: new Date(),
+        lastActivity: new Date(),
+        config: browserConfig,
+        sessions: [sessionId]
+      };
+      
+      this.sessionManager.registerBrowser(managedBrowser);
       
     } catch (error) {
       this.log(`❌ Failed to launch browser for session ${sessionId}: ${error}`, 'error');
