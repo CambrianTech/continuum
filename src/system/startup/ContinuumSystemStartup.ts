@@ -270,6 +270,7 @@ export class ContinuumSystem extends EventEmitter {
     const chatRoomDaemon = this.daemons.get('chatroom');
     const academyDaemon = this.daemons.get('academy');
     const sessionManagerDaemon = this.daemons.get('session-manager');
+    const browserManagerDaemon = this.daemons.get('browser-manager');
     
     // Register daemons with WebSocket daemon for message routing
     webSocketDaemon.registerDaemon(rendererDaemon);
@@ -278,6 +279,7 @@ export class ContinuumSystem extends EventEmitter {
     webSocketDaemon.registerDaemon(chatRoomDaemon);
     webSocketDaemon.registerDaemon(academyDaemon);
     webSocketDaemon.registerDaemon(sessionManagerDaemon);
+    webSocketDaemon.registerDaemon(browserManagerDaemon);
     
     // Register static file routes first (they take precedence)
     staticFileDaemon.registerWithWebSocketDaemon(webSocketDaemon);

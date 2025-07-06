@@ -58,39 +58,31 @@ export class ConnectCommand extends DaemonCommand {
     };
   }
 
+  /**
+   * Specify which daemon handles this command
+   */
   protected static getTargetDaemon(): string {
     return 'session-manager';
   }
   
+  /**
+   * Specify the message type for the daemon
+   */
   protected static getMessageType(): string {
-    return 'connect';
+    return 'session.connect';
   }
   
+  /**
+   * Prepare the data to send to SessionManagerDaemon
+   */
   protected static prepareDaemonData(params: any, context?: CommandContext): any {
-    const sessionType = params.sessionType || 'development';
-    const owner = params.owner || 'shared';
-    const requestedSessionId = params.sessionId;
-    const forceNew = params.forceNew || false;
-    const connectionId = context?.connectionId || 'cli';
-    
-    // Determine session preference
-    let sessionPreference = 'current'; // default: join existing
-    if (forceNew) {
-      sessionPreference = 'new';
-    } else if (requestedSessionId) {
-      sessionPreference = requestedSessionId;
-    }
-    
-    // Prepare capabilities based on connection type
-    const capabilities = connectionId === 'cli' ? ['browser'] : [];
-    
     return {
-      source: 'connect-command',
-      owner: owner,
-      sessionPreference: sessionPreference,
-      capabilities: capabilities,
-      context: sessionType,
-      sessionType: sessionType
+      sessionType: params.sessionType || 'development',
+      owner: params.owner || 'shared',
+      sessionId: params.sessionId,
+      forceNew: params.forceNew || false,
+      connectionId: context?.connectionId || 'cli',
+      source: (context as any)?.source || 'cli'
     };
   }
 

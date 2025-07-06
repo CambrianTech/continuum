@@ -503,6 +503,20 @@ export class CommandProcessorDaemon extends BaseDaemon {
   }
 
   // Implementation-specific execution methods
+  private async routeToDaemon(daemonRequest: any): Promise<DaemonResponse> {
+    console.log(`🔍 [CommandProcessor] Routing to daemon: ${daemonRequest.targetDaemon}`);
+    
+    // Send through daemon connector/mesh using BaseDaemon's sendMessage
+    const response = await this.sendMessage(
+      daemonRequest.targetDaemon,
+      daemonRequest.messageType,
+      daemonRequest.data
+    );
+    console.log(`🔍 [CommandProcessor] Daemon response:`, response);
+    
+    return response;
+  }
+
   private async executeBrowserImplementation<T, R>(request: TypedCommandRequest<T>): Promise<R> {
     this.log(`🌐 Executing command via dynamic discovery: ${request.command}`);
     console.log(`🔍 [CommandProcessor] executeBrowserImplementation called for: ${request.command}`);
@@ -533,6 +547,20 @@ export class CommandProcessorDaemon extends BaseDaemon {
       request.context
     );
     console.log(`🔍 [CommandProcessor] Command connector result:`, result);
+    
+    // Check if this is a daemon routing request
+    if (result.success && result.data && typeof result.data === 'object' && '_routeToDaemon' in result.data) {
+      const daemonRequest = result.data._routeToDaemon;
+      console.log(`🔍 [CommandProcessor] Command wants to route to daemon: ${daemonRequest.targetDaemon}`);
+      
+      // Route to the specified daemon through WebSocket daemon
+      const daemonResponse = await this.routeToDaemon(daemonRequest);
+      if (daemonResponse.success) {
+        return daemonResponse.data as R;
+      } else {
+        throw new Error(daemonResponse.error || 'Daemon routing failed');
+      }
+    }
     
     if (result.success) {
       return result.data as R;

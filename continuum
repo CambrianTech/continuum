@@ -191,6 +191,29 @@ status_daemon() {
   fi
 }
 
+# Handle version
+if [ "$COMMAND" = "--version" ] || [ "$COMMAND" = "-v" ] || [ "$COMMAND" = "version" ]; then
+  # Check if daemon is running
+  if daemon_running; then
+    # Get version from API
+    VERSION=$(curl -s "http://localhost:9000/api/version" 2>/dev/null | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
+    if [ -n "$VERSION" ]; then
+      echo "continuum $VERSION"
+      exit 0
+    fi
+  fi
+  
+  # Fallback to local package.json
+  install_dir=$(find_continuum_installation)
+  if [ -n "$install_dir" ] && [ -f "$install_dir/package.json" ]; then
+    VERSION=$(grep '"version"' "$install_dir/package.json" | head -1 | cut -d'"' -f4)
+  else
+    VERSION="unknown"
+  fi
+  echo "continuum $VERSION"
+  exit 0
+fi
+
 # Handle explicit daemon management commands 
 case "$COMMAND" in
   "start")
@@ -220,34 +243,32 @@ case "$COMMAND" in
     status_daemon
     exit 0
     ;;
-  "help"|"--help"|"-h")
+  "help"|"--help"|"-h"|"")
     echo "Continuum CLI - Universal thin client with session management"
     echo ""
     echo "Usage:"
-    echo "  continuum [command] [session-options]"
+    echo "  continuum [command] [options]"
     echo ""
     echo "Commands:"
-    echo "  connect                 Connect to session (default)"
+    echo "  <default>               Open Continuum in browser (auto-starts daemons)"
     echo "  start                   Start daemon system"
     echo "  stop                    Stop daemon system"  
     echo "  restart                 Restart daemon system"
     echo "  status                  Show daemon status"
     echo "  health                  Check system health"
-    echo "  help                    Show this help"
+    echo "  version, --version      Show version"
+    echo "  help, --help            Show this help"
     echo ""
     echo "Session Options:"
     echo "  --session ID            Connect to specific session ID"
-    echo "  --session-type TYPE     Connect to session of specific type (development, persona, etc.)"
-    echo "  --owner OWNER           Connect to session owned by specific user"
+    echo "  --session-type TYPE     Session type (development, persona, etc.)"
+    echo "  --owner OWNER           Session owner (default: shared)"
     echo "  --new                   Force create new session"
     echo ""
     echo "Examples:"
-    echo "  continuum                                    # Connect to shared session (default)"
-    echo "  continuum --session development-system-abc  # Connect to specific session"
-    echo "  continuum --session-type persona --owner alice  # Connect to Alice's persona session"
-    echo "  continuum --new                              # Force new session"
-    echo "  continuum health --session my-session       # Check health in specific session context"
-    echo "  continuum start                              # Start daemon system"
+    echo "  continuum                        # Open browser and connect"
+    echo "  continuum --new                  # Create new session"
+    echo "  continuum status                 # Check if daemons are running"
     exit 0
     ;;
 esac
@@ -280,26 +301,78 @@ fi
 
 request_data="$request_data}"
 
-# Call command via API with session parameters
-echo "🌐 Executing command: $COMMAND"
-if [ -n "$SESSION_ID" ] || [ -n "$SESSION_TYPE" ] || [ -n "$OWNER" ] || [ -n "$FORCE_NEW" ]; then
-  echo "   Session parameters: sessionId=$SESSION_ID, type=$SESSION_TYPE, owner=$OWNER, forceNew=$FORCE_NEW"
-fi
-
-response=$(curl -s -X POST "http://localhost:9000/api/commands/$COMMAND" \
-  -H "Content-Type: application/json" \
-  -d "$request_data" 2>/dev/null)
-
-if [ $? -eq 0 ] && [ -n "$response" ]; then
-  # Pretty print JSON if possible
-  if command -v jq > /dev/null 2>&1; then
-    echo "$response" | jq .
+# Special handling for connect command (default)
+if [ "$COMMAND" = "connect" ]; then
+  response=$(curl -s -X POST "http://localhost:9000/api/commands/$COMMAND" \
+    -H "Content-Type: application/json" \
+    -d "$request_data" 2>/dev/null)
+  
+  if [ $? -eq 0 ] && [ -n "$response" ]; then
+    # Debug: show raw response
+    # echo "DEBUG: Raw response: $response"
+    
+    # Parse the response
+    if command -v jq > /dev/null 2>&1; then
+      # Check if response has sessionId at top level (new format)
+      if echo "$response" | jq -e '.sessionId' > /dev/null 2>&1; then
+        SESSION_ID=$(echo "$response" | jq -r '.sessionId')
+        ACTION=$(echo "$response" | jq -r '.action')
+        INTERFACE=$(echo "$response" | jq -r '.interface')
+        BROWSER_LAUNCHED=$(echo "$response" | jq -r '.launched.browser')
+        VERSION=$(echo "$response" | jq -r '.version // "unknown"')
+        
+        # Show user-friendly output
+        echo ""
+        echo "🎉 Connected to Continuum v$VERSION"
+        echo "   Session: $SESSION_ID"
+        echo "   Status:  $ACTION"
+        echo "   URL:     $INTERFACE"
+        echo ""
+        
+        # Check if browser should launch
+        if [ "$BROWSER_LAUNCHED" = "true" ]; then
+          echo "🌐 Browser launching..."
+        fi
+      else
+        # Error response
+        ERROR=$(echo "$response" | jq -r '.error // "Unknown error"')
+        echo "❌ Connection failed: $ERROR"
+        # Debug: show what we got
+        echo "DEBUG: Response was: $response"
+        exit 1
+      fi
+    else
+      # No jq, just show raw response
+      echo "$response"
+    fi
   else
-    echo "$response"
+    echo "❌ Failed to connect to daemon"
+    echo "🔍 Checking daemon status..."
+    status_daemon
+    exit 1
   fi
 else
-  echo "❌ Command failed or daemon not responding"
-  echo "🔍 Checking daemon status..."
-  status_daemon
-  exit 1
+  # For other commands, call via API
+  echo "🌐 Executing command: $COMMAND"
+  if [ -n "$SESSION_ID" ] || [ -n "$SESSION_TYPE" ] || [ -n "$OWNER" ] || [ -n "$FORCE_NEW" ]; then
+    echo "   Session parameters: sessionId=$SESSION_ID, type=$SESSION_TYPE, owner=$OWNER, forceNew=$FORCE_NEW"
+  fi
+
+  response=$(curl -s -X POST "http://localhost:9000/api/commands/$COMMAND" \
+    -H "Content-Type: application/json" \
+    -d "$request_data" 2>/dev/null)
+
+  if [ $? -eq 0 ] && [ -n "$response" ]; then
+    # Pretty print JSON if possible
+    if command -v jq > /dev/null 2>&1; then
+      echo "$response" | jq .
+    else
+      echo "$response"
+    fi
+  else
+    echo "❌ Command failed or daemon not responding"
+    echo "🔍 Checking daemon status..."
+    status_daemon
+    exit 1
+  fi
 fi
