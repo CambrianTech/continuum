@@ -301,6 +301,25 @@ async function analyzeDebugSession(sessionId: string) {
 
 ## 🧪 JTAG Validation Path (Middle-Out Testing)
 
+### **⚠️ CRITICAL: Basic Steps That Must NEVER Be Forgotten**
+
+**FUNDAMENTAL REBUILD & VALIDATION STEPS** (Write these down because Claude keeps forgetting):
+
+1. **ALWAYS** run `npm run build:browser-ts` after ANY TypeScript changes
+2. **ALWAYS** run `continuum reload --target=page` after rebuild  
+3. **ALWAYS** check version in browser: `window.__CONTINUUM_VERSION__`
+4. **ALWAYS** check browser logs are capturing: look for console messages in `.continuum/sessions/*/logs/browser.log`
+5. **NEVER** assume "command completed" means JavaScript executed - CHECK THE BROWSER LOGS
+6. **ALWAYS** kill and restart daemons after major changes: `kill $(ps aux | grep main.ts | awk '{print $2}') && continuum connect`
+
+**VALIDATION CHECKLIST** (Must complete before claiming anything works):
+- [ ] Built browser TypeScript: `npm run build:browser-ts` 
+- [ ] Reloaded browser: `continuum reload --target=page`
+- [ ] Verified version updated in browser
+- [ ] Verified browser console logs are being captured
+- [ ] Tested actual JavaScript execution with UUID in browser logs
+- [ ] Confirmed UUIDs appear in browser.log file
+
 ### **UUID-Based Foundation Testing**
 
 **Core Principle**: Start with simplest possible JTAG test - UUID generation and console logging - before advancing to complex features.
