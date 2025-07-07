@@ -5,6 +5,10 @@
 printf "\rContinuum Pre-Push Validation - STRICT ENFORCEMENT\n" >&2
 echo "🚀 Production-ready validation - Zero tolerance for regressions"
 echo ""
+echo "📋 VALIDATION LOGS: All test results are logged to .continuum/logs/"
+echo "   🔍 Run individual commands below if validation fails"
+echo "   📊 Check package.json verification fields for module status"
+echo ""
 
 # 🎓 GRADUATED MODULES: MUST BE PERFECT FOREVER
 echo "🎓 GRADUATED MODULE ENFORCEMENT - Zero tolerance:"
@@ -13,27 +17,74 @@ echo "   🔍 Checking all graduated modules for regressions..."
 # 🎯 PER-MODULE QUALITY ENFORCEMENT (PUSH MODE: Strict)
 echo "🎯 Per-module quality enforcement - STRICT PRODUCTION MODE..."
 npm run test:quality:push || {
+    echo ""
     echo "❌ PUSH BLOCKED: Quality standards not met!"
-    echo "🎓 Graduated and candidate modules must maintain perfect quality"
-    echo "💡 Fix quality issues before pushing to production"
+    echo ""
+    echo "🎓 GRADUATED MODULE QUALITY FAILURE:"
+    echo "   One or more graduated modules have quality regressions"
+    echo "   Graduated modules must maintain PERFECT quality forever"
+    echo ""
+    echo "📋 DEBUGGING INFORMATION:"
+    echo "   🔍 Run: npm run test:quality:push"
+    echo "   📊 View: npm run test:quality:report"
+    echo "   📝 Logs: .continuum/logs/quality-enforcement.log"
+    echo "   🎯 Status: Check package.json verification fields"
+    echo ""
+    echo "💡 NEXT STEPS:"
+    echo "   1. Run 'npm run test:quality:push' to see specific failures"
+    echo "   2. Fix ESLint, TypeScript, or test issues in failed modules"
+    echo "   3. Or demote module status to 'candidate' if needed"
+    echo "   4. Retry push once quality is restored"
+    echo ""
     exit 1
 }
 
 # 🧪 INTEGRATION TESTS: PRODUCTION READINESS
 echo "🧪 INTEGRATION TESTS - Production readiness validation:"
 npm run test:integration:layer2-3 --silent || {
+    echo ""
     echo "❌ PUSH BLOCKED: Integration test failures detected!"
-    echo "🏭 Production requires all integration tests to pass"
-    echo "💡 Fix integration issues before pushing"
+    echo ""
+    echo "🧪 INTEGRATION TEST FAILURE:"
+    echo "   Production requires all integration tests to pass"
+    echo ""
+    echo "📋 DEBUGGING INFORMATION:"
+    echo "   🔍 Run: npm run test:integration:layer2-3"
+    echo "   📊 View: npm test -- --verbose"
+    echo "   📝 Logs: .continuum/logs/integration-tests.log"
+    echo "   🎯 Check: Individual daemon and command integration"
+    echo ""
+    echo "💡 NEXT STEPS:"
+    echo "   1. Run 'npm run test:integration:layer2-3' to see specific failures"
+    echo "   2. Fix failing daemon or command integration tests"
+    echo "   3. Verify all services are properly communicating"
+    echo "   4. Retry push once tests pass"
+    echo ""
     exit 1
 }
 
 # 📊 MODULE COMPLIANCE: STRICT VALIDATION
 echo "📊 MODULE COMPLIANCE - Strict validation:"
 npm run test:compliance:strict --silent || {
+    echo ""
     echo "❌ PUSH BLOCKED: Module compliance failures detected!"
-    echo "🎯 Production requires strict module compliance"
-    echo "💡 Fix compliance issues or update whitelist appropriately"
+    echo ""
+    echo "📊 MODULE COMPLIANCE FAILURE:"
+    echo "   Production requires strict module compliance"
+    echo ""
+    echo "📋 DEBUGGING INFORMATION:"
+    echo "   🔍 Run: npm run test:compliance:strict"
+    echo "   📊 View: npm run test:compliance:report"
+    echo "   📝 Logs: .continuum/logs/compliance.log"
+    echo "   🎯 Check: package.json structure and module exports"
+    echo ""
+    echo "💡 NEXT STEPS:"
+    echo "   1. Run 'npm run test:compliance:strict' to see specific failures"
+    echo "   2. Fix missing package.json files or invalid module structure"
+    echo "   3. Update module exports or add required files"
+    echo "   4. Or update quality whitelist if intentional"
+    echo "   5. Retry push once compliance is restored"
+    echo ""
     exit 1
 }
 
