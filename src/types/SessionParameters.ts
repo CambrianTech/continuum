@@ -13,6 +13,8 @@ export interface SessionParameters {
   sessionType?: 'development' | 'persona' | 'portal' | 'git-hook' | 'test';
   owner?: string;
   forceNew?: boolean;
+  focus?: boolean;
+  killZombies?: boolean;
   capabilities?: string[];
   context?: string;
 }

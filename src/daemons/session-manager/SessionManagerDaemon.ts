@@ -281,10 +281,11 @@ export class SessionManagerDaemon extends BaseDaemon {
   async handleConnect(connectParams: SessionRequest): Promise<DaemonResponse<SessionConnectResponse>> {
     // Debug: Log the actual parameters received
     this.log(`🔍 handleConnect called with: ${JSON.stringify(connectParams)}`, 'info');
+    this.log(`🔍 FOCUS_DEBUG: focus=${connectParams.focus}, killZombies=${connectParams.killZombies}`, 'info');
     
-    const { source, owner = 'shared', sessionPreference = 'current', capabilities = [], context = 'development', sessionType = 'development' } = connectParams;
+    const { source, owner = 'shared', sessionPreference = 'current', capabilities = [], context = 'development', sessionType = 'development', focus = false, killZombies = false } = connectParams;
     
-    this.log(`🔍 After destructuring: owner=${owner}, sessionPreference=${sessionPreference}, sessionType=${sessionType}`, 'info');
+    this.log(`🔍 After destructuring: owner=${owner}, sessionPreference=${sessionPreference}, sessionType=${sessionType}, focus=${focus}, killZombies=${killZombies}`, 'info');
 
     try {
       let session: BrowserSession | null = null;
@@ -358,7 +359,9 @@ export class SessionManagerDaemon extends BaseDaemon {
             sessionId: session.id, 
             serverLogPath,
             sessionType: session.type,
-            owner: session.owner
+            owner: session.owner,
+            focus,
+            killZombies
           });
           
           this.log(`🔌 Enabled server logging for session ${session.id}: ${serverLogPath}`);
@@ -371,7 +374,9 @@ export class SessionManagerDaemon extends BaseDaemon {
           sessionId: session.id, 
           sessionType: session.type,
           owner: session.owner,
-          source: source || 'unknown'
+          source: source || 'unknown',
+          focus,
+          killZombies
         };
         DAEMON_EVENT_BUS.emitEvent(SystemEventType.SESSION_JOINED, sessionJoinedEvent);
         
