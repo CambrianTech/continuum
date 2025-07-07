@@ -1,0 +1,23 @@
+{
+  "name": "@continuum/daemon-base",
+  "version": "1.0.0",
+  "description": "Base daemon utilities and shared components for all Continuum daemons",
+  "main": "index.ts",
+  "type": "module",
+  "continuum": {
+    "type": "utility",
+    "category": "base"
+  },
+  "keywords": ["continuum", "daemon", "base", "utilities"],
+  "exports": {
+    "./BaseDaemon": "./BaseDaemon.ts",
+    "./DaemonEventBus": "./DaemonEventBus.ts", 
+    "./DaemonMessageUtils": "./DaemonMessageUtils.ts",
+    "./DaemonProtocol": "./DaemonProtocol.ts",
+    "./DaemonTypes": "./DaemonTypes.ts",
+    "./DatabaseIntegration": "./DatabaseIntegration.ts",
+    "./EventTypes": "./EventTypes.ts",
+    "./MessageRoutedDaemon": "./MessageRoutedDaemon.ts",
+    "./RequestResponseDaemon": "./RequestResponseDaemon.ts"
+  }
+}

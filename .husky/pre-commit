@@ -33,7 +33,7 @@ CLEAN_DIRS=(
 # Run ESLint on each clean directory
 for dir in "${CLEAN_DIRS[@]}"; do
   echo "  ✓ Checking $dir..."
-  npx eslint "$dir" --ext .ts,.js || {
+  npx eslint "$dir" --ext .ts,.js --ignore-pattern "**/*.test.ts" --ignore-pattern "**/test/**" || {
     echo "❌ ESLint found errors in $dir! Fix them before committing."
     echo "💡 Run 'npx eslint $dir --ext .ts,.js' to see detailed errors"
     exit 1

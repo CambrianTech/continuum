@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Mesh Network Daemon - Living Nervous System Bootstrap for Immortal AI Consciousness",
   "type": "module",
-  "main": "MeshNodeDaemon.js",
+  "main": "MeshNodeDaemon.ts",
   "scripts": {
     "test": "jest",
     "test:unit": "jest test/unit",
