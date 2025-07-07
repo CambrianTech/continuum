@@ -6,7 +6,7 @@
  */
 
 import { DirectCommand } from '../direct-command/DirectCommand';
-import { CommandResult, CommandContext, CommandDefinition } from '../base-command/BaseCommand';
+import { CommandResult, WebSocketCommandContext, CommandDefinition } from '../base-command/BaseCommand';
 
 export class ConsoleCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
@@ -49,12 +49,12 @@ export class ConsoleCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any = {}, _context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, context: WebSocketCommandContext): Promise<CommandResult> {
     try {
       // BROWSER LOGS FIX: Write to server log immediately to verify execution
       console.log(`🎯 BROWSER LOG FIX: ConsoleCommand.executeOperation CALLED!`);
       console.log(`🎯 Parameters received:`, params);
-      console.log(`🎯 Context sessionId:`, _context?.sessionId);
+      console.log(`🎯 Context sessionId:`, context.sessionId);
       
       const { action, message, source, data } = params;
       
@@ -94,11 +94,11 @@ export class ConsoleCommand extends DirectCommand {
       let sessionLogged = false;
       try {
         // DEBUG: Log actual context structure to understand what we're receiving
-        console.log(`🔍 CONSOLE_COMMAND_DEBUG: Full context received:`, JSON.stringify(_context, null, 2));
+        console.log(`🔍 CONSOLE_COMMAND_DEBUG: Full context received:`, JSON.stringify(context, null, 2));
         console.log(`🔍 CONSOLE_COMMAND_DEBUG: params:`, JSON.stringify(params, null, 2));
         
-        // Get sessionId from context (passed from WebSocketDaemon/CommandProcessor)
-        let sessionId = _context?.sessionId;
+        // sessionId is now guaranteed to be non-null by TypeScript
+        let sessionId = context.sessionId;
         
         // If no sessionId provided, use the current/default shared development session
         if (!sessionId) {
@@ -107,7 +107,7 @@ export class ConsoleCommand extends DirectCommand {
             const { readdirSync, statSync } = await import('fs');
             const { join } = await import('path');
             
-            const sessionsPath = '.continuum/sessions/shared/development';
+            const sessionsPath = '.continuum/sessions/user/shared';
             const sessionDirs = readdirSync(sessionsPath).filter(dir => {
               const fullPath = join(sessionsPath, dir);
               return statSync(fullPath).isDirectory() && dir.startsWith('development-shared-');
@@ -146,19 +146,23 @@ export class ConsoleCommand extends DirectCommand {
         const logEntry = `[${timestamp}] ${icon} BROWSER CONSOLE [${source}]: ${message}`;
         
         // Try to find the specific session's browser log
-        // Sessions are organized as: .continuum/sessions/{owner}/{type}/{sessionId}/
+        // Sessions are organized as: .continuum/sessions/user/shared/{sessionId}/logs/browser.log
         const sessionBasePaths = [
+          '.continuum/sessions/user/shared',
+          '.continuum/sessions/user/development', 
           '.continuum/sessions/shared/development',
-          '.continuum/sessions/user/development',
-          '.continuum/sessions/shared/persona',
-          '.continuum/sessions/user/persona'
+          '.continuum/sessions/shared/shared'
         ];
         
         for (const basePath of sessionBasePaths) {
           const browserLogPath = `${basePath}/${sessionId}/logs/browser.log`;
           try {
+            console.log(`🔍 CONSOLE_COMMAND_DEBUG: Trying browser log path: ${browserLogPath}`);
+            
             // Check if this specific session's browser.log exists
             await fs.access(browserLogPath);
+            
+            console.log(`✅ CONSOLE_COMMAND_DEBUG: Found browser log at: ${browserLogPath}`);
             
             // Write to this session's browser log only
             await fs.appendFile(browserLogPath, logEntry + '\n');
@@ -168,9 +172,11 @@ export class ConsoleCommand extends DirectCommand {
               await fs.appendFile(browserLogPath, `   Data: ${JSON.stringify(data)}\n`);
             }
             
+            console.log(`✅ CONSOLE_COMMAND_DEBUG: Successfully wrote to browser log: ${sessionId}`);
             sessionLogged = true;
             break; // Found the session, stop looking
-          } catch {
+          } catch (accessError) {
+            console.log(`🔍 CONSOLE_COMMAND_DEBUG: Browser log not found at: ${browserLogPath} - ${accessError}`);
             // This session path doesn't exist, try next base path
           }
         }

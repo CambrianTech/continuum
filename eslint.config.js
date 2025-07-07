@@ -52,10 +52,10 @@ export default [
     rules: {
       ...eslintJs.configs.recommended.rules,
       ...tseslint.configs.recommended.rules,
-      '@typescript-eslint/no-explicit-any': 'error', // Changed from 'warn' to 'error'
+      '@typescript-eslint/no-explicit-any': 'error', // No any types allowed
       '@typescript-eslint/no-unused-vars': ['warn', { 'argsIgnorePattern': '^_' }],
-      '@typescript-eslint/explicit-module-boundary-types': 'off',
-      '@typescript-eslint/no-require-imports': 'error', // Changed from 'off' to 'error'
+      '@typescript-eslint/explicit-module-boundary-types': 'warn', // Require explicit return types
+      '@typescript-eslint/no-require-imports': 'error', // No require() in TypeScript
       'no-undef': 'error',
       // Custom rules for proper module imports
       'no-restricted-imports': ['error', {
