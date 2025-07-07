@@ -1,41 +1,60 @@
 {
-  "name": "academy-widget",
+  "name": "academy-chat-widget",
   "version": "1.0.0",
-  "description": "Academy Widget - Real-time AI training and evolution visualization",
-  "main": "AcademyWidget.ts",
+  "description": "Academy Chat Widget - Discord-like interface for AI persona collaboration",
+  "main": "AcademyChatWidget.ts",
   "type": "module",
+  "continuum": {
+    "type": "widget",
+    "category": "academy",
+    "web_component": "academy-chat-widget"
+  },
+  "files": [
+    "AcademyChatWidget.ts",
+    "AcademyChatWidget.css",
+    "AcademyChatWidget.html",
+    "README.md"
+  ],
   "keywords": [
-    "academy-ui",
-    "training-visualization",
-    "persona-evolution",
-    "real-time-metrics",
-    "p2p-network-status",
-    "formula-monitoring"
+    "academy-chat",
+    "discord-interface", 
+    "persona-collaboration",
+    "natural-language-commands",
+    "ai-interaction",
+    "formula-generation",
+    "capability-synthesis",
+    "genome-discovery"
   ],
   "widget_capabilities": {
-    "real_time_updates": "5-second intervals for training progress",
-    "training_session_monitoring": "Live adversarial training session status",
-    "persona_evolution_tracking": "Vector space movement and capability growth",
-    "p2p_network_visualization": "Network connections and knowledge sharing",
-    "formula_generation_insights": "Formula Master decisions and reasoning",
-    "interactive_controls": "Spawn personas, start training, adjust parameters"
+    "natural_language_commands": "Ask personas to generate formulas, synthesize capabilities, discover genomes",
+    "multi_room_chat": "General, Academy, Synthesis Lab, Genome Discovery rooms",
+    "persona_interactions": "Direct chat with PlannerAI, FormulaMaster, SynthesisEngine, GenomeDiscoverer",
+    "real_time_typing": "Visual typing indicators during AI processing",
+    "command_analysis": "Automatic routing based on message content patterns",
+    "academy_backend_integration": "Direct connection to Academy daemon system"
   },
   "integration_points": {
-    "academy_daemon": "Real-time status via WebSocket commands",
-    "database_daemon": "Persona and training data queries",
-    "command_system": "academy-spawn, academy-train, academy-status execution",
-    "base_widget": "Extends BaseWidget for consistent UI patterns"
+    "academy_daemon": "Real-time Academy commands via executeCommand()",
+    "formula_master": "Training formula generation and optimization",
+    "synthesis_engine": "Multi-domain capability synthesis",
+    "genome_discoverer": "P2P genome search and assembly",
+    "planner_ai": "Academy resource coordination",
+    "base_widget": "Extends BaseWidget with declarative architecture"
   },
   "data_sources": {
-    "training_sessions": "Active adversarial training with progress metrics",
-    "persona_status": "Evolution tracking and capability development",
-    "p2p_network": "Peer connections and knowledge sharing activity",
-    "academy_stats": "Overall Academy performance and system health",
-    "formula_insights": "Formula Master generation reasoning and confidence"
+    "academy_personas": "PlannerAI, FormulaMaster, SynthesisEngine, GenomeDiscoverer status",
+    "chat_history": "Message history with metadata and room context",
+    "command_analysis": "Natural language pattern matching for Academy commands",
+    "session_costs": "Usage tracking and cost estimation",
+    "academy_backend": "Real-time connection status and capabilities"
   },
   "dependencies": {
     "shared-ui": "file:../shared",
     "base-widget": "file:../shared/BaseWidget.ts",
     "academy-commands": "file:../../../commands/academy"
+  },
+  "test": {
+    "unit": "src/ui/components/Academy/test/unit/AcademyChatWidget.test.ts",
+    "integration": "src/ui/components/Academy/test/integration/AcademyChatWidget.integration.test.ts"
   }
 }

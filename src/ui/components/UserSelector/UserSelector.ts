@@ -1,8 +1,10 @@
 /**
  * UserSelector Widget - TypeScript Implementation
  * Provides agent and user selection functionality with search
+ * Integrated with UniversalUserSystem for action buttons
  */
 import { BaseWidget } from '../shared/BaseWidget.js';
+import { universalUserSystem } from '../shared/UniversalUserSystem.js';
 
 interface Agent {
   id: string;
@@ -117,7 +119,7 @@ export class UserSelectorWidget extends BaseWidget {
       </div>
 
       <div class="agent-list">
-        ${this.getFilteredAgents().map(agent => this.renderAgent(agent)).join('')}
+        ${universalUserSystem.generateConnectedUsersHTML()}
       </div>
 
       <div class="actions">
@@ -173,15 +175,23 @@ export class UserSelectorWidget extends BaseWidget {
   }
 
   setupEventListeners(): void {
+    // Setup action button listeners for chat/train buttons
+    const agentListContainer = this.shadowRoot?.querySelector('.agent-list');
+    if (agentListContainer) {
+      universalUserSystem.setupActionButtonListeners(agentListContainer as HTMLElement);
+    }
+
     // Agent selection
     this.shadowRoot.addEventListener('click', (e: Event) => {
       const target = e.target as HTMLElement;
-      const agentItem = target.closest('.agent-item') as HTMLElement;
+      const agentItem = target.closest('.user-badge') as HTMLElement;
       
-      if (agentItem) {
-        const agentId = agentItem.dataset.agentId;
-        if (agentId) {
-          this.selectAgent(agentId);
+      if (agentItem && agentItem.classList.contains('clickable')) {
+        const userId = agentItem.dataset.userId;
+        if (userId) {
+          universalUserSystem.handleUserClick(userId, {
+            source: 'user-selector-widget'
+          });
         }
       }
 

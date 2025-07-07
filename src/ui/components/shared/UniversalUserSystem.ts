@@ -289,15 +289,67 @@ export class UniversalUserSystem {
       const clickableClass = user.isClickable ? 'clickable' : '';
       const typeClass = user.type;
       
+      // Add action buttons for personas and AI models
+      const actionButtons = (user.type === 'persona' || user.type === 'ai-model') ? `
+        <div class="user-actions">
+          <button class="user-action-btn chat-btn" data-action="chat" data-user-id="${user.id}" title="Start chat">💬</button>
+          <button class="user-action-btn train-btn" data-action="train" data-user-id="${user.id}" title="Academy training">🎓</button>
+        </div>
+      ` : '';
+      
       return `
         <div class="user-badge ${typeClass} ${clickableClass}" data-user-id="${user.id}">
           <span class="user-avatar">${user.avatar}</span>
           <span class="user-name">${user.name}</span>
           <span class="user-status ${user.status}"></span>
           ${user.currentTask ? `<span class="user-task">${user.currentTask}</span>` : ''}
+          ${actionButtons}
         </div>
       `;
     }).join('');
+  }
+
+  /**
+   * Setup event listeners for user action buttons
+   * Call this after the HTML is inserted into the DOM
+   */
+  setupActionButtonListeners(container: HTMLElement): void {
+    // Chat button handlers - use continuum API directly
+    container.querySelectorAll('.chat-btn').forEach(button => {
+      button.addEventListener('click', async (e: Event) => {
+        e.stopPropagation();
+        const target = e.currentTarget as HTMLButtonElement;
+        const userId = target.dataset.userId;
+        const user = this.getUser(userId!);
+        if (user) {
+          // Use continuum API - same as server controls pattern
+          await (window as any).continuum?.chat({
+            target: user.name,
+            userId: userId,
+            roomType: 'direct'
+          });
+        }
+      });
+    });
+
+    // Train button handlers - use continuum API directly
+    container.querySelectorAll('.train-btn').forEach(button => {
+      button.addEventListener('click', async (e: Event) => {
+        e.stopPropagation();
+        const target = e.currentTarget as HTMLButtonElement;
+        const userId = target.dataset.userId;
+        const user = this.getUser(userId!);
+        if (user) {
+          // Use continuum API - same as server controls pattern
+          await (window as any).continuum?.academy_train({
+            participantId: userId,
+            participantName: user.name,
+            participantType: user.type,
+            capabilities: user.capabilities
+          });
+        }
+      });
+    });
   }
 }
 

@@ -312,6 +312,12 @@ export class ChatWidget extends BaseWidget {
         }
       });
     });
+
+    // Setup action button listeners for chat/train buttons
+    const connectedUsersContainer = this.shadowRoot?.querySelector('.connected-users');
+    if (connectedUsersContainer) {
+      universalUserSystem.setupActionButtonListeners(connectedUsersContainer as HTMLElement);
+    }
   }
 
   private autoResizeTextarea(textarea: HTMLTextAreaElement): void {

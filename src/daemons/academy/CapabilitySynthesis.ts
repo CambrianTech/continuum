@@ -577,64 +577,99 @@ export class CapabilitySynthesis {
     }; // Placeholder
   }
 
-  private executeExactMatch(strategy: SynthesisStrategy, analysis: CapabilityAnalysis): Promise<SynthesisResult> {
-    console.log('TODO: Implement exact match execution for:', strategy, analysis);
-    return Promise.resolve({
+  private async executeExactMatch(strategy: SynthesisStrategy, analysis: CapabilityAnalysis): Promise<SynthesisResult> {
+    console.log('🎯 Executing exact match synthesis...');
+    
+    if (!strategy.primary_component) {
+      throw new Error('Exact match strategy requires primary component');
+    }
+    
+    const component = strategy.primary_component;
+    const componentPersonas = await this.createComponentPersonas([component]);
+    
+    // For exact match, we use the component as-is with minimal modification
+    const composition = await this.createDirectComposition(component, analysis);
+    
+    // Calculate domain-specific performance scores
+    const domainScores = this.calculateDomainScores(analysis.domain_capabilities, [component]);
+    
+    return {
       synthesis_strategy: 'exact_match',
-      confidence: 0.95,
-      component_personas: [],
-      lora_composition: { 
-        primary_layers: [], 
-        bridge_layers: [], 
-        novel_layers: [], 
-        composition_algorithm: 'direct',
-        total_rank: 0,
-        compression_efficiency: 1.0
+      confidence: Math.min(strategy.confidence, component.relevance_score),
+      component_personas: componentPersonas,
+      lora_composition: composition,
+      estimated_performance: {
+        overall_score: component.relevance_score,
+        domain_scores: domainScores,
+        confidence_interval: [component.relevance_score - 0.05, component.relevance_score + 0.05]
       },
-      estimated_performance: { overall_score: 0.9, domain_scores: {}, confidence_interval: [0.85, 0.95] },
-      creation_time_estimate: 1000,
-      resource_requirements: { compute_hours: 0.1, memory_gb: 2, storage_gb: 1, network_bandwidth_mbps: 10 }
-    });
+      creation_time_estimate: strategy.estimated_time,
+      resource_requirements: this.calculateMinimalResourceRequirements(component)
+    };
   }
 
-  private executeFineTuning(strategy: SynthesisStrategy, analysis: CapabilityAnalysis): Promise<SynthesisResult> {
-    console.log('TODO: Implement fine-tuning execution for:', strategy, analysis);
-    return Promise.resolve({
+  private async executeFineTuning(strategy: SynthesisStrategy, analysis: CapabilityAnalysis): Promise<SynthesisResult> {
+    console.log('🎯 Executing fine-tuning synthesis...');
+    
+    if (!strategy.base_components || !strategy.tuning_plan) {
+      throw new Error('Fine-tuning strategy requires base components and tuning plan');
+    }
+    
+    const baseComponents = strategy.base_components;
+    const componentPersonas = await this.createComponentPersonas(baseComponents);
+    
+    // Create initial composition from base components
+    const baseComposition = await this.createBaseComposition(baseComponents, analysis);
+    
+    // Identify capability gaps that need fine-tuning
+    const gaps = this.identifyCapabilityGaps(baseComposition, analysis);
+    
+    // Create fine-tuning plan to fill gaps
+    const fineTuningPlan = await this.createFineTuningPlan(gaps, analysis);
+    
+    // Estimate performance after fine-tuning
+    const performanceEstimate = this.estimateFineTunedPerformance(baseComposition, fineTuningPlan, analysis);
+    
+    return {
       synthesis_strategy: 'fine_tune_required',
-      confidence: 0.7,
-      component_personas: [],
-      lora_composition: { 
-        primary_layers: [], 
-        bridge_layers: [], 
-        novel_layers: [], 
-        composition_algorithm: 'adaptive',
-        total_rank: 32,
-        compression_efficiency: 0.75
-      },
-      estimated_performance: { overall_score: 0.75, domain_scores: {}, confidence_interval: [0.65, 0.85] },
-      creation_time_estimate: 60000,
-      resource_requirements: { compute_hours: 2, memory_gb: 8, storage_gb: 5, network_bandwidth_mbps: 50 }
-    });
+      confidence: this.calculateFineTuningConfidence(baseComponents, gaps, fineTuningPlan),
+      component_personas: componentPersonas,
+      lora_composition: baseComposition,
+      fine_tuning_plan: fineTuningPlan,
+      estimated_performance: performanceEstimate,
+      creation_time_estimate: strategy.estimated_time,
+      resource_requirements: this.calculateFineTuningResourceRequirements(baseComposition, fineTuningPlan)
+    };
   }
 
-  private executeNovelCreation(strategy: SynthesisStrategy, analysis: CapabilityAnalysis): Promise<SynthesisResult> {
-    console.log('TODO: Implement novel creation execution for:', strategy, analysis);
-    return Promise.resolve({
+  private async executeNovelCreation(strategy: SynthesisStrategy, analysis: CapabilityAnalysis): Promise<SynthesisResult> {
+    console.log('🚀 Executing novel creation synthesis...');
+    
+    const inspirationComponents = strategy.inspiration_components || [];
+    const componentPersonas = await this.createComponentPersonas(inspirationComponents);
+    
+    // Design novel architecture based on domain intersections
+    const novelArchitecture = await this.designNovelArchitecture(analysis);
+    
+    // Create composition with mostly novel layers
+    const composition = await this.createNovelComposition(novelArchitecture, inspirationComponents, analysis);
+    
+    // Develop training strategy for novel components
+    const trainingStrategy = this.developNovelTrainingStrategy(composition, analysis);
+    
+    // Conservative performance estimate for novel creation
+    const performanceEstimate = this.estimateNovelPerformance(composition, analysis);
+    
+    return {
       synthesis_strategy: 'novel_creation',
-      confidence: 0.3,
-      component_personas: [],
-      lora_composition: { 
-        primary_layers: [], 
-        bridge_layers: [], 
-        novel_layers: [], 
-        composition_algorithm: 'experimental',
-        total_rank: 64,
-        compression_efficiency: 0.5
-      },
-      estimated_performance: { overall_score: 0.5, domain_scores: {}, confidence_interval: [0.3, 0.7] },
-      creation_time_estimate: 300000,
-      resource_requirements: { compute_hours: 10, memory_gb: 16, storage_gb: 20, network_bandwidth_mbps: 100 }
-    });
+      confidence: this.calculateNovelCreationConfidence(novelArchitecture, inspirationComponents),
+      component_personas: componentPersonas,
+      lora_composition: composition,
+      fine_tuning_plan: trainingStrategy,
+      estimated_performance: performanceEstimate,
+      creation_time_estimate: strategy.estimated_time,
+      resource_requirements: this.calculateNovelCreationResourceRequirements(composition, trainingStrategy)
+    };
   }
 
   private identifyCapabilityGaps(composition: any, analysis: CapabilityAnalysis): any[] {

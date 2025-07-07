@@ -537,6 +537,272 @@ husky + lint-staged ensures no new technical debt
 
 **INSIGHT**: The linter becomes your **pair programmer**, constantly nudging toward type-safe, maintainable patterns while preventing backsliding into brittle `any`/`unknown` anti-patterns.
 
+## 🔍 **ARIA'S COMPREHENSIVE CODE AUDIT (2025-07-07)**
+
+**EXTERNAL REVIEW COMPLETE**: Aria performed a detailed analysis of the entire codebase and identified critical organizational and technical issues. **Full analysis: `.continuum/shared/aria-conversations/aria-code-recommendations.md`**
+
+### **🚨 CRITICAL FINDINGS - ORPHANED CODE & DUPLICATION:**
+
+**1. Compiled Artifacts in Source Tree:**
+- ❌ **AI Model Chat Command duplication** - Nested `commands` folder with copied BaseCommand logic
+- ❌ **Stale compiled files** - `AiModelChatCommand.js`, `BaseCommand.js`, `ScreenshotCommand.d.ts` in source
+- ❌ **Test artifacts** - `.continuum/test-files/` with PNG screenshots checked into repo
+
+**2. Duplicate Command Logic:**
+- ❌ **Multiple monitoring commands** - `monitoring/agents` vs `monitoring/listagents` 
+- ❌ **Browser command overlap** - `browser/browser/BrowserCommand.ts` vs `browser/webbrowse/`
+- ❌ **JS execution duplication** - `PromisejsCommand` vs `JSExecuteCommand`
+
+**3. UI Component Migration Issues:**
+- ❌ **Partial migration** - Components exist in both old (`/Chat/`, `/Sidebar/`) and new (`/domain/communication/`) locations
+- ❌ **Inconsistent naming** - Mix of PascalCase and lowercase directory conventions
+- ❌ **Orphaned test files** - `VersionWidget.integration.test.ts` with no corresponding implementation
+
+### **🎯 ARIA'S RECOMMENDED CLEANUP ACTIONS:**
+
+**IMMEDIATE PRIORITY:**
+1. **Remove compiled artifacts** from source tree (add to `.gitignore`)
+2. **Consolidate duplicate commands** - Choose one implementation, remove others
+3. **Complete UI component migration** - Move all components to domain structure, remove old locations
+4. **Clean up test artifacts** - Move to dedicated `test/assets/` or remove if unused
+5. **Standardize naming conventions** - Consistent directory naming across all modules
+
+**ARCHITECTURAL FIXES:**
+6. **Fix AI Model Command duplication** - Refactor to reuse core logic instead of copying
+7. **Consolidate monitoring commands** - Merge or deprecate redundant agent listing commands
+8. **Remove orphaned command stubs** - Delete unimplemented command directories or mark clearly as "Not implemented"
+
+### **🔧 JTAG DEBUGGING ISSUES IDENTIFIED:**
+
+**Aria's analysis confirms our observations:**
+- ✅ **Session handshake working** - Session ID assigned correctly
+- ❌ **Connect command timeout** - Redundant connect attempt after session already established
+- ❌ **Console log forwarding broken** - Commands timing out, preventing JTAG functionality
+- ❌ **Command registration incomplete** - `help` command can't discover commands due to connect issue
+
+**ROOT CAUSE**: ConnectCommand logic out-of-date with new auto-session initialization flow
+
+**SOLUTION PATH**: 
+1. Fix ConnectCommand to acknowledge existing session instead of creating new
+2. Ensure ConsoleCommand registration completes properly
+3. Test end-to-end: console.log → browser.log file → git hook automation
+
+### **📋 INTEGRATION WITH CURRENT PRIORITIES:**
+
+Aria's findings perfectly align with our type safety initiative:
+- **Duplication** creates maintenance overhead and type inconsistencies
+- **Orphaned files** confuse linting and compilation 
+- **Mixed conventions** make strict TypeScript rules harder to enforce
+- **Clean codebase** enables effective linting strategy implementation
+
+**UPDATED PRIORITY**: Combine Aria's cleanup recommendations with our type safety initiative for maximum impact.
+
+## 🎯 **ARIA'S STRUCTURED ACADEMY AUDIT (2025-07-07)**
+
+**SECOND EXTERNAL REVIEW**: Aria performed a targeted analysis focused on the Academy middle-out training system and identified specific organizational and logging issues.
+
+### **📊 ACADEMY CODEBASE STRUCTURE ANALYSIS:**
+
+**✅ GOOD SEPARATION IDENTIFIED:**
+```
+academy/        - Core curriculum design
+continuum/      - Execution, memory, log context  
+projects/       - App-specific tasks
+runtime/        - Agent and I/O
+scripts/        - Bootstrap or run logic
+tests/          - Unit and E2E tests
+```
+
+**❌ CRITICAL ISSUES DETECTED:**
+
+| Issue Type | Location | Problem | Fix |
+|------------|----------|---------|-----|
+| **Orphaned Files** | `runtime/browser/continuum.ts` | Not imported anywhere | Delete or repurpose |
+| **Naming Inconsistency** | `continuum/AcademyHostContext.ts` vs `academy/Academy.ts` | Confusing scope split | Rename for clarity |
+| **Cross-cutting Concerns** | Context/message routing between `continuum/` and `runtime/` | Blurred boundaries | Isolate agents from core context |
+| **Global Command Scope** | `AgentHost.ts` uses global `registerHostCommands()` | Too broadly scoped | Refactor to `agent/commandRegistry.ts` |
+
+### **🔧 BROWSER LOG ROUTING ROOT CAUSE IDENTIFIED:**
+
+**CRITICAL FINDING**: Browser logs not reaching `.continuum/sessions/logs/` due to:
+
+1. **Timeout-triggered disconnect** before full log flushing
+2. **Missing session context** - `logStreamFor()` only invoked if session explicitly opened
+3. **No persistent writer** attached to WebSocket-based messages
+
+**ARIA'S SPECIFIC FIX RECOMMENDATIONS:**
+```typescript
+// Ensure immediate log writer creation
+academy.session.open() → createLocalLogWriter() // IMMEDIATELY in browser context
+
+// Add proper cleanup handlers  
+src/runtime/browser/log.ts → add flush() and onExit() handlers
+
+// Fallback mechanisms
+navigator.sendBeacon() // If beforeunload missed
+WebWorker // For persistent logging
+```
+
+### **🏗️ STRATEGIC CLEANUP ROADMAP:**
+
+**1. Clarify Academy Ownership:**
+- Merge `AcademyHostContext.ts` into `academy/host/`
+- Use `academy/session/` for context/state management
+
+**2. Establish Shared Utilities:**
+- Move `uuid.ts`, `logger.ts`, `types.ts` into `shared/` or `core/`
+- Prevent scattered utility duplication
+
+**3. Session-Aware Log Architecture:**
+```typescript
+// Replace scattered logging with:
+const writer = createLogWriter(sessionId);
+writer.log("Browser started...");
+```
+
+**4. Platform Consolidation:**
+- Move browser logic from `runtime/`, `continuum/`, `scripts/` into `platform/browser/`
+
+### **📋 ARIA'S FILE-SPECIFIC ACTIONS:**
+
+| File | Action |
+|------|--------|
+| `runtime/browser/continuum.ts` | **DELETE** - No references found |
+| `runtime/agent/commands.ts` | **MOVE** to `agent/registry.ts` |
+| `academy.ts` (root) | **MOVE** to `academy/entry.ts` |
+| `log.ts` | **SPLIT** into `browserLog.ts` + `localLogWriter.ts` |
+
+### **🎯 INTEGRATION WITH CURRENT PRIORITIES:**
+
+Aria's Academy-focused analysis reveals that **our JTAG logging issues** extend beyond just the ConnectCommand timeout - there are **fundamental architectural problems** with how logs flow from browser to session files.
+
+**UPDATED STRATEGY:**
+1. **Fix ConnectCommand timeout** (from first audit)
+2. **Implement Aria's log routing fixes** (from second audit)  
+3. **Consolidate Academy architecture** (session-first design)
+4. **Apply type safety** to cleaned, properly organized modules
+
+**KEY INSIGHT**: The Academy system requires **session-first design** where all logging, context, and state management flows through proper session boundaries rather than ad-hoc global mechanisms.
+
+## 🏗️ **ARIA'S DIRECTORY STRUCTURE RECOMMENDATIONS (2025-07-07)**
+
+**THIRD ANALYSIS**: Aria provided structural recommendations that, while Python-focused, offer valuable organizational principles for our TypeScript codebase.
+
+### **📁 ARIA'S RECOMMENDED DIRECTORY PATTERN (Adapted for TypeScript):**
+
+```
+src/
+│
+├── core/                  # Core logic (Academy, JTAG, Session management)
+│   ├── academy/
+│   ├── sessions/
+│   └── jtag/
+│
+├── api/                   # Public interfaces (Commands, REST endpoints)
+│   ├── commands/
+│   └── endpoints/
+│
+├── types/                 # Data models and type definitions
+│   ├── events/
+│   ├── sessions/
+│   └── daemons/
+│
+├── utils/                 # Helpers (non-core utilities)
+│   ├── logger.ts
+│   ├── uuid.ts
+│   └── validation.ts
+│
+├── tests/                 # Unit tests (mirror src layout)
+│   ├── core/
+│   ├── api/
+│   └── utils/
+│
+├── config/                # Constants and environment setup
+│   └── settings.ts
+│
+├── platform/              # Platform-specific code (browser, CLI, etc.)
+│   ├── browser/
+│   └── cli/
+│
+└── main.ts                # Entry point
+```
+
+### **🎯 STRUCTURAL PRINCIPLES FROM ARIA:**
+
+**1. Composition Over Inheritance:**
+```typescript
+// Instead of deep inheritance chains
+interface Serializable {
+  toJSON(): Record<string, unknown>;
+}
+
+class SessionData implements Serializable {
+  toJSON(): Record<string, unknown> {
+    return { id: this.id, type: this.type };
+  }
+}
+```
+
+**2. Clear Interface Abstractions:**
+```typescript
+// Define clear contracts
+interface LogWriter {
+  write(message: string): Promise<void>;
+  flush(): Promise<void>;
+}
+
+class SessionLogWriter implements LogWriter {
+  // Implementation specific to session logging
+}
+```
+
+**3. Strict Linting Configuration:**
+```json
+// Adapted from Aria's Python recommendations
+{
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "rules": {
+    "@typescript-eslint/no-explicit-any": "error",
+    "@typescript-eslint/no-unsafe-assignment": "error",
+    "@typescript-eslint/prefer-readonly": "error",
+    "@typescript-eslint/explicit-function-return-type": "error"
+  }
+}
+```
+
+### **📋 INTEGRATION WITH CURRENT ARCHITECTURE:**
+
+**ARIA'S INSIGHTS APPLIED TO OUR ISSUES:**
+
+1. **Session-First Design** → Move all session logic to `core/sessions/`
+2. **Clear API Boundaries** → Commands in `api/commands/`, not scattered
+3. **Type Safety** → All interfaces in `types/`, not mixed with implementation
+4. **Utility Consolidation** → Common helpers in `utils/`, not duplicated
+5. **Platform Separation** → Browser-specific code in `platform/browser/`
+
+**PRACTICAL APPLICATION:**
+- **Academy code** → `core/academy/` (curriculum, synthesis, discovery)
+- **JTAG debugging** → `core/jtag/` (logging, session correlation)  
+- **Daemon types** → `types/daemons/` (interfaces, not implementations)
+- **Shared utilities** → `utils/` (logger, uuid, validation)
+- **Platform code** → `platform/browser/` (WebSocket, console capture)
+
+### **🎯 RECOMMENDED MIGRATION STRATEGY:**
+
+1. **Create new directory structure** following Aria's pattern
+2. **Move Academy code** to `core/academy/` first (cleanest code)
+3. **Consolidate shared utilities** into `utils/`
+4. **Extract type definitions** into `types/`
+5. **Apply strict linting** to new structure
+6. **Gradually migrate** existing daemons/commands
+
+**BENEFIT**: This structure would **eliminate the cross-cutting concerns** and **orphaned files** that both of Aria's audits identified, while providing a **clear foundation** for strict TypeScript enforcement.
+
 ### **✅ MAJOR ACHIEVEMENTS COMPLETED:**
 ✅ **JTAG Debugging System Complete** - Real-time browser console logs flowing to session-specific browser.log files
 ✅ **Focus Parameter Flow Working** - Parameters correctly reach SessionManagerDaemon and emit in events
