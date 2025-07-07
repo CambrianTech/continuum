@@ -40,6 +40,12 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   // Auto-cleanup interval
   private zombieCleanupInterval: NodeJS.Timeout | undefined = undefined;
   
+  // SAFETY: Track browser launch attempts to prevent infinite loops
+  private launchAttempts = new Map<string, number>();
+  private lastLaunchTime = new Map<string, number>();
+  private readonly MAX_LAUNCH_ATTEMPTS = 2;
+  private readonly LAUNCH_COOLDOWN_MS = 5000; // 5 seconds
+  
   // MessageRoutedDaemon implementation
   protected readonly primaryMessageType = 'browser_request';
   
@@ -196,22 +202,44 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     try {
       this.log(`🚀 SAFELY launching browser for NEW session ${sessionId} (${sessionType})`);
       
-      // SAFETY CHECK 1: Clean up zombies first
-      await this.performZombieCleanup();
+      // SAFETY CHECK 1: Rate limiting - prevent infinite loops
+      const now = Date.now();
+      const lastLaunch = this.lastLaunchTime.get(sessionId) || 0;
+      const attempts = this.launchAttempts.get(sessionId) || 0;
       
-      // SAFETY CHECK 2: Check if browser already exists
-      const tabStatus = await this.tabManager.checkTabs();
-      if (tabStatus.count > 0) {
-        this.log(`✅ Browser already has ${tabStatus.count} tab(s) open to localhost:9000 - reusing existing`);
+      if (now - lastLaunch < this.LAUNCH_COOLDOWN_MS) {
+        this.log(`⏰ Browser launch cooldown active for session ${sessionId} - skipping (${this.LAUNCH_COOLDOWN_MS - (now - lastLaunch)}ms remaining)`);
         return;
       }
       
-      // SAFETY CHECK 3: Check if we already have a browser for this session
+      if (attempts >= this.MAX_LAUNCH_ATTEMPTS) {
+        this.log(`🛑 Maximum browser launch attempts (${this.MAX_LAUNCH_ATTEMPTS}) reached for session ${sessionId} - preventing infinite loop`);
+        return;
+      }
+      
+      // Track this launch attempt
+      this.launchAttempts.set(sessionId, attempts + 1);
+      this.lastLaunchTime.set(sessionId, now);
+      
+      // SAFETY CHECK 2: Clean up zombies first
+      await this.performZombieCleanup();
+      
+      // SAFETY CHECK 3: Check if browser already exists
+      const tabStatus = await this.tabManager.checkTabs();
+      if (tabStatus.count > 0) {
+        this.log(`✅ Browser already has ${tabStatus.count} tab(s) open to localhost:9000 - reusing existing`);
+        // Reset attempts since we found existing browser
+        this.launchAttempts.delete(sessionId);
+        return;
+      }
+      
+      // SAFETY CHECK 4: Check if we already have a browser for this session
       // TODO: Re-enable browser session tracking when session system is fixed
       // const existingBrowser = this.sessionManager.getBrowserBySession(sessionId);
       const existingBrowser = null;
       if (existingBrowser) {
         this.log(`✅ Browser already exists for session ${sessionId} - not launching new one`);
+        this.launchAttempts.delete(sessionId);
         return;
       }
       
@@ -224,6 +252,9 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       
       const launchResult = await this.launcher.launch(browserConfig, 0);
       this.log(`🌐 Browser launched successfully for session ${sessionId} (PID: ${launchResult.pid})`);
+      
+      // Reset attempts on successful launch
+      this.launchAttempts.delete(sessionId);
       
       // Register browser
       const managedBrowser: ManagedBrowser = {
@@ -251,6 +282,21 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   private async ensureBrowserExistsForSession(sessionId: string, sessionType: string, _owner: string): Promise<void> {
     try {
       this.log(`🔍 Ensuring browser availability for session ${sessionId} (${sessionType})`);
+      
+      // SAFETY CHECK: Rate limiting for joined sessions too
+      const now = Date.now();
+      const lastLaunch = this.lastLaunchTime.get(sessionId) || 0;
+      const attempts = this.launchAttempts.get(sessionId) || 0;
+      
+      if (now - lastLaunch < this.LAUNCH_COOLDOWN_MS) {
+        this.log(`⏰ Browser ensure cooldown active for session ${sessionId} - skipping`);
+        return;
+      }
+      
+      if (attempts >= this.MAX_LAUNCH_ATTEMPTS) {
+        this.log(`🛑 Maximum browser ensure attempts reached for session ${sessionId} - preventing infinite loop`);
+        return;
+      }
       
       // Clean up any zombie tabs first
       await this.performZombieCleanup();

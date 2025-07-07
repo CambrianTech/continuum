@@ -66,7 +66,8 @@ export interface WebSocketEventData {
 }
 
 export interface WebSocketConnectionEventData extends WebSocketEventData {
-  // Additional connection-specific data
+  timestamp: Date;
+  source: string;
 }
 
 export interface WebSocketConnectionClosedEventData extends WebSocketEventData {
