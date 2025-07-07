@@ -2,9 +2,10 @@
   "name": "UserSelector-core",
   "version": "1.0.0",
   "description": "UserSelector core for Continuum",
-  "main": "UserSelectorCore.ts",
+  "main": "UserSelector.ts",
   "type": "module",
   "continuum": {
+    "type": "widget",
     "core": "UserSelector",
     "category": "Core",
     "capabilities": [

@@ -2,9 +2,10 @@
   "name": "SavedPersonas-core",
   "version": "1.0.0",
   "description": "SavedPersonas core for Continuum",
-  "main": "SavedPersonasCore.ts",
+  "main": "SavedPersonas.ts",
   "type": "module",
   "continuum": {
+    "type": "widget",
     "core": "SavedPersonas",
     "category": "Core",
     "capabilities": [
