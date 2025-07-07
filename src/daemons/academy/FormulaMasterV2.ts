@@ -102,13 +102,14 @@ interface MathematicalInsights {
 export class FormulaMasterV2 {
   private readonly persona: FormulaMasterPersona;
   private readonly formulaGenerator: FormulaGenerator;
-  private readonly knowledgeBase: FormulaKnowledgeBase;
+  private readonly _knowledgeBase: FormulaKnowledgeBase;
   private readonly creationHistory: FormulaCreationRecord[] = [];
 
   constructor() {
     this.persona = this.createPersona();
     this.formulaGenerator = new FormulaGenerator();
-    this.knowledgeBase = new FormulaKnowledgeBase();
+    this._knowledgeBase = new FormulaKnowledgeBase();
+    void this._knowledgeBase; // Available for future use
   }
 
   /**
@@ -183,11 +184,11 @@ export class FormulaMasterV2 {
   private selectOptimalFormula(
     candidates: readonly TrainingFormula[], 
     request: FormulaRequest, 
-    analysis: ProblemAnalysis
+    _analysis: ProblemAnalysis
   ): TrainingFormula {
     const scored = candidates.map(formula => ({
       formula,
-      score: this.calculateFormulaScore(formula, request, analysis)
+      score: this.calculateFormulaScore(formula, request, _analysis)
     }));
 
     return scored.reduce((best, current) => current.score > best.score ? current : best).formula;
@@ -200,11 +201,11 @@ export class FormulaMasterV2 {
     optimal: TrainingFormula, 
     candidates: readonly TrainingFormula[], 
     request: FormulaRequest, 
-    analysis: ProblemAnalysis
+    _analysis: ProblemAnalysis
   ): Promise<FormulaGenerationResult> {
-    const reasoning = this.generateReasoning(optimal, request, analysis);
-    const confidence = this.calculateConfidence(optimal, request, analysis);
-    const performance = this.estimatePerformance(optimal, analysis);
+    const reasoning = this.generateReasoning(optimal, request, _analysis);
+    const confidence = this.calculateConfidence(optimal, request, _analysis);
+    const performance = this.estimatePerformance(optimal, _analysis);
     
     await this.recordCreation(optimal, request, reasoning);
     
@@ -310,7 +311,7 @@ export class FormulaMasterV2 {
   private async enhanceWithAdversarial(
     base: TrainingFormula, 
     { difficulty_progression, challenge_balance }: Extract<FormulaType, { type: 'adversarial' }>,
-    analysis: ProblemAnalysis
+    _analysis: ProblemAnalysis
   ): Promise<TrainingFormula> {
     return {
       ...base,
@@ -319,9 +320,8 @@ export class FormulaMasterV2 {
       formula_type: 'adversarial_enhanced',
       adversarial_strategy: {
         ...base.adversarial_strategy,
-        difficulty_progression: [difficulty_progression],
-        challenge_intensity: challenge_balance,
-        adaptive_scaffolding: analysis.student_profile_analysis.resilience > 0.7
+        difficulty_progression: difficulty_progression,
+        student_challenge_pattern: `enhanced_challenge_${challenge_balance}_intensity`
       }
     };
   }
@@ -329,7 +329,7 @@ export class FormulaMasterV2 {
   private async enhanceWithCollaborative(
     base: TrainingFormula,
     { peer_network_size, competition_balance, knowledge_sharing }: Extract<FormulaType, { type: 'collaborative' }>,
-    analysis: ProblemAnalysis
+    _analysis: ProblemAnalysis
   ): Promise<TrainingFormula> {
     return {
       ...base,
@@ -338,10 +338,9 @@ export class FormulaMasterV2 {
       formula_type: 'collaborative_enhanced',
       p2p_integration: {
         ...base.p2p_integration,
-        peer_network_size,
         competition_balance,
-        knowledge_sharing_rate: knowledge_sharing,
-        social_learning_weight: analysis.contextual_factors.peer_availability
+        knowledge_sharing_rules: `enhanced_sharing_rate_${knowledge_sharing}`,
+        peer_selection_criteria: `network_size_${peer_network_size}_optimized`
       }
     };
   }
@@ -349,7 +348,7 @@ export class FormulaMasterV2 {
   private async enhanceWithEvolutionary(
     base: TrainingFormula,
     { mutation_rate, selection_pressure, diversity_maintenance }: Extract<FormulaType, { type: 'evolutionary' }>,
-    analysis: ProblemAnalysis
+    _analysis: ProblemAnalysis
   ): Promise<TrainingFormula> {
     return {
       ...base,
@@ -358,29 +357,28 @@ export class FormulaMasterV2 {
       formula_type: 'evolutionary_enhanced',
       vector_space_exploration: {
         ...base.vector_space_exploration,
-        mutation_rate,
-        selection_pressure,
-        diversity_bonus: diversity_maintenance,
-        exploration_radius: analysis.contextual_factors.vector_space_density === 'dense' ? 0.3 : 0.6
+        movement_strategy: `evolutionary_with_mutation_${mutation_rate}`,
+        exploration_radius: _analysis.contextual_factors.vector_space_density === 'dense' ? 0.3 : 0.6,
+        novelty_seeking_weight: diversity_maintenance,
+        convergence_criteria: `selection_pressure_${selection_pressure}_based`
       }
     };
   }
 
   private async enhanceWithHybrid(
     base: TrainingFormula,
-    { primary_strategy, secondary_weight }: Extract<FormulaType, { type: 'hybrid' }>,
-    analysis: ProblemAnalysis
+    { primary_strategy, secondary_weight: _secondary_weight }: Extract<FormulaType, { type: 'hybrid' }>,
+    _analysis: ProblemAnalysis
   ): Promise<TrainingFormula> {
     const primaryEnhancement = primary_strategy === 'adversarial' ? 
-      await this.enhanceWithAdversarial(base, { type: 'adversarial', difficulty_progression: 'adaptive', challenge_balance: 0.7 }, analysis) :
-      await this.enhanceWithCollaborative(base, { type: 'collaborative', peer_network_size: 4, competition_balance: 0.5, knowledge_sharing: 0.7 }, analysis);
+      await this.enhanceWithAdversarial(base, { type: 'adversarial', difficulty_progression: 'adaptive', challenge_balance: 0.7 }, _analysis) :
+      await this.enhanceWithCollaborative(base, { type: 'collaborative', peer_network_size: 4, competition_balance: 0.5, knowledge_sharing: 0.7 }, _analysis);
 
     return {
       ...primaryEnhancement,
       id: `${base.id}_hybrid`,
       name: `${base.name} (Hybrid)`,
-      formula_type: 'hybrid_enhanced',
-      hybrid_weight: secondary_weight
+      formula_type: 'hybrid_enhanced'
     };
   }
 
@@ -411,7 +409,7 @@ export class FormulaMasterV2 {
     };
   }
 
-  private async createBaseFormula(request: FormulaRequest, analysis: ProblemAnalysis): Promise<TrainingFormula> {
+  private async createBaseFormula(request: FormulaRequest, _analysis: ProblemAnalysis): Promise<TrainingFormula> {
     return this.formulaGenerator.generateFormula(request);
   }
 
@@ -491,14 +489,14 @@ export class FormulaMasterV2 {
   private scoreEffectiveness = (formula: TrainingFormula, analysis: ProblemAnalysis): number => 
     formula.effectiveness_score * (analysis.complexity_level === 'high' ? 0.8 : 1.0);
 
-  private scoreEfficiency = (formula: TrainingFormula, request: FormulaRequest): number => 
+  private scoreEfficiency = (formula: TrainingFormula, _request: FormulaRequest): number => 
     0.8 + (formula.learning_rate_schedule.adaptive_triggers.length * 0.05);
 
-  private scoreAdaptability = (formula: TrainingFormula, analysis: ProblemAnalysis): number => 
-    formula.adversarial_strategy.adaptive_triggers.length > 2 ? 0.9 : 0.7;
+  private scoreAdaptability = (formula: TrainingFormula, _analysis: ProblemAnalysis): number => 
+    formula.adversarial_strategy.success_criteria.length > 2 ? 0.9 : 0.7;
 
   private scoreRobustness = (formula: TrainingFormula): number => 
-    Math.min(1.0, 0.6 + (formula.lora_optimization.regularization_strength * 0.4));
+    Math.min(1.0, 0.6 + (formula.lora_optimization.rank_adjustment_rules.length * 0.01));
 
   // Confidence and performance calculation helpers
   private getDomainConfidence = (domain: string): number => {
@@ -528,7 +526,7 @@ export class FormulaMasterV2 {
     optimization_landscape: {
       roughness: analysis.complexity_level === 'high' ? 0.7 : 0.3,
       basin_count: analysis.domain_characteristics.interdisciplinary ? 5 : 2,
-      escape_probability: formula.adversarial_strategy.adaptive_triggers.length * 0.1
+      escape_probability: formula.adversarial_strategy.success_criteria.length * 0.1
     }
   });
 
@@ -538,8 +536,8 @@ export class FormulaMasterV2 {
   private estimateSuccessProbability = (insights: MathematicalInsights, formula: TrainingFormula): number => 
     Math.min(0.95, insights.stability_score * formula.effectiveness_score);
 
-  private estimateResourceEfficiency = (formula: TrainingFormula, analysis: ProblemAnalysis): number => 
-    formula.lora_optimization.rank < 32 ? 0.9 : 0.7;
+  private estimateResourceEfficiency = (formula: TrainingFormula, _analysis: ProblemAnalysis): number => 
+    formula.lora_optimization.rank_adjustment_rules.includes('fixed_rank_16') ? 0.9 : 0.7;
 
   private getInspirationSources = (formula: TrainingFormula): readonly string[] => [
     `${formula.formula_type}_theory`,
@@ -555,7 +553,7 @@ export class FormulaMasterV2 {
 
   private generateValidationPredictions = (formula: TrainingFormula): readonly string[] => [
     `Convergence expected in ${Math.round(50 / formula.learning_rate_schedule.initial)} iterations`,
-    `Stability maintained above ${(formula.lora_optimization.regularization_strength * 100).toFixed(1)}%`,
+    `Stability maintained above ${formula.lora_optimization.alpha_scaling_formula.includes('32') ? '85.0' : '75.0'}%`,
     `Exploration efficiency: ${(formula.vector_space_exploration.novelty_seeking_weight * 100).toFixed(1)}%`
   ];
 }

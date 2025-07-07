@@ -3,7 +3,7 @@
  * Shows system health, emotions, and live status updates
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 interface StatusMessage {
   text: string;
@@ -12,6 +12,9 @@ interface StatusMessage {
 }
 
 export class ContinuonWidget extends BaseWidget {
+  static getOwnCSS(): string[] {
+    return ['ContinuonWidget.css'];
+  }
   private currentStatus: 'red' | 'yellow' | 'green' = 'red';
   private currentEmotion: string | null = null;
   private statusFeed: StatusMessage[] = [];
@@ -22,7 +25,6 @@ export class ContinuonWidget extends BaseWidget {
     this.widgetName = 'ContinuonWidget';
     this.widgetIcon = '🔮';
     this.widgetTitle = 'System Status Orb';
-    this.cssPath = '/src/ui/components/Continuon/ContinuonWidget.css';
   }
 
   protected async initializeWidget(): Promise<void> {

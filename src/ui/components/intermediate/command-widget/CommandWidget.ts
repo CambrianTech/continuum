@@ -10,7 +10,7 @@
  * - PersonaWidget (persona management commands)
  */
 
-import { BaseWidget } from '../../shared/BaseWidget.js';
+import { BaseWidget } from '../../shared/BaseWidget';
 
 export interface CommandResult {
   success: boolean;

@@ -9,7 +9,7 @@
  * - Works alongside regular ChatWidget
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 interface AcademyPersona {
   readonly id: string;

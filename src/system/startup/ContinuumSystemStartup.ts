@@ -287,6 +287,9 @@ export class ContinuumSystem extends EventEmitter {
     // Register specific command endpoints only - CommandProcessorDaemon registers its own endpoints
     webSocketDaemon.registerRouteHandler('/api/commands/*', 'command-processor', 'handle_api');
     
+    // Register widgets API endpoint for dynamic widget discovery
+    webSocketDaemon.registerRouteHandler('/api/widgets/list', 'command-processor', 'handle_widget_api');
+    
     // Register catch-all route for renderer daemon (handles everything else)
     webSocketDaemon.registerRouteHandler('*', 'renderer', 'http_request');
     

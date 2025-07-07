@@ -60,9 +60,9 @@ class WidgetIntegrationTest {
     this.log("Testing widget file availability...");
     
     const widgetPaths = [
-      '/dist/ui/components/Chat/ChatWidget.js',
-      '/dist/ui/components/Sidebar/SidebarWidget.js',
-      '/dist/ui/components/shared/BaseWidget.js'
+      '/dist/ui/components/Chat/ChatWidget',
+      '/dist/ui/components/Sidebar/SidebarWidget',
+      '/dist/ui/components/shared/BaseWidget'
     ];
 
     let allPassed = true;
@@ -217,7 +217,7 @@ class WidgetIntegrationTest {
       const html = await response.text();
       
       const hasWidgetElements = html.includes('<chat-widget>') && html.includes('<continuum-sidebar>');
-      const hasWidgetScript = html.includes('continuum-browser.js');
+      const hasWidgetScript = html.includes('continuum-browser');
       const hasWidgetCSS = html.includes('type="module"'); // Module scripts should be present
       
       const passed = response.status === 200 && hasWidgetElements && hasWidgetScript;

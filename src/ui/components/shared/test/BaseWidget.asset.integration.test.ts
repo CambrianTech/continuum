@@ -4,7 +4,7 @@
  * Tests any widget that extends BaseWidget automatically
  */
 
-import { BaseWidget } from '../BaseWidget.js';
+import { BaseWidget } from '../BaseWidget';
 
 interface AssetTestResult {
   url: string;

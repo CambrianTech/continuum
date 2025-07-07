@@ -334,13 +334,18 @@ class ContinuumBrowserAPI implements ContinuumAPI {
   }
   
   async discoverAndLoadWidgets(): Promise<void> {
-    console.log('🔍 Loading core widgets...');
+    console.log('🔍 Single-source widget discovery - no duplicated logic...');
     
-    // Load core widgets first using Promise.all for parallel loading
-    const coreWidgets = [
-      './components/Sidebar/SidebarWidget.js',
-      './components/Chat/ChatWidget.js'
+    // SINGLE SOURCE OF TRUTH: Use working /src/ paths with .js extensions
+    const coreWidgets: string[] = [
+      '/src/ui/components/Sidebar/SidebarWidget.js',
+      '/src/ui/components/Chat/ChatWidget.js', 
+      '/src/ui/components/UserSelector/UserSelector.js',
+      '/src/ui/components/shared/BaseWidget.js'
     ];
+    
+    console.log(`📋 Loading ${coreWidgets.length} widgets from consistent /src/ paths`);
+    console.log('🏗️ No fallbacks, no duplicated discovery logic, single source of truth');
     
     const widgetPromises = coreWidgets.map(async (widgetPath) => {
       try {
@@ -369,49 +374,11 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     console.log(`✅ Core widgets loaded: ${loadedCount}/${coreWidgets.length}`);
     
     // Register fallbacks ONLY if some widgets failed to load
+    // SIMPLIFIED: Just report success/failure, no complex fallback logic
     if (loadedCount < coreWidgets.length) {
-      console.log(`🔧 Some widgets failed (${loadedCount}/${coreWidgets.length}) - registering fallbacks...`);
-      try {
-        await Promise.allSettled([
-          import('./components/shared/WidgetFallbacks.js'),
-          import('./components/shared/WidgetServerControls.js'),
-          import('./components/shared/InteractivePersona.js')
-        ]);
-        console.log('✅ Widget fallbacks registered for failed widgets');
-      } catch (error) {
-        console.warn('⚠️ Failed to load widget fallbacks:', error);
-      }
+      console.warn(`⚠️ Only ${loadedCount}/${coreWidgets.length} widgets loaded - check console for import errors`);
     } else {
-      console.log('✅ All core widgets loaded successfully - no fallbacks needed');
-    }
-    
-    // Try dynamic discovery as backup
-    try {
-      const widgetPaths = await this.discoverWidgetPaths();
-      const discoveryPromises = widgetPaths.map(async (path) => {
-        try {
-          console.log(`📦 Loading discovered widget: ${path}`);
-          await import(path);
-          return { path, success: true };
-        } catch (error) {
-          console.warn(`⚠️ Failed to load discovered widget ${path}:`, error);
-          return { path, success: false, error };
-        }
-      });
-      
-      const discoveryResults = await Promise.allSettled(discoveryPromises);
-      const discoveredCount = discoveryResults.filter((r, i) => {
-        if (r.status === 'fulfilled' && r.value.success) {
-          return true;
-        } else {
-          const widgetPath = widgetPaths[i];
-          console.warn(`⚠️ Discovery widget ${widgetPath} failed:`, r.status === 'rejected' ? r.reason : r.value.error);
-          return false;
-        }
-      }).length;
-      console.log(`✅ Discovery widgets loaded: ${discoveredCount}/${widgetPaths.length}`);
-    } catch (error) {
-      console.warn('⚠️ Dynamic widget discovery failed:', error);
+      console.log('✅ All core widgets loaded successfully');
     }
     
     console.log(`✅ Widget loading complete - ${loadedCount} widgets loaded`);
@@ -420,23 +387,6 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     console.log('🎨 Widgets ready (instantiated via HTML)');
   }
   
-  private async discoverWidgetPaths(): Promise<string[]> {
-    try {
-      // Ask the server to discover widgets via command (no hard-coded paths)
-      if (this.isConnected()) {
-        const response = await this.execute('discover_widgets');
-        if (response && response.success && response.widgets) {
-          return response.widgets;
-        }
-      }
-    } catch (error) {
-      console.warn('⚠️ Server widget discovery failed:', error);
-    }
-    
-    // If server discovery fails, widgets simply won't load
-    // No fallback hard-coding - maintains separation of concerns
-    return [];
-  }
   
   private getSourceLocation(stackTrace?: string): string {
     if (!stackTrace) return 'Unknown location';

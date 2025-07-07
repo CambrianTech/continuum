@@ -6,9 +6,10 @@
  */
 
 import { BaseDaemon } from '../base/BaseDaemon';
-import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import type { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
-import { spawn, ChildProcess } from 'child_process';
+import type { ChildProcess } from 'child_process';
+import { spawn } from 'child_process';
 import * as path from 'path';
 
 interface DaemonControlRequest {
@@ -203,7 +204,7 @@ export class DaemonManagerDaemon extends BaseDaemon {
   
   private async stopDaemon(name: string): Promise<DaemonResponse> {
     const daemon = this.daemons.get(name);
-    if (!daemon || !daemon.process) {
+    if (!daemon?.process) {
       return {
         success: true,
         data: { message: `${name} not running` }
@@ -217,7 +218,7 @@ export class DaemonManagerDaemon extends BaseDaemon {
     
     // Wait for process to exit
     await new Promise<void>((resolve) => {
-      let timeout = setTimeout(() => {
+      const timeout = setTimeout(() => {
         // Force kill if not stopped gracefully
         if (daemon.process) {
           this.log(`⚠️ Force killing ${name} daemon`, 'warn');
@@ -254,7 +255,7 @@ export class DaemonManagerDaemon extends BaseDaemon {
     
     daemon.restarts++;
     
-    const maxRestarts = daemon.config.maxRestarts || 5;
+    const maxRestarts = daemon.config.maxRestarts ?? 5;
     if (daemon.restarts > maxRestarts) {
       daemon.status = 'failed';
       this.log(`❌ ${name} daemon exceeded max restarts (${maxRestarts}), giving up`, 'error');
@@ -265,7 +266,7 @@ export class DaemonManagerDaemon extends BaseDaemon {
       return;
     }
     
-    const restartDelay = daemon.config.restartDelay || 1000;
+    const restartDelay = daemon.config.restartDelay ?? 1000;
     this.log(`🔄 Restarting ${name} daemon in ${restartDelay}ms (attempt ${daemon.restarts}/${maxRestarts})`);
     
     setTimeout(() => {

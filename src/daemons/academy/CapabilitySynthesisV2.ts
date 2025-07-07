@@ -3,7 +3,7 @@
  * Using destructuring, spread operators, and type inference to reduce cognitive load
  */
 
-import { LoRADiscovery, LoRAMetadata } from './LoRADiscovery';
+import { LoRADiscovery } from './LoRADiscovery';
 import { LoRALayer } from './types/index';
 
 // Core synthesis types using TypeScript's discriminated unions
@@ -14,8 +14,8 @@ type SynthesisStrategy =
   | { type: 'novel_creation'; inspiration?: ComponentCandidate[]; confidence: number; time: number };
 
 // Using template literal types for better type safety
-type LayerPosition = 'core' | 'bridge' | 'novel';
-type LayerType = 'primary' | 'bridge' | 'novel';
+// type _LayerPosition = 'core' | 'bridge' | 'novel';
+// type _LayerType = 'primary' | 'bridge' | 'novel';
 
 // Elegant interfaces using utility types
 interface ComponentCandidate {
@@ -142,13 +142,14 @@ interface DomainIntersection {
  * Brilliant synthesis engine using TypeScript's power for cognitive simplification
  */
 export class CapabilitySynthesis {
-  private readonly searchIndex: any;
-  private readonly loraDiscovery: LoRADiscovery;
+  private readonly _searchIndex: any;
+  private readonly _loraDiscovery: LoRADiscovery;
   private readonly synthesisCache = new Map<string, SynthesisResult>();
 
   constructor(searchIndex: any, loraDiscovery: LoRADiscovery) {
-    this.searchIndex = searchIndex;
-    this.loraDiscovery = loraDiscovery;
+    this._searchIndex = searchIndex;
+    this._loraDiscovery = loraDiscovery;
+    void this._searchIndex, this._loraDiscovery; // Available for future use
   }
 
   /**
@@ -218,7 +219,7 @@ export class CapabilitySynthesis {
    * Layer composition with elegant component mapping
    */
   private async executeLayerComposition(
-    { components, confidence, time }: Extract<SynthesisStrategy, { type: 'layer_composition' }>,
+    { components, confidence: _confidence, time }: Extract<SynthesisStrategy, { type: 'layer_composition' }>,
     analysis: CapabilityAnalysis
   ): Promise<SynthesisResult> {
     const composition = await this.designLayerComposition(components, analysis);
@@ -241,7 +242,7 @@ export class CapabilitySynthesis {
    * Fine-tuning with elegant gap analysis
    */
   private async executeFineTuning(
-    { base_components, plan, confidence, time }: Extract<SynthesisStrategy, { type: 'fine_tune_required' }>,
+    { base_components, plan: _plan, confidence, time }: Extract<SynthesisStrategy, { type: 'fine_tune_required' }>,
     analysis: CapabilityAnalysis
   ): Promise<SynthesisResult> {
     const composition = await this.createBaseComposition(base_components, analysis);
@@ -388,11 +389,11 @@ export class CapabilitySynthesis {
     };
   }
 
-  private async findCandidateComponents(analysis: CapabilityAnalysis): Promise<readonly ComponentCandidate[]> {
+  private async findCandidateComponents(_analysis: CapabilityAnalysis): Promise<readonly ComponentCandidate[]> {
     return [];
   }
 
-  private async determineSynthesisStrategy(analysis: CapabilityAnalysis, candidates: readonly ComponentCandidate[]): Promise<SynthesisStrategy> {
+  private async determineSynthesisStrategy(_analysis: CapabilityAnalysis, candidates: readonly ComponentCandidate[]): Promise<SynthesisStrategy> {
     return { type: 'exact_match', component: candidates[0] || this.createMockComponent(), confidence: 0.8, time: 5000 };
   }
 
@@ -427,7 +428,7 @@ export class CapabilitySynthesis {
   }
 
   // Additional stub methods following elegant patterns...
-  private async createDirectComposition(component: ComponentCandidate, analysis: CapabilityAnalysis): Promise<LoRAComposition> {
+  private async createDirectComposition(_component: ComponentCandidate, _analysis: CapabilityAnalysis): Promise<LoRAComposition> {
     return {
       primary_layers: [],
       bridge_layers: [],
@@ -446,11 +447,11 @@ export class CapabilitySynthesis {
     return this.designLayerComposition(components, analysis);
   }
 
-  private identifyCapabilityGaps(composition: LoRAComposition, analysis: CapabilityAnalysis): readonly CapabilityGap[] {
+  private identifyCapabilityGaps(_composition: LoRAComposition, _analysis: CapabilityAnalysis): readonly CapabilityGap[] {
     return [];
   }
 
-  private async createFineTuningPlan(gaps: readonly CapabilityGap[], analysis: CapabilityAnalysis): Promise<FineTuningPlan> {
+  private async createFineTuningPlan(gaps: readonly CapabilityGap[], _analysis: CapabilityAnalysis): Promise<FineTuningPlan> {
     return {
       target_gaps: gaps,
       training_strategy: 'few_shot',
@@ -460,11 +461,11 @@ export class CapabilitySynthesis {
     };
   }
 
-  private calculateCompositionConfidence(composition: LoRAComposition, gaps: readonly CapabilityGap[]): number {
+  private calculateCompositionConfidence(_composition: LoRAComposition, gaps: readonly CapabilityGap[]): number {
     return Math.max(0.5, 0.9 - (gaps.length * 0.1));
   }
 
-  private estimateCompositionPerformance(composition: LoRAComposition, gaps: readonly CapabilityGap[]): EstimatedPerformance {
+  private estimateCompositionPerformance(_composition: LoRAComposition, _gaps: readonly CapabilityGap[]): EstimatedPerformance {
     return {
       overall_score: 0.75,
       domain_scores: {},
@@ -472,7 +473,7 @@ export class CapabilitySynthesis {
     };
   }
 
-  private calculateResourceRequirements(composition: LoRAComposition): ResourceRequirements {
+  private calculateResourceRequirements(_composition: LoRAComposition): ResourceRequirements {
     return {
       compute_hours: 1,
       memory_gb: 4,
@@ -481,7 +482,7 @@ export class CapabilitySynthesis {
     };
   }
 
-  private estimateFineTunedPerformance(composition: LoRAComposition, plan: FineTuningPlan, analysis: CapabilityAnalysis): EstimatedPerformance {
+  private estimateFineTunedPerformance(_composition: LoRAComposition, _plan: FineTuningPlan, _analysis: CapabilityAnalysis): EstimatedPerformance {
     return {
       overall_score: 0.8,
       domain_scores: {},
@@ -489,7 +490,7 @@ export class CapabilitySynthesis {
     };
   }
 
-  private calculateFineTuningResources(composition: LoRAComposition, plan: FineTuningPlan): ResourceRequirements {
+  private calculateFineTuningResources(_composition: LoRAComposition, _plan: FineTuningPlan): ResourceRequirements {
     return {
       compute_hours: 2,
       memory_gb: 8,
@@ -498,11 +499,11 @@ export class CapabilitySynthesis {
     };
   }
 
-  private async designNovelArchitecture(analysis: CapabilityAnalysis): Promise<any> {
+  private async designNovelArchitecture(_analysis: CapabilityAnalysis): Promise<any> {
     return { innovation_patterns: [], architectural_choices: [] };
   }
 
-  private async createNovelComposition(architecture: any, inspiration: readonly ComponentCandidate[], analysis: CapabilityAnalysis): Promise<LoRAComposition> {
+  private async createNovelComposition(_architecture: any, _inspiration: readonly ComponentCandidate[], _analysis: CapabilityAnalysis): Promise<LoRAComposition> {
     return {
       primary_layers: [],
       bridge_layers: [],
@@ -513,7 +514,7 @@ export class CapabilitySynthesis {
     };
   }
 
-  private developNovelTrainingStrategy(composition: LoRAComposition, analysis: CapabilityAnalysis): FineTuningPlan {
+  private developNovelTrainingStrategy(_composition: LoRAComposition, _analysis: CapabilityAnalysis): FineTuningPlan {
     return {
       target_gaps: [],
       training_strategy: 'adversarial',
@@ -523,7 +524,7 @@ export class CapabilitySynthesis {
     };
   }
 
-  private estimateNovelPerformance(composition: LoRAComposition, analysis: CapabilityAnalysis): EstimatedPerformance {
+  private estimateNovelPerformance(_composition: LoRAComposition, _analysis: CapabilityAnalysis): EstimatedPerformance {
     return {
       overall_score: 0.5,
       domain_scores: {},
@@ -531,7 +532,7 @@ export class CapabilitySynthesis {
     };
   }
 
-  private calculateNovelResources(composition: LoRAComposition, training: FineTuningPlan): ResourceRequirements {
+  private calculateNovelResources(_composition: LoRAComposition, _training: FineTuningPlan): ResourceRequirements {
     return {
       compute_hours: 10,
       memory_gb: 16,

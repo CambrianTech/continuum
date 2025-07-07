@@ -16,7 +16,7 @@ continuum ActiveProjects --verbose
 
 ### Programmatic Usage
 ```typescript
-import { ActiveProjectsCommand } from './ActiveProjectsCommand.js';
+import { ActiveProjectsCommand } from './ActiveProjectsCommand';
 
 // Execute the command
 const result = await ActiveProjectsCommand.execute({

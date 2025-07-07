@@ -585,7 +585,7 @@ export class CapabilitySynthesis {
     }
     
     const component = strategy.primary_component;
-    const componentPersonas = await this.createComponentPersonas([component]);
+    const componentPersonas = await this.convertToComponentPersonas([component]);
     
     // For exact match, we use the component as-is with minimal modification
     const composition = await this.createDirectComposition(component, analysis);
@@ -604,7 +604,7 @@ export class CapabilitySynthesis {
         confidence_interval: [component.relevance_score - 0.05, component.relevance_score + 0.05]
       },
       creation_time_estimate: strategy.estimated_time,
-      resource_requirements: this.calculateMinimalResourceRequirements(component)
+      resource_requirements: this.calculateMinimalResourceRequirements([component])
     };
   }
 
@@ -616,7 +616,7 @@ export class CapabilitySynthesis {
     }
     
     const baseComponents = strategy.base_components;
-    const componentPersonas = await this.createComponentPersonas(baseComponents);
+    const componentPersonas = await this.convertToComponentPersonas(baseComponents);
     
     // Create initial composition from base components
     const baseComposition = await this.createBaseComposition(baseComponents, analysis);
@@ -628,17 +628,17 @@ export class CapabilitySynthesis {
     const fineTuningPlan = await this.createFineTuningPlan(gaps, analysis);
     
     // Estimate performance after fine-tuning
-    const performanceEstimate = this.estimateFineTunedPerformance(baseComposition, fineTuningPlan, analysis);
+    const performanceEstimate = this.estimateFineTunedPerformance(fineTuningPlan);
     
     return {
       synthesis_strategy: 'fine_tune_required',
-      confidence: this.calculateFineTuningConfidence(baseComponents, gaps, fineTuningPlan),
+      confidence: this.calculateFineTuningConfidence(performanceEstimate),
       component_personas: componentPersonas,
       lora_composition: baseComposition,
       fine_tuning_plan: fineTuningPlan,
-      estimated_performance: performanceEstimate,
+      estimated_performance: await performanceEstimate,
       creation_time_estimate: strategy.estimated_time,
-      resource_requirements: this.calculateFineTuningResourceRequirements(baseComposition, fineTuningPlan)
+      resource_requirements: this.calculateFineTuningResourceRequirements(fineTuningPlan)
     };
   }
 
@@ -646,29 +646,29 @@ export class CapabilitySynthesis {
     console.log('🚀 Executing novel creation synthesis...');
     
     const inspirationComponents = strategy.inspiration_components || [];
-    const componentPersonas = await this.createComponentPersonas(inspirationComponents);
+    const componentPersonas = await this.convertToComponentPersonas(inspirationComponents);
     
     // Design novel architecture based on domain intersections
     const novelArchitecture = await this.designNovelArchitecture(analysis);
     
     // Create composition with mostly novel layers
-    const composition = await this.createNovelComposition(novelArchitecture, inspirationComponents, analysis);
+    const composition = await this.createNovelComposition(novelArchitecture, analysis);
     
     // Develop training strategy for novel components
-    const trainingStrategy = this.developNovelTrainingStrategy(composition, analysis);
+    const trainingStrategy = this.developNovelTrainingStrategy(composition);
     
     // Conservative performance estimate for novel creation
-    const performanceEstimate = this.estimateNovelPerformance(composition, analysis);
+    const performanceEstimate = this.estimateNovelPerformance(trainingStrategy);
     
     return {
       synthesis_strategy: 'novel_creation',
-      confidence: this.calculateNovelCreationConfidence(novelArchitecture, inspirationComponents),
+      confidence: this.calculateNovelCreationConfidence(performanceEstimate),
       component_personas: componentPersonas,
       lora_composition: composition,
-      fine_tuning_plan: trainingStrategy,
-      estimated_performance: performanceEstimate,
+      fine_tuning_plan: await trainingStrategy,
+      estimated_performance: await performanceEstimate,
       creation_time_estimate: strategy.estimated_time,
-      resource_requirements: this.calculateNovelCreationResourceRequirements(composition, trainingStrategy)
+      resource_requirements: this.calculateNovelCreationResourceRequirements(await trainingStrategy)
     };
   }
 
@@ -715,6 +715,76 @@ export class CapabilitySynthesis {
   private calculateCompressionEfficiency(totalRank: number, algorithm: string): number {
     console.log('TODO: Implement compression efficiency calculation for:', totalRank, 'rank with', algorithm, 'algorithm');
     return 0.85; // Placeholder
+  }
+
+  private async createDirectComposition(component: any, analysis: any): Promise<any> {
+    console.log('TODO: Implement direct composition for component:', component, 'with analysis:', analysis);
+    return { type: 'direct', components: [component], analysis }; // Placeholder
+  }
+
+  private calculateDomainScores(domainCapabilities: any, components: any[]): any {
+    console.log('TODO: Implement domain scores calculation for:', domainCapabilities, 'with components:', components.length);
+    return { overall_score: 0.85, domain_specific_scores: {} }; // Placeholder
+  }
+
+  private calculateMinimalResourceRequirements(components: any[]): any {
+    console.log('TODO: Implement minimal resource requirements for:', components.length, 'components');
+    return { compute_hours: 0.5, memory_gb: 2, storage_gb: 1 }; // Placeholder
+  }
+
+  private async createBaseComposition(components: any[], analysis: any): Promise<any> {
+    console.log('TODO: Implement base composition for:', components.length, 'components');
+    return { type: 'base', components, analysis }; // Placeholder
+  }
+
+  private async createFineTuningPlan(components: any[], analysis: any): Promise<any> {
+    console.log('TODO: Implement fine-tuning plan for:', components.length, 'components');
+    return { strategy: 'fine_tune', components, analysis }; // Placeholder
+  }
+
+  private async estimateFineTunedPerformance(plan: any): Promise<any> {
+    console.log('TODO: Implement fine-tuned performance estimation for plan:', plan);
+    return { accuracy: 0.85, confidence: 0.8 }; // Placeholder
+  }
+
+  private calculateFineTuningConfidence(performance: any): number {
+    console.log('TODO: Implement fine-tuning confidence calculation for:', performance);
+    return 0.8; // Placeholder
+  }
+
+  private calculateFineTuningResourceRequirements(plan: any): any {
+    console.log('TODO: Implement fine-tuning resource requirements for plan:', plan);
+    return { compute_hours: 2, memory_gb: 8, storage_gb: 4 }; // Placeholder
+  }
+
+  private async designNovelArchitecture(analysis: any): Promise<any> {
+    console.log('TODO: Implement novel architecture design for analysis:', analysis);
+    return { type: 'novel', architecture: 'transformer_hybrid' }; // Placeholder
+  }
+
+  private async createNovelComposition(architecture: any, analysis: any): Promise<any> {
+    console.log('TODO: Implement novel composition for architecture:', architecture);
+    return { type: 'novel', architecture, analysis }; // Placeholder
+  }
+
+  private async developNovelTrainingStrategy(composition: any): Promise<any> {
+    console.log('TODO: Implement novel training strategy for composition:', composition);
+    return { strategy: 'novel_evolutionary', composition }; // Placeholder
+  }
+
+  private async estimateNovelPerformance(strategy: any): Promise<any> {
+    console.log('TODO: Implement novel performance estimation for strategy:', strategy);
+    return { accuracy: 0.7, novelty_score: 0.9 }; // Placeholder
+  }
+
+  private calculateNovelCreationConfidence(performance: any): number {
+    console.log('TODO: Implement novel creation confidence for performance:', performance);
+    return 0.7; // Placeholder
+  }
+
+  private calculateNovelCreationResourceRequirements(strategy: any): any {
+    console.log('TODO: Implement novel creation resource requirements for strategy:', strategy);
+    return { compute_hours: 10, memory_gb: 16, storage_gb: 20 }; // Placeholder
   }
 
   // ... many more implementation methods would follow

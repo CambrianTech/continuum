@@ -4,9 +4,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals';
-import { AcademyStatusWidget } from '../../AcademyStatusWidget.js';
-import { AcademyTrainingRecommendationWidget } from '../../AcademyTrainingRecommendationWidget.js';
-import { AcademySidebarWidget } from '../../AcademySidebarWidget.js';
+import { AcademyStatusWidget } from '../../AcademyStatusWidget';
+import { AcademyTrainingRecommendationWidget } from '../../AcademyTrainingRecommendationWidget';
+import { AcademySidebarWidget } from '../../AcademySidebarWidget';
 
 // Mock continuum API with realistic Academy system responses
 const mockContinuum = {
@@ -36,7 +36,7 @@ class MockShadowRoot {
 }
 
 // Mock BaseWidget for testing
-jest.mock('../../shared/BaseWidget.js', () => ({
+jest.mock('../../shared/BaseWidget', () => ({
   BaseWidget: class MockBaseWidget {
     shadowRoot = new MockShadowRoot();
     widgetName = '';

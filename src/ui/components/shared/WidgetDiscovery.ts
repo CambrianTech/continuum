@@ -171,7 +171,7 @@ export class WidgetDiscovery {
   generateWidgetPaths(widgets: WidgetMetadata[]): string[] {
     return widgets
       .filter(w => w.isCompliant && w.widgetFile)
-      .map(w => `/dist/ui/components/${w.name}/${w.widgetFile.replace('.ts', '.js')}`);
+      .map(w => `/dist/ui/components/${w.name}/${w.widgetFile.replace('.ts', '')}`);
   }
 
   /**

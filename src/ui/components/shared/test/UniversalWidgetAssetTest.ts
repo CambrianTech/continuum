@@ -4,7 +4,7 @@
  * Middle-out methodology: test the pattern, catch all widgets
  */
 
-import { BaseWidget } from '../BaseWidget.js';
+import { BaseWidget } from '../BaseWidget';
 
 export interface AssetTestResult {
   widget: string;
@@ -42,7 +42,7 @@ export class UniversalWidgetAssetTester {
     // Test HTML assets
     const allFiles = await WidgetClass.getWidgetFiles();
     const htmlAssets = allFiles.filter(file => file.endsWith('.html'));
-    const basePath = WidgetClass.getBasePath();
+    const basePath = (WidgetClass as typeof BaseWidget).getBasePath();
     for (const htmlFile of htmlAssets) {
       const htmlPath = `${basePath}/${htmlFile}`;
       const result = await this.testAsset(WidgetClass.name, 'html', htmlPath);

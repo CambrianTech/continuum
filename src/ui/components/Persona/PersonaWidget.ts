@@ -3,7 +3,7 @@
  * Represents a single AI persona with its capabilities and status
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 interface PersonaConfig {
   id: string;

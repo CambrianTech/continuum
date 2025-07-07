@@ -16,7 +16,7 @@ continuum module-compliance --verbose
 
 ### Programmatic Usage
 ```typescript
-import { ModuleComplianceCommand } from './ModuleComplianceCommand.js';
+import { ModuleComplianceCommand } from './ModuleComplianceCommand';
 
 // Execute the command
 const result = await ModuleComplianceCommand.execute({

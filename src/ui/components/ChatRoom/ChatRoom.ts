@@ -3,7 +3,7 @@
  * Manages room state, title, and delegates to ChatWidget for messages
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 interface Room {
   id: string;

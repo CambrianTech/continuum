@@ -3,7 +3,7 @@
  * Proper separation of HTML, CSS, and TypeScript
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 interface Persona {
   id: string;
@@ -16,6 +16,9 @@ interface Persona {
 }
 
 export class SavedPersonasWidget extends BaseWidget {
+  static getOwnCSS(): string[] {
+    return ['SavedPersonas.css'];
+  }
   private personas: Persona[] = [];
   private selectedPersona: Persona | null = null;
 
@@ -24,7 +27,6 @@ export class SavedPersonasWidget extends BaseWidget {
     this.widgetName = 'SavedPersonas';
     this.widgetIcon = '👤';
     this.widgetTitle = 'Saved Personas';
-    this.cssPath = '/src/ui/components/SavedPersonas/SavedPersonas.css';
   }
 
   async connectedCallback() {

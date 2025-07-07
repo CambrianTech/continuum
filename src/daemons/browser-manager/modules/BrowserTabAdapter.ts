@@ -48,7 +48,12 @@ export class MacOperaAdapter extends BaseBrowserAdapter {
           set tabList to tabs of w
           repeat with i from (count of tabList) to 1 by -1
             set t to item i of tabList
-            if (URL of t contains "${_urlPattern}") then
+            set currentURL to URL of t
+            -- Match ONLY the exact URL (no paths, only query params/fragments allowed)
+            if (currentURL is equal to "${_urlPattern}") or ¬
+               (currentURL is equal to "${_urlPattern}/") or ¬
+               (currentURL starts with "${_urlPattern}?") or ¬
+               (currentURL starts with "${_urlPattern}#") then
               if foundFirst then
                 close t
                 set closedCount to closedCount + 1
@@ -76,7 +81,12 @@ export class MacOperaAdapter extends BaseBrowserAdapter {
         set tabCount to 0
         repeat with w in windows
           repeat with t in tabs of w
-            if (URL of t contains "${_urlPattern}") then
+            set currentURL to URL of t
+            -- Match ONLY the exact URL (no paths, only query params/fragments allowed)
+            if (currentURL is equal to "${_urlPattern}") or ¬
+               (currentURL is equal to "${_urlPattern}/") or ¬
+               (currentURL starts with "${_urlPattern}?") or ¬
+               (currentURL starts with "${_urlPattern}#") then
               set tabCount to tabCount + 1
             end if
           end repeat
@@ -96,23 +106,53 @@ export class MacOperaAdapter extends BaseBrowserAdapter {
   async focusTab(_urlPattern: string): Promise<boolean> {
     const script = `
       tell application "Opera GX"
+        -- First pass: Look for exact match only (highest priority)
         repeat with w in windows
           repeat with t in tabs of w
-            if (URL of t contains "${_urlPattern}") then
+            set currentURL to URL of t
+            if (currentURL is equal to "${_urlPattern}") then
               set active tab index of w to index of t
               set index of w to 1
               activate
-              return "found"
+              return "found-exact"
             end if
           end repeat
         end repeat
+        
+        -- Second pass: Look for exact match with trailing slash
+        repeat with w in windows
+          repeat with t in tabs of w
+            set currentURL to URL of t
+            if (currentURL is equal to "${_urlPattern}/") then
+              set active tab index of w to index of t
+              set index of w to 1
+              activate
+              return "found-slash"
+            end if
+          end repeat
+        end repeat
+        
+        -- Third pass: Look for query params or fragments
+        repeat with w in windows
+          repeat with t in tabs of w
+            set currentURL to URL of t
+            if (currentURL starts with "${_urlPattern}?") or ¬
+               (currentURL starts with "${_urlPattern}#") then
+              set active tab index of w to index of t
+              set index of w to 1
+              activate
+              return "found-params"
+            end if
+          end repeat
+        end repeat
+        
         return "not found"
       end tell
     `;
     
     try {
       const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
-      return stdout.trim() === 'found';
+      return stdout.trim().startsWith('found-');
     } catch {
       return false;
     }

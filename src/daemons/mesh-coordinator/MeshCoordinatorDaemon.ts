@@ -7,7 +7,7 @@
  */
 
 import { BaseDaemon } from '../base/BaseDaemon';
-import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import type { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
 import { EventEmitter } from 'events';
 
@@ -273,7 +273,7 @@ class SemanticDependencyResolver extends EventEmitter {
     
     // Identify missing capabilities
     const missingCapabilities = tokens.filter(token => 
-      (coverageMap.get(token) || 0) < 0.7
+      (coverageMap.get(token) ?? 0) < 0.7
     );
     
     // Find component matches for synthesis
@@ -400,7 +400,7 @@ class SemanticDependencyResolver extends EventEmitter {
   private calculateSynthesisCost(strategy: SynthesisStrategy): number {
     const baseCost = strategy.resources.computeHours * 0.10; // $0.10 per compute hour
     const complexityMultiplier = strategy.approach === 'academy-training' ? 2 : 1;
-    const collaborationDiscount = strategy.resources.participants ? strategy.resources.participants! * 0.1 : 0;
+    const collaborationDiscount = strategy.resources.participants ? strategy.resources.participants * 0.1 : 0;
     return baseCost * complexityMultiplier * (1 - collaborationDiscount);
   }
 

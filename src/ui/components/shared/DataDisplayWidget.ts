@@ -8,7 +8,7 @@
  * 4. Provide item actions (edit, delete, etc.)
  */
 
-import { BaseWidget } from './BaseWidget.js';
+import { BaseWidget } from './BaseWidget';
 
 export interface DataItem {
   id: string;

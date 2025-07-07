@@ -192,6 +192,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
     return [
       'execute_command',    // WebSocket command execution  
       'handle_api',         // HTTP API routes: /api/commands/*
+      'handle_widget_api',  // HTTP API routes: /api/widgets/*
       'command.execute'     // Direct command execution
     ];
   }
@@ -298,6 +299,27 @@ export class CommandProcessorDaemon extends BaseDaemon {
         return {
           success: false,
           error: `Invalid API path: ${pathname} - not a command endpoint`
+        };
+
+      case 'handle_widget_api':
+        const widgetApiData = message.data as any;
+        const { pathname: widgetPath } = widgetApiData;
+        const widgetPathParts = widgetPath.split('/').filter(Boolean);
+        if (widgetPathParts[0] === 'api' && widgetPathParts[1] === 'widgets' && widgetPathParts[2] === 'list') {
+          return {
+            success: true,
+            command: 'widget-list',
+            parameters: widgetApiData.body || {},
+            context: { 
+              source: 'http', 
+              method: widgetApiData.method, 
+              url: widgetApiData.url
+            }
+          };
+        }
+        return {
+          success: false,
+          error: `Invalid widget API path: ${widgetPath}`
         };
 
       default:

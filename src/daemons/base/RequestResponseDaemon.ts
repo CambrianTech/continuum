@@ -8,7 +8,7 @@
  */
 
 import { BaseDaemon } from './BaseDaemon';
-import { DaemonMessage, DaemonResponse } from './DaemonProtocol';
+import type { DaemonMessage, DaemonResponse } from './DaemonProtocol';
 
 export interface RequestHandler<T = unknown> {
   (data: T): Promise<DaemonResponse>;

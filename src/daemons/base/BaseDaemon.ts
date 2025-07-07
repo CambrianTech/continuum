@@ -7,8 +7,9 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
-import { DaemonMessage, DaemonResponse, DaemonStatus } from './DaemonProtocol';
-import { DaemonType } from './DaemonTypes';
+import type { DaemonMessage, DaemonResponse} from './DaemonProtocol';
+import { DaemonStatus } from './DaemonProtocol';
+import type { DaemonType } from './DaemonTypes';
 
 // Global daemon registry for inter-daemon communication
 export const DAEMON_REGISTRY = new Map<string, BaseDaemon>();
@@ -112,7 +113,7 @@ export abstract class BaseDaemon extends EventEmitter {
       throw new Error(`Daemon ${this.name} is already ${this.status}`);
     }
 
-    this.startPromise = this._performStart();
+    this.startPromise = this.performStart();
     try {
       await this.startPromise;
     } finally {
@@ -120,7 +121,7 @@ export abstract class BaseDaemon extends EventEmitter {
     }
   }
 
-  private async _performStart(): Promise<void> {
+  private async performStart(): Promise<void> {
     this.status = DaemonStatus.STARTING;
     this.startTime = new Date();
     
@@ -160,7 +161,7 @@ export abstract class BaseDaemon extends EventEmitter {
       return;
     }
 
-    this.stopPromise = this._performStop();
+    this.stopPromise = this.performStop();
     try {
       await this.stopPromise;
     } finally {
@@ -168,7 +169,7 @@ export abstract class BaseDaemon extends EventEmitter {
     }
   }
 
-  private async _performStop(): Promise<void> {
+  private async performStop(): Promise<void> {
     this.status = DaemonStatus.STOPPING;
     this.log(`Stopping daemon ${this.name}`);
     
@@ -345,19 +346,19 @@ export abstract class BaseDaemon extends EventEmitter {
    * Setup signal handlers for graceful shutdown
    */
   private setupSignalHandlers(): void {
-    this.signalHandlers['SIGTERM'] = async () => {
+    this.signalHandlers['SIGTERM'] = async (): Promise<void> => {
       this.log('Received SIGTERM, shutting down gracefully');
       await this.stop();
       process.exit(0);
     };
 
-    this.signalHandlers['SIGINT'] = async () => {
+    this.signalHandlers['SIGINT'] = async (): Promise<void> => {
       this.log('Received SIGINT, shutting down gracefully');
       await this.stop();
       process.exit(0);
     };
 
-    this.signalHandlers['uncaughtException'] = (error: unknown) => {
+    this.signalHandlers['uncaughtException'] = (error: unknown): void => {
       const errorMessage = error instanceof Error ? error.message : String(error);
       const errorStack = error instanceof Error ? error.stack : '';
       this.log(`Uncaught exception: ${errorMessage}`, 'error');
@@ -365,7 +366,7 @@ export abstract class BaseDaemon extends EventEmitter {
       process.exit(1);
     };
 
-    this.signalHandlers['unhandledRejection'] = (reason: unknown) => {
+    this.signalHandlers['unhandledRejection'] = (reason: unknown): void => {
       this.log(`Unhandled rejection: ${reason}`, 'error');
       process.exit(1);
     };

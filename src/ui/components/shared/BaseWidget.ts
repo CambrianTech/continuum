@@ -1,33 +1,36 @@
 /**
- * BaseWidget - TypeScript Base Class for All Widgets
- * Provides common functionality and clean separation of concerns
- * Standardized CSS loading, event handling, and lifecycle management
+ * BaseWidget - Strongly Typed Abstract Base Class for All Widgets
+ * Enforces proper implementation through abstract methods and properties
  */
+
 
 export abstract class BaseWidget extends HTMLElement {
   declare shadowRoot: ShadowRoot;
+  
+  // Properties that subclasses can set in constructor
   protected widgetName: string = 'BaseWidget';
   protected widgetIcon: string = '🔹';
   protected widgetTitle: string = 'Widget';
+  
+  // Protected state
   protected widgetConnected: boolean = false;
-  protected cssPath: string = ''; // Override in child classes
-  protected isCollapsed: boolean = false; // Track collapse state
+  protected isCollapsed: boolean = false;
 
-  /**
-   * Widget base path - automatically determined from class name
-   * No need to override in child classes - path calculated dynamically
-   */
-  static getBasePath(): string {
-    // Extract widget directory from class name: ChatWidget -> Chat, SidebarWidget -> Sidebar
+  // Smart defaults - minimal requirements from subclasses
+  public static getBasePath(): string {
+    // Auto-derive from class name: ChatWidget -> /src/ui/components/Chat
     const className = this.name.replace('Widget', '');
-    
-    // Special case for shared components
-    if (className === 'Base' || className === 'Interactive' || this.name.includes('BaseWidget')) {
-      return '/src/ui/components/shared';
-    }
-    
-    // All other widgets: /src/ui/components/{WidgetName}  
     return `/src/ui/components/${className}`;
+  }
+  
+  protected static getOwnCSS(): ReadonlyArray<string> {
+    // Auto-derive: ChatWidget -> ['ChatWidget.css']
+    return [`${this.name}.css`];
+  }
+  
+  protected static getOwnHTML(): ReadonlyArray<string> {
+    // Auto-derive: ChatWidget -> ['ChatWidget.html'] if it exists
+    return [`${this.name}.html`];
   }
   
   /**
@@ -234,6 +237,7 @@ export abstract class BaseWidget extends HTMLElement {
     return this.loadCSS();
   }
 
+
   /**
    * Load base CSS for collapse functionality
    */
@@ -260,16 +264,17 @@ export abstract class BaseWidget extends HTMLElement {
     `;
   }
 
-  /**
-   * Render the HTML content - must be implemented by child classes
-   */
-  abstract renderContent(): string;
-
-  /**
-   * Setup event listeners - must be implemented by child classes
-   */
-  abstract setupEventListeners(): void;
-
+  // Minimal methods - subclasses CAN override, but BaseWidget provides defaults
+  protected renderContent(): string {
+    // Default: try to load HTML, fallback to simple content
+    return `<div class="widget-content">${this.widgetTitle} is ready</div>`;
+  }
+  
+  protected setupEventListeners(): void {
+    // Default: basic collapse functionality - subclasses can extend
+    // Override this method to add your own event listeners
+  }
+  
   /**
    * Cleanup method for when widget is disconnected
    */

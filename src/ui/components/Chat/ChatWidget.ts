@@ -3,8 +3,8 @@
  * Handles message display and input for chat rooms
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
-import { universalUserSystem } from '../shared/UniversalUserSystem.js';
+import { BaseWidget } from '../shared/BaseWidget';
+import { universalUserSystem } from '../shared/UniversalUserSystem';
 
 interface Message {
   id: string;
@@ -175,7 +175,7 @@ export class ChatWidget extends BaseWidget {
         <div class="connected-bar">
           <span class="connected-label">CONNECTED:</span>
           <div class="connected-users">
-            ${universalUserSystem.generateConnectedUsersHTML()}
+            ${this.renderSimpleConnectedUsers()}
           </div>
         </div>
         
@@ -299,25 +299,8 @@ export class ChatWidget extends BaseWidget {
       });
     });
 
-    // Handle clicks on connected users (personas, AI models, etc.)
-    this.shadowRoot?.querySelectorAll('.user-badge.clickable').forEach(badge => {
-      badge.addEventListener('click', (e: Event) => {
-        const target = e.currentTarget as HTMLElement;
-        const userId = target.dataset.userId;
-        if (userId) {
-          universalUserSystem.handleUserClick(userId, {
-            source: 'chat-widget',
-            currentRoom: this.currentRoomId
-          });
-        }
-      });
-    });
-
-    // Setup action button listeners for chat/train buttons
-    const connectedUsersContainer = this.shadowRoot?.querySelector('.connected-users');
-    if (connectedUsersContainer) {
-      universalUserSystem.setupActionButtonListeners(connectedUsersContainer as HTMLElement);
-    }
+    // Simple connected users - no action buttons needed in chat header
+    // Full user management with action buttons is handled by UserSelector in sidebar
   }
 
   private autoResizeTextarea(textarea: HTMLTextAreaElement): void {
@@ -578,6 +561,19 @@ export class ChatWidget extends BaseWidget {
     } catch (error) {
       return 'unknown';
     }
+  }
+
+  private renderSimpleConnectedUsers(): string {
+    // Simple connected user list for chat header - no action buttons
+    const users = universalUserSystem.getAllUsers();
+    const onlineUsers = users.filter(user => user.status === 'online');
+    
+    return onlineUsers.map(user => `
+      <span class="simple-user-badge" title="${user.name}">
+        <span class="user-avatar">${user.avatar}</span>
+        <span class="user-name">${user.name}</span>
+      </span>
+    `).join('');
   }
 }
 

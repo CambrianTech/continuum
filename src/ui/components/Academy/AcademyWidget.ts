@@ -5,7 +5,7 @@
  * persona evolution, and P2P network activity
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 interface TrainingSession {
   id: string;

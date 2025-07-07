@@ -228,5 +228,5 @@ export class AllWidgetsTestRunner {
   }
 }
 
-// Default export for module compatibility
-export default { AllWidgetsTestRunner };
+// Named export only to avoid confusion
+// export default AllWidgetsTestRunner;

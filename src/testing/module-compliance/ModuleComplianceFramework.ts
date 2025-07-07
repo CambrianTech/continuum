@@ -12,7 +12,7 @@ import {
   ContinuumWidgetConfig,
   ContinuumPackageUtils,
   PackageJson 
-} from '../../types/ContinuumPackage.js';
+} from '../../types/ContinuumPackage';
 
 export interface ModuleValidationResult {
   modulePath: string;

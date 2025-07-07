@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ES2020", 
+    "moduleResolution": "node",
+    "outDir": "./dist/ui/components",
+    "declaration": false,
+    "sourceMap": true,
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "strict": false,
+    "preserveConstEnums": true,
+    "removeComments": false
+  },
+  "include": [
+    "src/ui/components/Chat/ChatWidget.ts",
+    "src/ui/components/Sidebar/SidebarWidget.ts",
+    "src/ui/components/shared/BaseWidget.ts"
+  ]
+}

@@ -2,7 +2,7 @@
  * ActiveProjects Widget - TypeScript Implementation
  * Shows current active projects with progress tracking
  */
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 interface Project {
   id: string;
@@ -15,6 +15,9 @@ interface Project {
 }
 
 export class ActiveProjectsWidget extends BaseWidget {
+  static getOwnCSS(): string[] {
+    return ['ActiveProjects.css'];
+  }
   private projects: Project[] = [];
   private selectedProject: Project | null = null;
 
@@ -23,7 +26,6 @@ export class ActiveProjectsWidget extends BaseWidget {
     this.widgetName = 'ActiveProjects';
     this.widgetIcon = '📋';
     this.widgetTitle = 'Active Projects';
-    this.cssPath = '/src/ui/components/ActiveProjects/ActiveProjects.css';
   }
 
   async initializeWidget(): Promise<void> {

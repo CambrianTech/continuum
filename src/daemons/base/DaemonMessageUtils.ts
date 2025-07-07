@@ -4,7 +4,7 @@
  * Ensures all daemon communication follows the same DaemonProtocol structure
  */
 
-import { DaemonMessage } from './DaemonProtocol';
+import type { DaemonMessage } from './DaemonProtocol';
 
 export class DaemonMessageUtils {
   /**
@@ -26,7 +26,7 @@ export class DaemonMessageUtils {
       type: params.type,
       data: params.data,
       timestamp: new Date(),
-      priority: params.priority || 'normal'
+      priority: params.priority ?? 'normal'
     };
     
     if (params.correlationId) {
@@ -54,7 +54,7 @@ export class DaemonMessageUtils {
       data: {
         type: params.sessionType,
         owner: params.owner,
-        options: params.options || {}
+        options: params.options ?? {}
       }
     });
   }
@@ -88,7 +88,7 @@ export class DaemonMessageUtils {
       data: {
         sessionId: params.sessionId,
         url: params.url,
-        config: params.config || {
+        config: params.config ?? {
           purpose: 'development',
           requirements: {
             devtools: true,
@@ -139,7 +139,7 @@ export class DaemonMessageUtils {
       type: 'execute_command',
       data: {
         command: params.command,
-        parameters: params.parameters || {},
+        parameters: params.parameters ?? {},
         context: params.context
       }
     });

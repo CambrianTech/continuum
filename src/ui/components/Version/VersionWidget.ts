@@ -3,9 +3,12 @@
  * Shows current system version with real-time updates
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 export class VersionWidget extends BaseWidget {
+  static getOwnCSS(): string[] {
+    return ['VersionWidget.css'];
+  }
   private currentVersion: string = 'Loading...';
   private lastUpdate: Date = new Date();
 
@@ -14,7 +17,6 @@ export class VersionWidget extends BaseWidget {
     this.widgetName = 'VersionWidget';
     this.widgetIcon = '🏷️';
     this.widgetTitle = 'System Version';
-    this.cssPath = '/src/ui/components/Version/VersionWidget.css';
   }
 
   protected async initializeWidget(): Promise<void> {

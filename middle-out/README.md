@@ -29,6 +29,7 @@ This directory contains the complete architectural documentation for Continuum's
 ### 🏗️ Architecture Concepts
 
 #### 🏛️ [Architecture](architecture/)
+- **[universal-module-schema.md](architecture/universal-module-schema.md)** - Universal module schema system for AI-friendly discovery and validation
 - **[system-breakthroughs.md](architecture/system-breakthroughs.md)** - Multi-level inheritance and command vs program distinction (coming soon)
 - **[onion-pattern.md](architecture/onion-pattern.md)** - Layered onion architecture for dual client-server systems (coming soon)
 - **[self-validation.md](architecture/self-validation.md)** - Self-healing infrastructure patterns (coming soon)

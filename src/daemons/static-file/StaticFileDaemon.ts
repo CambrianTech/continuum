@@ -167,19 +167,27 @@ export class StaticFileDaemon extends BaseDaemon {
     try {
       const source = fs.readFileSync(tsPath, 'utf8');
       
+      // First compile TypeScript to JavaScript
       const result = ts.transpileModule(source, {
         compilerOptions: {
           target: ts.ScriptTarget.ES2020,
           module: ts.ModuleKind.ES2020,
+          moduleResolution: ts.ModuleResolutionKind.NodeJs,
           esModuleInterop: true,
+          allowSyntheticDefaultImports: true,
           sourceMap: true,
           inlineSourceMap: true
         }
       });
       
+      // Post-process the compiled JavaScript to fix imports
+      let processedContent = this.addJsExtensionsToImports(result.outputText);
+      
+      this.log(`📦 Compiled TypeScript and fixed imports: ${tsPath}`);
+      
       return {
         success: true,
-        content: result.outputText
+        content: processedContent
       };
       
     } catch (error) {
@@ -190,6 +198,27 @@ export class StaticFileDaemon extends BaseDaemon {
         data: { status: 500 }
       };
     }
+  }
+  
+  private addJsExtensionsToImports(jsCode: string): string {
+    // Simpler approach: find all import/export statements and process them
+    const importExportPattern = /((?:import|export)\s+[^;]+from\s*["'])([^"']+)(["'])/g;
+    
+    return jsCode.replace(importExportPattern, (match, prefix, path, suffix) => {
+      // Only add .js to relative imports that don't already have extensions
+      if (this.isRelativeImport(path) && !this.hasFileExtension(path)) {
+        return prefix + path + '.js' + suffix;
+      }
+      return match;
+    });
+  }
+  
+  private isRelativeImport(importPath: string): boolean {
+    return importPath.startsWith('./') || importPath.startsWith('../');
+  }
+  
+  private hasFileExtension(importPath: string): boolean {
+    return /\.(js|ts|css|json|html)$/.test(importPath);
   }
 
   private generateETag(filePath: string, stats: fs.Stats): string {
