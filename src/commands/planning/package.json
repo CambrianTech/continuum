@@ -1,0 +1,35 @@
+{
+  "name": "planning-commands",
+  "version": "1.0.0",
+  "description": "Planning and roadmap management commands",
+  "main": "index.ts",
+  "type": "module",
+  "continuum": {
+    "type": "command",
+    "category": "planning",
+    "quality": {
+      "status": "whitelisted",
+      "eslint": {
+        "enforce": false,
+        "level": "off"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": false
+      },
+      "tests": {
+        "required": false
+      },
+      "compliance": {
+        "required": false
+      }
+    }
+  },
+  "keywords": [
+    "planning",
+    "commands",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

@@ -1,0 +1,35 @@
+{
+  "name": "monitoring-commands",
+  "version": "1.0.0",
+  "description": "System monitoring and diagnostics commands",
+  "main": "index.ts",
+  "type": "module",
+  "continuum": {
+    "type": "command",
+    "category": "monitoring",
+    "quality": {
+      "status": "whitelisted",
+      "eslint": {
+        "enforce": false,
+        "level": "off"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": false
+      },
+      "tests": {
+        "required": false
+      },
+      "compliance": {
+        "required": false
+      }
+    }
+  },
+  "keywords": [
+    "monitoring",
+    "commands",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

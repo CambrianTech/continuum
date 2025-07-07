@@ -1,0 +1,35 @@
+{
+  "name": "ui-commands",
+  "version": "1.0.0",
+  "description": "User interface and widget commands",
+  "main": "index.ts",
+  "type": "module",
+  "continuum": {
+    "type": "command",
+    "category": "ui",
+    "quality": {
+      "status": "whitelisted",
+      "eslint": {
+        "enforce": false,
+        "level": "off"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": false
+      },
+      "tests": {
+        "required": false
+      },
+      "compliance": {
+        "required": false
+      }
+    }
+  },
+  "keywords": [
+    "ui",
+    "commands",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}
