@@ -8,7 +8,7 @@
     "type": "command",
     "category": "browser",
     "quality": {
-      "status": "candidate",
+      "status": "graduated",
       "eslint": {
         "enforce": true,
         "level": "warn"

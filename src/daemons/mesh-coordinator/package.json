@@ -7,7 +7,27 @@
   "continuum": {
     "type": "daemon",
     "priority": 90,
-    "description": "Coordinates mesh network topology and inter-daemon message routing"
+    "description": "Coordinates mesh network topology and inter-daemon message routing",
+    "quality": {
+      "status": "graduated",
+      "eslint": {
+        "enforce": true,
+        "level": "warn"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": true
+      },
+      "tests": {
+        "required": true,
+        "coverage": 70,
+        "types": ["unit"]
+      },
+      "compliance": {
+        "required": true,
+        "minimumScore": 70
+      }
+    }
   },
   "dependencies": {
     "base-daemon": "file:../base"
