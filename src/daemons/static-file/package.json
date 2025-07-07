@@ -22,7 +22,33 @@
       "caching",
       "content-type-detection"
     ],
-    "dependencies": ["base-daemon"]
+    "dependencies": ["base-daemon"],
+    "quality": {
+      "status": "graduated",
+      "eslint": {
+        "enforce": true,
+        "level": "warn"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": true
+      },
+      "tests": {
+        "required": true,
+        "coverage": 75,
+        "types": ["unit", "integration"]
+      },
+      "compliance": {
+        "required": true,
+        "minimumScore": 80,
+        "structure": {
+          "packageJson": true,
+          "readme": false,
+          "mainFile": true,
+          "testDirectory": true
+        }
+      }
+    }
   },
   "scripts": {
     "test": "npm run test:unit && npm run test:integration",

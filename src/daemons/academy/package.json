@@ -75,6 +75,33 @@
   },
   "continuum": {
     "type": "daemon",
-    "priority": 80
+    "priority": 80,
+    "quality": {
+      "status": "graduated",
+      "eslint": {
+        "enforce": true,
+        "level": "warn"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": true
+      },
+      "tests": {
+        "required": true,
+        "coverage": 80,
+        "types": ["unit", "integration"],
+        "mustPass": true
+      },
+      "compliance": {
+        "required": true,
+        "minimumScore": 85,
+        "structure": {
+          "packageJson": true,
+          "readme": false,
+          "mainFile": true,
+          "testDirectory": true
+        }
+      }
+    }
   }
 }
