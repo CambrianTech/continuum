@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2384",
+  "version": "0.2.2385",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -27,7 +27,7 @@
     "test:layer": "npx tsx src/system/testing/test/universal-layer-runner.ts --layer=",
     "test:widgets": "npx tsx src/testing/IntelligentModularTestRunner.ts widget",
     "test:daemons": "npx tsx src/testing/IntelligentModularTestRunner.ts daemon",
-    "test:commands": "npx tsx src/testing/IntelligentModularTestRunner.ts command",
+    "test:commands": "npx tsx src/testing/ModularTestRunner.ts command",
     "test:compliance": "npx tsx src/testing/ModuleComplianceReport.ts --use-whitelist",
     "test:compliance:strict": "npx tsx src/testing/ModuleComplianceReport.ts --exit-on-failure",
     "test:compliance:details": "npx tsx src/testing/ModuleComplianceReport.ts --use-whitelist --details",
@@ -35,6 +35,10 @@
     "test:compliance:focus": "npx tsx src/testing/IncrementalComplianceTracker.ts",
     "test:compliance:graduation": "npx tsx src/testing/ModuleGraduationTracker.ts",
     "test:compliance:next": "npx tsx src/testing/ModuleGraduationTracker.ts --suggest",
+    "test:eslint:graduation": "npx tsx src/testing/ESLintGraduationTracker.ts",
+    "test:eslint:next": "npx tsx src/testing/ESLintGraduationTracker.ts --suggest",
+    "test:quality:commit": "npx tsx src/testing/QualityEnforcementEngine.ts --commit",
+    "test:quality:push": "npx tsx src/testing/QualityEnforcementEngine.ts --push",
     "test:integration:all": "npm run test:integration:eventbus && npm run test:integration:routing && npm run test:integration:html && npm run test:integration:wildcard && npm run test:integration:types && npm run test:integration:modules",
     "test:integration:eventbus": "npx tsx --test src/test/integration/DaemonEventBus.integration.test.ts",
     "test:integration:routing": "npx tsx --test src/test/integration/CommandRouting.integration.test.ts",
@@ -56,7 +60,6 @@
     "test:comprehensive": "jest __tests__/comprehensive --config __tests__/config/jest.config.cjs && cd __tests__ && python3 -m pytest comprehensive -v -c config/pytest.ini",
     "test:critical": "jest __tests__/critical --config __tests__/config/jest.config.cjs",
     "test:screenshot": "node __tests__/config/test-runner.cjs screenshot",
-    "test:commands": "npx tsx src/testing/ModularTestRunner.ts command",
     "test:websocket": "npx tsx src/testing/ModularTestRunner.ts integration",
     "test:browser": "npx tsx src/ui/test/BrowserComprehensiveTest.ts",
     "test:visual": "npx tsx src/ui/test/VisualBrowserIntegration.ts",
@@ -134,6 +137,66 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "continuum": {
+    "quality": {
+      "enforcement": {
+        "commit": "warn",
+        "push": "strict"
+      },
+      "eslint": {
+        "graduated": [
+          "src/daemons/base",
+          "src/daemons/daemon-manager", 
+          "src/daemons/mesh-coordinator",
+          "src/commands/core/base-command"
+        ],
+        "candidates": [
+          "src/daemons/static-file",
+          "src/daemons/mesh", 
+          "src/daemons/renderer"
+        ],
+        "whitelisted": [
+          "src/test/integration",
+          "src/types",
+          "src/commands", 
+          "src/daemons",
+          "src/integrations",
+          "src/ui"
+        ]
+      },
+      "modules": {
+        "graduated": [
+          "daemons",
+          "widgets"
+        ],
+        "candidates": [
+          "integrations"
+        ],
+        "whitelisted": [
+          "commands"
+        ]
+      },
+      "typescript": {
+        "noAnyTypes": {
+          "graduated": [
+            "src/daemons/base",
+            "src/commands/core/base-command",
+            "src/types/SessionTypes.ts",
+            "src/types/CommandTypes.ts"
+          ],
+          "candidates": [
+            "src/daemons/daemon-manager",
+            "src/daemons/mesh-coordinator"
+          ],
+          "whitelisted": [
+            "src/ui",
+            "src/integrations",
+            "src/commands"
+          ]
+        }
+      }
+    }
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",

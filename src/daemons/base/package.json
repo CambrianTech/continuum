@@ -6,7 +6,26 @@
   "type": "module",
   "continuum": {
     "type": "utility",
-    "category": "base"
+    "category": "base",
+    "quality": {
+      "status": "graduated",
+      "eslint": {
+        "enforce": true,
+        "level": "strict"
+      },
+      "typescript": {
+        "noAny": true,
+        "strict": true
+      },
+      "tests": {
+        "required": true,
+        "coverage": 90
+      },
+      "compliance": {
+        "required": true,
+        "minimumScore": 100
+      }
+    }
   },
   "keywords": ["continuum", "daemon", "base", "utilities"],
   "exports": {
