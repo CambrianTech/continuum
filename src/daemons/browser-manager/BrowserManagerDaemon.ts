@@ -46,6 +46,10 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   private readonly MAX_LAUNCH_ATTEMPTS = 2;
   private readonly LAUNCH_COOLDOWN_MS = 5000; // 5 seconds
   
+  // SAFETY: Prevent multiple simultaneous browser launches globally
+  private isLaunchingBrowser = false;
+  private readonly BROWSER_LAUNCH_TIMEOUT_MS = 10000; // 10 seconds timeout
+  
   // MessageRoutedDaemon implementation
   protected readonly primaryMessageType = 'browser_request';
   
@@ -161,29 +165,27 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
    * Setup session event listening to launch browsers when sessions are created OR joined
    */
   private setupSessionEventListening(): void {
-    // Listen for session_created events from session manager (using proper types)
+    // Listen for session_created events - check if session needs browser
     DAEMON_EVENT_BUS.onEvent(SystemEventType.SESSION_CREATED, async (event: SessionCreatedPayload) => {
       const { sessionId, sessionType, owner } = event;
       this.log(`📋 Session created: ${sessionId} (${sessionType}) for ${owner}`);
       
-      // Only launch browser if this session needs one AND no browser exists
       if (this.sessionNeedsBrowser(sessionType)) {
-        await this.safelyLaunchBrowserForSession(sessionId, sessionType, owner);
+        await this.ensureSessionHasBrowser(sessionId, sessionType, owner);
       }
     });
     
-    // Listen for session_joined events - ensure browser exists if needed (using proper types)
+    // Listen for session_joined events - check if session needs browser  
     DAEMON_EVENT_BUS.onEvent(SystemEventType.SESSION_JOINED, async (event: SessionJoinedPayload) => {
       const { sessionId, sessionType, owner } = event;
-      this.log(`📋 Session joined: ${sessionId} (${sessionType}) for ${owner} - ensuring browser exists`);
+      this.log(`📋 Session joined: ${sessionId} (${sessionType}) for ${owner}`);
       
-      // For joined sessions, check if browser exists and launch if needed
       if (this.sessionNeedsBrowser(sessionType)) {
-        await this.ensureBrowserExistsForSession(sessionId, sessionType, owner);
+        await this.ensureSessionHasBrowser(sessionId, sessionType, owner);
       }
     });
     
-    this.log('👂 Listening for session events with SAFE browser management');
+    this.log('👂 Listening for session events with smart single-tab logic');
   }
   
   /**
@@ -193,6 +195,65 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     // Portal and development sessions need browsers
     // Validation and persona sessions might not
     return ['portal', 'development', 'user'].includes(sessionType);
+  }
+  
+  /**
+   * SMART: Ensure session has browser - check if exists first, only launch if missing
+   */
+  private async ensureSessionHasBrowser(sessionId: string, sessionType: string, owner: string): Promise<void> {
+    try {
+      // SAFETY: Prevent multiple simultaneous browser launches globally
+      if (this.isLaunchingBrowser) {
+        this.log(`⏸️ Already launching browser - skipping duplicate request for session ${sessionId}`);
+        return;
+      }
+      
+      // Mark as launching FIRST to block all other requests
+      this.isLaunchingBrowser = true;
+      
+      this.log(`🔍 Checking if any browser tab exists for localhost:9000...`);
+      
+      // Check if browser tab exists for localhost:9000 AFTER acquiring lock
+      const tabStatus = await this.tabManager.checkTabs();
+      
+      if (tabStatus.count > 0) {
+        this.log(`✅ Found ${tabStatus.count} browser tab(s) already open - no action needed`);
+        this.isLaunchingBrowser = false; // Release lock
+        return; // Tab exists, do nothing
+      }
+      
+      this.log(`🚀 No browser tab found - launching exactly ONE tab for session ${sessionId}`);
+      
+      // Set timeout to automatically release lock if launch hangs
+      const timeoutId = setTimeout(() => {
+        if (this.isLaunchingBrowser) {
+          this.log(`⏰ Browser launch timeout - releasing lock`, 'warn');
+          this.isLaunchingBrowser = false;
+        }
+      }, this.BROWSER_LAUNCH_TIMEOUT_MS);
+      
+      try {
+        // Launch exactly one browser tab
+        const browserConfig: BrowserConfig = {
+          type: BrowserType.DEFAULT,
+          headless: false,
+          url: 'http://localhost:9000',
+        };
+        
+        const launchResult = await this.launcher.launch(browserConfig, 0);
+        this.log(`✅ Browser launched for session ${sessionId} (PID: ${launchResult.pid})`);
+        
+      } finally {
+        // Clear timeout and release lock
+        clearTimeout(timeoutId);
+        this.isLaunchingBrowser = false;
+      }
+      
+    } catch (error) {
+      this.log(`❌ Failed to ensure browser for session ${sessionId}: ${error}`, 'error');
+      // Ensure we clean up the lock on error
+      this.isLaunchingBrowser = false;
+    }
   }
   
   /**
