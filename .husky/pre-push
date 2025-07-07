@@ -63,9 +63,9 @@ npm run test:integration:layer2-3 --silent || {
     exit 1
 }
 
-# 📊 MODULE COMPLIANCE: STRICT VALIDATION
-echo "📊 MODULE COMPLIANCE - Strict validation:"
-npm run test:compliance:strict --silent || {
+# 📊 MODULE COMPLIANCE: STRICT VALIDATION WITH WHITELIST
+echo "📊 MODULE COMPLIANCE - Strict validation with quality whitelist:"
+npx tsx src/testing/ModuleComplianceReport.ts --exit-on-failure --use-whitelist --silent || {
     echo ""
     echo "❌ PUSH BLOCKED: Module compliance failures detected!"
     echo ""
