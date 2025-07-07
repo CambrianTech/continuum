@@ -48,6 +48,31 @@ export function isValidEventType(type: string): type is SystemEventType {
   return Object.values(SystemEventType).includes(type as SystemEventType);
 }
 
+// Base Session Event Data (for inheritance)
+export interface SessionEventData {
+  sessionId: string;
+  sessionType: string;
+  owner: string;
+  timestamp?: string;
+}
+
+export interface WebSocketEventData {
+  connectionId: string;
+  metadata?: {
+    userAgent: string;
+    url: string;
+    headers: Record<string, string>;
+  };
+}
+
+export interface WebSocketConnectionEventData extends WebSocketEventData {
+  // Additional connection-specific data
+}
+
+export interface WebSocketConnectionClosedEventData extends WebSocketEventData {
+  reason?: string;
+}
+
 /**
  * Event categories for filtering and routing
  */

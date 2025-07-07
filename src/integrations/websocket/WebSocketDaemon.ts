@@ -325,6 +325,11 @@ export class WebSocketDaemon extends BaseDaemon {
         this.log(`🔍 [SESSION_DEBUG]   sessionId from mapping: ${sessionId || 'NOT_FOUND'}`);
         this.log(`🔍 [SESSION_DEBUG]   commandName: ${commandName}`);
         
+        // Enforce non-null sessionId for WebSocket commands
+        if (!sessionId) {
+          throw new Error(`WebSocket command '${commandName}' requires sessionId but connection ${connectionId} has no session mapping. Ensure session_ready was sent.`);
+        }
+        
         // Parse parameters (they might be JSON string from browser)
         let parsedParams = {};
         if (commandParams) {

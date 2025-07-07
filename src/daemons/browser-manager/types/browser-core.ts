@@ -52,6 +52,7 @@ export interface BrowserConfig {
   args?: string[];
   env?: Record<string, string>;
   timeout?: number;
+  url: string; // URL to open when launching browser (required)
   purpose?: BrowserPurpose; // Browser usage purpose
   requirements?: { devtools?: boolean; [key: string]: any }; // Browser requirements
   resources?: { [key: string]: any }; // Browser resource configuration

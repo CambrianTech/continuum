@@ -13,7 +13,7 @@
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
-import { SystemEventType, MessageType } from '../base/EventTypes';
+import { SystemEventType, MessageType, SessionCreatedPayload, SessionJoinedPayload } from '../base/EventTypes';
 import { SessionConsoleLogger } from './modules/SessionConsoleLogger';
 import { SessionRequest } from '../../types/SessionParameters';
 import { SessionConnectResponse } from '../../types/SessionConnectResponse';
@@ -367,12 +367,13 @@ export class SessionManagerDaemon extends BaseDaemon {
         }
       } else if (action === 'joined_existing') {
         // Emit session_joined event on global bus for existing sessions to ensure browser management
-        DAEMON_EVENT_BUS.emitEvent(SystemEventType.SESSION_JOINED, { 
+        const sessionJoinedEvent: SessionJoinedPayload = {
           sessionId: session.id, 
           sessionType: session.type,
           owner: session.owner,
-          source
-        });
+          source: source || 'unknown'
+        };
+        DAEMON_EVENT_BUS.emitEvent(SystemEventType.SESSION_JOINED, sessionJoinedEvent);
         
         this.log(`📋 Emitted session_joined event for ${session.id} (${session.type})`);
       }
@@ -1077,12 +1078,13 @@ export class SessionManagerDaemon extends BaseDaemon {
     });
 
     // CORE EVENT: Emit to global daemon event bus for ALL session creation (any client)
-    DAEMON_EVENT_BUS.emitEvent(SystemEventType.SESSION_CREATED, { 
+    const sessionCreatedEvent: SessionCreatedPayload = {
       sessionId: session.id, 
       sessionType: session.type,
       owner: session.owner,
-      storageDir: session.artifacts.storageDir
-    });
+      serverLogPath: session.artifacts.logs.server[0] || ''
+    };
+    DAEMON_EVENT_BUS.emitEvent(SystemEventType.SESSION_CREATED, sessionCreatedEvent);
     this.log(`🌐 Emitted core SESSION_CREATED event for ${sessionId} (${type})`);
     
     return session;

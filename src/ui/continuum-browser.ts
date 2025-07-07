@@ -216,13 +216,6 @@ class ContinuumBrowserAPI implements ContinuumAPI {
           data: consoleData,
           sessionId: this.sessionId  // Include sessionId for logging to session files
         };
-        
-        // 🔍 SESSION DEBUG: Log what sessionId is being sent from browser
-        if (!this.sessionId) {
-          console.log(`🔍 [SESSION_DEBUG] Browser console sending with NULL sessionId - no session_ready message received yet`);
-        } else {
-          console.log(`🔍 [SESSION_DEBUG] Browser console sending with sessionId: ${this.sessionId}`);
-        }
 
         // Queue console commands to prevent overwhelming the server
         this.queueConsoleCommand(consoleCommand);
@@ -881,6 +874,11 @@ class ContinuumBrowserAPI implements ContinuumAPI {
         // Flush any queued console messages now that we have sessionId
         this.flushMessageQueue();
         
+        // CRITICAL FIX: Restart console queue processing now that we have sessionId
+        // This processes any console commands that were queued waiting for sessionId
+        console.log(`🔍 [SESSION_DEBUG] Restarting console queue processing with sessionId: ${this.sessionId}`);
+        this.processConsoleQueue();
+        
         // Emit session ready event for widgets
         this.emit('session_ready', message.data);
         return;
@@ -1052,16 +1050,34 @@ class ContinuumBrowserAPI implements ContinuumAPI {
       const consoleCommand = this.consoleQueue.shift();
       
       if (this.isConnected()) {
-        try {
-          // Execute console command with shorter timeout for faster failure
-          await this.execute('console', consoleCommand);
-        } catch (error) {
-          // Log failed console forwards to original console to avoid loops
-          // Use setTimeout to prevent blocking the queue processing
-          setTimeout(() => {
-            const originalConsole = (window as any).__originalConsole__ || console;
-            originalConsole.warn('⚠️ Console forward failed:', error);
-          }, 0);
+        // CRITICAL FIX: Only send console commands if we have a sessionId
+        // This prevents null sessionId console logs from being sent
+        if (this.sessionId) {
+          try {
+            // Update the sessionId in the console command to ensure it's current
+            consoleCommand.sessionId = this.sessionId;
+            
+            // Execute console command with shorter timeout for faster failure
+            await this.execute('console', consoleCommand);
+          } catch (error) {
+            // Log failed console forwards to original console to avoid loops
+            // Use setTimeout to prevent blocking the queue processing
+            setTimeout(() => {
+              const originalConsole = (window as any).__originalConsole__ || console;
+              originalConsole.warn('⚠️ Console forward failed:', error);
+            }, 0);
+          }
+        } else {
+          // No sessionId yet - keep the console command in queue
+          // Put it back at the front of the queue to try again later
+          this.consoleQueue.unshift(consoleCommand);
+          
+          // Log debug message about waiting for sessionId
+          const originalConsole = (window as any).__originalConsole__ || console;
+          originalConsole.log('🔍 [SESSION_DEBUG] Console command queued - waiting for session_ready message');
+          
+          // Stop processing until we have sessionId
+          break;
         }
         
         // Rate limit: wait 50ms between console commands to prevent overwhelming

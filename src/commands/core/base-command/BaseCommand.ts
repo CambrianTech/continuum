@@ -45,6 +45,12 @@ export interface CommandContext {
   [key: string]: unknown;
 }
 
+// WebSocket commands MUST have sessionId - enforced by linter
+export interface WebSocketCommandContext extends CommandContext {
+  sessionId: string; // Required, non-null for WebSocket commands
+  connectionId: string; // Required for WebSocket routing
+}
+
 export interface CommandResult<T = unknown> {
   success: boolean;
   message?: string | undefined;
