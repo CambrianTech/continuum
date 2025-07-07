@@ -69,13 +69,8 @@ class ModuleComplianceReport {
       widgets: {
         minimumCompliance: 70, // Moderate standard for widgets
         allowedNonCompliant: [
-          // 🎓 GRADUATED: ActiveProjects, SavedPersonas, UserSelector (now 100% compliant!)
-          'ChatRoom',         // Legacy widget being replaced
-          'VersionWidget',    // Duplicate of Version widget  
-          'commands',         // Not a real widget
-          'domain',           // Not a real widget
-          'intermediate',     // Not a real widget  
-          'ui'                // Not a real widget
+          // 🎓 GRADUATED: ActiveProjects, SavedPersonas, UserSelector, ChatRoom (now 100% compliant!)
+          // 🧹 CLEANED UP: VersionWidget, commands, domain, intermediate, ui (removed fake directories)
         ]
       },
       commands: {
