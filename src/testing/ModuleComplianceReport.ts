@@ -141,7 +141,7 @@ class ModuleComplianceReport {
           results.summary.complianceRate,
           whitelistConfig.minimumCompliance,
           unexpectedNonCompliant.length,
-          options.useWhitelist
+          options.useWhitelist ?? false
         );
 
         const moduleStatus: ComplianceStatus = {
@@ -336,4 +336,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   });
 }
 
-export { ModuleComplianceReport, ComplianceWhitelist, OverallComplianceReport };
+export { ModuleComplianceReport };
+export type { ComplianceWhitelist, OverallComplianceReport };
