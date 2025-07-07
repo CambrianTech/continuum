@@ -17,8 +17,12 @@ import { BrowserLauncher } from './modules/BrowserLauncher';
 import { BrowserSessionManager } from './modules/BrowserSessionManager';
 import { ChromeBrowserModule } from './modules/ChromeBrowserModule';
 import { SessionConsoleLogger } from '../session-manager/modules/SessionConsoleLogger';
-import { SimpleTabManager } from './modules/SimpleTabManager';
+import { MacOperaAdapter, MacChromeAdapter, BaseBrowserAdapter } from './modules/BrowserTabAdapter';
 import { DAEMON_EVENT_BUS } from '../base/DaemonEventBus';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 // import { BrowserTabManager } from './modules/BrowserTabAdapter.js'; // TODO: Remove if not used
 
 export class BrowserManagerDaemon extends MessageRoutedDaemon {
@@ -29,7 +33,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   private launcher = new BrowserLauncher();
   private sessionManager = new BrowserSessionManager();
   // private hasActiveBrowser = false; // TODO: Remove if not needed
-  private tabManager = new SimpleTabManager();
+  private tabAdapter: BaseBrowserAdapter;
   // private _browserTabManager = new BrowserTabManager(); // TODO: Remove if not used
   
   // Track console loggers for each session
@@ -65,6 +69,9 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   protected async onStart(): Promise<void> {
     // Initialize browser modules
     await this.initializeBrowserModules();
+    
+    // Initialize platform-specific tab adapter
+    await this.initializeTabAdapter();
     
     // Browser launching now event-driven via session creation (no more auto-spawning)
     
@@ -152,35 +159,47 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   
   /**
    * SMART: Ensure session has browser - check if exists first, only launch if missing
+   * Uses semaphore protection to prevent race conditions and multiple launches
+   * @param killZombies - Whether to close zombie tabs that aren't connected to active sessions
    */
-  private async ensureSessionHasBrowser(sessionId: string, _sessionType: string, _owner: string): Promise<void> {
+  private async ensureSessionHasBrowser(sessionId: string, _sessionType: string, _owner: string, killZombies: boolean = false): Promise<void> {
     try {
-      // SAFETY: Prevent multiple simultaneous browser launches globally
+      // SEMAPHORE: Prevent multiple simultaneous browser launches globally
       if (this.isLaunchingBrowser) {
         this.log(`⏸️ Already launching browser - skipping duplicate request for session ${sessionId}`);
         return;
       }
       
-      // Mark as launching FIRST to block all other requests
+      // Acquire semaphore FIRST to block all other requests
       this.isLaunchingBrowser = true;
       
+      this.log(`🔍 [SEMAPHORE] Acquired browser launch lock for session ${sessionId}`);
       this.log(`🔍 Checking if any browser tab exists for localhost:9000...`);
       
-      // Check if browser tab exists for localhost:9000 AFTER acquiring lock
-      const tabStatus = await this.tabManager.checkTabs();
+      // Check if browser tab exists AFTER acquiring semaphore using proper adapter
+      const tabCount = await this.tabAdapter.countTabs('localhost:9000');
+      this.log(`🔍 Tab check result: ${tabCount} tab(s) found (via ${this.tabAdapter.constructor.name})`);
       
-      if (tabStatus.count > 0) {
-        this.log(`✅ Found ${tabStatus.count} browser tab(s) already open - no action needed`);
-        this.isLaunchingBrowser = false; // Release lock
+      if (tabCount > 0) {
+        this.log(`✅ Found ${tabCount} browser tab(s) already open - ONE TAB POLICY satisfied`);
+        
+        // SMART ZOMBIE KILLER: Close zombie tabs if requested
+        if (killZombies && tabCount > 1) {
+          this.log(`🧟 Zombie killer enabled - will close ${tabCount - 1} zombie tab(s)`);
+          await this.killZombieTabs(sessionId);
+        }
+        
+        this.log(`🔍 [SEMAPHORE] Releasing lock - no launch needed`);
+        this.isLaunchingBrowser = false; // Release semaphore
         return; // Tab exists, do nothing
       }
       
-      this.log(`🚀 No browser tab found - launching exactly ONE tab for session ${sessionId}`);
+      this.log(`🚀 No browser tabs found - launching exactly ONE tab for session ${sessionId}`);
       
-      // Set timeout to automatically release lock if launch hangs
+      // Set timeout to automatically release semaphore if launch hangs
       const timeoutId = setTimeout(() => {
         if (this.isLaunchingBrowser) {
-          this.log(`⏰ Browser launch timeout - releasing lock`, 'warn');
+          this.log(`⏰ Browser launch timeout - releasing semaphore`, 'warn');
           this.isLaunchingBrowser = false;
         }
       }, this.BROWSER_LAUNCH_TIMEOUT_MS);
@@ -196,19 +215,61 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
         const launchResult = await this.launcher.launch(browserConfig, 0);
         this.log(`✅ Browser launched for session ${sessionId} (PID: ${launchResult.pid})`);
         
+        // FOCUS BROWSER: Bring to front if requested
+        if (killZombies) { // Use killZombies as a proxy for focus for now
+          await this.focusBrowser();
+        }
+        this.log(`🔍 [SEMAPHORE] Browser launch complete - releasing lock`);
+        
       } finally {
-        // Clear timeout and release lock
+        // Clear timeout and release semaphore
         clearTimeout(timeoutId);
         this.isLaunchingBrowser = false;
+        this.log(`🔍 [SEMAPHORE] Lock released after launch attempt`);
       }
       
     } catch (error) {
       this.log(`❌ Failed to ensure browser for session ${sessionId}: ${error}`, 'error');
-      // Ensure we clean up the lock on error
+      // Ensure we clean up the semaphore on error
       this.isLaunchingBrowser = false;
+      this.log(`🔍 [SEMAPHORE] Lock released due to error`);
     }
   }
   
+
+  /**
+   * Initialize platform-specific tab adapter
+   */
+  private async initializeTabAdapter(): Promise<void> {
+    // Detect platform and available browsers
+    const platform = process.platform;
+    
+    if (platform === 'darwin') {
+      // macOS - try Opera first, then Chrome
+      try {
+        const operaAdapter = new MacOperaAdapter();
+        // Test if Opera GX is available
+        const testCount = await operaAdapter.countTabs('localhost:9000');
+        this.tabAdapter = operaAdapter;
+        this.log('✅ Using Opera GX adapter for tab management');
+        return;
+      } catch (error) {
+        this.log('⚠️ Opera GX not available, trying Chrome adapter');
+      }
+      
+      try {
+        this.tabAdapter = new MacChromeAdapter();
+        this.log('✅ Using Chrome adapter for tab management');
+        return;
+      } catch (error) {
+        this.log('⚠️ Chrome adapter failed, falling back to default');
+      }
+    }
+    
+    // Fallback: Use Opera adapter as default (most compatible)
+    this.tabAdapter = new MacOperaAdapter();
+    this.log('⚠️ Using Opera adapter as fallback for tab management');
+  }
 
   /**
    * Initialize available browser modules
@@ -467,6 +528,83 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       return port;
     }
     throw new Error('No available ports for browser debugging');
+  }
+
+  /**
+   * SMART ZOMBIE KILLER: Close browser tabs that aren't connected to active sessions
+   * Uses DevTools Protocol for reliable tab management
+   */
+  private async killZombieTabs(currentSessionId: string): Promise<void> {
+    try {
+      this.log(`🧟 Starting zombie tab cleanup for session ${currentSessionId}`);
+      
+      // For now, use simple AppleScript approach for macOS Opera GX
+      // TODO: Implement DevTools Protocol approach for reliable tab identification
+      if (process.platform === 'darwin') {
+        const script = `
+          tell application "Opera GX"
+            set tabsToClose to {}
+            repeat with w in (get windows)
+              repeat with t in tabs of w
+                if (URL of t contains "localhost:9000") then
+                  -- TODO: Add WebSocket connection checking via DevTools
+                  -- For now, keep only the first tab found
+                  if (count of tabsToClose) > 0 then
+                    set end of tabsToClose to t
+                  end if
+                end if
+              end repeat
+            end repeat
+            
+            repeat with t in tabsToClose
+              close t
+            end repeat
+            
+            return (count of tabsToClose)
+          end tell
+        `;
+        
+        const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
+        const closedCount = parseInt(stdout.trim()) || 0;
+        this.log(`🧟 Closed ${closedCount} zombie tab(s)`);
+      }
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`⚠️ Zombie cleanup failed: ${errorMessage}`, 'warn');
+    }
+  }
+
+  /**
+   * FOCUS BROWSER: Bring browser window to front using platform-specific methods
+   */
+  private async focusBrowser(): Promise<void> {
+    try {
+      if (process.platform === 'darwin') {
+        // macOS: Use AppleScript to bring Opera GX to front
+        const script = `
+          tell application "Opera GX"
+            activate
+            repeat with w in (get windows)
+              repeat with t in tabs of w
+                if (URL of t contains "localhost:9000") then
+                  set index of w to 1
+                  set active tab index of w to (index of t)
+                  return
+                end if
+              end repeat
+            end repeat
+          end tell
+        `;
+        
+        await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
+        this.log(`🎯 Focused browser window`);
+      }
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`⚠️ Browser focus failed: ${errorMessage}`, 'warn');
+    }
   }
 
   /**

@@ -8,6 +8,8 @@ SESSION_ID=""
 SESSION_TYPE=""
 OWNER=""
 FORCE_NEW=""
+FOCUS="true"
+KILL_ZOMBIES="true"
 
 # Parse session-related arguments
 shift || true  # Remove command from args
@@ -27,6 +29,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --new)
       FORCE_NEW="true"
+      shift
+      ;;
+    --focus)
+      FOCUS="true"
+      shift
+      ;;
+    --no-focus)
+      FOCUS="false"
+      shift
+      ;;
+    --kill-zombies)
+      KILL_ZOMBIES="true"
+      shift
+      ;;
+    --no-kill-zombies)
+      KILL_ZOMBIES="false"
       shift
       ;;
     *)
@@ -264,6 +282,10 @@ case "$COMMAND" in
     echo "  --session-type TYPE     Session type (development, persona, etc.)"
     echo "  --owner OWNER           Session owner (default: shared)"
     echo "  --new                   Force create new session"
+    echo "  --focus                 Focus browser window (default for bash)"
+    echo "  --no-focus              Don't focus browser window"
+    echo "  --kill-zombies          Close zombie browser tabs (default for shared)"
+    echo "  --no-kill-zombies       Keep all browser tabs"
     echo ""
     echo "Examples:"
     echo "  continuum                        # Open browser and connect"
@@ -300,9 +322,21 @@ else
 fi
 
 if [ -n "$FORCE_NEW" ]; then
-  request_data="$request_data\"forceNew\": true"
+  request_data="$request_data\"forceNew\": true, "
 else
-  request_data="$request_data\"forceNew\": false"
+  request_data="$request_data\"forceNew\": false, "
+fi
+
+if [ "$FOCUS" = "true" ]; then
+  request_data="$request_data\"focus\": true, "
+else
+  request_data="$request_data\"focus\": false, "
+fi
+
+if [ "$KILL_ZOMBIES" = "true" ]; then
+  request_data="$request_data\"killZombies\": true"
+else
+  request_data="$request_data\"killZombies\": false"
 fi
 
 request_data="$request_data}"
