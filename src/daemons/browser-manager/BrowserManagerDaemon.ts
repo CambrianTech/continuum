@@ -11,14 +11,13 @@ import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../ba
 import { DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
 import { SystemEventType, SessionCreatedPayload, SessionJoinedPayload } from '../base/EventTypes';
-import { BrowserType, BrowserRequest, BrowserConfig, BrowserStatus, BrowserAction, ManagedBrowser } from './types/index.js';
+import { BrowserType, BrowserRequest, BrowserConfig, BrowserStatus, BrowserAction } from './types/index.js';
 // BrowserFilters unused in this file
 import { BrowserLauncher } from './modules/BrowserLauncher';
 import { BrowserSessionManager } from './modules/BrowserSessionManager';
 import { ChromeBrowserModule } from './modules/ChromeBrowserModule';
 import { SessionConsoleLogger } from '../session-manager/modules/SessionConsoleLogger';
 import { SimpleTabManager } from './modules/SimpleTabManager';
-import { ZombieTabKiller } from './modules/ZombieTabKiller';
 import { DAEMON_EVENT_BUS } from '../base/DaemonEventBus';
 // import { BrowserTabManager } from './modules/BrowserTabAdapter.js'; // TODO: Remove if not used
 
@@ -31,7 +30,6 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   private sessionManager = new BrowserSessionManager();
   // private hasActiveBrowser = false; // TODO: Remove if not needed
   private tabManager = new SimpleTabManager();
-  private zombieKiller = new ZombieTabKiller();
   // private _browserTabManager = new BrowserTabManager(); // TODO: Remove if not used
   
   // Track console loggers for each session
@@ -40,11 +38,6 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   // Auto-cleanup interval
   private zombieCleanupInterval: NodeJS.Timeout | undefined = undefined;
   
-  // SAFETY: Track browser launch attempts to prevent infinite loops
-  private launchAttempts = new Map<string, number>();
-  private lastLaunchTime = new Map<string, number>();
-  private readonly MAX_LAUNCH_ATTEMPTS = 2;
-  private readonly LAUNCH_COOLDOWN_MS = 5000; // 5 seconds
   
   // SAFETY: Prevent multiple simultaneous browser launches globally
   private isLaunchingBrowser = false;
@@ -120,46 +113,6 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     this.log('🚨 Event-driven zombie cleanup enabled (on session creation)');
   }
   
-  /**
-   * Detect and automatically clean up zombie browser connections
-   */
-  private async performZombieCleanup(): Promise<void> {
-    try {
-      const status = await this.tabManager.checkTabs();
-      const zombieStatus = await this.zombieKiller.getTabStatus();
-      
-      this.log(`🔍 Browser check: ${status.count} tab(s) found - ${status.action}`);
-      
-      if (zombieStatus.zombies > 0) {
-        this.log(`💀 Found ${zombieStatus.zombies} zombie tabs (${zombieStatus.total} total connections)`);
-        this.log(`🔍 Tab details: ${JSON.stringify(zombieStatus.details)}`);
-        
-        // AUTO-CLEANUP: Kill zombie tabs
-        const killed = await this.zombieKiller.killZombieTabs((msg) => this.log(msg));
-        
-        if (killed > 0) {
-          this.log(`✅ Auto-cleanup complete: ${killed} zombie tabs killed`);
-          
-          // Give time for connections to clear
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          
-          // Verify cleanup worked
-          const newStatus = await this.zombieKiller.getTabStatus();
-          if (newStatus.zombies === 0) {
-            this.log(`✨ Browser connections healthy - console capture should work`);
-          } else {
-            this.log(`⚠️ Still have ${newStatus.zombies} zombie tabs after cleanup`);
-          }
-        }
-      } else {
-        // Periodic health check passed
-        this.log(`✅ Browser connections healthy (${zombieStatus.active} active, 0 zombies)`);
-      }
-      
-    } catch (error) {
-      this.log(`❌ Zombie cleanup error: ${error}`, 'error');
-    }
-  }
   
   /**
    * Setup session event listening to launch browsers when sessions are created OR joined
@@ -200,7 +153,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   /**
    * SMART: Ensure session has browser - check if exists first, only launch if missing
    */
-  private async ensureSessionHasBrowser(sessionId: string, sessionType: string, owner: string): Promise<void> {
+  private async ensureSessionHasBrowser(sessionId: string, _sessionType: string, _owner: string): Promise<void> {
     try {
       // SAFETY: Prevent multiple simultaneous browser launches globally
       if (this.isLaunchingBrowser) {
@@ -256,144 +209,6 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     }
   }
   
-  /**
-   * SAFELY launch browser for NEW session only (prevents runaway creation)
-   */
-  private async safelyLaunchBrowserForSession(sessionId: string, sessionType: string, _owner: string): Promise<void> {
-    try {
-      this.log(`🚀 SAFELY launching browser for NEW session ${sessionId} (${sessionType})`);
-      
-      // SAFETY CHECK 1: Rate limiting - prevent infinite loops
-      const now = Date.now();
-      const lastLaunch = this.lastLaunchTime.get(sessionId) || 0;
-      const attempts = this.launchAttempts.get(sessionId) || 0;
-      
-      if (now - lastLaunch < this.LAUNCH_COOLDOWN_MS) {
-        this.log(`⏰ Browser launch cooldown active for session ${sessionId} - skipping (${this.LAUNCH_COOLDOWN_MS - (now - lastLaunch)}ms remaining)`);
-        return;
-      }
-      
-      if (attempts >= this.MAX_LAUNCH_ATTEMPTS) {
-        this.log(`🛑 Maximum browser launch attempts (${this.MAX_LAUNCH_ATTEMPTS}) reached for session ${sessionId} - preventing infinite loop`);
-        return;
-      }
-      
-      // Track this launch attempt
-      this.launchAttempts.set(sessionId, attempts + 1);
-      this.lastLaunchTime.set(sessionId, now);
-      
-      // SAFETY CHECK 2: Clean up zombies first
-      await this.performZombieCleanup();
-      
-      // SAFETY CHECK 3: Check if browser already exists
-      const tabStatus = await this.tabManager.checkTabs();
-      if (tabStatus.count > 0) {
-        this.log(`✅ Browser already has ${tabStatus.count} tab(s) open to localhost:9000 - reusing existing`);
-        // Reset attempts since we found existing browser
-        this.launchAttempts.delete(sessionId);
-        return;
-      }
-      
-      // SAFETY CHECK 4: Check if we already have a browser for this session
-      // TODO: Re-enable browser session tracking when session system is fixed
-      // const existingBrowser = this.sessionManager.getBrowserBySession(sessionId);
-      const existingBrowser = null;
-      if (existingBrowser) {
-        this.log(`✅ Browser already exists for session ${sessionId} - not launching new one`);
-        this.launchAttempts.delete(sessionId);
-        return;
-      }
-      
-      // Launch browser only if all safety checks pass
-      const browserConfig: BrowserConfig = {
-        type: BrowserType.DEFAULT,
-        headless: false,
-        url: 'http://localhost:9000',
-      };
-      
-      const launchResult = await this.launcher.launch(browserConfig, 0);
-      this.log(`🌐 Browser launched successfully for session ${sessionId} (PID: ${launchResult.pid})`);
-      
-      // Reset attempts on successful launch
-      this.launchAttempts.delete(sessionId);
-      
-      // Register browser
-      const managedBrowser: ManagedBrowser = {
-        id: `browser-${sessionId}`,
-        type: BrowserType.DEFAULT,
-        pid: launchResult.pid,
-        debugPort: launchResult.debugPort || 0,
-        status: BrowserStatus.READY,
-        launchedAt: new Date(),
-        lastActivity: new Date(),
-        config: browserConfig,
-        sessions: [sessionId]
-      };
-      
-      this.sessionManager.registerBrowser(managedBrowser);
-      
-    } catch (error) {
-      this.log(`❌ Failed to safely launch browser for session ${sessionId}: ${error}`, 'error');
-    }
-  }
-
-  /**
-   * SAFELY ensure browser exists for joined session (NO automatic launching)
-   */
-  private async ensureBrowserExistsForSession(sessionId: string, sessionType: string, _owner: string): Promise<void> {
-    try {
-      this.log(`🔍 Ensuring browser availability for session ${sessionId} (${sessionType})`);
-      
-      // SAFETY CHECK: Rate limiting for joined sessions too
-      const now = Date.now();
-      const lastLaunch = this.lastLaunchTime.get(sessionId) || 0;
-      const attempts = this.launchAttempts.get(sessionId) || 0;
-      
-      if (now - lastLaunch < this.LAUNCH_COOLDOWN_MS) {
-        this.log(`⏰ Browser ensure cooldown active for session ${sessionId} - skipping`);
-        return;
-      }
-      
-      if (attempts >= this.MAX_LAUNCH_ATTEMPTS) {
-        this.log(`🛑 Maximum browser ensure attempts reached for session ${sessionId} - preventing infinite loop`);
-        return;
-      }
-      
-      // Clean up any zombie tabs first
-      await this.performZombieCleanup();
-      
-      // Check current tab status
-      const tabStatus = await this.tabManager.checkTabs();
-      this.log(`🌐 Current browser status: ${tabStatus.count} tab(s) - ${tabStatus.action}`);
-      
-      if (tabStatus.count === 0) {
-        // SAFE: Only launch if NO tabs exist
-        this.log(`🚀 No browser tabs found - SAFELY launching one tab for session ${sessionId}`);
-        await this.tabManager.ensureOneTab((msg: string) => this.log(msg));
-      } else if (tabStatus.count === 1) {
-        // Perfect - exactly one tab
-        this.log(`✅ Exactly 1 tab connected to localhost:9000 - ONE TAB POLICY satisfied`);
-      } else {
-        // Too many tabs - enforce ONE TAB POLICY
-        this.log(`⚠️ ${tabStatus.count} tabs connected to localhost:9000 - violates ONE TAB POLICY`);
-        this.log(`🧹 Running zombie cleanup to enforce ONE TAB POLICY`);
-        
-        // Run additional zombie cleanup cycle
-        await this.performZombieCleanup();
-        
-        // Check again after cleanup
-        const newStatus = await this.tabManager.checkTabs();
-        if (newStatus.count > 1) {
-          this.log(`⚠️ Still have ${newStatus.count} tabs after cleanup - manual intervention may be needed`);
-        } else {
-          this.log(`✅ ONE TAB POLICY restored: ${newStatus.count} tab(s) remaining`);
-        }
-      }
-      
-    } catch (error) {
-      this.log(`❌ Failed to ensure browser for session ${sessionId}: ${error}`, 'error');
-    }
-  }
 
   /**
    * Initialize available browser modules

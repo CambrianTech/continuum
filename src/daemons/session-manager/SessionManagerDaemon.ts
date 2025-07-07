@@ -1357,6 +1357,16 @@ export class SessionManagerDaemon extends BaseDaemon {
       // Create or find appropriate session
       const session = await this.createOrFindSession(connectionId, sessionType, metadata);
       
+      // RACE CONDITION FIX: Check if connection still exists before sending session_ready
+      const connectionCheck = await this.sendMessage(DaemonType.WEBSOCKET_SERVER, 'check_connection', {
+        connectionId
+      });
+      
+      if (!connectionCheck.success) {
+        this.log(`⚠️ Connection ${connectionId} no longer exists, skipping session_ready (likely client disconnected during session setup)`);
+        return;
+      }
+      
       // Send session_ready message to the connection via WebSocketDaemon
       const response = await this.sendMessage(DaemonType.WEBSOCKET_SERVER, MessageType.SEND_TO_CONNECTION, {
         connectionId,

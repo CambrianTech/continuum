@@ -19,3 +19,6 @@ export * from './browser-session.js';
 
 // DevTools Protocol and Adapter Types
 export * from './devtools.js';
+
+// Browser Connect Configuration (Universal Client Interface)
+export * from './browser-connect.js';
