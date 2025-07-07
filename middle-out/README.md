@@ -46,6 +46,12 @@ This directory contains the complete architectural documentation for Continuum's
 
 ### 🛠️ Development Support
 
+#### 🎓 [Academy Training](academy/)
+- **[README.md](academy/README.md)** - Complete Academy training system overview
+- **[competitive-training-system.md](academy/competitive-training-system.md)** - Gamified AI training with sport-style scoring and tournaments
+- **[training-methods/scoring-architecture.md](academy/training-methods/scoring-architecture.md)** - LoRA adaptation signals and competitive scoring systems
+- **[development/lora-training-signals.md](development/lora-training-signals.md)** - Progressive curriculum and feedback patterns for Academy AI training
+
 #### 🐛 [Debugging](debugging/)
 - **[common-mistakes.md](debugging/common-mistakes.md)** - AI debugging anti-patterns and solutions (coming soon)
 - **[cognitive-load-reduction.md](debugging/cognitive-load-reduction.md)** - Cognitive load reduction principles (coming soon)
