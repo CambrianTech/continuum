@@ -10,38 +10,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { glob } from 'glob';
-
-interface ModuleQualityConfig {
-  continuum?: {
-    quality?: {
-      status: 'graduated' | 'candidate' | 'whitelisted';
-      eslint?: {
-        enforce: boolean;
-        level: 'strict' | 'warn' | 'off';
-      };
-      typescript?: {
-        noAny: boolean;
-        strict: boolean;
-      };
-      tests?: {
-        required: boolean;
-        coverage?: number;
-      };
-      compliance?: {
-        required: boolean;
-        minimumScore?: number;
-      };
-    };
-  };
-}
+import { 
+  ModuleQualityConfig, 
+  ModulePackageJson, 
+  ModuleGraduationStatus,
+  isValidModuleQualityConfig,
+  mergeWithDefaults 
+} from '../types/ModuleQualitySchema';
 
 interface QualityResult {
   module: string;
   path: string;
-  status: 'graduated' | 'candidate' | 'whitelisted';
+  status: ModuleGraduationStatus;
   passed: boolean;
   issues: string[];
-  config: ModuleQualityConfig['continuum']['quality'];
+  config: ModuleQualityConfig;
 }
 
 class QualityEnforcementEngine {
@@ -76,7 +59,7 @@ class QualityEnforcementEngine {
   /**
    * Load quality configuration for a module
    */
-  loadModuleQualityConfig(modulePath: string): ModuleQualityConfig['continuum']['quality'] | null {
+  loadModuleQualityConfig(modulePath: string): ModuleQualityConfig | null {
     const packageJsonPath = path.join(this.rootDir, modulePath, 'package.json');
     
     if (!fs.existsSync(packageJsonPath)) {
@@ -84,8 +67,15 @@ class QualityEnforcementEngine {
     }
 
     try {
-      const packageJson: ModuleQualityConfig = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-      return packageJson.continuum?.quality || null;
+      const packageJson: ModulePackageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+      const qualityConfig = packageJson.continuum?.quality;
+      
+      if (!qualityConfig || !isValidModuleQualityConfig(qualityConfig)) {
+        return null;
+      }
+      
+      // Merge with defaults based on graduation status
+      return mergeWithDefaults(qualityConfig, qualityConfig.status);
     } catch (error) {
       console.warn(`⚠️ Failed to load quality config for ${modulePath}:`, error);
       return null;
@@ -148,7 +138,7 @@ class QualityEnforcementEngine {
   /**
    * Check quality standards for a specific module
    */
-  private async checkModuleQuality(modulePath: string, config: ModuleQualityConfig['continuum']['quality']): Promise<QualityResult> {
+  private async checkModuleQuality(modulePath: string, config: ModuleQualityConfig): Promise<QualityResult> {
     const issues: string[] = [];
     const fullPath = path.join(this.rootDir, modulePath);
 
