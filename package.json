@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2383",
+  "version": "0.2.2384",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -25,8 +25,9 @@
     "test:compile": "npx tsc --noEmit --project .",
     "test:full": "npx tsx src/system/testing/test/universal-layer-runner.ts",
     "test:layer": "npx tsx src/system/testing/test/universal-layer-runner.ts --layer=",
-    "test:widgets": "npx tsx src/testing/ModularTestRunner.ts widget",
-    "test:daemons": "npx tsx src/testing/ModularTestRunner.ts daemon",
+    "test:widgets": "npx tsx src/testing/IntelligentModularTestRunner.ts widget",
+    "test:daemons": "npx tsx src/testing/IntelligentModularTestRunner.ts daemon",
+    "test:commands": "npx tsx src/testing/IntelligentModularTestRunner.ts command",
     "test:integration:all": "npm run test:integration:eventbus && npm run test:integration:routing && npm run test:integration:html && npm run test:integration:wildcard && npm run test:integration:types && npm run test:integration:modules",
     "test:integration:eventbus": "npx tsx --test src/test/integration/DaemonEventBus.integration.test.ts",
     "test:integration:routing": "npx tsx --test src/test/integration/CommandRouting.integration.test.ts",
