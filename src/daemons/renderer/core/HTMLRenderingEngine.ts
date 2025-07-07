@@ -24,7 +24,7 @@ export class HTMLRenderingEngine {
         window.__CONTINUUM_VERSION__ = '${version}';
         window.__CONTINUUM_API_PATH__ = '/dist/api.js';
     </script>
-    <script type="module" src="/dist/ui/continuum-browser.js"></script>`;
+    <script type="module" src="/src/ui/continuum-browser.js"></script>`;
       
       // Insert scripts before closing body tag
       html = html.replace('</body>', scriptsToInject + '\n</body>');
@@ -122,7 +122,7 @@ export class HTMLRenderingEngine {
     <!-- Load browser API and widgets -->
     <script type="module">
         // Import and initialize the browser API
-        import('/dist/ui/continuum-browser.js').then(module => {
+        import('/src/ui/continuum-browser.js').then(module => {
             console.log('🌐 Continuum Browser API loaded');
             
             // Hide loading overlay once API is ready
