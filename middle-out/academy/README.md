@@ -8,8 +8,17 @@ The Academy transforms AI training from passive learning into competitive develo
 
 ## 📚 **CORE DOCUMENTATION**
 
+### **🏗️ Architecture & Implementation**
+- **[architecture-overview.md](architecture-overview.md)** - Complete Academy architecture with implemented classes, stubs to complete, and development roadmap
+
 ### **🏆 Competitive Training**
 - **[competitive-training-system.md](competitive-training-system.md)** - Complete gamified training architecture with dynamic scoring, tournaments, and achievement systems
+
+### **🌍 Universal Training Engine**
+- **[universal-training-engine.md](universal-training-engine.md)** - Competitive learning system adaptable to any domain - from code to robotics to social intelligence
+
+### **🧠 Autodidactic Intelligence**
+- **[autodidactic-intelligence.md](autodidactic-intelligence.md)** - Self-directed learning where AI agents construct their own curriculum, challenges, and feedback loops
 
 ### **🤖 AI-to-AI Learning** 
 - **[adversarial-learning.md](adversarial-learning.md)** - Multi-persona training environments with challenger/student/reviewer dynamics *(coming soon)*
