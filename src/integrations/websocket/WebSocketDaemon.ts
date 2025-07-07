@@ -837,24 +837,26 @@ export class WebSocketDaemon extends BaseDaemon {
         };
       }
       
+      // Track session assignment BEFORE sending (prevent race condition)
+      const msg = message as any;
+      this.log(`🔍 [MAPPING_DEBUG] Message type: ${msg.type}, has sessionId: ${!!msg.data?.sessionId}`);
+      if (msg.type === 'session_ready' && msg.data?.sessionId) {
+        this.connectionSessions.set(connectionId, msg.data.sessionId);
+        this.log(`🔗 Mapped connection ${connectionId} to session ${msg.data.sessionId} BEFORE sending`);
+        this.log(`🔍 [MAPPING_DEBUG] Total mappings: ${this.connectionSessions.size}`);
+      }
+
       // Send message to specific connection
       const sent = this.wsManager.sendToConnection(connectionId, message);
       
       if (sent) {
         this.log(`📤 Sent message to connection ${connectionId}`);
-        
-        // Track session assignment if this is a session_ready message
-        const msg = message as any;
-        if (msg.type === 'session_ready' && msg.data?.sessionId) {
-          this.connectionSessions.set(connectionId, msg.data.sessionId);
-          this.log(`🔗 Mapped connection ${connectionId} to session ${msg.data.sessionId}`);
-        }
-        
         return {
           success: true,
           data: { sent: true }
         };
       } else {
+        this.log(`📤 Failed to send message to connection ${connectionId} (connection may have closed)`);
         return {
           success: false,
           error: `Connection ${connectionId} not found`
