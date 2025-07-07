@@ -14,7 +14,35 @@
     ],
     "dependencies": [],
     "interfaces": [],
-    "permissions": []
+    "permissions": [],
+    "quality": {
+      "status": "graduated",
+      "eslint": {
+        "enforce": true,
+        "level": "warn"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": true
+      },
+      "tests": {
+        "required": true,
+        "coverage": 80,
+        "types": ["unit", "integration"],
+        "mustPass": true
+      },
+      "compliance": {
+        "required": true,
+        "minimumScore": 85,
+        "structure": {
+          "packageJson": true,
+          "readme": true,
+          "mainFile": true,
+          "testDirectory": true,
+          "typeDefinitions": true
+        }
+      }
+    }
   },
   "keywords": [
     "browser-manager",

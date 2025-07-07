@@ -16,7 +16,33 @@
     ],
     "dependencies": [],
     "interfaces": [],
-    "permissions": []
+    "permissions": [],
+    "quality": {
+      "status": "graduated",
+      "eslint": {
+        "enforce": true,
+        "level": "warn"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": true
+      },
+      "tests": {
+        "required": true,
+        "coverage": 75,
+        "types": ["unit", "integration"]
+      },
+      "compliance": {
+        "required": true,
+        "minimumScore": 80,
+        "structure": {
+          "packageJson": true,
+          "readme": false,
+          "mainFile": true,
+          "testDirectory": true
+        }
+      }
+    }
   },
   "keywords": [
     "session-manager",
