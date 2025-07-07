@@ -33,7 +33,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   private launcher = new BrowserLauncher();
   private sessionManager = new BrowserSessionManager();
   // private hasActiveBrowser = false; // TODO: Remove if not needed
-  private tabAdapter: BaseBrowserAdapter;
+  private tabAdapter!: BaseBrowserAdapter; // Initialized in initializeTabAdapter()
   // private _browserTabManager = new BrowserTabManager(); // TODO: Remove if not used
   
   // Track console loggers for each session
@@ -249,7 +249,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       try {
         const operaAdapter = new MacOperaAdapter();
         // Test if Opera GX is available
-        const testCount = await operaAdapter.countTabs('localhost:9000');
+        await operaAdapter.countTabs('localhost:9000'); // Test adapter availability
         this.tabAdapter = operaAdapter;
         this.log('✅ Using Opera GX adapter for tab management');
         return;
