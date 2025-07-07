@@ -9,9 +9,12 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { readFile } from 'fs/promises';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { BaseBrowserAdapter } from '../base/BaseBrowserAdapter.js';
 
 const execAsync = promisify(exec);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export abstract class MacOSBrowserAdapter extends BaseBrowserAdapter {
   protected scriptsPath: string;
