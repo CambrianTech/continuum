@@ -74,6 +74,13 @@ echo -e "${YELLOW}🧹 Cleaning orphaned logs...${NC}"
 find .continuum -name "*.log" -type f -mmin +$((KEEP_HOURS * 60)) -not -path "*sessions*" -delete 2>/dev/null || true
 echo -e "${GREEN}✅ Orphaned logs cleaned${NC}"
 
+# Clean dist directory and build artifacts
+echo -e "${YELLOW}🧹 Cleaning build artifacts...${NC}"
+rm -rf dist/ 2>/dev/null || true
+rm -f .tsbuildinfo 2>/dev/null || true
+rm -f src/ui/continuum-browser.js* 2>/dev/null || true
+echo -e "${GREEN}✅ Build artifacts cleaned${NC}"
+
 # If we deleted all sessions, kill ALL continuum processes to ensure clean state
 if [ "$DELETE_ALL" = true ]; then
     echo -e "${YELLOW}🔄 Stopping all Continuum processes for clean state...${NC}"
