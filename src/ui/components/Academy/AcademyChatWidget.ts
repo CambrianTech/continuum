@@ -9,7 +9,7 @@
  * - Drop-in compatibility with continuum render daemon
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 interface AcademyMessage {
   readonly id: string;
@@ -46,7 +46,7 @@ interface AcademyRoom {
 }
 
 export class AcademyChatWidget extends BaseWidget {
-  private readonly currentRoom: AcademyRoom;
+  private readonly _currentRoom: AcademyRoom;
   private readonly messageHistory: AcademyMessage[] = [];
   private readonly activePersonas: Map<string, AcademyPersona> = new Map();
   private messageContainer!: HTMLElement;
@@ -63,8 +63,9 @@ export class AcademyChatWidget extends BaseWidget {
     this.widgetIcon = '🧬';
     this.widgetTitle = 'Academy Chat Interface';
     
-    this.currentRoom = this.createDefaultAcademyRoom();
+    this._currentRoom = this.createDefaultAcademyRoom();
     this.initializeDefaultPersonas();
+    void this._currentRoom; // Available for future use
   }
 
   renderContent(): string {
@@ -379,7 +380,7 @@ export class AcademyChatWidget extends BaseWidget {
     );
   }
 
-  private async handleAcademyQuery(message: AcademyMessage): Promise<void> {
+  private async handleAcademyQuery(_message: AcademyMessage): Promise<void> {
     const generalAI = this.activePersonas.get('general_ai');
     if (!generalAI) return;
 
@@ -415,7 +416,7 @@ export class AcademyChatWidget extends BaseWidget {
       author: persona,
       content,
       type,
-      metadata
+      ...(metadata ? { metadata } : {})
     };
 
     await this.addMessage(message);
@@ -614,7 +615,7 @@ export class AcademyChatWidget extends BaseWidget {
     );
   }
 
-  private createAcademyPlan(content: string): any {
+  private createAcademyPlan(_content: string): any {
     return {
       steps: [
         {

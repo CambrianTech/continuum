@@ -4,9 +4,9 @@
  */
 
 import puppeteer from 'puppeteer';
-import { BaseWidget } from '../../shared/BaseWidget.js';
-import { ChatWidget } from '../../Chat/ChatWidget.js';
-import { SidebarWidget } from '../../Sidebar/SidebarWidget.js';
+import { BaseWidget } from '../../shared/BaseWidget';
+import { ChatWidget } from '../../Chat/ChatWidget';
+import { SidebarWidget } from '../../Sidebar/SidebarWidget';
 
 interface WidgetTestResult {
   widget: string;

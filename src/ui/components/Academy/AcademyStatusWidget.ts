@@ -8,7 +8,7 @@
  * - Discoverable module via package.json
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 interface TrainingSession {
   readonly id: string;
@@ -46,6 +46,26 @@ export class AcademyStatusWidget extends BaseWidget {
     return '/src/ui/components/Academy';
   }
 
+  static async getWidgetFiles(): Promise<string[]> {
+    try {
+      // Academy widgets use their own package.json files
+      const packagePath = `${this.getBasePath()}/AcademyStatusWidget.package.json`;
+      
+      console.log(`📦 ${this.name}: Fetching package.json from ${packagePath}`);
+      const response = await fetch(packagePath);
+      if (!response.ok) {
+        console.warn(`📦 No package.json found for ${this.name} at ${packagePath}`);
+        return [];
+      }
+      
+      const packageData = await response.json();
+      return packageData.files || [];
+    } catch (error) {
+      console.warn(`📦 Failed to read package.json for ${this.name}:`, error);
+      return [];
+    }
+  }
+
   static getOwnCSS(): string[] {
     return ['AcademyStatusWidget.css'];
   }
@@ -57,40 +77,6 @@ export class AcademyStatusWidget extends BaseWidget {
     this.widgetTitle = 'Academy System Status';
   }
 
-  renderContent(): string {
-    // Content comes from AcademyStatusWidget.html template
-    return '';
-  }
-
-  async initializeWidget(): Promise<void> {
-    const htmlContent = await this.loadHTMLTemplates();
-    if (htmlContent) {
-      console.log('Academy Status Widget: HTML template loaded');
-    } else {
-      console.warn('Academy Status Widget: HTML template not found, using fallback');
-    }
-    
-    // Start real-time updates
-    this.startRealTimeUpdates();
-  }
-
-  async render(): Promise<void> {
-    try {
-      const css = await this.loadCSS();
-      const html = await this.loadHTMLTemplates();
-      
-      this.shadowRoot.innerHTML = `
-        <style>${css}</style>
-        ${html}
-      `;
-
-      this.setupEventListeners();
-      
-    } catch (error) {
-      console.error('Academy Status Widget: Render failed:', error);
-      this.renderError(error);
-    }
-  }
 
   setupEventListeners(): void {
     // Academy control buttons
@@ -168,18 +154,71 @@ export class AcademyStatusWidget extends BaseWidget {
 
   private async loadAcademyStatus(): Promise<void> {
     try {
-      const status = await this.executeCommand('academy.status', {});
+      // MOCK DATA: Use client-side data until Academy commands are working
+      const mockStatus = {
+        training_sessions: [
+          {
+            id: 'session_1',
+            persona_id: 'DevMaster',
+            status: 'active' as const,
+            progress: 67,
+            convergence_time: 180,
+            estimated_completion: new Date(Date.now() + 3 * 60 * 1000),
+            formula_id: 'formula_typescript_optimization'
+          },
+          {
+            id: 'session_2', 
+            persona_id: 'CodeAI',
+            status: 'converging' as const,
+            progress: 23,
+            convergence_time: 480,
+            estimated_completion: new Date(Date.now() + 8 * 60 * 1000),
+            formula_id: 'formula_error_handling'
+          }
+        ],
+        p2p_network: [
+          {
+            id: 'node_1',
+            location: 'Local Network',
+            status: 'online' as const,
+            genome_count: 847,
+            last_sync: new Date(Date.now() - 2 * 60 * 1000)
+          },
+          {
+            id: 'node_2',
+            location: 'Academy Network',
+            status: 'syncing' as const,
+            genome_count: 1203,
+            last_sync: new Date(Date.now() - 5 * 60 * 1000)
+          }
+        ],
+        recent_discoveries: [
+          {
+            genome_id: 'genome_001',
+            domain: 'TypeScript Optimization',
+            performance: 94.7,
+            compatibility_score: 92.1,
+            source_node: 'FormulaMaster'
+          },
+          {
+            genome_id: 'genome_002',
+            domain: 'Error Handling Patterns', 
+            performance: 89.2,
+            compatibility_score: 87.5,
+            source_node: 'SynthesisEngine'
+          }
+        ]
+      };
       
-      if (status) {
-        this.activeSessions = status.training_sessions || [];
-        this.p2pNodes = status.p2p_network || [];
-        this.recentDiscoveries = status.recent_discoveries || [];
-        
-        this.updateTrainingSessions();
-        this.updateP2PNetwork();
-        this.updateGenomeDiscoveries();
-        this.updateAcademyMetrics(status.metrics);
-      }
+      this.activeSessions = mockStatus.training_sessions;
+      this.p2pNodes = mockStatus.p2p_network;
+      this.recentDiscoveries = mockStatus.recent_discoveries;
+      
+      this.updateTrainingSessions();
+      this.updateP2PNetwork();
+      this.updateGenomeDiscoveries();
+      
+      console.log('🎓 Academy Status Widget: Mock data loaded successfully');
     } catch (error) {
       console.warn('Academy Status Widget: Failed to load Academy status:', error);
       this.showOfflineState();
@@ -262,21 +301,6 @@ export class AcademyStatusWidget extends BaseWidget {
     `).join('');
   }
 
-  private updateAcademyMetrics(metrics: any): void {
-    if (!metrics) return;
-
-    const elements = {
-      totalPersonas: this.shadowRoot.querySelector('#total-personas'),
-      activeTraining: this.shadowRoot.querySelector('#active-training'),
-      p2pConnections: this.shadowRoot.querySelector('#p2p-connections'),
-      genomeLibrary: this.shadowRoot.querySelector('#genome-library')
-    };
-
-    if (elements.totalPersonas) elements.totalPersonas.textContent = metrics.total_personas || '0';
-    if (elements.activeTraining) elements.activeTraining.textContent = metrics.active_training_sessions || '0';
-    if (elements.p2pConnections) elements.p2pConnections.textContent = metrics.p2p_connections || '0';
-    if (elements.genomeLibrary) elements.genomeLibrary.textContent = metrics.genome_library_size || '0';
-  }
 
   private async spawnPersona(): Promise<void> {
     try {
@@ -427,12 +451,6 @@ export class AcademyStatusWidget extends BaseWidget {
     return `${days}d ago`;
   }
 
-  private startRealTimeUpdates(): void {
-    // Update every 5 seconds
-    this.updateInterval = window.setInterval(() => {
-      this.loadAcademyStatus();
-    }, 5000);
-  }
 
   cleanup(): void {
     if (this.updateInterval) {

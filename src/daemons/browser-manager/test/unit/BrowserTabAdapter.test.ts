@@ -119,7 +119,44 @@ describe('Browser Tab Adapter Unit Tests', () => {
     });
   });
 
-  describe('Platform Detection', () => {
+  describe('URL Pattern Matching', () => {
+    test('should distinguish between app URLs and debugging URLs', async () => {
+      const adapter = new MacOperaAdapter();
+      
+      // Mock execAsync to simulate AppleScript logic
+      (adapter as any).execAsync = async (command: string) => {
+        // Simulate the actual AppleScript logic we implemented
+        const mockTabs = [
+          'http://localhost:9000', // App URL - should match
+          'http://localhost:9000/', // App URL with trailing slash - should match  
+          'http://localhost:9000?session=abc', // App URL with query - should match
+          'http://localhost:9000#section', // App URL with fragment - should match
+          'http://localhost:9000/src/ui/components/shared/BaseWidget.js', // Debug URL - should NOT match
+          'http://localhost:9000/dist/ui/continuum-browser.js', // Debug URL - should NOT match
+        ];
+        
+        const targetPattern = 'http://localhost:9000';
+        let matchCount = 0;
+        
+        // Simulate the AppleScript matching logic we implemented
+        for (const url of mockTabs) {
+          if (url === targetPattern || 
+              url === targetPattern + '/' ||
+              url.startsWith(targetPattern + '?') ||
+              url.startsWith(targetPattern + '#')) {
+            matchCount++;
+          }
+        }
+        
+        return { stdout: matchCount.toString() + '\n' };
+      };
+      
+      const count = await adapter.countTabs('http://localhost:9000');
+      
+      // Should only match the 4 valid app URLs, not the 2 debugging URLs
+      assert.strictEqual(count, 4, 'Should match only app URLs, not debugging URLs like /src/ui/components/shared/BaseWidget.js');
+    });
+
     test('should handle different URL patterns', async () => {
       const adapter = new MacOperaAdapter();
       

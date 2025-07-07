@@ -5,7 +5,7 @@
  * Provides consistent interface to DatabaseDaemon for all subsystems
  */
 
-import { DaemonMessage } from './DaemonProtocol';
+import type { DaemonMessage } from './DaemonProtocol';
 
 export interface DatabaseOperation {
   operation: string;
@@ -73,7 +73,7 @@ export class DatabaseIntegration {
       const result = await this.databaseDaemon.handleMessage(message);
 
       if (!result.success) {
-        throw new Error(result.error || 'Database operation failed');
+        throw new Error(result.error ?? 'Database operation failed');
       }
 
       return {
@@ -297,7 +297,7 @@ export class ChatDatabaseIntegration extends DatabaseIntegration {
     return this.save('rooms', room.id, room, {
       type: 'chat_room',
       name: room.name,
-      participant_count: room.participants?.size || 0,
+      participant_count: room.participants?.size ?? 0,
       created_at: room.created_at
     });
   }
@@ -394,7 +394,7 @@ export class AcademyDatabaseIntegration extends DatabaseIntegration {
       uuid: identity.uuid,
       name: identity.name,
       creator_node: identity.creator_node,
-      domains: genome.knowledge?.domain_expertise?.map(d => d.domain) || [],
+      domains: genome.knowledge?.domain_expertise?.map(d => d.domain) ?? [],
       derivation_type: identity.derivation_type
     });
   }
@@ -411,7 +411,7 @@ export class AcademyDatabaseIntegration extends DatabaseIntegration {
   }>): Promise<DatabaseResponse> {
     return this.save('lora_compositions', compositionId, { composition, layer_identities: layerIdentities }, {
       type: 'lora_composition',
-      primary_layers: composition.primary_layers?.length || 0,
+      primary_layers: composition.primary_layers?.length ?? 0,
       total_rank: composition.total_rank,
       domains: [...new Set(layerIdentities.map(l => l.domain))],
       layer_uuids: layerIdentities.map(l => l.uuid)

@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals';
-import { AcademyStatusWidget } from '../../AcademyStatusWidget.js';
+import { AcademyStatusWidget } from '../../AcademyStatusWidget';
 
 // Mock continuum API
 const mockContinuum = {
@@ -14,7 +14,7 @@ const mockContinuum = {
 };
 
 // Mock BaseWidget methods
-jest.mock('../../shared/BaseWidget.js', () => ({
+jest.mock('../../shared/BaseWidget', () => ({
   BaseWidget: class MockBaseWidget {
     shadowRoot = document.createElement('div');
     widgetName = '';

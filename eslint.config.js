@@ -27,7 +27,9 @@ export default [
       sourceType: 'module',
       parserOptions: {
         ecmaVersion: 2022,
-        sourceType: 'module'
+        sourceType: 'module',
+        project: './tsconfig.json',
+        tsconfigRootDir: import.meta.dirname
       },
       globals: {
         // Node.js globals
@@ -52,15 +54,44 @@ export default [
     rules: {
       ...eslintJs.configs.recommended.rules,
       ...tseslint.configs.recommended.rules,
+      
+      // STRICT TYPE SAFETY - No compromises
       '@typescript-eslint/no-explicit-any': 'error', // No any types allowed
-      '@typescript-eslint/no-unused-vars': ['warn', { 'argsIgnorePattern': '^_' }],
-      '@typescript-eslint/explicit-module-boundary-types': 'warn', // Require explicit return types
+      '@typescript-eslint/no-unused-vars': ['error', { 'argsIgnorePattern': '^_' }], // Error not warn
+      '@typescript-eslint/explicit-module-boundary-types': 'error', // Require explicit return types
+      '@typescript-eslint/explicit-function-return-type': 'error', // All functions must have return types
+      '@typescript-eslint/no-inferrable-types': 'off', // Allow explicit types even if inferrable
+      // '@typescript-eslint/prefer-readonly-parameter-types': 'warn', // Prefer readonly params - needs project config
+      
+      // CLEAN CODE ENFORCEMENT
       '@typescript-eslint/no-require-imports': 'error', // No require() in TypeScript
+      '@typescript-eslint/no-var-requires': 'error', // No var require
+      '@typescript-eslint/consistent-type-imports': 'error', // Use import type
+      '@typescript-eslint/no-unnecessary-type-assertion': 'error', // Remove unnecessary assertions
+      '@typescript-eslint/prefer-nullish-coalescing': 'error', // Use ?? over ||
+      '@typescript-eslint/prefer-optional-chain': 'error', // Use optional chaining
+      
+      // ARCHITECTURE ENFORCEMENT
       'no-undef': 'error',
-      // Custom rules for proper module imports
+      'no-unused-expressions': 'error',
+      'prefer-const': 'error', // Use const when possible
+      'no-var': 'error', // No var declarations
+      
+      // MODULE SYSTEM ENFORCEMENT
       'no-restricted-imports': ['error', {
         'patterns': ['*.js', '*.jsx', '*.ts', '*.tsx'] // No file extensions in imports
       }],
+      
+      // NAMING CONVENTIONS
+      '@typescript-eslint/naming-convention': ['error',
+        { selector: 'interface', format: ['PascalCase'] },
+        { selector: 'typeAlias', format: ['PascalCase'] },
+        { selector: 'class', format: ['PascalCase'] },
+        { selector: 'method', format: ['camelCase'] },
+        { selector: 'function', format: ['camelCase'] },
+        { selector: 'variable', format: ['camelCase', 'UPPER_CASE'] },
+        { selector: 'parameter', format: ['camelCase'], leadingUnderscore: 'allow' }
+      ]
     }
   },
   

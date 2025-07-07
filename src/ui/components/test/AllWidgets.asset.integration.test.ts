@@ -4,9 +4,9 @@
  * Middle-out approach: test the pattern, catch everything
  */
 
-import { runWidgetAssetTests } from '../shared/test/BaseWidget.asset.integration.test.js';
-import { SidebarWidget } from '../Sidebar/SidebarWidget.js';
-import { ChatWidget } from '../Chat/ChatWidget.js';
+import { runWidgetAssetTests } from '../shared/test/BaseWidget.asset.integration.test';
+import { SidebarWidget } from '../Sidebar/SidebarWidget';
+import { ChatWidget } from '../Chat/ChatWidget';
 
 describe('All Widgets Asset Integration', () => {
   beforeAll(() => {
@@ -30,7 +30,7 @@ describe('All Widgets Asset Integration', () => {
       console.log(`\n🔍 Individual assertion for ${WidgetClass.name}:`);
       
       // Import dynamically to avoid circular dependencies
-      const { testWidgetAssets } = await import('../shared/test/BaseWidget.asset.integration.test.js');
+      const { testWidgetAssets } = await import('../shared/test/BaseWidget.asset.integration.test');
       const results = await testWidgetAssets(WidgetClass);
       
       // Assert all assets loaded successfully
@@ -49,7 +49,7 @@ describe('All Widgets Asset Integration', () => {
 
   describe('Individual Widget Asset Tests', () => {
     it('should load SidebarWidget assets', async () => {
-      const { testWidgetAssets } = await import('../shared/test/BaseWidget.asset.integration.test.js');
+      const { testWidgetAssets } = await import('../shared/test/BaseWidget.asset.integration.test');
       const results = await testWidgetAssets(SidebarWidget);
       
       expect(results.every(r => r.success)).toBe(true);
@@ -57,7 +57,7 @@ describe('All Widgets Asset Integration', () => {
     });
 
     it('should load ChatWidget assets', async () => {
-      const { testWidgetAssets } = await import('../shared/test/BaseWidget.asset.integration.test.js');
+      const { testWidgetAssets } = await import('../shared/test/BaseWidget.asset.integration.test');
       const results = await testWidgetAssets(ChatWidget);
       
       expect(results.every(r => r.success)).toBe(true);

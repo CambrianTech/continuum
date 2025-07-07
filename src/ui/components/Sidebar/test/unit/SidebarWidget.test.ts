@@ -3,7 +3,7 @@
  * Tests for the Sidebar widget component following MIDDLE-OUT methodology
  */
 
-import { SidebarWidget } from '../../SidebarWidget.js';
+import { SidebarWidget } from '../../SidebarWidget';
 
 describe('SidebarWidget', () => {
   let widget: SidebarWidget;

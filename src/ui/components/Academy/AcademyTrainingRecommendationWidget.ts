@@ -6,7 +6,7 @@
  * Has "Start Training" button to create new Academy session.
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 interface TrainingRecommendation {
   readonly persona_id: string;

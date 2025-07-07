@@ -9,7 +9,8 @@
  * - Content-type detection
  */
 
-import { describe, test, expect, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, before, after } from 'node:test';
+import assert from 'node:assert';
 import { StaticFileDaemon } from '../../StaticFileDaemon';
 import { DaemonMessage } from '../../../base/DaemonProtocol';
 import path from 'path';
@@ -17,9 +18,9 @@ import fs from 'fs/promises';
 
 describe('StaticFileDaemon Integration Tests', () => {
   let daemon: StaticFileDaemon;
-  const testFilesDir = path.join(__dirname, 'test-files');
+  const testFilesDir = path.join(process.cwd(), 'temp-test-files');
 
-  beforeEach(async () => {
+  before(async () => {
     daemon = new StaticFileDaemon();
     await daemon.start();
     
@@ -39,13 +40,13 @@ describe('StaticFileDaemon Integration Tests', () => {
     );
   });
 
-  afterEach(async () => {
+  after(async () => {
     await daemon.stop();
     await fs.rm(testFilesDir, { recursive: true, force: true });
   });
 
   describe('File Serving', () => {
-    test('should serve CSS files with correct content-type', async () => {
+    it('should serve CSS files with correct content-type', async () => {
       const message: DaemonMessage = {
         id: 'test-1',
         from: 'websocket',
@@ -60,10 +61,10 @@ describe('StaticFileDaemon Integration Tests', () => {
 
       const response = await daemon.handleMessage(message);
       
-      expect(response.success).toBe(true);
-      expect(response.data?.contentType).toBe('text/css');
-      expect(response.data?.content).toContain('.widget-container');
-      expect(response.data?.headers['Cache-Control']).toBeDefined();
+      assert.strictEqual(response.success, true);
+      assert.strictEqual(response.data?.contentType, 'text/css');
+      assert.ok(response.data?.content?.includes('.widget-container'));
+      assert.ok(response.data?.headers['Cache-Control']);
     });
 
     test('should serve JS files', async () => {
@@ -284,6 +285,53 @@ describe('StaticFileDaemon Integration Tests', () => {
       
       expect(response.success).toBe(true);
       expect(response.data?.content).toContain('//# sourceMappingURL=');
+    });
+
+    it('CRITICAL: should rewrite TypeScript imports to add .js extensions without creating double extensions', async () => {
+      // Create TypeScript file with relative imports (proper TS syntax without .js)
+      await fs.writeFile(
+        path.join(testFilesDir, 'widget-with-imports.ts'),
+        `import { BaseWidget } from './BaseWidget';
+import { UniversalUserSystem } from '../UniversalUserSystem';
+import { SomeModule } from '../../shared/SomeModule';
+
+export class TestWidget extends BaseWidget {
+  constructor() {
+    super();
+  }
+}`
+      );
+
+      const message: DaemonMessage = {
+        id: 'test-import-rewrite',
+        from: 'websocket',
+        to: 'static-file',
+        type: 'serve_file',
+        timestamp: new Date(),
+        data: {
+          pathname: '/test-files/widget-with-imports.js',
+          method: 'GET'
+        }
+      };
+
+      const response = await daemon.handleMessage(message);
+      
+      assert.strictEqual(response.success, true);
+      assert.strictEqual(response.data?.contentType, 'application/javascript');
+      
+      const content = response.data?.content || '';
+      
+      // Should add .js extensions to relative imports
+      assert.ok(content.includes("from './BaseWidget.js'"), 'Should add .js to BaseWidget import');
+      assert.ok(content.includes("from '../UniversalUserSystem.js'"), 'Should add .js to UniversalUserSystem import');
+      assert.ok(content.includes("from '../../shared/SomeModule.js'"), 'Should add .js to SomeModule import');
+      
+      // CRITICAL: Should NOT create double .js extensions
+      assert.ok(!content.includes('.js.js'), 'Should not create double .js extensions');
+      
+      // Should preserve TypeScript compilation (class extends should work)
+      assert.ok(content.includes('class TestWidget extends BaseWidget'), 'Should preserve class inheritance');
+      assert.ok(content.includes('constructor()'), 'Should preserve constructor');
     });
 
     test('should handle TypeScript compilation errors gracefully', async () => {

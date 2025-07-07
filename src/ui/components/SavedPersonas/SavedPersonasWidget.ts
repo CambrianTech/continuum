@@ -3,7 +3,7 @@
  * Self-contained with embedded styles, full functionality, and tests
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 interface Persona {
   id: string;
@@ -23,6 +23,9 @@ interface Persona {
 }
 
 export class SavedPersonasWidget extends BaseWidget {
+  static getOwnCSS(): string[] {
+    return ['SavedPersonasWidget.css'];
+  }
   private personas: Persona[] = [];
   private selectedPersona: Persona | null = null;
   private dragState: any = null;
@@ -32,7 +35,6 @@ export class SavedPersonasWidget extends BaseWidget {
     this.widgetName = 'SavedPersonas';
     this.widgetIcon = '👤';
     this.widgetTitle = 'Saved Personas';
-    this.cssPath = '/src/ui/components/SavedPersonas/SavedPersonasWidget.css';
   }
 
   protected async initializeWidget(): Promise<void> {

@@ -3,8 +3,8 @@
  * Provides agent and user selection functionality with search
  * Integrated with UniversalUserSystem for action buttons
  */
-import { BaseWidget } from '../shared/BaseWidget.js';
-import { universalUserSystem } from '../shared/UniversalUserSystem.js';
+import { BaseWidget } from '../shared/BaseWidget';
+import { universalUserSystem } from '../shared/UniversalUserSystem';
 
 interface Agent {
   id: string;
@@ -22,12 +22,19 @@ export class UserSelectorWidget extends BaseWidget {
   private searchQuery: string = '';
   private searchTimeout: number = 0;
 
+  static getBasePath(): string {
+    return '/src/ui/components/UserSelector';
+  }
+
+  static getOwnCSS(): string[] {
+    return ['UserSelector.css'];
+  }
+
   constructor() {
     super();
     this.widgetName = 'UserSelector';
     this.widgetIcon = '👥';
     this.widgetTitle = 'Users & Agents';
-    this.cssPath = '/src/ui/components/UserSelector/UserSelector.css';
   }
 
   async initializeWidget(): Promise<void> {

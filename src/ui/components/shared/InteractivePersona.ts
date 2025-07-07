@@ -3,7 +3,7 @@
  * Personas become clickable, responsive UI elements that provide real-time feedback
  */
 
-import { BaseWidget } from './BaseWidget.js';
+import { BaseWidget } from './BaseWidget';
 
 export interface PersonaState {
   id: string;

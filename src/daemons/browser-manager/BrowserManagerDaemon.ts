@@ -17,7 +17,9 @@ import { BrowserLauncher } from './modules/BrowserLauncher';
 import { BrowserSessionManager } from './modules/BrowserSessionManager';
 import { ChromeBrowserModule } from './modules/ChromeBrowserModule';
 import { SessionConsoleLogger } from '../session-manager/modules/SessionConsoleLogger';
-import { MacOperaAdapter, MacChromeAdapter, BaseBrowserAdapter } from './modules/BrowserTabAdapter';
+import { BaseBrowserAdapter } from './adapters/base/BaseBrowserAdapter.js';
+import { MacOperaAdapter } from './adapters/MacOperaAdapter.js';
+import { MacChromeAdapter } from './adapters/MacChromeAdapter.js';
 import { DAEMON_EVENT_BUS } from '../base/DaemonEventBus';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -178,7 +180,8 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       this.log(`🔍 Checking if any browser tab exists for localhost:9000...`);
       
       // Check if browser tab exists AFTER acquiring semaphore using proper adapter
-      const tabCount = await this.tabAdapter.countTabs('localhost:9000');
+      // Use exact URL pattern to avoid false positives from debugging URLs like /src/ui/components/shared/BaseWidget.js
+      const tabCount = await this.tabAdapter.countTabs('http://localhost:9000');
       this.log(`🔍 Tab check result: ${tabCount} tab(s) found (via ${this.tabAdapter.constructor.name})`);
       
       if (tabCount > 0) {
@@ -222,10 +225,9 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
         const launchResult = await this.launcher.launch(browserConfig, 0);
         this.log(`✅ Browser launched for session ${sessionId} (PID: ${launchResult.pid})`);
         
-        // FOCUS BROWSER: Bring to front if requested
+        // Browser automatically gets focus when launched - no need to focus
         if (focus) {
-          this.log(`🎯 Focus requested - bringing newly launched browser window to front`);
-          await this.focusBrowser();
+          this.log(`🎯 Focus requested but skipped - newly launched browser already has focus`);
         }
         this.log(`🔍 [SEMAPHORE] Browser launch complete - releasing lock`);
         
@@ -257,7 +259,7 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       try {
         const operaAdapter = new MacOperaAdapter();
         // Test if Opera GX is available
-        await operaAdapter.countTabs('localhost:9000'); // Test adapter availability
+        await operaAdapter.countTabs('http://localhost:9000'); // Test adapter availability
         this.tabAdapter = operaAdapter;
         this.log('✅ Using Opera GX adapter for tab management');
         return;

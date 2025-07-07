@@ -3,7 +3,7 @@
  * Includes resize functionality, room tabs, and widget containers
  */
 
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 export class SidebarWidget extends BaseWidget {
     private isResizing: boolean = false;
@@ -114,6 +114,9 @@ export class SidebarWidget extends BaseWidget {
             targetTab.classList.add('active');
         }
 
+        // Re-render content for the new room
+        this.render();
+
         // Emit room change event
         this.dispatchEvent(new CustomEvent('room-changed', {
             detail: { room },
@@ -127,6 +130,67 @@ export class SidebarWidget extends BaseWidget {
         // Child widgets are loaded by the main application
         // This sidebar provides the container for them
         console.log('✅ Sidebar container ready for child widgets');
+    }
+
+    private renderRoomContent(): string {
+        switch (this.currentRoom) {
+            case 'academy':
+                return this.renderAcademyContent();
+            case 'projects':
+                return this.renderProjectsContent();
+            case 'general':
+            default:
+                return this.renderGeneralContent();
+        }
+    }
+
+    private renderGeneralContent(): string {
+        return `
+            <!-- Interactive Personas -->
+            <div class="personas-section">
+                <div class="section-header">
+                    <span class="section-icon">🤖</span>
+                    <span class="section-title">AI Personas</span>
+                    <span class="section-count">3 active</span>
+                </div>
+                <div class="personas-list">
+                    <interactive-persona data-persona="designer"></interactive-persona>
+                    <interactive-persona data-persona="developer"></interactive-persona>
+                    <interactive-persona data-persona="tester"></interactive-persona>
+                </div>
+            </div>
+            
+            <!-- Child Widgets -->
+            <active-projects></active-projects>
+            <user-selector></user-selector>
+        `;
+    }
+
+    private renderAcademyContent(): string {
+        return `
+            <!-- Academy Status Widget -->
+            <academy-status-widget></academy-status-widget>
+            
+            <!-- Academy Personas & Training -->
+            <div class="academy-section">
+                <div class="section-header">
+                    <span class="section-icon">🎓</span>
+                    <span class="section-title">Academy Training</span>
+                    <span class="section-count">Ready</span>
+                </div>
+                <user-selector></user-selector>
+            </div>
+        `;
+    }
+
+    private renderProjectsContent(): string {
+        return `
+            <!-- Projects Content -->
+            <active-projects></active-projects>
+            
+            <!-- Project-specific user management -->
+            <user-selector></user-selector>
+        `;
     }
 
     renderContent(): string {
@@ -157,23 +221,7 @@ export class SidebarWidget extends BaseWidget {
             </div>
             
             <div class="sidebar-content">
-                <!-- Interactive Personas -->
-                <div class="personas-section">
-                    <div class="section-header">
-                        <span class="section-icon">🤖</span>
-                        <span class="section-title">AI Personas</span>
-                        <span class="section-count">3 active</span>
-                    </div>
-                    <div class="personas-list">
-                        <interactive-persona data-persona="designer"></interactive-persona>
-                        <interactive-persona data-persona="developer"></interactive-persona>
-                        <interactive-persona data-persona="tester"></interactive-persona>
-                    </div>
-                </div>
-                
-                <!-- Child Widgets -->
-                <active-projects></active-projects>
-                <user-selector></user-selector>
+                ${this.renderRoomContent()}
             </div>
         `;
     }

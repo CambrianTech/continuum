@@ -10,7 +10,8 @@ export interface TrainingFormula {
   name: string;
   description: string;
   domain: string;
-  formula_type: 'adversarial' | 'collaborative' | 'evolutionary' | 'hybrid';
+  formula_type: 'adversarial' | 'collaborative' | 'evolutionary' | 'hybrid' | 
+                'adversarial_enhanced' | 'collaborative_enhanced' | 'evolutionary_enhanced' | 'hybrid_enhanced';
   
   // AI-generated formula components
   learning_rate_schedule: {

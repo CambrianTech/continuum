@@ -29,31 +29,60 @@ export class AcademyStatusCommand extends DirectCommand {
     };
   }
 
-  async execute(params: any, context: CommandContext): Promise<CommandResult> {
+  async execute(_params: any, _context: CommandContext): Promise<CommandResult> {
+    // Force TS cache refresh
     try {
-      // Get comprehensive Academy status
-      const status = await this.delegateToAcademyDaemon('get_comprehensive_status', {
-        persona_id: params.persona_id,
-        detail_level: params.detail_level || 'summary',
-        include_p2p: params.include_p2p !== false,
-        include_vector_space: params.include_vector_space !== false,
-        include_adversarial: params.include_adversarial !== false,
-        session_id: context.session_id
-      });
+      // STUB IMPLEMENTATION: Return mock Academy status for widget testing
+      // TODO: Replace with real AcademyDaemon integration when available
+      void this._delegateToAcademyDaemon; // Available for future use
+      
+      const mockStatus = {
+        activePersonas: 5,
+        trainingSessions: [
+          {
+            id: 'session_1',
+            participants: ['DevMaster', 'TestExpert'],
+            progress: 67,
+            estimatedCompletion: '3 minutes',
+            type: 'collaborative'
+          },
+          {
+            id: 'session_2',
+            participants: ['CodeAI'],
+            progress: 23,
+            estimatedCompletion: '8 minutes',
+            type: 'solo'
+          }
+        ],
+        p2pNetwork: {
+          connectedNodes: 12,
+          syncStatus: 'healthy',
+          lastSync: '2 minutes ago',
+          pendingGenomes: 3
+        },
+        recentGenomes: [
+          {
+            id: 'genome_001',
+            name: 'TypeScript Optimization',
+            discoveredBy: 'FormulaMaster',
+            performance: 94.7,
+            timestamp: '5 minutes ago'
+          },
+          {
+            id: 'genome_002',
+            name: 'Error Handling Patterns',
+            discoveredBy: 'SynthesisEngine',
+            performance: 89.2,
+            timestamp: '12 minutes ago'
+          }
+        ],
+        systemHealth: 'excellent'
+      };
 
       return {
         success: true,
-        message: 'Academy status retrieved successfully',
-        data: {
-          academy_overview: status.academy_overview,
-          training_sessions: status.training_sessions,
-          persona_status: status.persona_status,
-          p2p_network: status.p2p_network,
-          vector_space_evolution: status.vector_space_evolution,
-          adversarial_training: status.adversarial_training,
-          system_health: status.system_health,
-          performance_metrics: status.performance_metrics
-        }
+        message: 'Academy status retrieved successfully (mock data)',
+        data: mockStatus
       };
     } catch (error) {
       return {
@@ -67,11 +96,11 @@ export class AcademyStatusCommand extends DirectCommand {
   /**
    * Delegate to AcademyDaemon via internal message bus
    */
-  private async delegateToAcademyDaemon(operation: string, params: any): Promise<any> {
+  private async _delegateToAcademyDaemon(_operation: string, _params: any): Promise<any> {
     // TODO: Implement actual daemon delegation via message bus
     // For now, return fallback responses to keep system working
     
-    switch (operation) {
+    switch (_operation) {
       case 'get_comprehensive_status':
         return {
           academy_overview: {
@@ -96,8 +125,8 @@ export class AcademyStatusCommand extends DirectCommand {
               evolution_rate: 'accelerating'
             }
           ],
-          persona_status: params.persona_id ? {
-            persona_id: params.persona_id,
+          persona_status: _params.persona_id ? {
+            persona_id: _params.persona_id,
             name: 'CodeMaster_Alpha',
             specialization: 'software_engineering',
             capability_vector: [0.85, 0.92, 0.67, 0.78, 0.91],
@@ -114,7 +143,7 @@ export class AcademyStatusCommand extends DirectCommand {
             highest_performer: 'CodeMaster_Alpha',
             most_evolved: 'ReasoningBot_Beta'
           },
-          p2p_network: params.include_p2p ? {
+          p2p_network: _params.include_p2p ? {
             total_nodes: 15,
             active_connections: 12,
             skill_sharing_rate: '3.2 transfers/minute',
@@ -133,7 +162,7 @@ export class AcademyStatusCommand extends DirectCommand {
               obsolete_patterns_pruned: 7
             }
           } : null,
-          vector_space_evolution: params.include_vector_space ? {
+          vector_space_evolution: _params.include_vector_space ? {
             dimensions: 512,
             active_regions: 89,
             convergence_clusters: 23,
@@ -158,7 +187,7 @@ export class AcademyStatusCommand extends DirectCommand {
               evolutionary_momentum: 'strong_positive'
             }
           } : null,
-          adversarial_training: params.include_adversarial ? {
+          adversarial_training: _params.include_adversarial ? {
             trainer_ai_status: {
               id: 'protocol_sheriff_1',
               specialization: 'adversarial_evaluation',
@@ -214,7 +243,7 @@ export class AcademyStatusCommand extends DirectCommand {
           }
         };
       default:
-        throw new Error(`Unknown AcademyDaemon operation: ${operation}`);
+        throw new Error(`Unknown AcademyDaemon operation: ${_operation}`);
     }
   }
 }

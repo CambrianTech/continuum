@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { ModuleComplianceFramework } from '../../ModuleComplianceFramework.js';
+import { ModuleComplianceFramework } from '../../ModuleComplianceFramework';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 

@@ -185,8 +185,8 @@ src/ui/components/MyWidget/
 ### **2. Widget Implementation**
 ```typescript
 // src/ui/components/MyWidget/MyWidget.ts
-import { BaseWidget } from '../shared/BaseWidget.js';
-import { WidgetSystem, WidgetEvents } from '../shared/WidgetSystem.js';
+import { BaseWidget } from '../shared/BaseWidget';
+import { WidgetSystem, WidgetEvents } from '../shared/WidgetSystem';
 
 export class MyWidget extends BaseWidget {
   // Widget data
@@ -585,7 +585,7 @@ interface MyWidgetData {
 ### **5. Widget Tests**
 ```typescript
 // src/ui/components/MyWidget/test/MyWidget.test.ts
-import { MyWidget } from '../MyWidget.js';
+import { MyWidget } from '../MyWidget';
 
 describe('MyWidget', () => {
   let widget: MyWidget;
@@ -649,8 +649,8 @@ describe('MyWidget', () => {
 ### **1. Registration & Loading**
 ```typescript
 // Widgets are loaded via app.js
-import('/dist/ui/components/shared/BaseWidget.js');
-import('/dist/ui/components/MyWidget/MyWidget.js');
+import('/dist/ui/components/shared/BaseWidget');
+import('/dist/ui/components/MyWidget/MyWidget');
 
 // Widget self-registers when module loads
 customElements.define('my-widget', MyWidget);
@@ -796,7 +796,7 @@ python python-client/ai-portal.py --cmd browser_js --script "
 describe('MyWidget Integration', () => {
   test('should integrate with sidebar', async () => {
     // Load full UI
-    await import('/src/ui/app.js');
+    await import('/src/ui/app');
     
     // Find widget in sidebar
     const sidebar = document.querySelector('continuum-sidebar');

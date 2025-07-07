@@ -3,13 +3,13 @@
  * Comprehensive test suite for the SavedPersonas TypeScript widget
  */
 
-import { SavedPersonasWidget } from './SavedPersonasWidget.js';
+import { SavedPersonasWidget } from './SavedPersonasWidget';
 
 // Mock fetch for CSS loading
 global.fetch = jest.fn();
 
 // Mock BaseWidget
-jest.mock('../shared/BaseWidget.js', () => ({
+jest.mock('../shared/BaseWidget', () => ({
   BaseWidget: class MockBaseWidget extends HTMLElement {
     protected widgetName = 'MockWidget';
     protected widgetIcon = '🔹';

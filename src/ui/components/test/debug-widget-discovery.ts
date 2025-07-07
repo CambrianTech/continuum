@@ -3,7 +3,7 @@
  * Debug Widget Discovery - Find out why widgets aren't being discovered
  */
 
-import { DiscoverWidgetsCommand } from '../../../commands/ui/discover-widgets/DiscoverWidgetsCommand.js';
+import { DiscoverWidgetsCommand } from '../../../commands/ui/discover-widgets/DiscoverWidgetsCommand';
 
 async function debugWidgetDiscovery() {
   console.log('🔍 Debug: Testing widget discovery directly...');

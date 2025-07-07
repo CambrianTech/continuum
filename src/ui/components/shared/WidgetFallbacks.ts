@@ -285,7 +285,7 @@ export class WidgetFallbackRegistry {
       widgetName: 'ChatWidget',
       icon: '💬',
       description: 'Chat widget for real-time messaging and AI interaction. Handles message display, input, and room management.',
-      expectedFile: '/dist/ui/components/Chat/ChatWidget.js',
+      expectedFile: '/dist/ui/components/Chat/ChatWidget',
       dependencies: ['continuum-api', 'websocket-connection']
     });
 
@@ -294,7 +294,7 @@ export class WidgetFallbackRegistry {
       widgetName: 'SidebarWidget', 
       icon: '📋',
       description: 'Sidebar widget for navigation and system status. Shows navigation items, connection status, and system info.',
-      expectedFile: '/dist/ui/components/Sidebar/SidebarWidget.js',
+      expectedFile: '/dist/ui/components/Sidebar/SidebarWidget',
       dependencies: ['continuum-api'],
       customHTML: (warning?: string) => `
         <div class="sidebar-fallback">
@@ -467,7 +467,7 @@ export class WidgetFallbackRegistry {
       widgetName: 'PersonaWidget',
       icon: '🤖',
       description: 'Persona widget for AI persona interaction and management.',
-      expectedFile: '/dist/ui/components/Persona/PersonaWidget.js',
+      expectedFile: '/dist/ui/components/Persona/PersonaWidget',
       dependencies: ['continuum-api', 'persona-system']
     });
 
@@ -476,7 +476,7 @@ export class WidgetFallbackRegistry {
       widgetName: 'VersionWidget',
       icon: '📋',
       description: 'Version widget for displaying system version information.',
-      expectedFile: '/dist/ui/components/Version/VersionWidget.js',
+      expectedFile: '/dist/ui/components/Version/VersionWidget',
       dependencies: ['continuum-api']
     });
 
@@ -485,7 +485,7 @@ export class WidgetFallbackRegistry {
       widgetName: 'ContinuonWidget',
       icon: '🌐',
       description: 'Continuon widget for system visualization and control.',
-      expectedFile: '/dist/ui/components/Continuon/ContinuonWidget.js', 
+      expectedFile: '/dist/ui/components/Continuon/ContinuonWidget', 
       dependencies: ['continuum-api']
     });
 

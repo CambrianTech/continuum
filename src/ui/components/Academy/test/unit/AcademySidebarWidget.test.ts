@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { AcademySidebarWidget } from '../../AcademySidebarWidget.js';
+import { AcademySidebarWidget } from '../../AcademySidebarWidget';
 
 // Type-safe test fixtures using discriminated unions
 type PersonaStatus = 'online' | 'working' | 'offline';

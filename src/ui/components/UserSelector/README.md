@@ -16,7 +16,7 @@ continuum UserSelector --verbose
 
 ### Programmatic Usage
 ```typescript
-import { UserSelectorCommand } from './UserSelectorCommand.js';
+import { UserSelectorCommand } from './UserSelectorCommand';
 
 // Execute the command
 const result = await UserSelectorCommand.execute({

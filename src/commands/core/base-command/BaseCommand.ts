@@ -193,7 +193,11 @@ export abstract class BaseCommand {
   /**
    * Create command registry entry
    */
-  static createRegistryEntry() {
+  static createRegistryEntry(): {
+    name: string;
+    execute: (context: CommandContext, parameters: Record<string, unknown>) => Promise<CommandResult>;
+    definition: CommandDefinition;
+  } {
     const definition = this.getDefinition();
     return {
       name: definition.name.toUpperCase(),

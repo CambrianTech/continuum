@@ -16,7 +16,7 @@ continuum SavedPersonas --verbose
 
 ### Programmatic Usage
 ```typescript
-import { SavedPersonasCommand } from './SavedPersonasCommand.js';
+import { SavedPersonasCommand } from './SavedPersonasCommand';
 
 // Execute the command
 const result = await SavedPersonasCommand.execute({

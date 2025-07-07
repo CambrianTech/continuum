@@ -95,11 +95,11 @@ export class ChatWidget extends CommunicationWidget {
 #### Step 3: Update Dependencies
 ```typescript
 // Old imports
-import { BaseWidget } from '../shared/BaseWidget.js';
+import { BaseWidget } from '../shared/BaseWidget';
 
 // New imports  
-import { CommunicationWidget } from '../domain/communication/base/CommunicationWidget.js';
-import { IntelligenceWidget } from '../domain/intelligence/base/IntelligenceWidget.js';
+import { CommunicationWidget } from '../domain/communication/base/CommunicationWidget';
+import { IntelligenceWidget } from '../domain/intelligence/base/IntelligenceWidget';
 ```
 
 ### Phase 3: Layer 3 Composition (Future)
@@ -143,8 +143,8 @@ export class DashboardWidget extends BaseWidget {
 ### Backwards Compatibility
 ```typescript
 // Create compatibility layer during migration
-export { ChatWidget } from './domain/communication/chat/ChatWidget.js';
-export { AcademyWidget } from './domain/intelligence/academy/AcademyWidget.js';
+export { ChatWidget } from './domain/communication/chat/ChatWidget';
+export { AcademyWidget } from './domain/intelligence/academy/AcademyWidget';
 // ... other exports for existing code
 ```
 

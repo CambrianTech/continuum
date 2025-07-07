@@ -29,7 +29,7 @@ export class AcademyTrainCommand extends DirectCommand {
     };
   }
 
-  async execute(params: any, context: CommandContext): Promise<CommandResult> {
+  async execute(params: any, _context: CommandContext): Promise<CommandResult> {
     try {
       if (!params.student_persona) {
         return {
@@ -39,27 +39,26 @@ export class AcademyTrainCommand extends DirectCommand {
         };
       }
 
-      // Start emergent evolution training session
-      const session = await this.delegateToAcademyDaemon('start_evolution_session', {
-        student_persona: params.student_persona,
-        trainer_mode: params.trainer_mode || 'adversarial',
-        evolution_target: params.evolution_target || 'auto-discover',
-        vector_exploration: params.vector_exploration !== false,
-        session_id: context.session_id,
-        domain: params.domain  // Let Academy discover domain if not specified
-      });
+      // STUB IMPLEMENTATION: Return mock training session for widget testing
+      // TODO: Replace with real AcademyDaemon integration when available
+      void this._delegateToAcademyDaemon; // Available for future use
+      
+      const mockSession = {
+        sessionId: `training_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`,
+        participantId: params.student_persona,
+        participantName: params.student_persona,
+        trainingType: params.trainer_mode || 'collaborative',
+        status: 'starting',
+        estimatedDuration: '30 minutes',
+        roomId: `academy_room_${Date.now()}`,
+        capabilities: ['typescript', 'testing', 'architecture'],
+        startTime: new Date().toISOString()
+      };
 
       return {
         success: true,
-        message: 'Academy evolution training session started',
-        data: {
-          message: 'Academy evolution training session started',
-          session_id: session.session_id,
-          training_mode: session.training_mode,
-          vector_exploration_enabled: session.vector_exploration,
-          estimated_duration: session.estimated_duration,
-          evolution_metrics: session.initial_metrics
-        }
+        message: 'Academy training session started (mock data)',
+        data: mockSession
       };
     } catch (error) {
       return {
@@ -73,17 +72,17 @@ export class AcademyTrainCommand extends DirectCommand {
   /**
    * Delegate to AcademyDaemon via internal message bus
    */
-  private async delegateToAcademyDaemon(operation: string, params: any): Promise<any> {
+  private async _delegateToAcademyDaemon(_operation: string, _params: any): Promise<any> {
     // TODO: Implement actual daemon delegation via message bus
     // For now, return fallback responses to keep system working
     
-    switch (operation) {
+    switch (_operation) {
       case 'start_evolution_session': {
         const sessionId = `academy_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         return {
           session_id: sessionId,
-          training_mode: params.trainer_mode,
-          vector_exploration: params.vector_exploration,
+          training_mode: _params.trainer_mode,
+          vector_exploration: _params.vector_exploration,
           estimated_duration: '30-120 minutes',
           initial_metrics: {
             student_capability_vector: [0.3, 0.7, 0.1, 0.9, 0.2],  // Current skill levels
@@ -105,7 +104,7 @@ export class AcademyTrainCommand extends DirectCommand {
         };
       }
       default:
-        throw new Error(`Unknown AcademyDaemon operation: ${operation}`);
+        throw new Error(`Unknown AcademyDaemon operation: ${_operation}`);
     }
   }
 }
