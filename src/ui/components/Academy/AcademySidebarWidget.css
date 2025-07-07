@@ -1,0 +1,297 @@
+/* Academy Sidebar Widget - Navigation and persona management */
+
+.academy-sidebar {
+  width: 280px;
+  background: #202225;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #40444b;
+  flex-shrink: 0;
+  height: 100vh;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  color: #dcddde;
+}
+
+/* Academy Header */
+.academy-header {
+  padding: 16px;
+  border-bottom: 1px solid #40444b;
+  background: #2f3136;
+}
+
+.academy-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 16px;
+  color: #ffffff;
+  margin-bottom: 8px;
+}
+
+.logo-icon {
+  font-size: 24px;
+}
+
+.academy-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #b9bbbe;
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #747f8d;
+}
+
+.status-indicator.online {
+  background: #43b581;
+}
+
+.status-indicator.working {
+  background: #faa61a;
+}
+
+.status-indicator.offline {
+  background: #f04747;
+}
+
+/* Room Navigation */
+.room-section {
+  padding: 16px;
+  border-bottom: 1px solid #40444b;
+}
+
+.section-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8e9297;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.room-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.room-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  color: #8e9297;
+}
+
+.room-item:hover {
+  background: #40444b;
+  color: #dcddde;
+}
+
+.room-item.active {
+  background: #5865f2;
+  color: #ffffff;
+}
+
+.room-icon {
+  font-size: 16px;
+  width: 20px;
+  text-align: center;
+}
+
+.room-name {
+  font-weight: 500;
+}
+
+/* Personas Section */
+.persona-section {
+  padding: 16px;
+  border-bottom: 1px solid #40444b;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.persona-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.persona-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  border: 1px solid transparent;
+}
+
+.persona-item:hover {
+  background: #40444b;
+  border-color: #5865f2;
+}
+
+.persona-item.online {
+  opacity: 1;
+}
+
+.persona-item.working {
+  opacity: 0.8;
+  background: rgba(250, 166, 26, 0.1);
+}
+
+.persona-item.offline {
+  opacity: 0.4;
+}
+
+.persona-avatar {
+  font-size: 20px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #36393f;
+  flex-shrink: 0;
+}
+
+.persona-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.persona-name {
+  font-weight: 500;
+  font-size: 13px;
+  color: #dcddde;
+  margin-bottom: 2px;
+}
+
+.persona-role {
+  font-size: 11px;
+  color: #8e9297;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+
+.persona-domains {
+  font-size: 10px;
+  color: #72767d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.persona-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #43b581;
+  flex-shrink: 0;
+}
+
+.persona-status.online {
+  background: #43b581;
+}
+
+.persona-status.working {
+  background: #faa61a;
+  animation: pulse 2s infinite;
+}
+
+.persona-status.offline {
+  background: #747f8d;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Session Info */
+.session-info {
+  padding: 16px;
+  background: #2f3136;
+  border-top: 1px solid #40444b;
+}
+
+.session-costs {
+  text-align: center;
+}
+
+.cost-label {
+  font-size: 10px;
+  color: #8e9297;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.cost-amount {
+  font-size: 16px;
+  font-weight: 600;
+  color: #43b581;
+  margin-bottom: 2px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.cost-details {
+  font-size: 10px;
+  color: #8e9297;
+}
+
+/* Scrollbar Styling */
+.persona-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.persona-list::-webkit-scrollbar-track {
+  background: #2f3136;
+}
+
+.persona-list::-webkit-scrollbar-thumb {
+  background: #202225;
+  border-radius: 4px;
+}
+
+.persona-list::-webkit-scrollbar-thumb:hover {
+  background: #40444b;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .academy-sidebar {
+    width: 240px;
+  }
+}
+
+@media (max-width: 600px) {
+  .academy-sidebar {
+    position: absolute;
+    left: -280px;
+    z-index: 1000;
+    transition: left 0.3s ease;
+  }
+  
+  .academy-sidebar.mobile-open {
+    left: 0;
+  }
+}
