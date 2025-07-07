@@ -558,8 +558,11 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
               repeat with t in tabs of w
                 if (URL of t contains "localhost:9000") then
                   -- TODO: Add WebSocket connection checking via DevTools
-                  -- For now, keep only the first tab found
-                  if (count of tabsToClose) > 0 then
+                  -- For now, keep only the first tab found (skip when list is empty)
+                  if (count of tabsToClose) = 0 then
+                    -- Skip the first tab (keep it open)
+                  else
+                    -- Close subsequent tabs
                     set end of tabsToClose to t
                   end if
                 end if
