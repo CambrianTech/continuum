@@ -144,57 +144,10 @@
         "commit": "warn",
         "push": "strict"
       },
-      "eslint": {
-        "graduated": [
-          "src/daemons/base",
-          "src/daemons/daemon-manager", 
-          "src/daemons/mesh-coordinator",
-          "src/commands/core/base-command"
-        ],
-        "candidates": [
-          "src/daemons/static-file",
-          "src/daemons/mesh", 
-          "src/daemons/renderer"
-        ],
-        "whitelisted": [
-          "src/test/integration",
-          "src/types",
-          "src/commands", 
-          "src/daemons",
-          "src/integrations",
-          "src/ui"
-        ]
-      },
-      "modules": {
-        "graduated": [
-          "daemons",
-          "widgets"
-        ],
-        "candidates": [
-          "integrations"
-        ],
-        "whitelisted": [
-          "commands"
-        ]
-      },
-      "typescript": {
-        "noAnyTypes": {
-          "graduated": [
-            "src/daemons/base",
-            "src/commands/core/base-command",
-            "src/types/SessionTypes.ts",
-            "src/types/CommandTypes.ts"
-          ],
-          "candidates": [
-            "src/daemons/daemon-manager",
-            "src/daemons/mesh-coordinator"
-          ],
-          "whitelisted": [
-            "src/ui",
-            "src/integrations",
-            "src/commands"
-          ]
-        }
+      "schema": {
+        "version": "1.0.0",
+        "description": "Quality standards are now configured per-module in their package.json files",
+        "documentation": "See src/types/ModuleQualitySchema.ts for the complete schema definition"
       }
     }
   },
