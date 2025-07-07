@@ -2,9 +2,10 @@
   "name": "websocket-core",
   "version": "1.0.0",
   "description": "websocket core for Continuum",
-  "main": "WebsocketCore.ts",
+  "main": "WebSocketDaemon.ts",
   "type": "module",
   "continuum": {
+    "type": "integration",
     "core": "websocket",
     "category": "Core",
     "capabilities": [

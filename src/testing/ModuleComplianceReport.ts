@@ -69,9 +69,7 @@ class ModuleComplianceReport {
       widgets: {
         minimumCompliance: 70, // Moderate standard for widgets
         allowedNonCompliant: [
-          'ActiveProjects',   // Needs main file + continuum.type (graduation candidate)
-          'SavedPersonas',    // Needs main file + continuum.type (graduation candidate)
-          'UserSelector',     // Needs main file + continuum.type (graduation candidate)
+          // 🎓 GRADUATED: ActiveProjects, SavedPersonas, UserSelector (now 100% compliant!)
           'ChatRoom',         // Legacy widget being replaced
           'VersionWidget',    // Duplicate of Version widget  
           'commands',         // Not a real widget
@@ -93,7 +91,7 @@ class ModuleComplianceReport {
       integrations: {
         minimumCompliance: 60, // Moderate standard for integrations
         allowedNonCompliant: [
-          'websocket',  // Needs main file + continuum.type (graduation candidate)
+          // 🎓 GRADUATED: websocket (now 100% compliant!)
           'academy',    // Legacy integration
           'devtools'    // Development-only integration
         ]
