@@ -127,21 +127,21 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   private setupSessionEventListening(): void {
     // Listen for session_created events - check if session needs browser
     DAEMON_EVENT_BUS.onEvent(SystemEventType.SESSION_CREATED, async (event: SessionCreatedPayload) => {
-      const { sessionId, sessionType, owner } = event;
-      this.log(`📋 Session created: ${sessionId} (${sessionType}) for ${owner}`);
+      const { sessionId, sessionType, owner, focus = false, killZombies = false } = event;
+      this.log(`📋 Session created: ${sessionId} (${sessionType}) for ${owner} (focus: ${focus}, killZombies: ${killZombies})`);
       
       if (this.sessionNeedsBrowser(sessionType)) {
-        await this.ensureSessionHasBrowser(sessionId, sessionType, owner);
+        await this.ensureSessionHasBrowser(sessionId, sessionType, owner, focus, killZombies);
       }
     });
     
     // Listen for session_joined events - check if session needs browser  
     DAEMON_EVENT_BUS.onEvent(SystemEventType.SESSION_JOINED, async (event: SessionJoinedPayload) => {
-      const { sessionId, sessionType, owner } = event;
-      this.log(`📋 Session joined: ${sessionId} (${sessionType}) for ${owner}`);
+      const { sessionId, sessionType, owner, focus = false, killZombies = false } = event;
+      this.log(`📋 Session joined: ${sessionId} (${sessionType}) for ${owner} (focus: ${focus}, killZombies: ${killZombies})`);
       
       if (this.sessionNeedsBrowser(sessionType)) {
-        await this.ensureSessionHasBrowser(sessionId, sessionType, owner);
+        await this.ensureSessionHasBrowser(sessionId, sessionType, owner, focus, killZombies);
       }
     });
     
@@ -160,9 +160,10 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   /**
    * SMART: Ensure session has browser - check if exists first, only launch if missing
    * Uses semaphore protection to prevent race conditions and multiple launches
+   * @param focus - Whether to bring browser window to front
    * @param killZombies - Whether to close zombie tabs that aren't connected to active sessions
    */
-  private async ensureSessionHasBrowser(sessionId: string, _sessionType: string, _owner: string, killZombies: boolean = false): Promise<void> {
+  private async ensureSessionHasBrowser(sessionId: string, _sessionType: string, _owner: string, focus: boolean = false, killZombies: boolean = false): Promise<void> {
     try {
       // SEMAPHORE: Prevent multiple simultaneous browser launches globally
       if (this.isLaunchingBrowser) {
@@ -182,6 +183,12 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       
       if (tabCount > 0) {
         this.log(`✅ Found ${tabCount} browser tab(s) already open - ONE TAB POLICY satisfied`);
+        
+        // FOCUS BROWSER: Bring existing browser to front if requested
+        if (focus) {
+          this.log(`🎯 Focus requested - bringing browser window to front`);
+          await this.focusBrowser();
+        }
         
         // SMART ZOMBIE KILLER: Close zombie tabs if requested
         if (killZombies && tabCount > 1) {
@@ -216,7 +223,8 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
         this.log(`✅ Browser launched for session ${sessionId} (PID: ${launchResult.pid})`);
         
         // FOCUS BROWSER: Bring to front if requested
-        if (killZombies) { // Use killZombies as a proxy for focus for now
+        if (focus) {
+          this.log(`🎯 Focus requested - bringing newly launched browser window to front`);
           await this.focusBrowser();
         }
         this.log(`🔍 [SEMAPHORE] Browser launch complete - releasing lock`);
@@ -586,12 +594,14 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
           tell application "Opera GX"
             activate
             repeat with w in (get windows)
+              set tab_index to 1
               repeat with t in tabs of w
                 if (URL of t contains "localhost:9000") then
                   set index of w to 1
-                  set active tab index of w to (index of t)
+                  set active tab index of w to tab_index
                   return
                 end if
+                set tab_index to tab_index + 1
               end repeat
             end repeat
           end tell

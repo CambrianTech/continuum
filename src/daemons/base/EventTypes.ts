@@ -135,6 +135,8 @@ export interface SessionCreatedPayload {
   serverLogPath: string;
   sessionType: string;
   owner: string;
+  focus?: boolean;
+  killZombies?: boolean;
 }
 
 export interface SessionJoinedPayload {
@@ -142,6 +144,8 @@ export interface SessionJoinedPayload {
   sessionType: string;
   owner: string;
   source: string;
+  focus?: boolean;
+  killZombies?: boolean;
 }
 
 export interface SessionClosedPayload {

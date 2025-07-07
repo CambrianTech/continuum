@@ -760,12 +760,11 @@ export class WebSocketDaemon extends BaseDaemon {
    */
   private async handleBrowserConsoleMessage(connectionId: string, message: any): Promise<void> {
     try {
-      // Get the session ID for this connection
-      // TODO: Re-enable session ID lookup when session system is fixed
-      // const sessionId = this.getSessionIdForConnection(connectionId);
-      const sessionId = null;
+      // Get the session ID for this connection from our mapping
+      const sessionId = this.connectionSessions.get(connectionId);
       if (!sessionId) {
-        this.log(`⚠️ No session found for connection ${connectionId} - cannot log console message`, 'warn');
+        this.log(`⚠️ No session found for connection ${connectionId} - logging to server console only`, 'warn');
+        this.log(`🔍 [CONSOLE_DEBUG] Console message from ${connectionId}: ${JSON.stringify(message.data)}`);
         return;
       }
 

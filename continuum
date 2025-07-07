@@ -3,7 +3,14 @@
 # Handles all deployment scenarios: development, production, homebrew, npm global, local
 
 # Parse arguments for command and session parameters
-COMMAND="${1:-connect}"
+# Default command is connect, but check if first arg is actually a flag
+COMMAND="connect"
+if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
+  # First argument doesn't start with --, so it's a command
+  COMMAND="$1"
+  shift
+fi
+
 SESSION_ID=""
 SESSION_TYPE=""
 OWNER=""
@@ -11,8 +18,7 @@ FORCE_NEW=""
 FOCUS="true"
 KILL_ZOMBIES="true"
 
-# Parse session-related arguments
-shift || true  # Remove command from args
+# Parse session-related arguments (no need to shift again)
 while [[ $# -gt 0 ]]; do
   case $1 in
     --session)
