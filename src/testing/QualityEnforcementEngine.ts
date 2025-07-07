@@ -208,11 +208,13 @@ class QualityEnforcementEngine {
   }
 
   /**
-   * Count 'any' types in a directory
+   * Count 'any' types in a directory (only actual TypeScript any types)
    */
   private countAnyTypes(dirPath: string): number {
     try {
-      const result = execSync(`grep -r "\\bany\\b" "${dirPath}" --include="*.ts" --exclude-dir=test --exclude-dir=node_modules | wc -l`, 
+      // Look for actual TypeScript 'any' type usage patterns:
+      // : any, <any>, any[], any |, any,, any;, any), any}
+      const result = execSync(`grep -rE "(: any\\b|<any>|any\\[\\]|any \\||any,|any;|any\\)|any\\})" "${dirPath}" --include="*.ts" --exclude-dir=test --exclude-dir=node_modules | wc -l`, 
         { encoding: 'utf8' });
       return parseInt(result.trim()) || 0;
     } catch (error) {

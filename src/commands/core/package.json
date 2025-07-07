@@ -8,7 +8,7 @@
     "type": "command",
     "category": "core",
     "quality": {
-      "status": "candidate",
+      "status": "graduated",
       "eslint": {
         "enforce": true,
         "level": "warn"
