@@ -6,20 +6,42 @@
  */
 
 /**
- * Module graduation status - determines enforcement level
+ * Module graduation status - AUTOMATED ONLY, cannot be manually edited
+ * The quality enforcement system automatically determines and updates these statuses
  */
-export type ModuleGraduationStatus = 
-  | 'graduated'     // Perfect quality required - strict enforcement
-  | 'candidate'     // Ready for graduation - moderate enforcement  
-  | 'whitelisted';  // Work in progress - lenient enforcement
+export enum ModuleGraduationStatus {
+  /** PERFECT - Zero tolerance enforcement, production ready */
+  GRADUATED = 'graduated',
+  
+  /** READY - All quality standards met, ready for graduation */
+  CANDIDATE = 'candidate', 
+  
+  /** DEVELOPMENT - Work in progress, development flexibility */
+  WHITELISTED = 'whitelisted',
+  
+  /** DEGRADED - Quality regression detected, requires immediate attention */
+  DEGRADED = 'degraded',
+  
+  /** BROKEN - Critical failures, completely non-functional */
+  BROKEN = 'broken',
+  
+  /** UNKNOWN - Not yet analyzed by quality system */
+  UNKNOWN = 'unknown'
+}
 
 /**
  * ESLint enforcement level
  */
-export type ESLintLevel = 
-  | 'strict'        // Zero tolerance - must pass completely
-  | 'warn'          // Allow but warn - for development
-  | 'off';          // Disabled - for legacy code
+export enum ESLintLevel {
+  /** Zero tolerance - must pass completely */
+  STRICT = 'strict',
+  
+  /** Allow but warn - for development */
+  WARN = 'warn',
+  
+  /** Disabled - for legacy code */
+  OFF = 'off'
+}
 
 /**
  * TypeScript quality requirements
@@ -144,11 +166,42 @@ export interface PerformanceQualityConfig {
 }
 
 /**
+ * Automated quality verification - SYSTEM MANAGED, READ-ONLY
+ */
+export interface QualityVerification {
+  /** Last verification timestamp */
+  lastChecked: string;
+  
+  /** Verification result by quality enforcement system */
+  verifiedStatus: ModuleGraduationStatus;
+  
+  /** Quality score (0-100) calculated automatically */
+  qualityScore: number;
+  
+  /** Issues detected by system */
+  issues: {
+    eslint: number;
+    typescript: number;
+    tests: number;
+    compliance: number;
+  };
+  
+  /** System-detected quality degradation reasons */
+  degradationReasons?: string[];
+  
+  /** Cannot be manually edited - managed by QualityEnforcementEngine */
+  readonly systemManaged: true;
+}
+
+/**
  * Complete module quality configuration
  */
 export interface ModuleQualityConfig {
-  /** Module graduation status */
+  /** Module graduation status - TARGET STATUS (what we want) */
   status: ModuleGraduationStatus;
+  
+  /** AUTOMATED VERIFICATION - actual current status */
+  verification?: QualityVerification;
   
   /** ESLint configuration */
   eslint?: ESLintQualityConfig;
