@@ -145,6 +145,9 @@ export class WebSocketDaemon extends BaseDaemon {
       case 'send_to_connection':
         return this.handleSendToConnection(message.data);
 
+      case 'check_connection':
+        return this.handleCheckConnection(message.data);
+
       default:
         return {
           success: false,
@@ -863,6 +866,73 @@ export class WebSocketDaemon extends BaseDaemon {
       return {
         success: false,
         error: `Failed to send to connection: ${errorMessage}`
+      };
+    }
+  }
+
+  /**
+   * Check if a WebSocket connection exists and is active
+   * Used to prevent race conditions when sending messages to connections
+   */
+  private async handleCheckConnection(data: unknown): Promise<DaemonResponse> {
+    try {
+      const { connectionId } = data as { connectionId: string };
+      
+      if (!connectionId) {
+        return {
+          success: false,
+          error: 'connectionId is required'
+        };
+      }
+      
+      // Check if connection exists and is active
+      const connection = this.wsManager.getConnection(connectionId);
+      const isActive = connection && connection.ws.readyState === WebSocket.OPEN;
+      
+      if (isActive) {
+        this.log(`✅ Connection ${connectionId} is active`);
+        return {
+          success: true,
+          data: {
+            connectionId,
+            exists: true,
+            active: true,
+            connectedAt: connection.connectedAt,
+            metadata: connection.metadata
+          }
+        };
+      } else if (connection) {
+        this.log(`⚠️ Connection ${connectionId} exists but is not active (state: ${connection.ws.readyState})`);
+        return {
+          success: false,
+          error: `Connection ${connectionId} exists but is not active`,
+          data: {
+            connectionId,
+            exists: true,
+            active: false,
+            readyState: connection.ws.readyState,
+            connectedAt: connection.connectedAt,
+            metadata: connection.metadata
+          }
+        };
+      } else {
+        this.log(`❌ Connection ${connectionId} not found`);
+        return {
+          success: false,
+          error: `Connection ${connectionId} not found`,
+          data: {
+            connectionId,
+            exists: false,
+            active: false
+          }
+        };
+      }
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `Failed to check connection: ${errorMessage}`
       };
     }
   }

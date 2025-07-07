@@ -27,7 +27,6 @@ export class WebSocketManager {
     
     this.server.on('connection', (ws, req) => {
       const connectionId = this.generateConnectionId();
-      const userAgent = req.headers['user-agent'] || '';
       
       // WebSocketManager is a PURE ROUTER - no browser tab management
       // Browser launching is handled by BrowserManagerDaemon via session events
