@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2385",
+  "version": "0.2.2386",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -39,6 +39,8 @@
     "test:eslint:next": "npx tsx src/testing/ESLintGraduationTracker.ts --suggest",
     "test:quality:commit": "npx tsx src/testing/QualityEnforcementEngine.ts --commit",
     "test:quality:push": "npx tsx src/testing/QualityEnforcementEngine.ts --push",
+    "fix:command-compliance": "node scripts/fix-command-compliance.js",
+    "fix:command-compliance:dry-run": "node scripts/fix-command-compliance.js --dry-run",
     "test:integration:all": "npm run test:integration:eventbus && npm run test:integration:routing && npm run test:integration:html && npm run test:integration:wildcard && npm run test:integration:types && npm run test:integration:modules",
     "test:integration:eventbus": "npx tsx --test src/test/integration/DaemonEventBus.integration.test.ts",
     "test:integration:routing": "npx tsx --test src/test/integration/CommandRouting.integration.test.ts",
