@@ -59,6 +59,12 @@ export interface CommandResult<T = unknown> {
   timestamp?: string | undefined;
 }
 
+export interface RegistryEntry {
+  name: string;
+  execute: (context: CommandContext, parameters: Record<string, unknown>) => Promise<CommandResult>;
+  definition: CommandDefinition;
+}
+
 /**
  * Abstract base class for all Continuum commands
  * Provides type safety, consistent interfaces, and common functionality
@@ -193,11 +199,7 @@ export abstract class BaseCommand {
   /**
    * Create command registry entry
    */
-  static createRegistryEntry(): {
-    name: string;
-    execute: (context: CommandContext, parameters: Record<string, unknown>) => Promise<CommandResult>;
-    definition: CommandDefinition;
-  } {
+  static createRegistryEntry(): RegistryEntry {
     const definition = this.getDefinition();
     return {
       name: definition.name.toUpperCase(),
