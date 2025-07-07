@@ -1,10 +1,25 @@
 # 🎛️ Continuum Widget System
 
-**Modern TypeScript Web Components Architecture**
+> **⚠️ DOCUMENTATION MOVED**  
+> **This README contains outdated architecture patterns.**  
+> **For current widget development, see:** **[middle-out/development/widget-architecture.md](../../middle-out/development/widget-architecture.md)**
 
-## 📋 Overview
+## 🚀 New Architecture (2025-07-07)
 
-The Continuum widget system provides a clean, modular approach to building UI components. All widgets are TypeScript web components that extend `BaseWidget` and follow standardized patterns for styling, events, and lifecycle management.
+The widget system has been completely redesigned with **layered abstract classes** and **CSS inheritance**:
+
+- **Minimal Burden Principle** - Subclasses provide just `widgetName`, everything else has smart defaults
+- **CSS Inheritance Hierarchy** - BaseWidget.css → SidebarWidget.css → UserSelectorWidget.css  
+- **Declarative Asset System** - Package.json drives HTML/CSS loading automatically
+- **RendererDaemon Efficiency** - Smart caching and optimization
+
+**Simple widget now requires just:**
+```typescript
+export class MyWidget extends SidebarWidget {
+  protected readonly widgetName = 'My';
+  // Everything else works automatically!
+}
+```
 
 ---
 
