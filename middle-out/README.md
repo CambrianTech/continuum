@@ -19,6 +19,9 @@ This directory contains the complete architectural documentation for Continuum's
 - **[error-fixing.md](development/error-fixing.md)** - Systematic error fixing methodology (coming soon)
 - **[widget-architecture.md](development/widget-architecture.md)** - Widget system breakthrough patterns (coming soon)
 
+#### 🧪 [Testing](testing/)
+- **[intelligent-modular-testing.md](testing/intelligent-modular-testing.md)** - AI-friendly module discovery, compliance, and graduation tracking
+
 #### 🔍 [JTAG Debugging](jtag/)
 - **[README.md](jtag/README.md)** - Complete JTAG debugging framework overview
 - **[implementation.md](jtag/implementation.md)** - Technical implementation details and connection information
