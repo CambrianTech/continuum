@@ -1,114 +1,186 @@
-# Browser Manager
+# Browser Manager Daemon
 
-browser-manager module for Continuum
+**Intelligent browser orchestration with context-aware behavior for AI-human collaboration**
 
-## 🚀 Usage
+## 🧠 **INTELLIGENT DEFAULTS BY CONTEXT**
 
-### Command Interface
-```bash
-# Basic usage
-continuum browser-manager
+The Browser Manager implements **smart behavioral defaults** that adapt to different connection contexts:
 
-# With options (customize based on your module)
-continuum browser-manager --help
-continuum browser-manager --verbose
-```
+### **Human Interactive Sessions** (`./continuum`):
+- **Focus**: `true` - Brings browser to front automatically
+- **Kill Zombies**: `true` - Cleans up orphaned tabs for workspace hygiene  
+- **Philosophy**: Helpful and active assistance for direct human interaction
 
-### Programmatic Usage
+### **AI/API/Portal Sessions**:
+- **Focus**: `false` - Respects human's current work, no interruption
+- **Kill Zombies**: `false` - Preserves existing browser state
+- **Philosophy**: Respectful background operation for autonomous systems
+
+### **🎯 Beautiful Emergent Behaviors**:
+
+1. **Persona working alongside human**:
+   ```typescript
+   // Persona connects via API - no disruption
+   api.connect({ sessionType: 'persona', focus: false })
+   // Human continues working in IDE while AI works silently
+   ```
+
+2. **Portal integration**:
+   ```typescript  
+   // Git hook triggers portal - silent operation
+   portal.connect({ sessionType: 'validation', killZombies: false })
+   // Doesn't interfere with human's debugging tabs
+   ```
+
+3. **Human development flow**:
+   ```bash
+   ./continuum  # Brings browser to front, cleans workspace
+   # Perfect for "I want to start working now"
+   ```
+
+4. **Academy training**:
+   ```typescript
+   // Spawned personas respect human's environment
+   academy.spawnPersona({ focus: false, killZombies: false })
+   // Multiple personas work without mutual interference
+   ```
+
+## 🚀 **CORE FEATURES**
+
+### **Smart Browser Management**
+- **ONE TAB POLICY**: Prevents browser tab proliferation with semaphore protection
+- **Race Condition Prevention**: Global launch lock prevents simultaneous browser spawning
+- **Modular Architecture**: Platform-specific adapters (macOS AppleScript, DevTools Protocol)
+
+### **Zombie Tab Management** 
+- **Smart Detection**: Uses AppleScript/DevTools to identify orphaned tabs
+- **Selective Cleanup**: Preserves tabs with active WebSocket connections
+- **Configurable Behavior**: Respects session-specific kill policies
+
+### **Cross-Platform Focus Control**
+- **macOS Integration**: AppleScript for Opera GX, Chrome, Safari
+- **Window Management**: Brings correct tab to front and activates window
+- **Non-Intrusive Options**: API clients can opt out of focus stealing
+
+## ⚙️ **CONFIGURATION**
+
+### **Session Connection Parameters**
 ```typescript
-import { BrowserManagerCommand } from './BrowserManagerCommand.js';
-
-// Execute the command
-const result = await BrowserManagerCommand.execute({
-  // Add your parameters here
-});
-
-console.log(result);
-```
-
-## ⚙️ Configuration
-
-```json
-{
-  "daemon": "browser-manager",
-  "category": "Core",
-  "capabilities": [
-    "browser-orchestration",
-    "tab-management",
-    "devtools-integration",
-    "session-coordination"
-  ],
-  "startupOrder": 100,
-  "healthCheck": {
-    "enabled": true,
-    "intervalMs": 30000,
-    "timeoutMs": 5000
-  },
-  "dependencies": [
-    "session-manager"
-  ],
-  "interfaces": [
-    "daemon-protocol",
-    "browser-management"
-  ],
-  "permissions": [
-    "browser-control",
-    "process-management",
-    "session-management"
-  ]
+interface ConnectOptions {
+  focus?: boolean;        // Default: true for bash, false for API
+  killZombies?: boolean;  // Default: true for shared, false for API
+  sessionType: string;    // development, persona, portal, validation
+  owner: string;          // shared, user, persona-name
 }
 ```
 
-## 🧪 Testing
+### **Platform Adapters**
+```json
+{
+  "darwin": {
+    "browsers": ["Opera GX", "Chrome", "Safari"],
+    "method": "AppleScript",
+    "fallback": "DevTools Protocol"
+  },
+  "linux": {
+    "browsers": ["Chrome", "Firefox"],
+    "method": "DevTools Protocol"
+  },
+  "win32": {
+    "browsers": ["Chrome", "Edge"],
+    "method": "DevTools Protocol"
+  }
+}
+```
+
+## 🧪 **TESTING**
 
 ```bash
-# Run all tests
-npm test
+# Test browser tab detection
+npm run test:browser-detection
 
-# Run specific test types
-npm run test:unit
-npm run test:integration
+# Test zombie cleanup logic  
+npm run test:zombie-management
 
-# Validate module compliance
-npm run validate
+# Test focus behavior
+npm run test:focus-control
+
+# Full integration with real browsers
+npm run test:browser-integration
 ```
 
-## 🏗️ Development
+## 🏗️ **ARCHITECTURE**
 
-This module follows the Continuum modular architecture:
-
-- **Self-validating**: Module validates its own compliance
-- **Middle-out**: Tests from core outward 
-- **Object-oriented**: Inherits from base classes
-- **Migration-ready**: Can upgrade structure automatically
-
-### Module Structure
+### **Modular Design**
 ```
 browser-manager/
-├── BrowserManagerCommand.ts     # Main implementation
-├── test/
-│   ├── unit/             # Unit tests
-│   └── integration/      # Integration tests
-├── package.json          # Module configuration
-└── README.md            # This file
+├── BrowserManagerDaemon.ts     # Core orchestrator
+├── modules/
+│   ├── BrowserLauncher.ts      # Platform-specific launching
+│   ├── BrowserTabAdapter.ts    # Tab detection & management
+│   ├── ChromeBrowserModule.ts  # Chrome/Chromium integration
+│   └── BrowserSessionManager.ts # Session-browser coordination
+├── adapters/
+│   ├── ChromiumDevToolsAdapter.ts
+│   └── AppleScriptAdapter.ts
+└── types/
+    └── index.ts               # Shared type definitions
 ```
 
-## 📋 Implementation Notes
+### **Event-Driven Architecture**
+- **Listens**: `SystemEventType.SESSION_CREATED`, `SystemEventType.SESSION_JOINED`
+- **Emits**: Browser lifecycle events for logging and monitoring
+- **Coordinates**: With SessionManagerDaemon for session-browser affinity
 
-**TODO**: Customize this section with:
-- Specific usage examples
-- Configuration options
-- API documentation
-- Performance considerations
-- Known limitations
+## 🤖 **AI-HUMAN COLLABORATION DESIGN**
 
-## 🔧 Bootstrap Information
+The Browser Manager's intelligent defaults create **cognitive amplification** through respectful automation:
 
-This file was auto-generated during module migration. The module now has:
+### **For Humans:**
+- Automatic workspace preparation when explicitly connecting
+- Clean tab management without manual intervention  
+- Focus assistance for direct development work
 
-- ✅ Complete package.json with continuum configuration
-- ✅ Test directories (unit/integration)
-- ✅ TypeScript ES module setup
-- ✅ Compliance validation
+### **For AI Systems:**
+- Non-intrusive background operation
+- Preservation of human's browser state
+- Multiple AI sessions without conflict
 
-**Next Steps**: Implement your module logic and update this documentation!
+### **For Personas:**
+- Academy-spawned personas inherit respectful defaults
+- Training data collection without disrupting human workflow
+- Collaborative development without interference
+
+## 🔧 **OOP TYPE SAFETY**
+
+The TypeScript compiler enforces respectful behavior patterns:
+
+```typescript
+// Compiler prevents focus stealing in API contexts
+const portalSession = await connect({
+  sessionType: 'portal',  
+  focus: true  // ❌ Type error: focus defaults to false for portal sessions
+});
+
+// Encourages appropriate defaults
+const humanSession = await connect({
+  sessionType: 'development',
+  focus: true,        // ✅ Explicit human intention
+  killZombies: true   // ✅ Helpful workspace management
+});
+```
+
+This design philosophy ensures the **browser manager serves both human productivity and AI autonomy** through intelligent, context-aware behavior.
+
+## 📋 **IMPLEMENTATION STATUS**
+
+- ✅ **Smart defaults by context** - Bash vs API behavior
+- ✅ **ONE TAB POLICY enforcement** - Semaphore protection
+- ✅ **Platform-specific focus control** - macOS AppleScript
+- ✅ **Zombie tab detection** - AppleScript integration
+- ✅ **Type-safe parameter passing** - ConnectCommand interface
+- 🚧 **DevTools Protocol adapters** - Chrome/Firefox support
+- 🚧 **WebSocket connection correlation** - Live tab identification
+- 📋 **Linux/Windows platform support** - Cross-platform adapters
+
+**Philosophy**: The compiler and type system become our cognitive infrastructure for designing respectful AI-human collaboration! 🤖✨

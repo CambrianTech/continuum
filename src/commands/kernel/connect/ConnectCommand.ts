@@ -38,6 +38,18 @@ export class ConnectCommand extends DaemonCommand {
           description: 'Force create new session instead of reusing existing',
           required: false,
           default: false
+        },
+        focus: {
+          type: 'boolean' as const,
+          description: 'Focus/bring browser to front when connecting',
+          required: false,
+          default: false
+        },
+        killZombies: {
+          type: 'boolean' as const,
+          description: 'Close zombie browser tabs that are not connected to active sessions',
+          required: false,
+          default: false
         }
       },
       examples: [
@@ -81,6 +93,8 @@ export class ConnectCommand extends DaemonCommand {
       owner: params.owner || 'shared',
       sessionId: params.sessionId,
       forceNew: params.forceNew || false,
+      focus: params.focus || false,
+      killZombies: params.killZombies || false,
       connectionId: context?.connectionId || 'cli',
       source: (context as any)?.source || 'cli'
     };
