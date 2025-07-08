@@ -348,7 +348,7 @@ export class BrowserWebSocketDaemon extends BaseBrowserDaemon {
       
       // Handle connection confirmation
       if (message.type === 'connection_confirmed') {
-        this.connectionState.clientId = message.data?.clientId;
+        this.connectionState.clientId = (message.data as any)?.clientId;
         this.log(`🆔 Client ID assigned: ${this.connectionState.clientId}`, 'info');
         
         // Send queued messages
@@ -358,7 +358,7 @@ export class BrowserWebSocketDaemon extends BaseBrowserDaemon {
 
       // Handle session_ready message using shared protocol
       if (message.type === 'session_ready') {
-        this.connectionState.sessionId = message.data?.sessionId;
+        this.connectionState.sessionId = (message.data as any)?.sessionId;
         this.log(`🎯 Session ready: ${this.connectionState.sessionId}`, 'info');
         this.emit('session:ready', message.data);
         return;
@@ -381,7 +381,7 @@ export class BrowserWebSocketDaemon extends BaseBrowserDaemon {
         if (this.pendingRequests.has(requestId)) {
           const { reject } = this.pendingRequests.get(requestId)!;
           this.pendingRequests.delete(requestId);
-          reject(new Error(message.error || 'Command execution failed'));
+          reject(new Error((message as any).error || 'Command execution failed'));
           return;
         }
       }
@@ -399,7 +399,7 @@ export class BrowserWebSocketDaemon extends BaseBrowserDaemon {
     while (this.messageQueue.length > 0) {
       const message = this.messageQueue.shift();
       if (message && this.isConnected()) {
-        this.sendMessage(message);
+        this.sendWebSocketMessage(message);
       }
     }
   }
@@ -430,7 +430,7 @@ export class BrowserWebSocketDaemon extends BaseBrowserDaemon {
   private async establishSession(): Promise<void> {
     try {
       this.log('🔌 Establishing session...', 'info');
-      const connectResult = await this.executeCommand('connect', {
+      await this.executeCommand('connect', {
         sessionType: 'development',
         owner: 'shared',
         forceNew: false
@@ -489,7 +489,7 @@ export class BrowserWebSocketDaemon extends BaseBrowserDaemon {
 
   private handleSendMessage(messageData: any): BrowserDaemonResponse {
     try {
-      this.sendMessage(messageData);
+      this.sendWebSocketMessage(messageData);
       return {
         success: true,
         data: { sent: true },
