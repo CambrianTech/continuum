@@ -361,14 +361,18 @@
 /* SidebarTabs widget handles its own styling */
 }
 
-/* Content Area - Container only */
-.sidebar-content {
+/* Sidebar Panel Widget Layout */
+sidebar-panel {
     flex: 1;
     overflow-y: auto;
     padding: 20px;
     display: flex;
     flex-direction: column;
     gap: 20px;
+    user-select: text;
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
 }
 
 /* Global resizing styles (applied to document body) */
@@ -390,10 +394,4 @@
     -ms-user-select: none;
 }
 
-/* Allow text selection only in content areas */
-.sidebar-content {
-    user-select: text;
-    -webkit-user-select: text;
-    -moz-user-select: text;
-    -ms-user-select: text;
-}
+/* Text selection now handled by sidebar-panel widget */

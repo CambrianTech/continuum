@@ -14,10 +14,6 @@
     "general": {
       "widgets": [
         {
-          "type": "academy-ready-status",
-          "config": {}
-        },
-        {
           "type": "session-costs",
           "config": {}
         },
