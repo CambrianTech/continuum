@@ -600,45 +600,45 @@ export function mergeWithDefaults(
   return {
     status,
     eslint: {
-      enforce: config.eslint?.enforce ?? defaults.eslint.enforce,
-      level: config.eslint?.level ?? defaults.eslint.level,
+      enforce: config.eslint?.enforce ?? defaults.eslint!.enforce,
+      level: config.eslint?.level ?? defaults.eslint!.level,
       ...(config.eslint?.configFile && { configFile: config.eslint.configFile }),
       ...(config.eslint?.additionalRules && { additionalRules: config.eslint.additionalRules })
     },
     typescript: {
-      noAny: config.typescript?.noAny ?? defaults.typescript.noAny,
-      strict: config.typescript?.strict ?? defaults.typescript.strict,
+      noAny: config.typescript?.noAny ?? defaults.typescript!.noAny,
+      strict: config.typescript?.strict ?? defaults.typescript!.strict,
       ...(config.typescript?.explicitReturnTypes !== undefined && { explicitReturnTypes: config.typescript.explicitReturnTypes }),
       ...(config.typescript?.strictNullChecks !== undefined && { strictNullChecks: config.typescript.strictNullChecks })
     },
     tests: {
-      required: config.tests?.required ?? defaults.tests.required,
-      coverage: config.tests?.coverage ?? defaults.tests.coverage,
-      types: config.tests?.types ?? defaults.tests.types,
-      mustPass: config.tests?.mustPass ?? defaults.tests.mustPass
+      required: config.tests?.required ?? defaults.tests!.required,
+      coverage: config.tests?.coverage ?? defaults.tests!.coverage,
+      types: config.tests?.types ?? defaults.tests!.types,
+      mustPass: config.tests?.mustPass ?? defaults.tests!.mustPass
     },
     compliance: {
-      required: config.compliance?.required ?? defaults.compliance.required,
-      minimumScore: config.compliance?.minimumScore ?? defaults.compliance.minimumScore,
-      structure: config.compliance?.structure ?? defaults.compliance.structure
+      required: config.compliance?.required ?? defaults.compliance!.required,
+      minimumScore: config.compliance?.minimumScore ?? defaults.compliance!.minimumScore,
+      structure: config.compliance?.structure ?? defaults.compliance!.structure
     },
     documentation: {
-      required: config.documentation?.required ?? defaults.documentation.required,
-      files: config.documentation?.files ?? defaults.documentation.files,
-      apiDocs: config.documentation?.apiDocs ?? defaults.documentation.apiDocs,
-      examples: config.documentation?.examples ?? defaults.documentation.examples
+      required: config.documentation?.required ?? defaults.documentation!.required,
+      files: config.documentation?.files ?? defaults.documentation!.files,
+      apiDocs: config.documentation?.apiDocs ?? defaults.documentation!.apiDocs,
+      examples: config.documentation?.examples ?? defaults.documentation!.examples
     },
     security: {
-      auditRequired: config.security?.auditRequired ?? defaults.security.auditRequired,
-      vulnerabilityScan: config.security?.vulnerabilityScan ?? defaults.security.vulnerabilityScan,
-      secretsScan: config.security?.secretsScan ?? defaults.security.secretsScan,
-      maxSeverity: config.security?.maxSeverity ?? defaults.security.maxSeverity
+      auditRequired: config.security?.auditRequired ?? defaults.security!.auditRequired,
+      vulnerabilityScan: config.security?.vulnerabilityScan ?? defaults.security!.vulnerabilityScan,
+      secretsScan: config.security?.secretsScan ?? defaults.security!.secretsScan,
+      maxSeverity: config.security?.maxSeverity ?? defaults.security!.maxSeverity
     },
     performance: {
-      required: config.performance?.required ?? defaults.performance.required,
-      maxBuildTime: config.performance?.maxBuildTime ?? defaults.performance.maxBuildTime,
-      maxBundleSize: config.performance?.maxBundleSize ?? defaults.performance.maxBundleSize,
-      memoryLeakDetection: config.performance?.memoryLeakDetection ?? defaults.performance.memoryLeakDetection
+      required: config.performance?.required ?? defaults.performance!.required,
+      maxBuildTime: config.performance?.maxBuildTime ?? defaults.performance!.maxBuildTime,
+      maxBundleSize: config.performance?.maxBundleSize ?? defaults.performance!.maxBundleSize,
+      memoryLeakDetection: config.performance?.memoryLeakDetection ?? defaults.performance!.memoryLeakDetection
     }
   };
 }
