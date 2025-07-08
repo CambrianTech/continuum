@@ -21,7 +21,7 @@ export abstract class MacOSBrowserAdapter extends BaseBrowserAdapter {
   
   constructor(browserName: string) {
     super(browserName, 'darwin');
-    this.scriptsPath = path.join(__dirname, '../../scripts/macos');
+    this.scriptsPath = path.join(__dirname, '../scripts');
   }
   
   // Abstract methods that concrete adapters must implement

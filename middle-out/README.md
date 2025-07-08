@@ -15,6 +15,7 @@ This directory contains the complete architectural documentation for Continuum's
 #### 🔧 [Development](development/)
 - **[testing-workflow.md](development/testing-workflow.md)** - Complete middle-out testing methodology with 6-layer validation
 - **[auto-build-workflow.md](development/auto-build-workflow.md)** - Automated build and version increment system
+- **[progressive-quality-enforcement.md](development/progressive-quality-enforcement.md)** - Progressive quality enforcement system with TypeScript schemas and graduation tracking
 - **[middle-out-cycle.md](development/middle-out-cycle.md)** - The development cycle and implementation phases
 - **[error-fixing.md](development/error-fixing.md)** - Systematic error fixing methodology (coming soon)
 - **[widget-architecture.md](development/widget-architecture.md)** - Widget system breakthrough patterns (coming soon)
