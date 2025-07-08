@@ -12,7 +12,7 @@ export interface PanelWidget {
 export interface PanelContent {
     readonly panelName: string;
     readonly widgets: PanelWidget[];
-    readonly selected?: boolean;
+    readonly active?: boolean;
 }
 
 export class SidebarPanelWidget extends BaseWidget {
