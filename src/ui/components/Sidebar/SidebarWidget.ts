@@ -4,7 +4,7 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
-import { universalUserSystem } from '../shared/UniversalUserSystem';
+// import { universalUserSystem } from '../shared/UniversalUserSystem';
 
 export class SidebarWidget extends BaseWidget {
     private isResizing: boolean = false;
@@ -184,7 +184,6 @@ export class SidebarWidget extends BaseWidget {
     private updateOrbEmotion(emotion: 'calm' | 'excited' | 'focused' | 'concerned' | 'distressed', message: string): void {
         const orbCenter = this.shadowRoot.querySelector('.orb-center') as HTMLElement;
         const orbRing = this.shadowRoot.querySelector('.orb-ring') as HTMLElement;
-        const orbGlow = this.shadowRoot.querySelector('.orb-glow') as HTMLElement;
         
         if (orbCenter && orbRing) {
             // Remove all emotional states
@@ -362,7 +361,6 @@ export class SidebarWidget extends BaseWidget {
     private checkRecentActivity(): boolean {
         // Check for signs of recent system activity
         const errorCount = (window as any).continuumErrorCount || 0;
-        const lastActivity = Date.now(); // Placeholder - could track actual activity
         
         // Simple heuristic - this could be much more sophisticated
         return errorCount === 0; // Healthy system = activity
