@@ -327,7 +327,7 @@ export const DEFAULT_QUALITY_CONFIGS: Record<ModuleGraduationStatus, ModuleQuali
     status: ModuleGraduationStatus.GRADUATED,
     eslint: {
       enforce: true,
-      level: 'strict'
+      level: ESLintLevel.STRICT
     },
     typescript: {
       noAny: true,
@@ -366,10 +366,10 @@ export const DEFAULT_QUALITY_CONFIGS: Record<ModuleGraduationStatus, ModuleQuali
   },
   
   candidate: {
-    status: 'candidate',
+    status: ModuleGraduationStatus.CANDIDATE,
     eslint: {
       enforce: true,
-      level: 'warn'
+      level: ESLintLevel.WARN
     },
     typescript: {
       noAny: false,
@@ -387,20 +387,190 @@ export const DEFAULT_QUALITY_CONFIGS: Record<ModuleGraduationStatus, ModuleQuali
   },
   
   whitelisted: {
-    status: 'whitelisted',
+    status: ModuleGraduationStatus.WHITELISTED,
     eslint: {
       enforce: false,
-      level: 'off'
+      level: ESLintLevel.OFF
     },
     typescript: {
       noAny: false,
       strict: false
     },
     tests: {
-      required: false
+      required: false,
+      coverage: 0,
+      types: [],
+      mustPass: false
     },
     compliance: {
-      required: false
+      required: false,
+      minimumScore: 0,
+      structure: {
+        packageJson: false,
+        readme: false,
+        mainFile: false,
+        testDirectory: false,
+        typeDefinitions: false
+      }
+    },
+    documentation: {
+      required: false,
+      files: [],
+      apiDocs: false,
+      examples: false
+    },
+    security: {
+      auditRequired: false,
+      vulnerabilityScan: false,
+      secretsScan: false,
+      maxSeverity: 'critical' as const
+    },
+    performance: {
+      required: false,
+      maxBuildTime: Infinity,
+      maxBundleSize: Infinity,
+      memoryLeakDetection: false
+    }
+  },
+  
+  degraded: {
+    status: ModuleGraduationStatus.DEGRADED,
+    eslint: {
+      enforce: false,
+      level: ESLintLevel.OFF
+    },
+    typescript: {
+      noAny: false,
+      strict: false
+    },
+    tests: {
+      required: false,
+      coverage: 0,
+      types: [],
+      mustPass: false
+    },
+    compliance: {
+      required: false,
+      minimumScore: 0,
+      structure: {
+        packageJson: false,
+        readme: false,
+        mainFile: false,
+        testDirectory: false,
+        typeDefinitions: false
+      }
+    },
+    documentation: {
+      required: false,
+      files: [],
+      apiDocs: false,
+      examples: false
+    },
+    security: {
+      auditRequired: false,
+      vulnerabilityScan: false,
+      secretsScan: false,
+      maxSeverity: 'critical' as const
+    },
+    performance: {
+      required: false,
+      maxBuildTime: Infinity,
+      maxBundleSize: Infinity,
+      memoryLeakDetection: false
+    }
+  },
+  
+  broken: {
+    status: ModuleGraduationStatus.BROKEN,
+    eslint: {
+      enforce: false,
+      level: ESLintLevel.OFF
+    },
+    typescript: {
+      noAny: false,
+      strict: false
+    },
+    tests: {
+      required: false,
+      coverage: 0,
+      types: [],
+      mustPass: false
+    },
+    compliance: {
+      required: false,
+      minimumScore: 0,
+      structure: {
+        packageJson: false,
+        readme: false,
+        mainFile: false,
+        testDirectory: false,
+        typeDefinitions: false
+      }
+    },
+    documentation: {
+      required: false,
+      files: [],
+      apiDocs: false,
+      examples: false
+    },
+    security: {
+      auditRequired: false,
+      vulnerabilityScan: false,
+      secretsScan: false,
+      maxSeverity: 'critical' as const
+    },
+    performance: {
+      required: false,
+      maxBuildTime: Infinity,
+      maxBundleSize: Infinity,
+      memoryLeakDetection: false
+    }
+  },
+  
+  unknown: {
+    status: ModuleGraduationStatus.UNKNOWN,
+    eslint: {
+      enforce: false,
+      level: ESLintLevel.OFF
+    },
+    typescript: {
+      noAny: false,
+      strict: false
+    },
+    tests: {
+      required: false,
+      coverage: 0,
+      types: [],
+      mustPass: false
+    },
+    compliance: {
+      required: false,
+      minimumScore: 0,
+      structure: {
+        packageJson: false,
+        readme: false,
+        mainFile: false,
+        testDirectory: false,
+        typeDefinitions: false
+      }
+    },
+    documentation: {
+      required: false,
+      files: [],
+      apiDocs: false,
+      examples: false
+    },
+    security: {
+      auditRequired: false,
+      vulnerabilityScan: false,
+      secretsScan: false,
+      maxSeverity: 'critical' as const
+    },
+    performance: {
+      required: false,
+      maxBuildTime: Infinity,
+      maxBundleSize: Infinity,
+      memoryLeakDetection: false
     }
   }
 };
@@ -423,17 +593,52 @@ export function mergeWithDefaults(
   status: ModuleGraduationStatus
 ): ModuleQualityConfig {
   const defaults = DEFAULT_QUALITY_CONFIGS[status];
+  if (!defaults) {
+    throw new Error(`Invalid module graduation status: ${status}`);
+  }
   
   return {
-    ...defaults,
-    ...config,
     status,
-    eslint: { ...defaults.eslint, ...config.eslint },
-    typescript: { ...defaults.typescript, ...config.typescript },
-    tests: { ...defaults.tests, ...config.tests },
-    compliance: { ...defaults.compliance, ...config.compliance },
-    documentation: { ...defaults.documentation, ...config.documentation },
-    security: { ...defaults.security, ...config.security },
-    performance: { ...defaults.performance, ...config.performance }
+    eslint: {
+      enforce: config.eslint?.enforce ?? defaults.eslint.enforce,
+      level: config.eslint?.level ?? defaults.eslint.level,
+      ...(config.eslint?.configFile && { configFile: config.eslint.configFile }),
+      ...(config.eslint?.additionalRules && { additionalRules: config.eslint.additionalRules })
+    },
+    typescript: {
+      noAny: config.typescript?.noAny ?? defaults.typescript.noAny,
+      strict: config.typescript?.strict ?? defaults.typescript.strict,
+      ...(config.typescript?.explicitReturnTypes !== undefined && { explicitReturnTypes: config.typescript.explicitReturnTypes }),
+      ...(config.typescript?.strictNullChecks !== undefined && { strictNullChecks: config.typescript.strictNullChecks })
+    },
+    tests: {
+      required: config.tests?.required ?? defaults.tests.required,
+      coverage: config.tests?.coverage ?? defaults.tests.coverage,
+      types: config.tests?.types ?? defaults.tests.types,
+      mustPass: config.tests?.mustPass ?? defaults.tests.mustPass
+    },
+    compliance: {
+      required: config.compliance?.required ?? defaults.compliance.required,
+      minimumScore: config.compliance?.minimumScore ?? defaults.compliance.minimumScore,
+      structure: config.compliance?.structure ?? defaults.compliance.structure
+    },
+    documentation: {
+      required: config.documentation?.required ?? defaults.documentation.required,
+      files: config.documentation?.files ?? defaults.documentation.files,
+      apiDocs: config.documentation?.apiDocs ?? defaults.documentation.apiDocs,
+      examples: config.documentation?.examples ?? defaults.documentation.examples
+    },
+    security: {
+      auditRequired: config.security?.auditRequired ?? defaults.security.auditRequired,
+      vulnerabilityScan: config.security?.vulnerabilityScan ?? defaults.security.vulnerabilityScan,
+      secretsScan: config.security?.secretsScan ?? defaults.security.secretsScan,
+      maxSeverity: config.security?.maxSeverity ?? defaults.security.maxSeverity
+    },
+    performance: {
+      required: config.performance?.required ?? defaults.performance.required,
+      maxBuildTime: config.performance?.maxBuildTime ?? defaults.performance.maxBuildTime,
+      maxBundleSize: config.performance?.maxBundleSize ?? defaults.performance.maxBundleSize,
+      memoryLeakDetection: config.performance?.memoryLeakDetection ?? defaults.performance.memoryLeakDetection
+    }
   };
 }

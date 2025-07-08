@@ -80,13 +80,18 @@ export class QualityAwareRuntime {
               continue;
             }
             
-            modules.push({
+            const moduleWithQuality: ModuleWithQuality = {
               name: entry.name,
               path: modulePath,
               packageJson,
-              verification,
               qualityRank
-            });
+            };
+            
+            if (verification) {
+              moduleWithQuality.verification = verification;
+            }
+            
+            modules.push(moduleWithQuality);
             
           } catch (error) {
             console.log(`❌ Failed to read package.json for ${entry.name}:`, error instanceof Error ? error.message : String(error));
