@@ -3,8 +3,12 @@
  * Enforces proper implementation through abstract methods and properties
  */
 
-// Import smart asset manifest (zero 404s!)
-import { WIDGET_ASSETS } from 'widget-discovery';
+// Smart asset manifest (zero 404s!) - globally available via esbuild plugin
+declare global {
+  interface Window {
+    WIDGET_ASSETS: Record<string, {css: string[], html: string[], js: string[]}>;
+  }
+}
 
 
 export abstract class BaseWidget extends HTMLElement {
@@ -119,7 +123,7 @@ export abstract class BaseWidget extends HTMLElement {
       const basePath = constructor.getBasePath();
       
       // SMART MANIFEST: Only load HTML files that actually exist (Zero 404s!)
-      const widgetAssets = WIDGET_ASSETS[widgetName];
+      const widgetAssets = window.WIDGET_ASSETS?.[widgetName];
       
       if (widgetAssets && widgetAssets.html.length > 0) {
         console.log(`📁 ${constructor.name}: Found ${widgetAssets.html.length} HTML files in manifest`);
@@ -287,7 +291,7 @@ export abstract class BaseWidget extends HTMLElement {
       const baseCSS = '/src/ui/components/shared/BaseWidget.css';
       
       // Get CSS files from build-time manifest
-      const widgetAssets = WIDGET_ASSETS[widgetName];
+      const widgetAssets = window.WIDGET_ASSETS?.[widgetName];
       const cssFiles = [baseCSS];
       
       if (widgetAssets && widgetAssets.css.length > 0) {

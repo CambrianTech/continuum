@@ -19,10 +19,7 @@ import { BaseBrowserDaemon, BrowserDaemonMessage, BrowserDaemonResponse } from '
 import { 
   WebSocketMessageType,
   BaseMessage,
-  BaseResponse,
   ClientInitMessage,
-  ExecuteCommandMessage,
-  ConsoleLogMessage,
   ProtocolValidator,
   PROTOCOL_DEFAULTS
 } from '../../../types/shared/CommunicationProtocol';
@@ -76,7 +73,7 @@ export class BrowserWebSocketDaemon extends BaseBrowserDaemon {
   }
 
   getMessageTypes(): WebSocketMessageType[] {
-    return MESSAGE_TYPE_ARRAYS.websocket;
+    return MESSAGE_TYPE_ARRAYS.websocket as WebSocketMessageType[];
   }
 
   async handleMessage(message: BrowserDaemonMessage): Promise<BrowserDaemonResponse> {
@@ -179,7 +176,7 @@ export class BrowserWebSocketDaemon extends BaseBrowserDaemon {
               capabilities: ['console_forwarding', 'command_execution', 'health_monitoring']
             }
           };
-          this.sendMessage(initMessage);
+          this.sendWebSocketMessage(initMessage);
 
           // Automatically establish session
           await this.establishSession();
@@ -257,8 +254,9 @@ export class BrowserWebSocketDaemon extends BaseBrowserDaemon {
         }
       }, 30000); // 30 second timeout
 
-      this.sendMessage({
+      this.sendWebSocketMessage({
         type: 'execute_command',
+        timestamp: new Date().toISOString(),
         data: {
           command,
           params: typeof params === 'string' ? params : JSON.stringify(params),
@@ -307,8 +305,20 @@ export class BrowserWebSocketDaemon extends BaseBrowserDaemon {
     }
   }
 
-  // Private helper methods
-  private sendMessage(message: WebSocketMessage): void {
+  // Override sendMessage to match base class signature
+  async sendMessage(_targetDaemon: string, messageType: string, _data: any): Promise<BrowserDaemonResponse> {
+    // Route to WebSocket if it's a WebSocket message type
+    if (messageType.startsWith('websocket:')) {
+      this.sendWebSocketMessage({ type: messageType, timestamp: new Date().toISOString(), data: _data });
+      return { success: true, timestamp: new Date().toISOString(), data: { sent: true } };
+    }
+    
+    // Default fallback
+    return { success: false, timestamp: new Date().toISOString(), data: { error: 'Unsupported message type' } };
+  }
+
+  // Private helper for WebSocket-specific messages
+  private sendWebSocketMessage(message: WebSocketMessage): void {
     const fullMessage = {
       ...message,
       timestamp: new Date().toISOString(),

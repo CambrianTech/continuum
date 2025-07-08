@@ -2,14 +2,15 @@
   "name": "ActiveProjects-core",
   "version": "1.0.0",
   "description": "ActiveProjects core for Continuum",
-  "main": "ActiveProjects.ts",
+  "main": "ActiveProjectsWidget.ts",
   "type": "module",
   "files": [
-    "ActiveProjects.ts",
+    "ActiveProjectsWidget.ts",
     "ActiveProjectsWidget.css"
   ],
   "continuum": {
     "type": "widget",
+    "widgetName": "ActiveProjectsWidget",
     "core": "ActiveProjects",
     "category": "Core",
     "capabilities": [
