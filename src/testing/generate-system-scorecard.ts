@@ -18,7 +18,7 @@ export function generateSystemScorecard(): string {
     // Get graduation status
     const qualityOutput = execSync('npx tsx src/testing/QualityEnforcementEngine.ts --commit --silent 2>/dev/null', { encoding: 'utf8' });
     const graduatedCount = qualityOutput.match(/🎓 Graduated modules: (\d+)/)?.[1] || '11';
-    const whitelistedCount = qualityOutput.match(/📋 Whitelisted modules: (\d+)/)?.[1] || '16';
+    // Note: whitelistedCount available but not used in current scorecard format
 
     // Get TypeScript error count
     const tsErrors = execSync('npx tsc --noEmit --project . 2>&1 | wc -l', { encoding: 'utf8' }).trim();
