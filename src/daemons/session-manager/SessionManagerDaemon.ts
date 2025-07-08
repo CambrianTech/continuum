@@ -114,7 +114,8 @@ export class SessionManagerDaemon extends BaseDaemon {
       'list_sessions',
       'add_artifact',
       'close_session',
-      'register_connection_identity'
+      'register_connection_identity',
+      'session.connect'
     ];
   }
 
