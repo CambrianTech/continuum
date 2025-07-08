@@ -24,14 +24,62 @@ export class SidebarWidget extends BaseWidget {
 
     protected async initializeWidget(): Promise<void> {
         // Widget initialization after DOM is ready
+        await this.loadSidebarConfig();
         this.loadChildWidgets();
         this.initializeContinuonOrb();
     }
 
+    private async loadSidebarConfig(): Promise<void> {
+        try {
+            const configPath = this.getAssetPath('sidebar-config.json');
+            const response = await fetch(configPath);
+            if (response.ok) {
+                const config = await response.json();
+                console.log('📋 Sidebar config loaded:', config);
+                // Store config to pass to children after they're rendered
+                this.sidebarConfig = config;
+            } else {
+                console.warn(`Failed to load sidebar config from ${configPath}`);
+            }
+        } catch (error) {
+            console.error('Error loading sidebar config:', error);
+        }
+    }
+
+    private sidebarConfig: any = null;
+
     setupEventListeners(): void {
         this.setupResizeHandlers();
         this.setupRoomSwitching();
+        
+        // Configure child widgets after they're rendered
+        if (this.sidebarConfig) {
+            this.configureSidebarTabs();
+        }
+        
         console.log(`🎛️ ${this.widgetName}: Event listeners initialized`);
+    }
+
+    private configureSidebarTabs(): void {
+        const sidebarTabs = this.shadowRoot?.querySelector('sidebar-tabs') as any;
+        if (sidebarTabs && this.sidebarConfig) {
+            console.log('🔧 Configuring SidebarTabs with:', this.sidebarConfig.tabs);
+            
+            // Map to TabContent format with dataKey
+            const tabContent = this.sidebarConfig.tabs.map((tab: any) => ({
+                title: tab.title,
+                panelName: tab.panelName,
+                dataKey: tab.panelName, // Use panelName as dataKey
+                selected: tab.panelName === this.sidebarConfig.defaultTab
+            }));
+            
+            // Set tabs property - this will auto-trigger render
+            sidebarTabs.tabs = tabContent;
+            
+            if (this.sidebarConfig.defaultTab) {
+                this.currentRoom = this.sidebarConfig.defaultTab;
+            }
+        }
     }
 
     private setupResizeHandlers(): void {

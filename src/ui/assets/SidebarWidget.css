@@ -216,39 +216,6 @@
     background: #4caf50;
 }
 
-/* Room Tabs */
-.room-tabs {
-    display: flex;
-    margin: 20px;
-    margin-bottom: 0;
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: 12px;
-    padding: 4px;
-    flex-shrink: 0;
-}
-
-.room-tab {
-    flex: 1;
-    padding: 10px 12px;
-    text-align: center;
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    font-size: 14px;
-    font-weight: 500;
-    color: #8a92a5;
-}
-
-.room-tab.active {
-    background: linear-gradient(135deg, #4FC3F7, #29B6F6);
-    color: white;
-    box-shadow: 0 2px 8px rgba(79, 195, 247, 0.3);
-}
-
-.room-tab:hover:not(.active) {
-    background: rgba(255, 255, 255, 0.1);
-    color: #e0e6ed;
-}
 
 /* Content Area */
 .sidebar-content {
