@@ -506,6 +506,11 @@ class ContinuumBrowserAPI implements ContinuumAPI {
           this.connectionState = 'connected';
           this.reconnectAttempts = 0;
           
+          // Initialize command daemon with WebSocket connection if enabled
+          if (browserDaemonController.isCommandDaemonActive() && this.ws) {
+            browserDaemonController.initializeCommandDaemonConnection(this.ws, this.sessionId || undefined, this.clientId || undefined);
+          }
+          
           // Send client initialization with version
           this.sendMessage({
             type: 'client_init',
@@ -718,6 +723,17 @@ class ContinuumBrowserAPI implements ContinuumAPI {
       throw new Error('Continuum API not connected');
     }
 
+    // Try using command daemon first if available
+    if (browserDaemonController.isCommandDaemonActive()) {
+      try {
+        return await browserDaemonController.executeCommand(command, params);
+      } catch (error) {
+        console.warn('Command daemon failed, falling back to legacy implementation:', error);
+        // Fall through to legacy implementation
+      }
+    }
+
+    // Legacy implementation
     return new Promise((resolve, reject) => {
       const requestId = `cmd_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
@@ -854,6 +870,15 @@ class ContinuumBrowserAPI implements ContinuumAPI {
 
       // Handle command responses
       if (message.type === 'execute_command_response') {
+        // Try command daemon first if active
+        if (browserDaemonController.isCommandDaemonActive()) {
+          const handled = browserDaemonController.handleCommandResponse(message);
+          if (handled) {
+            return; // Command daemon handled it
+          }
+        }
+        
+        // Fallback to legacy event system
         this.emit('command_response', message);
         return;
       }
@@ -997,6 +1022,25 @@ class ContinuumBrowserAPI implements ContinuumAPI {
    * Queue console commands with rate limiting to prevent overwhelming server
    */
   private queueConsoleCommand(consoleCommand: any): void {
+    // Try using command daemon first if available
+    if (browserDaemonController.isCommandDaemonActive()) {
+      try {
+        browserDaemonController.executeCommand('console', consoleCommand).catch(error => {
+          console.warn('Command daemon console failed, using legacy queue:', error);
+          // Fall back to legacy implementation
+          this.consoleQueue.push(consoleCommand);
+          if (!this.consoleProcessing) {
+            this.processConsoleQueue();
+          }
+        });
+        return;
+      } catch (error) {
+        console.warn('Command daemon not available, using legacy queue:', error);
+        // Fall through to legacy implementation
+      }
+    }
+    
+    // Legacy implementation
     this.consoleQueue.push(consoleCommand);
     
     if (!this.consoleProcessing) {
