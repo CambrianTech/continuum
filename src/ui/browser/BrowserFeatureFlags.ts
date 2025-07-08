@@ -234,6 +234,23 @@ export class BrowserFeatureFlags {
     console.log('✅ WebSocket daemon testing enabled - reload page to apply');
   }
 
+  static enableCommandDaemonTesting(): void {
+    // Handle Node.js environment for testing
+    if (typeof window === 'undefined') {
+      console.warn('enableCommandDaemonTesting() not available in Node.js environment');
+      console.warn('Use environment variable instead: CONTINUUM_COMMAND_DAEMON=true');
+      return;
+    }
+    
+    if (!BrowserFeatureFlags.isDevelopment) {
+      console.warn('Command daemon testing only available in development');
+      return;
+    }
+    
+    localStorage.setItem('continuum_command_daemon', 'true');
+    console.log('✅ Command daemon testing enabled - reload page to apply');
+  }
+
   /**
    * Get current feature flag status
    */

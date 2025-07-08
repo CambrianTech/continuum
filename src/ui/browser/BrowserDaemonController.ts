@@ -15,6 +15,7 @@
 
 import { BrowserDaemonManager } from './base/BrowserDaemonManager';
 import { BrowserConsoleDaemon } from './console/BrowserConsoleDaemon';
+import { commandDaemon } from './daemons/CommandDaemon';
 // import { BrowserWebSocketDaemon } from './websocket/BrowserWebSocketDaemon'; // TODO: Implement WebSocket integration
 import { BrowserFeatureFlags } from './BrowserFeatureFlags';
 
@@ -30,6 +31,7 @@ interface DaemonControllerConfig {
 export class BrowserDaemonController {
   private daemonManager: BrowserDaemonManager;
   private consoleDaemon: BrowserConsoleDaemon | null = null;
+  private commandDaemonEnabled = false;
   // private _websocketDaemon: BrowserWebSocketDaemon | null = null; // TODO: Implement WebSocket daemon integration
   private isInitialized = false;
   private config: DaemonControllerConfig = {};
@@ -68,6 +70,11 @@ export class BrowserDaemonController {
       await this.initializeConsoleDaemon();
     }
 
+    // Initialize command daemon if enabled
+    if (this.config.enableCommandDaemon) {
+      await this.initializeCommandDaemon();
+    }
+
     // Start daemon manager
     // await this.daemonManager.start(); // TODO: Implement start method in BrowserDaemonManager
 
@@ -95,6 +102,25 @@ export class BrowserDaemonController {
   }
 
   /**
+   * Initialize command daemon
+   */
+  private async initializeCommandDaemon(): Promise<void> {
+    try {
+      console.log('🎯 Initializing Command Daemon...');
+      
+      // Command daemon is already a singleton, just mark as enabled
+      this.commandDaemonEnabled = true;
+      
+      console.log('✅ Command Daemon enabled');
+    } catch (error) {
+      console.error('❌ Failed to initialize Command Daemon:', error);
+      console.warn('⚠️ Falling back to legacy command implementation');
+      this.commandDaemonEnabled = false;
+      this.config.enableCommandDaemon = false;
+    }
+  }
+
+  /**
    * Get the number of active daemons
    */
   private getActiveDaemonCount(): number {
@@ -106,6 +132,13 @@ export class BrowserDaemonController {
    */
   isConsoleDaemonActive(): boolean {
     return this.config.enableConsoleDaemon === true && this.consoleDaemon !== null;
+  }
+
+  /**
+   * Check if command daemon is active
+   */
+  isCommandDaemonActive(): boolean {
+    return this.config.enableCommandDaemon === true && this.commandDaemonEnabled === true;
   }
 
   /**
@@ -137,6 +170,12 @@ export class BrowserDaemonController {
       );
     }
 
+    // Set session for command daemon
+    if (this.isCommandDaemonActive()) {
+      commandDaemon.setSessionId(sessionId);
+      promises.push(Promise.resolve()); // Synchronous operation, but add to promise count
+    }
+
     // Add other daemons as they're implemented...
 
     await Promise.all(promises);
@@ -165,6 +204,41 @@ export class BrowserDaemonController {
     }
     
     return false; // Use legacy implementation
+  }
+
+  /**
+   * Route command execution to appropriate implementation
+   */
+  async executeCommand(command: string, params: any = {}): Promise<any> {
+    if (this.isCommandDaemonActive()) {
+      try {
+        return await commandDaemon.execute(command, params);
+      } catch (error) {
+        console.warn('Command daemon execution failed, falling back to legacy:', error);
+        throw error; // Re-throw for legacy handling
+      }
+    }
+    
+    throw new Error('Command daemon not active - use legacy implementation');
+  }
+
+  /**
+   * Initialize command daemon with WebSocket connection
+   */
+  initializeCommandDaemonConnection(ws: WebSocket, sessionId?: string, clientId?: string): void {
+    if (this.isCommandDaemonActive()) {
+      commandDaemon.initialize(ws, sessionId, clientId);
+    }
+  }
+
+  /**
+   * Handle command response messages
+   */
+  handleCommandResponse(message: any): boolean {
+    if (this.isCommandDaemonActive()) {
+      return commandDaemon.handleCommandResponse(message);
+    }
+    return false;
   }
 
   /**
