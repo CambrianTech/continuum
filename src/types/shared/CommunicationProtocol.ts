@@ -49,33 +49,10 @@ export interface BaseResponse {
  * WebSocket connection message types
  * Shared between WebSocketDaemon (server) and BrowserWebSocketDaemon (client)
  */
-export type WebSocketMessageType = 
-  // Connection lifecycle
-  | 'client_init'
-  | 'connection_confirmed'
-  | 'connection_heartbeat'
-  | 'connection_close'
-  
-  // Command execution
-  | 'execute_command'
-  | 'command_response' 
-  | 'command_error'
-  | 'command_timeout'
-  
-  // Session management
-  | 'session_ready'
-  | 'session_ended'
-  | 'session_error'
-  
-  // Console forwarding
-  | 'console_log'
-  | 'console_batch'
-  | 'console_flush'
-  
-  // System events
-  | 'system_health'
-  | 'system_error'
-  | 'system_shutdown';
+// Import shared event enums - single source of truth!
+import { WebSocketEvent } from './EventTypes';
+
+export type WebSocketMessageType = WebSocketEvent;
 
 /**
  * Client initialization message
@@ -268,13 +245,8 @@ export class ProtocolValidator {
    * Validate WebSocket message type
    */
   static isValidWebSocketMessageType(type: string): type is WebSocketMessageType {
-    const validTypes: WebSocketMessageType[] = [
-      'client_init', 'connection_confirmed', 'connection_heartbeat', 'connection_close',
-      'execute_command', 'command_response', 'command_error', 'command_timeout',
-      'session_ready', 'session_ended', 'session_error',
-      'console_log', 'console_batch', 'console_flush',
-      'system_health', 'system_error', 'system_shutdown'
-    ];
+    // Use the shared enum values - single source of truth!
+    const validTypes: WebSocketMessageType[] = Object.values(WebSocketEvent);
     return validTypes.includes(type as WebSocketMessageType);
   }
 
@@ -331,16 +303,22 @@ export class ProtocolValidator {
     errorType: string = 'unknown',
     context?: any
   ): BaseResponse {
-    return {
+    const response: BaseResponse = {
       success: false,
       timestamp: new Date().toISOString(),
-      requestId,
       error,
       data: {
         errorType,
         context
       }
     };
+    
+    // Only assign requestId if it's defined (exactOptionalPropertyTypes compatibility)
+    if (requestId !== undefined) {
+      response.requestId = requestId;
+    }
+    
+    return response;
   }
 
   /**
@@ -351,13 +329,21 @@ export class ProtocolValidator {
     requestId?: string, 
     metadata?: any
   ): BaseResponse {
-    return {
+    const response: BaseResponse = {
       success: true,
       timestamp: new Date().toISOString(),
-      requestId,
-      data,
-      metadata
+      data
     };
+    
+    // Only assign optional properties if they're defined (exactOptionalPropertyTypes compatibility)
+    if (requestId !== undefined) {
+      response.requestId = requestId;
+    }
+    if (metadata !== undefined) {
+      response.metadata = metadata;
+    }
+    
+    return response;
   }
 }
 
@@ -383,22 +369,5 @@ export const PROTOCOL_DEFAULTS = {
   compressionThreshold: 1024,   // Compress messages > 1KB
 } as const;
 
-/**
- * Export commonly used types for easy importing
- */
-export type {
-  BaseMessage,
-  BaseResponse,
-  WebSocketMessageType,
-  ConnectionState,
-  SessionType,
-  ClientInitMessage,
-  ConnectionConfirmedResponse,
-  ExecuteCommandMessage,
-  CommandResponse,
-  CommandError,
-  SessionReadyMessage,
-  ConsoleLogMessage,
-  HeartbeatMessage,
-  SystemHealthMessage
-};
+// All types are already exported above where they're defined.
+// No need for duplicate export statements - they cause TS2484 conflicts.

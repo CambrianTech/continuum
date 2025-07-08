@@ -51,6 +51,9 @@ ${imports}
 // Smart Asset Manifest - Only lists files that actually exist (Zero 404s!)
 export const WIDGET_ASSETS = ${JSON.stringify(assetManifest, null, 2)};
 
+// Make WIDGET_ASSETS globally available for widgets
+window.WIDGET_ASSETS = WIDGET_ASSETS;
+
 console.log('🎨 Widget Discovery: ${widgets.length} widgets registered');
 console.log('📁 Asset Manifest: Zero 404s guaranteed!', WIDGET_ASSETS);
 `;
