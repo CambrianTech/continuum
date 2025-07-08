@@ -228,5 +228,5 @@ export class AllWidgetsTestRunner {
   }
 }
 
-// Named export only to avoid confusion
-// export default AllWidgetsTestRunner;
+// Default export for compatibility
+export default AllWidgetsTestRunner;

@@ -2,7 +2,7 @@
   "name": "renderer-core",
   "version": "1.0.0",
   "description": "renderer core for Continuum",
-  "main": "RendererCore.ts",
+  "main": "RendererDaemon.ts",
   "type": "module",
   "continuum": {
     "type": "daemon",
