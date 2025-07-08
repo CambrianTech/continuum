@@ -18,6 +18,7 @@
  */
 
 import packageJson from '../../package.json';
+import { browserDaemonController } from './browser/BrowserDaemonController';
 
 interface ContinuumAPI {
   readonly version: string;
@@ -50,10 +51,32 @@ class ContinuumBrowserAPI implements ContinuumAPI {
 
   constructor() {
     this.version = packageJson.version;
-    // Don't use console.log before setting up capture
-    this.setupConsoleErrorCapture();
-    // Now we can use console.log safely
-    console.log(`🌐 Continuum Browser API v${this.version}: Initializing...`);
+    // Initialize console capture based on daemon system (async)
+    this.initializeConsoleCapture().then(() => {
+      console.log(`🌐 Continuum Browser API v${this.version}: Initialization complete`);
+    }).catch(error => {
+      console.error(`❌ Continuum Browser API initialization failed:`, error);
+      // Fall back to legacy implementation
+      this.setupConsoleErrorCapture();
+    });
+  }
+
+  /**
+   * Initialize console capture - choose between daemon or legacy implementation
+   */
+  private async initializeConsoleCapture(): Promise<void> {
+    // Initialize daemon controller first
+    await browserDaemonController.initialize();
+    
+    if (browserDaemonController.isConsoleDaemonActive()) {
+      console.log('📝 Using modular console daemon for capture');
+      // Console capture is handled by the daemon
+      return;
+    } else {
+      console.log('📝 Using legacy console capture implementation');
+      // Fall back to legacy implementation
+      this.setupConsoleErrorCapture();
+    }
   }
 
   private setupConsoleErrorCapture(): void {
@@ -156,6 +179,25 @@ class ContinuumBrowserAPI implements ContinuumAPI {
   }
 
   private forwardConsoleLog(type: string, args: any[]): void {
+    try {
+      // Check if console daemon is active and should handle this
+      if (browserDaemonController.isConsoleDaemonActive()) {
+        // Route through daemon controller
+        browserDaemonController.captureConsole(type, args).catch(error => {
+          console.warn('Daemon console capture failed, using legacy fallback:', error);
+          this.legacyForwardConsoleLog(type, args);
+        });
+        return;
+      }
+      
+      // Legacy implementation
+      this.legacyForwardConsoleLog(type, args);
+    } catch (error) {
+      // Fail silently to avoid error loops
+    }
+  }
+
+  private legacyForwardConsoleLog(type: string, args: any[]): void {
     try {
       // Always capture console logs, queue if not connected
       if (true) {  // Remove connection check - we'll queue messages if needed
@@ -817,6 +859,13 @@ class ContinuumBrowserAPI implements ContinuumAPI {
         this.sessionId = message.data?.sessionId;
         console.log(`🌐 Continuum API: Session ID assigned: ${this.sessionId}`);
         console.log(`🔌 Session type: ${message.data?.devtools ? 'DevTools enabled' : 'Standard'}`);
+        
+        // Update session ID in daemon controller
+        if (browserDaemonController.hasActiveDaemons() && this.sessionId) {
+          browserDaemonController.setSessionId(this.sessionId).catch(error => {
+            console.warn('Failed to set session ID in daemon controller:', error);
+          });
+        }
         
         // Discover and log available commands for both client and server visibility
         this.discoverAndLogAvailableCommands();
