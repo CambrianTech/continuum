@@ -99,7 +99,7 @@ export class SidebarWidget extends BaseWidget {
                 title: tab.title,
                 panelName: tab.panelName,
                 dataKey: tab.panelName,
-                selected: tab.panelName === selectedPanel
+                active: tab.panelName === selectedPanel
             }));
             
             sidebarTabs.tabs = tabContent;
@@ -113,7 +113,7 @@ export class SidebarWidget extends BaseWidget {
             const panelContent = Object.keys(this.sidebarConfig.sections).map(panelName => ({
                 panelName,
                 widgets: this.sidebarConfig.sections[panelName].widgets,
-                selected: panelName === selectedPanel
+                active: panelName === selectedPanel
             }));
             
             sidebarPanel.panels = panelContent;
@@ -131,7 +131,7 @@ export class SidebarWidget extends BaseWidget {
                 title: tab.title,
                 panelName: tab.panelName,
                 dataKey: tab.panelName, // Use panelName as dataKey
-                selected: tab.panelName === this.sidebarConfig.defaultTab
+                active: tab.panelName === this.sidebarConfig.defaultTab
             }));
             
             // Set tabs property - this will auto-trigger render
@@ -152,7 +152,7 @@ export class SidebarWidget extends BaseWidget {
             const panelContent = Object.keys(this.sidebarConfig.sections).map(panelName => ({
                 panelName,
                 widgets: this.sidebarConfig.sections[panelName].widgets,
-                selected: panelName === this.sidebarConfig.defaultTab
+                active: panelName === this.sidebarConfig.defaultTab
             }));
             
             // Set panels property - this will auto-trigger render
