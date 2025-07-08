@@ -362,7 +362,6 @@ export class WidgetFallbackRegistry {
           align-items: center;
           gap: 8px;
           padding-bottom: 8px;
-          border-bottom: 1px solid #ff6b6b33;
         }
         
         .sidebar-icon {

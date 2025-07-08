@@ -1,0 +1,14 @@
+{
+  "name": "sidebar-panel",
+  "version": "1.0.0",
+  "description": "SidebarPanel widget for dynamic content rendering",
+  "main": "SidebarPanel.ts",
+  "continuum": {
+    "type": "widget",
+    "widget": {
+      "name": "SidebarPanel",
+      "category": "layout",
+      "dependencies": ["BaseWidget"]
+    }
+  }
+}
