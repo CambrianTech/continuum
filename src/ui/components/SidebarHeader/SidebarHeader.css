@@ -1,7 +1,7 @@
 /* SidebarHeader Widget Styles */
 .logo {
     padding: 16px;
-    border-bottom: 1px solid #2a2f3a;
+    border-bottom: 1px solid var(--border-primary);
 }
 
 .logo-row {
@@ -14,13 +14,13 @@
 .logo-text {
     font-size: 24px;
     font-weight: 600;
-    color: #00d4ff;
-    text-shadow: 0 0 10px rgba(0, 212, 255, 0.3);
+    color: var(--continuum-blue);
+    text-shadow: 0 0 10px var(--continuum-blue-shadow);
 }
 
 .subtitle {
     font-size: 12px;
-    color: #8b949e;
+    color: var(--text-secondary);
     margin-left: 44px;
 }
 

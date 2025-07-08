@@ -4,14 +4,26 @@
  */
 import { BaseWidget } from '../shared/BaseWidget';
 
-export interface SidebarTab {
+export interface TabContent {
     readonly title: string;
     readonly panelName: string;
+    readonly dataKey: string;
+    readonly selected?: boolean;
 }
 
 export class SidebarTabs extends BaseWidget {
-    private tabs: SidebarTab[] = [];
+    private _tabs: TabContent[] = [];
     private activeTab: string = 'general';
+
+    public set tabs(newTabs: TabContent[]) {
+        this._tabs = newTabs;
+        // Auto-render when tabs are set
+        this.render();
+    }
+
+    public get tabs(): TabContent[] {
+        return this._tabs;
+    }
 
     constructor() {
         super();
@@ -21,28 +33,8 @@ export class SidebarTabs extends BaseWidget {
     }
 
     protected async initializeWidget(): Promise<void> {
-        await this.loadTabsFromConfig();
         this.render();
         console.log('🔧 SidebarTabs widget ready');
-    }
-
-    private async loadTabsFromConfig(): Promise<void> {
-        try {
-            const configPath = '/src/ui/components/Sidebar/sidebar-config.json';
-            const response = await fetch(configPath);
-            if (response.ok) {
-                const config = await response.json();
-                this.tabs = config.tabs || [];
-                this.activeTab = config.defaultTab || 'general';
-                console.log('📑 SidebarTabs loaded tabs from config:', this.tabs);
-                // Re-render now that we have the tabs data
-                this.render();
-            } else {
-                console.warn('Failed to load sidebar config');
-            }
-        } catch (error) {
-            console.error('Error loading sidebar config:', error);
-        }
     }
 
     protected setupEventListeners(): void {
@@ -81,12 +73,13 @@ export class SidebarTabs extends BaseWidget {
         });
     }
 
-    private emitTabChange(tab: SidebarTab): void {
+    private emitTabChange(tab: TabContent): void {
         this.dispatchEvent(new CustomEvent('tab-changed', {
             detail: { 
                 tab,
                 panelName: tab.panelName,
-                title: tab.title
+                title: tab.title,
+                dataKey: tab.dataKey
             },
             bubbles: true
         }));
@@ -94,15 +87,7 @@ export class SidebarTabs extends BaseWidget {
         console.log(`🔄 Tab switched to: ${tab.title} (${tab.panelName})`);
     }
 
-    public setTabs(tabs: SidebarTab[]): void {
-        console.log('📑 SidebarTabs.setTabs called with:', tabs);
-        this.tabs = tabs;
-        console.log('📑 SidebarTabs.tabs now contains:', this.tabs.length, 'tabs');
-        this.render();
-        console.log('📑 SidebarTabs rendered');
-    }
-
-    public getActiveTab(): SidebarTab | undefined {
+    public getActiveTab(): TabContent | undefined {
         return this.tabs.find(t => t.panelName === this.activeTab);
     }
 

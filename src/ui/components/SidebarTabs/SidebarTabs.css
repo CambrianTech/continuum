@@ -1,34 +1,31 @@
 /* SidebarTabs Widget Styles */
 .room-tabs {
     display: flex;
-    border-bottom: 1px solid #2a2f3a;
-    padding: 0 16px;
+    padding: 0 20px;
     gap: 8px;
+    margin-bottom: 20px;
 }
 
 .room-tab {
-    padding: 12px 16px;
+    padding: 10px 16px;
     cursor: pointer;
-    border-radius: 8px 8px 0 0;
+    border-radius: 6px 6px 0 0;
     font-size: 14px;
     font-weight: 500;
-    color: #8b949e;
     transition: all 0.2s ease;
-    border-bottom: 2px solid transparent;
+    /* Inactive state */
+    background: var(--surface-primary);
+    color: var(--text-secondary);
 }
 
-.room-tab:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #e0e6ed;
+.room-tab:hover:not(.active) {
+    background: var(--surface-elevated-hover);
+    color: var(--text-primary);
 }
 
 .room-tab.active {
-    background: #0969da;
+    /* Active state - Continuum blue */
+    background: var(--brand-primary);
     color: #ffffff;
-    border-bottom-color: #0969da;
-    box-shadow: 0 2px 8px rgba(9, 105, 218, 0.3);
-}
-
-.room-tab.active:hover {
-    background: #0860ca;
+    box-shadow: 0 2px 8px var(--brand-shadow);
 }
