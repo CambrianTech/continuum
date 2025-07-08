@@ -25,9 +25,6 @@ export class ActiveProjectsWidget extends BaseWidget {
     this.widgetTitle = 'Active Projects';
   }
 
-  static getOwnCSS(): ReadonlyArray<string> {
-    return ['ActiveProjectsWidget.css'];
-  }
 
   async initializeWidget(): Promise<void> {
     await this.loadProjects();

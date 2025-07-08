@@ -23,9 +23,6 @@ interface Persona {
 }
 
 export class SavedPersonasWidget extends BaseWidget {
-  static getOwnCSS(): string[] {
-    return ['SavedPersonasWidget.css'];
-  }
   private personas: Persona[] = [];
   private selectedPersona: Persona | null = null;
   private dragState: any = null;

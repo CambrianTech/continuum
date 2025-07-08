@@ -6,9 +6,7 @@
 import { BaseWidget } from '../shared/BaseWidget';
 
 export class VersionWidget extends BaseWidget {
-  static getOwnCSS(): string[] {
-    return ['VersionWidget.css'];
-  }
+  
   private currentVersion: string = 'Loading...';
   private lastUpdate: Date = new Date();
 

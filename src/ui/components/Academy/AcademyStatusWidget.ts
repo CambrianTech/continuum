@@ -66,10 +66,6 @@ export class AcademyStatusWidget extends BaseWidget {
     }
   }
 
-  static getOwnCSS(): string[] {
-    return ['AcademyStatusWidget.css'];
-  }
-
   constructor() {
     super();
     this.widgetName = 'Academy Status';

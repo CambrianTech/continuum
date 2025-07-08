@@ -16,9 +16,7 @@ interface Persona {
 }
 
 export class SavedPersonasWidget extends BaseWidget {
-  static getOwnCSS(): string[] {
-    return ['SavedPersonas.css'];
-  }
+
   private personas: Persona[] = [];
   private selectedPersona: Persona | null = null;
 

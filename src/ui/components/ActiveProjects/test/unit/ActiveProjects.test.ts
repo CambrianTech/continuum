@@ -58,10 +58,6 @@ describe('ActiveProjects Widget', () => {
       expect(widget.widgetIcon).toBe('📋');
       expect(widget.widgetTitle).toBe('Active Projects');
     });
-
-    it('should have static CSS declaration', () => {
-      expect(ActiveProjectsWidget.getOwnCSS()).toEqual(['ActiveProjects.css']);
-    });
   });
 
   describe('Mock Data Loading', () => {

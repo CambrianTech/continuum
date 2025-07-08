@@ -12,9 +12,7 @@ interface StatusMessage {
 }
 
 export class ContinuonWidget extends BaseWidget {
-  static getOwnCSS(): string[] {
-    return ['ContinuonWidget.css'];
-  }
+
   private currentStatus: 'red' | 'yellow' | 'green' = 'red';
   private currentEmotion: string | null = null;
   private statusFeed: StatusMessage[] = [];

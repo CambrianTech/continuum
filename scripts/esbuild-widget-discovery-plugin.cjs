@@ -191,6 +191,8 @@ async function generateAssetManifest(widgets) {
       // Only include widget in manifest if it has assets
       // Use the class name as the key (widget.name) so widgets can find their assets
       if (widgetAssets.css.length > 0 || widgetAssets.html.length > 0 || widgetAssets.js.length > 0) {
+        // Include directory name for correct basePath resolution
+        widgetAssets.directoryName = widget.directoryName;
         manifest[widget.name] = widgetAssets;
       }
       

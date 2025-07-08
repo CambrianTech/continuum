@@ -38,6 +38,7 @@ export class SidebarPanelWidget extends BaseWidget {
         return this._activePanel;
     }
 
+
     constructor() {
         super();
         this.widgetName = 'SidebarPanelWidget';

@@ -42,7 +42,7 @@ export class UniversalWidgetAssetTester {
     // Test HTML assets
     const allFiles = await WidgetClass.getWidgetFiles();
     const htmlAssets = allFiles.filter(file => file.endsWith('.html'));
-    const basePath = (WidgetClass as typeof BaseWidget).getBasePath();
+    const basePath = WidgetClass.basePath;
     for (const htmlFile of htmlAssets) {
       const htmlPath = `${basePath}/${htmlFile}`;
       const result = await this.testAsset(WidgetClass.name, 'html', htmlPath);
