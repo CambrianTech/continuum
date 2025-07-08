@@ -836,7 +836,7 @@ class ContinuumBrowserAPI implements ContinuumAPI {
 
       // Handle command responses
       if (message.type === 'execute_command_response') {
-        this.emit('command_response', message.data);
+        this.emit('command_response', message);
         return;
       }
 
