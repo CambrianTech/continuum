@@ -66,7 +66,6 @@ describe('AcademyStatusWidget', () => {
 
     test('should declare correct CSS and HTML paths', () => {
       expect(AcademyStatusWidget.getBasePath()).toBe('/src/ui/components/Academy');
-      expect(AcademyStatusWidget.getOwnCSS()).toEqual(['AcademyStatusWidget.css']);
     });
   });
 

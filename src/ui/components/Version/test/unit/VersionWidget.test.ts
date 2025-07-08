@@ -72,10 +72,6 @@ describe('VersionWidget', () => {
       expect(widget.widgetTitle).toBe('System Version');
     });
 
-    it('should have static CSS declaration', () => {
-      expect(VersionWidget.getOwnCSS()).toEqual(['VersionWidget.css']);
-    });
-
     it('should initialize with default values', () => {
       const widget = new VersionWidget();
       

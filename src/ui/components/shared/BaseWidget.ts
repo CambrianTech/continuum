@@ -6,7 +6,7 @@
 // Smart asset manifest (zero 404s!) - globally available via esbuild plugin
 declare global {
   interface Window {
-    WIDGET_ASSETS: Record<string, {css: string[], html: string[], js: string[]}>;
+    WIDGET_ASSETS: Record<string, {css: string[], html: string[], js: string[], directoryName?: string}>;
   }
 }
 
@@ -24,59 +24,39 @@ export abstract class BaseWidget extends HTMLElement {
   protected isCollapsed: boolean = false;
 
   // Smart defaults - minimal requirements from subclasses
-  public static getBasePath(): string {
-    // Auto-derive from class name: ChatWidget -> /src/ui/components/Chat
-    // Handle TypeScript compilation artifacts like _PersonaWidget -> PersonaWidget
-    const rawName = this.name.replace(/^_/, ''); // Remove leading underscore
-    const className = rawName.replace('Widget', '');
-    return `/src/ui/components/${className}`;
-  }
-  
-  protected static getOwnCSS(): ReadonlyArray<string> {
-    // DISCOVERY-FIRST: Auto-discover ALL CSS files in widget directory
-    // Can be overridden for performance or specific control
-    return this.discoverAllCSS();
-  }
-  
-  protected static getOwnHTML(): ReadonlyArray<string> {
-    // DISCOVERY-FIRST: Auto-discover ALL HTML files in widget directory  
-    // Can be overridden for specific template control
-    return this.discoverAllHTML();
-  }
   
   /**
-   * Discovery method: Find all CSS files in widget directory
-   * Override this method for custom discovery logic
+   * Widget base path - automagic from build-time directory mapping
    */
-  protected static discoverAllCSS(): ReadonlyArray<string> {
-    // Use package.json files array for discovery
-    return this.getAssetsByExtension('.css');
-  }
-  
-  /**
-   * Discovery method: Find all HTML files in widget directory
-   * Override this method for custom discovery logic
-   */
-  protected static discoverAllHTML(): ReadonlyArray<string> {
-    // Use package.json files array for discovery
-    return this.getAssetsByExtension('.html');
-  }
-  
-  /**
-   * Get assets by file extension from package.json files array
-   * Falls back to convention if package.json not available
-   */
-  private static getAssetsByExtension(extension: string): ReadonlyArray<string> {
-    // For now, use the package.json discovery we already have
-    // This is synchronous fallback - async discovery happens in loadCSS()
-    const cleanName = this.name.replace(/^_/, ''); // Remove TypeScript compilation underscore
-    if (extension === '.css') {
-      return [`${cleanName}.css`]; // Convention fallback
-    } else if (extension === '.html') {
-      return [`${cleanName}.html`]; // Convention fallback
+  public static get basePath(): string {
+    const widgetName = this.name.replace(/^_/, '');
+    
+    // Check if we have build-time directory mapping available
+    if (typeof window !== 'undefined' && window.WIDGET_ASSETS) {
+      const widgetInfo = window.WIDGET_ASSETS[widgetName];
+      if (widgetInfo && widgetInfo.directoryName) {
+        return `/src/ui/components/${widgetInfo.directoryName}`;
+      }
     }
-    return [];
+    
+    // Fallback: try to map common class name patterns to directory names
+    const directoryMap: Record<string, string> = {
+      'ChatWidget': 'Chat',
+      'SidebarWidget': 'Sidebar', 
+      'PersonaWidget': 'Persona',
+      'VersionWidget': 'Version',
+      'ContinuonWidget': 'Continuon',
+      'ActiveProjectsWidget': 'ActiveProjects',
+      'SavedPersonasWidget': 'SavedPersonas',
+      'UserSelectorWidget': 'UserSelector'
+    };
+    
+    const directoryName = directoryMap[widgetName] || widgetName;
+    return `/src/ui/components/${directoryName}`;
   }
+  
+  // CSS and HTML loading is now handled directly in loadCSS() and loadHTMLTemplatesOrFallback()
+  // using package.json files array - no complex discovery methods needed
   
   /**
    * Get widget files from package.json - replaces manual CSS/HTML declarations
@@ -84,8 +64,7 @@ export abstract class BaseWidget extends HTMLElement {
    */
   static async getWidgetFiles(): Promise<string[]> {
     try {
-      const basePath = this.getBasePath().replace('/dist/', '/src/'); // Read from source
-      const packagePath = `${basePath}/package.json`;
+      const packagePath = `${this.basePath}/package.json`;
       
       console.log(`📦 ${this.name}: Fetching package.json from ${packagePath}`);
       const response = await fetch(packagePath);
@@ -109,7 +88,7 @@ export abstract class BaseWidget extends HTMLElement {
   static async getWidgetAssets(): Promise<string[]> {
     const widgetFiles = await this.getWidgetFiles();
     const assets = widgetFiles.filter(file => !file.endsWith('.ts')); // Serve everything except TypeScript
-    return assets.map(file => `${this.getBasePath()}/${file}`);
+    return assets.map(file => `${this.basePath}/${file}`);
   }
 
   
@@ -119,11 +98,10 @@ export abstract class BaseWidget extends HTMLElement {
   protected async loadHTMLTemplatesOrFallback(): Promise<string> {
     try {
       const constructor = this.constructor as typeof BaseWidget;
-      const widgetName = constructor.name.replace(/^_/, ''); // Handle TypeScript compilation artifacts
-      const basePath = constructor.getBasePath();
+      const basePath = constructor.basePath;
       
       // SMART MANIFEST: Only load HTML files that actually exist (Zero 404s!)
-      const widgetAssets = window.WIDGET_ASSETS?.[widgetName];
+      const widgetAssets = window.WIDGET_ASSETS?.[constructor.name.replace(/^_/, '')];
       
       if (widgetAssets && widgetAssets.html.length > 0) {
         console.log(`📁 ${constructor.name}: Found ${widgetAssets.html.length} HTML files in manifest`);
@@ -171,7 +149,7 @@ export abstract class BaseWidget extends HTMLElement {
     try {
       const constructor = this.constructor as typeof BaseWidget;
       const htmlPromises = htmlFiles.map(file => 
-        fetch(`${constructor.getBasePath()}/${file}`).then(r => r.text())
+        fetch(`${constructor.basePath}/${file}`).then(r => r.text())
       );
       
       const htmlContents = await Promise.all(htmlPromises);
@@ -215,7 +193,7 @@ export abstract class BaseWidget extends HTMLElement {
    * Get widget-relative asset path
    */
   protected getAssetPath(relativePath: string): string {
-    const basePath = (this.constructor as typeof BaseWidget).getBasePath();
+    const basePath = (this.constructor as typeof BaseWidget).basePath;
     return `${basePath}/${relativePath}`;
   }
 
@@ -279,24 +257,22 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   /**
-   * Load CSS for the widget - uses declarative getOwnCSS() method only
+   * Load CSS for the widget
    */
   async loadCSS(): Promise<string> {
     const constructor = this.constructor as typeof BaseWidget;
     
     try {
       // SMART MANIFEST: Only load CSS files that actually exist (Zero 404s!)
-      const widgetName = constructor.name.replace(/^_/, ''); // Handle TypeScript compilation artifacts
-      const basePath = constructor.getBasePath();
       const baseCSS = '/src/ui/components/shared/BaseWidget.css';
       
       // Get CSS files from build-time manifest
-      const widgetAssets = window.WIDGET_ASSETS?.[widgetName];
+      const widgetAssets = window.WIDGET_ASSETS?.[constructor.name.replace(/^_/, '')];
       const cssFiles = [baseCSS];
       
       if (widgetAssets && widgetAssets.css.length > 0) {
         console.log(`📁 ${constructor.name}: Found ${widgetAssets.css.length} CSS files in manifest (Zero 404s!)`);
-        const widgetCSSFiles = widgetAssets.css.map(file => `${basePath}/${file}`);
+        const widgetCSSFiles = widgetAssets.css.map(file => `${constructor.basePath}/${file}`);
         cssFiles.push(...widgetCSSFiles);
       } else {
         console.log(`📁 ${constructor.name}: No CSS files in manifest - using BaseWidget only`);

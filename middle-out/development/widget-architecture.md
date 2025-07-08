@@ -81,10 +81,6 @@ export abstract class BaseWidget extends HTMLElement {
     return `/src/ui/components/${className}`;
   }
   
-  protected static getOwnCSS(): ReadonlyArray<string> {
-    return [`${this.name}.css`]; // ChatWidget -> ['ChatWidget.css']
-  }
-  
   // WORKING DEFAULTS - override only if needed
   protected renderContent(): string {
     return `<div class="widget-content">${this.widgetTitle} is ready</div>`;
@@ -456,7 +452,6 @@ npm run test:compliance
 
 **What tests were NOT checking:**
 - ❌ `getBasePath()` method works
-- ❌ `getOwnCSS()` method works
 - ❌ CSS files actually load
 - ❌ Widget renders without errors
 
