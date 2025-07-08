@@ -15,9 +15,6 @@ interface Project {
 }
 
 export class ActiveProjectsWidget extends BaseWidget {
-  static getOwnCSS(): string[] {
-    return ['ActiveProjects.css'];
-  }
   private projects: Project[] = [];
   private selectedProject: Project | null = null;
 
@@ -26,6 +23,10 @@ export class ActiveProjectsWidget extends BaseWidget {
     this.widgetName = 'ActiveProjects';
     this.widgetIcon = '📋';
     this.widgetTitle = 'Active Projects';
+  }
+
+  static getOwnCSS(): ReadonlyArray<string> {
+    return ['ActiveProjectsWidget.css'];
   }
 
   async initializeWidget(): Promise<void> {
@@ -146,8 +147,8 @@ export class ActiveProjectsWidget extends BaseWidget {
         <div class="project-details">
           <div class="last-activity">${project.lastActivity}</div>
           <div class="assigned-agents">
-            ${project.assignedAgents.slice(0, 2).map(agent => `<span class="agent-tag">${agent}</span>`).join('')}
-            ${project.assignedAgents.length > 2 ? `<span class="agent-count">+${project.assignedAgents.length - 2}</span>` : ''}
+            ${(project.assignedAgents || []).slice(0, 2).map(agent => `<span class="agent-tag">${agent}</span>`).join('')}
+            ${(project.assignedAgents || []).length > 2 ? `<span class="agent-count">+${(project.assignedAgents || []).length - 2}</span>` : ''}
           </div>
         </div>
       </div>

@@ -25,8 +25,13 @@
             height: 100vh;
         }
         
+        continuum-sidebar {
+            flex: 0 0 auto; /* Don't shrink, don't grow, use intrinsic size */
+            height: 100vh;
+        }
+        
         chat-widget {
-            flex: 1;
+            flex: 1; /* Take remaining space */
             height: 100vh;
         }
     </style>
@@ -38,16 +43,7 @@
         <chat-widget></chat-widget>
     </div>
     
-    <!-- Load widget modules -->
-    <script type="module">
-        // Import widget modules to register custom elements
-        import('/src/ui/components/Sidebar/SidebarWidget.js').catch(err => 
-            console.error('Failed to load SidebarWidget:', err)
-        );
-        import('/src/ui/components/Chat/ChatWidget.js').catch(err => 
-            console.error('Failed to load ChatWidget:', err)
-        );
-    </script>
+    <!-- Widget modules bundled with continuum-browser.js - no separate loading needed -->
     
     <!-- All scripts injected dynamically by RendererDaemon -->
 </body>

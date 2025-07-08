@@ -4,7 +4,7 @@
     "module": "ES2020", 
     "moduleResolution": "node",
     "outDir": "./dist/ui",
-    "rootDir": "./src/ui",
+    "rootDir": "./src",
     "declaration": false,
     "sourceMap": true,
     "skipLibCheck": true,
@@ -16,7 +16,8 @@
     "removeComments": false
   },
   "include": [
-    "src/ui/components/**/*.ts"
+    "src/ui/components/**/*.ts",
+    "src/types/shared/**/*.ts"
   ],
   "exclude": [
     "src/ui/**/*.test.ts",

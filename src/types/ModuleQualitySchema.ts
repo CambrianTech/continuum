@@ -613,32 +613,32 @@ export function mergeWithDefaults(
     },
     tests: {
       required: config.tests?.required ?? defaults.tests!.required,
-      coverage: config.tests?.coverage ?? defaults.tests!.coverage,
-      types: config.tests?.types ?? defaults.tests!.types,
-      mustPass: config.tests?.mustPass ?? defaults.tests!.mustPass
+      ...(config.tests?.coverage !== undefined && { coverage: config.tests.coverage }),
+      ...(config.tests?.types !== undefined && { types: config.tests.types }),
+      ...(config.tests?.mustPass !== undefined && { mustPass: config.tests.mustPass })
     },
     compliance: {
       required: config.compliance?.required ?? defaults.compliance!.required,
-      minimumScore: config.compliance?.minimumScore ?? defaults.compliance!.minimumScore,
-      structure: config.compliance?.structure ?? defaults.compliance!.structure
+      ...(config.compliance?.minimumScore !== undefined && { minimumScore: config.compliance.minimumScore }),
+      ...(config.compliance?.structure !== undefined && { structure: config.compliance.structure })
     },
     documentation: {
       required: config.documentation?.required ?? defaults.documentation!.required,
-      files: config.documentation?.files ?? defaults.documentation!.files,
-      apiDocs: config.documentation?.apiDocs ?? defaults.documentation!.apiDocs,
-      examples: config.documentation?.examples ?? defaults.documentation!.examples
+      ...(config.documentation?.files !== undefined && { files: config.documentation.files }),
+      ...(config.documentation?.apiDocs !== undefined && { apiDocs: config.documentation.apiDocs }),
+      ...(config.documentation?.examples !== undefined && { examples: config.documentation.examples })
     },
     security: {
       auditRequired: config.security?.auditRequired ?? defaults.security!.auditRequired,
-      vulnerabilityScan: config.security?.vulnerabilityScan ?? defaults.security!.vulnerabilityScan,
-      secretsScan: config.security?.secretsScan ?? defaults.security!.secretsScan,
-      maxSeverity: config.security?.maxSeverity ?? defaults.security!.maxSeverity
+      ...(config.security?.vulnerabilityScan !== undefined && { vulnerabilityScan: config.security.vulnerabilityScan }),
+      ...(config.security?.secretsScan !== undefined && { secretsScan: config.security.secretsScan }),
+      ...(config.security?.maxSeverity !== undefined && { maxSeverity: config.security.maxSeverity })
     },
     performance: {
       required: config.performance?.required ?? defaults.performance!.required,
-      maxBuildTime: config.performance?.maxBuildTime ?? defaults.performance!.maxBuildTime,
-      maxBundleSize: config.performance?.maxBundleSize ?? defaults.performance!.maxBundleSize,
-      memoryLeakDetection: config.performance?.memoryLeakDetection ?? defaults.performance!.memoryLeakDetection
+      ...(config.performance?.maxBuildTime !== undefined && { maxBuildTime: config.performance.maxBuildTime }),
+      ...(config.performance?.maxBundleSize !== undefined && { maxBundleSize: config.performance.maxBundleSize }),
+      ...(config.performance?.memoryLeakDetection !== undefined && { memoryLeakDetection: config.performance.memoryLeakDetection })
     }
   };
 }

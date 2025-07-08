@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2396",
+  "version": "0.2.2432",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -15,7 +15,7 @@
     "prepare": "husky",
     "postinstall": "lerna run prepare",
     "compile": "npx tsc --noEmit --project .",
-    "build:browser-ts": "npm run clean:all && npm run version:bump && rm -f src/ui/continuum-browser.js* && esbuild src/ui/continuum-browser.ts --bundle --outfile=src/ui/continuum-browser.js --target=es2020 --format=esm --sourcemap --loader:.css=text",
+    "build:browser-ts": "npm run clean:all && npm run version:bump && rm -f src/ui/continuum-browser.js* && node scripts/build-browser.cjs",
     "build:ui-components": "tsc --project tsconfig.ui.json",
     "build:ui": "tsc --project tsconfig.ui.json",
     "dev:browser": "npm run build:browser-ts -- --watch",

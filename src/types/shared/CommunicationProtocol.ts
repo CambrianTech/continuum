@@ -25,6 +25,7 @@ export interface BaseMessage {
   requestId?: string;
   sessionId?: string | null;
   clientId?: string | null;
+  data?: unknown; // Optional data payload for message content
 }
 
 /**
@@ -285,9 +286,10 @@ export class ProtocolValidator {
       this.isValidBaseMessage(obj) &&
       obj.type === 'client_init' &&
       typeof obj.data === 'object' &&
-      typeof obj.data.userAgent === 'string' &&
-      typeof obj.data.url === 'string' &&
-      typeof obj.data.version === 'string'
+      obj.data !== null &&
+      typeof (obj.data as any).userAgent === 'string' &&
+      typeof (obj.data as any).url === 'string' &&
+      typeof (obj.data as any).version === 'string'
     );
   }
 
@@ -299,8 +301,9 @@ export class ProtocolValidator {
       this.isValidBaseMessage(obj) &&
       obj.type === 'execute_command' &&
       typeof obj.data === 'object' &&
-      typeof obj.data.command === 'string' &&
-      typeof obj.data.requestId === 'string'
+      obj.data !== null &&
+      typeof (obj.data as any).command === 'string' &&
+      typeof (obj.data as any).requestId === 'string'
     );
   }
 
@@ -312,9 +315,10 @@ export class ProtocolValidator {
       this.isValidBaseMessage(obj) &&
       obj.type === 'console_log' &&
       typeof obj.data === 'object' &&
-      typeof obj.data.level === 'string' &&
-      typeof obj.data.message === 'string' &&
-      Array.isArray(obj.data.args)
+      obj.data !== null &&
+      typeof (obj.data as any).level === 'string' &&
+      typeof (obj.data as any).message === 'string' &&
+      Array.isArray((obj.data as any).args)
     );
   }
 

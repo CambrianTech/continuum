@@ -50,12 +50,8 @@ export class BrowserLauncher {
       return config.type;
     }
 
-    // DevTools sessions require Chrome for best compatibility
-    if (config.devtools) {
-      return BrowserType.CHROME;
-    }
-
-    // Default to system default browser
+    // Default to system default browser - respect user preferences
+    // DevTools work in most modern browsers (Chrome, Firefox, Safari, Edge)
     return BrowserType.DEFAULT;
   }
 

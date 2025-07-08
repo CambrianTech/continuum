@@ -22,13 +22,6 @@ export class UserSelectorWidget extends BaseWidget {
   private searchQuery: string = '';
   private searchTimeout: number = 0;
 
-  static getBasePath(): string {
-    return '/src/ui/components/UserSelector';
-  }
-
-  static getOwnCSS(): string[] {
-    return ['UserSelector.css'];
-  }
 
   constructor() {
     super();
@@ -182,11 +175,7 @@ export class UserSelectorWidget extends BaseWidget {
   }
 
   setupEventListeners(): void {
-    // Setup action button listeners for chat/train buttons
-    const agentListContainer = this.shadowRoot?.querySelector('.agent-list');
-    if (agentListContainer) {
-      universalUserSystem.setupActionButtonListeners(agentListContainer as HTMLElement);
-    }
+    // TODO: Add action button listeners when universalUserSystem supports them
 
     // Agent selection
     this.shadowRoot.addEventListener('click', (e: Event) => {

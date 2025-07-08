@@ -396,10 +396,8 @@ export class ChatWidget extends BaseWidget {
    * Setup Universal User System - all users have same interface & privileges
    */
   private setupUniversalUserSystem(): void {
-    // Initialize AI model names in background - don't block widget loading
-    universalUserSystem.initializeAIModelNames().catch(error => {
-      console.warn(`💬 Chat: AI model initialization failed (non-blocking):`, error);
-    });
+    // TODO: Add AI model initialization when universalUserSystem supports it
+    console.log(`💬 Chat: Universal user system ready`);
     
     // Listen for user updates to refresh UI
     universalUserSystem.on('user:updated', () => {
