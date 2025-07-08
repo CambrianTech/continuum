@@ -51,13 +51,14 @@ export class BrowserFeatureFlags {
       return process.env.CONTINUUM_CONSOLE_DAEMON === 'true';
     }
     
-    // Start disabled - only enable for development testing
+    // Check for explicit local override first
     const localOverride = localStorage.getItem('continuum_console_daemon');
     if (localOverride !== null) {
       return localOverride === 'true';
     }
     
-    return false; // Default: use legacy implementation
+    // Default: disabled until issues are resolved
+    return false;
   }
 
   /**
@@ -92,7 +93,8 @@ export class BrowserFeatureFlags {
       return localOverride === 'true';
     }
     
-    return false; // Default: use legacy implementation
+    // Default: disabled until issues are resolved
+    return false;
   }
 
   /**
@@ -110,7 +112,8 @@ export class BrowserFeatureFlags {
       return localOverride === 'true';
     }
     
-    return false; // Default: use legacy implementation
+    // Default: disabled until issues are resolved
+    return false;
   }
 
   /**
@@ -249,6 +252,23 @@ export class BrowserFeatureFlags {
     
     localStorage.setItem('continuum_command_daemon', 'true');
     console.log('✅ Command daemon testing enabled - reload page to apply');
+  }
+
+  static enableWidgetDaemonTesting(): void {
+    // Handle Node.js environment for testing
+    if (typeof window === 'undefined') {
+      console.warn('enableWidgetDaemonTesting() not available in Node.js environment');
+      console.warn('Use environment variable instead: CONTINUUM_WIDGET_DAEMON=true');
+      return;
+    }
+    
+    if (!BrowserFeatureFlags.isDevelopment) {
+      console.warn('Widget daemon testing only available in development');
+      return;
+    }
+    
+    localStorage.setItem('continuum_widget_daemon', 'true');
+    console.log('✅ Widget daemon testing enabled - reload page to apply');
   }
 
   /**

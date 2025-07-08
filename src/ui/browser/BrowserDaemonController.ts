@@ -16,6 +16,7 @@
 import { BrowserDaemonManager } from './base/BrowserDaemonManager';
 import { BrowserConsoleDaemon } from './console/BrowserConsoleDaemon';
 import { commandDaemon } from './daemons/CommandDaemon';
+import { widgetDaemon } from './daemons/WidgetDaemon';
 // import { BrowserWebSocketDaemon } from './websocket/BrowserWebSocketDaemon'; // TODO: Implement WebSocket integration
 import { BrowserFeatureFlags } from './BrowserFeatureFlags';
 
@@ -32,6 +33,7 @@ export class BrowserDaemonController {
   private daemonManager: BrowserDaemonManager;
   private consoleDaemon: BrowserConsoleDaemon | null = null;
   private commandDaemonEnabled = false;
+  private widgetDaemonEnabled = false;
   // private _websocketDaemon: BrowserWebSocketDaemon | null = null; // TODO: Implement WebSocket daemon integration
   private isInitialized = false;
   private config: DaemonControllerConfig = {};
@@ -73,6 +75,11 @@ export class BrowserDaemonController {
     // Initialize command daemon if enabled
     if (this.config.enableCommandDaemon) {
       await this.initializeCommandDaemon();
+    }
+
+    // Initialize widget daemon if enabled
+    if (this.config.enableWidgetDaemon) {
+      await this.initializeWidgetDaemon();
     }
 
     // Start daemon manager
@@ -121,6 +128,25 @@ export class BrowserDaemonController {
   }
 
   /**
+   * Initialize widget daemon
+   */
+  private async initializeWidgetDaemon(): Promise<void> {
+    try {
+      console.log('🎨 Initializing Widget Daemon...');
+      
+      await widgetDaemon.initialize();
+      this.widgetDaemonEnabled = true;
+      
+      console.log('✅ Widget Daemon enabled');
+    } catch (error) {
+      console.error('❌ Failed to initialize Widget Daemon:', error);
+      console.warn('⚠️ Falling back to legacy widget implementation');
+      this.widgetDaemonEnabled = false;
+      this.config.enableWidgetDaemon = false;
+    }
+  }
+
+  /**
    * Get the number of active daemons
    */
   private getActiveDaemonCount(): number {
@@ -139,6 +165,13 @@ export class BrowserDaemonController {
    */
   isCommandDaemonActive(): boolean {
     return this.config.enableCommandDaemon === true && this.commandDaemonEnabled === true;
+  }
+
+  /**
+   * Check if widget daemon is active
+   */
+  isWidgetDaemonActive(): boolean {
+    return this.config.enableWidgetDaemon === true && this.widgetDaemonEnabled === true;
   }
 
   /**
@@ -223,6 +256,52 @@ export class BrowserDaemonController {
   }
 
   /**
+   * Route widget discovery to appropriate implementation
+   */
+  async discoverAndLoadWidgets(): Promise<any> {
+    if (this.isWidgetDaemonActive()) {
+      try {
+        return await widgetDaemon.discoverAndLoadWidgets();
+      } catch (error) {
+        console.warn('Widget daemon discovery failed, falling back to legacy:', error);
+        throw error; // Re-throw for legacy handling
+      }
+    }
+    
+    throw new Error('Widget daemon not active - use legacy implementation');
+  }
+
+  /**
+   * Route widget health validation to appropriate implementation
+   */
+  async validateWidgetHealth(): Promise<any> {
+    if (this.isWidgetDaemonActive()) {
+      try {
+        return await widgetDaemon.validateWidgetHealth();
+      } catch (error) {
+        console.warn('Widget daemon health validation failed, falling back to legacy:', error);
+        throw error; // Re-throw for legacy handling
+      }
+    }
+    
+    throw new Error('Widget daemon not active - use legacy implementation');
+  }
+
+  /**
+   * Handle continuum ready event through widget daemon
+   */
+  async handleContinuumReady(): Promise<void> {
+    if (this.isWidgetDaemonActive()) {
+      try {
+        await widgetDaemon.handleContinuumReady();
+      } catch (error) {
+        console.warn('Widget daemon continuum ready handling failed:', error);
+        // Don't throw - this is not critical
+      }
+    }
+  }
+
+  /**
    * Initialize command daemon with WebSocket connection
    */
   initializeCommandDaemonConnection(ws: WebSocket, sessionId?: string, clientId?: string): void {
@@ -259,6 +338,10 @@ export class BrowserDaemonController {
         timestamp: new Date().toISOString()
       });
       status.daemons.console = consoleResponse.data;
+    }
+
+    if (this.isWidgetDaemonActive()) {
+      status.daemons.widget = await widgetDaemon.getWidgetStatus();
     }
 
     // Add other daemon statuses as they're implemented...
