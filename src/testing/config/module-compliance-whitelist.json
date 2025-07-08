@@ -1,0 +1,30 @@
+{
+  "daemons": {
+    "minimumCompliance": 95,
+    "allowedNonCompliant": []
+  },
+  "widgets": {
+    "minimumCompliance": 70,
+    "allowedNonCompliant": []
+  },
+  "commands": {
+    "minimumCompliance": 50,
+    "allowedNonCompliant": [
+      "academy", "ai", "browser", "communication", "database",
+      "development", "devtools", "docs", "events", "file",
+      "input", "kernel", "monitoring", "persona", "planning",
+      "system", "testing", "ui"
+    ]
+  },
+  "integrations": {
+    "minimumCompliance": 60,
+    "allowedNonCompliant": [
+      "academy",
+      "devtools"
+    ]
+  },
+  "browser-daemons": {
+    "minimumCompliance": 95,
+    "allowedNonCompliant": []
+  }
+}
