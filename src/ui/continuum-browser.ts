@@ -270,6 +270,26 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     }
   }
 
+  private legacyWidgetHealthValidation(healthReport: any): void {
+    const widgets = ['chat-widget', 'continuum-sidebar'];
+    widgets.forEach(widgetName => {
+      const widget = document.querySelector(widgetName);
+      const widgetStyles = widget ? window.getComputedStyle(widget) : null;
+      
+      healthReport.components.push({
+        component: widgetName,
+        status: widget ? 'healthy' : 'failed',
+        lastCheck: Date.now(),
+        details: widget ? 'Widget element present and styled' : 'Widget element missing from DOM',
+        metrics: {
+          hasElement: !!widget,
+          isVisible: widgetStyles ? widgetStyles.display !== 'none' : false,
+          hasStyles: widgetStyles ? widgetStyles.cssText.length > 0 : false
+        }
+      });
+    });
+  }
+
   private inspectArgument(arg: any): any {
     try {
       // Handle different types with full inspection
@@ -379,6 +399,19 @@ class ContinuumBrowserAPI implements ContinuumAPI {
   }
   
   async discoverAndLoadWidgets(): Promise<void> {
+    // Try using widget daemon first if available
+    if (browserDaemonController.isWidgetDaemonActive()) {
+      try {
+        const result = await browserDaemonController.discoverAndLoadWidgets();
+        console.log(`🎨 Widget daemon discovery complete - ${result.totalWidgets} widgets found`);
+        return;
+      } catch (error) {
+        console.warn('Widget daemon failed, falling back to legacy implementation:', error);
+        // Fall through to legacy implementation
+      }
+    }
+
+    // Legacy implementation
     console.log('🔍 Widget loading delegated to RendererDaemon...');
     
     // ARCHITECTURAL DECISION: RendererDaemon handles all widget discovery/injection
@@ -623,23 +656,20 @@ class ContinuumBrowserAPI implements ContinuumAPI {
     });
 
     // 3. WIDGET SELF-VALIDATION
-    const widgets = ['chat-widget', 'continuum-sidebar'];
-    widgets.forEach(widgetName => {
-      const widget = document.querySelector(widgetName);
-      const widgetStyles = widget ? window.getComputedStyle(widget) : null;
-      
-      healthReport.components.push({
-        component: widgetName,
-        status: widget ? 'healthy' : 'failed',
-        lastCheck: Date.now(),
-        details: widget ? 'Widget element present and styled' : 'Widget element missing from DOM',
-        metrics: {
-          hasElement: !!widget,
-          isVisible: widgetStyles ? widgetStyles.display !== 'none' : false,
-          hasStyles: widgetStyles ? widgetStyles.cssText.length > 0 : false
-        }
-      });
-    });
+    // Try using widget daemon first if available
+    if (browserDaemonController.isWidgetDaemonActive()) {
+      try {
+        const widgetHealthComponents = await browserDaemonController.validateWidgetHealth();
+        healthReport.components.push(...widgetHealthComponents);
+      } catch (error) {
+        console.warn('Widget daemon health validation failed, using legacy implementation:', error);
+        // Fall through to legacy implementation
+        this.legacyWidgetHealthValidation(healthReport);
+      }
+    } else {
+      // Legacy implementation
+      this.legacyWidgetHealthValidation(healthReport);
+    }
 
     // 4. SCRIPT LOADING VALIDATION
     const scripts = Array.from(document.querySelectorAll('script[src]'));
@@ -1128,6 +1158,9 @@ continuum.connect().then(async () => {
   // Fire ready event for widgets to respond
   continuum.emit('continuum:ready');
   
+  // Handle continuum ready event through daemon if available
+  await browserDaemonController.handleContinuumReady();
+  
   // Run automatic client-side health validation
   try {
     const healthReport = await continuum.validateClientHealth();
@@ -1156,6 +1189,9 @@ continuum.connect().then(async () => {
   
   // Still fire ready event so widgets can handle disconnected state
   continuum.emit('continuum:ready');
+  
+  // Handle continuum ready event through daemon if available
+  await browserDaemonController.handleContinuumReady();
   
   // Run health validation even if connection failed
   try {
