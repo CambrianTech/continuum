@@ -7,13 +7,20 @@
  */
 
 import { execSync } from 'child_process';
+import { ModuleComplianceReport } from './ModuleComplianceReport';
 
-export function generateSystemScorecard(): string {
+export async function generateSystemScorecard(): Promise<string> {
   try {
-    // Get compliance summary
-    const complianceOutput = execSync('npx tsx src/testing/ModuleComplianceReport.ts --use-whitelist --silent 2>/dev/null', { encoding: 'utf8' });
-    const overallCompliance = complianceOutput.match(/✅ Compliant: \d+\/\d+ \((\d+\.?\d*%)\)/)?.[1] || '95.6%';
-    const totalModules = complianceOutput.match(/✅ Compliant: (\d+\/\d+)/)?.[1] || '43/45';
+    // Use ModuleComplianceReport directly as single source of truth
+    const reporter = new ModuleComplianceReport();
+    const complianceReport = await reporter.generateReport({ 
+      useWhitelist: true,
+      includeDetails: false,
+      exitOnFailure: false
+    });
+    
+    const overallCompliance = `${complianceReport.summary.overallComplianceRate.toFixed(1)}%`;
+    const totalModules = `${complianceReport.summary.totalCompliant}/${complianceReport.summary.totalModules}`;
 
     // Get graduation status
     const qualityOutput = execSync('npx tsx src/testing/QualityEnforcementEngine.ts --commit --silent 2>/dev/null', { encoding: 'utf8' });
@@ -44,5 +51,10 @@ export function generateSystemScorecard(): string {
 
 // CLI usage
 if (import.meta.url === `file://${process.argv[1]}`) {
-  console.log(generateSystemScorecard());
+  generateSystemScorecard().then(scorecard => {
+    console.log(scorecard);
+  }).catch(error => {
+    console.error('Failed to generate scorecard:', error);
+    process.exit(1);
+  });
 }
