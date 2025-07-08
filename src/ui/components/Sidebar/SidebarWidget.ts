@@ -116,8 +116,8 @@ export class SidebarWidget extends BaseWidget {
             targetTab.classList.add('active');
         }
 
-        // Re-render content for the new room
-        this.render();
+        // Update only the content area without full re-render (preserves widget state!)
+        this.updateRoomContent();
 
         // Emit room change event
         this.dispatchEvent(new CustomEvent('room-changed', {
@@ -126,6 +126,43 @@ export class SidebarWidget extends BaseWidget {
         }));
 
         console.log(`🔄 Sidebar switched to room: ${room}`);
+    }
+
+    /**
+     * Update only the room content without destroying widgets (preserves widget state!)
+     */
+    private updateRoomContent(): void {
+        const contentArea = this.shadowRoot.querySelector('.sidebar-content');
+        if (contentArea) {
+            // Hide all room content sections first
+            const allSections = contentArea.querySelectorAll('[data-room-content]');
+            allSections.forEach(section => {
+                (section as HTMLElement).style.display = 'none';
+            });
+            
+            // Show the target room section or create it if needed
+            let targetSection = contentArea.querySelector(`[data-room-content="${this.currentRoom}"]`) as HTMLElement;
+            if (!targetSection) {
+                // Create new room section if it doesn't exist
+                targetSection = document.createElement('div');
+                targetSection.setAttribute('data-room-content', this.currentRoom);
+                targetSection.innerHTML = this.renderRoomContent();
+                contentArea.appendChild(targetSection);
+                
+                // Setup widgets for the new section
+                setTimeout(() => {
+                    this.setupPersonaWidgets();
+                }, 100);
+            } else {
+                // Show existing section (widgets already configured!)
+                targetSection.style.display = 'block';
+            }
+            
+            console.log(`✅ Room content switched to: ${this.currentRoom} (widgets preserved and configured)`);
+        } else {
+            console.warn(`❌ Could not find .sidebar-content - falling back to full render`);
+            this.render(); // Fallback if content area not found
+        }
     }
 
     private initializeContinuonOrb(): void {
@@ -554,7 +591,10 @@ export class SidebarWidget extends BaseWidget {
             </div>
             
             <div class="sidebar-content">
-                ${this.renderRoomContent()}
+                <!-- Initial render: only show current room content with proper data attribute -->
+                <div data-room-content="${this.currentRoom}">
+                    ${this.renderRoomContent()}
+                </div>
             </div>
         `;
     }
