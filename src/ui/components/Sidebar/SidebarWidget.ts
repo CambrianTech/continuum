@@ -561,41 +561,8 @@ export class SidebarWidget extends BaseWidget {
         `;
     }
 
-    renderContent(): string {
-        return `
-            <div class="sidebar-resize-handle"></div>
-            
-            <div class="sidebar-header">
-                <div class="logo">
-                    <div class="logo-row">
-                        <div class="continuon-orb-integrated">
-                            <div class="orb-ring"></div>
-                            <div class="orb-center status-healthy">
-                                <span class="orb-emotion"></span>
-                            </div>
-                            <div class="orb-glow"></div>
-                        </div>
-                        <div class="logo-text">continuum</div>
-                    </div>
-                    <div class="subtitle">AI Workforce Construction</div>
-                </div>
-            </div>
-            
-            <!-- Room Tabs -->
-            <div class="room-tabs">
-                <div class="room-tab active" data-room="general">General</div>
-                <div class="room-tab" data-room="academy">Academy</div>
-                <div class="room-tab" data-room="projects">Projects</div>
-            </div>
-            
-            <div class="sidebar-content">
-                <!-- Initial render: only show current room content with proper data attribute -->
-                <div data-room-content="${this.currentRoom}">
-                    ${this.renderRoomContent()}
-                </div>
-            </div>
-        `;
-    }
+    // HTML content now loaded from SidebarWidget.html file
+    // BaseWidget will automatically load and use it
 }
 
 // Register the custom element

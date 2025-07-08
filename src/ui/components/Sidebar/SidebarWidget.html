@@ -1,0 +1,54 @@
+<div class="sidebar-resize-handle"></div>
+
+<sidebar-header class="sidebar-header"></sidebar-header>
+
+<!-- Room Tabs Widget -->
+<sidebar-tabs class="room-tabs"></sidebar-tabs>
+
+<div class="sidebar-content">
+    <!-- General Tab Panel -->
+    <div class="room-panel" data-room-content="general">
+        <!-- Academy Ready Status -->
+        <div class="academy-ready-button">
+            <button class="academy-status-btn">
+                <span class="status-indicator"></span>
+                Academy Ready
+            </button>
+        </div>
+        
+        <!-- Session Costs -->
+        <div class="session-costs-section">
+            <div class="section-header">
+                <span class="section-title">SESSION COSTS</span>
+            </div>
+            <div class="cost-display">
+                <div class="cost-row">
+                    <span class="cost-value">0</span>
+                    <span class="cost-label">Requests</span>
+                </div>
+                <div class="cost-row">
+                    <span class="cost-value highlight">$0.0000</span>
+                    <span class="cost-label">Cost</span>
+                </div>
+            </div>
+            <button class="clear-history-btn">🗑️ Clear History</button>
+        </div>
+        
+        <!-- User Selector Widget -->
+        <user-selector></user-selector>
+    </div>
+
+    <!-- Academy Tab Panel -->
+    <div class="room-panel" data-room-content="academy" style="display: none;">
+        <!-- Saved Personas Widget -->
+        <saved-personas></saved-personas>
+        
+        <!-- Available Agents -->
+        <div class="available-agents-section">
+            <div class="section-header">
+                <span class="section-title">AVAILABLE AGENTS</span>
+            </div>
+            <user-selector></user-selector>
+        </div>
+    </div>
+</div>
