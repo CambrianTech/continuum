@@ -118,25 +118,6 @@ echo "🧪 INTEGRATION TESTS: ✅ All passing"
 echo "🛡️ IMMUNE SYSTEM: ✅ Protecting production"
 echo ""
 
-# 📝 APPEND SCORECARD TO COMMIT MESSAGE
-printf "\n\n🔍 Appending system health scorecard to commit message...\n"
-
-# Generate concise scorecard for commit message
-SCORECARD_TEXT=$(npx tsx src/testing/generate-system-scorecard.ts 2>/dev/null)
-
-if [ $? -eq 0 ] && [ -n "$SCORECARD_TEXT" ]; then
-    # Get the commit message file path from git
-    COMMIT_MSG_FILE="$(git rev-parse --git-dir)/COMMIT_EDITMSG"
-    
-    if [ -f "$COMMIT_MSG_FILE" ]; then
-        # Append scorecard to commit message
-        echo "$SCORECARD_TEXT" >> "$COMMIT_MSG_FILE"
-        printf "✅ System health scorecard appended to commit message\n"
-    else
-        printf "⚠️ Commit message file not found - scorecard not appended\n"
-    fi
-else
-    printf "⚠️ Failed to generate scorecard - not appended to commit message\n"
-fi
-
+# 📝 Note: System health scorecard will be added via prepare-commit-msg hook
+printf "\n\n💡 System health scorecard will be appended to commit message...\n"
 echo ""
