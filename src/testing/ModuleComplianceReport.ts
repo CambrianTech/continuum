@@ -9,6 +9,9 @@
  */
 
 import { IntelligentModularTestRunner } from './IntelligentModularTestRunner';
+import * as path from 'path';
+import * as fs from 'fs';
+import { fileURLToPath } from 'url';
 
 interface ComplianceWhitelist {
   daemons: {
@@ -24,6 +27,10 @@ interface ComplianceWhitelist {
     allowedNonCompliant: string[];
   };
   integrations: {
+    minimumCompliance: number;
+    allowedNonCompliant: string[];
+  };
+  'browser-daemons': {
     minimumCompliance: number;
     allowedNonCompliant: string[];
   };
@@ -59,38 +66,64 @@ class ModuleComplianceReport {
 
   constructor() {
     this.runner = new IntelligentModularTestRunner();
+    this.whitelist = this.loadWhitelistConfig();
+  }
+
+  /**
+   * Load whitelist configuration from JSON file
+   */
+  private loadWhitelistConfig(): ComplianceWhitelist {
+    try {
+      // Get current file directory in ES modules
+      const currentDir = path.dirname(fileURLToPath(import.meta.url));
+      const configPath = path.join(currentDir, 'config', 'module-compliance-whitelist.json');
+      const configContent = fs.readFileSync(configPath, 'utf8');
+      const config = JSON.parse(configContent);
+      
+      // Validate required structure
+      this.validateWhitelistConfig(config);
+      
+      return config as ComplianceWhitelist;
+    } catch (error) {
+      console.warn(`⚠️ Failed to load whitelist config: ${error}`);
+      console.warn('Using default configuration');
+      
+      // Fallback to minimal default configuration
+      return this.getDefaultWhitelistConfig();
+    }
+  }
+
+  /**
+   * Validate whitelist configuration structure
+   */
+  private validateWhitelistConfig(config: any): void {
+    const requiredTypes = ['daemons', 'widgets', 'commands', 'integrations', 'browser-daemons'];
     
-    // Default whitelist configuration
-    this.whitelist = {
-      daemons: {
-        minimumCompliance: 95, // Very high standard for daemons
-        allowedNonCompliant: [] // No exceptions - daemons must be compliant
-      },
-      widgets: {
-        minimumCompliance: 70, // Moderate standard for widgets
-        allowedNonCompliant: [
-          // 🎓 GRADUATED: ActiveProjects, SavedPersonas, UserSelector, ChatRoom (now 100% compliant!)
-          // 🧹 CLEANED UP: VersionWidget, commands, domain, intermediate, ui (removed fake directories)
-        ]
-      },
-      commands: {
-        minimumCompliance: 50, // Low standard initially - lots of work needed
-        allowedNonCompliant: [
-          // All commands currently non-compliant - working on this
-          'academy', 'ai', 'browser', 'communication', 'database',
-          'development', 'devtools', 'docs', 'events', 'file',
-          'input', 'kernel', 'monitoring', 'persona', 'planning',
-          'system', 'testing', 'ui'
-        ]
-      },
-      integrations: {
-        minimumCompliance: 60, // Moderate standard for integrations
-        allowedNonCompliant: [
-          // 🎓 GRADUATED: websocket (now 100% compliant!)
-          'academy',    // Legacy integration
-          'devtools'    // Development-only integration
-        ]
+    for (const type of requiredTypes) {
+      if (!config[type]) {
+        throw new Error(`Missing configuration for module type: ${type}`);
       }
+      
+      if (typeof config[type].minimumCompliance !== 'number') {
+        throw new Error(`Invalid minimumCompliance for ${type}: must be a number`);
+      }
+      
+      if (!Array.isArray(config[type].allowedNonCompliant)) {
+        throw new Error(`Invalid allowedNonCompliant for ${type}: must be an array`);
+      }
+    }
+  }
+
+  /**
+   * Default fallback configuration
+   */
+  private getDefaultWhitelistConfig(): ComplianceWhitelist {
+    return {
+      daemons: { minimumCompliance: 95, allowedNonCompliant: [] },
+      widgets: { minimumCompliance: 70, allowedNonCompliant: [] },
+      commands: { minimumCompliance: 50, allowedNonCompliant: [] },
+      integrations: { minimumCompliance: 60, allowedNonCompliant: [] },
+      'browser-daemons': { minimumCompliance: 95, allowedNonCompliant: [] }
     };
   }
 
@@ -109,8 +142,8 @@ class ModuleComplianceReport {
     console.log(`⏰ Generated: ${new Date().toISOString()}`);
     console.log('');
 
-    const moduleTypes: ('daemon' | 'widget' | 'command' | 'integration')[] = 
-      ['daemon', 'widget', 'command', 'integration'];
+    const moduleTypes: ('daemon' | 'widget' | 'command' | 'integration' | 'browser-daemon')[] = 
+      ['daemon', 'widget', 'command', 'integration', 'browser-daemon'];
 
     const moduleStatuses: ComplianceStatus[] = [];
     let totalModules = 0;

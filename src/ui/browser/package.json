@@ -1,0 +1,43 @@
+{
+  "name": "@continuum/browser-daemon-system",
+  "version": "1.0.0",
+  "description": "Browser daemon system - modular client-side architecture",
+  "main": "index.ts",
+  "continuum": {
+    "type": "browser-daemon-system",
+    "category": "browser",
+    "dependencies": [
+      "@continuum/browser-daemon-base"
+    ],
+    "provides": [
+      "BrowserFeatureFlags",
+      "browser-daemon-orchestration"
+    ],
+    "architecture": "browser-daemon-system",
+    "compliance": {
+      "moduleStructure": "full",
+      "testing": "comprehensive",
+      "documentation": "complete"
+    }
+  },
+  "exports": {
+    "./BrowserFeatureFlags": "./BrowserFeatureFlags.ts",
+    "./base/*": "./base/*"
+  },
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx tsx --test base/test/unit/*.test.ts",
+    "test:integration": "npx tsx --test base/test/integration/*.test.ts",
+    "test:compliance": "npx tsx src/testing/ModuleComplianceRunner.ts --module browser"
+  },
+  "keywords": [
+    "continuum",
+    "browser",
+    "daemon",
+    "modular",
+    "architecture",
+    "client-side"
+  ],
+  "author": "Continuum Development Team",
+  "license": "MIT"
+}

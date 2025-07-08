@@ -20,7 +20,7 @@ import * as fs from 'fs';
 interface ModuleInfo {
   name: string;
   path: string;
-  type: 'widget' | 'daemon' | 'command' | 'integration';
+  type: 'widget' | 'daemon' | 'command' | 'integration' | 'browser-daemon';
   hasPackageJson: boolean;
   hasMainFile: boolean;
   hasTestDir: boolean;
@@ -65,7 +65,7 @@ class IntelligentModularTestRunner {
   /**
    * Discover modules by type using intelligent scanning
    */
-  async discoverModules(type: 'widget' | 'daemon' | 'command' | 'integration'): Promise<ModuleInfo[]> {
+  async discoverModules(type: 'widget' | 'daemon' | 'command' | 'integration' | 'browser-daemon'): Promise<ModuleInfo[]> {
     const modules: ModuleInfo[] = [];
     const basePaths = this.getBasePaths(type);
 
@@ -83,7 +83,7 @@ class IntelligentModularTestRunner {
   /**
    * Get base paths to scan for different module types
    */
-  private getBasePaths(type: 'widget' | 'daemon' | 'command' | 'integration'): string[] {
+  private getBasePaths(type: 'widget' | 'daemon' | 'command' | 'integration' | 'browser-daemon'): string[] {
     switch (type) {
       case 'widget':
         return ['src/ui/components'];
@@ -93,6 +93,8 @@ class IntelligentModularTestRunner {
         return ['src/commands'];
       case 'integration':
         return ['src/integrations'];
+      case 'browser-daemon':
+        return ['src/ui/browser'];
       default:
         return [];
     }
@@ -127,7 +129,7 @@ class IntelligentModularTestRunner {
   /**
    * Analyze a single module for compliance
    */
-  private async analyzeModule(name: string, modulePath: string, type: 'widget' | 'daemon' | 'command' | 'integration'): Promise<ModuleInfo> {
+  private async analyzeModule(name: string, modulePath: string, type: 'widget' | 'daemon' | 'command' | 'integration' | 'browser-daemon'): Promise<ModuleInfo> {
     const packageJsonPath = path.join(modulePath, 'package.json');
     const testDirPath = path.join(modulePath, 'test');
     
@@ -183,7 +185,8 @@ class IntelligentModularTestRunner {
       widget: [`${name}Widget.ts`, `${name}.ts`, 'index.ts'],
       daemon: [`${name}Daemon.ts`, `${name}.ts`, 'index.ts'],
       command: [`${name}Command.ts`, `${name}.ts`, 'index.ts'],
-      integration: [`${name}Integration.ts`, `${name}.ts`, 'index.ts']
+      integration: [`${name}Integration.ts`, `${name}.ts`, 'index.ts'],
+      'browser-daemon': [`${name}BrowserDaemon.ts`, `Browser${name}Daemon.ts`, `${name}.ts`, 'index.ts']
     };
 
     const filesToCheck = conventions[type as keyof typeof conventions] || ['index.ts'];
@@ -258,7 +261,7 @@ class IntelligentModularTestRunner {
   /**
    * Run tests for all modules of a specific type
    */
-  async runModuleTests(type: 'widget' | 'daemon' | 'command' | 'integration'): Promise<ModularTestResults> {
+  async runModuleTests(type: 'widget' | 'daemon' | 'command' | 'integration' | 'browser-daemon'): Promise<ModularTestResults> {
     console.log(`🧪 Intelligent Modular Test Runner - ${type.toUpperCase()} MODULES`);
     console.log('='.repeat(60));
 
@@ -400,10 +403,10 @@ class IntelligentModularTestRunner {
 
 // Main execution
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const type = process.argv[2] as 'widget' | 'daemon' | 'command' | 'integration';
+  const type = process.argv[2] as 'widget' | 'daemon' | 'command' | 'integration' | 'browser-daemon';
   
-  if (!type || !['widget', 'daemon', 'command', 'integration'].includes(type)) {
-    console.error('❌ Usage: npx tsx IntelligentModularTestRunner.ts <widget|daemon|command|integration>');
+  if (!type || !['widget', 'daemon', 'command', 'integration', 'browser-daemon'].includes(type)) {
+    console.error('❌ Usage: npx tsx IntelligentModularTestRunner.ts <widget|daemon|command|integration|browser-daemon>');
     process.exit(1);
   }
 
