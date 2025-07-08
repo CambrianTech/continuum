@@ -146,7 +146,7 @@ export abstract class BaseBrowserDaemon {
    * Emit events to other daemons
    * Will be connected to BrowserDaemonEventBus
    */
-  protected emit(eventType: string, data?: any): void {
+  protected emit(eventType: string, _data?: any): void {
     // TODO: Connect to BrowserDaemonEventBus
     this.log(`Event emitted: ${eventType}`, 'info');
   }
@@ -158,7 +158,7 @@ export abstract class BaseBrowserDaemon {
   protected async sendMessage(
     targetDaemon: string, 
     messageType: string, 
-    data: any
+    _data: any
   ): Promise<BrowserDaemonResponse> {
     // TODO: Connect to BrowserDaemonManager for routing
     this.log(`Message sent to ${targetDaemon}: ${messageType}`, 'info');
@@ -174,12 +174,20 @@ export abstract class BaseBrowserDaemon {
    * Create standardized response
    */
   protected createResponse(success: boolean, data?: any, error?: string): BrowserDaemonResponse {
-    return {
+    const response: BrowserDaemonResponse = {
       success,
-      data,
-      error,
       timestamp: new Date().toISOString()
     };
+    
+    if (data !== undefined) {
+      response.data = data;
+    }
+    
+    if (error !== undefined) {
+      response.error = error;
+    }
+    
+    return response;
   }
 
   /**
