@@ -10,7 +10,11 @@ export class SidebarWidget extends BaseWidget {
     private isResizing: boolean = false;
     private startX: number = 0;
     private startWidth: number = 0;
-    private currentRoom: string = 'general';
+    private _currentRoom: string = 'general';
+
+    public get currentRoom(): string {
+        return this._currentRoom;
+    }
 
 
     constructor() {
@@ -50,14 +54,71 @@ export class SidebarWidget extends BaseWidget {
 
     setupEventListeners(): void {
         this.setupResizeHandlers();
-        this.setupRoomSwitching();
+        this.setupTabChangeListeners();
         
         // Configure child widgets after they're rendered
         if (this.sidebarConfig) {
             this.configureSidebarTabs();
+            this.configureSidebarPanels();
         }
         
         console.log(`🎛️ ${this.widgetName}: Event listeners initialized`);
+    }
+
+    private setupTabChangeListeners(): void {
+        // Listen for tab-changed events from SidebarTabs
+        this.shadowRoot.addEventListener('tab-changed', (e: Event) => {
+            const customEvent = e as CustomEvent;
+            const { panelName } = customEvent.detail;
+            console.log(`🔄 Sidebar received tab-changed: ${panelName}`);
+            this.switchToPanel(panelName);
+        });
+    }
+
+    private switchToPanel(panelName: string): void {
+        this._currentRoom = panelName;
+        
+        // Update both tabs and panels with new selected state
+        this.updateTabsSelection(panelName);
+        this.updatePanelsSelection(panelName);
+        
+        console.log(`🔄 Switched to: ${panelName}`);
+        
+        // Emit room change event for other components
+        this.dispatchEvent(new CustomEvent('room-changed', {
+            detail: { room: panelName },
+            bubbles: true
+        }));
+    }
+
+    private updateTabsSelection(selectedPanel: string): void {
+        const sidebarTabs = this.shadowRoot?.querySelector('sidebar-tabs') as any;
+        if (sidebarTabs && this.sidebarConfig) {
+            // Update tabs with new selection
+            const tabContent = this.sidebarConfig.tabs.map((tab: any) => ({
+                title: tab.title,
+                panelName: tab.panelName,
+                dataKey: tab.panelName,
+                selected: tab.panelName === selectedPanel
+            }));
+            
+            sidebarTabs.tabs = tabContent;
+        }
+    }
+
+    private updatePanelsSelection(selectedPanel: string): void {
+        const sidebarPanel = this.shadowRoot?.querySelector('sidebar-panel') as any;
+        if (sidebarPanel && this.sidebarConfig) {
+            // Update panels with new selection
+            const panelContent = Object.keys(this.sidebarConfig.sections).map(panelName => ({
+                panelName,
+                widgets: this.sidebarConfig.sections[panelName].widgets,
+                selected: panelName === selectedPanel
+            }));
+            
+            sidebarPanel.panels = panelContent;
+            sidebarPanel.activePanel = selectedPanel;
+        }
     }
 
     private configureSidebarTabs(): void {
@@ -77,8 +138,26 @@ export class SidebarWidget extends BaseWidget {
             sidebarTabs.tabs = tabContent;
             
             if (this.sidebarConfig.defaultTab) {
-                this.currentRoom = this.sidebarConfig.defaultTab;
+                this._currentRoom = this.sidebarConfig.defaultTab;
             }
+        }
+    }
+
+    private configureSidebarPanels(): void {
+        const sidebarPanel = this.shadowRoot?.querySelector('sidebar-panel') as any;
+        if (sidebarPanel && this.sidebarConfig) {
+            console.log('🔧 Configuring SidebarPanel with:', this.sidebarConfig.sections);
+            
+            // Map sections to PanelContent format
+            const panelContent = Object.keys(this.sidebarConfig.sections).map(panelName => ({
+                panelName,
+                widgets: this.sidebarConfig.sections[panelName].widgets,
+                selected: panelName === this.sidebarConfig.defaultTab
+            }));
+            
+            // Set panels property - this will auto-trigger render
+            sidebarPanel.panels = panelContent;
+            sidebarPanel.activePanel = this.sidebarConfig.defaultTab || 'general';
         }
     }
 
@@ -138,80 +217,7 @@ export class SidebarWidget extends BaseWidget {
         console.log(`🎛️ ${this.widgetName}: Resize handlers setup complete`);
     }
 
-    private setupRoomSwitching(): void {
-        this.shadowRoot.querySelectorAll('.room-tab').forEach(tab => {
-            tab.addEventListener('click', (e: Event) => {
-                const target = e.target as HTMLElement;
-                const room = target.dataset.room;
-                if (room) {
-                    this.switchRoom(room);
-                }
-            });
-        });
-    }
-
-    private switchRoom(room: string): void {
-        this.currentRoom = room;
-        console.log(`🔄 Switched to room: ${this.currentRoom}`);
-        
-        // Update active tab
-        this.shadowRoot.querySelectorAll('.room-tab').forEach(tab => {
-            tab.classList.remove('active');
-        });
-        
-        const targetTab = this.shadowRoot.querySelector(`[data-room="${room}"]`);
-        if (targetTab) {
-            targetTab.classList.add('active');
-        }
-
-        // Update only the content area without full re-render (preserves widget state!)
-        this.updateRoomContent();
-
-        // Emit room change event
-        this.dispatchEvent(new CustomEvent('room-changed', {
-            detail: { room },
-            bubbles: true
-        }));
-
-        console.log(`🔄 Sidebar switched to room: ${room}`);
-    }
-
-    /**
-     * Update only the room content without destroying widgets (preserves widget state!)
-     */
-    private updateRoomContent(): void {
-        const contentArea = this.shadowRoot.querySelector('.sidebar-content');
-        if (contentArea) {
-            // Hide all room content sections first
-            const allSections = contentArea.querySelectorAll('[data-room-content]');
-            allSections.forEach(section => {
-                (section as HTMLElement).style.display = 'none';
-            });
-            
-            // Show the target room section or create it if needed
-            let targetSection = contentArea.querySelector(`[data-room-content="${this.currentRoom}"]`) as HTMLElement;
-            if (!targetSection) {
-                // Create new room section if it doesn't exist
-                targetSection = document.createElement('div');
-                targetSection.setAttribute('data-room-content', this.currentRoom);
-                targetSection.innerHTML = this.renderRoomContent();
-                contentArea.appendChild(targetSection);
-                
-                // Setup widgets for the new section
-                setTimeout(() => {
-                    this.setupPersonaWidgets();
-                }, 100);
-            } else {
-                // Show existing section (widgets already configured!)
-                targetSection.style.display = 'block';
-            }
-            
-            console.log(`✅ Room content switched to: ${this.currentRoom} (widgets preserved and configured)`);
-        } else {
-            console.warn(`❌ Could not find .sidebar-content - falling back to full render`);
-            this.render(); // Fallback if content area not found
-        }
-    }
+    // Room switching now handled by tab-changed events and panel system
 
     private initializeContinuonOrb(): void {
         console.log(`🔮 ${this.widgetName}: Initializing sophisticated Continuon consciousness...`);
@@ -527,87 +533,7 @@ export class SidebarWidget extends BaseWidget {
         };
     }
 
-    private renderRoomContent(): string {
-        switch (this.currentRoom) {
-            case 'academy':
-                return this.renderAcademyContent();
-            case 'projects':
-                return this.renderProjectsContent();
-            case 'general':
-            default:
-                return this.renderGeneralContent();
-        }
-    }
-
-    private renderGeneralContent(): string {
-        return `
-            <!-- Session Costs Section (matching screenshot) -->
-            <div class="session-costs-section">
-                <div class="section-header">
-                    <span class="section-icon">💰</span>
-                    <span class="section-title">Session Costs</span>
-                    <span class="section-status">Active</span>
-                </div>
-                <div class="cost-display">
-                    <div class="cost-row">
-                        <span class="cost-label">Requests</span>
-                        <span class="cost-value">47</span>
-                    </div>
-                    <div class="cost-row">
-                        <span class="cost-label">Cost</span>
-                        <span class="cost-value highlight">$0.0000</span>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Active Projects Section -->
-            <active-projects></active-projects>
-            
-            <!-- Users & Agents Section -->  
-            <user-selector></user-selector>
-            
-            <!-- Interactive Personas Section -->
-            <div class="personas-section">
-                <div class="section-header">
-                    <span class="section-icon">🤖</span>
-                    <span class="section-title">AI Personas</span>
-                    <span class="section-count">3 active</span>
-                </div>
-                <div class="personas-list">
-                    <persona-widget data-persona="designer"></persona-widget>
-                    <persona-widget data-persona="developer"></persona-widget>
-                    <persona-widget data-persona="tester"></persona-widget>
-                </div>
-            </div>
-        `;
-    }
-
-    private renderAcademyContent(): string {
-        return `
-            <!-- Academy Status Widget -->
-            <academy-status-widget></academy-status-widget>
-            
-            <!-- Academy Personas & Training -->
-            <div class="academy-section">
-                <div class="section-header">
-                    <span class="section-icon">🎓</span>
-                    <span class="section-title">Academy Training</span>
-                    <span class="section-count">Ready</span>
-                </div>
-                <user-selector></user-selector>
-            </div>
-        `;
-    }
-
-    private renderProjectsContent(): string {
-        return `
-            <!-- Projects Content -->
-            <active-projects></active-projects>
-            
-            <!-- Project-specific user management -->
-            <user-selector></user-selector>
-        `;
-    }
+    // Content rendering now handled by sidebar-panel widget
 
     // HTML content now loaded from SidebarWidget.html file
     // BaseWidget will automatically load and use it

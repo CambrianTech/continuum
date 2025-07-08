@@ -36,7 +36,6 @@
 /* Header */
 .sidebar-header {
     padding: 20px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     flex-shrink: 0;
 }
 
@@ -362,7 +361,7 @@
 /* SidebarTabs widget handles its own styling */
 }
 
-/* Content Area */
+/* Content Area - Container only */
 .sidebar-content {
     flex: 1;
     overflow-y: auto;
@@ -370,89 +369,6 @@
     display: flex;
     flex-direction: column;
     gap: 20px;
-}
-
-/* Section Headers */
-.section-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 12px;
-    padding: 8px 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.section-icon {
-    font-size: 16px;
-}
-
-.section-title {
-    color: #e0e6ed;
-    font-weight: 600;
-    font-size: 14px;
-    flex: 1;
-}
-
-.section-count,
-.section-status {
-    color: #8a92a5;
-    font-size: 12px;
-    font-weight: 500;
-}
-
-.section-status {
-    color: #4ade80;
-}
-
-/* Session Costs Section */
-.session-costs-section {
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: 12px;
-    padding: 16px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.cost-display {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.cost-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 4px 0;
-}
-
-.cost-label {
-    color: #8a92a5;
-    font-size: 13px;
-    font-weight: 500;
-}
-
-.cost-value {
-    color: #e0e6ed;
-    font-size: 14px;
-    font-weight: 600;
-}
-
-.cost-value.highlight {
-    color: #4ade80;
-    font-weight: 700;
-}
-
-/* Personas Section */
-.personas-section {
-    background: rgba(255, 255, 255, 0.03);
-    border-radius: 10px;
-    padding: 14px;
-}
-
-.personas-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
 }
 
 /* Global resizing styles (applied to document body) */
