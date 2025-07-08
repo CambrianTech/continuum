@@ -4,6 +4,11 @@
   "description": "Persona widget for AI persona interaction and management",
   "main": "PersonaWidget.ts",
   "type": "module",
+  "files": [
+    "PersonaWidget.ts",
+    "PersonaWidget.css",
+    "persona-animations.css"
+  ],
   "continuum": {
     "type": "widget",
     "componentName": "persona-widget",

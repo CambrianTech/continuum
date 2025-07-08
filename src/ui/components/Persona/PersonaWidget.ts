@@ -18,6 +18,7 @@ interface PersonaConfig {
 }
 
 export class PersonaWidget extends BaseWidget {
+
   private config: PersonaConfig | null = null;
   private isInteracting: boolean = false;
 
@@ -35,131 +36,6 @@ export class PersonaWidget extends BaseWidget {
     this.render();
   }
 
-  async loadCSS(): Promise<string> {
-    return `
-      :host {
-        display: block;
-        background: rgba(20, 25, 35, 0.95);
-        border-radius: 12px;
-        padding: 16px;
-        margin: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        transition: all 0.3s ease;
-        cursor: pointer;
-        min-width: 200px;
-        max-width: 300px;
-      }
-
-      :host(:hover) {
-        border-color: rgba(79, 195, 247, 0.3);
-        transform: translateY(-2px);
-        box-shadow: 0 4px 16px rgba(79, 195, 247, 0.1);
-      }
-
-      .persona-header {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        margin-bottom: 12px;
-      }
-
-      .persona-avatar {
-        font-size: 24px;
-        width: 40px;
-        height: 40px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: rgba(79, 195, 247, 0.1);
-        border-radius: 50%;
-      }
-
-      .persona-info {
-        flex: 1;
-      }
-
-      .persona-name {
-        font-size: 16px;
-        font-weight: 600;
-        color: #e0e6ed;
-        margin-bottom: 2px;
-      }
-
-      .persona-status {
-        font-size: 12px;
-        padding: 2px 8px;
-        border-radius: 10px;
-        text-transform: uppercase;
-        font-weight: 500;
-      }
-
-      .status-active { background: rgba(76, 175, 80, 0.2); color: #4CAF50; }
-      .status-training { background: rgba(255, 152, 0, 0.2); color: #FF9800; }
-      .status-graduated { background: rgba(33, 150, 243, 0.2); color: #2196F3; }
-      .status-offline { background: rgba(158, 158, 158, 0.2); color: #9E9E9E; }
-
-      .persona-specialization {
-        font-size: 12px;
-        color: #888;
-        margin-bottom: 8px;
-      }
-
-      .persona-description {
-        font-size: 13px;
-        color: #ccc;
-        line-height: 1.4;
-        margin-bottom: 12px;
-      }
-
-      .persona-capabilities {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-        margin-bottom: 12px;
-      }
-
-      .capability-tag {
-        font-size: 10px;
-        padding: 2px 6px;
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 8px;
-        color: #aaa;
-      }
-
-      .persona-metrics {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-size: 11px;
-        color: #888;
-      }
-
-      .accuracy {
-        color: #4CAF50;
-        font-weight: 500;
-      }
-
-      .last-active {
-        opacity: 0.7;
-      }
-
-      .interaction-indicator {
-        position: absolute;
-        top: 8px;
-        right: 8px;
-        width: 8px;
-        height: 8px;
-        background: #4CAF50;
-        border-radius: 50%;
-        animation: pulse 2s infinite;
-      }
-
-      @keyframes pulse {
-        0%, 100% { opacity: 0.5; }
-        50% { opacity: 1; }
-      }
-    `;
-  }
 
   renderContent(): string {
     if (!this.config) {
@@ -245,12 +121,8 @@ export class PersonaWidget extends BaseWidget {
   }
 }
 
-// Register the custom element
+// Register the custom element - only register once per constructor
 if (!customElements.get('persona-widget')) {
   customElements.define('persona-widget', PersonaWidget);
-}
-
-// Also register as <persona> for short syntax
-if (!customElements.get('persona')) {
-  customElements.define('persona', PersonaWidget);
+  console.log('✅ PersonaWidget: Registered as persona-widget');
 }

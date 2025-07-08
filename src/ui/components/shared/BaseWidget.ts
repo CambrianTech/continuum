@@ -3,6 +3,9 @@
  * Enforces proper implementation through abstract methods and properties
  */
 
+// Import smart asset manifest (zero 404s!)
+import { WIDGET_ASSETS } from 'widget-discovery';
+
 
 export abstract class BaseWidget extends HTMLElement {
   declare shadowRoot: ShadowRoot;
@@ -19,18 +22,56 @@ export abstract class BaseWidget extends HTMLElement {
   // Smart defaults - minimal requirements from subclasses
   public static getBasePath(): string {
     // Auto-derive from class name: ChatWidget -> /src/ui/components/Chat
-    const className = this.name.replace('Widget', '');
+    // Handle TypeScript compilation artifacts like _PersonaWidget -> PersonaWidget
+    const rawName = this.name.replace(/^_/, ''); // Remove leading underscore
+    const className = rawName.replace('Widget', '');
     return `/src/ui/components/${className}`;
   }
   
   protected static getOwnCSS(): ReadonlyArray<string> {
-    // Auto-derive: ChatWidget -> ['ChatWidget.css']
-    return [`${this.name}.css`];
+    // DISCOVERY-FIRST: Auto-discover ALL CSS files in widget directory
+    // Can be overridden for performance or specific control
+    return this.discoverAllCSS();
   }
   
   protected static getOwnHTML(): ReadonlyArray<string> {
-    // Auto-derive: ChatWidget -> ['ChatWidget.html'] if it exists
-    return [`${this.name}.html`];
+    // DISCOVERY-FIRST: Auto-discover ALL HTML files in widget directory  
+    // Can be overridden for specific template control
+    return this.discoverAllHTML();
+  }
+  
+  /**
+   * Discovery method: Find all CSS files in widget directory
+   * Override this method for custom discovery logic
+   */
+  protected static discoverAllCSS(): ReadonlyArray<string> {
+    // Use package.json files array for discovery
+    return this.getAssetsByExtension('.css');
+  }
+  
+  /**
+   * Discovery method: Find all HTML files in widget directory
+   * Override this method for custom discovery logic
+   */
+  protected static discoverAllHTML(): ReadonlyArray<string> {
+    // Use package.json files array for discovery
+    return this.getAssetsByExtension('.html');
+  }
+  
+  /**
+   * Get assets by file extension from package.json files array
+   * Falls back to convention if package.json not available
+   */
+  private static getAssetsByExtension(extension: string): ReadonlyArray<string> {
+    // For now, use the package.json discovery we already have
+    // This is synchronous fallback - async discovery happens in loadCSS()
+    const cleanName = this.name.replace(/^_/, ''); // Remove TypeScript compilation underscore
+    if (extension === '.css') {
+      return [`${cleanName}.css`]; // Convention fallback
+    } else if (extension === '.html') {
+      return [`${cleanName}.html`]; // Convention fallback
+    }
+    return [];
   }
   
   /**
@@ -69,7 +110,50 @@ export abstract class BaseWidget extends HTMLElement {
 
   
   /**
-   * Load HTML templates if widget declares any
+   * Auto-load HTML templates or fallback to renderContent() - zero burden
+   */
+  protected async loadHTMLTemplatesOrFallback(): Promise<string> {
+    try {
+      const constructor = this.constructor as typeof BaseWidget;
+      const widgetName = constructor.name.replace(/^_/, ''); // Handle TypeScript compilation artifacts
+      const basePath = constructor.getBasePath();
+      
+      // SMART MANIFEST: Only load HTML files that actually exist (Zero 404s!)
+      const widgetAssets = WIDGET_ASSETS[widgetName];
+      
+      if (widgetAssets && widgetAssets.html.length > 0) {
+        console.log(`📁 ${constructor.name}: Found ${widgetAssets.html.length} HTML files in manifest`);
+        
+        // Try to load HTML files from manifest
+        for (const htmlFile of widgetAssets.html) {
+          const htmlPath = `${basePath}/${htmlFile}`;
+          try {
+            const response = await fetch(htmlPath);
+            if (response.ok) {
+              const htmlContent = await response.text();
+              console.log(`✅ Loaded HTML template: ${htmlPath} (Zero 404s!)`);
+              return htmlContent;
+            } else {
+              console.error(`🚨 MANIFEST ERROR: ${htmlPath} not found but was in manifest!`);
+            }
+          } catch (error) {
+            console.error(`🚨 MANIFEST ERROR: Failed to fetch ${htmlPath}:`, error);
+          }
+        }
+      } else {
+        console.log(`📁 ${constructor.name}: No HTML files in manifest - using renderContent() fallback`);
+      }
+      
+      // No HTML template found or available, use code-based renderContent()
+      return this.renderContent();
+    } catch (error) {
+      console.warn(`🎨 ${this.widgetName}: HTML template loading failed, using fallback:`, error);
+      return this.renderContent();
+    }
+  }
+
+  /**
+   * Load HTML templates if widget declares any (legacy method)
    */
   protected async loadHTMLTemplates(): Promise<string> {
     const constructor = this.constructor as typeof BaseWidget;
@@ -169,7 +253,9 @@ export abstract class BaseWidget extends HTMLElement {
       console.log(`🎨 ${this.widgetName}: Starting render() - about to loadCSS()`);
       const css = await this.loadCSS();
       console.log(`🎨 ${this.widgetName}: CSS loaded, length: ${css.length} chars`);
-      const html = this.renderContent();
+      
+      // Auto-load HTML templates if they exist, otherwise use renderContent()
+      const html = await this.loadHTMLTemplatesOrFallback();
 
       this.shadowRoot.innerHTML = `
         <style>
@@ -189,43 +275,55 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   /**
-   * Load CSS for the widget - reads from package.json files array
+   * Load CSS for the widget - uses declarative getOwnCSS() method only
    */
   async loadCSS(): Promise<string> {
-    // Load BaseWidget CSS + any CSS files declared in package.json
     const constructor = this.constructor as typeof BaseWidget;
-    const baseCSS = ['/src/ui/components/shared/BaseWidget.css'];
-    const widgetAssets = await constructor.getWidgetAssets();
-    const cssFiles = widgetAssets.filter(asset => asset.endsWith('.css'));
-    const allCSSAssets = [...baseCSS, ...cssFiles];
     
     try {
-      console.log(`🎨 ${constructor.name}: Attempting to load CSS files:`, allCSSAssets);
-      const cssPromises = allCSSAssets.map(async (assetPath) => {
+      // SMART MANIFEST: Only load CSS files that actually exist (Zero 404s!)
+      const widgetName = constructor.name.replace(/^_/, ''); // Handle TypeScript compilation artifacts
+      const basePath = constructor.getBasePath();
+      const baseCSS = '/src/ui/components/shared/BaseWidget.css';
+      
+      // Get CSS files from build-time manifest
+      const widgetAssets = WIDGET_ASSETS[widgetName];
+      const cssFiles = [baseCSS];
+      
+      if (widgetAssets && widgetAssets.css.length > 0) {
+        console.log(`📁 ${constructor.name}: Found ${widgetAssets.css.length} CSS files in manifest (Zero 404s!)`);
+        const widgetCSSFiles = widgetAssets.css.map(file => `${basePath}/${file}`);
+        cssFiles.push(...widgetCSSFiles);
+      } else {
+        console.log(`📁 ${constructor.name}: No CSS files in manifest - using BaseWidget only`);
+      }
+      
+      console.log(`🎨 ${constructor.name}: Loading CSS files:`, cssFiles);
+      const cssPromises = cssFiles.map(async (cssPath) => {
         try {
-          console.log(`🎨 ${constructor.name}: Fetching CSS: ${assetPath}`);
-          const response = await fetch(assetPath);
+          const response = await fetch(cssPath);
           if (!response.ok) {
-            console.warn(`❌ Failed to load CSS asset ${assetPath}: HTTP ${response.status}`);
-            return '/* CSS asset failed to load */';
+            // This should NEVER happen with smart manifest, but handle gracefully
+            console.error(`🚨 MANIFEST ERROR: ${cssPath} not found but was in manifest!`);
+            return '/* CSS failed to load - manifest error */';
           }
           const cssText = await response.text();
-          console.log(`✅ Loaded CSS: ${assetPath} (${cssText.length} chars)`);
+          console.log(`✅ Loaded CSS: ${cssPath} (${cssText.length} chars)`);
           return cssText;
         } catch (error) {
-          console.warn(`❌ Failed to fetch CSS asset ${assetPath}:`, error);
-          return '/* CSS asset failed to load */';
+          console.error(`🚨 MANIFEST ERROR: Failed to fetch ${cssPath}:`, error);
+          return '/* CSS failed to load - manifest error */';
         }
       });
       
       const cssContents = await Promise.all(cssPromises);
       const combinedCSS = cssContents.join('\n');
       
-      console.log(`✅ ${constructor.name}: Loaded ${allCSSAssets.length} CSS assets`);
+      console.log(`✅ ${constructor.name}: Loaded ${cssFiles.length} CSS files successfully (Zero 404s!)`);
       return combinedCSS;
       
     } catch (error) {
-      console.warn(`Failed to load CSS assets for ${constructor.name}:`, error);
+      console.warn(`Failed to load CSS for ${constructor.name}:`, error);
       return this.getDefaultBaseCSS();
     }
   }
@@ -266,8 +364,8 @@ export abstract class BaseWidget extends HTMLElement {
 
   // Minimal methods - subclasses CAN override, but BaseWidget provides defaults
   protected renderContent(): string {
-    // Default: try to load HTML, fallback to simple content
-    return `<div class="widget-content">${this.widgetTitle} is ready</div>`;
+    // Try HTML templates first, fallback to renderOwnContent()
+    return this.renderOwnContent();
   }
   
   protected setupEventListeners(): void {

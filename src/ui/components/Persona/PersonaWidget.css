@@ -1,0 +1,94 @@
+/* PersonaWidget - AI Persona Component */
+:host {
+  display: block;
+  padding: 12px;
+  margin: 8px 0;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: all 0.2s ease;
+}
+
+:host(:hover) {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(79, 195, 247, 0.3);
+}
+
+.persona-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.persona-avatar {
+  font-size: 24px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(79, 195, 247, 0.1);
+  border-radius: 50%;
+}
+
+.persona-info {
+  flex: 1;
+}
+
+.persona-name {
+  color: #e0e6ed;
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.persona-specialization {
+  color: #8a92a5;
+  font-size: 12px;
+}
+
+.persona-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-active .status-indicator {
+  background: #4ade80;
+}
+
+.status-training .status-indicator {
+  background: #fbbf24;
+}
+
+.status-graduated .status-indicator {
+  background: #00d4ff;
+}
+
+.status-offline .status-indicator {
+  background: #6b7280;
+}
+
+.persona-capabilities {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.capability-tag {
+  background: rgba(79, 195, 247, 0.2);
+  color: #4FC3F7;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+}

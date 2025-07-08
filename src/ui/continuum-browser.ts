@@ -20,6 +20,9 @@
 import packageJson from '../../package.json';
 import { browserDaemonController } from './browser/BrowserDaemonController';
 
+// Auto-discover and import widgets using esbuild plugin
+import 'widget-discovery';
+
 interface ContinuumAPI {
   readonly version: string;
   isConnected(): boolean;
@@ -376,56 +379,22 @@ class ContinuumBrowserAPI implements ContinuumAPI {
   }
   
   async discoverAndLoadWidgets(): Promise<void> {
-    console.log('🔍 Single-source widget discovery - no duplicated logic...');
+    console.log('🔍 Widget loading delegated to RendererDaemon...');
     
-    // SINGLE SOURCE OF TRUTH: Use working /src/ paths with .js extensions
-    const coreWidgets: string[] = [
-      '/src/ui/components/Sidebar/SidebarWidget.js',
-      '/src/ui/components/Chat/ChatWidget.js', 
-      '/src/ui/components/UserSelector/UserSelector.js',
-      '/src/ui/components/shared/BaseWidget.js'
-    ];
+    // ARCHITECTURAL DECISION: RendererDaemon handles all widget discovery/injection
+    // Browser client just initializes what's already in the HTML
+    console.log('📋 RendererDaemon: Discovers widgets, bundles assets, injects into HTML');
+    console.log('🏗️ Browser: Initializes custom elements that are already in DOM');
     
-    console.log(`📋 Loading ${coreWidgets.length} widgets from consistent /src/ paths`);
-    console.log('🏗️ No fallbacks, no duplicated discovery logic, single source of truth');
+    // No complex widget loading - just let HTML custom elements auto-initialize
+    const customElements = document.querySelectorAll('continuum-sidebar, chat-widget');
+    console.log(`✅ Found ${customElements.length} custom elements in DOM`);
     
-    const widgetPromises = coreWidgets.map(async (widgetPath) => {
-      try {
-        console.log(`📦 Loading core widget: ${widgetPath}`);
-        await import(widgetPath);
-        console.log(`✅ Successfully loaded: ${widgetPath}`);
-        return { path: widgetPath, success: true };
-      } catch (error) {
-        console.warn(`⚠️ Failed to load core widget ${widgetPath}:`, error);
-        return { path: widgetPath, success: false, error };
-      }
-    });
+    // Simplified: Just count existing elements (no async loading needed)
+    const loadedCount = customElements.length;
+    console.log(`✅ Widget loading complete - ${loadedCount} widgets found in DOM`);
     
-    // Wait for all core widgets to load (with individual error handling)
-    const results = await Promise.allSettled(widgetPromises);
-    const loadedCount = results.filter((r, i) => {
-      if (r.status === 'fulfilled' && r.value.success) {
-        return true;
-      } else {
-        const widgetPath = coreWidgets[i];
-        console.warn(`⚠️ Widget ${widgetPath} failed:`, r.status === 'rejected' ? r.reason : r.value.error);
-        return false;
-      }
-    }).length;
-    
-    console.log(`✅ Core widgets loaded: ${loadedCount}/${coreWidgets.length}`);
-    
-    // Register fallbacks ONLY if some widgets failed to load
-    // SIMPLIFIED: Just report success/failure, no complex fallback logic
-    if (loadedCount < coreWidgets.length) {
-      console.warn(`⚠️ Only ${loadedCount}/${coreWidgets.length} widgets loaded - check console for import errors`);
-    } else {
-      console.log('✅ All core widgets loaded successfully');
-    }
-    
-    console.log(`✅ Widget loading complete - ${loadedCount} widgets loaded`);
-    
-    // Widgets are already instantiated in the HTML - no need to create duplicates
+    // Widgets are already instantiated in the HTML via RendererDaemon
     console.log('🎨 Widgets ready (instantiated via HTML)');
   }
   

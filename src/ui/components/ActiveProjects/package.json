@@ -4,6 +4,10 @@
   "description": "ActiveProjects core for Continuum",
   "main": "ActiveProjects.ts",
   "type": "module",
+  "files": [
+    "ActiveProjects.ts",
+    "ActiveProjectsWidget.css"
+  ],
   "continuum": {
     "type": "widget",
     "core": "ActiveProjects",

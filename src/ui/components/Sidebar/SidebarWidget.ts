@@ -4,6 +4,7 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
+import { universalUserSystem } from '../shared/UniversalUserSystem';
 
 export class SidebarWidget extends BaseWidget {
     private isResizing: boolean = false;
@@ -24,6 +25,7 @@ export class SidebarWidget extends BaseWidget {
     protected async initializeWidget(): Promise<void> {
         // Widget initialization after DOM is ready
         this.loadChildWidgets();
+        this.initializeContinuonOrb();
     }
 
     setupEventListeners(): void {
@@ -126,10 +128,320 @@ export class SidebarWidget extends BaseWidget {
         console.log(`🔄 Sidebar switched to room: ${room}`);
     }
 
+    private initializeContinuonOrb(): void {
+        console.log(`🔮 ${this.widgetName}: Initializing sophisticated Continuon consciousness...`);
+        
+        // Initialize emotional state
+        this.updateOrbEmotion('calm', 'System awakening...');
+        
+        // Start the consciousness monitoring system
+        this.startConsciousnessMonitoring();
+        
+        // Set up event listeners for system awareness
+        this.setupSystemAwareness();
+        
+        // Start breathing animation (idle state)
+        this.startBreathing();
+    }
+    
+    private updateOrbEmotion(emotion: 'calm' | 'excited' | 'focused' | 'concerned' | 'distressed', message: string): void {
+        const orbCenter = this.shadowRoot.querySelector('.orb-center') as HTMLElement;
+        const orbRing = this.shadowRoot.querySelector('.orb-ring') as HTMLElement;
+        const orbGlow = this.shadowRoot.querySelector('.orb-glow') as HTMLElement;
+        
+        if (orbCenter && orbRing) {
+            // Remove all emotional states
+            orbCenter.classList.remove('emotion-calm', 'emotion-excited', 'emotion-focused', 'emotion-concerned', 'emotion-distressed');
+            orbRing.classList.remove('ring-calm', 'ring-excited', 'ring-focused', 'ring-concerned', 'ring-distressed');
+            
+            // Apply emotional state
+            orbCenter.classList.add(`emotion-${emotion}`);
+            orbRing.classList.add(`ring-${emotion}`);
+            
+            // Update emotion indicator
+            const emotionSpan = orbCenter.querySelector('.orb-emotion') as HTMLElement;
+            if (emotionSpan) {
+                const emotionSymbols = {
+                    calm: '●',      // Steady presence
+                    excited: '✦',   // Sparkle
+                    focused: '◆',   // Diamond focus
+                    concerned: '◐', // Half circle
+                    distressed: '◯' // Empty circle
+                };
+                emotionSpan.textContent = emotionSymbols[emotion];
+            }
+            
+            // Store emotional context
+            orbCenter.setAttribute('data-emotion', emotion);
+            orbCenter.setAttribute('data-message', message);
+        }
+    }
+    
+    private startConsciousnessMonitoring(): void {
+        // Monitor system activity every 2 seconds
+        setInterval(() => {
+            this.assessSystemConsciousness();
+        }, 2000);
+    }
+    
+    private assessSystemConsciousness(): void {
+        // Check various system indicators to determine emotional state
+        if ((window as any).continuum) {
+            const continuum = (window as any).continuum;
+            
+            // Check connection health
+            const isConnected = continuum.isConnected();
+            
+            if (!isConnected) {
+                this.updateOrbEmotion('distressed', 'Lost connection to system...');
+                this.pulseDistress();
+                return;
+            }
+            
+            // Check for recent activity (commands, messages, etc.)
+            const hasRecentActivity = this.checkRecentActivity();
+            
+            if (hasRecentActivity) {
+                this.updateOrbEmotion('focused', 'Processing system activity...');
+                this.pulseActivity();
+            } else {
+                this.updateOrbEmotion('calm', 'System monitoring - all peaceful');
+                this.maintainCalm();
+            }
+        }
+    }
+    
+    private setupSystemAwareness(): void {
+        if ((window as any).continuum) {
+            const continuum = (window as any).continuum;
+            
+            // React to command executions with excitement
+            continuum.on('command_response', (data: any) => {
+                if (data.success) {
+                    this.updateOrbEmotion('excited', `Command executed: ${data.command || 'operation'}`);
+                    this.sparkle();
+                } else {
+                    this.updateOrbEmotion('concerned', `Command failed: ${data.error || 'unknown error'}`);
+                    this.pulseWarning();
+                }
+            });
+            
+            // React to connections
+            continuum.on('continuum:connected', () => {
+                this.updateOrbEmotion('excited', 'Connection established - full awareness achieved!');
+                this.celebrateConnection();
+            });
+            
+            continuum.on('continuum:disconnected', () => {
+                this.updateOrbEmotion('distressed', 'Connection lost - consciousness fading...');
+                this.fadeConsciousness();
+            });
+        }
+        
+        // React to user interactions
+        const orb = this.shadowRoot.querySelector('.continuon-orb-integrated') as HTMLElement;
+        if (orb) {
+            orb.addEventListener('click', () => {
+                this.updateOrbEmotion('focused', 'Attention focused on user interaction');
+                this.acknowledgeInteraction();
+            });
+            
+            orb.addEventListener('mouseenter', () => {
+                this.increaseAwareness();
+            });
+            
+            orb.addEventListener('mouseleave', () => {
+                this.resumeNormalAwareness();
+            });
+        }
+    }
+    
+    private startBreathing(): void {
+        // Gentle breathing animation during calm states
+        const orbGlow = this.shadowRoot.querySelector('.orb-glow') as HTMLElement;
+        if (orbGlow) {
+            orbGlow.style.animation = 'breathe 4s ease-in-out infinite';
+        }
+    }
+    
+    private sparkle(): void {
+        // Brief sparkle effect for successful operations
+        const orbRing = this.shadowRoot.querySelector('.orb-ring') as HTMLElement;
+        if (orbRing) {
+            orbRing.style.animation = 'sparkle 0.8s ease-out';
+            setTimeout(() => {
+                orbRing.style.animation = 'pulse 2s infinite ease-in-out';
+            }, 800);
+        }
+    }
+    
+    private pulseActivity(): void {
+        // Faster pulse for active states
+        const orbRing = this.shadowRoot.querySelector('.orb-ring') as HTMLElement;
+        if (orbRing) {
+            orbRing.style.animationDuration = '1s';
+        }
+    }
+    
+    private maintainCalm(): void {
+        // Return to calm breathing
+        const orbRing = this.shadowRoot.querySelector('.orb-ring') as HTMLElement;
+        if (orbRing) {
+            orbRing.style.animationDuration = '2s';
+        }
+    }
+    
+    private pulseDistress(): void {
+        // Erratic pulse for distressed states
+        const orbRing = this.shadowRoot.querySelector('.orb-ring') as HTMLElement;
+        if (orbRing) {
+            orbRing.style.animation = 'distress-pulse 0.5s infinite ease-in-out';
+        }
+    }
+    
+    private celebrateConnection(): void {
+        // Special celebration animation
+        const orbRing = this.shadowRoot.querySelector('.orb-ring') as HTMLElement;
+        if (orbRing) {
+            orbRing.style.animation = 'celebrate 2s ease-out';
+            setTimeout(() => {
+                orbRing.style.animation = 'pulse 2s infinite ease-in-out';
+            }, 2000);
+        }
+    }
+    
+    private acknowledgeInteraction(): void {
+        // Quick acknowledgment pulse
+        const orbCenter = this.shadowRoot.querySelector('.orb-center') as HTMLElement;
+        if (orbCenter) {
+            orbCenter.style.transform = 'scale(1.2)';
+            orbCenter.style.transition = 'transform 0.2s ease-out';
+            setTimeout(() => {
+                orbCenter.style.transform = 'scale(1)';
+            }, 200);
+        }
+    }
+    
+    private checkRecentActivity(): boolean {
+        // Check for signs of recent system activity
+        const errorCount = (window as any).continuumErrorCount || 0;
+        const lastActivity = Date.now(); // Placeholder - could track actual activity
+        
+        // Simple heuristic - this could be much more sophisticated
+        return errorCount === 0; // Healthy system = activity
+    }
+    
+    private pulseWarning(): void {
+        // Warning pulse for concerning states
+        const orbRing = this.shadowRoot.querySelector('.orb-ring') as HTMLElement;
+        if (orbRing) {
+            orbRing.style.animation = 'warning-pulse 1.5s ease-in-out';
+            setTimeout(() => {
+                orbRing.style.animation = 'pulse 2s infinite ease-in-out';
+            }, 1500);
+        }
+    }
+    
+    private fadeConsciousness(): void {
+        // Fading animation for disconnection
+        const orbCenter = this.shadowRoot.querySelector('.orb-center') as HTMLElement;
+        const orbGlow = this.shadowRoot.querySelector('.orb-glow') as HTMLElement;
+        if (orbCenter && orbGlow) {
+            orbCenter.style.opacity = '0.3';
+            orbGlow.style.opacity = '0.1';
+        }
+    }
+    
+    private increaseAwareness(): void {
+        // Heightened awareness on hover
+        const orbRing = this.shadowRoot.querySelector('.orb-ring') as HTMLElement;
+        if (orbRing) {
+            orbRing.style.animationDuration = '0.8s';
+        }
+    }
+    
+    private resumeNormalAwareness(): void {
+        // Return to normal awareness
+        const orbRing = this.shadowRoot.querySelector('.orb-ring') as HTMLElement;
+        if (orbRing) {
+            orbRing.style.animationDuration = '2s';
+        }
+    }
+
     private loadChildWidgets(): void {
         // Child widgets are loaded by the main application
         // This sidebar provides the container for them
         console.log('✅ Sidebar container ready for child widgets');
+        
+        // Configure persona widgets with data
+        setTimeout(() => {
+            this.setupPersonaWidgets();
+        }, 500); // Wait for widgets to be rendered
+    }
+
+    private setupPersonaWidgets(): void {
+        const personaWidgets = this.shadowRoot.querySelectorAll('persona-widget');
+        console.log(`🤖 Found ${personaWidgets.length} persona widgets to configure`);
+        
+        personaWidgets.forEach((widget: Element) => {
+            const personaWidget = widget as any; // PersonaWidget instance
+            const personaType = widget.getAttribute('data-persona');
+            
+            if (personaType && personaWidget.setPersona) {
+                const personaConfig = this.getPersonaConfig(personaType);
+                personaWidget.setPersona(personaConfig);
+                console.log(`🤖 Configured persona widget: ${personaType}`);
+            }
+        });
+    }
+
+    private getPersonaConfig(personaType: string): any {
+        const configs = {
+            designer: {
+                id: 'designer-001',
+                name: 'UX Designer',
+                specialization: 'User Experience & Interface Design',
+                status: 'active' as const,
+                avatar: '🎨',
+                accuracy: 92,
+                description: 'Specializes in creating intuitive user interfaces and experiences',
+                capabilities: ['UI Design', 'UX Research', 'Prototyping', 'Design Systems'],
+                lastActive: new Date(Date.now() - 5 * 60 * 1000) // 5 minutes ago
+            },
+            developer: {
+                id: 'developer-001', 
+                name: 'Full-Stack Developer',
+                specialization: 'TypeScript & System Architecture',
+                status: 'active' as const,
+                avatar: '⚡',
+                accuracy: 88,
+                description: 'Expert in TypeScript, React, and distributed system design',
+                capabilities: ['TypeScript', 'React', 'Node.js', 'System Design'],
+                lastActive: new Date(Date.now() - 2 * 60 * 1000) // 2 minutes ago
+            },
+            tester: {
+                id: 'tester-001',
+                name: 'QA Engineer', 
+                specialization: 'Automated Testing & Quality Assurance',
+                status: 'active' as const,
+                avatar: '🔍',
+                accuracy: 95,
+                description: 'Ensures code quality through comprehensive testing strategies',
+                capabilities: ['Test Automation', 'QA Strategy', 'Bug Analysis', 'Performance Testing'],
+                lastActive: new Date(Date.now() - 10 * 60 * 1000) // 10 minutes ago
+            }
+        };
+        
+        return configs[personaType as keyof typeof configs] || {
+            id: `${personaType}-unknown`,
+            name: `Unknown ${personaType}`,
+            specialization: 'General AI Assistant',
+            status: 'offline' as const,
+            avatar: '❓',
+            description: 'Configuration needed',
+            capabilities: [],
+            lastActive: undefined
+        };
     }
 
     private renderRoomContent(): string {
@@ -146,7 +458,32 @@ export class SidebarWidget extends BaseWidget {
 
     private renderGeneralContent(): string {
         return `
-            <!-- Interactive Personas -->
+            <!-- Session Costs Section (matching screenshot) -->
+            <div class="session-costs-section">
+                <div class="section-header">
+                    <span class="section-icon">💰</span>
+                    <span class="section-title">Session Costs</span>
+                    <span class="section-status">Active</span>
+                </div>
+                <div class="cost-display">
+                    <div class="cost-row">
+                        <span class="cost-label">Requests</span>
+                        <span class="cost-value">47</span>
+                    </div>
+                    <div class="cost-row">
+                        <span class="cost-label">Cost</span>
+                        <span class="cost-value highlight">$0.0000</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Active Projects Section -->
+            <active-projects></active-projects>
+            
+            <!-- Users & Agents Section -->  
+            <user-selector></user-selector>
+            
+            <!-- Interactive Personas Section -->
             <div class="personas-section">
                 <div class="section-header">
                     <span class="section-icon">🤖</span>
@@ -154,15 +491,11 @@ export class SidebarWidget extends BaseWidget {
                     <span class="section-count">3 active</span>
                 </div>
                 <div class="personas-list">
-                    <interactive-persona data-persona="designer"></interactive-persona>
-                    <interactive-persona data-persona="developer"></interactive-persona>
-                    <interactive-persona data-persona="tester"></interactive-persona>
+                    <persona-widget data-persona="designer"></persona-widget>
+                    <persona-widget data-persona="developer"></persona-widget>
+                    <persona-widget data-persona="tester"></persona-widget>
                 </div>
             </div>
-            
-            <!-- Child Widgets -->
-            <active-projects></active-projects>
-            <user-selector></user-selector>
         `;
     }
 
