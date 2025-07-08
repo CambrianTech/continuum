@@ -15,6 +15,7 @@
 
 import { BrowserDaemonManager } from './base/BrowserDaemonManager';
 import { BrowserConsoleDaemon } from './console/BrowserConsoleDaemon';
+import { BrowserWebSocketDaemon } from './websocket/BrowserWebSocketDaemon';
 import { BrowserFeatureFlags } from './BrowserFeatureFlags';
 
 interface DaemonControllerConfig {
@@ -29,6 +30,7 @@ interface DaemonControllerConfig {
 export class BrowserDaemonController {
   private daemonManager: BrowserDaemonManager;
   private consoleDaemon: BrowserConsoleDaemon | null = null;
+  private websocketDaemon: BrowserWebSocketDaemon | null = null;
   private isInitialized = false;
   private config: DaemonControllerConfig = {};
 
