@@ -11,7 +11,7 @@
  *   npm run test:daemons  (runs: npx tsx src/testing/ModularTestRunner.ts daemon)
  */
 
-import { AllWidgetsTestRunner } from '../ui/components/test/AllWidgetsTest';
+// Using IntelligentModularTestRunner instead of AllWidgetsTestRunner
 import * as path from 'path';
 import * as fs from 'fs';
 

@@ -2,7 +2,7 @@
   "name": "continuum-directory-core",
   "version": "1.0.0",
   "description": "continuum-directory core for Continuum",
-  "main": "ContinuumDirectoryCore.ts",
+  "main": "ContinuumDirectoryDaemon.ts",
   "type": "module",
   "continuum": {
     "type": "daemon",

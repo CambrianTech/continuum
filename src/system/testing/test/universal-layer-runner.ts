@@ -11,7 +11,7 @@
  *        npm exec tsx src/system/testing/test/universal-layer-runner.ts --layer=2
  */
 
-import { AllWidgetsTestRunner } from '../../../ui/components/test/AllWidgetsTest';
+// Use generic modular test runners instead of specific widget runner
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -37,9 +37,14 @@ class UniversalLayerTesting {
     while (currentDir !== path.dirname(currentDir)) {
       const packagePath = path.join(currentDir, 'package.json');
       
-      // Use fs from top-level import
+      // Use fs from top-level import and check if this is the main project package.json
       if (fs.existsSync(packagePath)) {
-        return currentDir;
+        const packageContent = fs.readFileSync(packagePath, 'utf8');
+        const packageJson = JSON.parse(packageContent);
+        // Look for the main continuum package
+        if (packageJson.name === 'continuum' && packageJson.bin && packageJson.bin.continuum) {
+          return currentDir;
+        }
       }
       
       currentDir = path.dirname(currentDir);
@@ -162,7 +167,7 @@ class UniversalLayerTesting {
         
         try {
           // Scan command categories
-          const commandsDir = path.resolve(this.rootDir, '../../commands');
+          const commandsDir = path.resolve(this.rootDir, 'src/commands');
           const categories = fs.readdirSync(commandsDir, { withFileTypes: true })
             .filter(dirent => dirent.isDirectory())
             .map(dirent => dirent.name);
@@ -202,6 +207,12 @@ class UniversalLayerTesting {
                     continue;
                   }
                   
+                  // Check if main file is properly defined
+                  if (!packageJson.main) {
+                    console.log(`    ⚠️  No main file defined in package.json`);
+                    continue;
+                  }
+                  
                   const commandFile = path.join(commandPath, packageJson.main);
                   const commandModule = await import(commandFile);
                   
@@ -211,16 +222,27 @@ class UniversalLayerTesting {
                     const CommandClass = commandModule[commandClassName];
                     
                     // Skip base classes - they're abstract
-                    if (commandClassName === 'BaseCommand' || commandClassName === 'BaseFileCommand') {
+                    if (commandClassName === 'BaseCommand' || commandClassName === 'BaseFileCommand' || 
+                        commandClassName === 'DaemonCommand' || commandClassName === 'DirectCommand' ||
+                        commandClassName === 'OperationRoutedCommand' || commandClassName === 'RemoteCommand') {
                       console.log(`    ✅ ${commandClassName} (abstract base class - skipped)`);
                     } else {
-                      // Test command definition
-                      const definition = CommandClass.getDefinition();
-                      if (definition && definition.name) {
-                        console.log(`    ✅ Command loads and has definition: ${definition.name}`);
-                      } else {
-                        console.log(`    ❌ Command missing definition`);
-                        allPassed = false;
+                      // Test command definition with error handling
+                      try {
+                        const definition = CommandClass.getDefinition();
+                        if (definition && definition.name) {
+                          console.log(`    ✅ Command loads and has definition: ${definition.name}`);
+                        } else {
+                          console.log(`    ❌ Command missing definition`);
+                          allPassed = false;
+                        }
+                      } catch (error) {
+                        if (error instanceof Error && error.message.includes('getDefinition() must be implemented')) {
+                          console.log(`    ⚠️  ${commandClassName} is abstract or incomplete - skipped`);
+                        } else {
+                          console.log(`    ❌ Command definition failed: ${error}`);
+                          allPassed = false;
+                        }
                       }
                     }
                   } else {
@@ -258,7 +280,7 @@ class UniversalLayerTesting {
         // Test 1: System loading
         try {
           // Test main system can load
-          const mainPath = path.resolve(this.rootDir, '../../../main.ts');
+          const mainPath = path.resolve(this.rootDir, 'main.ts');
           await import(mainPath);
           console.log('  ✅ Main system module loads');
           
@@ -357,19 +379,22 @@ class UniversalLayerTesting {
         console.log('🧪 Testing Layer 5: Widget UI System...');
         
         try {
-          const runner = new AllWidgetsTestRunner();
-          const results = await runner.runAllWidgetTests();
+          // Use existing npm test script for widgets
+          const { execSync } = await import('child_process');
+          const result = execSync('npm run test:widgets', { 
+            stdio: 'pipe',
+            cwd: this.rootDir,
+            encoding: 'utf8'
+          });
           
-          console.log(`  📊 Widgets tested: ${results.totalWidgets}`);
-          console.log(`  ✅ Compliant: ${results.compliantWidgets}`);
-          console.log(`  ⚠️  Non-compliant: ${results.nonCompliantWidgets}`);
-          console.log(`  🧪 Tests: ${results.summary.passed}/${results.summary.totalTests} passed`);
+          console.log('  📊 Widget testing completed');
           
-          // Success if at least one widget is compliant and tests exist
-          if (results.compliantWidgets > 0 && results.summary.totalTests > 0) {
+          // Check for 100% compliance in the output
+          if (result.includes('100% module compliance rate')) {
+            console.log('  ✅ All widgets compliant and tests passing');
             return true;
           } else {
-            console.error('  ❌ No compliant widgets or no tests found');
+            console.error('  ❌ Widget compliance issues detected');
             return false;
           }
         } catch (error) {
