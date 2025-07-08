@@ -51,7 +51,7 @@ describe('Browser Tab Adapter Unit Tests', () => {
       
       // Mock execAsync to simulate command failure
       const originalExecAsync = (adapter as any).execAsync;
-      (adapter as any).execAsync = async () => {
+      (adapter as any).execAsync = async (scriptFile: string, functionName: string, args: string[]) => {
         throw new Error('Command failed');
       };
       
@@ -68,8 +68,8 @@ describe('Browser Tab Adapter Unit Tests', () => {
       const adapter = new MacOperaAdapter();
       
       // Mock execAsync to return known output
-      (adapter as any).execAsync = async (command: string) => {
-        if (command.includes('countTabs')) {
+      (adapter as any).execAsync = async (scriptFile: string, functionName: string, args: string[]) => {
+        if (functionName === 'countTabs') {
           return { stdout: '3\n' }; // Simulate 3 tabs found
         }
         return { stdout: '' };
@@ -82,7 +82,7 @@ describe('Browser Tab Adapter Unit Tests', () => {
     test('should handle invalid AppleScript output', async () => {
       const adapter = new MacOperaAdapter();
       
-      (adapter as any).execAsync = async () => {
+      (adapter as any).execAsync = async (scriptFile: string, functionName: string, args: string[]) => {
         return { stdout: 'invalid\n' }; // Non-numeric output
       };
       
@@ -110,7 +110,7 @@ describe('Browser Tab Adapter Unit Tests', () => {
     test('should handle Chrome not available gracefully', async () => {
       const adapter = new MacChromeAdapter();
       
-      (adapter as any).execAsync = async () => {
+      (adapter as any).execAsync = async (scriptFile: string, functionName: string, args: string[]) => {
         throw new Error('Chrome not found');
       };
       
@@ -124,31 +124,34 @@ describe('Browser Tab Adapter Unit Tests', () => {
       const adapter = new MacOperaAdapter();
       
       // Mock execAsync to simulate AppleScript logic
-      (adapter as any).execAsync = async (command: string) => {
-        // Simulate the actual AppleScript logic we implemented
-        const mockTabs = [
-          'http://localhost:9000', // App URL - should match
-          'http://localhost:9000/', // App URL with trailing slash - should match  
-          'http://localhost:9000?session=abc', // App URL with query - should match
-          'http://localhost:9000#section', // App URL with fragment - should match
-          'http://localhost:9000/src/ui/components/shared/BaseWidget.js', // Debug URL - should NOT match
-          'http://localhost:9000/dist/ui/continuum-browser.js', // Debug URL - should NOT match
-        ];
-        
-        const targetPattern = 'http://localhost:9000';
-        let matchCount = 0;
-        
-        // Simulate the AppleScript matching logic we implemented
-        for (const url of mockTabs) {
-          if (url === targetPattern || 
-              url === targetPattern + '/' ||
-              url.startsWith(targetPattern + '?') ||
-              url.startsWith(targetPattern + '#')) {
-            matchCount++;
+      (adapter as any).execAsync = async (scriptFile: string, functionName: string, args: string[]) => {
+        if (functionName === 'countTabs') {
+          // Simulate the actual AppleScript logic we implemented
+          const mockTabs = [
+            'http://localhost:9000', // App URL - should match
+            'http://localhost:9000/', // App URL with trailing slash - should match  
+            'http://localhost:9000?session=abc', // App URL with query - should match
+            'http://localhost:9000#section', // App URL with fragment - should match
+            'http://localhost:9000/src/ui/components/shared/BaseWidget.js', // Debug URL - should NOT match
+            'http://localhost:9000/dist/ui/continuum-browser.js', // Debug URL - should NOT match
+          ];
+          
+          const targetPattern = args[0]; // First argument is the URL pattern
+          let matchCount = 0;
+          
+          // Simulate the AppleScript matching logic we implemented
+          for (const url of mockTabs) {
+            if (url === targetPattern || 
+                url === targetPattern + '/' ||
+                url.startsWith(targetPattern + '?') ||
+                url.startsWith(targetPattern + '#')) {
+              matchCount++;
+            }
           }
+          
+          return { stdout: matchCount.toString() + '\n' };
         }
-        
-        return { stdout: matchCount.toString() + '\n' };
+        return { stdout: '0\n' };
       };
       
       const count = await adapter.countTabs('http://localhost:9000');
@@ -160,12 +163,16 @@ describe('Browser Tab Adapter Unit Tests', () => {
     test('should handle different URL patterns', async () => {
       const adapter = new MacOperaAdapter();
       
-      (adapter as any).execAsync = async (command: string) => {
-        // Simulate different results for different URLs
-        if (command.includes('localhost:9000')) {
-          return { stdout: '2\n' };
-        } else if (command.includes('localhost:3000')) {
-          return { stdout: '1\n' };
+      (adapter as any).execAsync = async (scriptFile: string, functionName: string, args: string[]) => {
+        if (functionName === 'countTabs') {
+          const urlPattern = args[0];
+          // Simulate different results for different URLs
+          if (urlPattern.includes('localhost:9000')) {
+            return { stdout: '2\n' };
+          } else if (urlPattern.includes('localhost:3000')) {
+            return { stdout: '1\n' };
+          }
+          return { stdout: '0\n' };
         }
         return { stdout: '0\n' };
       };
@@ -183,7 +190,7 @@ describe('Browser Tab Adapter Unit Tests', () => {
       const adapter = new MacOperaAdapter();
       
       let callCount = 0;
-      (adapter as any).execAsync = async () => {
+      (adapter as any).execAsync = async (scriptFile: string, functionName: string, args: string[]) => {
         callCount++;
         await new Promise(resolve => setTimeout(resolve, 10)); // Simulate async work
         return { stdout: '1\n' };
@@ -208,7 +215,7 @@ describe('Browser Tab Adapter Unit Tests', () => {
     test('should handle AppleScript syntax errors', async () => {
       const adapter = new MacOperaAdapter();
       
-      (adapter as any).execAsync = async () => {
+      (adapter as any).execAsync = async (scriptFile: string, functionName: string, args: string[]) => {
         throw new Error('syntax error: Expected end of line but found identifier');
       };
       
@@ -219,7 +226,7 @@ describe('Browser Tab Adapter Unit Tests', () => {
     test('should handle system command timeouts', async () => {
       const adapter = new MacOperaAdapter();
       
-      (adapter as any).execAsync = async () => {
+      (adapter as any).execAsync = async (scriptFile: string, functionName: string, args: string[]) => {
         throw new Error('Command timed out');
       };
       
@@ -230,7 +237,7 @@ describe('Browser Tab Adapter Unit Tests', () => {
     test('should handle process permission errors', async () => {
       const adapter = new MacOperaAdapter();
       
-      (adapter as any).execAsync = async () => {
+      (adapter as any).execAsync = async (scriptFile: string, functionName: string, args: string[]) => {
         throw new Error('Operation not permitted');
       };
       

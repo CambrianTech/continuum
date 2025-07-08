@@ -3,11 +3,8 @@
  * Inspired by claude/testing-autonomy but adapted for our TypeScript daemon architecture
  */
 
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { platform } from 'os';
-
-const execAsync = promisify(exec);
+import { appleScriptExecutor } from './AppleScriptExecutor';
 
 export interface TabCloseResult {
   browser: string;
@@ -29,6 +26,14 @@ export abstract class BaseBrowserAdapter {
       return url;
     }
   }
+
+  /**
+   * Execute AppleScript - can be mocked in tests
+   */
+  protected async execAsync(scriptFile: string, functionName: string, args: string[]): Promise<{ stdout: string }> {
+    const result = await appleScriptExecutor.executeScript(scriptFile, functionName, args);
+    return { stdout: result.stdout };
+  }
 }
 
 /**
@@ -40,35 +45,8 @@ export class MacOperaAdapter extends BaseBrowserAdapter {
   }
   
   async closeTabs(_urlPattern: string): Promise<number> {
-    const script = `
-      tell application "Opera GX"
-        set closedCount to 0
-        set foundFirst to false
-        repeat with w in (get windows)
-          set tabList to tabs of w
-          repeat with i from (count of tabList) to 1 by -1
-            set t to item i of tabList
-            set currentURL to URL of t
-            -- Match ONLY the exact URL (no paths, only query params/fragments allowed)
-            if (currentURL is equal to "${_urlPattern}") or ¬
-               (currentURL is equal to "${_urlPattern}/") or ¬
-               (currentURL starts with "${_urlPattern}?") or ¬
-               (currentURL starts with "${_urlPattern}#") then
-              if foundFirst then
-                close t
-                set closedCount to closedCount + 1
-              else
-                set foundFirst to true
-              end if
-            end if
-          end repeat
-        end repeat
-        return closedCount
-      end tell
-    `;
-    
     try {
-      const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
+      const { stdout } = await this.execAsync('OperaTabManager.applescript', 'closeTabs', [_urlPattern]);
       return parseInt(stdout.trim()) || 0;
     } catch {
       return 0;
@@ -76,27 +54,8 @@ export class MacOperaAdapter extends BaseBrowserAdapter {
   }
   
   async countTabs(_urlPattern: string): Promise<number> {
-    const script = `
-      tell application "Opera GX"
-        set tabCount to 0
-        repeat with w in windows
-          repeat with t in tabs of w
-            set currentURL to URL of t
-            -- Match ONLY the exact URL (no paths, only query params/fragments allowed)
-            if (currentURL is equal to "${_urlPattern}") or ¬
-               (currentURL is equal to "${_urlPattern}/") or ¬
-               (currentURL starts with "${_urlPattern}?") or ¬
-               (currentURL starts with "${_urlPattern}#") then
-              set tabCount to tabCount + 1
-            end if
-          end repeat
-        end repeat
-        return tabCount
-      end tell
-    `;
-    
     try {
-      const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
+      const { stdout } = await this.execAsync('OperaTabManager.applescript', 'countTabs', [_urlPattern]);
       return parseInt(stdout.trim()) || 0;
     } catch {
       return 0;
@@ -104,54 +63,8 @@ export class MacOperaAdapter extends BaseBrowserAdapter {
   }
   
   async focusTab(_urlPattern: string): Promise<boolean> {
-    const script = `
-      tell application "Opera GX"
-        -- First pass: Look for exact match only (highest priority)
-        repeat with w in windows
-          repeat with t in tabs of w
-            set currentURL to URL of t
-            if (currentURL is equal to "${_urlPattern}") then
-              set active tab index of w to index of t
-              set index of w to 1
-              activate
-              return "found-exact"
-            end if
-          end repeat
-        end repeat
-        
-        -- Second pass: Look for exact match with trailing slash
-        repeat with w in windows
-          repeat with t in tabs of w
-            set currentURL to URL of t
-            if (currentURL is equal to "${_urlPattern}/") then
-              set active tab index of w to index of t
-              set index of w to 1
-              activate
-              return "found-slash"
-            end if
-          end repeat
-        end repeat
-        
-        -- Third pass: Look for query params or fragments
-        repeat with w in windows
-          repeat with t in tabs of w
-            set currentURL to URL of t
-            if (currentURL starts with "${_urlPattern}?") or ¬
-               (currentURL starts with "${_urlPattern}#") then
-              set active tab index of w to index of t
-              set index of w to 1
-              activate
-              return "found-params"
-            end if
-          end repeat
-        end repeat
-        
-        return "not found"
-      end tell
-    `;
-    
     try {
-      const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
+      const { stdout } = await this.execAsync('OperaTabManager.applescript', 'focusTab', [_urlPattern]);
       return stdout.trim().startsWith('found-');
     } catch {
       return false;
@@ -168,30 +81,8 @@ export class MacChromeAdapter extends BaseBrowserAdapter {
   }
   
   async closeTabs(_urlPattern: string): Promise<number> {
-    const script = `
-      tell application "Google Chrome"
-        set closedCount to 0
-        set foundFirst to false
-        repeat with w in (get windows)
-          set tabList to tabs of w
-          repeat with i from (count of tabList) to 1 by -1
-            set t to item i of tabList
-            if (URL of t contains "${_urlPattern}") then
-              if foundFirst then
-                close t
-                set closedCount to closedCount + 1
-              else
-                set foundFirst to true
-              end if
-            end if
-          end repeat
-        end repeat
-        return closedCount
-      end tell
-    `;
-    
     try {
-      const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
+      const { stdout } = await this.execAsync('ChromeTabManager.applescript', 'closeTabs', [_urlPattern]);
       return parseInt(stdout.trim()) || 0;
     } catch {
       return 0;
@@ -199,22 +90,8 @@ export class MacChromeAdapter extends BaseBrowserAdapter {
   }
   
   async countTabs(_urlPattern: string): Promise<number> {
-    const script = `
-      tell application "Google Chrome"
-        set tabCount to 0
-        repeat with w in windows
-          repeat with t in tabs of w
-            if (URL of t contains "${_urlPattern}") then
-              set tabCount to tabCount + 1
-            end if
-          end repeat
-        end repeat
-        return tabCount
-      end tell
-    `;
-    
     try {
-      const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
+      const { stdout } = await this.execAsync('ChromeTabManager.applescript', 'countTabs', [_urlPattern]);
       return parseInt(stdout.trim()) || 0;
     } catch {
       return 0;
@@ -222,8 +99,12 @@ export class MacChromeAdapter extends BaseBrowserAdapter {
   }
   
   async focusTab(_urlPattern: string): Promise<boolean> {
-    // Similar to Opera implementation
-    return false;
+    try {
+      const { stdout } = await this.execAsync('ChromeTabManager.applescript', 'focusTab', [_urlPattern]);
+      return stdout.trim().startsWith('found');
+    } catch {
+      return false;
+    }
   }
 }
 
