@@ -27,8 +27,11 @@ export class ConsoleForwarder {
   }
 
   enableConsoleForwarding(): void {
-    if (this.consoleForwarding) return;
-    
+    if (this.consoleForwarding) {
+      console.warn('⚠️ Console forwarding is already enabled, called twice?');
+      return;
+    }
+
     // Store original console methods
     this.originalConsole = {
       log: console.log.bind(console),
@@ -37,6 +40,8 @@ export class ConsoleForwarder {
       info: console.info.bind(console),
       trace: console.trace.bind(console)
     };
+
+    this.originalConsole.log('🔄 Enabling console forwarding...');
 
     // Override console methods
     console.log = (...args: unknown[]): void => {
@@ -106,9 +111,9 @@ export class ConsoleForwarder {
     this.consoleMessageQueue.push(consoleCommand);
   }
 
-  private executeConsoleCommand(consoleCommand: ConsoleCommand): void {
+  private executeConsoleCommand(consoleCommand: ConsoleCommand, prefix="🔄"): void {
     if (this.executeCallback) {
-      this.originalConsole.log(`🔄 Executing console command: ${consoleCommand.action}`, consoleCommand);
+      this.originalConsole.log(`${prefix} Executing console command: ${consoleCommand.action}`, consoleCommand);
       this.executeCallback('console', consoleCommand).catch((e) => {
         this.originalConsole.error(`❌ Failed to execute console command: ${consoleCommand.action}`, consoleCommand, e);
       });
@@ -117,10 +122,10 @@ export class ConsoleForwarder {
 
   executeAndFlushConsoleMessageQueue(): void {
     if (this.consoleMessageQueue.length > 0 && this.executeCallback) {
-      console.log(`🔄 Flushing ${this.consoleMessageQueue.length} queued console messages`);
+      console.log(`🚽 Flushing ${this.consoleMessageQueue.length} queued console messages`);
       
       // Send all queued messages
-      this.consoleMessageQueue.forEach(consoleCommand => this.executeConsoleCommand(consoleCommand));
+      this.consoleMessageQueue.forEach(consoleCommand => this.executeConsoleCommand(consoleCommand, '🚽'));
       
       // Clear the queue
       this.consoleMessageQueue = [];
