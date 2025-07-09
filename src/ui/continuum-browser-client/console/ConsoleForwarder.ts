@@ -71,7 +71,7 @@ export class ConsoleForwarder {
   private forwardConsole(type: string, args: unknown[]): void {
     // Forward as soon as console forwarding is enabled (connected state)
     if (this.getState() !== 'connected' && this.getState() !== 'ready') {
-      console.warn(`⚠️ Console forwarding is not active, queuing message: ${type}`, args);
+      this.originalConsole.warn(`⚠️ Console forwarding is not active, queuing message: ${type}`, args);
       this.queueConsoleMessage({
         action: type,
         message: args.map(arg => String(arg)).join(' '),
@@ -91,9 +91,7 @@ export class ConsoleForwarder {
 
       // Only execute if we're in ready state, otherwise queue for later
       if (this.getState() === 'ready' && this.executeCallback) {
-        this.executeCallback('console', consoleCommand).catch((e) => {
-          this.originalConsole.error(`❌ Failed to execute queued console command: ${consoleCommand.action}`, consoleCommand, e);
-        });
+        this.executeConsoleCommand(consoleCommand);
       } else {
         // Queue message for when we reach ready state
         this.queueConsoleMessage(consoleCommand);
@@ -108,16 +106,21 @@ export class ConsoleForwarder {
     this.consoleMessageQueue.push(consoleCommand);
   }
 
+  private executeConsoleCommand(consoleCommand: ConsoleCommand): void {
+    if (this.executeCallback) {
+      this.originalConsole.log(`🔄 Executing console command: ${consoleCommand.action}`, consoleCommand);
+      this.executeCallback('console', consoleCommand).catch((e) => {
+        this.originalConsole.error(`❌ Failed to execute console command: ${consoleCommand.action}`, consoleCommand, e);
+      });
+    }
+  }
+
   executeAndFlushConsoleMessageQueue(): void {
     if (this.consoleMessageQueue.length > 0 && this.executeCallback) {
       console.log(`🔄 Flushing ${this.consoleMessageQueue.length} queued console messages`);
       
       // Send all queued messages
-      this.consoleMessageQueue.forEach(consoleCommand => {
-        this.executeCallback!('console', consoleCommand).catch((e) => {
-          this.originalConsole.error(`❌ Failed to execute queued console command: ${consoleCommand.action}`, consoleCommand, e);
-        });
-      });
+      this.consoleMessageQueue.forEach(consoleCommand => this.executeConsoleCommand(consoleCommand));
       
       // Clear the queue
       this.consoleMessageQueue = [];
