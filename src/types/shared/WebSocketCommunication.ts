@@ -67,7 +67,47 @@ export interface ServerToBrowserCommandResult {
 }
 
 /**
- * Console Log Forwarding from Browser
+ * Universal Log Entry - Used by both browser and server logging
+ * Matches the actual JSON structure written to log files
+ */
+export interface LogEntry {
+  consoleLogLevel: 'debug' | 'log' | 'info' | 'warn' | 'error';
+  consoleMessage: string;
+  consoleArguments?: Array<{
+    argumentType: 'string' | 'number' | 'boolean' | 'object' | 'function' | 'undefined' | 'null';
+    argumentValue: string; // Serialized representation
+    originalValue?: unknown; // For simple types
+  }>;
+  browserContext?: {
+    sourceFileName?: string;
+    sourceLineNumber?: number;
+    sourceColumnNumber?: number;
+    functionName?: string;
+    stackTrace: string;
+    currentUrl: string;
+    userAgent: string;
+    viewportWidth: number;
+    viewportHeight: number;
+    timestamp: string;
+  };
+  serverContext?: {
+    daemonName: string;
+    processId: number;
+    daemonVersion?: string;
+    methodName?: string;
+    fileName?: string;
+    lineNumber?: number;
+    stackTrace?: string;
+    connectionId?: string;
+    timestamp: string;
+  };
+  serverTimestamp: string;
+  sessionId: string;
+}
+
+/**
+ * Console Log Forwarding from Browser (alias for compatibility)
+ * @deprecated Use LogEntry instead for new code
  */
 export interface BrowserConsoleLogForwarding {
   consoleLogLevel: 'debug' | 'log' | 'info' | 'warn' | 'error';
