@@ -1,18 +1,21 @@
 # Auto-Build & Version System Workflow
 
-## 🎯 Automated Build Integration
+## 🎯 ONE-COMMAND LAUNCH SYSTEM
 
-### **Commands That Auto-Build**
+### **NPM START DOES EVERYTHING**
 
-All primary development commands now automatically increment version and rebuild browser JS:
+The complete system launches with a single command:
 
 ```bash
-# All these commands auto-rebuild with version increment:
-npm run dev          # Auto-build → Start development mode
-npm run launch       # Auto-build → Start full system  
-npm start:full       # Auto-build → Start with all features
-./continuum          # Uses launch internally → auto-builds
+npm start   # TypeScript check → build → launch → browser
 ```
+
+**Complete workflow:**
+1. TypeScript compilation check (`npx tsc --noEmit`)
+2. Version increment and browser JS rebuild
+3. Daemon system launch
+4. Browser auto-opens to localhost:9000
+5. Session logging and console forwarding active
 
 ### **Build Process Flow**
 
