@@ -81,7 +81,7 @@ export class ContinuumBrowserClient implements ContinuumAPI {
         break;
       case 'ready':
         this.readyCallbacks.forEach(callback => callback());
-        this.consoleForwarder.flushConsoleMessageQueue();
+        this.consoleForwarder.executeAndFlushConsoleMessageQueue();
         console.log('✅ Continuum API ready for use');
         this.consoleForwarder.performHealthCheck();
         break;

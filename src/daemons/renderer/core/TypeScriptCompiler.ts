@@ -29,7 +29,7 @@ export class TypeScriptCompiler {
     return this.compileTypeScript(tsSource, options);
   }
 
-  async compileWidgetComponent(source: string, _filePath: string): Promise<string> {
+  async compileWidgetComponent(source: string, _filePath: string, options?: any): Promise<string> {
     // Compile widget TypeScript to JavaScript for browser
     const compilerOptions: ts.CompilerOptions = {
       target: ts.ScriptTarget.ES2020,
@@ -38,7 +38,8 @@ export class TypeScriptCompiler {
       strict: false,
       skipLibCheck: true,
       removeComments: false,
-      allowSyntheticDefaultImports: true
+      allowSyntheticDefaultImports: true,
+      ...options
     };
 
     // Transform imports to be browser-compatible
