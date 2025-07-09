@@ -119,26 +119,18 @@ echo "🧪 INTEGRATION TESTS: ✅ All passing"
 echo "🛡️ IMMUNE SYSTEM: ✅ Protecting production"
 echo ""
 
-# 📝 APPEND SCORECARD TO RECENT COMMIT MESSAGE (for push context)
-printf "\n\n🔍 Appending system health scorecard to most recent commit...\n"
+# 📝 DISPLAY SCORECARD (removed commit amend - pre-push hooks should not modify commits)
+printf "\n\n🔍 Displaying system health scorecard...\n"
 
-# Generate concise scorecard for commit message
+# Generate concise scorecard for display only
 SCORECARD_TEXT=$(npx tsx src/testing/generate-system-scorecard.ts 2>/dev/null)
 
 if [ $? -eq 0 ] && [ -n "$SCORECARD_TEXT" ]; then
-    # Amend the most recent commit to include the scorecard
-    CURRENT_COMMIT_MSG=$(git log -1 --pretty=%B)
-    
-    # Check if scorecard is already in the commit message
-    if echo "$CURRENT_COMMIT_MSG" | grep -q "📊 System Health:"; then
-        printf "⚠️ Scorecard already present in commit message - skipping append\n"
-    else
-        # Amend the commit with the scorecard
-        echo "$CURRENT_COMMIT_MSG$SCORECARD_TEXT" | git commit --amend --no-edit -F -
-        printf "✅ System health scorecard appended to commit message\n"
-    fi
+    printf "📊 System Health Scorecard:\n"
+    printf "%s\n" "$SCORECARD_TEXT"
+    printf "✅ System health scorecard generated\n"
 else
-    printf "⚠️ Failed to generate scorecard - not appended to commit message\n"
+    printf "⚠️ Failed to generate scorecard\n"
 fi
 
 echo ""
