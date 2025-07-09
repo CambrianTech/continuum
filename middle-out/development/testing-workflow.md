@@ -20,8 +20,8 @@ Each layer builds on the previous – test failures cascade down:
 ### Step 1: Fix All Compilation Errors
 
 ```bash
-npx tsc --noEmit --project .
-# Must return 0 errors before proceeding
+npm start
+# Automatically: TypeScript check + Build + Clean + Run
 ```
 
 ### Step 2: Write Unit Tests
