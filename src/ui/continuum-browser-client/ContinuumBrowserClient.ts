@@ -4,8 +4,8 @@
  */
 
 import packageJson from '../../../package.json';
-import { ContinuumAPI, ContinuumState, CommandResult } from './types/BrowserClientTypes';
-import { CommandExecuteData } from './types/WebSocketTypes';
+import type { ContinuumAPI, ContinuumState, CommandResult } from './types/BrowserClientTypes';
+import type { CommandExecuteData } from './types/WebSocketTypes';
 import { ConsoleForwarder } from './console/ConsoleForwarder';
 import { WebSocketManager } from './connection/WebSocketManager';
 
@@ -77,7 +77,7 @@ export class ContinuumBrowserClient implements ContinuumAPI {
   private handleStateChange(state: ContinuumState): void {
     switch (state) {
       case 'connected':
-        this.consoleForwarder.enableConsoleForwarding();
+        console.log('🔌 Continuum API connected to server');
         break;
       case 'ready':
         this.readyCallbacks.forEach(callback => callback());
