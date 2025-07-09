@@ -7,8 +7,8 @@ import { MessageRoutedDaemon, MessageRouteMap, MessageRouteHandler } from '../ba
 import { DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
 import { HTMLRenderingEngine } from './core/HTMLRenderingEngine';
-import { TypeScriptCompiler } from './core/TypeScriptCompiler';
 import { VersionService } from './core/VersionService';
+import { widgetManager } from '../../ui/components/core/WidgetManager';
 
 export interface RenderRequest {
   readonly type: 'render_ui' | 'update_component' | 'render_page';
@@ -30,7 +30,6 @@ export class RendererDaemon extends MessageRoutedDaemon {
   public readonly daemonType = DaemonType.RENDERER;
 
   private htmlEngine: HTMLRenderingEngine;
-  private tsCompiler: TypeScriptCompiler;
   private versionService: VersionService;
   
   // MessageRoutedDaemon implementation
@@ -40,7 +39,11 @@ export class RendererDaemon extends MessageRoutedDaemon {
     return {
       'render_ui': (data: unknown) => this.handleRenderUI(data as RenderRequest),
       'update_component': (data: unknown) => this.handleUpdateComponent(data as RenderRequest),
-      'render_page': (data: unknown) => this.handleRenderPage(data as RenderRequest)
+      'render_page': (data: unknown) => this.handleRenderPage(data as RenderRequest),
+      'render_widget': (data: unknown) => this.handleRenderWidget(data as { name: string }),
+      'get_widget_assets': (data: unknown) => this.handleGetWidgetAssets(data as { name: string }),
+      'get_widget_script': (data: unknown) => this.handleGetWidgetScript(data as { name: string }),
+      'get_widget_styles': (data: unknown) => this.handleGetWidgetStyles(data as { name: string })
     };
   }
 
@@ -54,13 +57,27 @@ export class RendererDaemon extends MessageRoutedDaemon {
   constructor() {
     super();
     this.htmlEngine = new HTMLRenderingEngine();
-    this.tsCompiler = new TypeScriptCompiler();
     this.versionService = new VersionService();
   }
 
   protected async onStart(): Promise<void> {
     this.log('🎨 Starting clean modular Renderer Daemon...');
-    this.log('✅ Renderer Daemon started with modular architecture');
+    
+    // Initialize widget system
+    try {
+      this.log('🔧 Initializing widget system...');
+      await widgetManager.initialize({
+        baseUrl: 'http://localhost:9000',
+        assetsPath: '/src/ui/components',
+        compilationEnabled: true,
+        developmentMode: true
+      });
+      this.log('✅ Widget system initialized successfully');
+    } catch (error) {
+      this.log(`❌ Widget system initialization failed: ${error}`, 'error');
+    }
+    
+    this.log('✅ Renderer Daemon started with modular architecture and widget system');
   }
 
   public async registerRoutesWithWebSocket(): Promise<void> {
@@ -223,46 +240,62 @@ export class RendererDaemon extends MessageRoutedDaemon {
           }
         }
 
-        case 'serve_ui_component':
-         {
-           // Serve widget files dynamically based on pathname
-          const fs2 = await import('fs');
-          const path2 = await import('path');
-          const { fileURLToPath: fileURLToPath2 } = await import('url');
+        case 'serve_ui_component': {
+          // Serve widget files dynamically using widget system
+          const pathParts = pathname.split('/');
+          const widgetName = pathParts[pathParts.length - 2]; // Extract widget name from path
+          const fileName = pathParts[pathParts.length - 1];
           
-          const __dirname2 = path2.dirname(fileURLToPath2(import.meta.url));
-          // Convert /src/ui/components/Chat/ChatWidget.js to actual file path
-          const relativePath = pathname.replace(/^\/src\/ui\//, '');
-          let componentPath = path2.join(__dirname2, '../../ui/', relativePath);
-          
-          // Try .ts extension if .js doesn't exist
-          if (!fs2.existsSync(componentPath) && pathname.endsWith('.js')) {
-            const tsPath = componentPath.replace(/\.js$/, '.ts');
-            if (fs2.existsSync(tsPath)) {
-              // Compile TypeScript to JavaScript on the fly
-              const content = fs2.readFileSync(tsPath, 'utf-8');
-              const compiledJS = await this.tsCompiler.compileWidgetComponent(content, tsPath);
+          try {
+            if (fileName.endsWith('.js')) {
+              // Serve compiled JavaScript
+              const script = await widgetManager.getWidgetScript(widgetName);
               return {
                 success: true,
                 data: {
                   contentType: 'application/javascript',
-                  content: compiledJS,
+                  content: script,
                   headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
                 }
               };
-            }
-          }
-          
-          // Serve existing JS file
-          if (fs2.existsSync(componentPath)) {
-            const content = fs2.readFileSync(componentPath, 'utf-8');
-            return {
-              success: true,
-              data: {
-                contentType: 'application/javascript',
-                content,
-                headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+            } else if (fileName.endsWith('.css')) {
+              // Serve CSS styles
+              const styles = await widgetManager.getWidgetStyles(widgetName);
+              return {
+                success: true,
+                data: {
+                  contentType: 'text/css',
+                  content: styles,
+                  headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+                }
+              };
+            } else {
+              // Serve other assets
+              const fs2 = await import('fs');
+              const path2 = await import('path');
+              const { fileURLToPath: fileURLToPath2 } = await import('url');
+              
+              const __dirname2 = path2.dirname(fileURLToPath2(import.meta.url));
+              const relativePath = pathname.replace(/^\/src\/ui\//, '');
+              const componentPath = path2.join(__dirname2, '../../ui/', relativePath);
+              
+              if (fs2.existsSync(componentPath)) {
+                const content = fs2.readFileSync(componentPath, 'utf-8');
+                return {
+                  success: true,
+                  data: {
+                    contentType: this.getContentType(fileName),
+                    content,
+                    headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+                  }
+                };
               }
+            }
+          } catch (error) {
+            console.error(`❌ Error serving widget component ${pathname}:`, error);
+            return {
+              success: false,
+              error: `Failed to serve widget component: ${pathname}`
             };
           }
           
@@ -285,6 +318,85 @@ export class RendererDaemon extends MessageRoutedDaemon {
         success: false,
         error: errorMessage
       };
+    }
+  }
+
+  // Widget system handlers
+  private async handleRenderWidget(data: { name: string }): Promise<DaemonResponse> {
+    try {
+      const html = await widgetManager.renderWidget(data.name);
+      return {
+        success: true,
+        data: { html }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `Failed to render widget ${data.name}: ${errorMessage}`
+      };
+    }
+  }
+
+  private async handleGetWidgetAssets(data: { name: string }): Promise<DaemonResponse> {
+    try {
+      const assets = await widgetManager.getWidgetAssets(data.name);
+      return {
+        success: true,
+        data: { assets }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `Failed to get widget assets for ${data.name}: ${errorMessage}`
+      };
+    }
+  }
+
+  private async handleGetWidgetScript(data: { name: string }): Promise<DaemonResponse> {
+    try {
+      const script = await widgetManager.getWidgetScript(data.name);
+      return {
+        success: true,
+        data: { script }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `Failed to get widget script for ${data.name}: ${errorMessage}`
+      };
+    }
+  }
+
+  private async handleGetWidgetStyles(data: { name: string }): Promise<DaemonResponse> {
+    try {
+      const styles = await widgetManager.getWidgetStyles(data.name);
+      return {
+        success: true,
+        data: { styles }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `Failed to get widget styles for ${data.name}: ${errorMessage}`
+      };
+    }
+  }
+
+  private getContentType(filename: string): string {
+    const ext = filename.split('.').pop()?.toLowerCase();
+    switch (ext) {
+      case 'js': return 'application/javascript';
+      case 'css': return 'text/css';
+      case 'html': return 'text/html';
+      case 'json': return 'application/json';
+      case 'png': return 'image/png';
+      case 'jpg': case 'jpeg': return 'image/jpeg';
+      case 'svg': return 'image/svg+xml';
+      default: return 'text/plain';
     }
   }
 
