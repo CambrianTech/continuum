@@ -555,18 +555,8 @@ class ContinuumBrowserAPI implements ContinuumAPI {
             }
           });
 
-          // Automatically send connect command to establish session
-          console.log('🔌 Sending connect command to establish session...');
-          try {
-            const connectResult = await this.execute('connect', {
-              sessionType: 'development',
-              owner: 'shared',
-              forceNew: false
-            });
-            console.log('🔌 Connect result:', connectResult);
-          } catch (error) {
-            console.error('❌ Failed to establish session:', error);
-          }
+          // Note: Session connection is handled by CLI, no need for browser to also connect
+          console.log('🔌 WebSocket connected - waiting for session_ready message from CLI...');
 
           this.emit('continuum:connected');
           resolve();

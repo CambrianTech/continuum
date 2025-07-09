@@ -1442,6 +1442,11 @@ export class SessionManagerDaemon extends BaseDaemon {
   ): Promise<BrowserSession> {
     // For development sessions, try to find an existing shared session
     if (sessionType === 'development') {
+      // RACE CONDITION FIX: Wait for CLI connect command to complete first
+      // The CLI connect command runs first and creates the shared session
+      // WebSocket connections wait 500ms to allow CLI session creation to complete
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
       const existingSessions = Array.from(this.sessions.values())
         .filter(s => s.type === 'development' && s.isActive && s.owner === 'shared');
       
