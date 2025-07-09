@@ -7,8 +7,51 @@
 
 import { DirectCommand } from '../direct-command/DirectCommand';
 import { CommandResult, WebSocketCommandContext, CommandDefinition } from '../base-command/BaseCommand';
+import { BrowserConsoleLogForwarding } from '../../../types/shared/WebSocketCommunication';
 
 export class ConsoleCommand extends DirectCommand {
+  /**
+   * Normalize any client input format into our well-defined shared type
+   * Server-side only - ensures type safety regardless of what client sends
+   */
+  private static normalizeToSharedType(params: any): BrowserConsoleLogForwarding {
+    // If already in shared type format, use as-is
+    if (params.consoleLogLevel && params.consoleMessage) {
+      return params as BrowserConsoleLogForwarding;
+    }
+    
+    // Legacy format - convert to shared type
+    const { action, message, source, data, level, args, timestamp, ...rest } = params;
+    
+    return {
+      consoleLogLevel: (action || level || 'log') as 'debug' | 'log' | 'info' | 'warn' | 'error',
+      consoleMessage: message || '',
+      consoleArguments: Array.isArray(args) ? args.map((arg: any) => {
+        const argType = typeof arg;
+        // Map TypeScript types to shared type specification
+        const mappedType = argType === 'bigint' || argType === 'symbol' ? 'string' : 
+                          arg === null ? 'null' : argType;
+        return {
+          argumentType: mappedType as 'string' | 'number' | 'boolean' | 'object' | 'function' | 'undefined' | 'null',
+          argumentValue: String(arg),
+          originalValue: arg
+        };
+      }) : [],
+      browserContext: {
+        sourceFileName: data?.fileName || rest.fileName,
+        sourceLineNumber: data?.lineNumber || rest.lineNumber,
+        sourceColumnNumber: data?.columnNumber || rest.columnNumber,
+        functionName: data?.functionName || rest.functionName,
+        stackTrace: data?.stackTrace || rest.stackTrace || '',
+        currentUrl: data?.url || rest.url || '',
+        userAgent: data?.userAgent || rest.userAgent || '',
+        viewportWidth: data?.viewport?.width || rest.viewportWidth || 0,
+        viewportHeight: data?.viewport?.height || rest.viewportHeight || 0,
+        timestamp: timestamp || data?.timestamp || new Date().toISOString()
+      }
+    };
+  }
+
   static getDefinition(): CommandDefinition {
     return {
       name: 'console',
@@ -51,52 +94,48 @@ export class ConsoleCommand extends DirectCommand {
 
   protected static async executeOperation(params: any = {}, context: WebSocketCommandContext): Promise<CommandResult> {
     try {
-      // BROWSER LOGS FIX: Write to server log immediately to verify execution
-      console.log(`🎯 BROWSER LOG FIX: ConsoleCommand.executeOperation CALLED!`);
-      console.log(`🎯 Parameters received:`, params);
-      console.log(`🎯 Context sessionId:`, context.sessionId);
+      // Convert whatever the client sends into our well-defined shared type
+      // This ensures server-side type safety regardless of client format
+      const logData: BrowserConsoleLogForwarding = this.normalizeToSharedType(params);
       
-      const { action, message, source, data } = params;
-      
-      if (!action || !message) {
-        console.log(`🎯 MISSING PARAMS: action=${action}, message=${message}`);
-        return this.createErrorResult('Console forwarding requires action and message parameters');
+      if (!logData.consoleLogLevel || !logData.consoleMessage) {
+        console.log(`🎯 MISSING PARAMS: level=${logData.consoleLogLevel}, message=${logData.consoleMessage}`);
+        return this.createErrorResult('Console forwarding requires consoleLogLevel and consoleMessage parameters');
       }
 
-      // Format console message for portal
-      const timestamp = new Date().toISOString();
-      const consoleEntry = {
-        timestamp,
-        action,
-        message,
-        source: source || 'browser',
-        data: data || {},
-        environment: 'browser'
+      // Add server-side timestamp and create structured log entry
+      const serverTimestamp = new Date().toISOString();
+      const logEntry = {
+        ...logData,
+        serverTimestamp,
+        sessionId: context.sessionId
       };
 
-      // Format console output
+      // Format console output with timestamp
       const iconMap: Record<string, string> = {
         'log': '📝',
         'error': '❌', 
         'warn': '⚠️',
         'info': 'ℹ️',
+        'debug': '🔍',
+        'trace': '🕵️',
+        'table': '📊',
+        'group': '📁',
+        'groupEnd': '📁',
         'health_report': '🏥'
       };
-      const icon = iconMap[action as string] || '📝';
+      const icon = iconMap[logData.consoleLogLevel] || '📝';
+      const timePrefix = `[${new Date().toLocaleTimeString()}]`;
 
-      // Log to server console (always)
-      console.log(`${icon} PORTAL BRIDGE [${source}]: ${message}`);
-      if (data && Object.keys(data).length > 0) {
-        console.log(`   Data:`, data);
+      // Log to server console (always) with timestamp
+      console.log(`${timePrefix} ${icon} BROWSER [${logData.consoleLogLevel.toUpperCase()}]: ${logData.consoleMessage}`);
+      if (logData.consoleArguments && logData.consoleArguments.length > 0) {
+        console.log(`   Args:`, logData.consoleArguments);
       }
 
-      // Write to specific session browser log only (session affinity)
+      // Write to session-specific log files with level-based JSON format
       let sessionLogged = false;
       try {
-        // DEBUG: Log actual context structure to understand what we're receiving
-        console.log(`🔍 CONSOLE_COMMAND_DEBUG: Full context received:`, JSON.stringify(context, null, 2));
-        console.log(`🔍 CONSOLE_COMMAND_DEBUG: params:`, JSON.stringify(params, null, 2));
-        
         // sessionId is now guaranteed to be non-null by TypeScript
         let sessionId = context.sessionId;
         
@@ -133,20 +172,17 @@ export class ConsoleCommand extends DirectCommand {
             console.log(`📝 No active session found - logging to server console only`);
             return this.createSuccessResult('Console message forwarded to server console', {
               forwarded: true,
-              timestamp,
-              consoleEntry,
+              serverTimestamp,
+              logData,
               sessionLogged: false
             });
           }
         }
 
         const fs = await import('fs/promises');
+        const { join } = await import('path');
         
-        // Format log entry for session file
-        const logEntry = `[${timestamp}] ${icon} BROWSER CONSOLE [${source}]: ${message}`;
-        
-        // Try to find the specific session's browser log
-        // Sessions are organized as: .continuum/sessions/user/shared/{sessionId}/logs/browser.log
+        // Try to find the specific session's logs directory
         const sessionBasePaths = [
           '.continuum/sessions/user/shared',
           '.continuum/sessions/user/development', 
@@ -155,34 +191,38 @@ export class ConsoleCommand extends DirectCommand {
         ];
         
         for (const basePath of sessionBasePaths) {
-          const browserLogPath = `${basePath}/${sessionId}/logs/browser.log`;
+          const sessionLogsDir = join(basePath, sessionId, 'logs');
           try {
-            console.log(`🔍 CONSOLE_COMMAND_DEBUG: Trying browser log path: ${browserLogPath}`);
+            // Check if this session's logs directory exists
+            await fs.access(sessionLogsDir);
             
-            // Check if this specific session's browser.log exists
-            await fs.access(browserLogPath);
+            // Write to level-specific JSON log files for easy parsing
+            const levelLogPath = join(sessionLogsDir, `${logData.consoleLogLevel}.json`);
+            const allLogsPath = join(sessionLogsDir, 'browser.log');
             
-            console.log(`✅ CONSOLE_COMMAND_DEBUG: Found browser log at: ${browserLogPath}`);
+            // JSON format for easy tooling/parsing
+            const jsonLogEntry = JSON.stringify(logEntry) + '\n';
             
-            // Write to this session's browser log only
-            await fs.appendFile(browserLogPath, logEntry + '\n');
+            // Text format for human readability (legacy compatibility)
+            const textLogEntry = `[${serverTimestamp}] ${icon} BROWSER [${logData.consoleLogLevel.toUpperCase()}]: ${logData.consoleMessage}\n`;
             
-            // Add data on separate line if present
-            if (data && Object.keys(data).length > 0) {
-              await fs.appendFile(browserLogPath, `   Data: ${JSON.stringify(data)}\n`);
-            }
+            // Write to both level-specific JSON and general text log
+            await Promise.all([
+              fs.appendFile(levelLogPath, jsonLogEntry),
+              fs.appendFile(allLogsPath, textLogEntry)
+            ]);
             
-            console.log(`✅ CONSOLE_COMMAND_DEBUG: Successfully wrote to browser log: ${sessionId}`);
+            console.log(`✅ Wrote to browser logs: ${sessionId} (${logData.consoleLogLevel})`);
             sessionLogged = true;
             break; // Found the session, stop looking
           } catch (accessError) {
-            console.log(`🔍 CONSOLE_COMMAND_DEBUG: Browser log not found at: ${browserLogPath} - ${accessError}`);
             // This session path doesn't exist, try next base path
+            continue;
           }
         }
         
         if (!sessionLogged) {
-          console.warn(`⚠️ Session ${sessionId} browser.log not found - console message not logged to session file`);
+          console.warn(`⚠️ Session ${sessionId} logs directory not found - console message not logged to session file`);
         }
         
       } catch (error) {
@@ -193,8 +233,8 @@ export class ConsoleCommand extends DirectCommand {
         'Console message forwarded successfully',
         {
           forwarded: true,
-          timestamp,
-          consoleEntry,
+          serverTimestamp,
+          logData,
           sessionLogged
         }
       );
