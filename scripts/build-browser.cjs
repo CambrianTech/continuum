@@ -11,7 +11,7 @@ async function buildBrowser() {
     console.log('🏗️ Building browser bundle with widget discovery...');
     
     const result = await esbuild.build({
-      entryPoints: ['src/ui/simple-continuum.ts'],
+      entryPoints: ['src/ui/lifecycle-continuum.ts'],
       bundle: true,
       outfile: 'src/ui/continuum-browser.js',
       target: 'es2020',
