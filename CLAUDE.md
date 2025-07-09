@@ -15,15 +15,19 @@
 
 **🤖 AUTONOMOUS AI DEVELOPMENT** - Complete documentation of AI personas as full-stack developers with autonomous design, implementation, testing, and pull request creation capabilities. Features visual evidence generation, DevTools integration, and Academy learning loops.
 
-## 🎉 **COMPLETE SYSTEM WORKING - NPM START DOES EVERYTHING**
+## 🚀 **ESSENTIAL WORKFLOW: npm start (ALWAYS USE THIS)**
 
 **📚 Complete workflow documented in [middle-out/development/auto-build-workflow.md](middle-out/development/auto-build-workflow.md)**
 
-**✅ ONE-COMMAND LAUNCH SYSTEM**:
-- `npm start` handles everything: TypeScript check → build → launch → browser
-- Auto-increments version and rebuilds browser JS automatically
-- Session log files auto-created for browser console capture
-- Complete version tracking across logs and browser
+**CRITICAL**: `npm start` is the ONLY way to run the system properly. It handles:
+
+1. **Clears out sessions** - `npm run clean:all` - Removes all stale sessions and processes
+2. **Increments version** - `npm run version:bump` - Tracks every build with version numbers
+3. **Builds browser bundle** - `npm run build:browser-ts` - Compiles TypeScript to browser JavaScript
+4. **Runs TypeScript compilation** - `npx tsc --noEmit --project .` - Validates all TypeScript code
+5. **Starts the daemon system** - `./continuum` - Launches the complete system
+
+**NEVER** run individual commands, open browsers manually, or try to debug without `npm start`. The workflow ensures clean state, proper version tracking, and complete system integration.
 
 **✅ CONSOLE FORWARDING WORKING**:
 - Browser console logs flow to session-specific browser.log files

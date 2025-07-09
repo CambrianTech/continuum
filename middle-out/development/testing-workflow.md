@@ -21,8 +21,18 @@ Each layer builds on the previous – test failures cascade down:
 
 ```bash
 npm start
-# Automatically: TypeScript check + Build + Clean + Run
+# CRITICAL: The ONLY way to run the system properly
+# Automatically: Clean + Version + TypeScript check + Build + Run
 ```
+
+**ESSENTIAL npm start workflow:**
+1. **Clears out sessions** - `npm run clean:all` - Removes all stale sessions and processes
+2. **Increments version** - `npm run version:bump` - Tracks every build with version numbers
+3. **Builds browser bundle** - `npm run build:browser-ts` - Compiles TypeScript to browser JavaScript
+4. **Runs TypeScript compilation** - `npx tsc --noEmit --project .` - Validates all TypeScript code
+5. **Starts the daemon system** - `./continuum` - Launches the complete system
+
+**NEVER** run individual commands, open browsers manually, or try to debug without `npm start`.
 
 ### Step 2: Write Unit Tests
 
