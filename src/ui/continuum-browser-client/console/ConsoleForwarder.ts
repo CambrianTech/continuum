@@ -20,13 +20,15 @@ export class ConsoleForwarder {
   private originalConsole: OriginalConsole = {} as OriginalConsole;
   private executeCallback?: (command: string, params: Record<string, unknown>) => Promise<unknown>;
 
-  constructor(private getState: () => ContinuumState, private getSessionId: () => string | null) {}
+  constructor(private getState: () => ContinuumState, private getSessionId: () => string | null) {
+    this.enableConsoleForwarding();
+  }
 
   setExecuteCallback(callback: (command: string, params: Record<string, unknown>) => Promise<unknown>): void {
     this.executeCallback = callback;
   }
 
-  enableConsoleForwarding(): void {
+  private enableConsoleForwarding(): void {
     if (this.consoleForwarding) {
       console.warn('⚠️ Console forwarding is already enabled, called twice?');
       return;
@@ -41,13 +43,13 @@ export class ConsoleForwarder {
       trace: console.trace.bind(console)
     };
 
-    this.originalConsole.log('🔄 Enabling console forwarding...');
-
     // Override console methods
     console.log = (...args: unknown[]): void => {
       this.originalConsole.log(...args);
       this.forwardConsole('log', args);
     };
+
+    console.log('🔄 Enabling console forwarding...');
 
     console.warn = (...args: unknown[]): void => {
       this.originalConsole.warn(...args);
@@ -74,18 +76,6 @@ export class ConsoleForwarder {
   }
 
   private forwardConsole(type: string, args: unknown[]): void {
-    // Forward as soon as console forwarding is enabled (connected state)
-    if (this.getState() !== 'connected' && this.getState() !== 'ready') {
-      this.originalConsole.warn(`⚠️ Console forwarding is not active, queuing message: ${type}`, args);
-      this.queueConsoleMessage({
-        action: type,
-        message: args.map(arg => String(arg)).join(' '),
-        timestamp: new Date().toISOString(),
-        sessionId: this.getSessionId()
-      });
-      return;
-    }
-
     try {
       const consoleCommand: ConsoleCommand = {
         action: type,
@@ -122,10 +112,10 @@ export class ConsoleForwarder {
 
   executeAndFlushConsoleMessageQueue(): void {
     if (this.consoleMessageQueue.length > 0 && this.executeCallback) {
-      console.log(`🚽 Flushing ${this.consoleMessageQueue.length} queued console messages`);
-      
       // Send all queued messages
-      this.consoleMessageQueue.forEach(consoleCommand => this.executeConsoleCommand(consoleCommand, '🚽'));
+      this.consoleMessageQueue.sort((a, b) => a.timestamp.localeCompare(b.timestamp)).forEach(consoleCommand => this.executeConsoleCommand(consoleCommand, '🚽'));
+
+      console.log(`🚽 Flushing ${this.consoleMessageQueue.length} queued console messages`);//occurred after everything else
       
       // Clear the queue
       this.consoleMessageQueue = [];
