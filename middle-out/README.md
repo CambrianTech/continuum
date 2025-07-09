@@ -84,9 +84,10 @@ Each section is designed for:
 ## 🎯 How to Use This Documentation
 
 ### **For New AI Agents**
-1. Start with [JTAG](jtag/README.md) for debugging capabilities
+1. **Quick Start**: Run `npm start` - everything launches automatically
 2. Review [Testing Workflow](development/testing-workflow.md) for development methodology
-3. Explore architecture sections relevant to your task
+3. Use [JTAG](jtag/README.md) for debugging capabilities
+4. Explore architecture sections relevant to your task
 
 ### **For Human Developers**
 1. Begin with [Getting Started](getting-started/) for mental model
