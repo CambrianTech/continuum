@@ -3,8 +3,8 @@
  * Provides semaphore protection and message queuing
  */
 
-import { ConsoleCommand } from '../types/ConsoleTypes';
-import { ContinuumState } from '../types/BrowserClientTypes';
+import type { ConsoleCommand } from '../types/ConsoleTypes';
+import type { ContinuumState } from '../types/BrowserClientTypes';
 
 interface OriginalConsole {
   log: (...args: unknown[]) => void;
@@ -39,27 +39,27 @@ export class ConsoleForwarder {
     };
 
     // Override console methods
-    console.log = (...args: unknown[]) => {
+    console.log = (...args: unknown[]): void => {
       this.originalConsole.log(...args);
       this.forwardConsole('log', args);
     };
 
-    console.warn = (...args: unknown[]) => {
+    console.warn = (...args: unknown[]): void => {
       this.originalConsole.warn(...args);
       this.forwardConsole('warn', args);
     };
 
-    console.error = (...args: unknown[]) => {
+    console.error = (...args: unknown[]): void => {
       this.originalConsole.error(...args);
       this.forwardConsole('error', args);
     };
 
-    console.info = (...args: unknown[]) => {
+    console.info = (...args: unknown[]): void => {
       this.originalConsole.info(...args);
       this.forwardConsole('info', args);
     };
 
-    console.trace = (...args: unknown[]) => {
+    console.trace = (...args: unknown[]): void => {
       this.originalConsole.trace(...args);
       this.forwardConsole('trace', args);
     };
