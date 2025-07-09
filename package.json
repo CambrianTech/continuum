@@ -11,6 +11,7 @@
     "packages/*"
   ],
   "scripts": {
+    "start": "npx tsc --noEmit --project . && npm run build:browser-ts && ./continuum",
     "install:global": "node scripts/install.js",
     "prepare": "husky",
     "postinstall": "lerna run prepare",
