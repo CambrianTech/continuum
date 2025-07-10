@@ -8,6 +8,10 @@ import { DaemonConnection, CommandResult, DaemonConfig } from '../types';
 export class DaemonConnector extends EventEmitter {
   private connection: DaemonConnection;
   private commandProcessor: any = null;
+  
+  // Cache TSX registration to avoid expensive re-registration
+  private static tsxRegistered = false;
+  private static _tsxUnregister: (() => void) | null = null;
 
   constructor(_config: DaemonConfig = {}) {
     super();
@@ -16,6 +20,35 @@ export class DaemonConnector extends EventEmitter {
       connected: false,
       connectionAttempts: 0
     };
+  }
+  
+  /**
+   * Ensure TSX is registered once and reused
+   */
+  private static async ensureTsxRegistered(): Promise<void> {
+    if (!this.tsxRegistered) {
+      try {
+        // @ts-ignore - tsx module resolution issue
+        const tsxModule = await import('tsx/cjs/api');
+        this._tsxUnregister = tsxModule.register();
+        this.tsxRegistered = true;
+        console.log('✅ TSX module registered (one-time setup)');
+      } catch (error) {
+        console.error('❌ Failed to register TSX module:', error);
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Cleanup TSX registration (called on shutdown)
+   */
+  static cleanup(): void {
+    if (this._tsxUnregister) {
+      this._tsxUnregister();
+      this.tsxRegistered = false;
+      this._tsxUnregister = null;
+    }
   }
 
   async connect(): Promise<boolean> {
@@ -70,49 +103,31 @@ export class DaemonConnector extends EventEmitter {
         }
         
         try {
-          // DEBUG: Log command execution attempt
-          console.log(`🔍 [DaemonConnector] Attempting to execute: ${command}`);
-          console.log(`🔍 [DaemonConnector] Command file: ${commandInfo.originalTsPath}`);
-          console.log(`🔍 [DaemonConnector] Class name: ${commandInfo.className}`);
+          // Ensure TSX is registered (one-time setup)
+          await DaemonConnector.ensureTsxRegistered();
           
-          // Use dynamic import for tsx-loader
-          // @ts-ignore - tsx module resolution issue
-          const tsxModule = await import('tsx/cjs/api');
-          const unregister = tsxModule.register();
+          // Import TypeScript file directly using file:// URL for absolute paths
+          const fileUrl = `file://${commandInfo.originalTsPath}`;
+          const commandModule = await import(fileUrl);
           
-          try {
-            // Import TypeScript file directly using file:// URL for absolute paths
-            const fileUrl = `file://${commandInfo.originalTsPath}`;
-            console.log(`🔍 [DaemonConnector] Importing: ${fileUrl}`);
-            const commandModule = await import(fileUrl);
-            console.log(`🔍 [DaemonConnector] Module exports: [${Object.keys(commandModule).join(', ')}]`);
-            
-            const CommandClass = commandModule[commandInfo.className];
-            console.log(`🔍 [DaemonConnector] CommandClass found: ${!!CommandClass}`);
-            console.log(`🔍 [DaemonConnector] Execute method: ${!!CommandClass?.execute}`);
-            
-            if (!CommandClass || !CommandClass.execute) {
-              return {
-                success: false,
-                error: `Command ${command} does not have execute method. Module exports: [${Object.keys(commandModule).join(', ')}]`,
-                processor: 'dynamic-command-discovery'
-              };
-            }
-            
-            console.log(`🔍 [DaemonConnector] Calling ${commandInfo.className}.execute() with params:`, params);
-            console.log(`🔍 [DaemonConnector] Context being passed:`, JSON.stringify(context, null, 2));
-            const result = await CommandClass.execute(params, context);
-            console.log(`🔍 [DaemonConnector] Result:`, result);
-            
+          const CommandClass = commandModule[commandInfo.className];
+          
+          if (!CommandClass || !CommandClass.execute) {
             return {
-              success: result.success,
-              processor: 'dynamic-command-discovery',
-              ...(result.data !== undefined && { data: result.data }),
-              ...(result.error !== undefined && { error: result.error })
+              success: false,
+              error: `Command ${command} does not have execute method. Module exports: [${Object.keys(commandModule).join(', ')}]`,
+              processor: 'dynamic-command-discovery'
             };
-          } finally {
-            unregister();
           }
+          
+          const result = await CommandClass.execute(params, context);
+          
+          return {
+            success: result.success,
+            processor: 'dynamic-command-discovery',
+            ...(result.data !== undefined && { data: result.data }),
+            ...(result.error !== undefined && { error: result.error })
+          };
           
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
@@ -130,19 +145,13 @@ export class DaemonConnector extends EventEmitter {
         if (!commandInfo) return null;
         
         try {
-          // Use dynamic import for tsx-loader
-          // @ts-ignore - tsx module resolution issue
-          const tsxModule = await import('tsx/cjs/api');
-          const unregister = tsxModule.register();
+          // Ensure TSX is registered (one-time setup)
+          await DaemonConnector.ensureTsxRegistered();
           
-          try {
-            const fileUrl = `file://${commandInfo.originalTsPath}`;
-            const commandModule = await import(fileUrl);
-            const CommandClass = commandModule[commandInfo.className];
-            return CommandClass?.getDefinition ? CommandClass.getDefinition() : null;
-          } finally {
-            unregister();
-          }
+          const fileUrl = `file://${commandInfo.originalTsPath}`;
+          const commandModule = await import(fileUrl);
+          const CommandClass = commandModule[commandInfo.className];
+          return CommandClass?.getDefinition ? CommandClass.getDefinition() : null;
         } catch (error) {
           console.warn(`Failed to get definition for ${command}:`, error instanceof Error ? error.message : String(error));
           return null;

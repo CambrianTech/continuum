@@ -267,14 +267,10 @@ export class WebSocketDaemon extends BaseDaemon {
     try {
       const message = JSON.parse(data.toString());
       
-      // 🔍 SESSION DEBUG: Log full incoming message structure
-      this.log(`🔍 [SESSION_DEBUG] WebSocket message received:`);
-      this.log(`🔍 [SESSION_DEBUG]   type: ${message.type}`);
-      this.log(`🔍 [SESSION_DEBUG]   connectionId: ${connectionId}`);
-      this.log(`🔍 [SESSION_DEBUG]   message.data: ${JSON.stringify(message.data || {}, null, 2)}`);
-      this.log(`🔍 [SESSION_DEBUG]   message.sessionId: ${message.sessionId || 'NOT_FOUND'}`);
-      this.log(`🔍 [SESSION_DEBUG]   message.data.sessionId: ${message.data?.sessionId || 'NOT_FOUND'}`);
-      this.log(`🔍 [SESSION_DEBUG]   full message keys: ${Object.keys(message).join(', ')}`);
+      // Minimal debug logging - only log message type and routing
+      if (message.type !== 'console_log' && message.type !== 'browser_console') {
+        this.log(`📨 WebSocket: ${message.type} from ${connectionId}`);
+      }
       
       // Route WebSocket messages to appropriate daemon
       // This is pure message routing, no content knowledge
