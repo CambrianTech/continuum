@@ -115,8 +115,25 @@ export class ConsoleCommand extends DirectCommand {
 
       // Add server-side timestamp and create structured log entry
       const serverTimestamp = new Date().toISOString();
+      
+      // Decode base64 JavaScript if present (for probe level)
+      const enhancedLogData = { ...logData };
+      if (logData.consoleLogLevel === 'probe' as any && logData.consoleArguments?.length > 0) {
+        const probeArg = logData.consoleArguments[0];
+        if (probeArg?.originalValue && typeof probeArg.originalValue === 'object' && 'executeJSBase64' in probeArg.originalValue) {
+          try {
+            const executeJSBase64 = (probeArg.originalValue as any).executeJSBase64;
+            const decodedJS = Buffer.from(executeJSBase64, 'base64').toString('utf-8');
+            // Add decoded JS to server logs for debugging (but keep base64 in stored logs)
+            console.log(`🔬 PROBE JS Code: ${decodedJS}`);
+          } catch (error) {
+            console.warn(`⚠️ Failed to decode probe JavaScript: ${error}`);
+          }
+        }
+      }
+      
       const logEntry = {
-        ...logData,
+        ...enhancedLogData,
         serverTimestamp,
         sessionId: context.sessionId
       };
@@ -199,13 +216,26 @@ export class ConsoleCommand extends DirectCommand {
             // JSON format for easy tooling/parsing
             const jsonLogEntry = JSON.stringify(logEntry) + '\n';
             
-            // Simplified JSON format for browser.log file (user requested stringified entire log entry)
-            const simplifiedLogEntry = JSON.stringify(logEntry) + '\n';
+            // Human-readable format for browser.log file (same format as server logs)
+            let humanReadableEntry = `[${serverTimestamp}] ${logData.consoleLogLevel.toUpperCase()}: ${logData.consoleMessage}`;
             
-            // Write to both formats: level-specific JSON and simplified JSON for browser.log
+            // Add arguments if present, with JSON formatting for objects
+            if (logData.consoleArguments && logData.consoleArguments.length > 0) {
+              const formattedArgs = logData.consoleArguments.map(arg => {
+                if (arg.argumentType === 'object' && arg.argumentValue) {
+                  return arg.argumentValue; // This is already JSON formatted
+                } else {
+                  return arg.argumentValue;
+                }
+              }).join(' ');
+              humanReadableEntry += ` ${formattedArgs}`;
+            }
+            humanReadableEntry += '\n';
+            
+            // Write to both formats: level-specific JSON and human-readable for browser.log
             await Promise.all([
-              fs.appendFile(levelLogPath, jsonLogEntry),        // browser.warn.json
-              fs.appendFile(allLogsPath, simplifiedLogEntry)    // browser.log (now stringified JSON)
+              fs.appendFile(levelLogPath, jsonLogEntry),        // browser.warn.json (JSON)
+              fs.appendFile(allLogsPath, humanReadableEntry)    // browser.log (human-readable)
             ]);
             
             console.log(`✅ Wrote to browser logs: ${sessionId} (${logData.consoleLogLevel})`);

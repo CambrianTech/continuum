@@ -99,6 +99,15 @@ export class ContinuumBrowserClient implements ContinuumAPI {
               boolean: true 
             };
             console.log('🧪 SERIALIZATION_TEST: Testing object logging:', testObj);
+          
+          // Test console.probe() functionality for AI diagnostics
+          (console as any).probe({
+            message: '🔬 AI_DIAGNOSTIC_TEST: Testing probe functionality with JS execution',
+            data: { widgets: result, serialization: testObj },
+            executeJS: 'window.location.href + " | " + navigator.userAgent.substring(0, 50)',
+            category: 'ai-diagnostic',
+            tags: ['test', 'widget-discovery', 'serialization']
+          });
           })
           .catch(error => {
             console.error('❌ Widget discovery error:', error);

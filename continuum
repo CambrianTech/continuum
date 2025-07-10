@@ -368,11 +368,16 @@ if [ "$COMMAND" = "connect" ]; then
         VERSION=$(echo "$response" | jq -r '.version // "unknown"')
         SERVER_LOG=$(echo "$response" | jq -r '.logs.server // ""')
         BROWSER_LOG=$(echo "$response" | jq -r '.logs.browser // ""')
+        SCREENSHOTS_DIR=$(echo "$response" | jq -r '.screenshots // ""')
+        STOP_CMD=$(echo "$response" | jq -r '.commands.stop // ""')
+        INFO_CMD=$(echo "$response" | jq -r '.commands.info // ""')
+        FORK_CMD=$(echo "$response" | jq -r '.commands.fork // ""')
+        CLIENTS_CMD=$(echo "$response" | jq -r '.commands.otherClients // ""')
         
         # Get current directory for full path display
         PROJECT_DIR=$(pwd)
         
-        # Show user-friendly output
+        # Show enhanced user-friendly output
         echo ""
         echo "🎉 Connected to Continuum v$VERSION"
         echo "   Session: $SESSION_ID"
@@ -382,8 +387,35 @@ if [ "$COMMAND" = "connect" ]; then
         echo "📂 Project: $PROJECT_DIR"
         echo ""
         echo "📋 Session Logs:"
-        echo "   Server:  tail -f $SERVER_LOG"
-        echo "   Browser: tail -f $BROWSER_LOG"
+        echo "   🖥️  Server:  tail -f $SERVER_LOG (human-readable)"
+        echo "   🌐 Browser: tail -f $BROWSER_LOG (human-readable)"
+        echo ""
+        echo "📸 Screenshots: $SCREENSHOTS_DIR"
+        echo ""
+        echo "🛠️  Session Management:"
+        echo "   ℹ️  Info:    $INFO_CMD"
+        echo "   ⏹️  Stop:    $STOP_CMD" 
+        echo "   🔀 Fork:    $FORK_CMD"
+        echo "   👥 Clients: $CLIENTS_CMD"
+        echo ""
+        echo "💡 Log Features:"
+        echo "   • Browser logs now in structured JSON format"
+        echo "   • Object serialization prevents [object Object] issues"
+        echo "   • Level-specific log files for targeted monitoring:"
+        echo "     🔴 error   → browser.error.json"
+        echo "     🟡 warn    → browser.warn.json"
+        echo "     🔵 info    → browser.info.json"
+        echo "     ⚪ log     → browser.log.json"
+        echo "     🟣 trace   → browser.trace.json"
+        echo "     🔬 probe   → browser.probe.json (AI diagnostics)"
+        echo "   • Full context: timestamps, session correlation, stack traces"
+        echo ""
+        echo "🤖 AI Development Tips:"
+        echo "   • Use console.probe('message', data) for simple diagnostics"
+        echo "   • Advanced: console.probe({ message, data, executeJS, category, tags })"
+        echo "   • JavaScript execution: executeJS: 'document.title' (captured safely)"
+        echo "   • Monitor AI probes: tail -f browser.probe.json"
+        echo "   • Isolate by category: grep 'ai-diagnostic' browser.probe.json"
         echo ""
         
         # Check if browser should launch
