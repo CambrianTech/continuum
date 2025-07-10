@@ -1303,16 +1303,10 @@ export class SessionManagerDaemon extends BaseDaemon {
     const sessionStartMessage = `# Continuum Session Log\n# Session: ${sessionId}\n# Created: ${sessionStartTime}\n# Type: ${type}\n# Owner: ${owner}\n${sessionContext ? `# Context: ${sessionContext}\n` : ''}#\n# Session started at ${sessionStartTime}\n\n`;
     
     // Create browser.log
-    await fs.writeFile(
-      path.join(sessionPath, 'logs', 'browser.log'),
-      sessionStartMessage + `[${sessionStartTime}] Browser log initialized for session ${sessionId}\n`
-    );
+    await fs.writeFile(path.join(sessionPath, 'logs', 'browser.log'), sessionStartMessage);
     
     // Create server.log  
-    await fs.writeFile(
-      path.join(sessionPath, 'logs', 'server.log'),
-      sessionStartMessage + `[${sessionStartTime}] Server log initialized for session ${sessionId}\n`
-    );
+    await fs.writeFile(path.join(sessionPath, 'logs', 'server.log'), sessionStartMessage);
     
     return sessionPath;
   }

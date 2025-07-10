@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2554",
+  "version": "0.2.2561",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -11,19 +11,18 @@
     "packages/*"
   ],
   "scripts": {
-    "start": "npx tsc --noEmit --project . && npm run build:browser-ts && ./continuum",
+    "compile": "npx tsc --noEmit --project .",
+    "start": "npm run compile && npm run build:browser-ts && ./continuum",
     "install:global": "node scripts/install.js",
     "prepare": "husky",
     "postinstall": "lerna run prepare",
-    "compile": "npx tsc --noEmit --project .",
     "build:browser-ts": "npm run clean:all && npm run version:bump && rm -f src/ui/continuum-browser.js* && node scripts/build-browser.cjs",
     "build:ui-components": "tsc --project tsconfig.ui.json",
     "build:ui": "tsc --project tsconfig.ui.json",
     "dev:browser": "npm run build:browser-ts -- --watch",
     "dev:ui": "npm run build:ui-components -- --watch",
-    "test": "npm run test:compile && npm run test:unit && npm run test:integration:layer2-3",
+    "test": "npm run compile && npm run test:unit && npm run test:integration:layer2-3",
     "test:integration:layer2-3": "npm run test:integration:eventbus && npm run test:integration:routing && npm run test:integration:html && npm run test:integration:wildcard && npm run test:integration:types && npm run test:integration:modules && npm run test:integration:browser-manager",
-    "test:compile": "npx tsc --noEmit --project .",
     "test:full": "npx tsx src/system/testing/test/universal-layer-runner.ts",
     "test:layer": "npx tsx src/system/testing/test/universal-layer-runner.ts --layer=",
     "test:widgets": "npx tsx src/testing/IntelligentModularTestRunner.ts widget",
