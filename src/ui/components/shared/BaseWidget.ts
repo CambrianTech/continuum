@@ -511,15 +511,11 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   /**
-   * Send message via continuum API
+   * Send message via continuum API (using execute with message command)
    */
   protected sendMessage(message: any): void {
-    const continuum = this.getContinuumAPI();
-    if (continuum) {
-      continuum.send(message);
-    } else {
-      console.warn(`🎛️ ${this.widgetName}: Continuum API not available`);
-    }
+    // Use execute with a generic message command instead of non-existent send method
+    this.notifySystem('widget_message', message);
   }
 
   /**
