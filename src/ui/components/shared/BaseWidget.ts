@@ -20,6 +20,20 @@ export abstract class BaseWidget extends HTMLElement {
   protected widgetName: string = 'BaseWidget';
   protected widgetIcon: string = '🔹';
   protected widgetTitle: string = 'Widget';
+
+  /**
+   * Widget name for registration - override in subclasses
+   */
+  static get widgetName(): string {
+    return 'base-widget';
+  }
+
+  /**
+   * HTML tag name - defaults to widgetName, override only if different
+   */
+  static get tagName(): string {
+    return this.widgetName;
+  }
   
   // Protected state
   protected widgetConnected: boolean = false;
