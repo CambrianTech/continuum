@@ -11,12 +11,12 @@
  */
 
 import { BaseDaemon } from '../base/BaseDaemon';
-import type { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
-import type { SystemEventType, MessageType, SessionCreatedPayload, SessionJoinedPayload } from '../base/EventTypes';
+import { SystemEventType, MessageType, SessionCreatedPayload, SessionJoinedPayload } from '../base/EventTypes';
 import { SessionConsoleLogger } from './modules/SessionConsoleLogger';
-import type { SessionRequest } from '../../types/SessionParameters';
-import type { SessionConnectResponse } from '../../types/SessionConnectResponse';
+import { SessionRequest } from '../../types/SessionParameters';
+import { SessionConnectResponse } from '../../types/SessionConnectResponse';
 import { DAEMON_EVENT_BUS } from '../base/DaemonEventBus';
 import * as fs from 'fs/promises';
 import * as path from 'path';
