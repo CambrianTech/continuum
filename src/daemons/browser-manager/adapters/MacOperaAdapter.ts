@@ -33,6 +33,10 @@ export class MacOperaAdapter extends MacOSBrowserAdapter {
     return super.focusTab(urlPattern);
   }
   
+  async refreshTab(urlPattern: string): Promise<boolean> {
+    return super.refreshTab(urlPattern);
+  }
+  
   // Chromium-specific methods via mixin
   supportsDevTools(): boolean {
     return this.chromiumMixin.supportsDevTools();

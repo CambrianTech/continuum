@@ -125,12 +125,13 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
   
   /**
    * Setup session event listening to launch browsers when sessions are created OR joined
+   * STRONGLY TYPED: Uses compiler-enforced event selectors and type guards
    */
   private setupSessionEventListening(): void {
     // Listen for session_created events - check if session needs browser
     DAEMON_EVENT_BUS.onEvent(SystemEventType.SESSION_CREATED, async (event: SessionCreatedPayload) => {
       const { sessionId, sessionType, owner, focus = false, killZombies = false } = event;
-      this.log(`📋 Session created: ${sessionId} (${sessionType}) for ${owner} (focus: ${focus}, killZombies: ${killZombies})`);
+      this.log(`📋 REFRESH_DEBUG: Session created: ${sessionId} (${sessionType}) for ${owner} (focus: ${focus}, killZombies: ${killZombies})`);
       
       if (this.sessionNeedsBrowser(sessionType)) {
         await this.ensureSessionHasBrowser(sessionId, sessionType, owner, focus, killZombies);
@@ -140,14 +141,14 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     // Listen for session_joined events - check if session needs browser  
     DAEMON_EVENT_BUS.onEvent(SystemEventType.SESSION_JOINED, async (event: SessionJoinedPayload) => {
       const { sessionId, sessionType, owner, focus = false, killZombies = false } = event;
-      this.log(`📋 Session joined: ${sessionId} (${sessionType}) for ${owner} (focus: ${focus}, killZombies: ${killZombies})`);
+      this.log(`📋 REFRESH_DEBUG: Session joined: ${sessionId} (${sessionType}) for ${owner} (focus: ${focus}, killZombies: ${killZombies})`);
       
       if (this.sessionNeedsBrowser(sessionType)) {
         await this.ensureSessionHasBrowser(sessionId, sessionType, owner, focus, killZombies);
       }
     });
     
-    this.log('👂 Listening for session events with smart single-tab logic');
+    this.log('👂 STRONGLY_TYPED: Listening for session events with compiler-enforced type safety');
   }
   
   /**
@@ -191,6 +192,20 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
         if (focus) {
           this.log(`🎯 Focus requested - bringing browser window to front`);
           await this.focusBrowser();
+        }
+        
+        // REFRESH TAB: Refresh existing tab to ensure fresh content
+        this.log(`🔄 REFRESH_DEBUG: About to refresh existing browser tab for fresh content`);
+        this.log(`🔄 REFRESH_DEBUG: Using adapter: ${this.tabAdapter.constructor.name}`);
+        this.log(`🔄 REFRESH_DEBUG: Target URL: http://localhost:9000`);
+        
+        const refreshSuccess = await this.refreshBrowser();
+        
+        this.log(`🔄 REFRESH_DEBUG: Refresh result: ${refreshSuccess}`);
+        if (refreshSuccess) {
+          this.log(`✅ Browser tab refreshed successfully`);
+        } else {
+          this.log(`⚠️ Browser tab refresh failed - content may be stale`, 'warn');
         }
         
         // SMART ZOMBIE KILLER: Close zombie tabs if requested
@@ -619,6 +634,26 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.log(`⚠️ Browser focus failed: ${errorMessage}`, 'warn');
+    }
+  }
+
+  /**
+   * Refresh the browser tab using the adapter infrastructure
+   */
+  private async refreshBrowser(): Promise<boolean> {
+    try {
+      this.log(`🔄 REFRESH_DEBUG: Calling tabAdapter.refreshTab with URL: http://localhost:9000`);
+      this.log(`🔄 REFRESH_DEBUG: Adapter type: ${this.tabAdapter.constructor.name}`);
+      
+      const refreshSuccess = await this.tabAdapter.refreshTab('http://localhost:9000');
+      
+      this.log(`🔄 REFRESH_DEBUG: tabAdapter.refreshTab returned: ${refreshSuccess}`);
+      return refreshSuccess;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ REFRESH_DEBUG: Browser refresh threw error: ${errorMessage}`, 'error');
+      this.log(`❌ REFRESH_DEBUG: Error stack: ${error instanceof Error ? error.stack : 'no stack'}`, 'error');
+      return false;
     }
   }
 

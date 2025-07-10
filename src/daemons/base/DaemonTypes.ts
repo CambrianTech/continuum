@@ -19,6 +19,7 @@ export enum DaemonType {
   CHATROOM = 'chatroom',
   ACADEMY = 'academy',
   DATABASE = 'database',
+  WIDGET = 'widget',
   
   // Mesh and persona daemons
   MESH = 'mesh',
@@ -73,6 +74,7 @@ export const DAEMON_CATEGORIES: Record<DaemonType, DaemonCategory> = {
   [DaemonType.CHATROOM]: DaemonCategory.SERVICE,
   [DaemonType.ACADEMY]: DaemonCategory.SERVICE,
   [DaemonType.DATABASE]: DaemonCategory.SERVICE,
+  [DaemonType.WIDGET]: DaemonCategory.SERVICE,
   
   [DaemonType.MESH]: DaemonCategory.INTEGRATION,
   [DaemonType.PERSONA]: DaemonCategory.INTEGRATION,

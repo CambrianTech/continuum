@@ -181,7 +181,11 @@ export enum SessionEvent {
   
   // Events (existing)
   EVENT = 'session:event',
-  BROADCAST = 'session:broadcast'
+  BROADCAST = 'session:broadcast',
+  
+  // Critical browser management events
+  CREATED = 'session:created',
+  JOINED = 'session:joined'
 }
 
 /**

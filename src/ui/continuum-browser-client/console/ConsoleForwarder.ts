@@ -107,9 +107,9 @@ export class ConsoleForwarder {
         if (this.getState() !== 'ready') {
           // We will retry later when we reach ready state
           if (consoleCommand.action === 'error') {
-            this.originalConsole.error(`❌ Console command failed while not ready: ${consoleCommand.action}`, consoleCommand, e);
+            this.originalConsole.error(`❌ Console command failed while not ready: console.${consoleCommand.action}`, consoleCommand, e);
           } else {
-            this.originalConsole.warn(`⚠️ Console command rescheduled until online: ${consoleCommand.action}`, consoleCommand, e);
+            this.originalConsole.warn(`⚠️ Console command rescheduled until online: console.${consoleCommand.action}`, consoleCommand, e);
           }
           this.queueConsoleMessage(consoleCommand);
         } else {
