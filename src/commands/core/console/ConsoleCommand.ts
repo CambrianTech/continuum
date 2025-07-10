@@ -184,7 +184,6 @@ export class ConsoleCommand extends DirectCommand {
             
             // Write to level-specific JSON log files following naming convention
             const levelLogPath = join(sessionLogsDir, `browser.${logData.consoleLogLevel}.json`);
-            const allJsonLogPath = join(sessionLogsDir, 'browser.log.json');
             const allLogsPath = join(sessionLogsDir, 'browser.log');
             
             // JSON format for easy tooling/parsing
@@ -196,7 +195,6 @@ export class ConsoleCommand extends DirectCommand {
             // Write to all three formats: level-specific JSON, all-levels JSON, and human-readable text
             await Promise.all([
               fs.appendFile(levelLogPath, jsonLogEntry),        // browser.warn.json
-              fs.appendFile(allJsonLogPath, jsonLogEntry),      // browser.log.json
               fs.appendFile(allLogsPath, textLogEntry)          // browser.log
             ]);
             
