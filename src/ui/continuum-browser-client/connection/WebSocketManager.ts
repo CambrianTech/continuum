@@ -3,8 +3,8 @@
  * Manages connection lifecycle and message handling
  */
 
-import { WebSocketMessage, ClientInitData } from '../types/WebSocketTypes';
-import { ContinuumState } from '../types/BrowserClientTypes';
+import type { WebSocketMessage, ClientInitData } from '../types/WebSocketTypes';
+import type { ContinuumState } from '../types/BrowserClientTypes';
 
 export class WebSocketManager {
   private ws: WebSocket | null = null;
