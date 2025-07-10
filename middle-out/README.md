@@ -33,6 +33,9 @@ This directory contains the complete architectural documentation for Continuum's
 - **[examples.md](jtag/examples.md)** - Real-world debugging scenarios (coming soon)
 - **[roadmap.md](jtag/roadmap.md)** - Implementation phases and future vision (coming soon)
 
+#### 🔥 [Development Workflow](development/)
+- **[hot-reload-workflow.md](development/hot-reload-workflow.md)** - **🚀 Autonomous AI development with session preservation**
+
 ### 🏗️ Architecture Concepts
 
 #### 🏛️ [Architecture](architecture/)

@@ -115,19 +115,19 @@ export class ChatWidget extends BaseWidget {
       return;
     }
 
-    this.onContinuumEvent('message_received', (data: any) => {
+    this.notifySystem('message_received', (data: any) => {
       if (data.roomId === this.currentRoomId) {
         this.handleIncomingMessage(data);
       }
     });
 
-    this.onContinuumEvent('agent_typing', (data: any) => {
+    this.notifySystem('agent_typing', (data: any) => {
       if (data.roomId === this.currentRoomId) {
         this.setTypingIndicator(true);
       }
     });
 
-    this.onContinuumEvent('agent_stop_typing', (data: any) => {
+    this.notifySystem('agent_stop_typing', (data: any) => {
       if (data.roomId === this.currentRoomId) {
         this.setTypingIndicator(false);
       }

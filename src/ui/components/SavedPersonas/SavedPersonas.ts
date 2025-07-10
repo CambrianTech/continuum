@@ -36,17 +36,17 @@ export class SavedPersonasWidget extends BaseWidget {
 
   private setupContinuumListeners(): void {
     if (this.getContinuumAPI()) {
-      this.onContinuumEvent('personas_updated', () => {
+      this.notifySystem('personas_updated', () => {
         console.log('🎛️ SavedPersonas: personas_updated received');
         this.loadPersonas();
       });
       
-      this.onContinuumEvent('persona_added', (data: any) => {
+      this.notifySystem('persona_added', (data: any) => {
         console.log('🎛️ SavedPersonas: persona_added received', data);
         this.loadPersonas();
       });
       
-      this.onContinuumEvent('persona_deleted', (data: any) => {
+      this.notifySystem('persona_deleted', (data: any) => {
         console.log('🎛️ SavedPersonas: persona_deleted received', data);
         this.loadPersonas();
       });
