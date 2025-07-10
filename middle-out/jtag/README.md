@@ -12,7 +12,7 @@
 - **Visual validation** with screenshot capture
 - **Self-healing capabilities** through automated error recovery
 
-### ✅ JTAG Implementation Success (2025-07-03)
+### ✅ JTAG Implementation Success (2025-07-10)
 
 **Complete Visibility Achieved:**
 
@@ -20,6 +20,16 @@
 * **✅ Browser logs**: Console capture system forwarding ALL browser activity
 * **✅ Session-based**: Automatic logging for every session, no manual activation needed
 * **✅ Command discovery**: 24 commands discovered, implementations loading dynamically
+* **✅ Console probes**: Real-time JavaScript execution for AI debugging
+* **✅ Object serialization**: Proper JSON handling prevents [object Object] issues
+* **✅ Human-readable logs**: Both structured JSON and readable formats available
+
+**🛸 AI Probe System (New!):**
+
+* **Real-time browser inspection**: `console.probe()` with JavaScript execution
+* **Structured debugging**: Categories, tags, and session correlation
+* **Live DOM analysis**: Execute any JavaScript in browser context
+* **Autonomous debugging**: AIs can investigate and fix issues independently
 
 **Key Achievement**: We can now see browser errors like:
 
@@ -80,6 +90,11 @@ This visibility enables debugging complex distributed issues across the browser-
 - **[debugging-protocol.md](debugging-protocol.md)**: Systematic debugging methodology
 - **[examples.md](examples.md)**: Real-world debugging scenarios and success stories
 - **[roadmap.md](roadmap.md)**: Phased implementation approach and future vision
+
+### 🤖 AI Development Tools
+
+- **[ai-browser-debugging.md](ai-browser-debugging.md)**: Complete guide for AIs to debug browser state using console probes
+- **[ai-script-execution.md](ai-script-execution.md)**: JavaScript execution patterns for autonomous development
 
 ### 🎯 Next Steps
 

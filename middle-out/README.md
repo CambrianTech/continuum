@@ -23,10 +23,12 @@ This directory contains the complete architectural documentation for Continuum's
 #### 🧪 [Testing](testing/)
 - **[intelligent-modular-testing.md](testing/intelligent-modular-testing.md)** - AI-friendly module discovery, compliance, and graduation tracking
 
-#### 🔍 [JTAG Debugging](jtag/)
+#### 🔍 [JTAG Debugging](jtag/) **⭐ AI DEBUGGING BREAKTHROUGH**
 - **[README.md](jtag/README.md)** - Complete JTAG debugging framework overview
 - **[implementation.md](jtag/implementation.md)** - Technical implementation details and connection information
 - **[debugging-protocol.md](jtag/debugging-protocol.md)** - Systematic debugging protocol with self-healing capabilities
+- **[ai-browser-debugging.md](jtag/ai-browser-debugging.md)** - **🛸 AI console probe debugging guide**
+- **[ai-script-execution.md](jtag/ai-script-execution.md)** - **🚀 JavaScript execution for autonomous development**
 - **[examples.md](jtag/examples.md)** - Real-world debugging scenarios (coming soon)
 - **[roadmap.md](jtag/roadmap.md)** - Implementation phases and future vision (coming soon)
 
