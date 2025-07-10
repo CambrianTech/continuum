@@ -21,14 +21,24 @@ export class ConsoleCommand extends DirectCommand {
     }
     
     // Legacy format - convert to shared type
-    const { action, message, source, data, level, args, timestamp, ...rest } = params;
+    const { action, message, source, data, level, args, arguments: consoleArguments, timestamp, ...rest } = params;
     
     return {
       consoleLogLevel: (action || level || 'log') as 'debug' | 'log' | 'info' | 'warn' | 'error',
       consoleMessage: message || '',
-      consoleArguments: Array.isArray(args) ? args.map((arg: any) => {
+      consoleArguments: Array.isArray(args || consoleArguments) ? (args || consoleArguments).map((arg: any) => {
+        // Handle enhanced Console.ConsoleArgument format from shared types
+        if (arg && typeof arg === 'object' && arg.type === 'object' && arg.stringRepresentation) {
+          // This is a properly serialized ObjectArgument from Console.MessageUtils
+          return {
+            argumentType: 'object' as const,
+            argumentValue: arg.stringRepresentation,
+            originalValue: arg.value
+          };
+        }
+        
+        // Handle simple types
         const argType = typeof arg;
-        // Map TypeScript types to shared type specification
         const mappedType = argType === 'bigint' || argType === 'symbol' ? 'string' : 
                           arg === null ? 'null' : argType;
         return {
@@ -189,13 +199,13 @@ export class ConsoleCommand extends DirectCommand {
             // JSON format for easy tooling/parsing
             const jsonLogEntry = JSON.stringify(logEntry) + '\n';
             
-            // Text format for human readability (legacy compatibility)
-            const textLogEntry = `[${serverTimestamp} console.${logData.consoleLogLevel}]: ${logData.consoleMessage}\n`;
+            // Simplified JSON format for browser.log file (user requested stringified entire log entry)
+            const simplifiedLogEntry = JSON.stringify(logEntry) + '\n';
             
-            // Write to all three formats: level-specific JSON, all-levels JSON, and human-readable text
+            // Write to both formats: level-specific JSON and simplified JSON for browser.log
             await Promise.all([
               fs.appendFile(levelLogPath, jsonLogEntry),        // browser.warn.json
-              fs.appendFile(allLogsPath, textLogEntry)          // browser.log
+              fs.appendFile(allLogsPath, simplifiedLogEntry)    // browser.log (now stringified JSON)
             ]);
             
             console.log(`✅ Wrote to browser logs: ${sessionId} (${logData.consoleLogLevel})`);
