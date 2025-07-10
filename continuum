@@ -407,7 +407,7 @@ if [ "$COMMAND" = "connect" ]; then
         echo "     🔵 info    → browser.info.json"
         echo "     ⚪ log     → browser.log.json"
         echo "     🟣 trace   → browser.trace.json"
-        echo "     🔬 probe   → browser.probe.json (AI diagnostics)"
+        echo "     👽 probe   → browser.probe.json (AI diagnostics)"
         echo "   • Full context: timestamps, session correlation, stack traces"
         echo ""
         echo "🤖 AI Development Tips:"
