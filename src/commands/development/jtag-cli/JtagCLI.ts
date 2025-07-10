@@ -101,6 +101,18 @@ export class JtagCLI {
       timeout: 5000
     });
 
+  /**
+   * Comprehensive widget inspection - delegates to widget-inspect command
+   */
+  inspectWidgets = (selector?: string, options?: any) => {
+    const params = {
+      selector: selector || 'continuum-sidebar, chat-widget, [class*="widget"], [class*="Widget"]',
+      ...options
+    };
+    
+    return this.run('widget-inspect', params);
+  };
+
   health = () => this.run('health');
   logs = () => this.run('logs');
   errors = () => this.run('errors');
@@ -121,6 +133,7 @@ Usage: ./jtag <command> [args]
 🔍 Core Commands:
   screenshot [selector] [scale]  Capture browser screenshot (default: body 2.0)
   probe [method]                 Analyze widgets, shadowDOM, health, performance
+  inspectWidgets [selector]      Comprehensive widget inspection with health, content, and state
   logs                           Show recent browser logs
   errors                         Show recent browser errors  
   warnings                       Show recent browser warnings
@@ -134,6 +147,8 @@ Usage: ./jtag <command> [args]
   ./jtag screenshot "saved-personas"   # Just personas widget
   ./jtag screenshot body 4.0           # High resolution
   ./jtag probe widgets                 # Widget analysis
+  ./jtag inspectWidgets                # Full widget health report
+  ./jtag inspectWidgets ".sidebar"     # Inspect specific widgets
   ./jtag logs                          # Recent activity
 
 💡 All commands delegate to Continuum's command API
