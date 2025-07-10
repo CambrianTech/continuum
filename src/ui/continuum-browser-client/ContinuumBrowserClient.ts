@@ -100,13 +100,21 @@ export class ContinuumBrowserClient implements ContinuumAPI {
             };
             console.log('🧪 SERIALIZATION_TEST: Testing object logging:', testObj);
           
-          // Test console.probe() functionality for AI diagnostics
+          // Test console.probe() functionality for AI diagnostics with DOM exploration
           (console as any).probe({
-            message: '🔬 AI_DIAGNOSTIC_TEST: Testing probe functionality with JS execution',
+            message: '🔬 AI_DIAGNOSTIC_TEST: Probing DOM and browser state',
             data: { widgets: result, serialization: testObj },
-            executeJS: 'window.location.href + " | " + navigator.userAgent.substring(0, 50)',
-            category: 'ai-diagnostic',
-            tags: ['test', 'widget-discovery', 'serialization']
+            executeJS: 'JSON.stringify({ title: document.title, url: window.location.href, bodyChildren: document.body?.children.length || 0, scripts: document.scripts.length, stylesheets: document.styleSheets.length, readyState: document.readyState })',
+            category: 'dom-analysis',
+            tags: ['test', 'dom', 'browser-state', 'widget-discovery']
+          });
+
+          // Add another probe to explore specific HTML elements
+          (console as any).probe({
+            message: '🔍 DOM_ELEMENT_PROBE: Checking for specific elements',
+            executeJS: 'JSON.stringify({ hasHead: !!document.head, hasBody: !!document.body, bodyHTML: document.body?.innerHTML?.substring(0, 200) || "no body", headHTML: document.head?.innerHTML?.substring(0, 200) || "no head" })',
+            category: 'dom-elements',
+            tags: ['dom', 'html', 'elements']
           });
           })
           .catch(error => {
