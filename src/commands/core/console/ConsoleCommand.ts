@@ -154,24 +154,48 @@ export class ConsoleCommand extends DirectCommand {
         
         // If no sessionId provided, use the current/default shared development session
         if (!sessionId) {
-          // Try to find the most recent development session
+          // Try to find the most recent development session using async operations
           try {
-            const { readdirSync, statSync } = await import('fs');
+            const fs = await import('fs/promises');
             const { join } = await import('path');
             
             const sessionsPath = '.continuum/sessions/user/shared';
-            const sessionDirs = readdirSync(sessionsPath).filter(dir => {
-              const fullPath = join(sessionsPath, dir);
-              return statSync(fullPath).isDirectory() && dir.startsWith('development-shared-');
-            });
+            
+            // Use async operations to avoid blocking
+            const allEntries = await fs.readdir(sessionsPath);
+            const sessionDirs: string[] = [];
+            
+            // Check each entry asynchronously
+            for (const entry of allEntries) {
+              try {
+                const fullPath = join(sessionsPath, entry);
+                const stat = await fs.stat(fullPath);
+                if (stat.isDirectory() && entry.startsWith('development-shared-')) {
+                  sessionDirs.push(entry);
+                }
+              } catch (statError) {
+                // Skip entries we can't access
+                continue;
+              }
+            }
             
             if (sessionDirs.length > 0) {
               // Sort by modification time to get the most recent
-              const sortedSessions = sessionDirs.sort((a, b) => {
-                const aTime = statSync(join(sessionsPath, a)).mtimeMs;
-                const bTime = statSync(join(sessionsPath, b)).mtimeMs;
-                return bTime - aTime; // Most recent first
-              });
+              const sessionStats = await Promise.all(
+                sessionDirs.map(async (dir) => {
+                  try {
+                    const fullPath = join(sessionsPath, dir);
+                    const stat = await fs.stat(fullPath);
+                    return { dir, mtime: stat.mtimeMs };
+                  } catch (error) {
+                    return { dir, mtime: 0 };
+                  }
+                })
+              );
+              
+              const sortedSessions = sessionStats
+                .sort((a, b) => b.mtime - a.mtime)
+                .map(s => s.dir);
               
               sessionId = sortedSessions[0];
               console.log(`📝 No sessionId in context - using most recent shared session: ${sessionId}`);
