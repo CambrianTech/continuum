@@ -1,0 +1,29 @@
+{
+  "name": "@continuum/personas-command",
+  "version": "1.0.0",
+  "description": "AI Persona Management Command",
+  "main": "PersonasCommand.ts",
+  "continuum": {
+    "core": "personas",
+    "category": "Persona",
+    "capabilities": [
+      "ai-persona-management"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "scripts": {
+    "test": "jest",
+    "test:unit": "jest test/unit/",
+    "test:integration": "jest test/integration/"
+  },
+  "dependencies": {
+    "@continuum/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "jest": "^29.0.0",
+    "typescript": "^5.0.0"
+  }
+}
