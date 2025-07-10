@@ -1,0 +1,46 @@
+{
+  "name": "@continuum/jtag-cli",
+  "version": "1.0.0",
+  "description": "JTAG AI Debugging CLI - Clean command delegation for browser debugging",
+  "main": "JtagCLI.ts",
+  "type": "module",
+  "continuum": {
+    "type": "command",
+    "category": "development",
+    "capabilities": [
+      "browser-debugging",
+      "screenshot-capture",
+      "log-analysis",
+      "hot-reload"
+    ],
+    "dependencies": [
+      "base-command"
+    ],
+    "interfaces": [
+      "command-bus",
+      "browser-management"
+    ],
+    "permissions": [
+      "browser-control",
+      "file-read",
+      "process-spawn"
+    ]
+  },
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "keywords": [
+    "jtag",
+    "debugging",
+    "browser",
+    "ai",
+    "cli"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
