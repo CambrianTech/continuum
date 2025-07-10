@@ -1,9 +1,10 @@
 /**
  * Console Forwarder - Handles console message forwarding to server
  * Provides semaphore protection and message queuing
+ * Enhanced with proper object serialization using shared types
  */
 
-import type { ConsoleCommand } from '../types/ConsoleTypes';
+import { Console } from '../../../types/shared/ConsoleTypes';
 import type { ContinuumState } from '../types/BrowserClientTypes';
 
 interface OriginalConsole {
@@ -16,7 +17,7 @@ interface OriginalConsole {
 
 export class ConsoleForwarder {
   private consoleForwarding = false;
-  private consoleMessageQueue: ConsoleCommand[] = [];
+  private consoleMessageQueue: Console.LogEntry[] = [];
   private originalConsole: OriginalConsole = {} as OriginalConsole;
   private executeCallback?: (command: string, params: Record<string, unknown>) => Promise<unknown>;
 
@@ -77,19 +78,27 @@ export class ConsoleForwarder {
 
   private forwardConsole(type: string, args: unknown[]): void {
     try {
-      const consoleCommand: ConsoleCommand = {
-        action: type,
-        message: args.map(arg => String(arg)).join(' '),
-        timestamp: new Date().toISOString(),
-        sessionId: this.getSessionId()
+      // Convert type string to proper Console.Level enum
+      const level = type as Console.Level;
+      
+      // Create properly formatted log entry using shared types
+      const logEntry = Console.MessageUtils.createLogEntry(level, args, {
+        url: typeof window !== 'undefined' ? window.location.href : '',
+        userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : ''
+      });
+
+      // Add session ID to the log entry
+      const consoleLogEntry: Console.LogEntry = {
+        ...logEntry,
+        sessionId: this.getSessionId() || ''
       };
 
       // Only execute if we're in ready state, otherwise queue for later
       if (this.getState() === 'ready' && this.executeCallback) {
-        this.executeConsoleCommand(consoleCommand);
+        this.executeConsoleCommand(consoleLogEntry);
       } else {
         // Queue message for when we reach ready state
-        this.queueConsoleMessage(consoleCommand);
+        this.queueConsoleMessage(consoleLogEntry);
       }
     } catch (error) {
       // Fail silently to avoid console loops
@@ -97,23 +106,23 @@ export class ConsoleForwarder {
     }
   }
 
-  private queueConsoleMessage(consoleCommand: ConsoleCommand): void {
-    this.consoleMessageQueue.push(consoleCommand);
+  private queueConsoleMessage(logEntry: Console.LogEntry): void {
+    this.consoleMessageQueue.push(logEntry);
   }
 
-  private executeConsoleCommand(consoleCommand: ConsoleCommand): void {
+  private executeConsoleCommand(logEntry: Console.LogEntry): void {
     if (this.executeCallback) {
-      this.executeCallback('console', consoleCommand).catch((e) => {
+      this.executeCallback('console', logEntry as unknown as Record<string, unknown>).catch((e) => {
         if (this.getState() !== 'ready') {
           // We will retry later when we reach ready state
-          if (consoleCommand.action === 'error') {
-            this.originalConsole.error(`❌ Console command failed while not ready: console.${consoleCommand.action}`, consoleCommand, e);
+          if (logEntry.level === Console.Level.ERROR) {
+            this.originalConsole.error(`❌ Console command failed while not ready: console.${logEntry.level}`, logEntry, e);
           } else {
-            this.originalConsole.warn(`⚠️ Console command rescheduled until online: console.${consoleCommand.action}`, consoleCommand, e);
+            this.originalConsole.warn(`⚠️ Console command rescheduled until online: console.${logEntry.level}`, logEntry, e);
           }
-          this.queueConsoleMessage(consoleCommand);
+          this.queueConsoleMessage(logEntry);
         } else {
-          this.originalConsole.error(`❌ Failed to execute console command: ${consoleCommand.action}`, consoleCommand, e);
+          this.originalConsole.error(`❌ Failed to execute console command: ${logEntry.level}`, logEntry, e);
         }
       });
     }
@@ -122,7 +131,7 @@ export class ConsoleForwarder {
   executeAndFlushConsoleMessageQueue(): void {
     if (this.consoleMessageQueue.length > 0 && this.executeCallback) {
       // Send all queued messages
-      this.consoleMessageQueue.sort((a, b) => a.timestamp.localeCompare(b.timestamp)).forEach(consoleCommand => this.executeConsoleCommand(consoleCommand));
+      this.consoleMessageQueue.sort((a, b) => a.timestamp.localeCompare(b.timestamp)).forEach(logEntry => this.executeConsoleCommand(logEntry));
 
       console.log(`🚽 Flushing ${this.consoleMessageQueue.length} queued console messages`);//occurred after everything else
       

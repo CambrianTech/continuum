@@ -90,6 +90,15 @@ export class ContinuumBrowserClient implements ContinuumAPI {
         this.execute('widget:discover', { paths: ['src/ui/components'] })
           .then(result => {
             console.log('🎨 BROWSER_DEBUG: Widget discovery via WidgetDaemon result:', result);
+            
+            // Test console object serialization with known object
+            const testObj = { 
+              test: 'serialization', 
+              number: 42, 
+              nested: { key: 'value', array: [1, 2, 3] },
+              boolean: true 
+            };
+            console.log('🧪 SERIALIZATION_TEST: Testing object logging:', testObj);
           })
           .catch(error => {
             console.error('❌ Widget discovery error:', error);
