@@ -110,25 +110,11 @@ export class ConsoleCommand extends DirectCommand {
         serverTimestamp,
         sessionId: context.sessionId
       };
-
-      // Format console output with timestamp
-      const iconMap: Record<string, string> = {
-        'log': '📝',
-        'error': '❌', 
-        'warn': '⚠️',
-        'info': 'ℹ️',
-        'debug': '🔍',
-        'trace': '🕵️',
-        'table': '📊',
-        'group': '📁',
-        'groupEnd': '📁',
-        'health_report': '🏥'
-      };
-      const icon = iconMap[logData.consoleLogLevel] || '📝';
+      
       const timePrefix = `[${new Date().toLocaleTimeString()}]`;
 
       // Log to server console (always) with timestamp
-      console.log(`${timePrefix} ${icon} BROWSER [${logData.consoleLogLevel.toUpperCase()}]: ${logData.consoleMessage}`);
+      console.log(`[${timePrefix} console.${logData.consoleLogLevel}]: ${logData.consoleMessage}`);
       if (logData.consoleArguments && logData.consoleArguments.length > 0) {
         console.log(`   Args:`, logData.consoleArguments);
       }
@@ -205,7 +191,7 @@ export class ConsoleCommand extends DirectCommand {
             const jsonLogEntry = JSON.stringify(logEntry) + '\n';
             
             // Text format for human readability (legacy compatibility)
-            const textLogEntry = `[${serverTimestamp}] ${icon} BROWSER [${logData.consoleLogLevel.toUpperCase()}]: ${logData.consoleMessage}\n`;
+            const textLogEntry = `[${serverTimestamp} console.${logData.consoleLogLevel}]: ${logData.consoleMessage}\n`;
             
             // Write to all three formats: level-specific JSON, all-levels JSON, and human-readable text
             await Promise.all([

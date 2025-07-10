@@ -101,9 +101,8 @@ export class ConsoleForwarder {
     this.consoleMessageQueue.push(consoleCommand);
   }
 
-  private executeConsoleCommand(consoleCommand: ConsoleCommand, prefix="🔄"): void {
+  private executeConsoleCommand(consoleCommand: ConsoleCommand): void {
     if (this.executeCallback) {
-      this.originalConsole.log(`${prefix} Executing console command: ${consoleCommand.action}`, consoleCommand);
       this.executeCallback('console', consoleCommand).catch((e) => {
         this.originalConsole.error(`❌ Failed to execute console command: ${consoleCommand.action}`, consoleCommand, e);
       });
@@ -113,7 +112,7 @@ export class ConsoleForwarder {
   executeAndFlushConsoleMessageQueue(): void {
     if (this.consoleMessageQueue.length > 0 && this.executeCallback) {
       // Send all queued messages
-      this.consoleMessageQueue.sort((a, b) => a.timestamp.localeCompare(b.timestamp)).forEach(consoleCommand => this.executeConsoleCommand(consoleCommand, '🚽'));
+      this.consoleMessageQueue.sort((a, b) => a.timestamp.localeCompare(b.timestamp)).forEach(consoleCommand => this.executeConsoleCommand(consoleCommand));
 
       console.log(`🚽 Flushing ${this.consoleMessageQueue.length} queued console messages`);//occurred after everything else
       
