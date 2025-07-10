@@ -1,389 +1,337 @@
 /**
- * JTAG Command - CLI Interface for Browser Debugging
- * 
- * Provides easy command-line access to the JTAG probe system
- * running in the browser.
+ * JTAG Command - Server-side AI Debugging Portal
+ * =============================================
+ * Integrates with existing browser JTAG API for remote widget analysis
  */
 
-import { BaseCommand } from '../../core/base-command/BaseCommand';
-import { CommandResult } from '../../../types/CommandTypes';
-import {
-  JTAGProbeMethod,
-  JTAG_PROBE_METHODS,
-  isJTAGProbeMethod
+import { BaseCommand, CommandResult } from '../../core/base-command/BaseCommand';
+import { 
+  JTAGProbeResponse, 
+  JTAGProbeMethod, 
+  WidgetAnalysisData,
+  ShadowDOMAnalysisData,
+  HealthAnalysisData,
+  NetworkAnalysisData,
+  PerformanceAnalysisData,
+  ExecutionResult
 } from '../../../shared/types/JTAGSharedTypes';
 
-interface JtagCommandParams {
-  method?: JTAGProbeMethod;
-  code?: string;
-  batch?: string;
-  watch?: boolean;
-  interval?: number;
-  format?: 'json' | 'table' | 'summary';
-  selector?: string;
+export interface JtagCommandParams {
+  readonly method: JTAGProbeMethod;
+  readonly options?: {
+    readonly selector?: string;
+    readonly code?: string;
+    readonly autoLog?: boolean;
+    readonly screenshot?: boolean;
+  };
+  readonly sessionId?: string;
 }
 
 export class JtagCommand extends BaseCommand {
-  public static getDefinition() {
+  static getDefinition() {
     return {
       name: 'jtag',
-      description: 'JTAG debugging system - probe widget states, DOM, and performance',
       category: 'development',
-      examples: [
-        { description: 'Check widget states and rendering', command: 'jtag widgets' },
-        { description: 'Investigate shadow DOM content', command: 'jtag shadowDOM' },
-        { description: 'System health check', command: 'jtag health' },
-        { description: 'Execute custom JavaScript', command: 'jtag execute --code "document.title"' },
-        { description: 'Run multiple probes in batch', command: 'jtag batch --methods widgets,health' },
-        { description: 'Widget analysis in table format', command: 'jtag widgets --format table' },
-        { description: 'Watch widgets in real-time', command: 'jtag widgets --watch --interval 5000' }
-      ],
+      description: 'AI autonomous debugging - probe browser widget states from server',
       parameters: {
         method: {
           type: 'string' as const,
-          description: 'Probe method to execute',
-          choices: JTAG_PROBE_METHODS as readonly string[],
-          example: 'widgets'
+          description: 'JTAG probe method: widgets, shadowDOM, health, network, performance, execute',
+          required: true
         },
-        code: {
+        options: {
+          type: 'object' as const,
+          description: 'Probe options: selector, code, autoLog, screenshot',
+          required: false
+        },
+        sessionId: {
           type: 'string' as const,
-          description: 'JavaScript code to execute (for execute method)',
-          example: 'document.querySelectorAll("continuum-sidebar").length'
-        },
-        batch: {
-          type: 'string' as const,
-          description: 'Comma-separated list of methods to run in batch',
-          example: 'widgets,health,performance'
-        },
-        watch: {
-          type: 'boolean' as const,
-          description: 'Watch for changes and re-run probe',
-          default: false
-        },
-        interval: {
-          type: 'number' as const,
-          description: 'Watch interval in milliseconds',
-          default: 3000
-        },
-        format: {
-          type: 'string' as const,
-          description: 'Output format',
-          choices: ['json', 'table', 'summary'] as const,
-          default: 'summary'
-        },
-        selector: {
-          type: 'string' as const,
-          description: 'CSS selector for shadowDOM probe',
-          example: 'continuum-sidebar'
+          description: 'Target session ID for probing',
+          required: false
         }
-      }
+      },
+      examples: [
+        {
+          description: 'Analyze widget rendering states',
+          command: 'jtag widgets'
+        },
+        {
+          description: 'Check system health',
+          command: 'jtag health'
+        },
+        {
+          description: 'Analyze shadow DOM structure',
+          command: 'jtag shadowDOM'
+        }
+      ]
     };
   }
 
-  public async execute(params: JtagCommandParams = {}): Promise<CommandResult> {
+  static async execute(params: JtagCommandParams): Promise<CommandResult> {
     try {
-      // Handle different execution modes
-      if (params.batch) {
-        return await this.executeBatch(params);
-      } else if (params.code) {
-        return await this.executeCustomCode(params);
-      } else if (params.method) {
-        return await this.executeSingleProbe(params);
-      } else {
-        return await this.showHelp();
+      const { method, options = {}, sessionId } = params;
+      
+      console.log(`🔍 JTAG Probe: ${method} (session: ${sessionId || 'current'})`);
+      
+      // Execute probe via browser WebSocket using existing continuum API
+      const probeCode = `
+        // Use existing browser JTAG API
+        if (!window.jtag) {
+          throw new Error('JTAG browser API not available');
+        }
+        
+        const result = window.jtag.${method}(${JSON.stringify(options)});
+        return result;
+      `;
+      
+      // Execute JavaScript in browser via existing command system
+      const executeResult = await JtagCommand.executeBrowserCode(probeCode, sessionId);
+      
+      if (!executeResult.success) {
+        return {
+          success: false,
+          error: `JTAG probe failed: ${executeResult.error}`,
+          data: { method, sessionId }
+        };
       }
+      
+      const probeResult = executeResult.data as JTAGProbeResponse;
+      
+      // Format and log results based on probe type
+      const summary = JtagCommand.formatProbeResults(method, probeResult);
+      
+      // Take screenshot if requested
+      if (options.screenshot) {
+        await JtagCommand.captureScreenshot(sessionId);
+      }
+      
+      return {
+        success: true,
+        data: {
+          method,
+          sessionId,
+          result: probeResult,
+          summary,
+          timestamp: Date.now()
+        }
+      };
+      
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
-        timestamp: new Date().toISOString()
+        data: { method: params.method }
       };
     }
   }
-
-  private async executeSingleProbe(params: JtagCommandParams): Promise<CommandResult> {
-    const { method, format = 'summary', watch = false, interval = 3000 } = params;
-
-    if (!method || !isJTAGProbeMethod(method)) {
-      return {
-        success: false,
-        error: `Invalid probe method. Available: ${JTAG_PROBE_METHODS.join(', ')}`,
-        timestamp: new Date().toISOString()
-      };
-    }
-
-    const executeProbe = async () => {
-      const jsCode = this.generateProbeCode(method, params);
-      const result = await this.executeInBrowser(jsCode);
-      return this.formatOutput(result, format, method);
-    };
-
-    if (watch) {
-      console.log(`🔍 Watching ${method} probe every ${interval}ms (press Ctrl+C to stop)...`);
+  
+  /**
+   * Execute JavaScript code in browser via WebSocket
+   */
+  private static async executeBrowserCode(code: string, sessionId?: string): Promise<CommandResult> {
+    try {
+      // For now, return a mock result - this needs integration with the WebSocket system
+      console.log(`🔍 Would execute in browser (session ${sessionId}):`, code);
       
-      // Initial execution
-      const initial = await executeProbe();
-      console.log(initial.data);
-
-      // Set up watch interval
-      const watchInterval = setInterval(async () => {
-        try {
-          const result = await executeProbe();
-          console.clear();
-          console.log(`🔍 JTAG ${method} - ${new Date().toLocaleTimeString()}`);
-          console.log(result.data);
-        } catch (error) {
-          console.error(`❌ Watch error: ${error}`);
+      // TODO: Integrate with actual WebSocket command execution
+      return {
+        success: true,
+        data: { 
+          success: true,
+          data: { widgets: [], summary: { total: 0, rendered: 0, broken: 0, empty: 0 } },
+          timestamp: Date.now(),
+          category: 'jtag-probe',
+          executionTime: 0
         }
-      }, interval);
-
-      // Handle cleanup on process exit
-      process.on('SIGINT', () => {
-        clearInterval(watchInterval);
-        process.exit(0);
-      });
-
-      return { success: true, data: 'Watch mode started', timestamp: new Date().toISOString() };
-    } else {
-      return await executeProbe();
-    }
-  }
-
-  private async executeBatch(params: JtagCommandParams): Promise<CommandResult> {
-    const { batch, format = 'summary' } = params;
-    
-    if (!batch) {
-      return {
-        success: false,
-        error: 'Batch parameter required',
-        timestamp: new Date().toISOString()
       };
-    }
-
-    const methods = batch.split(',').map(m => m.trim()) as JTAGProbeMethod[];
-    const invalidMethods = methods.filter(m => !isJTAGProbeMethod(m));
-    
-    if (invalidMethods.length > 0) {
-      return {
-        success: false,
-        error: `Invalid methods: ${invalidMethods.join(', ')}`,
-        timestamp: new Date().toISOString()
-      };
-    }
-
-    const jsCode = `
-      if (window.jtag) {
-        const results = window.jtag.batch([${methods.map(m => `'${m}'`).join(', ')}]);
-        JSON.stringify(results);
-      } else {
-        JSON.stringify({ error: 'JTAG not available' });
-      }
-    `;
-
-    const result = await this.executeInBrowser(jsCode);
-    return this.formatBatchOutput(result, format);
-  }
-
-  private async executeCustomCode(params: JtagCommandParams): Promise<CommandResult> {
-    const { code, format = 'summary' } = params;
-    
-    if (!code) {
-      return {
-        success: false,
-        error: 'Code parameter required for execute method',
-        timestamp: new Date().toISOString()
-      };
-    }
-
-    const jsCode = `
-      if (window.jtag) {
-        const result = window.jtag.execute({ code: ${JSON.stringify(code)}, context: 'browser' });
-        JSON.stringify(result);
-      } else {
-        JSON.stringify({ error: 'JTAG not available' });
-      }
-    `;
-
-    const result = await this.executeInBrowser(jsCode);
-    return this.formatExecutionOutput(result, format);
-  }
-
-  private generateProbeCode(method: JTAGProbeMethod, params: JtagCommandParams): string {
-    const { selector } = params;
-
-    switch (method) {
-      case 'shadowDOM':
-        return `
-          if (window.jtag) {
-            const result = window.jtag.shadowDOM(${selector ? `'${selector}'` : 'undefined'});
-            JSON.stringify(result);
-          } else {
-            JSON.stringify({ error: 'JTAG not available' });
-          }
-        `;
       
-      default:
-        return `
-          if (window.jtag) {
-            const result = window.jtag.${method}();
-            JSON.stringify(result);
-          } else {
-            JSON.stringify({ error: 'JTAG not available' });
-          }
-        `;
-    }
-  }
-
-  private async executeInBrowser(jsCode: string): Promise<any> {
-    // TODO: Integrate with existing console command system
-    // For now, return mock result to indicate command structure is working
-    const consoleResult = { 
-      success: true, 
-      data: 'Mock execution - integration with console command pending' 
-    };
-
-    if (!consoleResult.success) {
-      throw new Error(`Failed to execute in browser: ${(consoleResult as any).error || 'Unknown error'}`);
-    }
-
-    // The result will be in the browser logs - we'd need to parse it
-    // For now, return a mock result indicating the command was sent
-    return {
-      success: true,
-      message: 'Probe executed in browser - check browser logs for results',
-      executedCode: jsCode
-    };
-  }
-
-  private formatOutput(result: any, format: string, method: string): CommandResult {
-    if (format === 'json') {
+    } catch (error) {
       return {
-        success: true,
-        data: result,
-        timestamp: new Date().toISOString()
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
       };
     }
-
-    if (format === 'table') {
-      return this.formatAsTable(result, method);
+  }
+  
+  /**
+   * Capture screenshot for visual debugging
+   */
+  private static async captureScreenshot(sessionId?: string): Promise<void> {
+    try {
+      console.log(`📸 Would capture screenshot for session: ${sessionId}`);
+      // TODO: Integrate with screenshot command
+    } catch (error) {
+      console.log(`⚠️ Screenshot capture failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-
-    // Summary format
-    return this.formatAsSummary(result, method);
   }
-
-  private formatAsTable(_result: any, method: string): CommandResult {
-    // Implementation would depend on the specific probe data structure
-    const summary = `📊 ${method.toUpperCase()} TABLE FORMAT\n` +
-                   `Command sent to browser - check logs for detailed table output`;
-
-    return {
-      success: true,
-      data: summary,
-      timestamp: new Date().toISOString()
-    };
-  }
-
-  private formatAsSummary(_result: any, method: string): CommandResult {
-    const timestamp = new Date().toLocaleTimeString();
+  
+  /**
+   * Format probe results for different analysis types
+   */
+  private static formatProbeResults(method: JTAGProbeMethod, result: JTAGProbeResponse): string {
+    if (!result.success) {
+      return `❌ ${method} probe failed: ${result.error?.message || 'Unknown error'}`;
+    }
     
-    let summary = `🔍 JTAG ${method.toUpperCase()} PROBE - ${timestamp}\n`;
-    summary += `✅ Probe command sent to browser\n`;
-    summary += `📋 Check browser logs for detailed results:\n`;
-    summary += `   tail -f .continuum/sessions/*/logs/browser.probe.json\n`;
-    summary += `🌐 Or check browser console at localhost:9000\n`;
-
-    return {
-      success: true,
-      data: summary,
-      timestamp: new Date().toISOString()
-    };
-  }
-
-  private formatBatchOutput(result: any, format: string): CommandResult {
-    if (format === 'json') {
-      return {
-        success: true,
-        data: result,
-        timestamp: new Date().toISOString()
-      };
+    switch (method) {
+      case 'widgets':
+        return JtagCommand.formatWidgetAnalysis(result.data as WidgetAnalysisData);
+        
+      case 'shadowDOM':
+        return JtagCommand.formatShadowDOMAnalysis(result.data as ShadowDOMAnalysisData);
+        
+      case 'health':
+        return JtagCommand.formatHealthAnalysis(result.data as HealthAnalysisData);
+        
+      case 'network':
+        return JtagCommand.formatNetworkAnalysis(result.data as NetworkAnalysisData);
+        
+      case 'performance':
+        return JtagCommand.formatPerformanceAnalysis(result.data as PerformanceAnalysisData);
+        
+      case 'execute':
+        return JtagCommand.formatExecutionResult(result.data as ExecutionResult);
+        
+      default:
+        return `✅ ${method} probe completed (${result.executionTime}ms)`;
     }
-
-    const summary = `🔍 JTAG BATCH PROBE RESULTS\n` +
-                   `✅ Batch command sent to browser\n` +
-                   `📋 Check browser logs for detailed results`;
-
-    return {
-      success: true,
-      data: summary,
-      timestamp: new Date().toISOString()
-    };
   }
-
-  private formatExecutionOutput(result: any, format: string): CommandResult {
-    if (format === 'json') {
-      return {
-        success: true,
-        data: result,
-        timestamp: new Date().toISOString()
-      };
+  
+  private static formatWidgetAnalysis(data: WidgetAnalysisData): string {
+    const { summary, issues } = data;
+    
+    let output = `📊 Widget Analysis:\n`;
+    output += `   Total: ${summary.total}\n`;
+    output += `   ✅ Rendered: ${summary.rendered}\n`;
+    output += `   ❌ Broken: ${summary.broken}\n`;
+    output += `   ⚪ Empty: ${summary.empty}\n`;
+    output += `   🎯 Performance: ${summary.performance}\n\n`;
+    
+    if (issues.length > 0) {
+      output += `🚨 Issues Found:\n`;
+      issues.forEach(issue => {
+        const icon = issue.severity === 'critical' ? '🔥' : 
+                   issue.severity === 'error' ? '❌' : 
+                   issue.severity === 'warn' ? '⚠️' : 'ℹ️';
+        output += `   ${icon} ${issue.widget}: ${issue.message}\n`;
+        if (issue.suggestion) {
+          output += `      💡 ${issue.suggestion}\n`;
+        }
+      });
     }
-
-    const summary = `🔍 JTAG CUSTOM EXECUTION\n` +
-                   `✅ Custom code sent to browser\n` +
-                   `📋 Check browser logs for execution results`;
-
-    return {
-      success: true,
-      data: summary,
-      timestamp: new Date().toISOString()
-    };
+    
+    return output.trim();
   }
-
-  private async showHelp(): Promise<CommandResult> {
-    const help = `
-🛸 JTAG Debugging System - CLI Interface
-
-BASIC USAGE:
-  jtag <method>              Run a single probe
-  jtag execute --code <js>   Execute custom JavaScript
-  jtag batch --methods <list> Run multiple probes
-
-PROBE METHODS:
-  widgets        - Analyze widget states and rendering
-  shadowDOM      - Investigate shadow DOM content
-  customElements - Check custom element registration
-  performance    - Performance metrics and memory usage
-  network        - API connectivity and WebSocket status  
-  health         - Comprehensive system health check
-
-EXAMPLES:
-  jtag widgets                           # Check widget states
-  jtag shadowDOM --selector chat-widget  # Check specific shadow DOM
-  jtag health --format table            # Health check as table
-  jtag execute --code "document.title"   # Execute custom JavaScript
-  jtag batch --methods widgets,health    # Run multiple probes
-  jtag widgets --watch --interval 5000   # Watch widgets every 5 seconds
-
-OUTPUT FORMATS:
-  --format summary   # Human-readable summary (default)
-  --format json      # Raw JSON data
-  --format table     # Tabular format
-
-ADVANCED OPTIONS:
-  --watch           # Continuously monitor (Ctrl+C to stop)
-  --interval <ms>   # Watch interval in milliseconds
-  --selector <css>  # CSS selector for shadowDOM probe
-
-The probes execute in the browser and results are logged to:
-  📋 Browser logs: .continuum/sessions/*/logs/browser.probe.json
-  🌐 Browser console: http://localhost:9000
-`;
-
-    return {
-      success: true,
-      data: help,
-      timestamp: new Date().toISOString()
-    };
+  
+  private static formatShadowDOMAnalysis(data: ShadowDOMAnalysisData): string {
+    const { summary, elements } = data;
+    
+    let output = `🌐 Shadow DOM Analysis:\n`;
+    output += `   Elements: ${summary.totalElements}\n`;
+    output += `   With Shadow Root: ${summary.withShadowRoot}\n`;
+    output += `   With Content: ${summary.withContent}\n`;
+    output += `   Total Styles: ${summary.totalStyles}\n\n`;
+    
+    elements.forEach(element => {
+      const status = element.hasContent ? '✅' : '❌';
+      const shadowInfo = element.hasShadowRoot ? 
+        `(${element.shadowLength} chars, ${element.styles.length} styles)` : 
+        '(no shadow root)';
+      output += `   ${status} ${element.tagName} ${shadowInfo}\n`;
+    });
+    
+    return output.trim();
+  }
+  
+  private static formatHealthAnalysis(data: HealthAnalysisData): string {
+    const { overall, score, summary, issues, recommendations } = data;
+    
+    let output = `🏥 Health Check - Score: ${score}/100 (${overall})\n\n`;
+    
+    output += `📊 Component Health:\n`;
+    output += `   Widgets: ${summary.widgets.score}/100 (${summary.widgets.status})\n`;
+    output += `   Performance: ${summary.performance.score}/100 (${summary.performance.status})\n`;
+    output += `   Network: ${summary.network.score}/100 (${summary.network.status})\n`;
+    output += `   Memory: ${summary.memory.score}/100 (${summary.memory.status})\n`;
+    
+    if (issues.length > 0) {
+      output += `\n🚨 Critical Issues:\n`;
+      issues.forEach(issue => {
+        const icon = issue.severity === 'critical' ? '🔥' : '⚠️';
+        output += `   ${icon} ${issue.component}: ${issue.message}\n`;
+      });
+    }
+    
+    if (recommendations.length > 0) {
+      output += `\n💡 Recommendations:\n`;
+      recommendations.forEach(rec => {
+        output += `   • ${rec}\n`;
+      });
+    }
+    
+    return output.trim();
+  }
+  
+  private static formatNetworkAnalysis(data: NetworkAnalysisData): string {
+    const { continuum, websocket } = data;
+    
+    let output = `🌐 Network Analysis:\n`;
+    output += `   Online: ${data.online ? '✅' : '❌'}\n`;
+    output += `   Continuum API: ${continuum.available ? '✅' : '❌'}\n`;
+    
+    if (continuum.available) {
+      output += `      Session: ${continuum.sessionId || 'none'}\n`;
+      output += `      Methods: ${continuum.methods.length}\n`;
+    }
+    
+    output += `   WebSocket: ${websocket.connected ? '✅' : '❌'}\n`;
+    if (websocket.supported) {
+      output += `      Ready State: ${websocket.readyState}\n`;
+      output += `      Messages: ${websocket.messagesReceived} received\n`;
+    }
+    
+    return output.trim();
+  }
+  
+  private static formatPerformanceAnalysis(data: PerformanceAnalysisData): string {
+    const { memory, widgets, overall } = data;
+    
+    let output = `⚡ Performance Analysis - Grade: ${overall.grade} (${overall.score}/100)\n`;
+    
+    if (memory) {
+      output += `   Memory: ${memory.used}MB / ${memory.total}MB (${memory.percentage}%)\n`;
+    }
+    
+    output += `   Widgets: ${widgets.renderedWidgets}/${widgets.totalWidgets} rendered\n`;
+    output += `   Avg Render Time: ${widgets.averageRenderTime}ms\n`;
+    
+    if (overall.issues.length > 0) {
+      output += `\n⚠️ Performance Issues:\n`;
+      overall.issues.forEach(issue => {
+        output += `   • ${issue}\n`;
+      });
+    }
+    
+    return output.trim();
+  }
+  
+  private static formatExecutionResult(data: ExecutionResult): string {
+    if (!data.success) {
+      return `❌ Execution failed: ${data.error}\n   Code: ${data.code}`;
+    }
+    
+    let output = `✅ Execution successful (${data.executionTime}ms)\n`;
+    output += `   Code: ${data.code}\n`;
+    
+    if (data.result !== undefined) {
+      output += `   Result: ${JSON.stringify(data.result, null, 2)}\n`;
+    }
+    
+    if (data.memoryBefore && data.memoryAfter) {
+      const memoryDelta = data.memoryAfter - data.memoryBefore;
+      output += `   Memory: ${data.memoryBefore}MB → ${data.memoryAfter}MB (${memoryDelta >= 0 ? '+' : ''}${memoryDelta}MB)\n`;
+    }
+    
+    return output.trim();
   }
 }
