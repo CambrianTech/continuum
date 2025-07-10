@@ -21,6 +21,7 @@ export abstract class BaseBrowserAdapter {
   abstract countTabs(urlPattern: string): Promise<number>;
   abstract closeTabs(urlPattern: string): Promise<number>;
   abstract focusTab(urlPattern: string): Promise<boolean>;
+  abstract refreshTab(urlPattern: string): Promise<boolean>;
   
   // Browser identification
   abstract isAvailable(): Promise<boolean>;

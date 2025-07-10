@@ -84,6 +84,16 @@ export class ContinuumBrowserClient implements ContinuumAPI {
         this.consoleForwarder.executeAndFlushConsoleMessageQueue();
         console.log('✅ Continuum API ready for use');
         this.consoleForwarder.performHealthCheck();
+        
+        // Test widget daemon discovery
+        console.log('🎨 BROWSER_DEBUG: Testing widget daemon discovery...');
+        this.execute('widget:discover', { paths: ['src/ui/components'] })
+          .then(result => {
+            console.log('🎨 BROWSER_DEBUG: Widget discovery result:', result);
+          })
+          .catch(error => {
+            console.error('❌ Widget discovery error:', error);
+          });
         break;
       case 'error':
         console.error('❌ Continuum API in error state');

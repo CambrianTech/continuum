@@ -380,7 +380,7 @@ export class SessionManagerDaemon extends BaseDaemon {
         };
         DAEMON_EVENT_BUS.emitEvent(SystemEventType.SESSION_JOINED, sessionJoinedEvent);
         
-        this.log(`📋 Emitted session_joined event for ${session.id} (${session.type})`);
+        this.log(`📋 REFRESH_DEBUG: Emitted session_joined event for ${session.id} (${session.type})`);
       }
 
       // Orchestrate what needs to be launched based on capabilities
@@ -1090,7 +1090,7 @@ export class SessionManagerDaemon extends BaseDaemon {
       serverLogPath: session.artifacts.logs.server[0] || ''
     };
     DAEMON_EVENT_BUS.emitEvent(SystemEventType.SESSION_CREATED, sessionCreatedEvent);
-    this.log(`🌐 Emitted core SESSION_CREATED event for ${sessionId} (${type})`);
+    this.log(`🌐 REFRESH_DEBUG: Emitted core SESSION_CREATED event for ${sessionId} (${type})`);
     
     return session;
   }

@@ -13,6 +13,7 @@ import { SessionManagerDaemon } from '../../daemons/session-manager/SessionManag
 import { ContinuumDirectoryDaemon } from '../../daemons/continuum-directory/ContinuumDirectoryDaemon';
 import { StaticFileDaemon } from '../../daemons/static-file/StaticFileDaemon';
 import { AcademyDaemon } from '../../daemons/academy/AcademyDaemon';
+import { WidgetDaemon } from '../../daemons/widget/WidgetDaemon';
 // import { PersonaDaemon } from '../../daemons/persona/PersonaDaemon';
 import { ChatRoomDaemon } from '../../daemons/chatroom/ChatRoomDaemon';
 // import { DaemonMessage } from '../../daemons/base/DaemonProtocol';
@@ -32,6 +33,7 @@ export class ContinuumSystem extends EventEmitter {
     this.daemons.set('websocket', new WebSocketDaemon());
     this.daemons.set('renderer', new RendererDaemon());
     this.daemons.set('command-processor', new CommandProcessorDaemon());
+    this.daemons.set('widget', new WidgetDaemon());
     this.daemons.set('chatroom', new ChatRoomDaemon());
     // PersonaDaemon needs special handling - it's created per persona, not as a system daemon
     // this.daemons.set('persona', new PersonaDaemon());

@@ -11,6 +11,13 @@ import { readFile } from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { BaseBrowserAdapter } from '../base/BaseBrowserAdapter.js';
+import { 
+  BrowserActionType, 
+  createBrowserActionResult,
+  BrowserEventType,
+  createBrowserEvent,
+  BrowserRefreshEvent
+} from '../../../../types/shared/BrowserEvents.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -91,6 +98,63 @@ export abstract class MacOSBrowserAdapter extends BaseBrowserAdapter {
       });
       return result.startsWith('found-');
     } catch {
+      return false;
+    }
+  }
+  
+  async refreshTab(urlPattern: string): Promise<boolean> {
+    try {
+      console.log(`🔄 ADAPTER_DEBUG: refreshTab called with URL: ${urlPattern}`);
+      console.log(`🔄 ADAPTER_DEBUG: App name: ${this.getAppName()}`);
+      
+      const result = await this.executeScriptTemplate('refresh-tab', {
+        APP_NAME: this.getAppName(),
+        URL_PATTERN: urlPattern
+      });
+      
+      console.log(`🔄 ADAPTER_DEBUG: AppleScript result: "${result}"`);
+      const success = result.startsWith('refreshed-');
+      console.log(`🔄 ADAPTER_DEBUG: Success: ${success}`);
+      
+      // Create strongly typed browser action result
+      const actionResult = createBrowserActionResult(
+        BrowserActionType.REFRESH,
+        urlPattern,
+        success,
+        success 
+          ? { refreshed: true } 
+          : { refreshed: false, error: `AppleScript result: ${result}` }
+      );
+      
+      console.log(`🔄 ADAPTER_DEBUG: Action result:`, actionResult);
+      
+      // Emit browser refresh event (type-safe)
+      if (success) {
+        const refreshEvent = createBrowserEvent<BrowserRefreshEvent>(
+          BrowserEventType.TAB_REFRESH,
+          {
+            url: urlPattern,
+            reason: 'session_join'
+          },
+          'adapter'
+        );
+        console.log(`🔄 ADAPTER_DEBUG: Would emit refresh event:`, refreshEvent);
+        // TODO: Add event bus integration
+      }
+      
+      return success;
+    } catch (error) {
+      console.error(`❌ ADAPTER_DEBUG: refreshTab error:`, error);
+      
+      // Create error action result  
+      const errorResult = createBrowserActionResult(
+        BrowserActionType.REFRESH,
+        urlPattern,
+        false,
+        { error: error instanceof Error ? error.message : String(error) }
+      );
+      
+      console.error(`❌ ADAPTER_DEBUG: Error result:`, errorResult);
       return false;
     }
   }
