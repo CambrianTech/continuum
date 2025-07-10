@@ -6,14 +6,12 @@
   "type": "module",
   "continuum": {
     "type": "widget",
-    "core": "SavedPersonas",
-    "category": "Core",
-    "capabilities": [
-      "auto-generated"
-    ],
-    "dependencies": [],
-    "interfaces": [],
-    "permissions": []
+    "widget": "saved-personas",
+    "widgetName": "SavedPersonasWidget",
+    "assets": {
+      "css": ["SavedPersonas.css"],
+      "html": []
+    }
   },
   "keywords": [
     "SavedPersonas",
