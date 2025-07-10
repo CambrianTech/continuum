@@ -1,0 +1,64 @@
+{
+  "personas": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "specialization": "AI Assistant",
+      "status": "active",
+      "accuracy": 96.5,
+      "created": "2025-01-01",
+      "avatar": "🤖",
+      "description": "AI Assistant for code analysis and development"
+    },
+    {
+      "id": "joel",
+      "name": "joel",
+      "specialization": "Project Owner",
+      "status": "active",
+      "accuracy": 100,
+      "created": "2025-01-01",
+      "avatar": "👤",
+      "description": "Human project owner and system architect"
+    },
+    {
+      "id": "auto-route",
+      "name": "Auto Route",
+      "specialization": "Smart agent selection",
+      "status": "active",
+      "accuracy": 94.2,
+      "created": "2025-01-01",
+      "avatar": "🎯",
+      "description": "Intelligent routing for optimal agent selection"
+    },
+    {
+      "id": "codeai",
+      "name": "CodeAI",
+      "specialization": "Code analysis & debugging",
+      "status": "active",
+      "accuracy": 97.8,
+      "created": "2025-01-01",
+      "avatar": "🔧",
+      "description": "Specialized in code analysis and debugging"
+    },
+    {
+      "id": "generalai",
+      "name": "GeneralAI",
+      "specialization": "General assistance",
+      "status": "active",
+      "accuracy": 95.1,
+      "created": "2025-01-01",
+      "avatar": "🌟",
+      "description": "General purpose AI assistant"
+    },
+    {
+      "id": "plannerai",
+      "name": "PlannerAI",
+      "specialization": "Strategy & web commands",
+      "status": "active",
+      "accuracy": 93.6,
+      "created": "2025-01-01",
+      "avatar": "📋",
+      "description": "Strategic planning and web command coordination"
+    }
+  ]
+}

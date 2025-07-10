@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2634",
+  "version": "0.2.2636",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -13,7 +13,7 @@
   "scripts": {
     "compile": "npx tsc --noEmit --project .",
     "start": "npm run compile && npm run build:browser-ts && ./continuum",
-    "jtag": "npm start && echo '' && echo '🛸 JTAG Widget Analysis:' && echo 'Open browser DevTools (F12) and run:' && echo 'fetch(\"/src/ui/jtag-probe.js\").then(r=>r.text()).then(eval)' && echo ''",
+    "jtag": "npm start && echo '' && ./jtag.ts help",
     "install:global": "node scripts/install.js",
     "prepare": "husky",
     "postinstall": "lerna run prepare",
