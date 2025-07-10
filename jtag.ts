@@ -57,6 +57,9 @@ Usage: ./jtag <command>
 📱 Browser Commands (paste in DevTools):
   fetch("/src/ui/jtag-probe.js").then(r=>r.text()).then(eval)
   window.jtag.widgets()      Direct widget analysis
+
+📚 Documentation:
+  Widget debugging case study: middle-out/development/widget-debugging-case-study.md
 `);
   },
 
