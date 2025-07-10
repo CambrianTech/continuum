@@ -72,8 +72,53 @@ export class ConsoleForwarder {
       this.forwardConsole('trace', args);
     };
 
+    // Add AI-friendly probe method for diagnostic logging with optional JS execution
+    (console as any).probe = (messageOrProbeData: string | Console.ProbeData, data?: Record<string, unknown>): void => {
+      let probeData: Console.ProbeData;
+      
+      // Handle both simple string usage and full ProbeData interface
+      if (typeof messageOrProbeData === 'string') {
+        probeData = {
+          message: messageOrProbeData,
+          category: 'ai-diagnostic'
+        };
+        if (data) {
+          probeData.data = data;
+        }
+      } else {
+        probeData = messageOrProbeData;
+      }
+
+      // Execute optional JavaScript and capture result
+      if (probeData.executeJS) {
+        try {
+          const result = eval(probeData.executeJS);
+          probeData.data = {
+            ...probeData.data,
+            jsExecutionResult: result,
+            jsCode: probeData.executeJS  // Keep original for local logging
+          };
+        } catch (error) {
+          probeData.data = {
+            ...probeData.data,
+            jsExecutionError: error instanceof Error ? error.message : String(error),
+            jsCode: probeData.executeJS  // Keep original for local logging
+          };
+        }
+        
+        // Base64 encode for secure wire transmission
+        probeData.executeJSBase64 = btoa(probeData.executeJS);
+        // Remove plain text version for wire transmission
+        delete probeData.executeJS;
+      }
+
+      this.originalConsole.log('🔬 PROBE:', probeData.message, probeData.data || '');
+      this.forwardConsole('probe', [probeData]);
+    };
+
     this.consoleForwarding = true;
     console.log('✅ Console forwarding enabled');
+    console.log('🔬 console.probe() method added for AI diagnostics');
   }
 
   private forwardConsole(type: string, args: unknown[]): void {

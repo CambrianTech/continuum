@@ -18,7 +18,26 @@ export namespace Console {
     TRACE = 'trace',
     TABLE = 'table',
     GROUP = 'group',
-    GROUP_END = 'groupEnd'
+    GROUP_END = 'groupEnd',
+    PROBE = 'probe'
+  }
+
+  /**
+   * AI Probe interface for diagnostic logging
+   */
+  export interface ProbeData {
+    /** Human-readable probe description */
+    message: string;
+    /** Structured data for analysis */
+    data?: Record<string, unknown>;
+    /** Optional JavaScript code to execute and capture result */
+    executeJS?: string;
+    /** Base64 encoded JavaScript for wire transmission (internal use) */
+    executeJSBase64?: string;
+    /** Probe category (ai-diagnostic, performance, error-trace, etc.) */
+    category?: string;
+    /** Tags for filtering and organization */
+    tags?: string[];
   }
 
   /**
