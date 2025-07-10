@@ -104,7 +104,17 @@ export class ConsoleForwarder {
   private executeConsoleCommand(consoleCommand: ConsoleCommand): void {
     if (this.executeCallback) {
       this.executeCallback('console', consoleCommand).catch((e) => {
-        this.originalConsole.error(`❌ Failed to execute console command: ${consoleCommand.action}`, consoleCommand, e);
+        if (this.getState() !== 'ready') {
+          // We will retry later when we reach ready state
+          if (consoleCommand.action === 'error') {
+            this.originalConsole.error(`❌ Console command failed while not ready: ${consoleCommand.action}`, consoleCommand, e);
+          } else {
+            this.originalConsole.warn(`⚠️ Console command rescheduled until online: ${consoleCommand.action}`, consoleCommand, e);
+          }
+          this.queueConsoleMessage(consoleCommand);
+        } else {
+          this.originalConsole.error(`❌ Failed to execute console command: ${consoleCommand.action}`, consoleCommand, e);
+        }
       });
     }
   }
