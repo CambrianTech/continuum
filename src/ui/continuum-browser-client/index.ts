@@ -5,6 +5,9 @@
 
 import { ContinuumBrowserClient } from './ContinuumBrowserClient';
 
+// Trigger widget discovery plugin to automatically import all widgets
+import 'widget-discovery';
+
 // Create single global instance
 const continuum = new ContinuumBrowserClient();
 
