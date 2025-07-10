@@ -399,6 +399,17 @@ export class BrowserDaemonController {
   getFeatureFlagStatus(): any {
     return BrowserFeatureFlags.getStatus();
   }
+
+  /**
+   * Get WidgetDaemon instance for widget communication
+   */
+  getWidgetDaemon(): any {
+    if (this.widgetDaemonEnabled) {
+      return widgetDaemon;
+    }
+    return null;
+  }
+
 }
 
 // Export singleton instance for global access

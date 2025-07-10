@@ -1,0 +1,26 @@
+{
+  "name": "jtag-command",
+  "version": "1.0.0", 
+  "description": "CLI interface for JTAG browser debugging system",
+  "main": "JtagCommand.ts",
+  "files": [
+    "JtagCommand.ts",
+    "README.md"
+  ],
+  "continuum": {
+    "type": "command",
+    "category": "development",
+    "framework": "typescript"
+  },
+  "keywords": [
+    "jtag",
+    "debugging", 
+    "cli",
+    "browser",
+    "widgets",
+    "development"
+  ],
+  "scripts": {
+    "test": "../../../test/scripts/run-module-tests.js"
+  }
+}

@@ -302,47 +302,65 @@ export class SidebarWidget extends BaseWidget {
     }
     
     private setupSystemAwareness(): void {
-        if ((window as any).continuum) {
-            const continuum = (window as any).continuum;
-            
-            // React to command executions with excitement
-            continuum.on('command_response', (data: any) => {
-                if (data.success) {
-                    this.updateOrbEmotion('excited', `Command executed: ${data.command || 'operation'}`);
-                    this.sparkle();
-                } else {
-                    this.updateOrbEmotion('concerned', `Command failed: ${data.error || 'unknown error'}`);
-                    this.pulseWarning();
-                }
-            });
-            
-            // React to connections
-            continuum.on('continuum:connected', () => {
-                this.updateOrbEmotion('excited', 'Connection established - full awareness achieved!');
-                this.celebrateConnection();
-            });
-            
-            continuum.on('continuum:disconnected', () => {
-                this.updateOrbEmotion('distressed', 'Connection lost - consciousness fading...');
-                this.fadeConsciousness();
-            });
-        }
+        // Simple widget-based approach - no complex event dependencies
+        console.log(`🧠 ${this.widgetName}: Setting up system awareness with simple notifications`);
         
-        // React to user interactions
+        // Notify system that we're ready for awareness
+        this.notifySystem('widget_ready', { 
+            type: 'continuum-sidebar', 
+            capabilities: ['system-awareness', 'emotional-feedback', 'user-interaction'] 
+        });
+        
+        // Set up user interactions with orb
         const orb = this.shadowRoot.querySelector('.continuon-orb-integrated') as HTMLElement;
         if (orb) {
             orb.addEventListener('click', () => {
                 this.updateOrbEmotion('focused', 'Attention focused on user interaction');
                 this.acknowledgeInteraction();
+                this.notifySystem('user_interaction', { type: 'click', target: 'orb' });
             });
             
             orb.addEventListener('mouseenter', () => {
                 this.increaseAwareness();
+                this.notifySystem('user_interaction', { type: 'hover_start', target: 'orb' });
             });
             
             orb.addEventListener('mouseleave', () => {
                 this.resumeNormalAwareness();
+                this.notifySystem('user_interaction', { type: 'hover_end', target: 'orb' });
             });
+        }
+        
+        // Start with neutral awareness state
+        this.updateOrbEmotion('calm', 'System awareness initialized - observing environment');
+        this.startBreathing();
+        
+        console.log(`✅ ${this.widgetName}: System awareness configured with graceful API handling`);
+    }
+
+    /**
+     * Override system status handler to react with appropriate emotions
+     */
+    protected onSystemStatus(status: string, data?: any): void {
+        switch (status) {
+            case 'command_success':
+                this.updateOrbEmotion('excited', `Command executed: ${data?.command || 'operation'}`);
+                this.sparkle();
+                break;
+            case 'command_failure':
+                this.updateOrbEmotion('concerned', `Command failed: ${data?.error || 'unknown error'}`);
+                this.pulseWarning();
+                break;
+            case 'connection_established':
+                this.updateOrbEmotion('excited', 'Connection established - full awareness achieved!');
+                this.celebrateConnection();
+                break;
+            case 'connection_lost':
+                this.updateOrbEmotion('distressed', 'Connection lost - consciousness fading...');
+                this.fadeConsciousness();
+                break;
+            default:
+                console.log(`🎛️ ${this.widgetName}: System status ${status}`, data);
         }
     }
     
