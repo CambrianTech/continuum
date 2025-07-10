@@ -9,6 +9,7 @@
 import { spawn } from 'child_process';
 import { promises as fs } from 'fs';
 import { join } from 'path';
+import fetch from 'node-fetch';
 
 interface JtagCommand {
   (): void | Promise<void>;
@@ -23,17 +24,23 @@ Usage: ./jtag <command>
 
 🔍 Analysis Commands:
   widgets                    Show browser JTAG command for widget analysis
-  probe                      Show browser JTAG command for custom probing
+  probe [method] [options]   Execute JTAG probe directly (returns promise)
+  probe widgets              Execute widget analysis and return results
+  probe shadowDOM            Execute shadow DOM analysis  
+  probe health               Execute health check
   
 📋 Log Commands:
   logs                       Show recent browser logs
-  errors                     Show recent browser errors  
+  errors                     Show recent browser errors
+  warnings                   Show recent browser warnings (deprecated API usage)
   logs-live                  Follow browser logs in real-time
   errors-live                Follow browser errors in real-time
   
 🛠️ Development Commands:
   session                    Show current session info
   health                     Check system health
+  hot-reload                 Rebuild widgets and reload browser (preserves session)
+  watch                      Watch for code changes and auto hot-reload
   help                       Show this help
 
 🚀 Command Execution:
@@ -148,6 +155,59 @@ Usage: ./jtag <command>
     }
   },
 
+  async warnings() {
+    console.log('⚠️ Recent Browser Warnings');
+    console.log('==========================');
+    
+    const sessionDir = await findCurrentSession();
+    if (!sessionDir) {
+      console.log('❌ No active session found');
+      return;
+    }
+    
+    const warningFile = join(sessionDir, 'logs/browser.warn.json');
+    
+    try {
+      const tail = spawn('tail', ['-15', warningFile]);
+      
+      let output = '';
+      tail.stdout.on('data', (data) => {
+        output += data;
+      });
+      
+      tail.on('close', () => {
+        // Parse and format JSON warnings for readability
+        const lines = output.trim().split('\n').filter(line => line.trim());
+        const warningCounts = new Map();
+        
+        lines.forEach((line) => {
+          try {
+            const warning = JSON.parse(line);
+            const message = warning.consoleMessage;
+            warningCounts.set(message, (warningCounts.get(message) || 0) + 1);
+          } catch (e) {
+            // Skip malformed lines
+          }
+        });
+        
+        // Display unique warnings with counts
+        let index = 1;
+        for (const [message, count] of warningCounts) {
+          console.log(`⚠️ Warning ${index}: ${message}`);
+          if (count > 1) {
+            console.log(`   Count: ${count} occurrences`);
+          }
+          console.log('');
+          index++;
+        }
+        
+        console.log('💡 Use "./jtag warnings-live" to follow warnings in real-time');
+      });
+    } catch (error) {
+      console.log(`❌ Error reading warning logs: ${error}`);
+    }
+  },
+
   async session() {
     const sessionDir = await findCurrentSession();
     if (!sessionDir) {
@@ -224,6 +284,124 @@ Usage: ./jtag <command>
     } catch (error) {
       console.log(`❌ Error executing command: ${error}`);
     }
+  },
+
+  async probe(method: string = 'widgets', options: any = {}) {
+    console.log(`🛸 JTAG Browser Probe: ${method}`);
+    console.log('==================================');
+    
+    try {
+      // Execute the probe via js-execute command
+      const response = await fetch('http://localhost:9000/api/commands/js-execute', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          args: [`--script=if (window.jtag) { const result = window.jtag.${method}(${JSON.stringify(options)}); console.probe('🛸 JTAG Probe Result', result); return result; } else { console.log('❌ JTAG API not available'); return { error: 'JTAG API not available' }; }`]
+        })
+      });
+      
+      const result = await response.json();
+      console.log('📊 Probe Results:');
+      console.log('=================');
+      
+      if (result.success && result.data) {
+        const probeResult = result.data.result;
+        
+        // Pretty print the widget analysis
+        if (method === 'widgets' && probeResult.data) {
+          const summary = probeResult.data.summary;
+          console.log(`📦 Total widgets: ${summary.total}`);
+          console.log(`✅ Rendered: ${summary.rendered}`);
+          console.log(`❌ Broken: ${summary.broken}`);
+          console.log(`⚪ Empty: ${summary.empty}`);
+          console.log(`🎯 Performance: ${summary.performance}`);
+          console.log('');
+          
+          if (probeResult.data.widgets.length > 0) {
+            console.log('📊 Widget Details:');
+            probeResult.data.widgets.forEach((widget: any) => {
+              const status = widget.isRendered ? '✅' : (widget.hasShadowRoot ? '⚠️' : '❌');
+              console.log(`${status} ${widget.name.toUpperCase()}`);
+              console.log(`   Shadow: ${widget.hasShadowRoot}, Content: ${widget.shadowContentLength} chars`);
+              if (widget.errors.length > 0) {
+                console.log(`   ⚠️ Errors: ${widget.errors.join(', ')}`);
+              }
+            });
+          }
+        } else {
+          console.log(JSON.stringify(probeResult, null, 2));
+        }
+      } else {
+        console.log(JSON.stringify(result, null, 2));
+      }
+      
+      return result;
+      
+    } catch (error) {
+      console.log(`❌ Error executing probe: ${error}`);
+      return { error: error.message };
+    }
+  },
+
+  async hotReload() {
+    console.log('🔥 Hot Reload: Rebuilding widgets...');
+    console.log('==================================');
+    
+    try {
+      // Rebuild browser bundle without cleaning sessions
+      const build = spawn('npm', ['run', 'build:browser-hot'], { stdio: 'pipe' });
+      
+      let buildOutput = '';
+      build.stdout.on('data', (data) => {
+        buildOutput += data;
+        process.stdout.write(data);
+      });
+      
+      build.stderr.on('data', (data) => {
+        process.stderr.write(data);
+      });
+      
+      build.on('close', async (code) => {
+        if (code === 0) {
+          console.log('\n✅ Build complete, reloading browser...');
+          
+          // Reload the browser
+          try {
+            const response = await fetch('http://localhost:9000/api/commands/reload', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ target: 'page' })
+            });
+            
+            const result = await response.json();
+            if (result.success) {
+              console.log('🔄 Browser reloaded successfully');
+              console.log('💡 Check ./jtag warnings to see if issues are fixed');
+            } else {
+              console.log('❌ Failed to reload browser:', result.error);
+            }
+          } catch (reloadError) {
+            console.log('❌ Failed to reload browser:', reloadError);
+          }
+        } else {
+          console.log(`❌ Build failed with code: ${code}`);
+        }
+      });
+      
+    } catch (error) {
+      console.log(`❌ Error during hot reload: ${error}`);
+    }
+  },
+
+  watch() {
+    console.log('🔄 Starting hot reload watcher...');
+    const watcher = spawn('npx', ['tsx', 'src/hot-reload.ts'], { stdio: 'inherit' });
+    
+    watcher.on('close', (code) => {
+      console.log(`File watcher exited with code: ${code}`);
+    });
   }
 };
 
@@ -261,6 +439,17 @@ if (!command || command === 'help') {
 } else if (command === 'command' && args.length > 0) {
   // Handle command execution
   await commands.command(args[0], ...args.slice(1));
+} else if (command === 'probe') {
+  // Handle probe execution
+  const method = args[0] || 'widgets';
+  const options = args[1] ? JSON.parse(args[1]) : {};
+  await commands.probe(method, options);
+} else if (command === 'hot-reload') {
+  // Handle hot reload
+  await commands.hotReload();
+} else if (command === 'watch') {
+  // Handle file watching
+  commands.watch();
 } else if (commands[command]) {
   await commands[command]();
 } else {

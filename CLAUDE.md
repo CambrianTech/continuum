@@ -46,14 +46,17 @@
 - All tests still run but don't mess with git state
 - Push process works without git divergence issues
 
-**✅ JTAG AI AUTONOMOUS DEBUGGING COMPLETE**:
+**✅ JTAG AI AUTONOMOUS DEBUGGING + HOT RELOAD COMPLETE**:
 ```bash
 🛸 JTAG Widget Analysis System - AI Debugging Portal
 ✅ npm jtag: Full system startup + JTAG instructions  
 ✅ ./jtag widgets: Show JTAG commands (system must be running)
+✅ ./jtag warnings: Show deprecated API usage (fixed SavedPersonas + ChatWidget)
+✅ ./jtag hot-reload: Rebuild widgets + reload browser (preserves session)
+✅ ./jtag watch: Auto hot-reload on file changes (autonomous development)
 ✅ Browser Integration: fetch("/src/ui/jtag-probe.js").then(r=>r.text()).then(eval)
 ✅ Real-time Analysis: window.jtag.widgets(), .shadowDOM(), .health(), .network()
-✅ Modular Architecture: Server command + Browser API + CLI wrapper
+✅ Modular Architecture: Server command + Browser API + CLI wrapper + hot reload
 🔍 Widget Discovery: 11 widgets building (SidebarWidget, ChatWidget, SavedPersonas, etc.)
 🎯 Target Interface: Academy status, session costs, Users & Agents sidebar layout
 ```
