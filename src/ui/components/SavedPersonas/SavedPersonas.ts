@@ -74,7 +74,7 @@ export class SavedPersonasWidget extends BaseWidget {
         this.loadMockData();
       }
       
-      this.render();
+      this.update();
     } catch (error) {
       console.error('🎛️ SavedPersonas: Failed to load personas:', error);
       this.loadMockData();
@@ -102,7 +102,7 @@ export class SavedPersonasWidget extends BaseWidget {
         lastUsed: '2025-01-25'
       }
     ];
-    this.render();
+    this.update();
   }
 
   renderContent(): string {
@@ -175,7 +175,7 @@ export class SavedPersonasWidget extends BaseWidget {
         persona: persona
       });
       
-      this.render();
+      this.update();
     }
   }
 
