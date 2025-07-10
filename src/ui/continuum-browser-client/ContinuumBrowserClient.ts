@@ -85,11 +85,11 @@ export class ContinuumBrowserClient implements ContinuumAPI {
         console.log('✅ Continuum API ready for use');
         this.consoleForwarder.performHealthCheck();
         
-        // Test widget daemon discovery
-        console.log('🎨 BROWSER_DEBUG: Testing widget daemon discovery...');
+        // Test widget discovery using the WidgetDaemon event system  
+        console.log('🎨 BROWSER_DEBUG: Testing widget discovery via WidgetDaemon...');
         this.execute('widget:discover', { paths: ['src/ui/components'] })
           .then(result => {
-            console.log('🎨 BROWSER_DEBUG: Widget discovery result:', result);
+            console.log('🎨 BROWSER_DEBUG: Widget discovery via WidgetDaemon result:', result);
           })
           .catch(error => {
             console.error('❌ Widget discovery error:', error);

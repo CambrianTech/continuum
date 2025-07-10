@@ -344,14 +344,29 @@ export class WebSocketDaemon extends BaseDaemon {
           }
         }
         
+        // Determine target daemon based on command prefix
+        let targetDaemon = 'command-processor';
+        let targetDaemonInstance = commandProcessor;
+        
+        if (commandName.startsWith('widget:')) {
+          const widgetDaemon = this.registeredDaemons.get('widget');
+          if (widgetDaemon) {
+            targetDaemon = 'widget';
+            targetDaemonInstance = widgetDaemon;
+            this.log(`🎨 Routing widget command "${commandName}" to WidgetDaemon`);
+          } else {
+            this.log(`⚠️ Widget command "${commandName}" requested but WidgetDaemon not registered`);
+          }
+        }
+        
         // Convert WebSocket message to DaemonMessage format
         const daemonMessage = {
           id: `ws-${Date.now()}`,
           from: 'websocket-server',
-          to: 'command-processor',
-          type: 'command.execute',
+          to: targetDaemon,
+          type: targetDaemon === 'widget' ? commandName : 'command.execute',
           timestamp: new Date(),
-          data: {
+          data: targetDaemon === 'widget' ? parsedParams : {
             command: commandName,
             parameters: parsedParams,
             context: {
@@ -365,15 +380,19 @@ export class WebSocketDaemon extends BaseDaemon {
           }
         };
         
-        // 🔍 SESSION DEBUG: Log final message being sent to CommandProcessor  
-        this.log(`🔍 [SESSION_DEBUG] Final daemonMessage to CommandProcessor:`);
+        // 🔍 SESSION DEBUG: Log final message being sent to target daemon
+        this.log(`🔍 [SESSION_DEBUG] Final daemonMessage to ${targetDaemon}:`);
         this.log(`🔍 [SESSION_DEBUG]   command: ${commandName}`);
-        this.log(`🔍 [SESSION_DEBUG]   context.sessionId: ${daemonMessage.data.context.sessionId || 'NOT_FOUND'}`);
-        this.log(`🔍 [SESSION_DEBUG]   context.connectionId: ${daemonMessage.data.context.connectionId}`);
-        this.log(`🔄 Routing command "${commandName}" to command processor`);
+        this.log(`🔍 [SESSION_DEBUG]   target: ${targetDaemon}`);
+        if (targetDaemon !== 'widget' && typeof daemonMessage.data === 'object' && daemonMessage.data && 'context' in daemonMessage.data) {
+          const data = daemonMessage.data as any;
+          this.log(`🔍 [SESSION_DEBUG]   context.sessionId: ${data.context?.sessionId || 'NOT_FOUND'}`);
+          this.log(`🔍 [SESSION_DEBUG]   context.connectionId: ${data.context?.connectionId}`);
+        }
+        this.log(`🔄 Routing command "${commandName}" to ${targetDaemon}`);
         
-        // Forward to command processor using standard daemon protocol
-        const response = await commandProcessor.handleMessage(daemonMessage);
+        // Forward to target daemon using standard daemon protocol
+        const response = await targetDaemonInstance.handleMessage(daemonMessage);
         
         // Send response back to WebSocket client
         const wsResponse = {

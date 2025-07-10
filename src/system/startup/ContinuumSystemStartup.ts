@@ -289,8 +289,12 @@ export class ContinuumSystem extends EventEmitter {
     // Register specific command endpoints only - CommandProcessorDaemon registers its own endpoints
     webSocketDaemon.registerRouteHandler('/api/commands/*', 'command-processor', 'handle_api');
     
-    // Register widgets API endpoint for dynamic widget discovery
-    webSocketDaemon.registerRouteHandler('/api/widgets/list', 'command-processor', 'handle_widget_api');
+    // Register widget daemon with WebSocket for command routing
+    const widgetDaemon = this.daemons.get('widget') as WidgetDaemon;
+    if (widgetDaemon) {
+      webSocketDaemon.registerDaemon(widgetDaemon);
+      console.log(`🔧 Registered WidgetDaemon with WebSocket for command routing`);
+    }
     
     // Register catch-all route for renderer daemon (handles everything else)
     webSocketDaemon.registerRouteHandler('*', 'renderer', 'http_request');
@@ -354,46 +358,6 @@ export class ContinuumSystem extends EventEmitter {
       return false;
     }
   }
-
-  /**
-   * Check if there are already tabs open to localhost:9000
-   * @deprecated - Not used, browser manager handles this
-   */
-  // private async checkExistingTabs(): Promise<number> {
-  //   try {
-  //     // Simple check: Can we connect to the WebSocket?
-  //     const response = await fetch('http://localhost:9000/api/status');
-  //     if (response.ok) {
-  //       // Server is up, check WebSocket connections
-  //       const wsResponse = await fetch('http://localhost:9000/api/connections');
-  //       if (wsResponse.ok) {
-  //         const data = await wsResponse.json();
-  //         return data.activeConnections || 1; // At least 1 if server responds
-  //       }
-  //       return 1; // Server up = at least 1 tab
-  //     }
-  //     return 0;
-  //   } catch (error) {
-  //     // Can't connect = no tabs
-  //     return 0;
-  //   }
-  // }
-
-  /**
-   * Setup session-specific logging for all daemons
-   * @deprecated - Not used currently
-   */
-  // private setupSessionLogging(serverLogPath: string): void {
-  //   console.log(`📝 Setting up live session logging: ${serverLogPath}`);
-  //   
-  //   // Configure all daemons to write to the session log file
-  //   for (const [daemonName, daemon] of this.daemons) {
-  //     if (daemon && typeof daemon.setSessionLogPath === 'function') {
-  //       daemon.setSessionLogPath(serverLogPath);
-  //       console.log(`✅ ${daemonName} daemon logging to session file`);
-  //     }
-  //   }
-  // }
 
   private setupSessionLogging(): void {
     const sessionManager = this.daemons.get('session-manager');
