@@ -213,28 +213,86 @@ export class ConsoleCommand extends DirectCommand {
             const levelLogPath = join(sessionLogsDir, `browser.${logData.consoleLogLevel}.json`);
             const allLogsPath = join(sessionLogsDir, 'browser.log');
             
-            // JSON format for easy tooling/parsing
-            const jsonLogEntry = JSON.stringify(logEntry) + '\n';
+            // Handle probe logs specially for better readability
+            let jsonLogEntry: string;
+            let humanReadableEntry: string;
             
-            // Human-readable format for browser.log file (same format as server logs)
-            let humanReadableEntry = `[${serverTimestamp}] ${logData.consoleLogLevel.toUpperCase()}: ${logData.consoleMessage}`;
-            
-            // Add arguments if present, with JSON formatting for objects
-            if (logData.consoleArguments && logData.consoleArguments.length > 0) {
-              const formattedArgs = logData.consoleArguments.map(arg => {
-                if (arg.argumentType === 'object' && arg.argumentValue) {
-                  return arg.argumentValue; // This is already JSON formatted
-                } else {
-                  return arg.argumentValue;
+            if (logData.consoleLogLevel === 'probe' as any) {
+              // For probe logs, format for human readability with decoded JS
+              // Probe data is in consoleMessage as JSON string
+              let probeData: any = null;
+              try {
+                probeData = JSON.parse(logData.consoleMessage);
+              } catch (error) {
+                // Fallback: check consoleArguments for legacy format
+                probeData = logData.consoleArguments?.[0]?.originalValue;
+              }
+              
+              if (probeData && typeof probeData === 'object') {
+                const probe = probeData as any;
+                
+                // Create readable probe entry
+                const readableProbe = {
+                  message: probe.message,
+                  category: probe.category,
+                  tags: probe.tags,
+                  data: probe.data,
+                  executeJS: probe.executeJSBase64 ? 
+                    Buffer.from(probe.executeJSBase64, 'base64').toString('utf-8') : 
+                    probe.executeJS,
+                  timestamp: serverTimestamp,
+                  sessionId: context.sessionId
+                };
+                
+                // Formatted JSON for probe file (pretty-printed)
+                jsonLogEntry = JSON.stringify(readableProbe, null, 2) + '\n';
+                
+                // Human-readable format for browser.log
+                humanReadableEntry = `[${serverTimestamp}] 🛸 PROBE: ${probe.message}`;
+                if (probe.category) {
+                  humanReadableEntry += ` (${probe.category})`;
                 }
-              }).join(' ');
-              humanReadableEntry += ` ${formattedArgs}`;
+                humanReadableEntry += '\n';
+                
+                // Add JS execution if present
+                if (readableProbe.executeJS) {
+                  humanReadableEntry += `  JS: ${readableProbe.executeJS}\n`;
+                }
+                
+                // Add execution result if present
+                if (probe.data?.jsExecutionResult) {
+                  humanReadableEntry += `  Result: ${probe.data.jsExecutionResult}\n`;
+                }
+                
+                humanReadableEntry += '\n';
+              } else {
+                // Fallback for malformed probe data
+                jsonLogEntry = JSON.stringify(logEntry, null, 2) + '\n';
+                humanReadableEntry = `[${serverTimestamp}] 🛸 PROBE: ${logData.consoleMessage}\n`;
+              }
+            } else {
+              // Standard log format for non-probe logs
+              jsonLogEntry = JSON.stringify(logEntry) + '\n';
+              
+              humanReadableEntry = `[${serverTimestamp}] ${logData.consoleLogLevel.toUpperCase()}: ${logData.consoleMessage}`;
+              
+              // Add arguments if present, with JSON formatting for objects
+              if (logData.consoleArguments && logData.consoleArguments.length > 0) {
+                const formattedArgs = logData.consoleArguments.map(arg => {
+                  if (arg.argumentType === 'object' && arg.argumentValue) {
+                    return arg.argumentValue; // This is already JSON formatted
+                  } else {
+                    return arg.argumentValue;
+                  }
+                }).join(' ');
+                humanReadableEntry += ` ${formattedArgs}`;
+              }
+              humanReadableEntry += '\n';
             }
-            humanReadableEntry += '\n';
             
             // Write to both formats: level-specific JSON and human-readable for browser.log
             await Promise.all([
-              fs.appendFile(levelLogPath, jsonLogEntry),        // browser.warn.json (JSON)
+              fs.appendFile(levelLogPath, jsonLogEntry),        // browser.probe.json (readable JSON) or browser.warn.json (compact JSON)
               fs.appendFile(allLogsPath, humanReadableEntry)    // browser.log (human-readable)
             ]);
             
