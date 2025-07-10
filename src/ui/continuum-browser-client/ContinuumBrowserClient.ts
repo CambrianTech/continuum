@@ -109,12 +109,20 @@ export class ContinuumBrowserClient implements ContinuumAPI {
             tags: ['test', 'dom', 'browser-state', 'widget-discovery']
           });
 
-          // Add another probe to explore specific HTML elements
+          // Add probes to explore widget state and debug why page might be blank
           (console as any).probe({
-            message: '🔍 DOM_ELEMENT_PROBE: Checking for specific elements',
-            executeJS: 'JSON.stringify({ hasHead: !!document.head, hasBody: !!document.body, bodyHTML: document.body?.innerHTML?.substring(0, 200) || "no body", headHTML: document.head?.innerHTML?.substring(0, 200) || "no head" })',
-            category: 'dom-elements',
-            tags: ['dom', 'html', 'elements']
+            message: '🔍 WIDGET_INVESTIGATION: Checking widget custom elements status',
+            executeJS: 'JSON.stringify({ sidebarElement: !!document.querySelector("continuum-sidebar"), chatElement: !!document.querySelector("chat-widget"), sidebarInnerHTML: document.querySelector("continuum-sidebar")?.innerHTML?.substring(0, 100) || "empty", chatInnerHTML: document.querySelector("chat-widget")?.innerHTML?.substring(0, 100) || "empty", customElementsSupported: !!window.customElements, bodyHTML: document.body?.innerHTML?.substring(0, 300) || "no body" })',
+            category: 'widget-debug',
+            tags: ['widgets', 'custom-elements', 'debug']
+          });
+
+          // Probe for custom element registration and widget class definitions
+          (console as any).probe({
+            message: '🔍 CUSTOM_ELEMENT_PROBE: Checking widget class registration',
+            executeJS: 'JSON.stringify({ customElementsRegistry: Object.keys(window.customElements || {}), sidebarClass: typeof window.customElements?.get("continuum-sidebar"), chatClass: typeof window.customElements?.get("chat-widget"), globalClasses: Object.keys(window).filter(k => k.includes("Widget") || k.includes("Sidebar")).slice(0, 10) })',
+            category: 'custom-elements',
+            tags: ['registration', 'classes', 'debug']
           });
           })
           .catch(error => {
