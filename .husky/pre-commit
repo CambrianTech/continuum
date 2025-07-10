@@ -76,6 +76,50 @@ npm run test:compliance || {
     # Don't exit 1 - allow commit but warn
 }
 
+printf "\rContinuum Middle-Out Validation (Layer 6/6) - JTAG Health...\n" >&2
+
+# 🧅 LAYER 6: JTAG Health Check (CRITICAL - Never commit with broken debugging)
+echo "🧅 Layer 6: JTAG Health Check - Validating debugging pipeline..."
+
+# Test JTAG system health (requires full browser connection)
+printf "\r  → Layer 6a: Testing JTAG browser connection...\r" >&2
+
+# Run JTAG health check to verify debugging system
+./jtag.ts health >/dev/null 2>&1 || {
+    echo "❌ JTAG health check failed! Debugging system is broken."
+    echo "💡 Run 'npm run jtag' to diagnose and fix JTAG issues"
+    echo "🚨 NEVER commit with broken JTAG - debugging is critical infrastructure!"
+    exit 1
+}
+
+# Verify browser logs are being written (proves browser connection)
+printf "\r  → Layer 6b: Verifying browser log connectivity...\r" >&2
+
+# Find most recent session directory
+LATEST_SESSION=$(find .continuum/sessions -name "development-shared-*" -type d 2>/dev/null | head -1)
+if [ -z "$LATEST_SESSION" ]; then
+    echo "❌ No active session found! Browser connection failed."
+    echo "💡 Run 'npm start' to establish browser connection"
+    exit 1
+fi
+
+# Check if browser logs exist and are recent (within last 5 minutes)
+BROWSER_LOG="$LATEST_SESSION/logs/browser.log"
+if [ ! -f "$BROWSER_LOG" ]; then
+    echo "❌ Browser log file not found! Browser not connected properly."
+    echo "💡 Expected: $BROWSER_LOG"
+    exit 1
+fi
+
+# Check if browser logs are recent (updated within last 5 minutes)
+if [ $(find "$BROWSER_LOG" -mmin -5 | wc -l) -eq 0 ]; then
+    echo "❌ Browser logs are stale! Browser connection lost."
+    echo "💡 Browser logs should be updating in real-time"
+    exit 1
+fi
+
+echo "✅ JTAG debugging system verified - browser connected with live logging"
+
 printf "\rContinuum Middle-Out Validation Complete!\n" >&2
 
 echo "✅ All layers validated! Safe to commit with confidence!"
@@ -86,6 +130,7 @@ echo "   Layer 2: ✅ Code Quality (ESLint)"
 echo "   Layer 3: ✅ Integration (Daemon coordination)"
 echo "   Layer 4: ✅ System Integration (Basic validation)"
 echo "   Layer 5: ✅ Modular Architecture (Module compliance)"
+echo "   Layer 6: ✅ JTAG Health Check (Debugging pipeline)"
 
 # 📊 SYSTEM HEALTH SCORECARD (Terminal Display)
 echo ""
