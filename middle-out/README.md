@@ -25,6 +25,7 @@ This directory contains the complete architectural documentation for Continuum's
 
 #### 🔍 [JTAG Debugging](jtag/) **⭐ AI DEBUGGING BREAKTHROUGH**
 - **[README.md](jtag/README.md)** - Complete JTAG debugging framework overview
+- **[widget-debugging.md](jtag/widget-debugging.md)** - **🎨 Widget shadow DOM analysis and UI debugging workflow**
 - **[implementation.md](jtag/implementation.md)** - Technical implementation details and connection information
 - **[debugging-protocol.md](jtag/debugging-protocol.md)** - Systematic debugging protocol with self-healing capabilities
 - **[ai-browser-debugging.md](jtag/ai-browser-debugging.md)** - **🛸 AI console probe debugging guide**

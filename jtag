@@ -1,355 +1,67 @@
 #!/usr/bin/env node
 
 /**
- * JTAG - AI Autonomous Debugging Portal
- * ====================================
- * Seamlessly integrates with existing ./continuum TypeScript architecture
- * Reuses command system, WebSocket infrastructure, and module ecosystem
+ * JTAG - Simple Widget Analysis Tool
+ * ==================================
+ * Provides browser JTAG probe command (no browser launching)
  */
 
-const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-
-// Reuse ./continuum for all command execution
-async function executeContinuumCommand(cmd, args = []) {
-  return new Promise((resolve) => {
-    const continuum = spawn('./continuum', [cmd, ...args], {
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    
-    let stdout = '';
-    let stderr = '';
-    
-    continuum.stdout.on('data', (data) => stdout += data);
-    continuum.stderr.on('data', (data) => stderr += data);
-    
-    continuum.on('close', (code) => {
-      try {
-        const result = JSON.parse(stdout);
-        resolve({ success: code === 0, ...result });
-      } catch (e) {
-        resolve({ 
-          success: code === 0, 
-          output: stdout.trim() || stderr.trim() 
-        });
-      }
-    });
-    
-    // Timeout protection
-    setTimeout(() => {
-      continuum.kill();
-      resolve({ success: false, error: 'Command timeout' });
-    }, 10000);
-  });
-}
-
-// Find current session logs (reuse existing session discovery)
-function getSessionLogsDir() {
-  const sessionsBase = '.continuum/sessions/user/shared';
-  try {
-    const sessions = fs.readdirSync(sessionsBase)
-      .filter(d => d.startsWith('development-shared-'));
-    
-    if (sessions.length === 0) return null;
-    
-    const latest = sessions.reduce((latest, current) => {
-      const latestTime = fs.statSync(path.join(sessionsBase, latest)).mtime;
-      const currentTime = fs.statSync(path.join(sessionsBase, current)).mtime;
-      return currentTime > latestTime ? current : latest;
-    });
-    
-    return path.join(sessionsBase, latest, 'logs');
-  } catch (e) {
-    return null;
-  }
-}
-
-// Command handlers using existing ./continuum infrastructure
 const commands = {
-  async widgets(options = {}) {
-    console.log('🔍 Analyzing widget states...');
-    
-    const result = await executeContinuumCommand('execute', [
-      '--typescript',
-      `
-      // Widget analysis using existing JTAG browser API
-      const widgets = Array.from(document.querySelectorAll('*')).filter(el => el.tagName.includes('-'));
-      const analysis = widgets.map(widget => ({
-        tagName: widget.tagName.toLowerCase(),
-        hasShadowRoot: !!widget.shadowRoot,
-        shadowContentLength: widget.shadowRoot ? widget.shadowRoot.innerHTML.length : 0,
-        visible: widget.offsetWidth > 0 && widget.offsetHeight > 0,
-        hasContent: (widget.textContent?.trim().length || 0) > 0,
-        boundingRect: widget.getBoundingClientRect()
-      }));
-      
-      const summary = {
-        total: analysis.length,
-        working: analysis.filter(w => w.hasShadowRoot && w.shadowContentLength > 100).length,
-        empty: analysis.filter(w => w.hasShadowRoot && w.shadowContentLength < 50).length,
-        visible: analysis.filter(w => w.visible).length
-      };
-      
-      return { analysis, summary };
-      `
-    ]);
-    
-    if (result.success && result.data) {
-      const { summary, analysis } = result.data;
-      console.log(`📊 Widget Summary:`);
-      console.log(`   Total: ${summary.total}`);
-      console.log(`   ✅ Working: ${summary.working}`);
-      console.log(`   ⚠️  Empty: ${summary.empty}`);
-      console.log(`   👁️  Visible: ${summary.visible}`);
-      
-      console.log(`\n🎨 Widget Details:`);
-      analysis.forEach(widget => {
-        const status = widget.shadowContentLength > 100 ? '✅' : 
-                      widget.hasShadowRoot ? '⚠️' : '❌';
-        console.log(`   ${status} ${widget.tagName} - ${widget.shadowContentLength}chars, Visible: ${widget.visible}`);
-      });
-      
-      if (options.screenshot) {
-        console.log('📸 Taking screenshot...');
-        await executeContinuumCommand('screenshot');
-      }
-    } else {
-      console.log(`❌ Widget analysis failed: ${result.error}`);
-    }
-  },
-
-  async network(options = {}) {
-    console.log('🌐 Analyzing network performance...');
-    
-    const result = await executeContinuumCommand('execute', [
-      '--typescript', 
-      `
-      // Network analysis using existing browser APIs
-      const networkInfo = {
-        connection: navigator.connection ? {
-          effectiveType: navigator.connection.effectiveType,
-          downlink: navigator.connection.downlink,
-          rtt: navigator.connection.rtt
-        } : null,
-        
-        websocket: window.continuum ? {
-          connected: window.continuum.isConnected(),
-          sessionId: window.continuum.sessionId,
-          readyState: window.continuum.ws?.readyState
-        } : null,
-        
-        performance: {
-          memory: performance.memory ? {
-            used: Math.round(performance.memory.usedJSHeapSize / 1024 / 1024),
-            total: Math.round(performance.memory.totalJSHeapSize / 1024 / 1024)
-          } : null,
-          
-          resources: performance.getEntriesByType('resource').length,
-          navigation: performance.getEntriesByType('navigation')[0]?.duration || 0
-        }
-      };
-      
-      return networkInfo;
-      `
-    ]);
-    
-    if (result.success && result.data) {
-      const network = result.data;
-      console.log('📊 Network Status:');
-      
-      if (network.connection) {
-        console.log(`   Connection: ${network.connection.effectiveType} (${network.connection.downlink}Mbps, ${network.connection.rtt}ms RTT)`);
-      }
-      
-      if (network.websocket) {
-        const wsStatus = network.websocket.connected ? '✅ Connected' : '❌ Disconnected';
-        console.log(`   WebSocket: ${wsStatus} (Session: ${network.websocket.sessionId})`);
-      }
-      
-      if (network.performance.memory) {
-        console.log(`   Memory: ${network.performance.memory.used}MB / ${network.performance.memory.total}MB`);
-      }
-      
-      console.log(`   Resources: ${network.performance.resources} loaded`);
-    } else {
-      console.log(`❌ Network analysis failed: ${result.error}`);
-    }
-  },
-
-  async probe(code) {
-    console.log('🛸 Executing probe...');
-    
-    if (!code) {
-      console.log('❌ Usage: ./jtag probe "JavaScript code"');
-      return;
-    }
-    
-    const result = await executeContinuumCommand('execute', ['--typescript', code]);
-    
-    if (result.success) {
-      console.log('🛸 Probe Result:');
-      console.log(JSON.stringify(result.data || result.output, null, 2));
-    } else {
-      console.log(`❌ Probe failed: ${result.error}`);
-    }
-  },
-
-  async logs(options = {}) {
-    const logsDir = getSessionLogsDir();
-    if (!logsDir) {
-      console.log('❌ No active session found');
-      return;
-    }
-    
-    const logFile = options.level ? 
-      path.join(logsDir, `browser.${options.level}.json`) :
-      path.join(logsDir, 'browser.log');
-    
-    if (options.follow) {
-      console.log(`📋 Following ${logFile}...`);
-      
-      // Use existing Node.js streaming for log following
-      const { spawn } = require('child_process');
-      const tail = spawn('tail', ['-f', logFile]);
-      
-      tail.stdout.on('data', (data) => {
-        process.stdout.write(data);
-      });
-      
-      process.on('SIGINT', () => {
-        tail.kill();
-        console.log('\n👋 Log following stopped');
-        process.exit(0);
-      });
-    } else {
-      // Show recent logs
-      try {
-        const { spawn } = require('child_process');
-        const tail = spawn('tail', ['-20', logFile]);
-        tail.stdout.pipe(process.stdout);
-      } catch (e) {
-        console.log(`❌ Error reading logs: ${e.message}`);
-      }
-    }
-  },
-
-  async screenshot(selector) {
-    console.log('📸 Taking screenshot...');
-    
-    const args = ['screenshot'];
-    if (selector) args.push('--selector', selector);
-    
-    const result = await executeContinuumCommand('screenshot', args.slice(1));
-    
-    if (result.success) {
-      console.log('📸 Screenshot taken');
-      if (result.path) {
-        console.log(`📁 Path: ${result.path}`);
-      }
-    } else {
-      console.log(`❌ Screenshot failed: ${result.error}`);
-    }
-  },
-
-  async health() {
-    console.log('🏥 System health check...');
-    
-    const result = await executeContinuumCommand('execute', [
-      '--typescript',
-      `
-      const health = {
-        widgets: document.querySelectorAll('*').length,
-        customElements: document.querySelectorAll('*[tagName*="-"]').length,
-        errors: window.continuumErrorCount || 0,
-        connected: window.continuum?.isConnected() || false,
-        sessionId: window.continuum?.sessionId || 'unknown',
-        memory: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1024 / 1024) : 0,
-        timestamp: new Date().toISOString()
-      };
-      return health;
-      `
-    ]);
-    
-    if (result.success && result.data) {
-      const health = result.data;
-      const score = health.connected ? (health.errors === 0 ? 100 : 75) : 25;
-      
-      console.log(`🏥 Health Score: ${score}/100`);
-      console.log(`   Elements: ${health.widgets} (${health.customElements} custom)`);
-      console.log(`   Connected: ${health.connected ? '✅' : '❌'}`);
-      console.log(`   Errors: ${health.errors}`);
-      console.log(`   Memory: ${health.memory}MB`);
-      console.log(`   Session: ${health.sessionId}`);
-    } else {
-      console.log(`❌ Health check failed: ${result.error}`);
-    }
-  },
-
   help() {
     console.log(`
-🛸 JTAG - AI Autonomous Debugging Portal
+🛸 JTAG - Widget Analysis Tool
 
-Usage: ./jtag <command> [options]
+Usage: ./jtag <command>
 
 Commands:
-  widgets [--screenshot]     🎨 Analyze widget rendering states
-  network                    🌐 Network performance analysis  
-  probe "code"              🛸 Execute JavaScript in browser
-  logs [--follow] [--level]  📋 View/follow session logs
-  screenshot [selector]      📸 Take screenshot for debugging
-  health                     🏥 System health check
-  help                       ❓ Show this help
+  widgets                    Show browser JTAG command for widget analysis
+  probe                      Show browser JTAG command for custom probing
+  help                       Show this help
 
-Examples:
-  ./jtag widgets --screenshot
-  ./jtag probe "document.title"
-  ./jtag logs --follow --level error
-  ./jtag network
-  ./jtag health
+Note: Use 'npm jtag' to start system + get JTAG commands
+      Use './jtag widgets' if system already running
 
-🔗 Integrates with existing ./continuum infrastructure
-⚡ Reuses TypeScript modules and WebSocket system
-📊 Real-time debugging without breaking the app
+Browser Command (copy to DevTools):
+  fetch("/src/ui/jtag-probe.js").then(r=>r.text()).then(eval)
 `);
+  },
+
+  widgets() {
+    console.log('🛸 JTAG Widget Analysis');
+    console.log('=======================');
+    console.log('');
+    console.log('1. Ensure system is running (npm start or npm jtag)');
+    console.log('2. Open browser DevTools (F12)');
+    console.log('3. Paste this command:');
+    console.log('');
+    console.log('   fetch("/src/ui/jtag-probe.js").then(r=>r.text()).then(eval)');
+    console.log('');
+    console.log('This will analyze all widget shadow DOM states.');
+  },
+
+  probe() {
+    console.log('🛸 JTAG Custom Probe');
+    console.log('====================');
+    console.log('');
+    console.log('Available browser commands:');
+    console.log('');
+    console.log('  window.jtag.widgets()     - Widget analysis');
+    console.log('  window.jtag.shadowDOM()   - Shadow DOM analysis');
+    console.log('  window.jtag.health()      - System health check');
+    console.log('  window.jtag.network()     - Network status');
+    console.log('  window.jtag.performance() - Performance metrics');
+    console.log('');
+    console.log('Example: window.jtag.widgets({ autoLog: true })');
   }
 };
 
-// Parse command line arguments
-const [,, command, ...args] = process.argv;
+// Parse command line
+const [,, command] = process.argv;
 
 if (!command || command === 'help') {
   commands.help();
-  process.exit(0);
-}
-
-// Parse options from args
-const options = {};
-let positionalArgs = [];
-
-for (let i = 0; i < args.length; i++) {
-  const arg = args[i];
-  if (arg.startsWith('--')) {
-    const key = arg.slice(2);
-    const nextArg = args[i + 1];
-    if (nextArg && !nextArg.startsWith('--')) {
-      options[key] = nextArg;
-      i++; // Skip next arg since we consumed it
-    } else {
-      options[key] = true;
-    }
-  } else {
-    positionalArgs.push(arg);
-  }
-}
-
-// Execute command
-if (commands[command]) {
-  commands[command](positionalArgs[0] || options, options)
-    .catch(error => {
-      console.error(`❌ Error: ${error.message}`);
-      process.exit(1);
-    });
+} else if (commands[command]) {
+  commands[command]();
 } else {
   console.log(`❌ Unknown command: ${command}`);
   console.log('Run ./jtag help for available commands');
