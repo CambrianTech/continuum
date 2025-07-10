@@ -1,0 +1,110 @@
+/* Session Costs Widget CSS */
+.session-costs-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: #1a1a1a;
+  border-radius: 8px;
+  color: #e0e0e0;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #333;
+}
+
+.section-icon {
+  font-size: 16px;
+  margin-right: 8px;
+}
+
+.section-title {
+  font-weight: 600;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #fff;
+}
+
+.section-status {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+.status-active {
+  background: #2d5a27;
+  color: #4caf50;
+}
+
+.status-paused {
+  background: #5a4d27;
+  color: #ff9800;
+}
+
+.status-ended {
+  background: #5a2727;
+  color: #f44336;
+}
+
+.metrics-display {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.metric-label {
+  font-size: 13px;
+  color: #b0b0b0;
+}
+
+.metric-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.metric-value.highlight {
+  color: #4caf50;
+  font-weight: 700;
+}
+
+.cost-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.action-button {
+  flex: 1;
+  padding: 6px 12px;
+  background: #333;
+  border: 1px solid #555;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.action-button:hover {
+  background: #444;
+  border-color: #666;
+}
+
+.action-button:active {
+  background: #222;
+}

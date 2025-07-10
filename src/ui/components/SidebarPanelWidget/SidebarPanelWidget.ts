@@ -132,72 +132,11 @@ export class SidebarPanelWidget extends BaseWidget {
     }
 
     private renderWidget(widget: PanelWidget): string {
-        switch (widget.type) {
-            case 'session-costs':
-                return this.renderSessionCosts();
-            
-            case 'user-selector':
-                return `<user-selector></user-selector>`;
-            
-            case 'active-projects':
-                return `<active-projects></active-projects>`;
-            
-            case 'saved-personas':
-                return `<saved-personas></saved-personas>`;
-            
-            case 'academy-status':
-                return `<academy-status-widget></academy-status-widget>`;
-            
-            case 'academy-ready-status':
-                return this.renderAcademyReadyStatus();
-            
-            default:
-                console.warn(`🗂️ Unknown widget type: ${widget.type}`);
-                return `<div class="unknown-widget">Unknown widget: ${widget.type}</div>`;
-        }
+        return `<${widget.type}></${widget.type}>`;
     }
 
-    private renderSessionCosts(): string {
-        return `
-            <!-- Session Costs Section -->
-            <div class="session-costs-section">
-                <div class="section-header">
-                    <span class="section-icon">💰</span>
-                    <span class="section-title">Session Costs</span>
-                    <span class="section-status">Active</span>
-                </div>
-                <div class="cost-display">
-                    <div class="cost-row">
-                        <span class="cost-label">Requests</span>
-                        <span class="cost-value">47</span>
-                    </div>
-                    <div class="cost-row">
-                        <span class="cost-label">Cost</span>
-                        <span class="cost-value highlight">$0.0000</span>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
+    // All widgets now rendered generically as <widget-type></widget-type>
 
-    private renderAcademyReadyStatus(): string {
-        return `
-            <!-- Academy Ready Status -->
-            <div class="academy-ready-section">
-                <div class="section-header">
-                    <span class="section-icon">🎓</span>
-                    <span class="section-title">Academy Status</span>
-                    <span class="section-status">Ready</span>
-                </div>
-                <div class="ready-display">
-                    <div class="ready-indicator">
-                        <span class="ready-icon">✅</span>
-                        <span class="ready-text">Training System Online</span>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
 }
 
 // Register the custom element
