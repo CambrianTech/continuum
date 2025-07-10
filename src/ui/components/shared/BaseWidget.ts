@@ -3,6 +3,8 @@
  * Enforces proper implementation through abstract methods and properties
  */
 
+import { globalErrorHandler, captureError } from '../../continuum-browser-client/error/GlobalErrorHandler';
+
 // Smart asset manifest (zero 404s!) - globally available via esbuild plugin
 declare global {
   interface Window {
@@ -200,18 +202,44 @@ export abstract class BaseWidget extends HTMLElement {
   constructor() {
     super();
     console.log(`🏗️ ${this.constructor.name}: Constructor called`);
-    this.attachShadow({ mode: 'open' });
-    console.log(`🏗️ ${this.constructor.name}: Shadow DOM attached`);
+    
+    try {
+      this.attachShadow({ mode: 'open' });
+      console.log(`🏗️ ${this.constructor.name}: Shadow DOM attached`);
+    } catch (error) {
+      captureError(error, {
+        component: 'widget',
+        widget: this.constructor.name,
+        operation: 'constructor'
+      });
+      throw error; // Re-throw so widget fails to initialize properly
+    }
   }
 
   async connectedCallback() {
     console.log(`🎛️ ${this.widgetName}: connectedCallback() triggered - connecting to DOM`);
     this.widgetConnected = true;
-    console.log(`🎛️ ${this.widgetName}: About to call initializeWidget()`);
-    await this.initializeWidget();
-    console.log(`🎛️ ${this.widgetName}: About to call render()`);
-    await this.render();
-    console.log(`🎛️ ${this.widgetName}: connectedCallback() complete`);
+    
+    // Wrap with global error handler that captures EVERYTHING
+    await globalErrorHandler.safeExecute(async () => {
+      console.log(`🎛️ ${this.widgetName}: About to call initializeWidget()`);
+      await this.initializeWidget();
+      console.log(`🎛️ ${this.widgetName}: About to call render()`);
+      await this.render();
+      console.log(`🎛️ ${this.widgetName}: connectedCallback() complete`);
+    }, {
+      component: 'widget',
+      widget: this.widgetName,
+      operation: 'connectedCallback'
+    });
+    
+    // If initialization failed, render basic fallback (avoid infinite loops)
+    if (!this.shadowRoot?.hasChildNodes()) {
+      // Simple fallback without console calls that could trigger infinite loops
+      if (this.shadowRoot) {
+        this.shadowRoot.innerHTML = `<div style="padding: 8px; color: #666; font-size: 12px;">⚠️ ${this.widgetName}: Loading...</div>`;
+      }
+    }
   }
 
   /**
@@ -224,7 +252,15 @@ export abstract class BaseWidget extends HTMLElement {
   disconnectedCallback() {
     console.log(`🎛️ ${this.widgetName}: Disconnecting from DOM`);
     this.widgetConnected = false;
-    this.cleanup();
+    
+    // Wrap cleanup with error handler
+    globalErrorHandler.safeExecute(() => {
+      this.cleanup();
+    }, {
+      component: 'widget',
+      widget: this.widgetName,
+      operation: 'disconnectedCallback'
+    });
   }
 
   /**
@@ -485,25 +521,91 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   /**
-   * Register event listener with continuum API
+   * Simple widget notification system - uses WidgetDaemon queue
    */
-  protected onContinuumEvent(type: string, handler: (data: any) => void): void {
-    const continuum = this.getContinuumAPI();
-    if (continuum) {
-      continuum.on(type, handler);
-    } else {
-      console.warn(`🎛️ ${this.widgetName}: Cannot register event ${type} - Continuum API not available`);
+  protected notifySystem(eventType: string, data?: any): void {
+    try {
+      // Try to use WidgetDaemon first (preferred approach)
+      const widgetDaemon = this.getWidgetDaemon();
+      if (widgetDaemon) {
+        widgetDaemon.notifySystem(this.widgetName, eventType, data);
+        return;
+      }
+      
+      // Fallback: Direct logging if no daemon available
+      console.log(`🔔 ${this.widgetName}: ${eventType}`, data ? { event: eventType, data } : { event: eventType });
+      
+      // Try to forward to continuum API as last resort
+      const continuum = this.getContinuumAPI();
+      if (continuum && typeof continuum.emit === 'function') {
+        continuum.emit(eventType, { widget: this.widgetName, data });
+      }
+    } catch (error) {
+      // Fail silently - notification is optional
+      console.warn(`🎛️ ${this.widgetName}: Failed to notify system about ${eventType}:`, error);
     }
   }
 
   /**
-   * Remove event listener from continuum API
+   * Get WidgetDaemon from browser daemon system
    */
-  protected offContinuumEvent(type: string, handler?: (data: any) => void): void {
-    const continuum = this.getContinuumAPI();
-    if (continuum) {
-      continuum.off(type, handler);
+  private getWidgetDaemon(): any {
+    try {
+      // Access WidgetDaemon through global browser daemon controller
+      const browserDaemonController = (window as any).browserDaemonController;
+      if (browserDaemonController && typeof browserDaemonController.getWidgetDaemon === 'function') {
+        return browserDaemonController.getWidgetDaemon();
+      }
+      
+      // Try direct access to widgetDaemon global
+      const widgetDaemon = (window as any).widgetDaemon;
+      if (widgetDaemon && typeof widgetDaemon.notifySystem === 'function') {
+        return widgetDaemon;
+      }
+      
+      return null;
+    } catch (error) {
+      return null;
     }
+  }
+
+  /**
+   * Simple command execution with graceful fallback
+   */
+  protected async tryExecuteCommand(command: string, params: any = {}): Promise<any> {
+    try {
+      const continuum = this.getContinuumAPI();
+      if (continuum && typeof continuum.execute === 'function') {
+        return await continuum.execute(command, params);
+      } else {
+        console.warn(`🎛️ ${this.widgetName}: Cannot execute command ${command} - API not available`);
+        return { success: false, error: 'Continuum API not available' };
+      }
+    } catch (error) {
+      console.warn(`🎛️ ${this.widgetName}: Command ${command} failed:`, error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * Register simple status listener - widgets can override this
+   */
+  protected onSystemStatus(status: string, data?: any): void {
+    // Default implementation - widgets can override
+    console.log(`🎛️ ${this.widgetName}: System status ${status}`, data);
+  }
+
+  /**
+   * DEPRECATED: Use notifySystem() instead
+   * Kept for backward compatibility with existing widgets
+   */
+  protected onContinuumEvent(type: string, _handler: (data: any) => void): void {
+    console.warn(`⚠️ ${this.widgetName}: onContinuumEvent() is deprecated. Use notifySystem() instead.`);
+    
+    // Graceful fallback - just log the registration attempt
+    console.log(`🔄 ${this.widgetName}: Would register event listener for ${type} (deprecated API)`);
+    
+    // Don't actually register anything - this prevents errors but encourages migration
   }
 
   /**
@@ -544,6 +646,49 @@ export abstract class BaseWidget extends HTMLElement {
     } else {
       this.classList.remove('collapsed');
     }
+  }
+
+  /**
+   * Render error state when widget initialization fails
+   */
+  protected async renderErrorState(error: any): Promise<void> {
+    if (!this.shadowRoot) return;
+    
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    // Don't call console.error here to avoid infinite loops when server is down
+    // The error is already captured by the calling globalErrorHandler.safeExecute()
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        .error-widget {
+          background: #ffe6e6;
+          border: 2px solid #ff9999;
+          border-radius: 8px;
+          padding: 16px;
+          margin: 8px;
+          font-family: monospace;
+          color: #cc0000;
+        }
+        .error-title {
+          font-weight: bold;
+          margin-bottom: 8px;
+        }
+        .error-message {
+          margin-bottom: 8px;
+          font-size: 14px;
+        }
+        .error-time {
+          font-size: 12px;
+          color: #666;
+        }
+      </style>
+      <div class="error-widget">
+        <div class="error-title">⚠️ ${this.widgetName} Error</div>
+        <div class="error-message">${errorMessage}</div>
+        <div class="error-time">${new Date().toLocaleTimeString()}</div>
+      </div>
+    `;
   }
 
   /**

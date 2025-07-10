@@ -25,10 +25,23 @@ export interface WidgetDiscoveryResult {
   discoveryMethod: 'html-dom' | 'dynamic-injection' | 'renderer-daemon';
 }
 
+interface WidgetNotification {
+  widgetName: string;
+  eventType: string;
+  data?: any;
+  timestamp: number;
+  id: string;
+}
+
 export class WidgetDaemon {
   private eventHandlers = new Map<string, ((data: any) => void)[]>();
   private knownWidgets = ['chat-widget', 'continuum-sidebar'];
   private widgetLoadingComplete = false;
+  
+  // Widget communication queue (similar to ConsoleForwarder pattern)
+  private notificationQueue: WidgetNotification[] = [];
+  private isProcessingQueue = false;
+  private executeCallback?: (command: string, params: Record<string, unknown>) => Promise<unknown>;
 
   constructor() {
     console.log('🎨 WidgetDaemon: Initializing widget management system');
@@ -296,6 +309,88 @@ export class WidgetDaemon {
    */
   getKnownWidgets(): string[] {
     return [...this.knownWidgets];
+  }
+
+  /**
+   * Set callback for executing commands (similar to ConsoleForwarder)
+   */
+  setExecuteCallback(callback: (command: string, params: Record<string, unknown>) => Promise<unknown>): void {
+    this.executeCallback = callback;
+  }
+
+  /**
+   * Queue widget notification for processing (main API for widgets)
+   */
+  notifySystem(widgetName: string, eventType: string, data?: any): void {
+    const notification: WidgetNotification = {
+      widgetName,
+      eventType,
+      data,
+      timestamp: Date.now(),
+      id: `${widgetName}-${eventType}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    };
+
+    // Queue the notification
+    this.notificationQueue.push(notification);
+    
+    // Log locally for immediate feedback
+    console.log(`🔔 WidgetDaemon: ${widgetName} → ${eventType}`, data || '');
+    
+    // Emit local event for any listeners
+    this.emit(`widget:${eventType}`, { widget: widgetName, ...data });
+    
+    // Start queue processing if not already running
+    this.processNotificationQueue();
+  }
+
+  /**
+   * Process queued notifications (similar to ConsoleForwarder pattern)
+   */
+  private async processNotificationQueue(): Promise<void> {
+    if (this.isProcessingQueue || this.notificationQueue.length === 0) {
+      return;
+    }
+
+    this.isProcessingQueue = true;
+
+    while (this.notificationQueue.length > 0) {
+      const notification = this.notificationQueue.shift()!;
+      
+      try {
+        // Try to forward to server if execute callback is available
+        if (this.executeCallback) {
+          await this.executeCallback('widget-event', {
+            widget: notification.widgetName,
+            event: notification.eventType,
+            data: notification.data,
+            timestamp: notification.timestamp,
+            id: notification.id
+          });
+        } else {
+          // No execute callback available - just emit locally
+          console.log(`🎨 WidgetDaemon: No server connection - handled locally: ${notification.eventType}`);
+        }
+      } catch (error) {
+        // Log failed forwards but don't break the queue
+        console.warn(`⚠️ WidgetDaemon: Failed to forward notification ${notification.id}:`, error);
+        
+        // Could implement retry logic here if needed
+        // For now, just continue processing other notifications
+      }
+    }
+
+    this.isProcessingQueue = false;
+  }
+
+  /**
+   * Get queue status for debugging
+   */
+  getQueueStatus(): { queueLength: number; isProcessing: boolean; hasExecuteCallback: boolean } {
+    return {
+      queueLength: this.notificationQueue.length,
+      isProcessing: this.isProcessingQueue,
+      hasExecuteCallback: !!this.executeCallback
+    };
   }
 
   /**
