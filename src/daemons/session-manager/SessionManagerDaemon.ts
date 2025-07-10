@@ -79,6 +79,9 @@ export class SessionManagerDaemon extends BaseDaemon {
   private cleanupInterval?: NodeJS.Timeout;
   private eventListeners = new Set<(event: SessionEvent) => void>();
   private consoleLoggers = new Map<string, SessionConsoleLogger>(); // sessionId -> logger
+  
+  // SEMAPHORE: Prevent race conditions in session creation
+  private sessionCreationLock = new Map<string, Promise<BrowserSession>>();
 
   constructor(artifactRoot: string = '.continuum/sessions') {
     super();
@@ -301,13 +304,11 @@ export class SessionManagerDaemon extends BaseDaemon {
           session = await this.forkSession(forkFromId, { owner, type: sessionType as BrowserSession['type'], context });
           action = 'forked_from';
         } else {
-          session = await this.createSession({ 
-            type: sessionType as BrowserSession['type'], 
-            owner, 
-            context,
-            starter: source,
-            identity: { name: owner, user: owner }
-          });
+          session = await this.createOrFindSession(
+            owner, // connectionId for new sessions
+            sessionType as BrowserSession['type'],
+            { userAgent: source || 'handleConnect', url: context || 'new-session' }
+          );
           action = 'created_new';
         }
         newLogFiles = true;
@@ -327,14 +328,12 @@ export class SessionManagerDaemon extends BaseDaemon {
         });
 
         if (!session) {
-          // Create the shared session with a well-known owner
-          session = await this.createSession({
-            type: sessionType as BrowserSession['type'],
-            owner: 'shared', // Shared session owned by 'shared' not specific user
-            context: context,
-            starter: source,
-            identity: { name: 'shared-session', user: 'shared' }
-          });
+          // Create the shared session using createOrFindSession for consistency
+          session = await this.createOrFindSession(
+            'shared-session', // connectionId for shared sessions
+            sessionType as BrowserSession['type'],
+            { userAgent: source || 'handleConnect', url: context || 'development' }
+          );
           action = 'created_new';
           newLogFiles = true;
           this.log(`✨ Created new shared development session: ${session.id}`);
@@ -439,7 +438,7 @@ export class SessionManagerDaemon extends BaseDaemon {
       throw new Error(`Source session ${fromSessionId} not found for forking`);
     }
 
-    // Create new session with copied context
+    // Create new session with copied context using semaphore protection
     const newSession = await this.createSession({
       type: options.type,
       owner: options.owner,
@@ -1434,33 +1433,44 @@ export class SessionManagerDaemon extends BaseDaemon {
     sessionType: BrowserSession['type'],
     metadata: { userAgent: string; url: string }
   ): Promise<BrowserSession> {
-    // For development sessions, try to find an existing shared session
-    if (sessionType === 'development') {
-      // RACE CONDITION FIX: Wait for CLI connect command to complete first
-      // The CLI connect command runs first and creates the shared session
-      // WebSocket connections wait 500ms to allow CLI session creation to complete
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      const existingSessions = Array.from(this.sessions.values())
-        .filter(s => s.type === 'development' && s.isActive && s.owner === 'shared');
-      
-      if (existingSessions.length > 0) {
-        const session = existingSessions[0];
-        session.lastActive = new Date();
-        this.log(`♻️ Reusing existing development session: ${session.id}`);
-        return session;
-      }
+    
+    // SEMAPHORE: Prevent race conditions
+    const owner = sessionType === 'development' ? 'shared' : connectionId;
+    const lockKey = `${sessionType}-${owner}`;
+    
+    if (this.sessionCreationLock.has(lockKey)) {
+      this.log(`⏳ Session creation in progress for ${lockKey}, waiting...`);
+      return await this.sessionCreationLock.get(lockKey)!;
+    }
+
+    // Look for existing sessions based on type and owner
+    const existingSessions = Array.from(this.sessions.values())
+      .filter(s => s.type === sessionType && s.isActive && s.owner === owner);
+    
+    if (existingSessions.length > 0) {
+      const session = existingSessions[0];
+      session.lastActive = new Date();
+      this.log(`♻️ Reusing existing ${sessionType} session: ${session.id}`);
+      return session;
     }
     
-    // Create new session
-    const session = await this.createSession({
+    // Create new session with semaphore protection
+    const sessionPromise = this.createSession({
       type: sessionType,
-      owner: sessionType === 'development' ? 'shared' : connectionId,
+      owner: owner,
       starter: metadata.userAgent,
       autoCleanup: sessionType !== 'development',
       context: 'websocket-connection'
     });
     
-    return session;
+    this.sessionCreationLock.set(lockKey, sessionPromise);
+    
+    try {
+      const session = await sessionPromise;
+      this.log(`✨ Created session with semaphore: ${session.id}`);
+      return session;
+    } finally {
+      this.sessionCreationLock.delete(lockKey);
+    }
   }
 }
