@@ -60,7 +60,7 @@ export abstract class RemoteCommand extends BaseCommand {
   /**
    * Process client response on server side
    */
-  protected static async processClientResponse(response: RemoteExecutionResponse, originalParams: any): Promise<CommandResult> {
+  protected static async processClientResponse(response: RemoteExecutionResponse, originalParams: any, _context?: CommandContext): Promise<CommandResult> {
     if (!response.success) {
       return this.createErrorResult(`Client execution failed: ${response.error}`);
     }
@@ -86,8 +86,8 @@ export abstract class RemoteCommand extends BaseCommand {
       // 2. Send to client via WebSocket and wait for response
       const response = await this.sendToClientViaWebSocket(request, context);
       
-      // 3. Process the client response
-      return await this.processClientResponse(response, params);
+      // 3. Process the client response with context
+      return await this.processClientResponse(response, params, context);
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

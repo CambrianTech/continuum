@@ -5,14 +5,8 @@
   "main": "ScreenshotCommand.ts",
   "type": "module",
   "continuum": {
-    "core": "screenshot",
-    "category": "Core",
-    "capabilities": [
-      "auto-generated"
-    ],
-    "dependencies": [],
-    "interfaces": [],
-    "permissions": []
+    "type": "command",
+    "category": "browser"
   },
   "keywords": [
     "screenshot",
