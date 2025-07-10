@@ -10,7 +10,7 @@
  * Used by JTAG for autonomous development validation.
  */
 
-import { BaseCommand } from '../../core/base-command/BaseCommand';
+// import { BaseCommand } from '../../core/base-command/BaseCommand';
 import { CommandResult } from '../../../types/CommandTypes';
 
 export interface WidgetInspectOptions {
@@ -66,7 +66,7 @@ export interface WidgetInspectionResult {
   };
 }
 
-export class WidgetInspectCommand extends BaseCommand {
+export class WidgetInspectCommand {
   static getDefinition() {
     return {
       name: 'widget-inspect',
@@ -193,7 +193,7 @@ export class WidgetInspectCommand extends BaseCommand {
   /**
    * Parse command parameters from various input formats
    */
-  private static parseParams(params: any): WidgetInspectOptions {
+  protected static parseParams(params: any): WidgetInspectOptions {
     // Handle command line args (--key=value format)
     if (params && params.args && Array.isArray(params.args)) {
       const result: any = {};

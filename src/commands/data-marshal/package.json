@@ -1,0 +1,18 @@
+{
+  "name": "@continuum/data-marshal-command",
+  "version": "1.0.0", 
+  "description": "Universal data marshalling for cross-environment communication and command chaining",
+  "main": "DataMarshalCommand.ts",
+  "continuum": {
+    "type": "command",
+    "category": "data-marshal"
+  },
+  "scripts": {
+    "test": "npx tsx test/unit/DataMarshalCommand.test.ts"
+  },
+  "keywords": ["data", "marshal", "base64", "chain", "promise", "websocket"],
+  "dependencies": {
+    "../../types": "*",
+    "../core/base-command": "*"
+  }
+}

@@ -258,7 +258,7 @@ export class ScreenshotCommand extends RemoteCommand {
   /**
    * Process client response and orchestrate file saving through command chaining
    */
-  protected static async processClientResponse(response: RemoteExecutionResponse, originalParams: any): Promise<CommandResult> {
+  protected static async processClientResponse(response: RemoteExecutionResponse, originalParams: any, context?: any): Promise<CommandResult> {
     if (!response.success) {
       return this.createErrorResult(`Screenshot capture failed: ${response.error}`);
     }
@@ -276,9 +276,9 @@ export class ScreenshotCommand extends RemoteCommand {
           return this.createErrorResult('Filename required when destination is FILE');
         }
         return this.createSuccessResult(
-          `Screenshot captured - ready for file save command`,
+          `Screenshot captured - ready for session-managed file save`,
           {
-            filename: path.resolve(filename),
+            filename: filename, // Just the filename, no path.resolve()
             selector,
             dimensions: { width, height },
             format,
@@ -287,10 +287,10 @@ export class ScreenshotCommand extends RemoteCommand {
             nextCommand: {
               command: 'file_write',
               params: {
-                filename: path.resolve(filename),
-                content: base64Data,
-                encoding: 'base64',
-                ensureDirectory: true
+                filename: filename, // Let FileWriteCommand handle path resolution
+                content: buffer, // Pass the raw buffer, not base64 string
+                artifactType: 'screenshot', // Tell FileWriteCommand this is a screenshot
+                sessionId: context?.sessionId // Let FileWriteCommand use session directory
               }
             }
           }
