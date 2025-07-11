@@ -5,6 +5,7 @@
 
 import { RemoteCommand, RemoteExecutionRequest, RemoteExecutionResponse } from '../../core/remote-command/RemoteCommand.js';
 import { CommandDefinition, CommandResult } from '../../core/base-command/BaseCommand.js';
+import { normalizeCommandCategory } from '../../../types/shared/CommandTypes';
 import * as path from 'path';
 
 // Strongly typed enums for screenshot behavior
@@ -67,7 +68,7 @@ export class ScreenshotCommand extends RemoteCommand {
       
       return {
         name: definition.name || 'screenshot',
-        category: definition.category || 'Browser',
+        category: normalizeCommandCategory(definition.category || 'browser'),
         icon: definition.icon || '📸',
         description: definition.description || 'Capture browser screenshot with advanced targeting',
         parameters: definition.parameters,
@@ -83,7 +84,7 @@ export class ScreenshotCommand extends RemoteCommand {
       // Fallback definition if README.md not found
       return {
         name: 'screenshot',
-        category: 'Browser',
+        category: 'browser',
         icon: '📸',
         description: 'Capture browser screenshot with advanced targeting',
         parameters: { 
@@ -275,13 +276,11 @@ export class ScreenshotCommand extends RemoteCommand {
         if (!filename) {
           return this.createErrorResult('Filename required when destination is FILE');
         }
-        return this.createSuccessResult(
-          `Screenshot captured - ready for session-managed file save`,
-          {
-            filename: filename, // Just the filename, no path.resolve()
-            selector,
-            dimensions: { width, height },
-            format,
+        return this.createSuccessResult({
+          filename: filename, // Just the filename, no path.resolve()
+          selector,
+          dimensions: { width, height },
+          format,
             size: buffer.length,
             client: response.clientMetadata,
             nextCommand: {
@@ -297,36 +296,31 @@ export class ScreenshotCommand extends RemoteCommand {
         );
 
       case ScreenshotDestination.BYTES:
-        return this.createSuccessResult(
-          `Screenshot captured - returning bytes`,
-          {
-            imageData: base64Data,
-            selector,
-            dimensions: { width, height },
-            format,
-            size: buffer.length,
-            client: response.clientMetadata
-          }
-        );
+        return this.createSuccessResult({
+          imageData: base64Data,
+          selector,
+          dimensions: { width, height },
+          format,
+          size: buffer.length,
+          client: response.clientMetadata
+        });
 
       case ScreenshotDestination.BOTH:
         if (!filename) {
           return this.createErrorResult('Filename required when destination is BOTH');
         }
-        return this.createSuccessResult(
-          `Screenshot captured - file and bytes available`,
-          {
-            imageData: base64Data,
-            filename: path.resolve(filename),
-            selector,
-            dimensions: { width, height },
-            format,
-            size: buffer.length,
-            client: response.clientMetadata,
-            nextCommand: {
-              command: 'file_write',
-              params: {
-                filename: path.resolve(filename),
+        return this.createSuccessResult({
+          imageData: base64Data,
+          filename: path.resolve(filename),
+          selector,
+          dimensions: { width, height },
+          format,
+          size: buffer.length,
+          client: response.clientMetadata,
+          nextCommand: {
+            command: 'file_write',
+            params: {
+              filename: path.resolve(filename),
                 content: base64Data,
                 encoding: 'base64',
                 ensureDirectory: true
@@ -337,16 +331,13 @@ export class ScreenshotCommand extends RemoteCommand {
 
       default:
         // Default to bytes-only for backward compatibility
-        return this.createSuccessResult(
-          `Screenshot captured successfully`,
-          {
-            imageData: base64Data,
-            selector,
-            dimensions: { width, height },
-            format,
-            client: response.clientMetadata
-          }
-        );
+        return this.createSuccessResult({
+          imageData: base64Data,
+          selector,
+          dimensions: { width, height },
+          format,
+          client: response.clientMetadata
+        });
     }
   }
 

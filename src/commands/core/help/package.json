@@ -6,7 +6,7 @@
   "type": "module",
   "continuum": {
     "core": "help",
-    "category": "Core",
+    "category": "core",
     "capabilities": [
       "auto-generated"
     ],

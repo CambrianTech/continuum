@@ -231,20 +231,20 @@ export class CommandDaemon {
         
         return response.commands.map((cmd: any) => cmd.name);
       } else {
-        // Fallback: try common commands to see what's available
-        console.log('📋 Testing common commands...');
-        const testCommands = ['health', 'help', 'js-execute', 'browserjs', 'screenshot', 'console'];
+        // Fallback: try to discover available commands dynamically
+        console.log('📋 Discovering available commands...');
         
-        for (const cmd of testCommands) {
-          try {
-            // Quick test - don't wait for full execution
-            setTimeout(() => this.execute(cmd, {}).catch(() => {}), 100);
-          } catch {
-            // Ignore errors, just testing availability
+        try {
+          // Try to get list of available commands from the server
+          const listResult = await this.execute('help', {});
+          if (listResult.success) {
+            console.log('✅ Commands discovered via help command');
           }
+        } catch (error) {
+          console.log('⚠️ Could not discover commands dynamically:', error);
         }
         
-        return testCommands;
+        return []; // Return empty array if discovery fails - commands will be discovered as used
       }
       
     } catch (error) {

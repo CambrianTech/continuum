@@ -10,7 +10,7 @@ export class PromisejsCommand extends RemoteCommand {
   static getDefinition(): CommandDefinition {
     return {
       name: 'promisejs',
-      category: 'Browser',
+      category: 'browser',
       icon: '⚡',
       description: 'Promise-based JavaScript execution in browser (stub implementation)',
       parameters: { script: { type: 'string' as const, description: 'JavaScript script to execute as a Promise' } },

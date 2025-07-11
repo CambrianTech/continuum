@@ -15,7 +15,7 @@ export class BrowserCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
     return {
       name: 'browser',
-      category: 'Browser',
+      category: 'browser',
       icon: '🌐',
       description: 'Launch browser and navigate to URL',
       parameters: { 
@@ -53,13 +53,10 @@ export class BrowserCommand extends DirectCommand {
       // Emit event to BrowserManagerDaemon
       DAEMON_EVENT_BUS.emit('browser_request', browserRequest);
 
-      return this.createSuccessResult(
-        `Browser launched with URL: ${url}`,
-        {
-          url: url,
-          sessionId: sessionId
-        }
-      );
+      return this.createSuccessResult({
+        url: url,
+        sessionId: sessionId
+      });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return this.createErrorResult(`Failed to launch browser: ${errorMessage}`);
