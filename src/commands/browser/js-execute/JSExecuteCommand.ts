@@ -5,7 +5,7 @@
  * Integrates with session console logging to capture execution results
  */
 
-import { BaseCommand } from '../../core/base-command/BaseCommand';
+import { BaseCommand, CommandDefinition } from '../../core/base-command/BaseCommand';
 import { CommandResult } from '../../../types/CommandTypes';
 
 export interface JSExecuteOptions {
@@ -66,7 +66,7 @@ export class JSExecuteCommand extends BaseCommand {
     return { script: '' };
   }
 
-  static getDefinition() {
+  static getDefinition(): CommandDefinition {
     return {
       name: 'js-execute',
       description: 'Execute JavaScript in browser with session logging integration',

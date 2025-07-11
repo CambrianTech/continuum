@@ -41,13 +41,10 @@ export class AgentsCommand extends DirectCommand {
         }
       ];
 
-      return this.createSuccessResult(
-        `Found ${agents.length} available agents`,
-        {
-          agents,
-          count: agents.length
-        }
-      );
+      return this.createSuccessResult({
+        agents,
+        count: agents.length
+      });
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

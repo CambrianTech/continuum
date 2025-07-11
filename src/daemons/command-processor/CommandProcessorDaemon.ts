@@ -547,19 +547,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
     this.log(`🌐 Executing command via dynamic discovery: ${request.command}`);
     console.log(`🔍 [CommandProcessor] executeBrowserImplementation called for: ${request.command}`);
     
-    // Handle special test commands that might not be in the discovery system
-    if (request.command === 'selftest') {
-      return {
-        success: true,
-        status: 'executed',
-        processor: 'typescript-daemon',
-        mode: (request.parameters as any)?.mode || 'simple',
-        verbose: (request.parameters as any)?.verbose || false,
-        message: 'Selftest command executed successfully'
-      } as R;
-    }
-    
-    // Use the command connector to execute discovered commands
+    // Use the command connector to execute discovered commands - NO HARDCODED COMMANDS
     console.log(`🔍 [CommandProcessor] Checking command connector: connected=${this.commandConnector?.isConnected()}`);
     if (!this.commandConnector || !this.commandConnector.isConnected()) {
       console.log(`🔍 [CommandProcessor] Command connector not available - throwing error`);
@@ -576,7 +564,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
     
     // Check if this is a daemon routing request
     if (result.success && result.data && typeof result.data === 'object' && '_routeToDaemon' in result.data) {
-      const daemonRequest = result.data._routeToDaemon;
+      const daemonRequest = (result.data as any)._routeToDaemon;
       console.log(`🔍 [CommandProcessor] Command wants to route to daemon: ${daemonRequest.targetDaemon}`);
       
       // Route to the specified daemon through WebSocket daemon
@@ -650,16 +638,12 @@ export class CommandProcessorDaemon extends BaseDaemon {
 
   // Helper methods
   private async registerCoreImplementations(): Promise<void> {
-    // Get discovered commands from the command connector
+    // Get ALL commands from dynamic discovery - no hardcoded lists
     const availableCommands = this.commandConnector?.getAvailableCommands() || [];
-    
-    // Add built-in test commands that might not be discovered
-    const testCommands = ['selftest'];
-    const allCommands = [...new Set([...availableCommands, ...testCommands])];
     
     // Register all discovered commands as browser implementations
     // (since the dynamic discovery uses filesystem-based command loading)
-    const discoveredImplementations: CommandImplementation[] = allCommands.map(commandName => ({
+    const discoveredImplementations: CommandImplementation[] = availableCommands.map(commandName => ({
       name: `${commandName}-discovered`,
       provider: 'browser' as const,
       status: 'available' as const,
@@ -669,13 +653,13 @@ export class CommandProcessorDaemon extends BaseDaemon {
     }));
 
     // Register implementations for each command
-    for (let i = 0; i < allCommands.length; i++) {
-      const commandName = allCommands[i];
+    for (let i = 0; i < availableCommands.length; i++) {
+      const commandName = availableCommands[i];
       const implementation = discoveredImplementations[i];
       this.implementations.set(commandName, [implementation]);
     }
     
-    this.log(`Registered ${discoveredImplementations.length} command implementations: ${allCommands.join(', ')}`);
+    this.log(`🔍 DYNAMIC REGISTRY: Registered ${discoveredImplementations.length} command implementations: ${availableCommands.join(', ')}`);
   }
 
   // Removed unused methods to fix compilation warnings

@@ -5,7 +5,7 @@
  * Enables reading console output and executing console commands with session tracking
  */
 
-import { BaseCommand } from '../../core/base-command/BaseCommand';
+import { BaseCommand, CommandDefinition } from '../../core/base-command/BaseCommand';
 import { CommandResult } from '../../../types/CommandTypes';
 
 export interface BrowserConsoleOptions {
@@ -18,7 +18,7 @@ export interface BrowserConsoleOptions {
 }
 
 export class BrowserConsoleCommand extends BaseCommand {
-  static getDefinition() {
+  static getDefinition(): CommandDefinition {
     return {
       name: 'browser-console',
       description: 'Interact with browser console through session logging system',

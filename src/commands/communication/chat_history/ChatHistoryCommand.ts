@@ -64,15 +64,12 @@ export class ChatHistoryCommand extends BaseCommand {
           metadata: msg.metadata
         }));
 
-        return this.createSuccessResult(
-          `Found ${messages.length} messages in room "${roomId}"`,
-          {
-            room: roomId,
-            messages: messages,
-            count: result.total_count || messages.length,
-            limit: limit
-          }
-        );
+        return this.createSuccessResult({
+          room: roomId,
+          messages: messages,
+          count: result.total_count || messages.length,
+          limit: limit
+        });
       } catch (daemonError) {
         // Fallback to mock data if daemon communication fails
         console.warn('ChatRoomDaemon unavailable, using fallback data:', daemonError);
@@ -108,15 +105,12 @@ export class ChatHistoryCommand extends BaseCommand {
           }
         ];
 
-        return this.createSuccessResult(
-          `Found ${mockHistory.length} messages in room "${roomId}"`,
-          {
-            room: roomId,
-            messages: mockHistory.slice(0, limit),
-            count: mockHistory.length,
-            limit: limit
-          }
-        );
+        return this.createSuccessResult({
+          room: roomId,
+          messages: mockHistory.slice(0, limit),
+          count: mockHistory.length,
+          limit: limit
+        });
       }
 
     } catch (error) {

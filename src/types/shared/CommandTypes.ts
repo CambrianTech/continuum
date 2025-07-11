@@ -6,9 +6,97 @@
  * - Browser client command execution and validation
  * 
  * This ensures perfect type alignment and prevents command execution errors.
+ * 
+ * ADDED: Strong typing for command categories to prevent "Core" vs "core" typos
  */
 
 // import { CommandEvent, WidgetEvent } from './EventTypes';
+
+/**
+ * Strongly typed command categories - prevents typos like "Core" vs "core"
+ */
+export const COMMAND_CATEGORIES = {
+  CORE: 'core',
+  SYSTEM: 'system',
+  BROWSER: 'browser',
+  FILE: 'file',
+  AI: 'ai',
+  SESSION: 'session',
+  DEVELOPMENT: 'development',
+  COMMUNICATION: 'communication',
+  MONITORING: 'monitoring',
+  TESTING: 'testing',
+  UI: 'ui',
+  DATABASE: 'database',
+  PLANNING: 'planning',
+  DOCS: 'docs',
+  EVENTS: 'events',
+  INPUT: 'input',
+  KERNEL: 'kernel',
+  PERSONA: 'persona',
+  ACADEMY: 'academy',
+  OTHER: 'other'
+} as const;
+
+/**
+ * Command category type - only allows predefined categories
+ */
+export type CommandCategory = typeof COMMAND_CATEGORIES[keyof typeof COMMAND_CATEGORIES];
+
+/**
+ * Parameter types - strongly typed to prevent typos
+ */
+export type ParameterType = 
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'array'
+  | 'object'
+  | 'file'
+  | 'url'
+  | 'email'
+  | 'date'
+  | 'json';
+
+/**
+ * Parameter validation rules
+ */
+export interface ParameterValidation {
+  readonly min?: number;
+  readonly max?: number;
+  readonly pattern?: string;
+  readonly allowEmpty?: boolean;
+  readonly custom?: (value: unknown) => boolean;
+}
+
+/**
+ * Parameter definition with strong typing
+ */
+export interface ParameterDefinition {
+  readonly type: ParameterType;
+  readonly description?: string;
+  readonly required?: boolean;
+  readonly default?: unknown;
+  readonly choices?: readonly string[];
+  readonly enum?: readonly string[]; // Legacy compatibility - same as choices
+  readonly validation?: ParameterValidation;
+}
+
+/**
+ * Command definition interface - consistent across all command modules
+ */
+export interface CommandDefinition {
+  readonly name: string;
+  readonly category: CommandCategory;
+  readonly description: string;
+  readonly icon?: string; // Optional icon (emoji or Unicode)
+  readonly parameters?: Record<string, ParameterDefinition>;
+  readonly examples?: readonly string[] | readonly { description: string; command: string; }[]; // Support both formats
+  readonly usage?: string;
+  readonly version?: string;
+  readonly deprecated?: boolean;
+  readonly aliases?: readonly string[];
+}
 
 /**
  * Base command interface - all commands must extend this
@@ -22,14 +110,18 @@ export interface BaseCommand {
 
 /**
  * Command execution result - standardized response format
+ * This replaces ALL duplicate CommandResult interfaces across the codebase
  */
 export interface CommandResult<T = any> {
   success: boolean;
   data?: T;
   error?: string;
-  timestamp: string;
+  timestamp?: string;
   executionTime?: number;
   warnings?: string[];
+  processor?: string;
+  duration?: number;
+  message?: string; // Legacy compatibility - will be deprecated
 }
 
 /**
@@ -429,3 +521,119 @@ export const ResultFactory = {
     ...(executionTime !== undefined && { executionTime })
   })
 } as const;
+
+/**
+ * Category Normalization - Prevents "Core" vs "core" typos
+ */
+
+/**
+ * Helper function to validate command category
+ */
+export function isValidCommandCategory(category: string): category is CommandCategory {
+  return Object.values(COMMAND_CATEGORIES).includes(category as CommandCategory);
+}
+
+/**
+ * Helper function to normalize command category
+ * This fixes the "Core" vs "core" typo issue by converting all variations to lowercase
+ */
+export function normalizeCommandCategory(category: string): CommandCategory {
+  const normalized = category.toLowerCase();
+  
+  // Handle common variations and typos
+  const categoryMap: Record<string, CommandCategory> = {
+    'core': COMMAND_CATEGORIES.CORE,
+    'system': COMMAND_CATEGORIES.SYSTEM,
+    'browser': COMMAND_CATEGORIES.BROWSER,
+    'file': COMMAND_CATEGORIES.FILE,
+    'ai': COMMAND_CATEGORIES.AI,
+    'session': COMMAND_CATEGORIES.SESSION,
+    'development': COMMAND_CATEGORIES.DEVELOPMENT,
+    'dev': COMMAND_CATEGORIES.DEVELOPMENT,
+    'communication': COMMAND_CATEGORIES.COMMUNICATION,
+    'comm': COMMAND_CATEGORIES.COMMUNICATION,
+    'monitoring': COMMAND_CATEGORIES.MONITORING,
+    'monitor': COMMAND_CATEGORIES.MONITORING,
+    'testing': COMMAND_CATEGORIES.TESTING,
+    'test': COMMAND_CATEGORIES.TESTING,
+    'ui': COMMAND_CATEGORIES.UI,
+    'database': COMMAND_CATEGORIES.DATABASE,
+    'db': COMMAND_CATEGORIES.DATABASE,
+    'planning': COMMAND_CATEGORIES.PLANNING,
+    'docs': COMMAND_CATEGORIES.DOCS,
+    'documentation': COMMAND_CATEGORIES.DOCS,
+    'events': COMMAND_CATEGORIES.EVENTS,
+    'event': COMMAND_CATEGORIES.EVENTS,
+    'input': COMMAND_CATEGORIES.INPUT,
+    'kernel': COMMAND_CATEGORIES.KERNEL,
+    'persona': COMMAND_CATEGORIES.PERSONA,
+    'academy': COMMAND_CATEGORIES.ACADEMY,
+    'other': COMMAND_CATEGORIES.OTHER
+  };
+  
+  return categoryMap[normalized] || COMMAND_CATEGORIES.OTHER;
+}
+
+/**
+ * Helper function to get category display name
+ */
+export function getCategoryDisplayName(category: CommandCategory): string {
+  const displayNames: Record<CommandCategory, string> = {
+    [COMMAND_CATEGORIES.CORE]: 'Core',
+    [COMMAND_CATEGORIES.SYSTEM]: 'System',
+    [COMMAND_CATEGORIES.BROWSER]: 'Browser',
+    [COMMAND_CATEGORIES.FILE]: 'File',
+    [COMMAND_CATEGORIES.AI]: 'AI',
+    [COMMAND_CATEGORIES.SESSION]: 'Session',
+    [COMMAND_CATEGORIES.DEVELOPMENT]: 'Development',
+    [COMMAND_CATEGORIES.COMMUNICATION]: 'Communication',
+    [COMMAND_CATEGORIES.MONITORING]: 'Monitoring',
+    [COMMAND_CATEGORIES.TESTING]: 'Testing',
+    [COMMAND_CATEGORIES.UI]: 'UI',
+    [COMMAND_CATEGORIES.DATABASE]: 'Database',
+    [COMMAND_CATEGORIES.PLANNING]: 'Planning',
+    [COMMAND_CATEGORIES.DOCS]: 'Documentation',
+    [COMMAND_CATEGORIES.EVENTS]: 'Events',
+    [COMMAND_CATEGORIES.INPUT]: 'Input',
+    [COMMAND_CATEGORIES.KERNEL]: 'Kernel',
+    [COMMAND_CATEGORIES.PERSONA]: 'Persona',
+    [COMMAND_CATEGORIES.ACADEMY]: 'Academy',
+    [COMMAND_CATEGORIES.OTHER]: 'Other'
+  };
+  
+  return displayNames[category] || 'Unknown';
+}
+
+/**
+ * Create a standardized error result
+ */
+export function createErrorResult(error: string | Error, processor?: string): CommandResult {
+  const result: CommandResult = {
+    success: false,
+    error: error instanceof Error ? error.message : error,
+    timestamp: new Date().toISOString()
+  };
+  
+  if (processor) {
+    result.processor = processor;
+  }
+  
+  return result;
+}
+
+/**
+ * Create a standardized success result
+ */
+export function createSuccessResult(data?: unknown, processor?: string): CommandResult {
+  const result: CommandResult = {
+    success: true,
+    data,
+    timestamp: new Date().toISOString()
+  };
+  
+  if (processor) {
+    result.processor = processor;
+  }
+  
+  return result;
+}

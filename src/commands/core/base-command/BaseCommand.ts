@@ -3,25 +3,10 @@
  * Clean, typed foundation for all Continuum commands
  */
 
-export interface ParameterDefinition {
-  type: 'string' | 'number' | 'boolean' | 'array' | 'object';
-  description: string;
-  required?: boolean;
-  default?: unknown;
-}
+import { CommandResult, CommandDefinition, ParameterDefinition } from '../../../types/shared/CommandTypes';
 
-export interface CommandDefinition {
-  name: string;
-  category: string;
-  icon?: string;
-  description: string;
-  parameters: Record<string, ParameterDefinition>;
-  examples: Array<{
-    description: string;
-    command: string;
-  }>;
-  usage?: string;
-}
+// Re-export shared types for backward compatibility
+export type { CommandResult, CommandDefinition, ParameterDefinition };
 
 // Common types for context properties
 export interface WebSocketServer {
@@ -51,13 +36,7 @@ export interface WebSocketCommandContext extends CommandContext {
   connectionId: string; // Required for WebSocket routing
 }
 
-export interface CommandResult<T = unknown> {
-  success: boolean;
-  message?: string | undefined;
-  data?: T | undefined;
-  error?: string | undefined;
-  timestamp?: string | undefined;
-}
+// CommandResult is now imported from shared types
 
 export interface RegistryEntry {
   name: string;
@@ -103,27 +82,28 @@ export abstract class BaseCommand {
    * Create standardized success result
    */
   protected static createSuccessResult<T = unknown>(
-    message: string, 
     data?: T
   ): CommandResult<T> {
-    return {
+    const result: CommandResult<T> = {
       success: true,
-      message,
-      data,
       timestamp: new Date().toISOString()
     };
+    
+    if (data !== undefined) {
+      result.data = data;
+    }
+    
+    return result;
   }
 
   /**
    * Create standardized error result
    */
   protected static createErrorResult(
-    message: string, 
-    error?: string
+    error: string
   ): CommandResult {
     return {
       success: false,
-      message,
       error,
       timestamp: new Date().toISOString()
     };
