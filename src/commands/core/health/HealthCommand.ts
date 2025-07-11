@@ -164,7 +164,8 @@ export class HealthCommand extends DirectCommand {
   }
 
   private static async checkCommands(): Promise<HealthStatus[]> {
-    const commands = ['preferences', 'reload', 'help', 'info', 'health'];
+    // Use dynamic command discovery instead of hardcoded list
+    const commands = await this.getDiscoveredCommands();
     
     return commands.map(command => {
       return {
@@ -235,6 +236,34 @@ export class HealthCommand extends DirectCommand {
       return `🟡 System degraded: Some components experiencing issues`;
     } else {
       return `🔴 System unhealthy: Critical components failed`;
+    }
+  }
+
+  /**
+   * Get discovered commands from the command discovery system
+   */
+  private static async getDiscoveredCommands(): Promise<string[]> {
+    try {
+      // Use the DaemonConnector to get commands from the command processor
+      const { DaemonConnector } = await import('../../../integrations/websocket/core/DaemonConnector.js');
+      
+      const connector = new DaemonConnector();
+      const connected = await connector.connect();
+      
+      if (!connected) {
+        console.warn('Failed to connect to command processor daemon, using fallback commands');
+        return ['health', 'help', 'preferences', 'reload', 'info'];
+      }
+      
+      const commands = connector.getAvailableCommands();
+      await connector.disconnect();
+      
+      return commands;
+      
+    } catch (error) {
+      // Fallback to basic commands if discovery fails
+      console.warn('Command discovery failed, using fallback commands:', error);
+      return ['health', 'help', 'preferences', 'reload', 'info'];
     }
   }
 }
