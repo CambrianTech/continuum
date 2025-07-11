@@ -5,6 +5,7 @@
  */
 
 import { BaseCommand, CommandResult } from '../../core/base-command/BaseCommand';
+import { COMMAND_CATEGORIES } from '../../../types/shared/CommandTypes';
 import { 
   JTAGProbeResponse, 
   JTAGProbeMethod, 
@@ -31,7 +32,7 @@ export class JtagCommand extends BaseCommand {
   static getDefinition() {
     return {
       name: 'jtag',
-      category: 'development',
+      category: COMMAND_CATEGORIES.DEVELOPMENT,
       description: 'AI autonomous debugging - probe browser widget states from server',
       parameters: {
         method: {

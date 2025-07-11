@@ -43,8 +43,8 @@ export interface EmotionResult {
     emotion: string;
     config: EmotionConfig;
     timestamp: string;
-  } | undefined;
-  error?: string | undefined;
+  };
+  error?: string;
 }
 
 export type EmotionType = 'fleeting' | 'contextual' | 'system';

@@ -5,11 +5,11 @@
 import { EventEmitter } from 'events';
 import { DaemonConnection, DaemonConfig } from '../types';
 import { CommandResult } from '../../../types/shared/CommandTypes';
-import { UniversalCommandRegistry, getGlobalCommandRegistry } from '../../../services/UniversalCommandRegistry';
+// Import UniversalCommandRegistry properly - using dynamic import to avoid ESM issues
 
 export class DaemonConnector extends EventEmitter {
   private connection: DaemonConnection;
-  private commandRegistry: UniversalCommandRegistry;
+  private commandRegistry: any; // Will be UniversalCommandRegistry after dynamic import
 
   constructor(_config: DaemonConfig = {}) {
     super();
@@ -19,14 +19,24 @@ export class DaemonConnector extends EventEmitter {
       connectionAttempts: 0
     };
     
-    // Use the global command registry for universal command access
-    this.commandRegistry = getGlobalCommandRegistry();
+    // Initialize with null - will be set up in connect() method
+    this.commandRegistry = null;
   }
   
   async connect(): Promise<boolean> {
     console.log('🔌 Connecting to Universal Command Registry...');
     
     try {
+      // Dynamically import and instantiate UniversalCommandRegistry
+      if (!this.commandRegistry) {
+        const { UniversalCommandRegistry } = await import('../../../services/UniversalCommandRegistry');
+        this.commandRegistry = new UniversalCommandRegistry({
+          enableFileWatcher: true,
+          cacheEnabled: true,
+          logLevel: 'info'
+        });
+      }
+      
       // Initialize the command registry
       await this.commandRegistry.initialize();
       

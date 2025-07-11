@@ -80,8 +80,10 @@ export abstract class BaseCommand {
 
   /**
    * Create standardized success result
+   * Legacy signature: createSuccessResult(message, data) or createSuccessResult(data)
    */
   protected static createSuccessResult<T = unknown>(
+    messageOrData?: string | T,
     data?: T
   ): CommandResult<T> {
     const result: CommandResult<T> = {
@@ -89,8 +91,13 @@ export abstract class BaseCommand {
       timestamp: new Date().toISOString()
     };
     
-    if (data !== undefined) {
+    // Handle legacy signature: createSuccessResult(message, data)
+    if (typeof messageOrData === 'string' && data !== undefined) {
       result.data = data;
+      // Legacy message parameter is ignored - data takes precedence
+    } else if (messageOrData !== undefined) {
+      // New signature: createSuccessResult(data)
+      result.data = messageOrData as T;
     }
     
     return result;
@@ -100,7 +107,8 @@ export abstract class BaseCommand {
    * Create standardized error result
    */
   protected static createErrorResult(
-    error: string
+    error: string,
+    _data?: unknown  // Legacy parameter - maintained for backward compatibility
   ): CommandResult {
     return {
       success: false,

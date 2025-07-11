@@ -4,8 +4,9 @@ printf "\rContinuum Middle-Out Validation (Layer 1/4) - Foundation...\n" >&2
 # 🧅 LAYER 1: Core Foundation (TypeScript compilation)
 echo "🧅 Layer 1: Core Foundation - TypeScript compilation..."
 npx tsc --noEmit --project . || {
-    echo "⚠️  TypeScript compilation has errors. Consider fixing them."
-    # Don't block commit for now - we're in active development
+    echo "❌ TypeScript compilation FAILED! Fix errors before committing."
+    echo "💡 Run: npx tsc --noEmit --project . to see all errors"
+    exit 1
 }
 
 printf "\rContinuum Middle-Out Validation (Layer 2/4) - Code Quality...\n" >&2
@@ -79,23 +80,30 @@ npm run test:compliance || {
 printf "\rContinuum Middle-Out Validation (Layer 6/6) - JTAG Health...\n" >&2
 
 # 🧅 LAYER 6: JTAG Health Check (CRITICAL - Never commit with broken debugging)
-echo "🧅 Layer 6: JTAG Health Check - Validating debugging pipeline..."
+echo "🧅 Layer 6: JTAG Health Check - Full system validation with clean startup..."
 
-# Test JTAG system health (requires full browser connection)
-printf "\r  → Layer 6a: Testing JTAG browser connection...\r" >&2
+# CRITICAL: Kill any existing processes to ensure clean test
+echo "🧹 Killing any existing Continuum processes for clean validation..."
+pkill -f "tsx main.ts" 2>/dev/null || true
+pkill -f "continuum" 2>/dev/null || true
+sleep 2
 
-# Run JTAG integration tests
-printf "\r  → Layer 6a: Testing JTAG debugging pipeline...\r" >&2
-cd src/commands/development/jtag-cli && npx tsx test/integration/JtagCLI.integration.test.ts >/dev/null 2>&1
+# CRITICAL: Run full npm jtag validation (includes npm start + JTAG tests)
+echo "🚀 Running full system validation: npm run jtag"
+echo "   This includes: npm start (compile + build + daemon startup) + JTAG health checks"
+printf "\r  → Layer 6a: Full npm jtag validation (clean startup required)...\r" >&2
+
+npm run jtag >/dev/null 2>&1
 JTAG_RESULT=$?
-cd - >/dev/null
 
 if [ $JTAG_RESULT -ne 0 ]; then
-    echo "❌ JTAG integration tests failed! Run: cd src/commands/development/jtag-cli && npx tsx test/integration/JtagCLI.integration.test.ts"
+    echo "❌ CRITICAL: npm run jtag FAILED! System cannot start or JTAG validation failed!"
+    echo "💡 Debug with: npm run jtag"
+    echo "💡 This validates: TypeScript compilation → Browser build → Daemon startup → JTAG health"
     exit 1
 fi
 
-echo "✅ JTAG debugging system verified - browser connected with live logging"
+echo "✅ JTAG debugging system verified - full clean startup + browser connected with live logging"
 
 printf "\rContinuum Middle-Out Validation Complete!\n" >&2
 

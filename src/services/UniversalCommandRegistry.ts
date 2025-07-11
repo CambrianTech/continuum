@@ -11,16 +11,18 @@
  * - Core/kernel command dependency system
  * - Universal availability across all components
  * - Automatic registration when commands are added/removed
+ * 
+ * This implementation addresses technical debt documented in:
+ * @see ../../TECHNICAL_DEBT.md - Systematic analysis of brittle patterns
+ * @see ../../MIDDLE_OUT_SUCCESS.md - Middle-out methodology results
  */
 
 import { EventEmitter } from 'events';
 import { CommandDefinition, CommandResult, CommandContext } from '../commands/core/base-command/BaseCommand';
 import { 
   CommandCategory, 
-  normalizeCommandCategory, 
-  isValidCommandCategory,
-  createErrorResult,
-  createSuccessResult
+  normalizeCommandCategory,
+  createErrorResult
 } from '../types/shared/CommandTypes';
 
 export interface CommandMetadata {
@@ -538,4 +540,5 @@ export async function initializeGlobalCommandRegistry(): Promise<void> {
   await registry.initialize();
 }
 
+// Default export for compatibility
 export default UniversalCommandRegistry;
