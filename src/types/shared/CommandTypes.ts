@@ -7,7 +7,10 @@
  * 
  * This ensures perfect type alignment and prevents command execution errors.
  * 
- * ADDED: Strong typing for command categories to prevent "Core" vs "core" typos
+ * BREAKTHROUGH: Strong typing for command categories prevents "Core" vs "core" typos
+ * This implementation resulted from systematic middle-out methodology documented in:
+ * @see ../../TECHNICAL_DEBT.md - Analysis of brittle patterns discovered during migration
+ * @see ../../MIDDLE_OUT_SUCCESS.md - Complete methodology and quantified results
  */
 
 // import { CommandEvent, WidgetEvent } from './EventTypes';

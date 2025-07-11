@@ -14,6 +14,7 @@
 
 import { BaseCommand } from '../base-command/BaseCommand';
 import { CommandResult } from '../../../types/CommandTypes';
+import { COMMAND_CATEGORIES } from '../../../types/shared/CommandTypes';
 
 export interface DataMarshalOptions {
   operation: 'encode' | 'decode' | 'chain' | 'extract';
@@ -51,7 +52,7 @@ export class DataMarshalCommand extends BaseCommand {
     return {
       name: 'data-marshal',
       description: 'Universal data marshalling for cross-environment command chaining',
-      category: 'core',
+      category: COMMAND_CATEGORIES.CORE,
       parameters: {
         operation: {
           type: 'string' as const,

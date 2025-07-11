@@ -6,6 +6,7 @@
 
 import { BaseCommand } from '../../core/base-command/BaseCommand.js';
 import { CommandResult } from '../../core/base-command/BaseCommand.js';
+import { COMMAND_CATEGORIES } from '../../../types/shared/CommandTypes.js';
 import { WidgetDiscovery } from '../../../ui/components/shared/WidgetDiscovery.js';
 
 export class DiscoverWidgetsCommand extends BaseCommand {
@@ -13,7 +14,7 @@ export class DiscoverWidgetsCommand extends BaseCommand {
     return {
       name: 'discover_widgets',
       description: 'Discover all compliant widgets for dynamic loading',
-      category: 'ui',
+      category: COMMAND_CATEGORIES.UI,
       parameters: {},
       examples: [
         {

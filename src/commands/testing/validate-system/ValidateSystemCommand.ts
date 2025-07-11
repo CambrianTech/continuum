@@ -7,6 +7,7 @@
 
 import { BaseCommand } from '../../core/base-command/BaseCommand';
 import { CommandResult, CommandContext } from '../../core/base-command/BaseCommand';
+import { COMMAND_CATEGORIES } from '../../../types/shared/CommandTypes';
 import { ModuleComplianceFramework } from '../../../testing/module-compliance/ModuleComplianceFramework';
 import { SelfValidatingModule } from '../../../testing/self-validating/SelfValidatingModule';
 import * as fs from 'fs/promises';
@@ -25,7 +26,7 @@ export class ValidateSystemCommand extends BaseCommand {
   static getDefinition() {
     return {
       name: 'validate-system',
-      category: 'testing',
+      category: COMMAND_CATEGORIES.TESTING,
       icon: '🔍',
       description: 'Validate all modules follow consistent structure and implement declared capabilities',
       parameters: {

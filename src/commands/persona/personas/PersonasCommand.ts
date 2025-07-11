@@ -5,6 +5,7 @@
  */
 
 import { BaseCommand, CommandResult } from '../../core/base-command/BaseCommand';
+import { COMMAND_CATEGORIES } from '../../../types/shared/CommandTypes';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 
@@ -23,7 +24,7 @@ export class PersonasCommand extends BaseCommand {
   static getDefinition() {
     return {
       name: 'personas',
-      category: 'persona',
+      category: COMMAND_CATEGORIES.PERSONA,
       description: 'Manage AI personas for Users & Agents interface',
       parameters: {
         action: {

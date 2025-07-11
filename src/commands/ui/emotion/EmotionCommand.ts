@@ -124,11 +124,10 @@ export class EmotionCommand extends BaseCommand {
    * Create typed error result using base class
    */
   private static createEmotionErrorResult(message: string): EmotionResult {
-    const baseResult = super.createErrorResult(message, message);
     return {
-      success: baseResult.success,
-      message: baseResult.message || message,
-      error: baseResult.error
+      success: false,
+      message: message,
+      error: message
     };
   }
 
@@ -136,11 +135,10 @@ export class EmotionCommand extends BaseCommand {
    * Create typed success result using base class
    */
   private static createEmotionSuccessResult(message: string, data: { emotion: string; config: EmotionConfig; timestamp: string; }): EmotionResult {
-    const baseResult = super.createSuccessResult(message, data);
     return {
-      success: baseResult.success,
-      message: baseResult.message || message,
-      data: baseResult.data
+      success: true,
+      message: message,
+      data: data
     };
   }
 

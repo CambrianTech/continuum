@@ -11,6 +11,7 @@
 
 import { BaseCommand } from '../../core/base-command/BaseCommand';
 import { CommandResult } from '../../core/base-command/BaseCommand';
+import { COMMAND_CATEGORIES } from '../../../types/shared/CommandTypes';
 import { spawn, exec } from 'child_process';
 import { promisify } from 'util';
 
@@ -53,7 +54,7 @@ export class ProcessCommand extends BaseCommand {
     return {
       name: 'process',
       description: 'Low-level process management for system operations',
-      category: 'kernel',
+      category: COMMAND_CATEGORIES.KERNEL,
       parameters: {
         subcommand: { type: 'string' as const, description: 'Process operation to perform (list|find|spawn|kill|monitor|ports|tree|cleanup)' },
         filter: { type: 'object' as const, description: 'Filter criteria for process operations', required: false },
