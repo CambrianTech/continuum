@@ -92,6 +92,9 @@ export class ConsoleForwarder {
       // Execute optional JavaScript and capture result
       if (probeData.executeJS) {
         try {
+          // ESLint disable: eval needed for dynamic probe execution in browser context
+          // This is intentional for debugging/testing - probe commands need dynamic JS execution
+          // eslint-disable-next-line no-eval
           const result = eval(probeData.executeJS);
           probeData.data = {
             ...probeData.data,

@@ -4,8 +4,16 @@
   "description": "Universal data marshalling for cross-environment communication and command chaining",
   "main": "DataMarshalCommand.ts",
   "continuum": {
-    "type": "command",
-    "category": "data-marshal"
+    "core": "data-marshal",
+    "category": "Core",
+    "capabilities": [
+      "data-marshalling",
+      "command-chaining",
+      "base64-encoding"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
   "scripts": {
     "test": "npx tsx test/unit/DataMarshalCommand.test.ts"

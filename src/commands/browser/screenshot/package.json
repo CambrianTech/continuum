@@ -5,8 +5,16 @@
   "main": "ScreenshotCommand.ts",
   "type": "module",
   "continuum": {
-    "type": "command",
-    "category": "browser"
+    "core": "screenshot",
+    "category": "Browser",
+    "capabilities": [
+      "browser-screenshot",
+      "visual-capture",
+      "session-file-management"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
   },
   "keywords": [
     "screenshot",
