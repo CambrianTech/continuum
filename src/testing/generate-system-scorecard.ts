@@ -6,8 +6,7 @@
  * Designed to be appended to commit messages automatically by git hooks
  */
 
-import { execSync } from 'child_process';
-import { ModuleComplianceReport } from './ModuleComplianceReport';
+// No imports needed - simplified validation approach
 
 export async function generateSystemScorecard(): Promise<string> {
   try {
