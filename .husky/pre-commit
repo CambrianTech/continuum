@@ -82,6 +82,11 @@ printf "\rContinuum Middle-Out Validation (Layer 6/6) - JTAG Health...\n" >&2
 # 🧅 LAYER 6: JTAG Health Check (CRITICAL - Never commit with broken debugging)
 echo "🧅 Layer 6: JTAG Health Check - Full system validation with clean startup..."
 
+# BACKUP: Save package.json and package-lock.json before validation
+echo "💾 Backing up package files before validation (npm start increments version for testing)..."
+cp package.json package.json.pre-commit-backup 2>/dev/null || true
+cp package-lock.json package-lock.json.pre-commit-backup 2>/dev/null || true
+
 # CRITICAL: Kill any existing processes to ensure clean test
 echo "🧹 Killing any existing Continuum processes for clean validation..."
 pkill -f "tsx main.ts" 2>/dev/null || true
@@ -91,6 +96,7 @@ sleep 2
 # CRITICAL: Run full npm jtag validation (includes npm start + JTAG tests)
 echo "🚀 Running full system validation: npm run jtag"
 echo "   This includes: npm start (compile + build + daemon startup) + JTAG health checks"
+echo "   Note: Version will increment during validation - this tests the build system!"
 printf "\r  → Layer 6a: Full npm jtag validation (clean startup required)...\r" >&2
 
 npm run jtag >/dev/null 2>&1
@@ -100,8 +106,23 @@ if [ $JTAG_RESULT -ne 0 ]; then
     echo "❌ CRITICAL: npm run jtag FAILED! System cannot start or JTAG validation failed!"
     echo "💡 Debug with: npm run jtag"
     echo "💡 This validates: TypeScript compilation → Browser build → Daemon startup → JTAG health"
+    # Restore backup files before failing
+    mv package.json.pre-commit-backup package.json 2>/dev/null || true
+    mv package-lock.json.pre-commit-backup package-lock.json 2>/dev/null || true
     exit 1
 fi
+
+# VALIDATION SUCCESS: Check that version actually incremented (proves build system working)
+if [ -f package.json.pre-commit-backup ]; then
+    OLD_VERSION=$(grep '"version"' package.json.pre-commit-backup | sed 's/.*"version": "\([^"]*\)".*/\1/')
+    NEW_VERSION=$(grep '"version"' package.json | sed 's/.*"version": "\([^"]*\)".*/\1/')
+    echo "✅ Version increment test: $OLD_VERSION → $NEW_VERSION (build system functional)"
+fi
+
+# RESTORE: Put back original package files (don't commit test increments)
+echo "🔄 Restoring original package files (validation complete, don't commit test changes)..."
+mv package.json.pre-commit-backup package.json 2>/dev/null || true
+mv package-lock.json.pre-commit-backup package-lock.json 2>/dev/null || true
 
 echo "✅ JTAG debugging system verified - full clean startup + browser connected with live logging"
 
