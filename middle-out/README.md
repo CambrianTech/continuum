@@ -13,11 +13,13 @@ This directory contains the complete architectural documentation for Continuum's
 - **[documentation-patterns.md](bootloader/documentation-patterns.md)** - Self-documenting code architecture patterns
 
 #### 🔧 [Development](development/)
+- **[README.md](development/README.md)** - Development methodologies overview and framework
 - **[testing-workflow.md](development/testing-workflow.md)** - Complete middle-out testing methodology with 6-layer validation
 - **[auto-build-workflow.md](development/auto-build-workflow.md)** - Automated build and version increment system
 - **[progressive-quality-enforcement.md](development/progressive-quality-enforcement.md)** - Progressive quality enforcement system with TypeScript schemas and graduation tracking
 - **[quality-ratchet-architecture.md](development/quality-ratchet-architecture.md)** - **🎯 Quality Ratchet System - Zero degradation quality enforcement for PR-level CI**
 - **[middle-out-cycle.md](development/middle-out-cycle.md)** - The development cycle and implementation phases
+- **[npm-intelligence-patterns.md](development/npm-intelligence-patterns.md)** - **⚡ NPM Intelligence Patterns - Work with the tooling, not against it**
 - **[error-fixing.md](development/error-fixing.md)** - Systematic error fixing methodology (coming soon)
 - **[widget-architecture.md](development/widget-architecture.md)** - Widget system breakthrough patterns (coming soon)
 
@@ -40,7 +42,8 @@ This directory contains the complete architectural documentation for Continuum's
 ### 🏗️ Architecture Concepts
 
 #### 🏛️ [Architecture](architecture/)
-- **[universal-module-schema.md](architecture/universal-module-schema.md)** - Universal module schema system for AI-friendly discovery and validation
+- **[README.md](architecture/README.md)** - Architecture documentation overview and principles
+- **[universal-module-schema.md](architecture/universal-module-schema.md)** - **✅ IMPLEMENTED** Universal module schema system for AI-friendly discovery and validation
 - **[system-breakthroughs.md](architecture/system-breakthroughs.md)** - Multi-level inheritance and command vs program distinction (coming soon)
 - **[onion-pattern.md](architecture/onion-pattern.md)** - Layered onion architecture for dual client-server systems (coming soon)
 - **[self-validation.md](architecture/self-validation.md)** - Self-healing infrastructure patterns (coming soon)
