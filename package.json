@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2678",
+  "version": "0.2.2681",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -65,7 +65,7 @@
     "test:critical": "jest __tests__/critical --config __tests__/config/jest.config.cjs",
     "test:screenshot": "node __tests__/config/test-runner.cjs screenshot",
     "test:websocket": "npx tsx src/testing/ModularTestRunner.ts integration",
-    "test:browser": "npx tsx src/ui/test/BrowserComprehensiveTest.ts",
+    "test:browser": "npx tsx --test src/daemons/browser-manager/test/integration/BrowserManager.integration.test.ts",
     "test:visual": "npx tsx src/ui/test/VisualBrowserIntegration.ts",
     "test:ai": "jest __tests__/integration/ai --config __tests__/config/jest.config.cjs",
     "test:ui": "jest __tests__/integration/ui --testPathPattern='\\.(js|cjs|ts)$' --config __tests__/config/jest.config.cjs && cd __tests__ && python3 -m pytest integration/ui -v -c config/pytest.ini",
