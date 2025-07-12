@@ -2,6 +2,9 @@
 node_modules/
 jspm_packages/
 
+# Git hook backup files
+*.pre-commit-backup
+
 # Build outputs
 dist/
 build/

@@ -84,6 +84,11 @@ echo "🧅 Layer 6: JTAG Health Check - Full system validation with clean startu
 
 # BACKUP: Save package.json and package-lock.json before validation
 echo "💾 Backing up package files before validation (npm start increments version for testing)..."
+
+# Clean up any existing backup files first
+rm -f package.json.pre-commit-backup package-lock.json.pre-commit-backup
+
+# Create fresh backups
 cp package.json package.json.pre-commit-backup || {
     echo "❌ CRITICAL: Failed to backup package.json"
     exit 1
