@@ -29,7 +29,7 @@
     "test:layer": "npx tsx src/system/testing/test/universal-layer-runner.ts --layer=",
     "test:widgets": "npx tsx src/testing/IntelligentModularTestRunner.ts widget",
     "test:daemons": "npx tsx src/testing/IntelligentModularTestRunner.ts daemon",
-    "test:commands": "npx tsx src/testing/ModularTestRunner.ts command",
+    "test:commands": "npx tsx src/testing/IntelligentModularTestRunner.ts command",
     "test:compliance": "npx tsx src/testing/ModuleComplianceReport.ts --use-whitelist",
     "test:compliance:strict": "npx tsx src/testing/ModuleComplianceReport.ts --exit-on-failure",
     "test:compliance:details": "npx tsx src/testing/ModuleComplianceReport.ts --use-whitelist --details",
