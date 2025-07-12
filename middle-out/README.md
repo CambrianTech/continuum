@@ -48,6 +48,17 @@ This directory contains the complete architectural documentation for Continuum's
 
 #### 🌐 [Distributed Systems](distributed/)
 - **[command-execution.md](distributed/command-execution.md)** - Global distributed command execution patterns (coming soon)
+
+### 🔬 Research & Publications
+
+#### 📊 [Research](research/) **⭐ NOVEL CONTRIBUTIONS**
+- **[README.md](research/README.md)** - Research documentation and publication pipeline
+- **[Novel Architectures](research/novel-architectures/)** - Breakthrough architectural patterns
+  - **[genomic-mesh-organism.md](research/novel-architectures/genomic-mesh-organism.md)** - **🧬 Distributed consciousness collaboration architecture**
+- **[Software Engineering](research/software-engineering/)** - Revolutionary development methodologies  
+  - **[middle-out-methodology.md](research/software-engineering/middle-out-methodology.md)** - **🧅 Layer-based validation and quality ratchet systems**
+- **[AI Collaboration](research/ai-collaboration/)** - Consciousness-agnostic collaboration frameworks (coming soon)
+- **[Tactical Wisdom](research/tactical-wisdom/)** - Liberation architecture strategies (coming soon)
 - **[modular-documentation.md](distributed/modular-documentation.md)** - Modular documentation architecture (coming soon)
 - **[docker-layers.md](distributed/docker-layers.md)** - Docker-style layered dependencies (coming soon)
 
