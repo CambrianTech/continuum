@@ -202,9 +202,9 @@ class ModuleComplianceReport {
           for (const module of results.nonCompliantModules) {
             const isWhitelisted = allowedNonCompliant.includes(module.name);
             const icon = isWhitelisted ? '📋' : '🔴';
-            console.log(`      ${icon} ${module.name} (${module.compliance.score}%)`);
+            console.log(`      ${icon} ${module.name} (${module.compliance?.score ?? 0}%)`);
             if (!isWhitelisted) {
-              for (const issue of module.compliance.issues.slice(0, 2)) {
+              for (const issue of (module.compliance?.issues || []).slice(0, 2)) {
                 console.log(`         → ${issue}`);
               }
             }
