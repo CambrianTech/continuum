@@ -84,8 +84,15 @@ echo "🧅 Layer 6: JTAG Health Check - Full system validation with clean startu
 
 # BACKUP: Save package.json and package-lock.json before validation
 echo "💾 Backing up package files before validation (npm start increments version for testing)..."
-cp package.json package.json.pre-commit-backup 2>/dev/null || true
-cp package-lock.json package-lock.json.pre-commit-backup 2>/dev/null || true
+cp package.json package.json.pre-commit-backup || {
+    echo "❌ CRITICAL: Failed to backup package.json"
+    exit 1
+}
+cp package-lock.json package-lock.json.pre-commit-backup || {
+    echo "❌ CRITICAL: Failed to backup package-lock.json"
+    exit 1
+}
+echo "✅ Backup files created: package.json.pre-commit-backup, package-lock.json.pre-commit-backup"
 
 # CRITICAL: Kill any existing processes to ensure clean test
 echo "🧹 Killing any existing Continuum processes for clean validation..."
@@ -107,8 +114,9 @@ if [ $JTAG_RESULT -ne 0 ]; then
     echo "💡 Debug with: npm run jtag"
     echo "💡 This validates: TypeScript compilation → Browser build → Daemon startup → JTAG health"
     # Restore backup files before failing
-    mv package.json.pre-commit-backup package.json 2>/dev/null || true
-    mv package-lock.json.pre-commit-backup package-lock.json 2>/dev/null || true
+    echo "🔄 Restoring backup files before failing..."
+    mv package.json.pre-commit-backup package.json 2>/dev/null || echo "⚠️ Warning: Could not restore package.json backup"
+    mv package-lock.json.pre-commit-backup package-lock.json 2>/dev/null || echo "⚠️ Warning: Could not restore package-lock.json backup"
     exit 1
 fi
 
@@ -121,8 +129,27 @@ fi
 
 # RESTORE: Put back original package files (don't commit test increments)
 echo "🔄 Restoring original package files (validation complete, don't commit test changes)..."
-mv package.json.pre-commit-backup package.json 2>/dev/null || true
-mv package-lock.json.pre-commit-backup package-lock.json 2>/dev/null || true
+mv package.json.pre-commit-backup package.json || {
+    echo "❌ CRITICAL: Failed to restore package.json from backup"
+    exit 1
+}
+mv package-lock.json.pre-commit-backup package-lock.json || {
+    echo "❌ CRITICAL: Failed to restore package-lock.json from backup"
+    exit 1
+}
+
+# VERIFY: Check that files are actually restored (no modifications in git)
+echo "🔍 Verifying package files are clean (no git modifications)..."
+if git diff --quiet package.json && git diff --quiet package-lock.json; then
+    echo "✅ Package files successfully restored - no git modifications detected"
+else
+    echo "❌ CRITICAL: Package files still modified after restore!"
+    echo "   This means the backup/restore system failed"
+    echo "   Git status shows:"
+    git status --porcelain package.json package-lock.json
+    echo "💡 Run: git restore package.json package-lock.json to fix manually"
+    exit 1
+fi
 
 echo "✅ JTAG debugging system verified - full clean startup + browser connected with live logging"
 
