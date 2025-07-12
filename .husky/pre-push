@@ -2,6 +2,7 @@
 # CONTINUUM PRE-PUSH VALIDATION: STRICT ENFORCEMENT FOR PRODUCTION
 # Once modules graduate, they must remain PERFECT forever
 
+npm run log:git-hook pre-push >/dev/null 2>&1 || true
 printf "\rContinuum Pre-Push Validation - STRICT ENFORCEMENT\n" >&2
 echo "🚀 Production-ready validation - Zero tolerance for regressions"
 echo ""
