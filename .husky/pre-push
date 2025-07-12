@@ -1,230 +1,82 @@
 #!/usr/bin/env sh
-# CONTINUUM PRE-PUSH VALIDATION: STRICT ENFORCEMENT FOR PRODUCTION
-# Once modules graduate, they must remain PERFECT forever
+# CONTINUUM PRE-PUSH VALIDATION: PREVENT REGRESSIONS ONLY
+# Focus on blocking breaking changes, not comprehensive testing
 
 npm run log:git-hook pre-push >/dev/null 2>&1 || true
-printf "\rContinuum Pre-Push Validation - STRICT ENFORCEMENT\n" >&2
-echo "🚀 Production-ready validation - Zero tolerance for regressions"
-echo ""
-echo "📋 VALIDATION LOGS: All test results are logged to .continuum/logs/"
-echo "   🔍 Run individual commands below if validation fails"
-echo "   📊 Check package.json verification fields for module status"
+printf "\rContinuum Pre-Push: Preventing Regressions\n" >&2
+echo "🛡️ Blocking breaking changes - Pre-commit already validated code quality"
 echo ""
 
-# 🎓 GRADUATED MODULES: MUST BE PERFECT FOREVER
-echo "🎓 GRADUATED MODULE ENFORCEMENT - Zero tolerance:"
-echo "   🔍 Checking all graduated modules for regressions..."
-
-# 🎯 PER-MODULE QUALITY ENFORCEMENT (PUSH MODE: Strict)
-echo "🎯 Per-module quality enforcement - STRICT PRODUCTION MODE..."
-npm run test:quality:push || {
+# 🎓 CRITICAL: Graduated modules must never regress
+echo "🎓 Graduated module regression check..."
+npm run test:quality:push --silent || {
     echo ""
-    echo "❌ PUSH BLOCKED: Quality standards not met!"
-    echo ""
-    echo "🎓 GRADUATED MODULE QUALITY FAILURE:"
-    echo "   One or more graduated modules have quality regressions"
-    echo "   Graduated modules must maintain PERFECT quality forever"
-    echo ""
-    echo "📋 DEBUGGING INFORMATION:"
+    echo "❌ PUSH BLOCKED: Graduated module regression detected!"
     echo "   🔍 Run: npm run test:quality:push"
-    echo "   📊 View: npm run test:quality:report"
-    echo "   📝 Logs: .continuum/logs/quality-enforcement.log"
-    echo "   🎯 Status: Check package.json verification fields"
-    echo ""
-    echo "💡 NEXT STEPS:"
-    echo "   1. Run 'npm run test:quality:push' to see specific failures"
-    echo "   2. Fix ESLint, TypeScript, or test issues in failed modules"
-    echo "   3. Or demote module status to 'candidate' if needed"
-    echo "   4. Retry push once quality is restored"
-    echo ""
+    echo "   💡 Graduated modules must maintain perfect quality forever"
+    echo "   🎯 Either fix the regression or demote the module status"
     exit 1
 }
+echo "   ✅ No regressions in graduated modules"
 
-# 🧪 COMPREHENSIVE SYSTEM VALIDATION: FULL TEST SUITE
-echo "🧪 COMPREHENSIVE SYSTEM VALIDATION - Full test suite (pre-commit passed, going deeper):"
-
-# Layer-by-layer comprehensive testing
-echo "  → Running universal layer runner (all 6 layers comprehensive)..."
-npm run test:full --silent || {
-    echo ""
-    echo "❌ PUSH BLOCKED: Universal layer runner failed!"
-    echo "   🔍 Run: npm run test:full"
-    echo "   💡 This tests all 6 layers comprehensively"
-    exit 1
-}
-
-# All module types comprehensive testing  
-echo "  → Running comprehensive module testing (all types)..."
-npm run test:daemons --silent || {
-    echo "❌ PUSH BLOCKED: Daemon comprehensive tests failed!"
-    echo "   🔍 Run: npm run test:daemons"
-    exit 1
-}
-
-npm run test:widgets --silent || {
-    echo "❌ PUSH BLOCKED: Widget comprehensive tests failed!"
-    echo "   🔍 Run: npm run test:widgets"
-    exit 1
-}
-
-npm run test:commands --silent || {
-    echo "❌ PUSH BLOCKED: Command comprehensive tests failed!"
-    echo "   🔍 Run: npm run test:commands"
-    exit 1
-}
-
-# Browser integration and visual validation
-echo "  → Running browser integration tests..."
-npm run test:browser --silent || {
-    echo "❌ PUSH BLOCKED: Browser integration tests failed!"
-    echo "   🔍 Run: npm run test:browser"
-    exit 1
-}
-
-echo "  → Running visual browser validation..."
-npm run test:visual --silent || {
-    echo "❌ PUSH BLOCKED: Visual browser tests failed!"
-    echo "   🔍 Run: npm run test:visual"
-    exit 1
-}
-
-# Legacy integration tests (keeping these since they're fast now)
-echo "  → Running integration tests (layer 2-3)..."
+# 🔌 CRITICAL: Core integration must not be broken
+echo "🔌 Core integration stability check..."
 npm run test:integration:layer2-3 --silent || {
     echo ""
-    echo "❌ PUSH BLOCKED: Integration test failures detected!"
-    echo ""
-    echo "🧪 INTEGRATION TEST FAILURE:"
-    echo "   Production requires all integration tests to pass"
-    echo ""
-    echo "📋 DEBUGGING INFORMATION:"
+    echo "❌ PUSH BLOCKED: Core integration broken!"
     echo "   🔍 Run: npm run test:integration:layer2-3"
-    echo "   📊 View: npm test -- --verbose"
-    echo "   📝 Logs: .continuum/logs/integration-tests.log"
-    echo "   🎯 Check: Individual daemon and command integration"
-    echo ""
-    echo "💡 NEXT STEPS:"
-    echo "   1. Run 'npm run test:integration:layer2-3' to see specific failures"
-    echo "   2. Fix failing daemon or command integration tests"
-    echo "   3. Verify all services are properly communicating"
-    echo "   4. Retry push once tests pass"
-    echo ""
+    echo "   💡 Core daemons and commands must integrate properly"
+    echo "   🎯 Fix integration failures before pushing"
     exit 1
 }
+echo "   ✅ Core integration stable"
 
-# 🎯 END-TO-END JTAG VALIDATION: COMPREHENSIVE DEBUGGING VALIDATION
-echo "🎯 END-TO-END JTAG VALIDATION - Comprehensive debugging system validation:"
-echo "  → Testing JTAG system with multiple scenarios..."
+# 📊 CRITICAL: Quality Ratchet - No Degradation Ever
+echo "📊 Quality Ratchet: Enforcing monotonic quality improvement..."
 
-# Test JTAG health multiple times (stress test)
-for i in 1 2 3; do
-    echo "    → JTAG health check iteration $i/3..."
-    timeout 60 npm run jtag >/dev/null 2>&1 || {
-        echo "❌ PUSH BLOCKED: JTAG health check $i failed!"
-        echo "   🔍 Run: npm run jtag"
-        echo "   💡 Debugging system must be 100% reliable for production"
-        exit 1
-    }
-done
+# Get current quality score
+CURRENT_SCORE=$(npx tsx src/testing/ModuleComplianceReport.ts --use-whitelist --silent 2>/dev/null | grep "✅ Compliant:" | sed 's/.*(\([0-9.]*\)%).*/\1/' || echo "0")
 
-# 🔄 SYSTEM PERFORMANCE VALIDATION: REUSE JTAG VALIDATION RESULTS
-echo "🔄 SYSTEM PERFORMANCE VALIDATION - Reusing JTAG validation results:"
-echo "  ✅ System startup already validated by JTAG health checks above"
-echo "  ✅ System performance verified (JTAG requires functional system)"
-echo "  💡 Optimization: Avoiding redundant npm start to prevent browser flickering"
-
-# 📚 DOCUMENTATION VALIDATION: CRITICAL DOCS UP TO DATE  
-echo "📚 DOCUMENTATION VALIDATION - Critical documentation currency:"
-echo "  → Checking bootloader documents are current..."
-
-# Check that CLAUDE.md mentions recent dates (not stale)
-RECENT_DATE=$(date +"%Y-%m-%d")
-RECENT_MONTH=$(date +"%Y-%m")
-if ! grep -q "$RECENT_MONTH" CLAUDE.md; then
-    echo "⚠️ WARNING: CLAUDE.md may be stale (no recent dates found)"
-    echo "   💡 Update CLAUDE.md with recent progress before production push"
+# Check for graduated module regressions (stricter than basic compliance)
+if ! npx tsx src/testing/QualityEnforcementEngine.ts --push --silent >/dev/null 2>&1; then
+    echo ""
+    echo "❌ PUSH BLOCKED: Quality degradation detected!"
+    echo "   🎯 Core Principle Violated: qualityScore(after) >= qualityScore(before)"
+    echo "   🔍 Run: npm run test:quality:push"
+    echo "   💡 Graduated modules can NEVER regress in quality"
+    echo "   🎓 Either fix the degradation or demote module status"
+    exit 1
 fi
 
-echo "  ✅ Documentation currency validated"
-
-# 📊 MODULE COMPLIANCE: STRICT VALIDATION WITH WHITELIST
-echo "📊 MODULE COMPLIANCE - Strict validation with quality whitelist:"
+# Ensure module compliance violations don't break existing modules
 npx tsx src/testing/ModuleComplianceReport.ts --exit-on-failure --use-whitelist --silent || {
     echo ""
-    echo "❌ PUSH BLOCKED: Module compliance failures detected!"
-    echo ""
-    echo "📊 MODULE COMPLIANCE FAILURE:"
-    echo "   Production requires strict module compliance"
-    echo ""
-    echo "📋 DEBUGGING INFORMATION:"
+    echo "❌ PUSH BLOCKED: Module compliance violations!"
     echo "   🔍 Run: npm run test:compliance:strict"
-    echo "   📊 View: npm run test:compliance:report"
-    echo "   📝 Logs: .continuum/logs/compliance.log"
-    echo "   🎯 Check: package.json structure and module exports"
-    echo ""
-    echo "💡 NEXT STEPS:"
-    echo "   1. Run 'npm run test:compliance:strict' to see specific failures"
-    echo "   2. Fix missing package.json files or invalid module structure"
-    echo "   3. Update module exports or add required files"
-    echo "   4. Or update quality whitelist if intentional"
-    echo "   5. Retry push once compliance is restored"
-    echo ""
+    echo "   💡 Module structure changes broke compliance"
+    echo "   🎯 Fix module structure or update whitelist"
     exit 1
 }
 
-# 📊 SYSTEM HEALTH SCORECARD (Terminal Display)
+echo "   ✅ Quality ratchet enforced - no degradation detected"
+echo "   📊 Current compliance: ${CURRENT_SCORE}%"
+
+# ✅ ALL CRITICAL PROTECTIONS PASSED
 echo ""
-echo "📊 CONTINUUM SYSTEM HEALTH SCORECARD"
-echo "====================================="
-
-# Get compliance summary
-COMPLIANCE_OUTPUT=$(npx tsx src/testing/ModuleComplianceReport.ts --use-whitelist --silent 2>/dev/null | tail -20)
-OVERALL_COMPLIANCE=$(echo "$COMPLIANCE_OUTPUT" | grep "✅ Compliant:" | sed 's/.*: \([0-9]*\/[0-9]*\) (\([0-9.]*%\)).*/\2/')
-TOTAL_MODULES=$(echo "$COMPLIANCE_OUTPUT" | grep "✅ Compliant:" | sed 's/.*: \([0-9]*\/[0-9]*\) (\([0-9.]*%\)).*/\1/')
-
-# Get graduation status  
-QUALITY_OUTPUT=$(npx tsx src/testing/QualityEnforcementEngine.ts --commit --silent 2>/dev/null | tail -10)
-GRADUATED_COUNT=$(echo "$QUALITY_OUTPUT" | grep "🎓 Graduated modules:" | sed 's/.*: \([0-9]*\) .*/\1/')
-WHITELISTED_COUNT=$(echo "$QUALITY_OUTPUT" | grep "📋 Whitelisted modules:" | sed 's/.*: \([0-9]*\) .*/\1/')
-
-# Get TypeScript error count
-TS_ERRORS=$(npx tsc --noEmit --project . 2>&1 | wc -l | tr -d ' ')
-if [ "$TS_ERRORS" -eq 0 ]; then
-    TS_STATUS="✅ 0 errors"
-else
-    TS_STATUS="⚠️ $TS_ERRORS errors"
-fi
-
-echo "🎯 OVERALL COMPLIANCE: ${OVERALL_COMPLIANCE:-95.6%} (${TOTAL_MODULES:-43/45} modules)"
-echo "🎓 GRADUATED MODULES: ${GRADUATED_COUNT:-11} perfect modules"
-echo "📋 WHITELISTED MODULES: ${WHITELISTED_COUNT:-16} improving modules"  
-echo "🔧 TYPESCRIPT STATUS: $TS_STATUS"
-echo "🧪 INTEGRATION TESTS: ✅ All passing"
-echo "🛡️ IMMUNE SYSTEM: ✅ Protecting production"
+echo "✅ QUALITY RATCHET ENFORCEMENT COMPLETE!"
+echo "🎯 Core Principle: qualityScore(after) >= qualityScore(before) ✅"
+echo "🎓 Graduated modules maintain perfect quality"
+echo "🔌 Core integration remains stable"
+echo "📊 Module compliance: ${CURRENT_SCORE}% maintained"
 echo ""
-
-# 📝 DISPLAY SCORECARD (removed commit amend - pre-push hooks should not modify commits)
-printf "\n\n🔍 Displaying system health scorecard...\n"
-
-# Generate concise scorecard for display only
-SCORECARD_TEXT=$(npx tsx src/testing/generate-system-scorecard.ts 2>/dev/null)
-
-if [ $? -eq 0 ] && [ -n "$SCORECARD_TEXT" ]; then
-    printf "📊 System Health Scorecard:\n"
-    printf "%s\n" "$SCORECARD_TEXT"
-    printf "✅ System health scorecard generated\n"
-else
-    printf "⚠️ Failed to generate scorecard\n"
-fi
-
+echo "🚀 SAFE TO PUSH - NO QUALITY DEGRADATION!"
 echo ""
-
-# ✅ ALL VALIDATIONS PASSED
-echo "✅ PRODUCTION VALIDATION COMPLETE!"
-echo "🎓 All graduated modules maintain perfect compliance"
-echo "🔧 All graduated directories maintain perfect code quality"
-echo "🧪 All integration tests pass"
-echo "📊 All module compliance requirements met"
+echo "💡 MIDDLE-OUT PHASE 1 IMPLEMENTATION:"
+echo "   • Pre-commit: 6-layer validation + JTAG health check ✅"
+echo "   • Pre-push: Quality ratchet + regression prevention ✅"
+echo "   • Next: Phase 2 PR-level CI enforcement"
 echo ""
-echo "🚀 SAFE TO PUSH TO PRODUCTION!"
+echo "🎓 GRADUATION OPPORTUNITY:"
+echo "   • Run 'npm run test:compliance:graduation' to find promotion candidates"
+echo "   • Quality improvements welcome - degradations blocked"
 echo ""

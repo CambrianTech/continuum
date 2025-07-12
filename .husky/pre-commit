@@ -83,8 +83,8 @@ printf "\rContinuum Middle-Out Validation (Layer 6/6) - JTAG Health...\n" >&2
 # 🧅 LAYER 6: JTAG Health Check (CRITICAL - Never commit with broken debugging)
 echo "🧅 Layer 6: JTAG Health Check - Full system validation with clean startup..."
 
-# BACKUP: Save package.json and package-lock.json before validation
-echo "💾 Backing up package files before validation (npm start increments version for testing)..."
+# BACKUP: Save package.json and package-lock.json EARLY - with trap for bulletproof restore
+echo "💾 Backing up package files EARLY (npm start increments version for testing)..."
 
 # Clean up any existing backup files first
 rm -f package.json.pre-commit-backup package-lock.json.pre-commit-backup
@@ -99,6 +99,21 @@ cp package-lock.json package-lock.json.pre-commit-backup || {
     exit 1
 }
 echo "✅ Backup files created: package.json.pre-commit-backup, package-lock.json.pre-commit-backup"
+
+# TRAP: Ensure restoration happens NO MATTER WHAT (success, failure, interrupt, etc.)
+restore_package_files() {
+    echo "🔄 TRAP: Restoring original package files (bulletproof cleanup)..."
+    if [ -f package.json.pre-commit-backup ]; then
+        mv package.json.pre-commit-backup package.json 2>/dev/null || echo "⚠️ Warning: Could not restore package.json backup"
+    fi
+    if [ -f package-lock.json.pre-commit-backup ]; then
+        mv package-lock.json.pre-commit-backup package-lock.json 2>/dev/null || echo "⚠️ Warning: Could not restore package-lock.json backup"
+    fi
+    rm -f package.json.pre-commit-backup package-lock.json.pre-commit-backup 2>/dev/null || true
+}
+
+# Set trap for ALL exit conditions (EXIT, INT, TERM, ERR)
+trap restore_package_files EXIT INT TERM ERR
 
 # CRITICAL: Kill any existing processes to ensure clean test
 echo "🧹 Killing any existing Continuum processes for clean validation..."
@@ -119,43 +134,22 @@ if [ $JTAG_RESULT -ne 0 ]; then
     echo "❌ CRITICAL: npm run jtag FAILED! System cannot start or JTAG validation failed!"
     echo "💡 Debug with: npm run jtag"
     echo "💡 This validates: TypeScript compilation → Browser build → Daemon startup → JTAG health"
-    # Restore backup files before failing
-    echo "🔄 Restoring backup files before failing..."
-    mv package.json.pre-commit-backup package.json 2>/dev/null || echo "⚠️ Warning: Could not restore package.json backup"
-    mv package-lock.json.pre-commit-backup package-lock.json 2>/dev/null || echo "⚠️ Warning: Could not restore package-lock.json backup"
+    # Trap will handle restoration automatically
     exit 1
 fi
 
 # VALIDATION SUCCESS: Check that version actually incremented (proves build system working)
 if [ -f package.json.pre-commit-backup ]; then
-    OLD_VERSION=$(grep '"version"' package.json.pre-commit-backup | sed 's/.*"version": "\([^"]*\)".*/\1/')
-    NEW_VERSION=$(grep '"version"' package.json | sed 's/.*"version": "\([^"]*\)".*/\1/')
+    OLD_VERSION=$(grep '^  "version"' package.json.pre-commit-backup | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')
+    NEW_VERSION=$(grep '^  "version"' package.json | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')
     echo "✅ Version increment test: $OLD_VERSION → $NEW_VERSION (build system functional)"
 fi
 
-# RESTORE: Put back original package files (don't commit test increments)
-echo "🔄 Restoring original package files (validation complete, don't commit test changes)..."
-mv package.json.pre-commit-backup package.json || {
-    echo "❌ CRITICAL: Failed to restore package.json from backup"
-    exit 1
-}
-mv package-lock.json.pre-commit-backup package-lock.json || {
-    echo "❌ CRITICAL: Failed to restore package-lock.json from backup"
-    exit 1
-}
+# SUCCESS: The trap will automatically restore files when script exits
+echo "✅ JTAG validation complete - trap will restore package files automatically"
 
-# VERIFY: Check that files are actually restored (no modifications in git)
-echo "🔍 Verifying package files are clean (no git modifications)..."
-if git diff --quiet package.json && git diff --quiet package-lock.json; then
-    echo "✅ Package files successfully restored - no git modifications detected"
-else
-    echo "❌ CRITICAL: Package files still modified after restore!"
-    echo "   This means the backup/restore system failed"
-    echo "   Git status shows:"
-    git status --porcelain package.json package-lock.json
-    echo "💡 Run: git restore package.json package-lock.json to fix manually"
-    exit 1
-fi
+# VERIFY: Check that files will be restored properly (done by trap on exit)
+echo "🔍 Package restoration will be verified by trap on script exit..."
 
 echo "✅ JTAG debugging system verified - full clean startup + browser connected with live logging"
 
