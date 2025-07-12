@@ -1,0 +1,33 @@
+{
+  "name": "@continuum/build-efficiency-monitor",
+  "version": "1.0.0",
+  "description": "Build efficiency monitoring and optimization tracking",
+  "main": "BuildEfficiencyMonitor.ts",
+  "type": "module",
+  "continuum": {
+    "type": "monitoring",
+    "category": "performance",
+    "capabilities": [
+      "build-tracking",
+      "efficiency-analysis",
+      "redundancy-detection",
+      "performance-monitoring"
+    ],
+    "dependencies": [
+      "filesystem",
+      "logging"
+    ]
+  },
+  "scripts": {
+    "test": "echo 'Monitoring module - tests pending'"
+  },
+  "keywords": [
+    "build",
+    "efficiency",
+    "monitoring",
+    "optimization",
+    "performance"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

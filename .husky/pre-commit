@@ -1,4 +1,5 @@
 # MIDDLE-OUT VALIDATION: Test layers from core outward
+npm run log:git-hook pre-commit >/dev/null 2>&1 || true
 printf "\rContinuum Middle-Out Validation (Layer 1/4) - Foundation...\n" >&2
 
 # 🧅 LAYER 1: Core Foundation (TypeScript compilation)
