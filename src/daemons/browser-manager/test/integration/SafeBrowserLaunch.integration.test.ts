@@ -10,7 +10,8 @@
  * This validates the browser management fixes that prevent infinite loops.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, beforeEach, afterEach } from 'node:test';
+import * as assert from 'node:assert';
 import { BrowserManagerDaemon } from '../../BrowserManagerDaemon';
 import { SessionManagerDaemon } from '../../../session-manager/SessionManagerDaemon';
 import * as fs from 'fs/promises';
@@ -104,15 +105,15 @@ describe('Safe Browser Launch Integration', () => {
         context: 'safety-test'
       });
       
-      expect(connectionResult.success).toBe(true);
+      assert.strictEqual(connectionResult.success, true);
       
       // Wait for async browser management
       await new Promise(resolve => setTimeout(resolve, 200));
       
       // Verify all safety checks were performed
-      expect(checks.zombieCleanup).toBe(true);
-      expect(checks.tabCount).toBe(true);
-      expect(checks.existingBrowser).toBe(true);
+      assert.strictEqual(checks.zombieCleanup, true);
+      assert.strictEqual(checks.tabCount, true);
+      assert.strictEqual(checks.existingBrowser, true);
       
       // Restore original methods
       browserManager['performZombieCleanup'] = originalPerformZombieCleanup;
@@ -157,11 +158,11 @@ describe('Safe Browser Launch Integration', () => {
         context: 'existing-tabs-test'
       });
       
-      expect(connectionResult.success).toBe(true);
+      assert.strictEqual(connectionResult.success, true);
       await new Promise(resolve => setTimeout(resolve, 200));
       
       // No browser launch should have been attempted
-      expect(launchAttempted).toBe(false);
+      assert.strictEqual(launchAttempted, false);
     });
 
     it('should NOT launch browser if browser already exists for session (safety check 3)', async () => {
@@ -194,11 +195,11 @@ describe('Safe Browser Launch Integration', () => {
         context: 'existing-browser-test'
       });
       
-      expect(connectionResult.success).toBe(true);
+      assert.strictEqual(connectionResult.success, true);
       await new Promise(resolve => setTimeout(resolve, 200));
       
       // No browser launch should have been attempted
-      expect(launchAttempted).toBe(false);
+      assert.strictEqual(launchAttempted, false);
     });
   });
 
@@ -225,12 +226,12 @@ describe('Safe Browser Launch Integration', () => {
         context: 'event-driven-test'
       });
       
-      expect(connectionResult.success).toBe(true);
+      assert.strictEqual(connectionResult.success, true);
       await new Promise(resolve => setTimeout(resolve, 100));
       
       // Verify event was handled with safe launch
-      expect(sessionCreatedHandled).toBe(true);
-      expect(safetyChecksPerformed).toBe(1);
+      assert.strictEqual(sessionCreatedHandled, true);
+      assert.strictEqual(safetyChecksPerformed, 1);
       
       // Restore original method
       browserManager['safelyLaunchBrowserForSession'] = originalSafeLaunch;
@@ -248,7 +249,7 @@ describe('Safe Browser Launch Integration', () => {
         capabilities: ['browser'],
         context: 'join-test'
       });
-      expect(firstResult.success).toBe(true);
+      assert.strictEqual(firstResult.success, true);
       
       // Mock the existence checker to track calls
       const originalEnsure = browserManager['ensureBrowserExistsForSession'];
@@ -267,13 +268,13 @@ describe('Safe Browser Launch Integration', () => {
         context: 'join-test'
       });
       
-      expect(joinResult.success).toBe(true);
-      expect(joinResult.data.action).toBe('joined_existing');
+      assert.strictEqual(joinResult.success, true);
+      assert.strictEqual(joinResult.data.action, 'joined_existing');
       await new Promise(resolve => setTimeout(resolve, 100));
       
       // Verify event was handled with existence check
-      expect(sessionJoinedHandled).toBe(true);
-      expect(existenceChecksPerformed).toBe(1);
+      assert.strictEqual(sessionJoinedHandled, true);
+      assert.strictEqual(existenceChecksPerformed, 1);
       
       // Restore original method
       browserManager['ensureBrowserExistsForSession'] = originalEnsure;
@@ -324,12 +325,12 @@ describe('Safe Browser Launch Integration', () => {
       
       // All should succeed
       results.forEach(result => {
-        expect(result.success).toBe(true);
+        assert.strictEqual(result.success, true);
       });
       
       // Should have controlled number of calls (not runaway)
-      expect(totalLaunchAttempts).toBeLessThanOrEqual(2); // At most 1-2 launch attempts
-      expect(totalExistenceChecks).toBeLessThanOrEqual(10); // Reasonable number of checks
+      assert.ok(totalLaunchAttempts <= 2, 'At most 1-2 launch attempts');
+      assert.ok(totalExistenceChecks <= 10, 'Reasonable number of checks');
       
       // Restore original methods
       browserManager['safelyLaunchBrowserForSession'] = originalSafeLaunch;
@@ -357,7 +358,7 @@ describe('Safe Browser Launch Integration', () => {
         capabilities: ['browser'],
         context: 'dev-test'
       });
-      expect(devResult.success).toBe(true);
+      assert.strictEqual(devResult.success, true);
       
       // Create test session (might not need browser based on logic)
       const testResult = await sessionManager.handleConnect({
@@ -368,12 +369,12 @@ describe('Safe Browser Launch Integration', () => {
         capabilities: ['browser'],
         context: 'test-session'
       });
-      expect(testResult.success).toBe(true);
+      assert.strictEqual(testResult.success, true);
       
       await new Promise(resolve => setTimeout(resolve, 200));
       
       // Should have launched browser for development session
-      expect(browserLaunchCount).toBeGreaterThan(0);
+      assert.ok(browserLaunchCount > 0, 'Browser should be launched');
       
       // Restore original method
       browserManager['safelyLaunchBrowserForSession'] = originalSafeLaunch;
@@ -408,11 +409,11 @@ describe('Safe Browser Launch Integration', () => {
         context: 'existing-tab-test'
       });
       
-      expect(result.success).toBe(true);
+      assert.strictEqual(result.success, true);
       await new Promise(resolve => setTimeout(resolve, 100));
       
       // Should have called ensure method
-      expect(ensureCalled).toBe(true);
+      assert.strictEqual(ensureCalled, true);
       
       // Restore original method
       browserManager['ensureBrowserExistsForSession'] = originalEnsure;

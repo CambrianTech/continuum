@@ -362,6 +362,12 @@ export const DEFAULT_QUALITY_CONFIGS: Record<ModuleGraduationStatus, ModuleQuali
       vulnerabilityScan: true,
       secretsScan: true,
       maxSeverity: 'low'
+    },
+    performance: {
+      required: true,
+      maxBuildTime: 30000,
+      maxBundleSize: 1000000,
+      memoryLeakDetection: true
     }
   },
   
@@ -382,7 +388,32 @@ export const DEFAULT_QUALITY_CONFIGS: Record<ModuleGraduationStatus, ModuleQuali
     },
     compliance: {
       required: true,
-      minimumScore: 70
+      minimumScore: 70,
+      structure: {
+        packageJson: true,
+        readme: false,
+        mainFile: true,
+        testDirectory: true,
+        typeDefinitions: false
+      }
+    },
+    documentation: {
+      required: false,
+      files: [],
+      apiDocs: false,
+      examples: false
+    },
+    security: {
+      auditRequired: false,
+      vulnerabilityScan: false,
+      secretsScan: false,
+      maxSeverity: 'medium'
+    },
+    performance: {
+      required: false,
+      maxBuildTime: 60000,
+      maxBundleSize: 2000000,
+      memoryLeakDetection: false
     }
   },
   

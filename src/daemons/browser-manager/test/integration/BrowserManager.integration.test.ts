@@ -170,6 +170,7 @@ describe('Browser Manager Integration Tests', () => {
       // Mock tab adapter to return 0 tabs (should trigger launch)
       (daemon as any).tabAdapter = {
         countTabs: async () => 0,
+        refreshTab: async () => true,
         constructor: { name: 'MockAdapter' }
       };
       
@@ -205,6 +206,7 @@ describe('Browser Manager Integration Tests', () => {
       // Mock tab adapter to return existing tabs
       (daemon as any).tabAdapter = {
         countTabs: async () => 2, // Existing tabs found
+        refreshTab: async () => true,
         constructor: { name: 'MockAdapter' }
       };
       
@@ -232,6 +234,7 @@ describe('Browser Manager Integration Tests', () => {
       // Mock tab adapter to return multiple tabs (triggers zombie cleanup)
       (daemon as any).tabAdapter = {
         countTabs: async () => 3, // Multiple tabs found
+        refreshTab: async () => true,
         constructor: { name: 'MockAdapter' }
       };
       
@@ -269,6 +272,7 @@ describe('Browser Manager Integration Tests', () => {
       // Mock tab adapter to return multiple tabs
       (daemon as any).tabAdapter = {
         countTabs: async () => mockTabs.length,
+        refreshTab: async () => true,
         constructor: { name: 'MockAdapter' }
       };
       
@@ -341,6 +345,7 @@ describe('Browser Manager Integration Tests', () => {
       
       (daemon as any).tabAdapter = {
         countTabs: async () => 3,
+        refreshTab: async () => true,
         constructor: { name: 'MockAdapter' }
       };
       
@@ -372,6 +377,7 @@ describe('Browser Manager Integration Tests', () => {
       
       (daemon as any).tabAdapter = {
         countTabs: async () => 0, // No tabs, will launch
+        refreshTab: async () => true,
         constructor: { name: 'MockAdapter' }
       };
       

@@ -8,12 +8,15 @@ import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import type { DaemonMessage, DaemonResponse} from './DaemonProtocol';
-import { LogEntry } from '../../types/shared/WebSocketCommunication';
+import type { LogEntry } from '../../types/shared/WebSocketCommunication';
 import { DaemonStatus } from './DaemonProtocol';
 import type { DaemonType } from './DaemonTypes';
 
 // Global daemon registry for inter-daemon communication
 export const DAEMON_REGISTRY = new Map<string, BaseDaemon>();
+
+// Increase process max listeners to handle multiple daemons in tests
+process.setMaxListeners(50);
 
 export abstract class BaseDaemon extends EventEmitter {
   public abstract readonly name: string;
