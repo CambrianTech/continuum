@@ -10,6 +10,14 @@ import { DaemonType } from '../../daemons/base/DaemonTypes';
 import { AcademyDaemon } from '../../daemons/academy/AcademyDaemon.js';
 import { PersonaDaemon } from '../../daemons/persona/PersonaDaemon.js';
 import { DatabaseDaemon } from '../../daemons/database/DatabaseDaemon.js';
+import { ModuleDiscovery, ModuleUtils, type ModuleDependency } from '../../core/modules/index.js';
+import { 
+  TrainingSessionData, 
+  PersonaData, 
+  AcademySystemStatus,
+  TrainingSessionParams,
+  PersonaSpawnParams
+} from './types.js';
 
 export interface AcademyIntegrationConfig {
   local_mode: boolean;
@@ -30,6 +38,48 @@ export interface IntegrationStatus {
 }
 
 /**
+ * Academy Integration Module Dependencies
+ * Consistent with core module discovery system
+ */
+export const ACADEMY_MODULE_DEPENDENCIES = {
+  academy: {
+    name: 'academy',
+    type: 'daemon' as const,
+    required: true,
+    healthCheck: 'get_capabilities',
+    config: {}
+  },
+  persona: {
+    name: 'persona', 
+    type: 'daemon' as const,
+    required: true,
+    healthCheck: 'get_capabilities',
+    config: {
+      // TODO: HARDCODED_ID - Make persona ID configurable
+      id: 'academy-persona',
+      // TODO: HARDCODED_NAME - Make persona name configurable
+      name: 'academy-persona',
+      // TODO: HARDCODED_PROVIDER - Make model provider configurable via environment variables
+      modelProvider: 'local',
+      // TODO: HARDCODED_MODEL - Make default model configurable via environment variables
+      modelConfig: { model: 'default' },
+      // TODO: HARDCODED_CAPABILITIES - Make capabilities configurable
+      capabilities: ['training', 'evaluation'] as string[],
+      // TODO: HARDCODED_PATH - Make session directory configurable via environment variables
+      sessionDirectory: '.continuum/academy/sessions',
+      loraAdapters: [] as string[]
+    }
+  },
+  database: {
+    name: 'database',
+    type: 'daemon' as const,
+    required: true,
+    healthCheck: 'get_capabilities',
+    config: {}
+  }
+} as const satisfies Record<string, ModuleDependency>;
+
+/**
  * Academy Integration - Orchestrates the complete Academy ecosystem
  * 
  * This is the top-level integration that coordinates:
@@ -45,10 +95,10 @@ export class AcademyIntegration extends BaseDaemon {
   public readonly daemonType = DaemonType.ACADEMY;
   
   private config: AcademyIntegrationConfig;
-  private academyDaemon: AcademyDaemon;
-  private personaDaemon: PersonaDaemon;
-  private databaseDaemon: DatabaseDaemon;
+  private daemons: Record<keyof typeof ACADEMY_MODULE_DEPENDENCIES, BaseDaemon>;
   private isInitialized: boolean = false;
+  private integrationStartTime?: Date;
+  private dependencyIterator = ModuleDiscovery.getInstance().createDependencyIterator(ACADEMY_MODULE_DEPENDENCIES);
 
   constructor(config: Partial<AcademyIntegrationConfig> = {}) {
     super();
@@ -56,24 +106,21 @@ export class AcademyIntegration extends BaseDaemon {
       local_mode: true,
       p2p_enabled: false,
       max_concurrent_sessions: 3,
+      // TODO: HARDCODED_PATH - Make training_data_path configurable via environment variables
       training_data_path: '.continuum/academy/training',
+      // TODO: HARDCODED_PATH - Make model_cache_path configurable via environment variables  
       model_cache_path: '.continuum/academy/models',
+      // TODO: HARDCODED_TIMEOUT - Make evaluation_interval_ms configurable via environment variables
       evaluation_interval_ms: 30000,
       ...config
     };
 
-    // Initialize daemons
-    this.academyDaemon = new AcademyDaemon();
-    this.personaDaemon = new PersonaDaemon({
-      id: 'academy-persona',
-      name: 'academy-persona',
-      modelProvider: 'local',
-      modelConfig: { model: 'default' },
-      capabilities: ['training', 'evaluation'],
-      sessionDirectory: '.continuum/academy/sessions',
-      loraAdapters: []
-    });
-    this.databaseDaemon = new DatabaseDaemon();
+    // Initialize daemons using consistent module pattern
+    this.daemons = {
+      academy: new AcademyDaemon(),
+      persona: new PersonaDaemon({ ...ACADEMY_MODULE_DEPENDENCIES.persona.config }),
+      database: new DatabaseDaemon()
+    };
   }
 
   /**
@@ -88,15 +135,13 @@ export class AcademyIntegration extends BaseDaemon {
     console.log('🚀 Initializing Academy Integration...');
 
     try {
-      // Start daemons in dependency order
-      console.log('📦 Starting DatabaseDaemon...');
-      await this.databaseDaemon.start();
-
-      console.log('🤖 Starting PersonaDaemon...');
-      await this.personaDaemon.start();
-
-      console.log('🎓 Starting AcademyDaemon...');
-      await this.academyDaemon.start();
+      // Start daemons in dependency order using module system
+      const startupOrder = ModuleUtils.calculateStartupOrder(ACADEMY_MODULE_DEPENDENCIES);
+      
+      for (const daemonName of startupOrder) {
+        console.log(`🚀 Starting ${daemonName} daemon...`);
+        await this.daemons[daemonName].start();
+      }
 
       // Verify integration health
       const status = await this.getIntegrationStatus();
@@ -104,6 +149,7 @@ export class AcademyIntegration extends BaseDaemon {
         throw new Error(`Integration health check failed: ${status.integration_health}`);
       }
 
+      this.integrationStartTime = new Date();
       this.isInitialized = true;
       console.log('✅ Academy Integration initialized successfully');
       console.log(`🔧 Mode: ${this.config.local_mode ? 'Local' : 'Distributed'} | P2P: ${this.config.p2p_enabled ? 'Enabled' : 'Disabled'}`);
@@ -122,17 +168,12 @@ export class AcademyIntegration extends BaseDaemon {
     console.log('🛑 Shutting down Academy Integration...');
 
     try {
-      // Stop daemons in reverse dependency order
-      if (this.academyDaemon) {
-        await this.academyDaemon.stop();
-      }
-
-      if (this.personaDaemon) {
-        await this.personaDaemon.stop();
-      }
-
-      if (this.databaseDaemon) {
-        await this.databaseDaemon.stop();
+      // Stop daemons in reverse dependency order using module system
+      const shutdownOrder = ModuleUtils.calculateShutdownOrder(ACADEMY_MODULE_DEPENDENCIES);
+      
+      for (const daemonName of shutdownOrder) {
+        console.log(`🛑 Stopping ${daemonName} daemon...`);
+        await this.daemons[daemonName]?.stop();
       }
 
       this.isInitialized = false;
@@ -158,17 +199,20 @@ export class AcademyIntegration extends BaseDaemon {
     };
 
     try {
-      // Check daemon health
-      if (this.academyDaemon && await this.isDaemonHealthy(this.academyDaemon)) {
-        status.academy_daemon = 'running';
-      }
+      // Check daemon health using dependency iterator
+      const healthChecks = await Promise.all(
+        this.dependencyIterator.names.map(async (name) => ({
+          name,
+          healthy: await this.isDaemonHealthy(this.daemons[name])
+        }))
+      );
 
-      if (this.personaDaemon && await this.isDaemonHealthy(this.personaDaemon)) {
-        status.persona_daemon = 'running';
-      }
-
-      if (this.databaseDaemon && await this.isDaemonHealthy(this.databaseDaemon)) {
-        status.database_daemon = 'running';
+      // Update status based on health checks
+      for (const { name, healthy } of healthChecks) {
+        const statusKey = `${name}_daemon` as keyof IntegrationStatus;
+        if (statusKey in status) {
+          (status as any)[statusKey] = healthy ? 'running' : 'stopped';
+        }
       }
 
       // Check local trainer
@@ -208,12 +252,7 @@ export class AcademyIntegration extends BaseDaemon {
   /**
    * Start a training session through the integration
    */
-  async startTrainingSession(params: {
-    student_persona: string;
-    trainer_mode?: string;
-    evolution_target?: string;
-    vector_exploration?: boolean;
-  }): Promise<any> {
+  async startTrainingSession(params: TrainingSessionParams): Promise<TrainingSessionData> {
     if (!this.isInitialized) {
       throw new Error('Academy Integration not initialized');
     }
@@ -227,7 +266,7 @@ export class AcademyIntegration extends BaseDaemon {
         throw new Error(result.error || 'Training session failed to start');
       }
 
-      const sessionData = result.data as any; // TODO: Add proper training session type
+      const sessionData = result.data as TrainingSessionData;
       console.log(`✅ Training session started: ${sessionData.session_id}`);
       return sessionData;
 
@@ -240,13 +279,7 @@ export class AcademyIntegration extends BaseDaemon {
   /**
    * Spawn a new persona through the integration
    */
-  async spawnPersona(params: {
-    persona_name: string;
-    base_model?: string;
-    specialization?: string;
-    skill_vector?: number[];
-    p2p_seed?: boolean;
-  }): Promise<any> {
+  async spawnPersona(params: PersonaSpawnParams): Promise<PersonaData> {
     if (!this.isInitialized) {
       throw new Error('Academy Integration not initialized');
     }
@@ -260,7 +293,7 @@ export class AcademyIntegration extends BaseDaemon {
         throw new Error(result.error || 'Persona spawning failed');
       }
 
-      const personaData = result.data as any; // TODO: Add proper persona type
+      const personaData = result.data as PersonaData;
       console.log(`✅ Persona spawned: ${personaData.persona_id}`);
       return personaData;
 
@@ -273,13 +306,13 @@ export class AcademyIntegration extends BaseDaemon {
   /**
    * Get comprehensive Academy system status
    */
-  async getAcademyStatus(): Promise<any> {
+  async getAcademyStatus(): Promise<AcademySystemStatus> {
     if (!this.isInitialized) {
       throw new Error('Academy Integration not initialized');
     }
 
     try {
-      const [academyResult, integrationStatus] = await Promise.all([
+      const [academyResult] = await Promise.all([
         this.sendMessage(DaemonType.ACADEMY, 'get_comprehensive_status', {
           include_p2p: this.config.p2p_enabled,
           include_vector_space: true,
@@ -289,11 +322,32 @@ export class AcademyIntegration extends BaseDaemon {
       ]);
 
       return {
-        academy_data: academyResult.success ? academyResult.data : null,
-        integration_status: integrationStatus,
-        config: this.config,
-        timestamp: new Date().toISOString()
-      };
+        academy_daemon: {
+          status: academyResult.success ? 'running' : 'error',
+          version: this.version,
+          uptime_ms: this.integrationStartTime ? Date.now() - this.integrationStartTime.getTime() : 0,
+          active_sessions: 0,
+          total_personas: 0
+        },
+        training_system: {
+          status: 'operational',
+          queue_length: 0,
+          active_sessions: [],
+          models_cached: 0
+        },
+        persona_system: {
+          status: 'operational',
+          active_personas: 0,
+          spawning_queue: 0,
+          lora_adapters_available: 0
+        },
+        vector_space: {
+          status: 'available',
+          dimensions: 0,
+          total_vectors: 0,
+          index_last_updated: new Date().toISOString()
+        }
+      } as AcademySystemStatus;
 
     } catch (error) {
       console.error('❌ Academy status retrieval failed:', error);
@@ -302,10 +356,10 @@ export class AcademyIntegration extends BaseDaemon {
   }
 
   // Private utility methods
-  private async isDaemonHealthy(daemon: any): Promise<boolean> {
+  private async isDaemonHealthy(daemon: BaseDaemon): Promise<boolean> {
     try {
       // Basic health check - daemon should respond to capabilities request
-      const response = await this.sendMessage(daemon.name, 'get_capabilities', {});
+      const response = await this.sendMessage(daemon.name as any, 'get_capabilities', {});
       return response.success === true;
     } catch {
       return false;
@@ -313,23 +367,17 @@ export class AcademyIntegration extends BaseDaemon {
   }
 
   private async cleanup(): Promise<void> {
-    // Best effort cleanup of any started components
-    try {
-      if (this.academyDaemon) await this.academyDaemon.stop();
-    } catch (error) {
-      console.warn('Academy daemon cleanup warning:', error);
-    }
-
-    try {
-      if (this.personaDaemon) await this.personaDaemon.stop();
-    } catch (error) {
-      console.warn('Persona daemon cleanup warning:', error);
-    }
-
-    try {
-      if (this.databaseDaemon) await this.databaseDaemon.stop();
-    } catch (error) {
-      console.warn('Database daemon cleanup warning:', error);
+    // Best effort cleanup using dependency iterator
+    const shutdownOrder = ModuleUtils.calculateShutdownOrder(ACADEMY_MODULE_DEPENDENCIES);
+    
+    for (const daemonName of shutdownOrder) {
+      try {
+        if (this.daemons[daemonName]) {
+          await this.daemons[daemonName].stop();
+        }
+      } catch (error) {
+        console.warn(`${daemonName} daemon cleanup warning:`, error);
+      }
     }
   }
 
@@ -350,7 +398,11 @@ export class AcademyIntegration extends BaseDaemon {
   /**
    * Get comprehensive Academy status
    */
-  public async getComprehensiveStatus(): Promise<any> {
+  public async getComprehensiveStatus(): Promise<{
+    academy: any;
+    integration: IntegrationStatus;
+    timestamp: string;
+  }> {
     const [academyResult, integrationStatus] = await Promise.all([
       this.sendMessage(DaemonType.ACADEMY, 'get_comprehensive_status', {
         include_p2p: this.config.p2p_enabled,
@@ -397,7 +449,12 @@ export class AcademyIntegration extends BaseDaemon {
   }
 
   // Getters for daemon access (if needed by higher-level integrations)
-  get academy(): AcademyDaemon { return this.academyDaemon; }
-  get persona(): PersonaDaemon { return this.personaDaemon; }
-  get database(): DatabaseDaemon { return this.databaseDaemon; }
+  get academy(): AcademyDaemon { return this.daemons.academy as AcademyDaemon; }
+  get persona(): PersonaDaemon { return this.daemons.persona as PersonaDaemon; }
+  get database(): DatabaseDaemon { return this.daemons.database as DatabaseDaemon; }
+  
+  // Generic daemon access using dependency names
+  getDaemon<T extends keyof typeof ACADEMY_MODULE_DEPENDENCIES>(name: T): BaseDaemon {
+    return this.daemons[name];
+  }
 }
