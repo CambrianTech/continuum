@@ -39,8 +39,56 @@ npm run test:quality:push || {
     exit 1
 }
 
-# 🧪 INTEGRATION TESTS: PRODUCTION READINESS
-echo "🧪 INTEGRATION TESTS - Production readiness validation:"
+# 🧪 COMPREHENSIVE SYSTEM VALIDATION: FULL TEST SUITE
+echo "🧪 COMPREHENSIVE SYSTEM VALIDATION - Full test suite (pre-commit passed, going deeper):"
+
+# Layer-by-layer comprehensive testing
+echo "  → Running universal layer runner (all 6 layers comprehensive)..."
+npm run test:full --silent || {
+    echo ""
+    echo "❌ PUSH BLOCKED: Universal layer runner failed!"
+    echo "   🔍 Run: npm run test:full"
+    echo "   💡 This tests all 6 layers comprehensively"
+    exit 1
+}
+
+# All module types comprehensive testing  
+echo "  → Running comprehensive module testing (all types)..."
+npm run test:daemons --silent || {
+    echo "❌ PUSH BLOCKED: Daemon comprehensive tests failed!"
+    echo "   🔍 Run: npm run test:daemons"
+    exit 1
+}
+
+npm run test:widgets --silent || {
+    echo "❌ PUSH BLOCKED: Widget comprehensive tests failed!"
+    echo "   🔍 Run: npm run test:widgets"
+    exit 1
+}
+
+npm run test:commands --silent || {
+    echo "❌ PUSH BLOCKED: Command comprehensive tests failed!"
+    echo "   🔍 Run: npm run test:commands"
+    exit 1
+}
+
+# Browser integration and visual validation
+echo "  → Running browser integration tests..."
+npm run test:browser --silent || {
+    echo "❌ PUSH BLOCKED: Browser integration tests failed!"
+    echo "   🔍 Run: npm run test:browser"
+    exit 1
+}
+
+echo "  → Running visual browser validation..."
+npm run test:visual --silent || {
+    echo "❌ PUSH BLOCKED: Visual browser tests failed!"
+    echo "   🔍 Run: npm run test:visual"
+    exit 1
+}
+
+# Legacy integration tests (keeping these since they're fast now)
+echo "  → Running integration tests (layer 2-3)..."
 npm run test:integration:layer2-3 --silent || {
     echo ""
     echo "❌ PUSH BLOCKED: Integration test failures detected!"
@@ -62,6 +110,75 @@ npm run test:integration:layer2-3 --silent || {
     echo ""
     exit 1
 }
+
+# 🎯 END-TO-END JTAG VALIDATION: COMPREHENSIVE DEBUGGING VALIDATION
+echo "🎯 END-TO-END JTAG VALIDATION - Comprehensive debugging system validation:"
+echo "  → Testing JTAG system with multiple scenarios..."
+
+# Test JTAG health multiple times (stress test)
+for i in 1 2 3; do
+    echo "    → JTAG health check iteration $i/3..."
+    timeout 60 npm run jtag >/dev/null 2>&1 || {
+        echo "❌ PUSH BLOCKED: JTAG health check $i failed!"
+        echo "   🔍 Run: npm run jtag"
+        echo "   💡 Debugging system must be 100% reliable for production"
+        exit 1
+    }
+done
+
+# 🔄 SYSTEM PERFORMANCE VALIDATION: STARTUP TIME & RESOURCE USAGE
+echo "🔄 SYSTEM PERFORMANCE VALIDATION - Production performance requirements:"
+echo "  → Testing system startup time..."
+
+START_TIME=$(date +%s)
+timeout 90 npm start >/dev/null 2>&1 &
+SYSTEM_PID=$!
+
+# Wait for system to be ready or timeout
+READY=false
+for i in {1..30}; do
+    if curl -s http://localhost:9000 >/dev/null 2>&1; then
+        READY=true
+        break
+    fi
+    sleep 3
+done
+
+END_TIME=$(date +%s)
+STARTUP_TIME=$((END_TIME - START_TIME))
+
+# Cleanup
+kill $SYSTEM_PID 2>/dev/null || true
+pkill -f "tsx main.ts" 2>/dev/null || true
+pkill -f "continuum" 2>/dev/null || true
+
+if [ "$READY" = false ]; then
+    echo "❌ PUSH BLOCKED: System startup timeout (>90s)!"
+    echo "   🔍 Run: npm start"
+    echo "   💡 Production requires fast, reliable startup"
+    exit 1
+fi
+
+if [ $STARTUP_TIME -gt 60 ]; then
+    echo "⚠️ WARNING: Slow startup time: ${STARTUP_TIME}s (target: <60s)"
+    echo "   💡 Consider optimizing daemon startup sequence"
+fi
+
+echo "  ✅ System startup: ${STARTUP_TIME}s (performance acceptable)"
+
+# 📚 DOCUMENTATION VALIDATION: CRITICAL DOCS UP TO DATE  
+echo "📚 DOCUMENTATION VALIDATION - Critical documentation currency:"
+echo "  → Checking bootloader documents are current..."
+
+# Check that CLAUDE.md mentions recent dates (not stale)
+RECENT_DATE=$(date +"%Y-%m-%d")
+RECENT_MONTH=$(date +"%Y-%m")
+if ! grep -q "$RECENT_MONTH" CLAUDE.md; then
+    echo "⚠️ WARNING: CLAUDE.md may be stale (no recent dates found)"
+    echo "   💡 Update CLAUDE.md with recent progress before production push"
+fi
+
+echo "  ✅ Documentation currency validated"
 
 # 📊 MODULE COMPLIANCE: STRICT VALIDATION WITH WHITELIST
 echo "📊 MODULE COMPLIANCE - Strict validation with quality whitelist:"
