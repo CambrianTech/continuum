@@ -4,6 +4,7 @@
  */
 
 import { ContinuumBrowserClient } from './ContinuumBrowserClient';
+import { WidgetServerControls } from '../components/shared/WidgetServerControls';
 
 // Trigger widget discovery plugin to automatically import all widgets
 import 'widget-discovery';
@@ -14,7 +15,11 @@ const continuum = new ContinuumBrowserClient();
 // Expose as the ONLY global
 (window as any).continuum = continuum;
 
+// Expose WidgetServerControls for dynamic widget-server integration
+(window as any).WidgetServerControls = WidgetServerControls;
+
 console.log('🌐 Continuum Browser Client: Single global instance created');
+console.log('🎮 Widget Server Controls: Dynamic command discovery system initialized');
 
 export default continuum;
 export { ContinuumBrowserClient };

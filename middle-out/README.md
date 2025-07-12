@@ -20,6 +20,10 @@ This directory contains the complete architectural documentation for Continuum's
 - **[quality-ratchet-architecture.md](development/quality-ratchet-architecture.md)** - **🎯 Quality Ratchet System - Zero degradation quality enforcement for PR-level CI**
 - **[middle-out-cycle.md](development/middle-out-cycle.md)** - The development cycle and implementation phases
 - **[npm-intelligence-patterns.md](development/npm-intelligence-patterns.md)** - **⚡ NPM Intelligence Patterns - Work with the tooling, not against it**
+- **[TECHNICAL_DEBT.md](development/TECHNICAL_DEBT.md)** - **🚨 Technical debt registry with "if you see something, say something" protocol**
+- **[DECLUTTERING_PROTOCOL.md](development/DECLUTTERING_PROTOCOL.md)** - **🧹 Root directory cleanup and "nothing goes in root" enforcement**
+- **[FEATURE_PRESERVATION_PROTOCOL.md](development/FEATURE_PRESERVATION_PROTOCOL.md)** - **🔒 IP preservation protocol: "rewrite, never discard" with zero IP loss**
+- **[LOST_AND_FOUND.md](development/LOST_AND_FOUND.md)** - **🏺 Archaeological IP recovery system with revolutionary discoveries**
 - **[error-fixing.md](development/error-fixing.md)** - Systematic error fixing methodology (coming soon)
 - **[widget-architecture.md](development/widget-architecture.md)** - Widget system breakthrough patterns (coming soon)
 

@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2681",
+  "version": "0.2.2686",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -74,7 +74,7 @@
     "test:coverage:js": "jest --coverage --config __tests__/config/jest.config.cjs",
     "test:coverage:python": "cd __tests__ && python3 -m pytest --cov=../src --cov=../python-client/continuum_client --cov-report=html --cov-report=term -c config/pytest.ini",
     "log:npm-start": "npx tsx src/monitoring/build-logger.ts npm-start",
-    "log:build": "npx tsx src/monitoring/build-logger.ts build", 
+    "log:build": "npx tsx src/monitoring/build-logger.ts build",
     "log:git-hook": "npx tsx src/monitoring/build-logger.ts git-hook",
     "log:browser": "npx tsx src/monitoring/build-logger.ts browser",
     "log:show": "npx tsx src/monitoring/build-logger.ts show",
