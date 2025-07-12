@@ -37,45 +37,41 @@ export class CommandDiscovery {
    */
   async getAvailableCommands(options: CommandDiscoveryOptions = {}): Promise<string[]> {
     const commandModules = await this.moduleDiscovery.discoverModules('command');
-    
     const allCommands: CommandMetadata[] = [];
     
-    // Process each command category module
     for (const module of commandModules) {
       if (!module.hasPackageJson) continue;
       
-      // First, try to extract direct commands from the category module
+      // Extract direct commands and sub-commands
       const directCommand = this.extractCommandMetadata(module);
-      if (directCommand) {
-        allCommands.push(directCommand);
-      }
+      if (directCommand) allCommands.push(directCommand);
       
-      // Then, scan for individual command modules within the category
       const subCommands = await this.extractSubCommands(module);
       allCommands.push(...subCommands);
     }
 
-    // Apply filters
-    let filteredCommands = allCommands;
+    // Apply filters and cache
+    const filteredCommands = this.applyFilters(allCommands, options);
+    filteredCommands.forEach(cmd => this.commandCache.set(cmd.name, cmd));
+
+    return filteredCommands.map(cmd => cmd.name).sort();
+  }
+
+  /**
+   * Apply filters to command list
+   */
+  private applyFilters(commands: CommandMetadata[], options: CommandDiscoveryOptions): CommandMetadata[] {
+    let filtered = commands;
     
     if (options.categoryFilter?.length) {
-      filteredCommands = filteredCommands.filter(cmd => 
-        options.categoryFilter!.includes(cmd.category)
-      );
+      filtered = filtered.filter(cmd => options.categoryFilter!.includes(cmd.category));
     }
 
     if (options.typeFilter?.length) {
-      filteredCommands = filteredCommands.filter(cmd => 
-        options.typeFilter!.includes(cmd.type)
-      );
+      filtered = filtered.filter(cmd => options.typeFilter!.includes(cmd.type));
     }
 
-    // Cache the results
-    for (const command of filteredCommands) {
-      this.commandCache.set(command.name, command);
-    }
-
-    return filteredCommands.map(cmd => cmd.name).sort();
+    return filtered;
   }
 
   /**
@@ -163,43 +159,33 @@ export class CommandDiscovery {
     if (!fs.existsSync(categoryModule.path)) return [];
     
     const subCommands: CommandMetadata[] = [];
+    const entries = fs.readdirSync(categoryModule.path, { withFileTypes: true });
     
-    try {
-      const entries = fs.readdirSync(categoryModule.path, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
       
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
+      const subPath = path.join(categoryModule.path, entry.name);
+      const packageJsonPath = path.join(subPath, 'package.json');
+      
+      if (!fs.existsSync(packageJsonPath)) continue;
+      
+      try {
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+        const subModule: ModuleInfo = {
+          name: entry.name,
+          path: subPath,
+          type: 'command',
+          hasPackageJson: true,
+          hasMainFile: await this.checkForMainFile(subPath, entry.name),
+          hasTestDir: fs.existsSync(path.join(subPath, 'test')),
+          packageData: packageJson
+        };
         
-        const subPath = path.join(categoryModule.path, entry.name);
-        const packageJsonPath = path.join(subPath, 'package.json');
-        
-        if (!fs.existsSync(packageJsonPath)) continue;
-        
-        try {
-          const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-          
-          // Create a synthetic module info for the subcommand
-          const subModule: ModuleInfo = {
-            name: entry.name,
-            path: subPath,
-            type: 'command',
-            hasPackageJson: true,
-            hasMainFile: this.checkForMainFile(subPath, entry.name),
-            hasTestDir: fs.existsSync(path.join(subPath, 'test')),
-            packageData: packageJson
-          };
-          
-          const commandMetadata = this.extractCommandMetadata(subModule, categoryModule.packageData?.continuum?.category);
-          if (commandMetadata) {
-            subCommands.push(commandMetadata);
-          }
-        } catch (error) {
-          // Skip malformed package.json files
-          continue;
-        }
+        const metadata = this.extractCommandMetadata(subModule, categoryModule.packageData?.continuum?.category);
+        if (metadata) subCommands.push(metadata);
+      } catch {
+        // Skip malformed modules
       }
-    } catch (error) {
-      // Skip directories we can't read
     }
     
     return subCommands;
@@ -208,9 +194,9 @@ export class CommandDiscovery {
   /**
    * Check if a sub-command directory has a main file
    */
-  private checkForMainFile(subPath: string, commandName: string): boolean {
-    const fs = require('fs');
-    const path = require('path');
+  private async checkForMainFile(subPath: string, commandName: string): Promise<boolean> {
+    const fs = await import('fs');
+    const path = await import('path');
     
     const possibleFiles = [
       `${commandName}Command.ts`,
@@ -246,9 +232,13 @@ export class CommandDiscovery {
       commandName = continuum.core;
     } else if (Array.isArray(continuum.commands) && continuum.commands.length > 0) {
       commandName = continuum.commands[0]; // Use first command name
-    } else {
-      // For sub-commands, use the directory name as command name
+    } else if (parentCategory) {
+      // For sub-commands, use the directory name as command name (this is the leaf command)
       commandName = module.name;
+    } else {
+      // For category-level modules without explicit command name, skip them
+      // We only want the leaf commands, not the category containers
+      return null;
     }
 
     if (!commandName) return null;
