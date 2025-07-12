@@ -21,6 +21,10 @@ This directory contains the complete development methodology documentation for b
 - **[lora-training-signals.md](lora-training-signals.md)** - Progressive curriculum and feedback patterns for Academy AI training
 
 ### **🛠️ Implementation Guides**
+- **[TECHNICAL_DEBT.md](TECHNICAL_DEBT.md)** - **🚨 Technical debt registry with "if you see something, say something" protocol**
+- **[DECLUTTERING_PROTOCOL.md](DECLUTTERING_PROTOCOL.md)** - **🧹 Root directory cleanup and "nothing goes in root" enforcement**
+- **[FEATURE_PRESERVATION_PROTOCOL.md](FEATURE_PRESERVATION_PROTOCOL.md)** - **🔒 IP preservation protocol: "rewrite, never discard" with zero IP loss**
+- **[LOST_AND_FOUND.md](LOST_AND_FOUND.md)** - **🏺 Archaeological IP recovery system with revolutionary discoveries**
 - **[error-fixing.md](error-fixing.md)** - Systematic error fixing methodology (coming soon)
 - **[widget-architecture.md](widget-architecture.md)** - Widget system breakthrough patterns (coming soon)
 

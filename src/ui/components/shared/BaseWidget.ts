@@ -4,6 +4,18 @@
  */
 
 import { globalErrorHandler, captureError } from '../../continuum-browser-client/error/GlobalErrorHandler';
+import {
+  WidgetDataRequest,
+  WidgetDataResponse,
+  WidgetCommandRequest,
+  WidgetCommandResponse,
+  SessionCreatedEvent,
+  SessionJoinedEvent,
+  HealthUpdatedEvent,
+  DataUpdatedEvent,
+  DataSourceType,
+  WidgetCapabilities
+} from '../../../types/shared/WidgetServerTypes';
 
 // Smart asset manifest (zero 404s!) - globally available via esbuild plugin
 declare global {
@@ -260,7 +272,188 @@ export abstract class BaseWidget extends HTMLElement {
    * Initialize widget - override for custom initialization
    */
   protected async initializeWidget(): Promise<void> {
+    // Setup server event listeners
+    this.setupServerEventListeners();
+    
     // Override in child classes for custom initialization
+  }
+
+  /**
+   * Setup server event listeners - automatically called during initialization
+   */
+  private setupServerEventListeners(): void {
+    // Listen for server events
+    this.addEventListener('server:session-created', (event: Event) => {
+      const customEvent = event as CustomEvent;
+      this.onServerSessionCreated(customEvent.detail);
+    });
+
+    this.addEventListener('server:session-joined', (event: Event) => {
+      const customEvent = event as CustomEvent;
+      this.onServerSessionJoined(customEvent.detail);
+    });
+
+    this.addEventListener('server:health-updated', (event: Event) => {
+      const customEvent = event as CustomEvent;
+      this.onServerHealthUpdated(customEvent.detail);
+    });
+
+    this.addEventListener('server:data-updated', (event: Event) => {
+      const customEvent = event as CustomEvent;
+      this.onServerDataUpdated(customEvent.detail);
+    });
+
+    // Listen for data responses from server
+    this.addEventListener('widget:data-received', (event: Event) => {
+      const customEvent = event as CustomEvent;
+      this.onDataReceived(customEvent.detail);
+    });
+
+    this.addEventListener('widget:command-complete', (event: Event) => {
+      const customEvent = event as CustomEvent;
+      this.onCommandComplete(customEvent.detail);
+    });
+  }
+
+  /**
+   * Called when a new session is created on the server
+   * Override in child classes to respond to session events
+   */
+  protected onServerSessionCreated(event: SessionCreatedEvent): void {
+    console.log(`🎛️ ${this.widgetName}: Session created [${event.sessionType}]`, {
+      owner: event.owner,
+      capabilities: event.capabilities
+    });
+  }
+
+  /**
+   * Called when a session is joined on the server
+   * Override in child classes to respond to session events
+   */
+  protected onServerSessionJoined(event: SessionJoinedEvent): void {
+    console.log(`🎛️ ${this.widgetName}: Session joined [${event.sessionType}]`, {
+      joinedBy: event.joinedBy,
+      userCount: event.userCount
+    });
+  }
+
+  /**
+   * Called when server health status is updated
+   * Override in child classes to respond to health changes
+   */
+  protected onServerHealthUpdated(event: HealthUpdatedEvent): void {
+    console.log(`🎛️ ${this.widgetName}: Health updated [${event.health.overall}]`, {
+      score: event.health.score,
+      changedComponents: event.changedComponents
+    });
+  }
+
+  /**
+   * Called when server data is updated
+   * Override in child classes to respond to data changes
+   */
+  protected onServerDataUpdated(event: DataUpdatedEvent): void {
+    console.log(`🎛️ ${this.widgetName}: Data updated [${event.dataSource}]`, {
+      updateType: event.updateType,
+      affectedItems: event.affectedItems.length
+    });
+    
+    // Auto-refresh if this widget is interested in updated data
+    if (this.shouldAutoRefreshOnDataUpdate(event)) {
+      this.update();
+    }
+  }
+
+  /**
+   * Called when server data is received from fetchServerData()
+   * Override in child classes to handle data responses
+   */
+  protected onDataReceived(response: WidgetDataResponse): void {
+    if (response.success && response.data) {
+      console.log(`🎛️ ${this.widgetName}: Data received [${response.dataSource}]`, {
+        itemCount: response.metadata?.totalCount,
+        fromCache: response.metadata?.fromCache
+      });
+      this.processServerData(response.dataSource, response.data);
+    } else {
+      console.error(`🎛️ ${this.widgetName}: Data fetch failed [${response.dataSource}]`, response.error);
+      this.onDataFetchError(response.dataSource, response.error || 'Unknown error');
+    }
+  }
+
+  /**
+   * Called when server command completes from executeServerCommand()
+   * Override in child classes to handle command responses
+   */
+  protected onCommandComplete(response: WidgetCommandResponse): void {
+    if (response.success && response.result) {
+      console.log(`🎛️ ${this.widgetName}: Command completed [${response.command}]`, {
+        executionTime: response.executionTime
+      });
+      this.processCommandResult(response.command, response.result);
+    } else {
+      console.error(`🎛️ ${this.widgetName}: Command failed [${response.command}]`, response.error);
+      this.onCommandError(response.command, response.error || 'Unknown error');
+    }
+  }
+
+  /**
+   * Override to determine if widget should auto-refresh when data changes
+   * Uses strongly typed event data to make informed decisions
+   */
+  protected shouldAutoRefreshOnDataUpdate(_event: DataUpdatedEvent): boolean {
+    // Default: no auto-refresh, widgets opt-in by overriding this method
+    // Example: return event.dataSource === 'personas' && event.updateType !== 'deleted';
+    return false;
+  }
+
+  /**
+   * Override to process received server data
+   * Type-safe processing with known data source types
+   */
+  protected processServerData(dataSource: DataSourceType, data: unknown): void {
+    // Default: log data received - widgets should override to actually use the data
+    console.log(`🎛️ ${this.widgetName}: Received ${dataSource} data - override processServerData() to use it`, data);
+  }
+
+  /**
+   * Override to process command results
+   * Type-safe command result processing
+   */
+  protected processCommandResult(command: string, result: unknown): void {
+    // Default: log command result - widgets should override to actually use the result
+    console.log(`🎛️ ${this.widgetName}: Command ${command} result - override processCommandResult() to use it`, result);
+  }
+
+  /**
+   * Override to handle data fetch errors
+   * Type-safe error handling with data source context
+   */
+  protected onDataFetchError(dataSource: DataSourceType, error: string): void {
+    console.warn(`🎛️ ${this.widgetName}: Data fetch error [${dataSource}] - override onDataFetchError() to handle gracefully`, error);
+  }
+
+  /**
+   * Override to handle command errors
+   * Type-safe command error handling
+   */
+  protected onCommandError(command: string, error: string): void {
+    console.warn(`🎛️ ${this.widgetName}: Command ${command} error - override onCommandError() to handle gracefully`, error);
+  }
+
+  /**
+   * Get widget capabilities - override to declare what this widget can do
+   * This enables the system to route events and validate permissions properly
+   */
+  protected getWidgetCapabilities(): WidgetCapabilities {
+    return {
+      canFetchData: [], // Override with DataSourceType[] that this widget needs
+      canExecuteCommands: [], // Override with command names this widget uses  
+      respondsToEvents: [], // Override with server event types this widget cares about
+      supportsExport: [], // Override with export formats this widget supports
+      requiresAuth: false, // Override if this widget needs authentication
+      updateFrequency: 'manual' // Override with 'realtime', 'periodic', or 'manual'
+    };
   }
 
   disconnectedCallback() {
@@ -491,6 +684,36 @@ export abstract class BaseWidget extends HTMLElement {
   protected triggerValidate(options: any = {}): void {
     this.dispatchEvent(new CustomEvent('widget:validate', {
       detail: options,
+      bubbles: true
+    }));
+  }
+
+  /**
+   * Fetch data from server (strongly typed server control event)
+   */
+  protected fetchServerData(dataSource: DataSourceType, requestOptions: Partial<WidgetDataRequest> = {}): void {
+    const request: WidgetDataRequest = {
+      dataSource,
+      ...requestOptions // Elegant spread - merge optional params, filters, etc.
+    };
+    
+    this.dispatchEvent(new CustomEvent('widget:fetch-data', {
+      detail: request,
+      bubbles: true
+    }));
+  }
+
+  /**
+   * Execute server command (strongly typed server control event)
+   */
+  protected executeServerCommand(command: string, requestOptions: Partial<WidgetCommandRequest> = {}): void {
+    const request: WidgetCommandRequest = {
+      command,
+      ...requestOptions // Elegant spread - merge timeout, priority, params, etc.
+    };
+    
+    this.dispatchEvent(new CustomEvent('widget:execute-command', {
+      detail: request,
       bubbles: true
     }));
   }
