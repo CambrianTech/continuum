@@ -150,68 +150,20 @@ export class CommandDiscovery {
   }
 
   /**
-   * Extract sub-commands from a command category module
+   * Extract sub-commands using npm/package.json intelligence
    */
   private async extractSubCommands(categoryModule: ModuleInfo): Promise<CommandMetadata[]> {
-    const fs = await import('fs');
-    const path = await import('path');
+    // Let the core module discovery system handle the heavy lifting
+    // We just need to filter the results for commands within this category
+    const allCommandModules = await this.moduleDiscovery.discoverModules('command');
     
-    if (!fs.existsSync(categoryModule.path)) return [];
-    
-    const subCommands: CommandMetadata[] = [];
-    const entries = fs.readdirSync(categoryModule.path, { withFileTypes: true });
-    
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      
-      const subPath = path.join(categoryModule.path, entry.name);
-      const packageJsonPath = path.join(subPath, 'package.json');
-      
-      if (!fs.existsSync(packageJsonPath)) continue;
-      
-      try {
-        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-        const subModule: ModuleInfo = {
-          name: entry.name,
-          path: subPath,
-          type: 'command',
-          hasPackageJson: true,
-          hasMainFile: await this.checkForMainFile(subPath, entry.name),
-          hasTestDir: fs.existsSync(path.join(subPath, 'test')),
-          packageData: packageJson
-        };
-        
-        const metadata = this.extractCommandMetadata(subModule, categoryModule.packageData?.continuum?.category);
-        if (metadata) subCommands.push(metadata);
-      } catch {
-        // Skip malformed modules
-      }
-    }
-    
-    return subCommands;
-  }
-
-  /**
-   * Check if a sub-command directory has a main file
-   */
-  private async checkForMainFile(subPath: string, commandName: string): Promise<boolean> {
-    const fs = await import('fs');
-    const path = await import('path');
-    
-    const possibleFiles = [
-      `${commandName}Command.ts`,
-      `${commandName.charAt(0).toUpperCase() + commandName.slice(1)}Command.ts`,
-      `${commandName}.ts`,
-      'index.ts'
-    ];
-    
-    for (const fileName of possibleFiles) {
-      if (fs.existsSync(path.join(subPath, fileName))) {
-        return true;
-      }
-    }
-    
-    return false;
+    return allCommandModules
+      .filter(module => 
+        module.path.startsWith(categoryModule.path + '/') && 
+        module.path !== categoryModule.path
+      )
+      .map(module => this.extractCommandMetadata(module, categoryModule.packageData?.continuum?.category))
+      .filter(Boolean) as CommandMetadata[];
   }
 
   /**
