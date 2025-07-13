@@ -177,30 +177,34 @@ export class ScreenshotCommand extends RemoteCommand {
   protected static async executeOnClient(request: RemoteExecutionRequest): Promise<RemoteExecutionResponse> {
     console.log(`🖼️ SCREENSHOT: Executing on client with params:`, request.params);
     
-    const options = this.parseParams<ScreenshotParams>(request.params);
-    
-    // Default parameters for elegant API
-    const {
-      selector = 'body',
-      filename,
-      subdirectory,
-      name_prefix = 'screenshot',
-      scale = 2.0,
-      source = 'unknown',
-      destination = ScreenshotDestination.FILE
-    } = options;
-    
-    // Infer format from filename extension
-    const format = this.getFormatFromFilename(filename, name_prefix);
-    
-    console.log(`📸 SCREENSHOT Command: ${source} requesting ${selector} -> ${destination} (${name_prefix})`);
-    
-    // Generate filename/id for tracking
-    const timestamp = Date.now();
-    const generatedFilename = this.generateFilename(filename, subdirectory, name_prefix, format, destination, timestamp);
-    
-    // Browser-side screenshot execution using html2canvas
     try {
+      const options = this.parseParams<ScreenshotParams>(request.params);
+      console.log(`🔍 SCREENSHOT: Parsed options:`, options);
+      
+      // Default parameters for elegant API
+      const {
+        selector = 'body',
+        filename,
+        subdirectory,
+        name_prefix = 'screenshot',
+        scale = 2.0,
+        source = 'unknown',
+        destination = ScreenshotDestination.FILE
+      } = options;
+      
+      console.log(`🔍 SCREENSHOT: Destructured params:`, { 
+        selector, filename, subdirectory, name_prefix, scale, source, destination 
+      });
+      
+      // Infer format from filename extension
+      const format = this.getFormatFromFilename(filename, name_prefix);
+      
+      console.log(`📸 SCREENSHOT Command: ${source} requesting ${selector} -> ${destination} (${name_prefix})`);
+      
+      // Generate filename/id for tracking
+      const timestamp = Date.now();
+      const generatedFilename = this.generateFilename(filename, subdirectory, name_prefix, format, destination, timestamp);
+      
       // This runs in the browser context
       const element = document.querySelector(selector) as HTMLElement;
       if (!element) {
@@ -244,9 +248,10 @@ export class ScreenshotCommand extends RemoteCommand {
       };
       
     } catch (error) {
+      console.error(`🔍 SCREENSHOT: Error in execution:`, error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: `Screenshot execution failed: ${error instanceof Error ? error.message : String(error)}`,
         clientMetadata: {
           userAgent: navigator.userAgent,
           timestamp: Date.now(),
@@ -346,7 +351,12 @@ export class ScreenshotCommand extends RemoteCommand {
    */
   private static getFormatFromFilename(filename?: string, name_prefix?: string): ScreenshotFormat {
     const targetFilename = filename || `${name_prefix || 'screenshot'}.png`;
-    const extension = path.extname(targetFilename).toLowerCase().replace('.', '');
+    console.log('🔍 getFormatFromFilename:', { filename, name_prefix, targetFilename });
+    
+    const extname = path.extname(targetFilename);
+    console.log('🔍 path.extname result:', { extname, targetFilename });
+    
+    const extension = extname.toLowerCase().replace('.', '');
     
     switch (extension) {
       case 'jpg':
