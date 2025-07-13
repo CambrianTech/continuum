@@ -1,0 +1,48 @@
+{
+  "defaultRooms": [
+    {
+      "id": "general",
+      "name": "General Chat",
+      "type": "chat",
+      "description": "Main chat room for general conversation",
+      "autoCreated": true,
+      "metadata": {
+        "default": true,
+        "category": "public"
+      }
+    },
+    {
+      "id": "development",
+      "name": "Development",
+      "type": "collaboration",
+      "description": "Collaboration space for development discussions",
+      "autoCreated": true,
+      "metadata": {
+        "default": true,
+        "category": "work"
+      }
+    },
+    {
+      "id": "academy",
+      "name": "Academy AI Training",
+      "type": "collaboration",
+      "description": "AI training and academy-related discussions",
+      "autoCreated": true,
+      "metadata": {
+        "default": true,
+        "category": "education"
+      }
+    },
+    {
+      "id": "support",
+      "name": "Support & Help",
+      "type": "system",
+      "description": "Get help and support for using the system",
+      "autoCreated": true,
+      "metadata": {
+        "default": true,
+        "category": "help"
+      }
+    }
+  ]
+}

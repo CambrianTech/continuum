@@ -15,14 +15,19 @@
 import { BaseCommand } from '../base-command/BaseCommand';
 import { CommandResult } from '../../../types/CommandTypes';
 import { COMMAND_CATEGORIES } from '../../../types/shared/CommandTypes';
+import {
+  DataMarshalOperation,
+  DataMarshalEncoding,
+  CommandSource
+} from '../../../types/shared/CommandOperationTypes';
 
 export interface DataMarshalOptions {
-  operation: 'encode' | 'decode' | 'chain' | 'extract';
+  operation: DataMarshalOperation;
   data?: any;
-  encoding?: 'base64' | 'json' | 'raw';
+  encoding?: DataMarshalEncoding;
   correlationId?: string;
-  source?: string;
-  destination?: string;
+  source?: CommandSource;
+  destination?: CommandSource;
   metadata?: Record<string, any>;
 }
 

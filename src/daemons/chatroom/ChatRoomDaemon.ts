@@ -50,39 +50,21 @@
 
 import { RequestResponseDaemon, RequestHandlerMap } from '../base/RequestResponseDaemon';
 import { DaemonType } from '../base/DaemonTypes';
-
-// ChatRoom types and interfaces
-interface ChatRoom {
-  id: string;
-  name: string;
-  type: 'chat' | 'collaboration' | 'system';
-  participants: Set<string>;
-  created_at: Date;
-  created_by: string;
-  metadata: Record<string, any>;
-}
-
-interface ChatMessage {
-  id: string;
-  room_id: string;
-  sender_id: string;
-  content: string;
-  timestamp: Date;
-  message_type: 'text' | 'system' | 'command';
-  metadata: Record<string, any>;
-}
-
-interface RoomParticipant {
-  user_id: string;
-  session_id: string;
-  joined_at: Date;
-  role: 'participant' | 'moderator' | 'owner';
-  status: 'online' | 'away' | 'offline';
-}
+import {
+  ChatRoom,
+  ChatMessage,
+  ChatParticipant,
+  ChatRoomType,
+  MessageType,
+  ParticipantRole,
+  ParticipantStatus
+} from '../../types/shared/ChatRoomTypes';
+import { CommandOperation, getChatRoomOperations } from '../../types/shared/CommandOperationTypes';
+import { loadDefaultRoomsConfig } from './DefaultRoomsConfig';
 
 export class ChatRoomDaemon extends RequestResponseDaemon {
   private rooms: Map<string, ChatRoom> = new Map();
-  private participants: Map<string, Set<RoomParticipant>> = new Map();
+  private participants: Map<string, Set<ChatParticipant>> = new Map();
   private messageHistory: Map<string, ChatMessage[]> = new Map();
 
   public readonly name = 'chatroom';
@@ -98,16 +80,33 @@ export class ChatRoomDaemon extends RequestResponseDaemon {
   }
 
   protected defineRequestHandlers(): RequestHandlerMap {
-    return {
-      'create_room': this.handleCreateRoom.bind(this),
-      'join_room': this.handleJoinRoom.bind(this),
-      'leave_room': this.handleLeaveRoom.bind(this),
-      'send_message': this.handleSendMessage.bind(this),
-      'get_messages': this.handleGetMessages.bind(this),
-      'list_rooms': this.handleListRooms.bind(this),
-      'get_room_info': this.handleGetRoomInfo.bind(this),
-      'delete_room': this.handleDeleteRoom.bind(this)
+    // Create handler map by iterating over ChatRoom operations from the single CommandOperation enum
+    const handlers: RequestHandlerMap = {};
+    
+    // Map each ChatRoom operation to its corresponding handler method
+    const methodMap: Record<string, any> = {
+      [CommandOperation.CREATE_ROOM]: this.handleCreateRoom.bind(this),
+      [CommandOperation.JOIN_ROOM]: this.handleJoinRoom.bind(this),
+      [CommandOperation.LEAVE_ROOM]: this.handleLeaveRoom.bind(this),
+      [CommandOperation.SEND_MESSAGE]: this.handleSendMessage.bind(this),
+      [CommandOperation.GET_MESSAGES]: this.handleGetMessages.bind(this),
+      [CommandOperation.LIST_ROOMS]: this.handleListRooms.bind(this),
+      [CommandOperation.GET_ROOM_INFO]: this.handleGetRoomInfo.bind(this),
+      [CommandOperation.DELETE_ROOM]: this.handleDeleteRoom.bind(this)
     };
+    
+    // Dynamically register all ChatRoom operations using the helper function
+    for (const operation of getChatRoomOperations()) {
+      const handler = methodMap[operation];
+      if (handler) {
+        handlers[operation] = handler;
+      } else {
+        this.log(`⚠️ No handler found for ChatRoom operation: ${operation}`, 'warn');
+      }
+    }
+    
+    this.log(`🔧 Registered ${Object.keys(handlers).length} ChatRoom operation handlers from single CommandOperation enum`);
+    return handlers;
   }
 
   private async handleCreateRoom(params: any): Promise<any> {
@@ -134,8 +133,8 @@ export class ChatRoomDaemon extends RequestResponseDaemon {
       user_id: created_by,
       session_id: params.session_id || 'unknown',
       joined_at: new Date(),
-      role: 'owner',
-      status: 'online'
+      role: ParticipantRole.OWNER,
+      status: ParticipantStatus.ONLINE
     }]));
     this.messageHistory.set(roomId, []);
 
@@ -166,8 +165,8 @@ export class ChatRoomDaemon extends RequestResponseDaemon {
       user_id,
       session_id: session_id || 'unknown',
       joined_at: new Date(),
-      role: 'participant',
-      status: 'online'
+      role: ParticipantRole.MEMBER,
+      status: ParticipantStatus.ONLINE
     });
     this.participants.set(room_id, roomParticipants);
 
@@ -210,15 +209,39 @@ export class ChatRoomDaemon extends RequestResponseDaemon {
   }
 
   private async handleSendMessage(params: any): Promise<any> {
-    const { room_id, sender_id, content, message_type = 'text', metadata = {} } = params;
+    const { room_id, sender_id, content, message_type = MessageType.TEXT, metadata = {} } = params;
     
     const room = this.rooms.get(room_id);
     if (!room) {
       throw new Error(`Room ${room_id} not found`);
     }
 
+    // Auto-join user to room if not already a participant (smart daemon logic)
     if (!room.participants.has(sender_id)) {
-      throw new Error(`User ${sender_id} is not a participant in room ${room_id}`);
+      // Check if this is a default/public room that allows auto-joining
+      const isAutoJoinRoom = room.metadata?.default === true || 
+                            room.metadata?.autoCreated === true ||
+                            room.metadata?.category === 'public';
+      
+      if (isAutoJoinRoom) {
+        this.log(`🔧 Auto-joining user ${sender_id} to ${room.name} (${room_id}) for message sending`);
+        
+        try {
+          // Auto-join the user to the room
+          await this.handleJoinRoom({ 
+            room_id, 
+            user_id: sender_id,
+            session_id: params.session_id || 'auto-join'
+          });
+          this.log(`✅ Auto-joined user ${sender_id} to room ${room.name}`);
+        } catch (joinError) {
+          this.log(`❌ Failed to auto-join user ${sender_id} to room ${room.name}: ${joinError}`);
+          throw new Error(`User ${sender_id} is not a participant in room ${room_id} and auto-join failed`);
+        }
+      } else {
+        // Private/restricted room - require explicit join
+        throw new Error(`User ${sender_id} is not a participant in room ${room_id}. Private rooms require explicit joining.`);
+      }
     }
 
     const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -336,18 +359,187 @@ export class ChatRoomDaemon extends RequestResponseDaemon {
   protected async onStart(): Promise<void> {
     this.log('📋 Starting ChatRoom Daemon...');
     
+    // Register to listen for chatroom requests
+    const { DAEMON_EVENT_BUS } = await import('../base/DaemonEventBus');
+    DAEMON_EVENT_BUS.on('chatroom_request', this.handleChatRoomRequest.bind(this));
+    this.log('🔌 Registered for chatroom_request events');
+    
+    // Create default rooms for immediate use
+    await this.createDefaultRooms();
+    
     // TODO: Load existing rooms from DatabaseDaemon
     // const existingRooms = await this.delegateToDatabaseDaemon('load_rooms');
     
     this.log('✅ ChatRoom Daemon ready for chat and room management');
   }
 
+  /**
+   * Create default rooms that are always available
+   * Loads room specifications from JSON configuration for easy editing
+   */
+  private async createDefaultRooms(): Promise<void> {
+    try {
+      const defaultRoomSpecs = await loadDefaultRoomsConfig();
+      this.log(`🏠 Loading ${defaultRoomSpecs.length} default rooms from configuration`);
+
+      for (const roomSpec of defaultRoomSpecs) {
+        try {
+          const room: ChatRoom = {
+            id: roomSpec.id,
+            name: roomSpec.name,
+            type: roomSpec.type as ChatRoomType,
+            participants: new Set(['system']),
+            created_at: new Date(),
+            created_by: 'system',
+            metadata: { 
+              default: true, 
+              autoCreated: roomSpec.autoCreated || true,
+              description: roomSpec.description,
+              ...roomSpec.metadata 
+            }
+          };
+
+          this.rooms.set(roomSpec.id, room);
+          this.participants.set(roomSpec.id, new Set([{
+            user_id: 'system',
+            session_id: 'system',
+            joined_at: new Date(),
+            role: ParticipantRole.OWNER,
+            status: ParticipantStatus.ONLINE
+          }]));
+          this.messageHistory.set(roomSpec.id, []);
+
+          this.log(`🏠 Created default room: ${roomSpec.name} (${roomSpec.id})`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          this.log(`❌ Failed to create default room ${roomSpec.id}: ${errorMessage}`, 'error');
+        }
+      }
+
+      this.log(`🏠 Created ${defaultRoomSpecs.length} default chat rooms from JSON configuration`);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Failed to load default rooms configuration: ${errorMessage}`, 'error');
+      
+      // Create minimal fallback room if configuration loading fails
+      const fallbackRoom: ChatRoom = {
+        id: 'general',
+        name: 'General Chat',
+        type: ChatRoomType.CHAT,
+        participants: new Set(['system']),
+        created_at: new Date(),
+        created_by: 'system',
+        metadata: { default: true, autoCreated: true, fallback: true }
+      };
+      
+      this.rooms.set('general', fallbackRoom);
+      this.participants.set('general', new Set([{
+        user_id: 'system',
+        session_id: 'system',
+        joined_at: new Date(),
+        role: ParticipantRole.OWNER,
+        status: ParticipantStatus.ONLINE
+      }]));
+      this.messageHistory.set('general', []);
+      
+      this.log('🏠 Created fallback general room due to configuration error');
+    }
+  }
+
+  /**
+   * Handle chatroom requests from the event bus
+   */
+  private async handleChatRoomRequest(request: any): Promise<void> {
+    try {
+      this.log(`📩 Received chatroom request: ${request.operation} (${request.correlationId})`);
+      
+      const handlers = this.getRequestHandlers();
+      const handler = handlers[request.operation];
+      
+      if (!handler) {
+        const availableOps = Object.keys(handlers).join(', ');
+        const errorResponse = {
+          correlationId: request.correlationId,
+          success: false,
+          error: `Unknown operation: ${request.operation}. Available: ${availableOps}`,
+          timestamp: Date.now()
+        };
+        
+        const { DAEMON_EVENT_BUS } = await import('../base/DaemonEventBus');
+        DAEMON_EVENT_BUS.emit('chatroom_response', errorResponse);
+        return;
+      }
+
+      // Execute the handler with the request data
+      const result = await handler(request.data);
+      
+      // Format response with correlation ID and timestamp
+      const response = {
+        correlationId: request.correlationId,
+        success: result.success || true,
+        data: result.success === false ? undefined : result,
+        error: result.success === false ? result.error : undefined,
+        timestamp: Date.now()
+      };
+      
+      this.log(`📤 Sending chatroom response: ${request.operation} (${request.correlationId})`);
+      
+      // Emit response back to the event bus
+      const { DAEMON_EVENT_BUS } = await import('../base/DaemonEventBus');
+      DAEMON_EVENT_BUS.emit('chatroom_response', response);
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Error handling chatroom request: ${errorMessage}`, 'error');
+      
+      // Send error response
+      const errorResponse = {
+        correlationId: request.correlationId,
+        success: false,
+        error: errorMessage,
+        timestamp: Date.now()
+      };
+      
+      const { DAEMON_EVENT_BUS } = await import('../base/DaemonEventBus');
+      DAEMON_EVENT_BUS.emit('chatroom_response', errorResponse);
+    }
+  }
+
   protected async onStop(): Promise<void> {
     this.log('🛑 Stopping ChatRoom Daemon...');
+    
+    // Unregister from event bus
+    const { DAEMON_EVENT_BUS } = await import('../base/DaemonEventBus');
+    DAEMON_EVENT_BUS.off('chatroom_request', this.handleChatRoomRequest.bind(this));
+    this.log('🔌 Unregistered from chatroom_request events');
     
     // TODO: Save current state to DatabaseDaemon
     // await this.delegateToDatabaseDaemon('save_all_rooms', Array.from(this.rooms.values()));
     
     this.log('✅ ChatRoom Daemon stopped');
   }
+}
+
+// Main entry point for standalone execution
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const daemon = new ChatRoomDaemon();
+  
+  // Handle graceful shutdown
+  process.on('SIGTERM', async () => {
+    console.log('Received SIGTERM, shutting down gracefully...');
+    await daemon.stop();
+    process.exit(0);
+  });
+  
+  process.on('SIGINT', async () => {
+    console.log('Received SIGINT, shutting down gracefully...');
+    await daemon.stop();
+    process.exit(0);
+  });
+  
+  // Start the daemon
+  daemon.start().catch(error => {
+    console.error('Failed to start ChatRoom Daemon:', error);
+    process.exit(1);
+  });
 }

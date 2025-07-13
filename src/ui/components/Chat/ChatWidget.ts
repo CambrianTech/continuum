@@ -5,6 +5,10 @@
 
 import { BaseWidget } from '../shared/BaseWidget';
 import { universalUserSystem } from '../shared/UniversalUserSystem';
+import { roomDataManager, RoomData, RoomChangeEvent } from '../shared/RoomDataManager';
+import { 
+  ChatEventsConfig
+} from '../shared/ChatEventTypes';
 
 interface Message {
   id: string;
@@ -31,8 +35,9 @@ export class ChatWidget extends BaseWidget {
   private messages: Message[] = [];
   private isTyping: boolean = false;
   private messageIdCounter: number = 0;
-  private currentRoomId: string = 'general';
+  private currentRoom: RoomData | null = null; // Now using complete room data instead of just ID
   private isLoadingHistory: boolean = false;
+  private chatEventsConfig: ChatEventsConfig | null = null; // Loaded from JSON
 
 
   constructor() {
@@ -48,25 +53,83 @@ export class ChatWidget extends BaseWidget {
 
 
   protected async initializeWidget(): Promise<void> {
+    await this.initializeRoomDataManager();
+    await this.loadChatEventsConfig();
     await this.initializeChat();
     this.setupContinuumListeners();
     this.setupServerControlListeners();
     this.setupUniversalUserSystem();
+    this.setupRoomDataListeners();
+  }
+
+  private async initializeRoomDataManager(): Promise<void> {
+    console.log('💬 Chat: Initializing room data manager...');
+    
+    // Initialize room data manager if not already done
+    await roomDataManager.initialize();
+    
+    // Set initial room (either current room or default)
+    if (!this.currentRoom) {
+      this.currentRoom = roomDataManager.getCurrentRoom() || roomDataManager.getRoom('general');
+      if (!this.currentRoom) {
+        console.warn('💬 Chat: No rooms available, will show placeholder');
+      }
+    }
+  }
+
+  private async loadChatEventsConfig(): Promise<void> {
+    try {
+      console.log('💬 Chat: Loading chat events configuration...');
+      
+      const response = await fetch('/src/ui/components/shared/chat-events-config.json');
+      if (!response.ok) {
+        throw new Error(`Failed to load chat events config: ${response.status}`);
+      }
+      
+      this.chatEventsConfig = await response.json() as ChatEventsConfig;
+      console.log('💬 Chat: Chat events configuration loaded');
+      
+    } catch (error) {
+      console.warn('💬 Chat: Failed to load chat events config, using defaults:', error);
+      // Minimal fallback config
+      this.chatEventsConfig = {
+        chatEvents: {
+          message_received: { handler: 'handleIncomingMessage', description: 'New message' },
+          agent_typing: { handler: 'setTypingIndicator', handlerArgs: [true], description: 'Typing' },
+          agent_stop_typing: { handler: 'setTypingIndicator', handlerArgs: [false], description: 'Stop typing' }
+        },
+        globalEvents: {},
+        messageTypes: {
+          user: { icon: '👤', className: 'user-message', showAvatar: true, allowEdit: true },
+          assistant: { icon: '🤖', className: 'assistant-message', showAvatar: true, allowEdit: false },
+          system: { icon: 'ℹ️', className: 'system-message', showAvatar: false, allowEdit: false }
+        },
+        messageStatuses: {
+          sending: { icon: '⏳', className: 'status-sending', description: 'Sending...' },
+          sent: { icon: '✓', className: 'status-sent', description: 'Sent' },
+          error: { icon: '❌', className: 'status-error', description: 'Failed' }
+        }
+      };
+    }
   }
 
   private async initializeChat(): Promise<void> {
-    console.log(`💬 Chat: Initializing chat for room: ${this.currentRoomId}`);
+    const roomInfo = this.currentRoom ? `${this.currentRoom.name} (${this.currentRoom.type})` : 'unknown room';
+    console.log(`💬 Chat: Initializing chat for room: ${roomInfo}`);
     
     // Load history in background - don't block initialization
     this.loadRoomHistory().catch(error => {
       console.warn(`💬 Chat: History loading failed (non-blocking):`, error);
     });
     
-    if (this.messages.length === 0) {
+    if (this.messages.length === 0 && this.currentRoom) {
+      // Use proper welcome message from room type config
+      const welcomeMessage = roomDataManager.getWelcomeMessage(this.currentRoom.type);
+      
       this.addMessage({
         id: this.generateMessageId(),
         type: 'system',
-        content: `Welcome to room: ${this.currentRoomId}! Start a conversation.`,
+        content: welcomeMessage,
         timestamp: new Date()
       });
     }
@@ -83,7 +146,7 @@ export class ChatWidget extends BaseWidget {
     try {
       this.isLoadingHistory = true;
       const response = await this.executeCommand('chat_history', {
-        roomId: this.currentRoomId,
+        roomId: this.currentRoom?.id,
         limit: 50
       });
 
@@ -115,39 +178,133 @@ export class ChatWidget extends BaseWidget {
       return;
     }
 
-    this.notifySystem('message_received', (data: any) => {
-      if (data.roomId === this.currentRoomId) {
-        this.handleIncomingMessage(data);
+    if (!this.chatEventsConfig) {
+      console.warn('💬 Chat: No chat events config available, skipping event setup');
+      return;
+    }
+
+    // Setup chat events from JSON configuration
+    for (const [eventName, eventConfig] of Object.entries(this.chatEventsConfig.chatEvents)) {
+      this.notifySystem(eventName, (data: any) => {
+        // Check if event requires current room matching
+        if (eventConfig.requiresCurrentRoom && eventConfig.matchField) {
+          const fieldValue = data[eventConfig.matchField];
+          if (fieldValue !== this.currentRoom?.id) {
+            return; // Event not for current room
+          }
+        }
+
+        // Call the handler method
+        this.callEventHandler(eventConfig.handler, data, eventConfig.handlerArgs);
+      });
+    }
+
+    // Setup global events from JSON configuration
+    for (const [eventName, eventConfig] of Object.entries(this.chatEventsConfig.globalEvents)) {
+      const listenerOptions = eventConfig.once ? { once: true } : {};
+      
+      document.addEventListener(eventName, (e: Event) => {
+        let data = e;
+        
+        // Extract data from specified path if configured
+        if (eventConfig.dataPath) {
+          const pathParts = eventConfig.dataPath.split('.');
+          let current: any = e;
+          for (const part of pathParts) {
+            current = current?.[part];
+          }
+          data = current;
+        }
+        
+        this.callEventHandler(eventConfig.handler, data);
+      }, listenerOptions);
+    }
+  }
+
+  private callEventHandler(handlerName: string, data: any, handlerArgs?: any[]): void {
+    try {
+      const handler = (this as any)[handlerName];
+      if (typeof handler === 'function') {
+        if (handlerArgs) {
+          handler.call(this, ...handlerArgs);
+        } else {
+          handler.call(this, data);
+        }
+      } else {
+        console.warn(`💬 Chat: Handler '${handlerName}' not found`);
       }
+    } catch (error) {
+      console.error(`💬 Chat: Error calling handler '${handlerName}':`, error);
+    }
+  }
+
+  private setupRoomDataListeners(): void {
+    // Listen to centralized room data manager
+    roomDataManager.addEventListener('room-changed', (e: Event) => {
+      const customEvent = e as CustomEvent<RoomChangeEvent>;
+      const { currentRoom } = customEvent.detail;
+      this.handleRoomChange(currentRoom);
     });
 
-    this.notifySystem('agent_typing', (data: any) => {
-      if (data.roomId === this.currentRoomId) {
-        this.setTypingIndicator(true);
+    roomDataManager.addEventListener('current-room-updated', (e: Event) => {
+      const customEvent = e as CustomEvent<RoomData>;
+      const updatedRoom = customEvent.detail;
+      
+      // Update our current room if it's the same room
+      if (this.currentRoom?.id === updatedRoom.id) {
+        this.currentRoom = updatedRoom;
+        this.updateRoomDisplay();
       }
-    });
-
-    this.notifySystem('agent_stop_typing', (data: any) => {
-      if (data.roomId === this.currentRoomId) {
-        this.setTypingIndicator(false);
-      }
-    });
-
-    // Listen for room changes from ChatRoom component
-    document.addEventListener('continuum:room-changed', (e: Event) => {
-      const customEvent = e as CustomEvent;
-      this.switchRoom(customEvent.detail.room.id);
     });
   }
 
-  public async switchRoom(roomId: string): Promise<void> {
-    if (this.currentRoomId === roomId) return;
-
-    console.log(`💬 Chat: Switching to room ${roomId}`);
-    this.currentRoomId = roomId;
+  private handleRoomChange(newRoom: RoomData): void {
+    console.log(`💬 Chat: Room changed to ${newRoom.name} (${newRoom.type})`);
+    this.currentRoom = newRoom;
     this.messages = [];
     
-    await this.loadRoomHistory();
+    // Add welcome message for new room
+    const welcomeMessage = roomDataManager.getWelcomeMessage(newRoom.type);
+    this.addMessage({
+      id: this.generateMessageId(),
+      type: 'system',
+      content: welcomeMessage,
+      timestamp: new Date()
+    });
+    
+    this.loadRoomHistory().catch(error => {
+      console.warn(`💬 Chat: Failed to load history for room ${newRoom.name}:`, error);
+    });
+    
+    this.render();
+  }
+
+  private updateRoomDisplay(): void {
+    // Update any UI elements that show room info
+    const roomTitle = this.shadowRoot?.querySelector('.room-title');
+    if (roomTitle && this.currentRoom) {
+      roomTitle.textContent = this.currentRoom.name;
+    }
+    
+    // Update widget title to include room name
+    if (this.currentRoom) {
+      this.widgetTitle = `💬 ${this.currentRoom.name}`;
+    }
+  }
+
+  public async switchRoom(roomId: string): Promise<void> {
+    if (this.currentRoom?.id === roomId) return;
+
+    console.log(`💬 Chat: Switching to room ${roomId}`);
+    
+    // Use room data manager to switch rooms
+    const success = roomDataManager.setCurrentRoom(roomId);
+    if (!success) {
+      console.warn(`💬 Chat: Failed to switch to room ${roomId} - room not found`);
+      return;
+    }
+    
+    // Room change will be handled by handleRoomChange() via event listener
     this.render();
   }
 
@@ -159,8 +316,8 @@ export class ChatWidget extends BaseWidget {
           <div class="header-left">
             <div class="chat-icon">💬</div>
             <div class="header-info">
-              <div class="chat-title">${this.getRoomDisplayName()} Chat</div>
-              <div class="chat-subtitle">Smart agent routing with Protocol Sheriff validation • Connected</div>
+              <div class="chat-title">${this.getRoomDisplayName()}</div>
+              <div class="chat-subtitle">${this.getRoomDescription()} • Connected</div>
             </div>
           </div>
           <div class="header-right">
@@ -334,7 +491,7 @@ export class ChatWidget extends BaseWidget {
     try {
       await this.executeCommand('chat', {
         message: content,
-        roomId: this.currentRoomId,
+        roomId: this.currentRoom?.id,
         timestamp: userMessage.timestamp.toISOString()
       });
 
@@ -355,7 +512,7 @@ export class ChatWidget extends BaseWidget {
     }
   }
 
-  private handleIncomingMessage(data: any): void {
+  public handleIncomingMessage(data: any): void {
     const message: Message = {
       id: this.generateMessageId(),
       type: 'assistant',
@@ -525,13 +682,23 @@ export class ChatWidget extends BaseWidget {
   }
 
   private getRoomDisplayName(): string {
-    const roomNames: Record<string, string> = {
-      'general': 'General',
-      'academy': 'Academy', 
-      'projects': 'Projects',
-      'development': 'Development'
-    };
-    return roomNames[this.currentRoomId] || this.currentRoomId.charAt(0).toUpperCase() + this.currentRoomId.slice(1);
+    // Use proper room name from room data manager
+    if (this.currentRoom) {
+      return this.currentRoom.name;
+    }
+    
+    // Fallback for no room data
+    return 'Chat';
+  }
+
+  private getRoomDescription(): string {
+    // Use proper room description from room data manager
+    if (this.currentRoom) {
+      return this.currentRoom.description;
+    }
+    
+    // Fallback for no room data
+    return 'Chat room';
   }
 
   private focusInput(): void {

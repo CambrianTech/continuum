@@ -5,6 +5,9 @@
 import { BaseCommand } from '../../core/base-command/BaseCommand';
 import { CommandDefinition, CommandResult } from '../../../types/CommandTypes';
 
+// Default room from JSON configuration - first room alphabetically  
+const DEFAULT_ROOM_ID = 'general';
+
 export class ChatHistoryCommand extends BaseCommand {
   static getDefinition(): CommandDefinition {
     return {
@@ -16,7 +19,7 @@ export class ChatHistoryCommand extends BaseCommand {
           type: 'string',
           description: 'Chat room name',
           required: false,
-          default: 'general'
+          default: DEFAULT_ROOM_ID
         },
         limit: {
           type: 'number',
@@ -40,7 +43,7 @@ export class ChatHistoryCommand extends BaseCommand {
 
   static async execute(_command: string, params: any = {}): Promise<CommandResult> {
     try {
-      const roomId = params.roomId || params.room || 'general';
+      const roomId = params.roomId || params.room || DEFAULT_ROOM_ID;
       const limit = params.limit || 50;
       const offset = params.offset || 0;
 
