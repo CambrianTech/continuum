@@ -1,29 +1,26 @@
 {
-  "name": "data-marshal-core",
-  "version": "1.0.0", 
-  "description": "Universal data marshalling for cross-environment communication and command chaining",
-  "main": "DataMarshalCommand.ts",
+  "name": "continuum-cli",
+  "version": "1.0.0",
+  "description": "Ultra-thin CLI pipe that forwards all arguments to command modules",
+  "main": "continuum-cli.ts",
   "type": "module",
   "continuum": {
-    "core": "data-marshal",
+    "type": "cli",
     "category": "Core",
     "capabilities": [
-      "data-marshalling",
-      "command-chaining",
-      "base64-encoding"
+      "argument-forwarding",
+      "command-discovery",
+      "ultra-thin-pipe"
     ],
     "dependencies": [],
     "interfaces": [],
     "permissions": []
   },
   "keywords": [
-    "data",
-    "marshal", 
-    "base64",
-    "chain",
-    "promise",
-    "websocket",
-    "core",
+    "cli",
+    "pipe",
+    "thin",
+    "forwarding",
     "continuum"
   ],
   "author": "Continuum AI Platform",
