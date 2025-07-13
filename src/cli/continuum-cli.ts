@@ -1,19 +1,25 @@
 #!/usr/bin/env tsx
+// ISSUES: 0 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
  * Continuum CLI - Ultra-thin pipe that knows NOTHING about commands
  * 
  * All command interface logic is inside the command modules themselves.
- * CLI just forwards raw arguments to the command discovery system.
+ * CLI just forwards raw arguments to the command discovery system via HTTP API.
+ * 
+ * ✅ CLEANED UP: Removed daemon management logic (2025-07-13)
+ * ✅ CLEANED UP: Made CLI ultra-thin HTTP client only (2025-07-13)
+ * ✅ CLEANED UP: Added fail-fast validation for command names (2025-07-13)
  */
 
 class ThinContinuumCLI {
-  private baseUrl = 'http://localhost:9000';
+  // Ultra-thin CLI connects to existing daemon, never creates daemons
 
   /**
    * Universal argument parsing - no special cases, everything is a command
    */
   parseArgs(args: string[]): { command: string; rawArgs: string[] } {
     // Note: args.length === 0 is handled by run() method before this is called
+    console.log(`🔬 JTAG CLI: parseArgs called with:`, args);
     
     const firstArg = args[0];
     
@@ -21,12 +27,14 @@ class ThinContinuumCLI {
     if (firstArg.startsWith('--')) {
       const command = firstArg.substring(2); // --help → help, --version → version, --screenshot → screenshot
       const rawArgs = args.slice(1);
+      console.log(`🔬 JTAG CLI: Parsed flag - command: ${command}, rawArgs:`, rawArgs);
       return { command, rawArgs };
     }
     
     // Regular command
     const command = firstArg;
     const rawArgs = args.slice(1);
+    console.log(`🔬 JTAG CLI: Parsed regular - command: ${command}, rawArgs:`, rawArgs);
     
     return { command, rawArgs };
   }
@@ -45,21 +53,35 @@ class ThinContinuumCLI {
    */
   buildRequestPayload(rawArgs: string[]): Record<string, any> {
     // The command module itself handles all argument interpretation
-    return { args: rawArgs };
+    const payload = { args: rawArgs };
+    console.log(`🔬 JTAG CLI: buildRequestPayload created:`, payload);
+    return payload;
   }
 
   /**
-   * Execute command via API with dynamic adaptation and ideal UX
+   * Execute command via HTTP API to existing daemon - ultra-thin pipe
    */
   async executeCommand(command: string, rawArgs: string[]): Promise<void> {
     try {
-      // Dynamic adaptation - let command system handle UX improvements
-      const adapted = await this.adaptCommand(command, rawArgs);
-      const payload = this.buildRequestPayload(adapted.rawArgs);
+      // FAIL FAST: Validate command name before proceeding
+      if (!command || command === 'undefined' || typeof command !== 'string' || command.trim() === '') {
+        const error = `❌ JTAG CLI: Invalid command name: "${command}" (type: ${typeof command})`;
+        console.error(error);
+        console.error(`🔬 JTAG CLI: Raw args:`, rawArgs);
+        throw new Error(error);
+      }
       
-      console.log(`🌐 Executing command: ${adapted.command}`);
+      console.log(`🌐 Executing command: ${command}`);
+      console.log(`🔬 JTAG CLI: Using HTTP API to existing daemon (ultra-thin)`);
       
-      const response = await fetch(`${this.baseUrl}/api/commands/${adapted.command}`, {
+      // Ultra-thin CLI - connect to existing daemon via HTTP
+      const baseUrl = 'http://localhost:9000';
+      const payload = this.buildRequestPayload(rawArgs);
+      
+      console.log(`🔬 JTAG CLI: Sending HTTP request to: ${baseUrl}/api/commands/${command}`);
+      console.log(`🔬 JTAG CLI: Payload:`, JSON.stringify(payload));
+      
+      const response = await fetch(`${baseUrl}/api/commands/${command}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -68,14 +90,17 @@ class ThinContinuumCLI {
       });
       
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        const error = `HTTP ${response.status}: ${response.statusText}`;
+        console.error(`❌ JTAG CLI: HTTP request failed: ${error}`);
+        throw new Error(error);
       }
       
       const result = await response.json();
+      console.log(`🔬 JTAG CLI: Command execution result:`, result);
       
       // Check if command returned help/definition format - make it user-friendly
-      if (this.isHelpResponse(result, adapted.command)) {
-        await this.formatHelpResponse(result, adapted.command, rawArgs);
+      if (this.isHelpResponse(result, command)) {
+        await this.formatHelpResponse(result, command, rawArgs);
       } else if (result.data && typeof result.data === 'string') {
         console.log(result.data);
       } else {
@@ -85,23 +110,28 @@ class ThinContinuumCLI {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       
-      // If command failed with 500 (likely missing parameters), auto-show help
-      if (errorMessage.includes('HTTP 500')) {
+      // If command failed (likely missing parameters), auto-show help
+      if (errorMessage.includes('Parameter validation failed') || errorMessage.includes('needs parameters')) {
         console.log(`💡 Command '${command}' needs parameters. Showing help:\n`);
         
         try {
-          // Auto-call help command by spawning new CLI process
-          const { spawn } = await import('child_process');
-          const helpProcess = spawn('npx', ['tsx', 'src/cli/continuum-cli.ts', 'help', command], { 
-            stdio: 'inherit',
-            cwd: process.cwd()
+          // Auto-call help command via HTTP
+          console.log(`🔬 JTAG CLI: Calling help command via HTTP`);
+          const helpResponse = await fetch(`http://localhost:9000/api/commands/help`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ args: [command] })
           });
           
-          await new Promise((resolve) => {
-            helpProcess.on('close', resolve);
-          });
+          if (helpResponse.ok) {
+            const helpResult = await helpResponse.json();
+            console.log(JSON.stringify(helpResult, null, 2));
+          } else {
+            console.error(`❌ JTAG CLI: Help request failed: ${helpResponse.status}`);
+          }
           return;
-        } catch {
+        } catch (helpError) {
+          console.error(`❌ JTAG CLI: Failed to show help: ${helpError}`);
           // Fallback to simple guidance if help command fails
         }
         
@@ -145,15 +175,16 @@ class ThinContinuumCLI {
    */
   private async showCommandDefinition(commandName: string): Promise<void> {
     try {
-      // Try to get definition via API first
-      const defResponse = await fetch(`${this.baseUrl}/api/commands/${commandName}`, {
+      // Try to get definition via HTTP
+      console.log(`🔬 JTAG CLI: Getting command definition via HTTP for: ${commandName}`);
+      const response = await fetch(`http://localhost:9000/api/commands/${commandName}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ args: ['--definition'] })
       });
 
-      if (defResponse.ok) {
-        const defResult = await defResponse.json();
+      if (response.ok) {
+        const defResult = await response.json();
         
         if (defResult.definition) {
           this.displayCommandDefinition(commandName, defResult.definition);
@@ -249,13 +280,27 @@ class ThinContinuumCLI {
   }
 
   /**
-   * Check if daemon is running
+   * Check if daemon is running via HTTP - ultra-thin client
    */
   async isDaemonRunning(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/health`);
-      return response.ok;
-    } catch {
+      console.log(`🔬 JTAG CLI: Checking daemon health via HTTP`);
+      const response = await fetch('http://localhost:9000/api/health', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`🔬 JTAG CLI: Health check result:`, result);
+        return result.success || result.status === 'healthy';
+      }
+      
+      return false;
+    } catch (error) {
+      console.log(`🔬 JTAG CLI: Health check failed: ${error}`);
       return false;
     }
   }

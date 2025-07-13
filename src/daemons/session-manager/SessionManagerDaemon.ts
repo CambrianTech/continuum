@@ -1,3 +1,4 @@
+// ISSUES: 0 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
  * Session Manager Daemon - Core session isolation and artifact management
  * 
@@ -8,6 +9,9 @@
  * - Organize artifacts by session type and owner
  * - Provide session sandboxing for safe experimentation
  * - Enable forensic analysis of session failures
+ * 
+ * ✅ CLEANED UP: Added session.extract handler with proper types (2025-07-13)
+ * ✅ CLEANED UP: Modern web standards session extraction (2025-07-13)
  */
 
 import { BaseDaemon } from '../base/BaseDaemon';
@@ -17,6 +21,7 @@ import { SystemEventType, MessageType, SessionCreatedPayload, SessionJoinedPaylo
 import { SessionConsoleLogger } from './modules/SessionConsoleLogger';
 import { SessionRequest } from '../../types/SessionParameters';
 import { SessionConnectResponse } from '../../types/SessionConnectResponse';
+import { SessionExtractionRequest, SessionExtractionResponse, SessionInfo } from '../../types/shared/SessionTypes';
 import { DAEMON_EVENT_BUS } from '../base/DaemonEventBus';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -118,7 +123,8 @@ export class SessionManagerDaemon extends BaseDaemon {
       'add_artifact',
       'close_session',
       'register_connection_identity',
-      'session.connect'
+      'session.connect',
+      'session.extract'
     ];
   }
 
@@ -222,6 +228,9 @@ export class SessionManagerDaemon extends BaseDaemon {
           
         case 'session.connect':
           return await this.handleConnect(message.data as SessionRequest);
+          
+        case 'session.extract':
+          return await this.handleSessionExtract(message.data as SessionExtractionRequest);
           
         default:
           return {
@@ -427,6 +436,89 @@ export class SessionManagerDaemon extends BaseDaemon {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return { success: false, error: `Connection orchestration failed: ${errorMessage}` };
     }
+  }
+
+  /**
+   * Handle session extraction from HTTP headers using modern web standards
+   */
+  private async handleSessionExtract(data: SessionExtractionRequest): Promise<DaemonResponse<SessionExtractionResponse>> {
+    try {
+      // Extract session using modern web standards
+      const sessionInfo = this.extractSessionFromHeaders(data.headers);
+      
+      // If session ID found, validate it exists
+      if (sessionInfo.sessionId) {
+        const sessionExists = this.sessions.has(sessionInfo.sessionId);
+        if (!sessionExists) {
+          // Session ID provided but doesn't exist - might be expired
+          return {
+            success: false,
+            error: `Session not found: ${sessionInfo.sessionId}`,
+            data: { 
+              sessionId: sessionInfo.sessionId,
+              extractedFrom: sessionInfo.source,
+              sessionExists: false
+            }
+          };
+        }
+      }
+      
+      const response: SessionExtractionResponse = {
+        ...(sessionInfo.sessionId && { sessionId: sessionInfo.sessionId }),
+        extractedFrom: sessionInfo.source,
+        sessionExists: sessionInfo.sessionId ? this.sessions.has(sessionInfo.sessionId) : false
+      };
+      
+      return {
+        success: true,
+        data: response
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: `Session extraction failed: ${errorMessage}`
+      };
+    }
+  }
+
+  /**
+   * Extract session information from HTTP headers using modern web standards
+   */
+  private extractSessionFromHeaders(headers: Record<string, string>): SessionInfo {
+    // 1. Check for X-Session-ID header (modern API standard)
+    const sessionHeader = headers['x-session-id'] || headers['X-Session-ID'];
+    if (sessionHeader) {
+      return {
+        sessionId: sessionHeader,
+        source: 'header'
+      };
+    }
+    
+    // 2. Check for Authorization Bearer token (OAuth2/JWT standard)
+    const authHeader = headers['authorization'] || headers['Authorization'];
+    if (authHeader?.startsWith('Bearer ')) {
+      const token = authHeader.substring(7);
+      return {
+        sessionId: token,
+        source: 'bearer'
+      };
+    }
+    
+    // 3. Check for session cookie (modern web standard)
+    const cookieHeader = headers['cookie'] || headers['Cookie'];
+    if (cookieHeader) {
+      // Modern cookie parsing - supports sessionId format
+      const sessionMatch = cookieHeader.match(/sessionId=([^;]+)/);
+      if (sessionMatch) {
+        return {
+          sessionId: sessionMatch[1],
+          source: 'cookie'
+        };
+      }
+    }
+    
+    return { source: 'none' };
   }
 
   /**
