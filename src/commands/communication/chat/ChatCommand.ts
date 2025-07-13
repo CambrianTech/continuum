@@ -7,15 +7,15 @@
 import { DirectCommand } from '../../core/direct-command/DirectCommand';
 import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
 import { 
-  ChatRoomDaemonRequest, 
   SendMessageRequest, 
   SendMessageResponse,
   ListRoomsRequest, 
   ListRoomsResponse,
   ChatCommandResult,
+  ChatRoomDaemonRequest,
   MessageType,
   isChatRoomDaemonResponse
-} from '../../../types/shared/ChatRoomTypes';
+} from '../../../types/shared/chat/ChatTypes';
 import { CommandOperation, ChatRoomOperations } from '../../../types/shared/CommandOperationTypes';
 
 // Default room from JSON configuration - first room alphabetically
@@ -52,13 +52,10 @@ export class ChatCommand extends DirectCommand {
           sender_id: context?.sessionId || 'unknown',
           content: params.message,
           message_type: MessageType.TEXT,
+          session_id: context?.sessionId,
           correlationId: `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           timestamp: Date.now()
         };
-        
-        if (context?.sessionId) {
-          sendRequest.session_id = context.sessionId;
-        }
         
         const result = await this.sendMessageToChatRoom(sendRequest);
 

@@ -7,7 +7,7 @@
 
 import { promises as fs } from 'fs';
 import { resolve, dirname } from 'path';
-import { ChatRoomType } from '../../types/shared/ChatRoomTypes';
+import { ChatRoomType } from '../../types/shared/chat/ChatTypes';
 
 /**
  * Interface describing a default room specification from JSON
