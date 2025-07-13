@@ -79,6 +79,9 @@ This directory contains the complete architectural documentation for Continuum's
 
 #### 🎓 [Academy Training](academy/)
 - **[README.md](academy/README.md)** - Complete Academy training system overview
+- **[persona-discovery.md](academy/persona-discovery.md)** - **🆕 NEW** Efficient vector search + benchmark-driven persona selection algorithms
+- **[autonomous-selection.md](academy/autonomous-selection.md)** - **🆕 NEW** Hyperintelligent genome assembly with deep component understanding
+- **[algorithmic-testing.md](academy/algorithmic-testing.md)** - **🆕 NEW** Test-driven algorithm validation with real performance metrics
 - **[competitive-training-system.md](academy/competitive-training-system.md)** - Gamified AI training with sport-style scoring and tournaments
 - **[training-methods/scoring-architecture.md](academy/training-methods/scoring-architecture.md)** - LoRA adaptation signals and competitive scoring systems
 - **[development/lora-training-signals.md](development/lora-training-signals.md)** - Progressive curriculum and feedback patterns for Academy AI training
