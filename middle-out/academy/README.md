@@ -15,6 +15,12 @@ The Academy transforms AI training from passive learning into competitive develo
 - **[persona-discovery.md](persona-discovery.md)** - **🆕 NEW** Efficient vector search + benchmark-driven ranking for autonomous persona selection
 - **[autonomous-selection.md](autonomous-selection.md)** - **🆕 NEW** Hyperintelligent genome assembly with deep understanding of component interactions
 - **[algorithmic-testing.md](algorithmic-testing.md)** - **🆕 NEW** Test-driven algorithm development with component validation and real performance metrics
+- **[chat-integration.md](chat-integration.md)** - **✅ INTEGRATED** Academy training within chat rooms with persona interoperability abstraction
+- **[genomic-data-architecture.md](genomic-data-architecture.md)** - **✅ INTEGRATED** Complete data structure for persona genomic layers and metadata
+- **[ai-workflow-integration.md](ai-workflow-integration.md)** - **🆕 NEW** Complete UX + algorithmic perspective on AI workflow within Continuum
+- **[comprehensive-testing-strategy.md](comprehensive-testing-strategy.md)** - **🆕 NEW** 6-layer testing methodology for all academy components
+- **[modular-architecture-compliance.md](modular-architecture-compliance.md)** - **🆕 NEW** Zero god objects + module iterators + automatic discovery patterns
+- **[intelligent-test-integration.md](intelligent-test-integration.md)** - **🆕 NEW** Academy validation through intelligent test runner with modular compliance
 - **[global-persona-portability.md](global-persona-portability.md)** - Global persona distribution and P2P discovery architecture *(coming soon)*
 
 ### **🏆 Competitive Training**
