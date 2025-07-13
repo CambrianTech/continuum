@@ -5,6 +5,7 @@
  */
 
 import { StrongScreenshotParams, ScreenshotTypeGuards } from './ScreenshotTypes';
+import { ScreenshotDestination } from './ScreenshotCommand';
 
 export type ScreenshotAction = 'screenshot' | 'capture' | 'snap';
 
@@ -59,13 +60,17 @@ export class ScreenshotHandler {
     // Delegate to the actual ScreenshotCommand in this same directory
     const { ScreenshotCommand } = await import('./ScreenshotCommand');
     
-    await ScreenshotCommand.execute({
+    const screenshotParams: any = {
       filename,
-      selector: params.selector,
-      format: params.format || 'png',
-      quality: params.quality || 90,
-      fullPage: params.fullPage ?? true
-    });
+      destination: ScreenshotDestination.FILE
+    };
+    
+    // Only add selector if it exists (exactOptionalPropertyTypes compliance)
+    if (params.selector) {
+      screenshotParams.selector = params.selector;
+    }
+    
+    await ScreenshotCommand.execute(screenshotParams);
   }
 
   /**

@@ -1,64 +1,29 @@
 #!/bin/bash
-# Continuum CLI - Universal thin client that connects to daemon system
-# Handles all deployment scenarios: development, production, homebrew, npm global, local
+# Continuum CLI - Universal thin client that pipes to TypeScript handler
+# Much simpler: just handle daemon management and pipe everything else to TS
 
-# Parse arguments for command and session parameters
-# Default command is connect, but check if first arg is actually a flag
-COMMAND="connect"
-if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-  # First argument doesn't start with --, so it's a command
-  COMMAND="$1"
-  shift
-fi
-
-SESSION_ID=""
-SESSION_TYPE=""
-OWNER=""
-FORCE_NEW=""
-FOCUS="true"
-KILL_ZOMBIES="true"
-
-# Parse session-related arguments (no need to shift again)
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --session)
-      SESSION_ID="$2"
-      shift 2
-      ;;
-    --session-type)
-      SESSION_TYPE="$2"
-      shift 2
-      ;;
-    --owner)
-      OWNER="$2"
-      shift 2
-      ;;
-    --new)
-      FORCE_NEW="true"
-      shift
-      ;;
-    --focus)
-      FOCUS="true"
-      shift
-      ;;
-    --no-focus)
-      FOCUS="false"
-      shift
-      ;;
-    --kill-zombies)
-      KILL_ZOMBIES="true"
-      shift
-      ;;
-    --no-kill-zombies)
-      KILL_ZOMBIES="false"
-      shift
-      ;;
-    *)
-      # Unknown option, skip
-      shift
-      ;;
-  esac
-done
+# Handle special daemon management commands that need bash
+case "$1" in
+  "start"|"stop"|"restart"|"status"|"version"|"--version"|"-v"|"")
+    # Keep these commands in bash - they need process management or are defaults
+    ;;
+  "help"|"--help"|"-h")
+    # Only handle bare help in bash - help with args goes to TypeScript
+    if [ $# -eq 1 ]; then
+      # Bare help command - show bash help
+      :  # Continue to bash help handling below
+    else
+      # Help with arguments - forward to TypeScript for command-specific help
+      npx tsx src/cli/continuum-cli.ts "$@"
+      exit $?
+    fi
+    ;;
+  *)
+    # Ultra-thin pipe to TypeScript - CLI knows NOTHING about commands
+    npx tsx src/cli/continuum-cli.ts "$@"
+    exit $?
+    ;;
+esac
 
 # Function to check if daemon is running
 daemon_running() {
@@ -216,7 +181,7 @@ status_daemon() {
 }
 
 # Handle version
-if [ "$COMMAND" = "--version" ] || [ "$COMMAND" = "-v" ] || [ "$COMMAND" = "version" ]; then
+if [ "$1" = "--version" ] || [ "$1" = "-v" ] || [ "$1" = "version" ]; then
   # Check if daemon is running
   if daemon_running; then
     # Get version from API
@@ -239,7 +204,7 @@ if [ "$COMMAND" = "--version" ] || [ "$COMMAND" = "-v" ] || [ "$COMMAND" = "vers
 fi
 
 # Handle explicit daemon management commands 
-case "$COMMAND" in
+case "$1" in
   "start")
     if daemon_running; then
       echo "✅ Continuum daemons already running at http://localhost:9000"
@@ -267,36 +232,30 @@ case "$COMMAND" in
     status_daemon
     exit 0
     ;;
-  "help"|"--help"|"-h"|"")
-    echo "Continuum CLI - Universal thin client with session management"
+  "")
+    # Default to connect when no command provided  
+    set -- "connect" "$@"
+    ;;
+  "help"|"--help"|"-h")
+    echo "🌐 Continuum CLI - Dynamic Command Proxy"
     echo ""
-    echo "Usage:"
-    echo "  continuum [command] [options]"
+    echo "🚀 Daemon Management:"
+    echo "  start, stop, restart             # Process management"  
+    echo "  status, version                  # System info"
     echo ""
-    echo "Commands:"
-    echo "  <default>               Open Continuum in browser (auto-starts daemons)"
-    echo "  start                   Start daemon system"
-    echo "  stop                    Stop daemon system"  
-    echo "  restart                 Restart daemon system"
-    echo "  status                  Show daemon status"
-    echo "  health                  Check system health"
-    echo "  version, --version      Show version"
-    echo "  help, --help            Show this help"
+    echo "🔧 Smart Command Discovery:"
+    echo "  continuum commands               # List all available commands (auto-proxy)"
+    echo "  continuum list                   # Same as above"
+    echo "  continuum capture                # Screenshot (auto-proxy)"
+    echo "  ./jtag.ts help                   # JTAG debugging tools"
     echo ""
-    echo "Session Options:"
-    echo "  --session ID            Connect to specific session ID"
-    echo "  --session-type TYPE     Session type (development, persona, etc.)"
-    echo "  --owner OWNER           Session owner (default: shared)"
-    echo "  --new                   Force create new session"
-    echo "  --focus                 Focus browser window (default for bash)"
-    echo "  --no-focus              Don't focus browser window"
-    echo "  --kill-zombies          Close zombie browser tabs (default for shared)"
-    echo "  --no-kill-zombies       Keep all browser tabs"
+    echo "💡 Dynamic Proxy:"
+    echo "  continuum [any-command]          # Auto-discovers and forwards"
+    echo "  • Checks if command exists"
+    echo "  • Smart UX aliases (commands→help, capture→screenshot)"
+    echo "  • Forwards unknown commands to system for handling"
     echo ""
-    echo "Examples:"
-    echo "  continuum                        # Open browser and connect"
-    echo "  continuum --new                  # Create new session"
-    echo "  continuum status                 # Check if daemons are running"
+    echo "📖 Zero hard-coding: Proxy adapts to command system dynamically!"
     exit 0
     ;;
 esac
@@ -345,11 +304,25 @@ else
   request_data="$request_data\"killZombies\": false"
 fi
 
+# Add command arguments dynamically (non-god object pattern)
+if [ ${#COMMAND_ARGS[@]} -gt 0 ]; then
+  request_data="$request_data, \"args\": ["
+  for i in "${!COMMAND_ARGS[@]}"; do
+    # Escape quotes in argument
+    escaped_arg=$(echo "${COMMAND_ARGS[$i]}" | sed 's/"/\\"/g')
+    request_data="$request_data\"$escaped_arg\""
+    if [ $i -lt $((${#COMMAND_ARGS[@]} - 1)) ]; then
+      request_data="$request_data, "
+    fi
+  done
+  request_data="$request_data]"
+fi
+
 request_data="$request_data}"
 
 # Special handling for connect command (default)
-if [ "$COMMAND" = "connect" ]; then
-  response=$(curl -s -X POST "http://localhost:9000/api/commands/$COMMAND" \
+if [ "$1" = "connect" ]; then
+  response=$(curl -s -X POST "http://localhost:9000/api/commands/$1" \
     -H "Content-Type: application/json" \
     -d "$request_data" 2>/dev/null)
   
@@ -442,12 +415,12 @@ if [ "$COMMAND" = "connect" ]; then
   fi
 else
   # For other commands, call via API
-  echo "🌐 Executing command: $COMMAND"
+  echo "🌐 Executing command: $1"
   if [ -n "$SESSION_ID" ] || [ -n "$SESSION_TYPE" ] || [ -n "$OWNER" ] || [ -n "$FORCE_NEW" ]; then
     echo "   Session parameters: sessionId=$SESSION_ID, type=$SESSION_TYPE, owner=$OWNER, forceNew=$FORCE_NEW"
   fi
 
-  response=$(curl -s -X POST "http://localhost:9000/api/commands/$COMMAND" \
+  response=$(curl -s -X POST "http://localhost:9000/api/commands/$1" \
     -H "Content-Type: application/json" \
     -d "$request_data" 2>/dev/null)
 

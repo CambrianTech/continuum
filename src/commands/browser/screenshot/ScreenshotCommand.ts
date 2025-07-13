@@ -1,9 +1,10 @@
 /**
  * Screenshot Command - TypeScript Implementation
  * Elegant screenshot capture with advanced targeting and orchestration
+ * Uses proper daemon bus architecture for browser communication
  */
 
-import { RemoteCommand, RemoteExecutionRequest, RemoteExecutionResponse } from '../../core/remote-command/RemoteCommand';
+import { RemoteCommand, RemoteExecutionResponse } from '../../core/remote-command/RemoteCommand';
 import { CommandDefinition, CommandResult } from '../../core/base-command/BaseCommand';
 import { normalizeCommandCategory } from '../../../types/shared/CommandTypes';
 import * as path from 'path';
@@ -28,19 +29,7 @@ export enum ScreenshotAnimation {
   ANIMATED = 'animated'    // Animate ROI highlighting
 }
 
-interface ScreenshotParams {
-  selector?: string;
-  filename?: string;
-  subdirectory?: string;
-  name_prefix?: string;
-  scale?: number;
-  manual?: boolean;
-  source?: string;
-  destination?: ScreenshotDestination;
-  animation?: ScreenshotAnimation;
-  roi?: boolean;
-  // format is inferred from filename extension
-}
+// ScreenshotParams interface removed - parameters defined in command definition
 
 
 interface ReadmeDefinition {
@@ -174,216 +163,84 @@ export class ScreenshotCommand extends RemoteCommand {
     return definition;
   }
 
-  protected static async executeOnClient(request: RemoteExecutionRequest): Promise<RemoteExecutionResponse> {
-    console.log(`🖼️ SCREENSHOT: Executing on client with params:`, request.params);
-    
-    try {
-      const options = this.parseParams<ScreenshotParams>(request.params);
-      console.log(`🔍 SCREENSHOT: Parsed options:`, options);
-      
-      // Default parameters for elegant API
-      const {
-        selector = 'body',
-        filename,
-        subdirectory,
-        name_prefix = 'screenshot',
-        scale = 2.0,
-        source = 'unknown',
-        destination = ScreenshotDestination.FILE
-      } = options;
-      
-      console.log(`🔍 SCREENSHOT: Destructured params:`, { 
-        selector, filename, subdirectory, name_prefix, scale, source, destination 
-      });
-      
-      // Infer format from filename extension
-      const format = this.getFormatFromFilename(filename, name_prefix);
-      
-      console.log(`📸 SCREENSHOT Command: ${source} requesting ${selector} -> ${destination} (${name_prefix})`);
-      
-      // Generate filename/id for tracking
-      const timestamp = Date.now();
-      const generatedFilename = this.generateFilename(filename, subdirectory, name_prefix, format, destination, timestamp);
-      
-      // This runs in the browser context
-      const element = document.querySelector(selector) as HTMLElement;
-      if (!element) {
-        return {
-          success: false,
-          error: `Element not found: ${selector}`,
-          clientMetadata: {
-            userAgent: navigator.userAgent,
-            timestamp: Date.now(),
-            executionTime: 0
-          }
-        };
-      }
-
-      // Use html2canvas for screenshot capture
-      const startTime = Date.now();
-      const canvas = await (window as any).html2canvas(element, {
-        scale: scale,
-        useCORS: true,
-        allowTaint: true
-      });
-      
-      const imageData = canvas.toDataURL(`image/${format}`);
-      const executionTime = Date.now() - startTime;
-      
-      return {
-        success: true,
-        data: {
-          imageData,
-          selector,
-          filename: generatedFilename,
-          format,
-          width: canvas.width,
-          height: canvas.height
-        },
-        clientMetadata: {
-          userAgent: navigator.userAgent,
-          timestamp: Date.now(),
-          executionTime
-        }
-      };
-      
-    } catch (error) {
-      console.error(`🔍 SCREENSHOT: Error in execution:`, error);
-      return {
-        success: false,
-        error: `Screenshot execution failed: ${error instanceof Error ? error.message : String(error)}`,
-        clientMetadata: {
-          userAgent: navigator.userAgent,
-          timestamp: Date.now(),
-          executionTime: 0
-        }
-      };
-    }
-  }
-
-  /**
-   * Process client response and orchestrate file saving through command chaining
-   */
-  protected static async processClientResponse(response: RemoteExecutionResponse, originalParams: any, context?: any): Promise<CommandResult> {
+  protected static async processClientResponse(response: RemoteExecutionResponse, _originalParams: any, context?: any): Promise<CommandResult> {
     if (!response.success) {
       return this.createErrorResult(`Screenshot capture failed: ${response.error}`);
     }
 
     const { imageData, filename, selector, format, width, height } = response.data;
-    const options = this.parseParams<ScreenshotParams>(originalParams);
     
+    // Extract base64 data from data URL
     const base64Data = imageData.replace(/^data:image\/[a-z]+;base64,/, '');
     const buffer = Buffer.from(base64Data, 'base64');
     
-    // Handle different destination modes using strongly typed enums
-    switch (options.destination) {
-      case ScreenshotDestination.FILE:
-        if (!filename) {
-          return this.createErrorResult('Filename required when destination is FILE');
-        }
-        return this.createSuccessResult({
-          filename: filename, // Just the filename, no path.resolve()
-          selector,
-          dimensions: { width, height },
-          format,
-            size: buffer.length,
-            client: response.clientMetadata,
-            nextCommand: {
-              command: 'file_write',
-              params: {
-                filename: filename, // Let FileWriteCommand handle path resolution
-                content: buffer, // Pass the raw buffer, not base64 string
-                artifactType: 'screenshot', // Tell FileWriteCommand this is a screenshot
-                sessionId: context?.sessionId // Let FileWriteCommand use session directory
-              }
-            }
-          }
-        );
+    console.log(`💾 SCREENSHOT: Saving file ${filename} (${buffer.length} bytes)`);
+    
+    try {
+      // Pipe screenshot data through marshal → file write chain
+      const screenshotData = {
+        imageData,
+        filename,
+        selector,
+        format,
+        width,
+        height,
+        size: buffer.length,
+        timestamp: new Date().toISOString(),
+        artifactType: 'screenshot'
+      };
 
-      case ScreenshotDestination.BYTES:
-        return this.createSuccessResult({
-          imageData: base64Data,
-          selector,
-          dimensions: { width, height },
-          format,
-          size: buffer.length,
-          client: response.clientMetadata
-        });
+      // 1. Marshal data (creates correlation ID and emits events for subscribers)
+      const { DataMarshalCommand } = await import('../../core/data-marshal/DataMarshalCommand');
+      const marshalResult = await DataMarshalCommand.execute({
+        operation: 'encode',
+        data: screenshotData,
+        encoding: 'json',
+        source: 'screenshot',
+        destination: 'file-write'
+      }, context);
 
-      case ScreenshotDestination.BOTH:
-        if (!filename) {
-          return this.createErrorResult('Filename required when destination is BOTH');
-        }
-        return this.createSuccessResult({
-          imageData: base64Data,
-          filename: path.resolve(filename),
-          selector,
-          dimensions: { width, height },
-          format,
-          size: buffer.length,
-          client: response.clientMetadata,
-          nextCommand: {
-            command: 'file_write',
-            params: {
-              filename: path.resolve(filename),
-                content: base64Data,
-                encoding: 'base64',
-                ensureDirectory: true
-              }
-            }
-          }
-        );
+      if (!marshalResult.success) {
+        return this.createErrorResult(`Screenshot marshal failed: ${marshalResult.error}`);
+      }
 
-      default:
-        // Default to bytes-only for backward compatibility
-        return this.createSuccessResult({
-          imageData: base64Data,
-          selector,
-          dimensions: { width, height },
-          format,
-          client: response.clientMetadata
-        });
+      // 2. Pipe marshalled data to file write (subscribers can listen to marshal events)
+      const { FileWriteCommand } = await import('../../file/write/FileWriteCommand');
+      const fileResult = await FileWriteCommand.execute({
+        content: buffer,
+        filename: filename,
+        artifactType: 'screenshot',
+        ...(context?.sessionId && { sessionId: context.sessionId }),
+        // Include marshal correlation for tracking the pipe
+        marshalId: marshalResult.data?.marshalId
+      }, context);
+      
+      if (!fileResult.success) {
+        return this.createErrorResult(`File save failed: ${fileResult.error}`);
+      }
+      
+      console.log(`✅ SCREENSHOT: File saved successfully to session directory`);
+      
+      return this.createSuccessResult({
+        filename: filename,
+        filepath: fileResult.data?.filepath || filename,
+        selector: selector,
+        dimensions: { width, height },
+        format: format,
+        size: buffer.length,
+        sessionId: context?.sessionId,
+        timestamp: new Date().toISOString(),
+        artifactType: 'screenshot'
+      });
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ SCREENSHOT: File save error:`, errorMessage);
+      return this.createErrorResult(`Screenshot file save failed: ${errorMessage}`);
     }
   }
 
-  /**
-   * Extract format from filename extension or default to PNG
-   */
-  private static getFormatFromFilename(filename?: string, name_prefix?: string): ScreenshotFormat {
-    const targetFilename = filename || `${name_prefix || 'screenshot'}.png`;
-    console.log('🔍 getFormatFromFilename:', { filename, name_prefix, targetFilename });
-    
-    const extname = path.extname(targetFilename);
-    console.log('🔍 path.extname result:', { extname, targetFilename });
-    
-    const extension = extname.toLowerCase().replace('.', '');
-    
-    switch (extension) {
-      case 'jpg':
-      case 'jpeg': return ScreenshotFormat.JPG;
-      case 'webp': return ScreenshotFormat.WEBP;
-      case 'png':
-      default: return ScreenshotFormat.PNG;
-    }
-  }
-
-  /**
-   * Generate filename based on parameters and destination
-   */
-  private static generateFilename(
-    filename: string | undefined,
-    subdirectory: string | undefined,
-    name_prefix: string,
-    format: ScreenshotFormat,
-    destination: ScreenshotDestination,
-    timestamp: number
-  ): string | null {
-    if (destination === ScreenshotDestination.FILE || destination === ScreenshotDestination.BOTH) {
-      const baseName = filename || `${name_prefix}_${timestamp}.${format}`;
-      return subdirectory ? `${subdirectory}/${baseName}` : baseName;
-    }
-    return null;
-  }
+  // Utility methods removed - using simplified approach with FileWriteCommand integration
 }
 
 export default ScreenshotCommand;

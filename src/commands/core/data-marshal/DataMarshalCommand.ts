@@ -110,9 +110,11 @@ export class DataMarshalCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any, _context?: any): Promise<CommandResult> {
+  static async execute(params: any, context?: any): Promise<CommandResult> {
     try {
+      console.log('🚨 DataMarshal RAW PARAMS:', { params, type: typeof params, keys: Object.keys(params || {}) });
       const options = DataMarshalCommand.parseParams<DataMarshalOptions>(params);
+      console.log('🎯 DataMarshal execute:', { options, context });
       
       const {
         operation,
@@ -123,6 +125,15 @@ export class DataMarshalCommand extends BaseCommand {
         destination,
         metadata = {}
       } = options;
+
+      // Emit marshal event for system awareness
+      await DataMarshalCommand.emitMarshalEvent('marshal_start', {
+        operation,
+        source,
+        destination,
+        correlationId: correlationId || `marshal-${Date.now()}`,
+        encoding
+      }, context);
 
       switch (operation) {
         case 'encode':
@@ -432,10 +443,13 @@ export class DataMarshalCommand extends BaseCommand {
   }
 
   /**
-   * Parse command parameters from various input formats
+   * Enhanced parameter parsing - learning from both implementations
+   * Handles CLI args, objects, JSON strings, and simple values
    */
   protected static parseParams<T>(params: any): T {
-    // Handle command line args (--key=value format)
+    console.log('🔍 DataMarshal parseParams input:', { params, type: typeof params });
+    
+    // Handle command line args (--key=value format) - from version 2
     if (params && params.args && Array.isArray(params.args)) {
       const result: any = {};
       for (const arg of params.args) {
@@ -443,9 +457,12 @@ export class DataMarshalCommand extends BaseCommand {
           const [key, value] = arg.split('=', 2);
           const cleanKey = key.replace('--', '');
           
-          // Parse special values
+          // Enhanced parsing with better type detection
           if (value === 'true') result[cleanKey] = true;
           else if (value === 'false') result[cleanKey] = false;
+          else if (value === 'null') result[cleanKey] = null;
+          else if (value === 'undefined') result[cleanKey] = undefined;
+          else if (!isNaN(Number(value))) result[cleanKey] = Number(value);
           else if (cleanKey === 'metadata' || cleanKey === 'data') {
             try {
               result[cleanKey] = JSON.parse(value);
@@ -457,24 +474,127 @@ export class DataMarshalCommand extends BaseCommand {
           }
         }
       }
+      console.log('🔍 DataMarshal parsed CLI args:', result);
       return result as T;
     }
     
-    // Handle object parameters
+    // Handle direct CLI parameters (from continuum command line)
+    if (Array.isArray(params)) {
+      const result: any = {};
+      for (const param of params) {
+        if (typeof param === 'string' && param.startsWith('--')) {
+          const [key, value] = param.split('=', 2);
+          const cleanKey = key.replace('--', '');
+          result[cleanKey] = value;
+        }
+      }
+      console.log('🔍 DataMarshal parsed array params:', result);
+      return result as T;
+    }
+    
+    // Handle object parameters - direct pass-through
     if (typeof params === 'object' && params !== null) {
+      console.log('🔍 DataMarshal using object params:', params);
       return params as T;
     }
     
     // Handle JSON string
     if (typeof params === 'string') {
       try {
-        return JSON.parse(params) as T;
+        const parsed = JSON.parse(params);
+        console.log('🔍 DataMarshal parsed JSON string:', parsed);
+        return parsed as T;
       } catch {
-        return { operation: 'encode', data: params } as T;
+        // If not JSON, treat as data to encode
+        const result = { operation: 'encode', data: params };
+        console.log('🔍 DataMarshal treating string as data:', result);
+        return result as T;
       }
     }
     
-    return { operation: 'encode' } as T;
+    // Default fallback
+    const fallback = { operation: 'encode' };
+    console.log('🔍 DataMarshal using fallback:', fallback);
+    return fallback as T;
+  }
+
+  /**
+   * Emit marshal events for system integration
+   * Screenshot commands can listen for these events
+   */
+  private static async emitMarshalEvent(
+    eventType: string,
+    payload: any,
+    context?: any
+  ): Promise<void> {
+    try {
+      // Use DaemonEventBus for system-wide event distribution
+      const { DaemonEventBus } = await import('../../../daemons/base/DaemonEventBus');
+      const eventBus = DaemonEventBus.getInstance();
+      
+      await eventBus.emit(`data-marshal:${eventType}`, {
+        ...payload,
+        timestamp: new Date().toISOString(),
+        sessionId: context?.sessionId
+      });
+      
+      console.log(`📡 DataMarshal event emitted: data-marshal:${eventType}`, payload);
+    } catch (error) {
+      console.warn('⚠️ DataMarshal event emission failed:', error);
+    }
+  }
+
+  /**
+   * Static method for screenshot command integration
+   * Screenshots can call this directly for marshalling
+   */
+  static async marshalScreenshotData(screenshotResult: any, context?: any): Promise<CommandResult> {
+    return DataMarshalCommand.execute({
+      operation: 'encode',
+      data: screenshotResult,
+      encoding: 'json',
+      source: 'screenshot',
+      destination: 'file-system',
+      metadata: {
+        artifactType: 'screenshot',
+        sessionId: context?.sessionId
+      }
+    }, context);
+  }
+
+  /**
+   * Chain screenshot to file save workflow
+   */
+  static async chainScreenshotToFile(screenshotData: any, context?: any): Promise<CommandResult> {
+    try {
+      // First marshal the screenshot data
+      const marshalResult = await DataMarshalCommand.marshalScreenshotData(screenshotData, context);
+      
+      if (!marshalResult.success) {
+        return marshalResult;
+      }
+
+      // Then chain to next command in pipe
+      const chainResult = await DataMarshalCommand.execute({
+        operation: 'chain',
+        data: marshalResult.data,
+        source: 'screenshot',
+        destination: 'file-write',
+        correlationId: marshalResult.data?.marshalId
+      }, context);
+
+      // Emit completion event
+      await DataMarshalCommand.emitMarshalEvent('screenshot_chain_complete', {
+        marshalId: marshalResult.data?.marshalId,
+        screenshotData,
+        chainResult: chainResult.data
+      }, context);
+
+      return chainResult;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return DataMarshalCommand.createErrorResult(`Screenshot chain failed: ${errorMessage}`);
+    }
   }
 }
 

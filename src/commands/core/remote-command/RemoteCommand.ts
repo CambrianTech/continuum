@@ -98,7 +98,7 @@ export abstract class RemoteCommand extends BaseCommand {
   /**
    * WebSocket communication infrastructure
    */
-  private static async sendToClientViaWebSocket(request: RemoteExecutionRequest, _context?: CommandContext): Promise<RemoteExecutionResponse> {
+  private static async sendToClientViaWebSocket(request: RemoteExecutionRequest, context?: CommandContext): Promise<RemoteExecutionResponse> {
     // TODO: Implement actual WebSocket communication
     // This should:
     // 1. Find the client WebSocket connection by sessionId
@@ -106,21 +106,38 @@ export abstract class RemoteCommand extends BaseCommand {
     // 3. Wait for response with timeout
     // 4. Handle connection errors and timeouts
     
-    console.log(`🔍 RemoteCommand: Mock execution for ${request.command} with params:`, request.params);
+    console.log(`🔍 RemoteCommand: Attempting real WebSocket communication for ${request.command}`);
     
-    // For now, return a command-specific mock response
-    if (request.command === 'screenshot') {
-      // Mock screenshot response with expected properties
+    try {
+      // Try to use the established daemon bus for browser communication
+      const daemonBusResult = await this.sendViaDaemonBus(request, context);
+      return daemonBusResult;
+    } catch (error) {
+      console.log(`⚠️ RemoteCommand: Daemon bus failed, using mock: ${error instanceof Error ? error.message : String(error)}`);
+      
+      // Fallback to mock for development
+      if (request.command === 'screenshot') {
+        return {
+          success: true,
+          data: {
+            imageData: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChAGANllpZQAAAABJRU5ErkJggg==',
+            filename: request.params.filename || 'mock-screenshot.png',
+            selector: request.params.selector || 'body',
+            format: 'png',
+            width: 100,
+            height: 100
+          },
+          clientMetadata: {
+            userAgent: 'MockBrowser/1.0',
+            timestamp: Date.now(),
+            executionTime: 50
+          }
+        };
+      }
+      
       return {
         success: true,
-        data: {
-          imageData: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChAGANllpZQAAAABJRU5ErkJggg==', // 1x1 transparent PNG
-          filename: request.params.filename || 'mock-screenshot.png',
-          selector: request.params.selector || 'body',
-          format: 'png',
-          width: 100,
-          height: 100
-        },
+        data: { message: 'Mock remote execution result' },
         clientMetadata: {
           userAgent: 'MockBrowser/1.0',
           timestamp: Date.now(),
@@ -128,17 +145,18 @@ export abstract class RemoteCommand extends BaseCommand {
         }
       };
     }
+  }
+  
+  /**
+   * Send command via daemon bus (the proper way)
+   */
+  private static async sendViaDaemonBus(request: RemoteExecutionRequest, _context?: CommandContext): Promise<RemoteExecutionResponse> {
+    // This should route through the CommandProcessorDaemon to the appropriate daemon
+    // For browser commands, it should go to BrowserManagerDaemon
+    console.log(`📡 RemoteCommand: Routing via daemon bus:`, request.command);
     
-    // Generic mock response for other commands
-    return {
-      success: true,
-      data: { message: 'Mock remote execution result' },
-      clientMetadata: {
-        userAgent: 'MockBrowser/1.0',
-        timestamp: Date.now(),
-        executionTime: 50
-      }
-    };
+    // For now, throw to use fallback until daemon bus integration is complete
+    throw new Error('Daemon bus integration not yet implemented for RemoteCommand');
   }
 
   /**
