@@ -5,6 +5,7 @@
   "main": "ScreenshotCommand.ts",
   "type": "module",
   "continuum": {
+    "type": "command",
     "core": "screenshot",
     "category": "Browser",
     "capabilities": [
@@ -12,6 +13,11 @@
       "visual-capture",
       "session-file-management"
     ],
+    "actions": ["screenshot", "capture", "snap"],
+    "exports": {
+      "ScreenshotCommand": "./ScreenshotCommand.ts",
+      "ScreenshotHandler": "./ScreenshotHandler.ts"
+    },
     "dependencies": [],
     "interfaces": [],
     "permissions": []

@@ -3,8 +3,8 @@
  * Elegant screenshot capture with advanced targeting and orchestration
  */
 
-import { RemoteCommand, RemoteExecutionRequest, RemoteExecutionResponse } from '../../core/remote-command/RemoteCommand.js';
-import { CommandDefinition, CommandResult } from '../../core/base-command/BaseCommand.js';
+import { RemoteCommand, RemoteExecutionRequest, RemoteExecutionResponse } from '../../core/remote-command/RemoteCommand';
+import { CommandDefinition, CommandResult } from '../../core/base-command/BaseCommand';
 import { normalizeCommandCategory } from '../../../types/shared/CommandTypes';
 import * as path from 'path';
 

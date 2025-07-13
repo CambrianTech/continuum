@@ -1,0 +1,61 @@
+{
+  "name": "@continuum/examples-widgets",
+  "version": "0.1.0",
+  "description": "Example widgets demonstrating dynamic patterns and best practices",
+  "main": "DynamicPatternDemoWidget.ts",
+  "continuum": {
+    "type": "widget",
+    "category": "examples",
+    "graduation": {
+      "status": "graduated",
+      "compliance": 100,
+      "features": [
+        "type-safe server communication",
+        "dynamic command discovery", 
+        "elegant spread operator patterns",
+        "self-contained data loading",
+        "npm intelligence patterns"
+      ]
+    },
+    "widgets": {
+      "DynamicPatternDemo": {
+        "class": "DynamicPatternDemoWidget",
+        "element": "dynamic-pattern-demo",
+        "setupHook": "initializeWidgetData",
+        "dataSource": "./data/demo-data.json",
+        "capabilities": [
+          "canFetchData",
+          "canExecuteCommands", 
+          "respondsToEvents",
+          "supportsExport"
+        ]
+      }
+    },
+    "quality": {
+      "enforcement": {
+        "commit": "strict",
+        "push": "strict"
+      },
+      "linting": {
+        "typescript": "strict",
+        "eslint": "strict",
+        "prettier": true
+      },
+      "testing": {
+        "unit": true,
+        "integration": true,
+        "coverage": 90
+      }
+    }
+  },
+  "scripts": {
+    "setup": "node setup-widget-data.js",
+    "test": "npx tsx test/DynamicPatternDemo.test.ts",
+    "lint": "eslint *.ts --fix",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}
