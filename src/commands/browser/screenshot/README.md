@@ -2,6 +2,21 @@
 
 **🎯 RemoteCommand**: Browser-server orchestrated screenshot capture with unified artifact system integration. Demonstrates proper command chaining and session-aware file handling.
 
+## Definition
+**Name**: screenshot
+**Description**: Capture browser screenshot with advanced targeting
+**Icon**: 📸
+**Category**: Browser
+**Status**: Active
+
+## Parameters
+- `selector`: CSS selector to target for screenshot
+- `filename`: Output filename for the screenshot
+- `format`: Image format (png, jpg, jpeg, webp)
+- `destination`: Where to save (file, bytes, both)
+- `animation`: Animation type (none, visible, animated)
+- `subdirectory`: Subdirectory to save the screenshot in
+
 ## 🚀 Usage
 
 ### Command Interface

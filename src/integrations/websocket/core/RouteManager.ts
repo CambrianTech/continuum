@@ -1,6 +1,10 @@
+// ISSUES: 0 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
  * Route Manager - Clean HTTP route handling with WebSocket messaging
  * Pure routing logic, no content generation, uses WebSocket for daemon communication
+ * 
+ * ✅ CLEANED UP: Removed hardcoded session management logic (2025-07-13)
+ * ✅ CLEANED UP: Made session management modular via daemons (2025-07-13)
  */
 
 export interface RouteHandler {
@@ -75,7 +79,13 @@ export class RouteManager {
           method: req.method,
           headers: req.headers,
           url: req.url,
-          body
+          body,
+          // Include raw request info for daemons to handle session extraction
+          requestInfo: {
+            headers: req.headers,
+            url: req.url,
+            method: req.method
+          }
         }
       };
 
@@ -103,6 +113,11 @@ export class RouteManager {
           }
           
           const headers = response.data?.headers || {};
+          
+          // If response includes session management headers, include them
+          if (response.sessionHeaders) {
+            Object.assign(headers, response.sessionHeaders);
+          }
           
           res.writeHead(200, { 
             'Content-Type': contentType,
@@ -152,6 +167,7 @@ export class RouteManager {
   getRegisteredRoutes(): string[] {
     return Array.from(this.routes.keys());
   }
+
 
   private parseRequestBody(req: any): Promise<any> {
     return new Promise((resolve, reject) => {

@@ -1,6 +1,11 @@
+// ISSUES: 0 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
  * Command Processor Daemon - TypeScript-first command execution orchestration
  * Strongly typed, modular, and designed for mesh distribution
+ * 
+ * ✅ CLEANED UP: Fixed session extraction with proper shared types (2025-07-13)
+ * ✅ CLEANED UP: Made session management modular via SessionManagerDaemon (2025-07-13)
+ * ✅ CLEANED UP: Removed hardcoded session logic from API handlers (2025-07-13)
  */
 
 import { BaseDaemon } from '../base/BaseDaemon';
@@ -10,6 +15,7 @@ import {
 } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
 import { DaemonConnector } from '../../integrations/websocket/core/DaemonConnector';
+import { SessionExtractionRequest, SessionExtractionResponse } from '../../types/shared/SessionTypes';
 
 // Strongly typed command interfaces
 export interface TypedCommandRequest<T = unknown> {
@@ -213,7 +219,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
   private async routeMessage(message: DaemonMessage): Promise<DaemonResponse> {
     console.log(`🔍 CommandProcessor: Routing message, extracting command info...`);
     // Extract command info from any message format
-    const commandInfo = this.extractCommandFromMessage(message);
+    const commandInfo = await this.extractCommandFromMessage(message);
     console.log(`🔍 CommandProcessor: Extracted command: ${commandInfo.command}, success: ${commandInfo.success}`);
     
     if (!commandInfo.success) {
@@ -228,13 +234,13 @@ export class CommandProcessorDaemon extends BaseDaemon {
     });
   }
   
-  private extractCommandFromMessage(message: DaemonMessage): {
+  private async extractCommandFromMessage(message: DaemonMessage): Promise<{
     success: boolean;
     command?: string;
     parameters?: any;
     context?: any;
     error?: string;
-  } {
+  }> {
     switch (message.type) {
       case 'command.execute':
         const directData = message.data as TypedCommandRequest;
@@ -272,7 +278,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
 
       case 'handle_api':
         const apiData = message.data as any; // TODO: Add proper type
-        const { pathname } = apiData;
+        const { pathname, requestInfo } = apiData;
         const pathParts = pathname.split('/').filter(Boolean);
         if (pathParts[0] === 'api' && pathParts[1] === 'commands' && pathParts[2]) {
           // Consistent parameter structure: merge args array with top-level parameters
@@ -283,6 +289,9 @@ export class CommandProcessorDaemon extends BaseDaemon {
             args: args  // Keep args array for commands that expect it
           };
           
+          // Use SessionManagerDaemon to extract session info dynamically
+          const sessionContext = await this.extractSessionContext(requestInfo);
+          
           return {
             success: true,
             command: pathParts[2],
@@ -291,6 +300,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
               source: 'http', 
               method: apiData.method, 
               url: apiData.url,
+              sessionId: sessionContext?.sessionId, // Session ID from SessionManagerDaemon
               // Include websocket context for daemon access (passed from WebSocketDaemon)
               websocket: apiData?.context?.websocket || null
             }
@@ -540,6 +550,17 @@ export class CommandProcessorDaemon extends BaseDaemon {
     );
     console.log(`🔍 [CommandProcessor] Daemon response:`, response);
     
+    // Check if this is a connect command response with session info
+    if (response.success && response.data && typeof response.data === 'object' && 'sessionId' in response.data) {
+      // Add session info to the response for HTTP cookie handling
+      return {
+        ...response,
+        sessionInfo: {
+          sessionId: (response.data as any).sessionId
+        }
+      } as DaemonResponse & { sessionInfo?: { sessionId: string } };
+    }
+    
     return response;
   }
 
@@ -587,6 +608,30 @@ export class CommandProcessorDaemon extends BaseDaemon {
     this.log(`🐍 Executing in Python: ${request.command}`);
     // Would integrate with Python execution system
     return { provider: 'python', status: 'executed' } as R;
+  }
+
+  /**
+   * Extract session context from HTTP request info using SessionManagerDaemon
+   */
+  private async extractSessionContext(requestInfo: SessionExtractionRequest): Promise<{ sessionId?: string }> {
+    try {
+      // Delegate session extraction to SessionManagerDaemon
+      const sessionResponse = await this.sendMessage(
+        'session-manager' as any,
+        'session.extract',
+        requestInfo
+      );
+      
+      if (sessionResponse.success && sessionResponse.data) {
+        const extractionResult = sessionResponse.data as SessionExtractionResponse;
+        return extractionResult.sessionId ? { sessionId: extractionResult.sessionId } : {};
+      }
+      
+      return {};
+    } catch (error) {
+      console.error(`🔍 [CommandProcessor] Session extraction failed: ${error}`);
+      return {};
+    }
   }
 
   private async executeCloudImplementation<T, R>(request: TypedCommandRequest<T>): Promise<R> {

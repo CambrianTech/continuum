@@ -8,6 +8,7 @@ This directory contains the foundational architectural documentation for Continu
 
 ### **🎯 Core System Architecture**
 - **[universal-module-schema.md](universal-module-schema.md)** - **✅ IMPLEMENTED** Universal module discovery and validation system with npm intelligence patterns
+- **[rest-api.md](rest-api.md)** - **🌐 REST API Documentation** - Modern HTTP API with session management for AI agents and automation
 - **[onion-pattern.md](onion-pattern.md)** - Layered onion architecture for dual client-server systems (coming soon)
 
 ### **🔬 System Design Patterns**

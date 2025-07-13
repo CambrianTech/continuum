@@ -17,6 +17,7 @@ export interface FileWriteParams {
   artifactType?: 'screenshot' | 'log' | 'recording' | 'file' | 'devtools' | 'metadata';
   directory?: string; // Override default location
   encoding?: BufferEncoding;
+  marshalId?: string; // For command chaining correlation
 }
 
 export class FileWriteCommand extends BaseFileCommand {
@@ -67,6 +68,7 @@ export class FileWriteCommand extends BaseFileCommand {
       await this.logFileOperation('write', targetPath, {
         artifactType: params.artifactType,
         sessionId: params.sessionId,
+        marshalId: params.marshalId,
         size: Buffer.isBuffer(params.content) ? params.content.length : Buffer.byteLength(params.content, encoding || 'utf8')
       });
       
@@ -74,10 +76,11 @@ export class FileWriteCommand extends BaseFileCommand {
         `File written successfully: ${params.filename}`,
         {
           filename: params.filename,
-          path: targetPath,
+          filepath: targetPath,
           size: Buffer.isBuffer(params.content) ? params.content.length : Buffer.byteLength(params.content, encoding),
           artifactType: params.artifactType,
           sessionId: params.sessionId,
+          marshalId: params.marshalId,
           timestamp: new Date().toISOString()
         }
       );

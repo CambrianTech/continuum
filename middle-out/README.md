@@ -49,6 +49,7 @@ This directory contains the complete architectural documentation for Continuum's
 - **[README.md](architecture/README.md)** - Architecture documentation overview and principles
 - **[universal-module-schema.md](architecture/universal-module-schema.md)** - **✅ IMPLEMENTED** Universal module schema system for AI-friendly discovery and validation
 - **[universal-integration-parsers.md](architecture/universal-integration-parsers.md)** - **🎯 NEW** Universal integration parser system - any format to any format translation
+- **[rest-api.md](architecture/rest-api.md)** - **🌐 REST API Documentation** - Modern HTTP API with session management for AI agents and automation
 - **[system-breakthroughs.md](architecture/system-breakthroughs.md)** - Multi-level inheritance and command vs program distinction (coming soon)
 - **[onion-pattern.md](architecture/onion-pattern.md)** - Layered onion architecture for dual client-server systems (coming soon)
 - **[self-validation.md](architecture/self-validation.md)** - Self-healing infrastructure patterns (coming soon)

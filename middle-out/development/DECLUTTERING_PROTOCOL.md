@@ -1,5 +1,9 @@
 # Decluttering Protocol - "Nothing Goes in Root"
 
+<!-- ISSUES: 1 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md -->
+<!-- 🚨 CRITICAL: 39 markdown files in root directory need proper organization -->
+<!-- ✅ CLEANED UP: Moved REST-API.md to middle-out/architecture/rest-api.md (2025-07-13) -->
+
 ## 🎯 **Core Principle: Clean Repository Root**
 
 > **"Nothing ever goes in the root of this repo"** - Architectural Law
