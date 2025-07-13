@@ -11,6 +11,12 @@ The Academy transforms AI training from passive learning into competitive develo
 ### **🏗️ Architecture & Implementation**
 - **[architecture-overview.md](architecture-overview.md)** - Complete Academy architecture with implemented classes, stubs to complete, and development roadmap
 
+### **🔍 Persona Discovery & Assembly**
+- **[persona-discovery.md](persona-discovery.md)** - **🆕 NEW** Efficient vector search + benchmark-driven ranking for autonomous persona selection
+- **[autonomous-selection.md](autonomous-selection.md)** - **🆕 NEW** Hyperintelligent genome assembly with deep understanding of component interactions
+- **[algorithmic-testing.md](algorithmic-testing.md)** - **🆕 NEW** Test-driven algorithm development with component validation and real performance metrics
+- **[global-persona-portability.md](global-persona-portability.md)** - Global persona distribution and P2P discovery architecture *(coming soon)*
+
 ### **🏆 Competitive Training**
 - **[competitive-training-system.md](competitive-training-system.md)** - Complete gamified training architecture with dynamic scoring, tournaments, and achievement systems
 
