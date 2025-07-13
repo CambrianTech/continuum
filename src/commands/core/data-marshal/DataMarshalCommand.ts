@@ -112,9 +112,7 @@ export class DataMarshalCommand extends BaseCommand {
 
   static async execute(params: any, context?: any): Promise<CommandResult> {
     try {
-      console.log('🚨 DataMarshal RAW PARAMS:', { params, type: typeof params, keys: Object.keys(params || {}) });
       const options = DataMarshalCommand.parseParams<DataMarshalOptions>(params);
-      console.log('🎯 DataMarshal execute:', { options, context });
       
       const {
         operation,
@@ -442,81 +440,6 @@ export class DataMarshalCommand extends BaseCommand {
     return Math.abs(hash).toString(16);
   }
 
-  /**
-   * Enhanced parameter parsing - learning from both implementations
-   * Handles CLI args, objects, JSON strings, and simple values
-   */
-  protected static parseParams<T>(params: any): T {
-    console.log('🔍 DataMarshal parseParams input:', { params, type: typeof params });
-    
-    // Handle command line args (--key=value format) - from version 2
-    if (params && params.args && Array.isArray(params.args)) {
-      const result: any = {};
-      for (const arg of params.args) {
-        if (typeof arg === 'string' && arg.startsWith('--')) {
-          const [key, value] = arg.split('=', 2);
-          const cleanKey = key.replace('--', '');
-          
-          // Enhanced parsing with better type detection
-          if (value === 'true') result[cleanKey] = true;
-          else if (value === 'false') result[cleanKey] = false;
-          else if (value === 'null') result[cleanKey] = null;
-          else if (value === 'undefined') result[cleanKey] = undefined;
-          else if (!isNaN(Number(value))) result[cleanKey] = Number(value);
-          else if (cleanKey === 'metadata' || cleanKey === 'data') {
-            try {
-              result[cleanKey] = JSON.parse(value);
-            } catch {
-              result[cleanKey] = value;
-            }
-          } else {
-            result[cleanKey] = value;
-          }
-        }
-      }
-      console.log('🔍 DataMarshal parsed CLI args:', result);
-      return result as T;
-    }
-    
-    // Handle direct CLI parameters (from continuum command line)
-    if (Array.isArray(params)) {
-      const result: any = {};
-      for (const param of params) {
-        if (typeof param === 'string' && param.startsWith('--')) {
-          const [key, value] = param.split('=', 2);
-          const cleanKey = key.replace('--', '');
-          result[cleanKey] = value;
-        }
-      }
-      console.log('🔍 DataMarshal parsed array params:', result);
-      return result as T;
-    }
-    
-    // Handle object parameters - direct pass-through
-    if (typeof params === 'object' && params !== null) {
-      console.log('🔍 DataMarshal using object params:', params);
-      return params as T;
-    }
-    
-    // Handle JSON string
-    if (typeof params === 'string') {
-      try {
-        const parsed = JSON.parse(params);
-        console.log('🔍 DataMarshal parsed JSON string:', parsed);
-        return parsed as T;
-      } catch {
-        // If not JSON, treat as data to encode
-        const result = { operation: 'encode', data: params };
-        console.log('🔍 DataMarshal treating string as data:', result);
-        return result as T;
-      }
-    }
-    
-    // Default fallback
-    const fallback = { operation: 'encode' };
-    console.log('🔍 DataMarshal using fallback:', fallback);
-    return fallback as T;
-  }
 
   /**
    * Emit marshal events for system integration

@@ -8,6 +8,9 @@ import { CommandResult, CommandDefinition, ParameterDefinition } from '../../../
 // Re-export shared types for backward compatibility
 export type { CommandResult, CommandDefinition, ParameterDefinition };
 
+// Import the modular parser system
+import { IntegrationParserRegistry } from './parsers';
+
 // Common types for context properties
 export interface WebSocketServer {
   send: (message: unknown) => void;
@@ -64,19 +67,14 @@ export abstract class BaseCommand {
   }
 
   /**
-   * Parse parameters with type safety
+   * Parse parameters using modular integration parser system
+   * Any format to BaseCommand's canonical JSON format
    */
   protected static parseParams<T = unknown>(params: unknown): T {
-    if (typeof params === 'string') {
-      try {
-        return JSON.parse(params) as T;
-      } catch (error) {
-        console.warn(`Failed to parse JSON params: ${params}`, error);
-        return params as T;
-      }
-    }
-    return params as T;
+    return IntegrationParserRegistry.parse<T>(params);
   }
+
+
 
   /**
    * Create standardized success result
