@@ -13,9 +13,7 @@ class ThinContinuumCLI {
    * Universal argument parsing - no special cases, everything is a command
    */
   parseArgs(args: string[]): { command: string; rawArgs: string[] } {
-    if (args.length === 0) {
-      return { command: 'connect', rawArgs: [] };
-    }
+    // Note: args.length === 0 is handled by run() method before this is called
     
     const firstArg = args[0];
     
@@ -87,20 +85,33 @@ class ThinContinuumCLI {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       
-      // If command failed and user asked for help, provide babel fish guidance
-      if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
-        console.error(`❌ Command failed: ${errorMessage}`);
-        console.log('');
-        console.log('💡 Try these alternatives for help:');
-        console.log(`   continuum help ${command}                # Get command-specific help`);
-        console.log(`   continuum commands                       # List all available commands`);
-        console.log(`   continuum help                           # General CLI help`);
-        console.log('');
-        console.log('🐋 Babel fish note: This command module doesn\'t handle --help properly');
-        console.log('   The system forwarded your request correctly, but the command needs --help support');
-      } else {
-        console.error(`❌ Command failed: ${errorMessage}`);
+      // If command failed with 500 (likely missing parameters), auto-show help
+      if (errorMessage.includes('HTTP 500')) {
+        console.log(`💡 Command '${command}' needs parameters. Showing help:\n`);
+        
+        try {
+          // Auto-call help command by spawning new CLI process
+          const { spawn } = await import('child_process');
+          const helpProcess = spawn('npx', ['tsx', 'src/cli/continuum-cli.ts', 'help', command], { 
+            stdio: 'inherit',
+            cwd: process.cwd()
+          });
+          
+          await new Promise((resolve) => {
+            helpProcess.on('close', resolve);
+          });
+          return;
+        } catch {
+          // Fallback to simple guidance if help command fails
+        }
+        
+        console.log(`📖 Usage: continuum ${command} [options]`);
+        console.log(`💡 Try: continuum help ${command} for detailed help`);
+        return;
       }
+      
+      // Other errors
+      console.error(`❌ Command failed: ${errorMessage}`);
       process.exit(1);
     }
   }
@@ -255,7 +266,7 @@ class ThinContinuumCLI {
   async run(): Promise<void> {
     const args = process.argv.slice(2);
     
-    // Only show CLI help for bare help commands, not help with args
+    // Show CLI help for bare help commands or empty args
     if (args.length === 0 || (args.length === 1 && (args[0] === '--help' || args[0] === '-h'))) {
       this.showHelp();
       return;

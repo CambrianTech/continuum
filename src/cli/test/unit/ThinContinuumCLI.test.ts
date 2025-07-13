@@ -21,10 +21,11 @@ describe('ThinContinuumCLI - Universal Command Interface', () => {
   });
 
   describe('parseArgs - Universal Argument Parsing', () => {
-    test('should default to connect when no args provided', () => {
-      const result = cli.parseArgs([]);
-      assert.strictEqual(result.command, 'connect');
-      assert.deepStrictEqual(result.rawArgs, []);
+    test('should parse first argument as command (empty args handled by run method)', () => {
+      // Note: parseArgs is not called with empty args in real usage - run() handles that case
+      const result = cli.parseArgs(['health', '--detailed']);
+      assert.strictEqual(result.command, 'health');
+      assert.deepStrictEqual(result.rawArgs, ['--detailed']);
     });
 
     test('should parse regular commands correctly', () => {

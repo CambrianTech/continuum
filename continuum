@@ -4,22 +4,15 @@
 
 # Handle special daemon management commands that need bash
 case "$1" in
-  "start"|"stop"|"restart"|"status"|"version"|"--version"|"-v"|"")
-    # Keep these commands in bash - they need process management or are defaults
+  "start"|"stop"|"restart"|"status"|"version"|"--version"|"-v")
+    # Only daemon management commands stay in bash
     ;;
-  "help"|"--help"|"-h")
-    # Only handle bare help in bash - help with args goes to TypeScript
-    if [ $# -eq 1 ]; then
-      # Bare help command - show bash help
-      :  # Continue to bash help handling below
-    else
-      # Help with arguments - forward to TypeScript for command-specific help
-      npx tsx src/cli/continuum-cli.ts "$@"
-      exit $?
-    fi
+  "")
+    # Empty command - default to connect
+    set -- "connect" "$@"
     ;;
   *)
-    # Ultra-thin pipe to TypeScript - CLI knows NOTHING about commands
+    # Everything else goes to TypeScript CLI - no special cases
     npx tsx src/cli/continuum-cli.ts "$@"
     exit $?
     ;;
@@ -233,30 +226,10 @@ case "$1" in
     exit 0
     ;;
   "")
-    # Default to connect when no command provided  
+    # Empty command - default to connect
     set -- "connect" "$@"
     ;;
   "help"|"--help"|"-h")
-    echo "🌐 Continuum CLI - Dynamic Command Proxy"
-    echo ""
-    echo "🚀 Daemon Management:"
-    echo "  start, stop, restart             # Process management"  
-    echo "  status, version                  # System info"
-    echo ""
-    echo "🔧 Smart Command Discovery:"
-    echo "  continuum commands               # List all available commands (auto-proxy)"
-    echo "  continuum list                   # Same as above"
-    echo "  continuum capture                # Screenshot (auto-proxy)"
-    echo "  ./jtag.ts help                   # JTAG debugging tools"
-    echo ""
-    echo "💡 Dynamic Proxy:"
-    echo "  continuum [any-command]          # Auto-discovers and forwards"
-    echo "  • Checks if command exists"
-    echo "  • Smart UX aliases (commands→help, capture→screenshot)"
-    echo "  • Forwards unknown commands to system for handling"
-    echo ""
-    echo "📖 Zero hard-coding: Proxy adapts to command system dynamically!"
-    exit 0
     ;;
 esac
 
@@ -266,175 +239,8 @@ if ! daemon_running; then
   start_daemon || exit 1
 fi
 
-# Build request payload with session parameters
-request_data="{"
+# Session parameters handled by TypeScript CLI - no bash JSON building needed
 
-# Add session parameters if provided
-if [ -n "$SESSION_ID" ]; then
-  request_data="$request_data\"sessionId\": \"$SESSION_ID\", "
-fi
-
-if [ -n "$SESSION_TYPE" ]; then
-  request_data="$request_data\"sessionType\": \"$SESSION_TYPE\", "
-else
-  request_data="$request_data\"sessionType\": \"development\", "
-fi
-
-if [ -n "$OWNER" ]; then
-  request_data="$request_data\"owner\": \"$OWNER\", "
-else
-  request_data="$request_data\"owner\": \"shared\", "
-fi
-
-if [ -n "$FORCE_NEW" ]; then
-  request_data="$request_data\"forceNew\": true, "
-else
-  request_data="$request_data\"forceNew\": false, "
-fi
-
-if [ "$FOCUS" = "true" ]; then
-  request_data="$request_data\"focus\": true, "
-else
-  request_data="$request_data\"focus\": false, "
-fi
-
-if [ "$KILL_ZOMBIES" = "true" ]; then
-  request_data="$request_data\"killZombies\": true"
-else
-  request_data="$request_data\"killZombies\": false"
-fi
-
-# Add command arguments dynamically (non-god object pattern)
-if [ ${#COMMAND_ARGS[@]} -gt 0 ]; then
-  request_data="$request_data, \"args\": ["
-  for i in "${!COMMAND_ARGS[@]}"; do
-    # Escape quotes in argument
-    escaped_arg=$(echo "${COMMAND_ARGS[$i]}" | sed 's/"/\\"/g')
-    request_data="$request_data\"$escaped_arg\""
-    if [ $i -lt $((${#COMMAND_ARGS[@]} - 1)) ]; then
-      request_data="$request_data, "
-    fi
-  done
-  request_data="$request_data]"
-fi
-
-request_data="$request_data}"
-
-# Special handling for connect command (default)
-if [ "$1" = "connect" ]; then
-  response=$(curl -s -X POST "http://localhost:9000/api/commands/$1" \
-    -H "Content-Type: application/json" \
-    -d "$request_data" 2>/dev/null)
-  
-  if [ $? -eq 0 ] && [ -n "$response" ]; then
-    # Debug: show raw response
-    # echo "DEBUG: Raw response: $response"
-    
-    # Parse the response
-    if command -v jq > /dev/null 2>&1; then
-      # Check if response has sessionId at top level (new format)
-      if echo "$response" | jq -e '.sessionId' > /dev/null 2>&1; then
-        SESSION_ID=$(echo "$response" | jq -r '.sessionId')
-        ACTION=$(echo "$response" | jq -r '.action')
-        INTERFACE=$(echo "$response" | jq -r '.interface')
-        BROWSER_LAUNCHED=$(echo "$response" | jq -r '.launched.browser')
-        VERSION=$(echo "$response" | jq -r '.version // "unknown"')
-        SERVER_LOG=$(echo "$response" | jq -r '.logs.server // ""')
-        BROWSER_LOG=$(echo "$response" | jq -r '.logs.browser // ""')
-        SCREENSHOTS_DIR=$(echo "$response" | jq -r '.screenshots // ""')
-        STOP_CMD=$(echo "$response" | jq -r '.commands.stop // ""')
-        INFO_CMD=$(echo "$response" | jq -r '.commands.info // ""')
-        FORK_CMD=$(echo "$response" | jq -r '.commands.fork // ""')
-        CLIENTS_CMD=$(echo "$response" | jq -r '.commands.otherClients // ""')
-        
-        # Get current directory for full path display
-        PROJECT_DIR=$(pwd)
-        
-        # Show enhanced user-friendly output
-        echo ""
-        echo "🎉 Connected to Continuum v$VERSION"
-        echo "   Session: $SESSION_ID"
-        echo "   Status:  $ACTION"
-        echo "   URL:     $INTERFACE"
-        echo ""
-        echo "📂 Project: $PROJECT_DIR"
-        echo ""
-        echo "📋 Session Logs:"
-        echo "   🖥️  Server:  tail -f $SERVER_LOG (human-readable)"
-        echo "   🌐 Browser: tail -f $BROWSER_LOG (human-readable)"
-        echo ""
-        echo "📸 Screenshots: $SCREENSHOTS_DIR"
-        echo ""
-        echo "🛠️  Session Management:"
-        echo "   ℹ️  Info:    $INFO_CMD"
-        echo "   ⏹️  Stop:    $STOP_CMD" 
-        echo "   🔀 Fork:    $FORK_CMD"
-        echo "   👥 Clients: $CLIENTS_CMD"
-        echo ""
-        echo "💡 Log Features:"
-        echo "   • Browser logs now in structured JSON format"
-        echo "   • Object serialization prevents [object Object] issues"
-        echo "   • Level-specific log files for targeted monitoring:"
-        echo "     🔴 error   → browser.error.json"
-        echo "     🟡 warn    → browser.warn.json"
-        echo "     🔵 info    → browser.info.json"
-        echo "     ⚪ log     → browser.log.json"
-        echo "     🟣 trace   → browser.trace.json"
-        echo "     👽 probe   → browser.probe.json (AI diagnostics)"
-        echo "   • Full context: timestamps, session correlation, stack traces"
-        echo ""
-        echo "🤖 AI Development Tips:"
-        echo "   • Use console.probe('message', data) for simple diagnostics"
-        echo "   • Advanced: console.probe({ message, data, executeJS, category, tags })"
-        echo "   • JavaScript execution: executeJS: 'document.title' (captured safely)"
-        echo "   • Monitor AI probes: tail -f browser.probe.json"
-        echo "   • Isolate by category: grep 'ai-diagnostic' browser.probe.json"
-        echo ""
-        
-        # Check if browser should launch
-        if [ "$BROWSER_LAUNCHED" = "true" ]; then
-          echo "🌐 Browser launching..."
-        fi
-      else
-        # Error response
-        ERROR=$(echo "$response" | jq -r '.error // "Unknown error"')
-        echo "❌ Connection failed: $ERROR"
-        # Debug: show what we got
-        echo "DEBUG: Response was: $response"
-        exit 1
-      fi
-    else
-      # No jq, just show raw response
-      echo "$response"
-    fi
-  else
-    echo "❌ Failed to connect to daemon"
-    echo "🔍 Checking daemon status..."
-    status_daemon
-    exit 1
-  fi
-else
-  # For other commands, call via API
-  echo "🌐 Executing command: $1"
-  if [ -n "$SESSION_ID" ] || [ -n "$SESSION_TYPE" ] || [ -n "$OWNER" ] || [ -n "$FORCE_NEW" ]; then
-    echo "   Session parameters: sessionId=$SESSION_ID, type=$SESSION_TYPE, owner=$OWNER, forceNew=$FORCE_NEW"
-  fi
-
-  response=$(curl -s -X POST "http://localhost:9000/api/commands/$1" \
-    -H "Content-Type: application/json" \
-    -d "$request_data" 2>/dev/null)
-
-  if [ $? -eq 0 ] && [ -n "$response" ]; then
-    # Pretty print JSON if possible
-    if command -v jq > /dev/null 2>&1; then
-      echo "$response" | jq .
-    else
-      echo "$response"
-    fi
-  else
-    echo "❌ Command failed or daemon not responding"
-    echo "🔍 Checking daemon status..."
-    status_daemon
-    exit 1
-  fi
-fi
+# Universal command handling - ALL commands go through TypeScript CLI
+# No special cases, no god objects, pure ultra-thin delegation
+npx tsx src/cli/continuum-cli.ts "$@"
