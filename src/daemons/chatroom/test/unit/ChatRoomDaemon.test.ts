@@ -8,7 +8,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import { ChatRoomDaemon } from '../../ChatRoomDaemon';
-import { ChatRoomType, ParticipantRole, ParticipantStatus } from '../../../../types/shared/ChatRoomTypes';
+import { ChatRoomType, ParticipantRole, ParticipantStatus } from '../../../../types/shared/chat/ChatTypes';
 import { CommandOperation } from '../../../../types/shared/CommandOperationTypes';
 import { loadDefaultRoomsConfig, DefaultRoomSpec } from '../../DefaultRoomsConfig';
 

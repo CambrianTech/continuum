@@ -58,7 +58,7 @@ import {
   MessageType,
   ParticipantRole,
   ParticipantStatus
-} from '../../types/shared/ChatRoomTypes';
+} from '../../types/shared/chat/ChatTypes';
 import { CommandOperation, getChatRoomOperations } from '../../types/shared/CommandOperationTypes';
 import { loadDefaultRoomsConfig } from './DefaultRoomsConfig';
 
@@ -134,7 +134,9 @@ export class ChatRoomDaemon extends RequestResponseDaemon {
       session_id: params.session_id || 'unknown',
       joined_at: new Date(),
       role: ParticipantRole.OWNER,
-      status: ParticipantStatus.ONLINE
+      status: ParticipantStatus.ONLINE,
+      last_seen: new Date(),
+      metadata: {}
     }]));
     this.messageHistory.set(roomId, []);
 
@@ -166,7 +168,9 @@ export class ChatRoomDaemon extends RequestResponseDaemon {
       session_id: session_id || 'unknown',
       joined_at: new Date(),
       role: ParticipantRole.MEMBER,
-      status: ParticipantStatus.ONLINE
+      status: ParticipantStatus.ONLINE,
+      last_seen: new Date(),
+      metadata: {}
     });
     this.participants.set(room_id, roomParticipants);
 
@@ -405,7 +409,9 @@ export class ChatRoomDaemon extends RequestResponseDaemon {
             session_id: 'system',
             joined_at: new Date(),
             role: ParticipantRole.OWNER,
-            status: ParticipantStatus.ONLINE
+            status: ParticipantStatus.ONLINE,
+            last_seen: new Date(),
+            metadata: {}
           }]));
           this.messageHistory.set(roomSpec.id, []);
 
@@ -438,7 +444,9 @@ export class ChatRoomDaemon extends RequestResponseDaemon {
         session_id: 'system',
         joined_at: new Date(),
         role: ParticipantRole.OWNER,
-        status: ParticipantStatus.ONLINE
+        status: ParticipantStatus.ONLINE,
+        last_seen: new Date(),
+        metadata: {}
       }]));
       this.messageHistory.set('general', []);
       
