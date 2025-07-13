@@ -79,6 +79,9 @@ export namespace Console {
       lineNumber?: number;
       columnNumber?: number;
       fileName?: string;
+      viewportWidth?: number;
+      viewportHeight?: number;
+      timestamp?: string;
     };
   }
 
@@ -116,6 +119,21 @@ export namespace Console {
       
       if (argType === 'object') {
         try {
+          // Special handling for Error objects to capture stack trace
+          if (arg instanceof Error) {
+            return {
+              type: 'object',
+              value: {
+                name: arg.name,
+                message: arg.message,
+                stack: arg.stack,
+                cause: (arg as any).cause // Error.cause is ES2022, use any for compatibility
+              },
+              stringRepresentation: `${arg.name}: ${arg.message}\n${arg.stack || 'No stack trace available'}`,
+              originalType: '[object Error]'
+            };
+          }
+          
           const jsonString = JSON.stringify(arg, null, 2);
           return {
             type: 'object',
@@ -174,18 +192,63 @@ export namespace Console {
       const mainMessage = serializedArgs.length > 0 ? this.argumentsToString([serializedArgs[0]]) : '';
       const additionalArgs = serializedArgs.slice(1);
       
+      // Capture actual stack trace and browser context
+      const stackTrace = this.captureStackTrace();
+      const browserContext = this.captureBrowserContext();
+      
       return {
         level,
         message: mainMessage,
         arguments: additionalArgs,
         timestamp: new Date().toISOString(),
         metadata: {
-          url: typeof window !== 'undefined' ? window.location.href : '',
-          userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
-          stackTrace: '',
+          stackTrace,
+          ...browserContext,
           ...metadata
         }
       };
+    }
+    
+    /**
+     * Capture actual stack trace from current execution context
+     */
+    static captureStackTrace(): string {
+      try {
+        const error = new Error();
+        if (error.stack) {
+          // Remove our own utility functions from the stack trace
+          const lines = error.stack.split('\n');
+          const filteredLines = lines.filter(line => 
+            !line.includes('MessageUtils.captureStackTrace') &&
+            !line.includes('MessageUtils.createLogEntry') &&
+            !line.includes('ConsoleForwarder.forwardConsole')
+          );
+          return filteredLines.join('\n');
+        }
+      } catch (e) {
+        // Fallback if stack capture fails
+      }
+      return '';
+    }
+    
+    /**
+     * Capture comprehensive browser context
+     */
+    static captureBrowserContext(): Partial<LogEntry['metadata']> {
+      if (typeof window === 'undefined') {
+        return {};
+      }
+      
+      const context: Partial<LogEntry['metadata']> = {
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        fileName: window.location.pathname,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        timestamp: new Date().toISOString()
+      };
+      
+      return context;
     }
   }
 }

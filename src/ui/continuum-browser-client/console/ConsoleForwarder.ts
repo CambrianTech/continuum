@@ -130,10 +130,7 @@ export class ConsoleForwarder {
       const level = type as Console.Level;
       
       // Create properly formatted log entry using shared types
-      const logEntry = Console.MessageUtils.createLogEntry(level, args, {
-        url: typeof window !== 'undefined' ? window.location.href : '',
-        userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : ''
-      });
+      const logEntry = Console.MessageUtils.createLogEntry(level, args);
 
       // Add session ID to the log entry
       const consoleLogEntry: Console.LogEntry = {

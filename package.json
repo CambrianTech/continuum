@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2709",
+  "version": "0.2.2734",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -29,6 +29,9 @@
     "test:layer": "npx tsx src/system/testing/test/universal-layer-runner.ts --layer=",
     "test:widgets": "npx tsx src/testing/IntelligentModularTestRunner.ts widget",
     "test:daemons": "npx tsx src/testing/IntelligentModularTestRunner.ts daemon",
+    "test:chatroom": "npx tsx src/daemons/chatroom/test/run-tests.ts",
+    "test:chatroom:unit": "npx tsx --test src/daemons/chatroom/test/unit/ChatRoomDaemon.test.ts",
+    "test:chatroom:integration": "npx tsx --test src/daemons/chatroom/test/integration/ChatRoomDaemon.integration.test.ts",
     "test:commands": "npx tsx src/testing/IntelligentModularTestRunner.ts command",
     "test:compliance": "npx tsx src/testing/ModuleComplianceReport.ts --use-whitelist",
     "test:compliance:strict": "npx tsx src/testing/ModuleComplianceReport.ts --exit-on-failure",

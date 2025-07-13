@@ -10,6 +10,8 @@ import { SystemEventType } from '../../daemons/base/EventTypes';
 import { RouteManager } from './core/RouteManager';
 import { WebSocketManager } from './core/WebSocketManager';
 import { PortManager } from './core/PortManager';
+import { messageRouter } from './core/MessageRouter';
+import { initializeWebSocketHandlers } from './handlers';
 import { createServer } from 'http';
 
 export interface ServerConfig {
@@ -61,6 +63,10 @@ export class WebSocketDaemon extends BaseDaemon {
 
   protected async onStart(): Promise<void> {
     this.log(`🌐 Starting pure router on ${this.config.host}:${this.config.port}`);
+    
+    // Initialize clean MessageRouter handler registration system
+    initializeWebSocketHandlers();
+    this.log(`🎯 Clean MessageRouter handlers initialized`);
     
     // Listen for session assignments from SessionManagerDaemon
     const { DAEMON_EVENT_BUS } = await import('../../daemons/base/DaemonEventBus');
@@ -272,9 +278,9 @@ export class WebSocketDaemon extends BaseDaemon {
         this.log(`📨 WebSocket: ${message.type} from ${connectionId}`);
       }
       
-      // Route WebSocket messages to appropriate daemon
-      // This is pure message routing, no content knowledge
+      // HYBRID ROUTING: Keep critical handlers, add MessageRouter for extensibility
       
+      // LEGACY CRITICAL HANDLERS (preserve session context & daemon routing)
       if (message.type === 'execute_command') {
         this.routeCommandToProcessor(connectionId, message).catch(error => {
           this.log(`❌ Failed to route command: ${error}`, 'error');
@@ -296,11 +302,93 @@ export class WebSocketDaemon extends BaseDaemon {
           this.log(`❌ Failed to route message to daemon: ${error}`, 'error');
         });
       } else {
-        this.log(`📨 Unknown WebSocket message type: ${message.type}`);
+        // NEW: Route unknown message types through clean MessageRouter
+        this.routeMessageThroughCleanRouter(connectionId, message).catch(error => {
+          this.log(`❌ Failed to route through MessageRouter: ${error}`, 'error');
+        });
       }
     } catch (error) {
       this.log(`❌ WebSocket message parse error: ${error}`, 'error');
     }
+  }
+
+  /**
+   * Route message through clean MessageRouter system
+   * This enables the dependency inversion architecture we built
+   */
+  private async routeMessageThroughCleanRouter(connectionId: string, message: any): Promise<void> {
+    try {
+      this.log(`🎯 Routing ${message.type} through clean MessageRouter`);
+      
+      // Create a basic DaemonConnector for MessageRouter compatibility
+      // TODO: Implement full DaemonConnector with proper daemon access
+      const basicDaemonConnector = {
+        isConnected: () => true,
+        executeCommand: async (command: string, params: any, context: any) => {
+          // For now, delegate back to our existing command routing
+          return await this.routeCommandViaLegacySystem(command, params, context);
+        }
+      };
+      
+      // Route through MessageRouter
+      const response = await messageRouter.routeMessage(
+        message,
+        connectionId,
+        basicDaemonConnector as any
+      );
+      
+      if (response) {
+        // Send response back to WebSocket client
+        this.wsManager.sendToConnection(connectionId, response);
+        this.log(`✅ MessageRouter handled ${message.type} successfully`);
+      } else {
+        this.log(`⚠️ MessageRouter returned null for ${message.type}`);
+      }
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ MessageRouter error for ${message.type}: ${errorMessage}`, 'error');
+      
+      // Send error response to client
+      const errorResponse = {
+        type: 'error',
+        data: { 
+          error: errorMessage,
+          messageType: message.type,
+          source: 'MessageRouter'
+        },
+        timestamp: new Date().toISOString(),
+        requestId: message.requestId
+      };
+      
+      this.wsManager.sendToConnection(connectionId, errorResponse);
+    }
+  }
+
+  /**
+   * Legacy command routing for DaemonConnector compatibility
+   */
+  private async routeCommandViaLegacySystem(command: string, params: any, context: any): Promise<any> {
+    // Delegate to existing command processor system
+    const commandProcessor = this.registeredDaemons.get('command-processor');
+    if (commandProcessor) {
+      const daemonMessage = {
+        id: `msg-${Date.now()}`,
+        from: 'websocket-server',
+        to: 'command-processor',
+        type: 'command.execute',
+        timestamp: new Date(),
+        data: {
+          command,
+          parameters: params,
+          context
+        }
+      };
+      
+      return await commandProcessor.handleMessage(daemonMessage);
+    }
+    
+    return { success: false, error: 'Command processor not available' };
   }
 
   private async routeCommandToProcessor(connectionId: string, message: any): Promise<void> {

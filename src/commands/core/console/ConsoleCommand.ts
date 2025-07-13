@@ -7,57 +7,59 @@
 
 import { DirectCommand } from '../direct-command/DirectCommand';
 import { CommandResult, WebSocketCommandContext, CommandDefinition } from '../base-command/BaseCommand';
-import { BrowserConsoleLogForwarding } from '../../../types/shared/WebSocketCommunication';
+import { Console } from '../../../types/shared/ConsoleTypes';
 
 export class ConsoleCommand extends DirectCommand {
   /**
    * Normalize any client input format into our well-defined shared type
    * Server-side only - ensures type safety regardless of what client sends
    */
-  private static normalizeToSharedType(params: any): BrowserConsoleLogForwarding {
-    // If already in shared type format, use as-is
-    if (params.consoleLogLevel && params.consoleMessage) {
-      return params as BrowserConsoleLogForwarding;
+  private static normalizeToSharedType(params: any): Console.LogEntry {
+    // If already in Console.LogEntry format, use as-is
+    if (params.level && params.message && params.arguments) {
+      return params as Console.LogEntry;
     }
     
-    // Legacy format - convert to shared type
+    // Handle legacy BrowserConsoleLogForwarding format
+    if (params.consoleLogLevel && params.consoleMessage) {
+      return {
+        level: params.consoleLogLevel as Console.Level,
+        message: params.consoleMessage,
+        arguments: params.consoleArguments || [],
+        timestamp: params.browserContext?.timestamp || new Date().toISOString(),
+        sessionId: params.sessionId,
+        metadata: {
+          ...params.browserContext,
+          url: params.browserContext?.currentUrl,
+          stackTrace: params.browserContext?.stackTrace || '',
+          fileName: params.browserContext?.sourceFileName,
+          lineNumber: params.browserContext?.sourceLineNumber,
+          columnNumber: params.browserContext?.sourceColumnNumber,
+          viewportWidth: params.browserContext?.viewportWidth || 0,
+          viewportHeight: params.browserContext?.viewportHeight || 0
+        }
+      };
+    }
+    
+    // Handle very legacy format - convert to shared type using spread operators
     const { action, message, source, data, level, args, arguments: consoleArguments, timestamp, ...rest } = params;
     
     return {
-      consoleLogLevel: (action || level || 'log') as 'debug' | 'log' | 'info' | 'warn' | 'error',
-      consoleMessage: message || '',
-      consoleArguments: Array.isArray(args || consoleArguments) ? (args || consoleArguments).map((arg: any) => {
-        // Handle enhanced Console.ConsoleArgument format from shared types
-        if (arg && typeof arg === 'object' && arg.type === 'object' && arg.stringRepresentation) {
-          // This is a properly serialized ObjectArgument from Console.MessageUtils
-          return {
-            argumentType: 'object' as const,
-            argumentValue: arg.stringRepresentation,
-            originalValue: arg.value
-          };
-        }
-        
-        // Handle simple types
-        const argType = typeof arg;
-        const mappedType = argType === 'bigint' || argType === 'symbol' ? 'string' : 
-                          arg === null ? 'null' : argType;
-        return {
-          argumentType: mappedType as 'string' | 'number' | 'boolean' | 'object' | 'function' | 'undefined' | 'null',
-          argumentValue: String(arg),
-          originalValue: arg
-        };
-      }) : [],
-      browserContext: {
-        sourceFileName: data?.fileName || rest.fileName,
-        sourceLineNumber: data?.lineNumber || rest.lineNumber,
-        sourceColumnNumber: data?.columnNumber || rest.columnNumber,
-        functionName: data?.functionName || rest.functionName,
+      level: (action || level || 'log') as Console.Level,
+      message: message || '',
+      arguments: Array.isArray(args || consoleArguments) ? (args || consoleArguments) : [],
+      timestamp: timestamp || data?.timestamp || new Date().toISOString(),
+      source,
+      metadata: {
         stackTrace: data?.stackTrace || rest.stackTrace || '',
-        currentUrl: data?.url || rest.url || '',
+        url: data?.url || rest.url || '',
         userAgent: data?.userAgent || rest.userAgent || '',
+        fileName: data?.fileName || rest.fileName,
+        lineNumber: data?.lineNumber || rest.lineNumber,
+        columnNumber: data?.columnNumber || rest.columnNumber,
         viewportWidth: data?.viewport?.width || rest.viewportWidth || 0,
         viewportHeight: data?.viewport?.height || rest.viewportHeight || 0,
-        timestamp: timestamp || data?.timestamp || new Date().toISOString()
+        ...rest
       }
     };
   }
@@ -106,23 +108,23 @@ export class ConsoleCommand extends DirectCommand {
     try {
       // Convert whatever the client sends into our well-defined shared type
       // This ensures server-side type safety regardless of client format
-      const logData: BrowserConsoleLogForwarding = this.normalizeToSharedType(params);
+      const logData: Console.LogEntry = this.normalizeToSharedType(params);
       
-      if (!logData.consoleLogLevel || !logData.consoleMessage) {
-        console.log(`🎯 MISSING PARAMS: level=${logData.consoleLogLevel}, message=${logData.consoleMessage}`);
-        return this.createErrorResult('Console forwarding requires consoleLogLevel and consoleMessage parameters');
+      if (!logData.level || !logData.message) {
+        console.log(`🎯 MISSING PARAMS: level=${logData.level}, message=${logData.message}`);
+        return this.createErrorResult('Console forwarding requires level and message parameters');
       }
 
-      // Add server-side timestamp and create structured log entry
+      // Add server-side timestamp and create structured log entry with spread operator
       const serverTimestamp = new Date().toISOString();
       
       // Decode base64 JavaScript if present (for probe level)
       const enhancedLogData = { ...logData };
-      if (logData.consoleLogLevel === 'probe' as any && logData.consoleArguments?.length > 0) {
-        const probeArg = logData.consoleArguments[0];
-        if (probeArg?.originalValue && typeof probeArg.originalValue === 'object' && 'executeJSBase64' in probeArg.originalValue) {
+      if (logData.level === Console.Level.PROBE && logData.arguments?.length > 0) {
+        const probeArg = logData.arguments[0];
+        if (probeArg && typeof probeArg === 'object' && 'executeJSBase64' in probeArg) {
           try {
-            const executeJSBase64 = (probeArg.originalValue as any).executeJSBase64;
+            const executeJSBase64 = (probeArg as any).executeJSBase64;
             const decodedJS = Buffer.from(executeJSBase64, 'base64').toString('utf-8');
             // Add decoded JS to server logs for debugging (but keep base64 in stored logs)
             console.log(`🔬 PROBE JS Code: ${decodedJS}`);
@@ -135,15 +137,23 @@ export class ConsoleCommand extends DirectCommand {
       const logEntry = {
         ...enhancedLogData,
         serverTimestamp,
-        sessionId: context.sessionId
+        sessionId: context.sessionId || logData.sessionId
       };
       
       const timePrefix = `[${new Date().toLocaleTimeString()}]`;
 
-      // Log to server console (always) with timestamp
-      console.log(`[${timePrefix} console.${logData.consoleLogLevel}]: ${logData.consoleMessage}`);
-      if (logData.consoleArguments && logData.consoleArguments.length > 0) {
-        console.log(`   Args:`, logData.consoleArguments);
+      // Log to server console (always) with timestamp and full metadata
+      console.log(`[${timePrefix} console.${logData.level}]: ${logData.message}`);
+      if (logData.arguments && logData.arguments.length > 0) {
+        console.log(`   Args:`, logData.arguments);
+      }
+      
+      // Log enhanced metadata including stack trace if available
+      if (logData.metadata?.stackTrace) {
+        console.log(`   Stack Trace:`, logData.metadata.stackTrace);
+      }
+      if (logData.metadata?.url) {
+        console.log(`   URL:`, logData.metadata.url);
       }
 
       // Write to session-specific log files with level-based JSON format
@@ -234,22 +244,22 @@ export class ConsoleCommand extends DirectCommand {
             await fs.access(sessionLogsDir);
             
             // Write to level-specific JSON log files following naming convention
-            const levelLogPath = join(sessionLogsDir, `browser.${logData.consoleLogLevel}.json`);
+            const levelLogPath = join(sessionLogsDir, `browser.${logData.level}.json`);
             const allLogsPath = join(sessionLogsDir, 'browser.log');
             
             // Handle probe logs specially for better readability
             let jsonLogEntry: string;
             let humanReadableEntry: string;
             
-            if (logData.consoleLogLevel === 'probe' as any) {
+            if (logData.level === Console.Level.PROBE) {
               // For probe logs, format for human readability with decoded JS
-              // Probe data is in consoleMessage as JSON string
+              // Probe data is in message as JSON string or first argument
               let probeData: any = null;
               try {
-                probeData = JSON.parse(logData.consoleMessage);
+                probeData = JSON.parse(logData.message);
               } catch (error) {
-                // Fallback: check consoleArguments for legacy format
-                probeData = logData.consoleArguments?.[0]?.originalValue;
+                // Fallback: check arguments for probe data object
+                probeData = logData.arguments?.[0];
               }
               
               if (probeData && typeof probeData === 'object') {
@@ -292,25 +302,25 @@ export class ConsoleCommand extends DirectCommand {
               } else {
                 // Fallback for malformed probe data
                 jsonLogEntry = JSON.stringify(logEntry, null, 2) + '\n';
-                humanReadableEntry = `[${serverTimestamp}] 🛸 PROBE: ${logData.consoleMessage}\n`;
+                humanReadableEntry = `[${serverTimestamp}] 🛸 PROBE: ${logData.message}\n`;
               }
             } else {
-              // Standard log format for non-probe logs
+              // Standard log format for non-probe logs with enhanced metadata
               jsonLogEntry = JSON.stringify(logEntry) + '\n';
               
-              humanReadableEntry = `[${serverTimestamp}] ${logData.consoleLogLevel.toUpperCase()}: ${logData.consoleMessage}`;
+              humanReadableEntry = `[${serverTimestamp}] ${logData.level.toUpperCase()}: ${logData.message}`;
               
-              // Add arguments if present, with JSON formatting for objects
-              if (logData.consoleArguments && logData.consoleArguments.length > 0) {
-                const formattedArgs = logData.consoleArguments.map(arg => {
-                  if (arg.argumentType === 'object' && arg.argumentValue) {
-                    return arg.argumentValue; // This is already JSON formatted
-                  } else {
-                    return arg.argumentValue;
-                  }
-                }).join(' ');
+              // Add arguments if present using Console.MessageUtils for proper formatting
+              if (logData.arguments && logData.arguments.length > 0) {
+                const formattedArgs = Console.MessageUtils.argumentsToString(logData.arguments);
                 humanReadableEntry += ` ${formattedArgs}`;
               }
+              
+              // Add stack trace for errors to human-readable log
+              if (logData.level === Console.Level.ERROR && logData.metadata?.stackTrace) {
+                humanReadableEntry += `\n   Stack: ${logData.metadata.stackTrace}`;
+              }
+              
               humanReadableEntry += '\n';
             }
             
@@ -320,7 +330,7 @@ export class ConsoleCommand extends DirectCommand {
               fs.appendFile(allLogsPath, humanReadableEntry)    // browser.log (human-readable)
             ]);
             
-            console.log(`✅ Wrote to browser logs: ${sessionId} (${logData.consoleLogLevel})`);
+            console.log(`✅ Wrote to browser logs: ${sessionId} (${logData.level})`);
             sessionLogged = true;
             break; // Found the session, stop looking
           } catch (accessError) {

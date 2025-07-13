@@ -91,6 +91,11 @@ export class SimpleDaemonStarter {
       critical: true
     },
     {
+      name: 'ChatRoom',
+      script: 'src/daemons/chatroom/ChatRoomDaemon.ts',
+      critical: false
+    },
+    {
       name: 'Renderer',
       script: 'src/daemons/renderer/RendererDaemon.ts', 
       critical: true
