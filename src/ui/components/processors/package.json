@@ -1,0 +1,14 @@
+{
+  "name": "@continuum/health-processor",
+  "version": "1.0.0",
+  "description": "Health data processor module",
+  "main": "HealthDataProcessor.ts",
+  "continuum": {
+    "type": "processor",
+    "capabilities": ["health-processing", "data-normalization"],
+    "dataSources": ["health"],
+    "exports": {
+      "HealthDataProcessor": "./HealthDataProcessor.ts"
+    }
+  }
+}

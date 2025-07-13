@@ -4,27 +4,19 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
-
-interface Persona {
-  id: string;
-  name: string;
-  status: 'training' | 'graduated' | 'failed' | 'loaded' | 'unknown';
-  specialization: string;
-  graduationScore?: number;
-  currentScore?: number;
-  threshold?: number;
-  originalThreshold?: number;
-  currentIteration?: number;
-  totalIterations?: number;
-  failureReason?: string;
-  accuracy?: number;
-  created?: string;
-  lastUsed?: string;
-}
+import { 
+  DataSourceType, 
+  DataUpdatedEvent, 
+  WidgetCapabilities,
+  SessionCreatedEvent,
+  PersonaData,
+  PersonaAction,
+  PersonaValidation
+} from '../../../types/shared/WidgetServerTypes';
 
 export class SavedPersonasWidget extends BaseWidget {
-  private personas: Persona[] = [];
-  private selectedPersona: Persona | null = null;
+  private personas: PersonaData[] = [];
+  private selectedPersona: PersonaData | null = null;
   private dragState: any = null;
 
   constructor() {
@@ -34,9 +26,67 @@ export class SavedPersonasWidget extends BaseWidget {
     this.widgetTitle = 'Saved Personas';
   }
 
-  protected async initializeWidget(): Promise<void> {
-    await this.loadPersonas();
-    this.setupContinuumListeners();
+  protected override getWidgetCapabilities(): WidgetCapabilities {
+    return {
+      canFetchData: ['personas'], // Uses dynamic discovery for personas data
+      canExecuteCommands: ['persona_deploy', 'persona_retrain', 'persona_share', 'persona_delete', 'persona_update_threshold'], 
+      respondsToEvents: ['session:created', 'data:updated'], // Type-safe event names
+      supportsExport: ['json'], // Personas can be exported as JSON
+      requiresAuth: false,
+      updateFrequency: 'realtime' // Auto-refresh when personas change
+    };
+  }
+
+  protected override async initializeWidget(): Promise<void> {
+    await super.initializeWidget(); // Sets up typed event listeners automatically
+    
+    // Use dynamic discovery to fetch personas data with proper command parameters
+    this.fetchServerData('personas', {
+      params: {
+        action: 'list'
+      },
+      filters: {
+        limit: 50,
+        sortBy: 'lastUsed',
+        sortOrder: 'desc'
+      }
+    });
+  }
+
+  // TypeScript prevents mistakes - must use DataSourceType, gets typed data
+  protected override processServerData(dataSource: DataSourceType, data: unknown): void {
+    if (dataSource === 'personas') {
+      // Use shared validation logic - works on both server and client
+      if (Array.isArray(data)) {
+        this.personas = data.filter(PersonaValidation.validatePersonaData);
+        console.log(`🎛️ ${this.widgetName}: Loaded ${this.personas.length} validated personas via dynamic discovery`);
+      } else {
+        this.personas = [];
+        console.warn(`🎛️ ${this.widgetName}: Invalid personas data received:`, data);
+      }
+      this.update(); // Re-render with new data
+    }
+  }
+
+  // TypeScript enforces correct event type - no more 'any' mistakes
+  protected override shouldAutoRefreshOnDataUpdate(event: DataUpdatedEvent): boolean {
+    return event.dataSource === 'personas' && event.updateType !== 'deleted';
+  }
+
+  // Type-safe session events - linter prevents property access mistakes
+  protected override onServerSessionCreated(event: SessionCreatedEvent): void {
+    console.log(`🎛️ ${this.widgetName}: New ${event.sessionType} session by ${event.owner} - refreshing personas`);
+    this.fetchServerData('personas'); // Type-safe call
+  }
+
+  // Type-safe error handling with data source context  
+  protected override onDataFetchError(dataSource: DataSourceType, error: string): void {
+    if (dataSource === 'personas') {
+      this.personas = []; // Fallback to empty state
+      console.error(`🎛️ ${this.widgetName}: Failed to load personas: ${error}`);
+      this.loadMockData(); // Fallback to mock data for demo
+      this.update();
+    }
   }
 
   renderContent(): string {
@@ -72,57 +122,57 @@ export class SavedPersonasWidget extends BaseWidget {
     return this.personas.map(persona => this.renderPersona(persona)).join('');
   }
 
-  private renderPersona(persona: Persona): string {
+  private renderPersona(persona: PersonaData): string {
     const isSelected = this.selectedPersona?.id === persona.id;
     
     return `
       <div class="persona-card ${isSelected ? 'selected' : ''}" data-persona-id="${persona.id}">
         <div class="persona-header">
-          <div class="persona-name">${this.formatPersonaName(persona.name)}</div>
+          <div class="persona-name">${PersonaValidation.getPersonaDisplayName(persona)}</div>
           <div class="persona-status ${persona.status}">
-            ${this.formatStatus(persona.status)}
+            ${PersonaValidation.getPersonaStatusDisplay(persona.status)}
           </div>
         </div>
         
         <div class="persona-specialization">
-          ${persona.specialization.replace(/_/g, ' ')}
+          ${PersonaValidation.getPersonaSpecializationDisplay(persona.specialization)}
         </div>
         
         ${this.renderAcademyProgress(persona)}
         
         <div class="persona-actions">
-          <button class="persona-action deploy" data-action="deploy" data-persona-id="${persona.id}">
-            ✅ Deploy
-          </button>
-          <button class="persona-action retrain" data-action="retrain" data-persona-id="${persona.id}">
-            🔄 Retrain
-          </button>
-          <button class="persona-action share" data-action="share" data-persona-id="${persona.id}">
-            🔗 Share
-          </button>
+          ${this.renderPersonaActions(persona)}
         </div>
       </div>
     `;
   }
 
-  private formatPersonaName(name: string): string {
-    if (name.includes('fine-tune-test-')) return 'Fine-Tune Test';
-    if (name.includes('test-lawyer-')) return 'Legal Test';
-    if (name.length > 25) return name.substring(0, 22) + '...';
-    return name;
+  // Dynamic action rendering based on shared business logic
+  private renderPersonaActions(persona: PersonaData): string {
+    const availableActions = PersonaValidation.getAvailableActions(persona);
+    
+    const actionLabels: Record<PersonaAction, string> = {
+      deploy: '✅ Deploy',
+      retrain: '🔄 Retrain', 
+      share: '🔗 Share',
+      delete: '🗑️ Delete',
+      export: '💾 Export'
+    };
+
+    return availableActions
+      .map(action => `
+        <button class="persona-action ${action}" 
+                data-action="${action}" 
+                data-persona-id="${persona.id}">
+          ${actionLabels[action]}
+        </button>
+      `)
+      .join('');
   }
 
-  private formatStatus(status: string): string {
-    switch (status) {
-      case 'training': return 'IN ACADEMY »';
-      case 'failed': return 'FAILED ⚠️';
-      case 'graduated': return 'GRADUATED ✓';
-      case 'loaded': return 'LOADED ⚡';
-      default: return status.toUpperCase();
-    }
-  }
+  // Removed formatPersonaName and formatStatus - using shared PersonaValidation methods instead
 
-  private renderAcademyProgress(persona: Persona): string {
+  private renderAcademyProgress(persona: PersonaData): string {
     if (!persona.currentScore && !persona.graduationScore) return '';
 
     const currentScore = persona.graduationScore || persona.currentScore || 0;
@@ -149,24 +199,7 @@ export class SavedPersonasWidget extends BaseWidget {
     `;
   }
 
-  private async loadPersonas(): Promise<void> {
-    try {
-      // Try to load from continuum API
-      const response = await this.executeCommand('personas', { action: 'list' });
-      
-      if (response && response.personas) {
-        this.personas = response.personas;
-      } else {
-        // Load mock data for demonstration
-        this.loadMockData();
-      }
-    } catch (error) {
-      console.error(`🎛️ ${this.widgetName}: Failed to load personas:`, error);
-      this.loadMockData();
-    }
-    
-    await this.render();
-  }
+  // Removed loadPersonas - now using dynamic discovery via fetchServerData in initializeWidget
 
   private loadMockData(): void {
     this.personas = [
@@ -223,7 +256,7 @@ export class SavedPersonasWidget extends BaseWidget {
     this.shadowRoot.querySelectorAll('.persona-action').forEach(button => {
       button.addEventListener('click', (e) => {
         e.stopPropagation();
-        const action = (button as HTMLElement).dataset.action!;
+        const action = (button as HTMLElement).dataset.action! as PersonaAction;
         const personaId = (button as HTMLElement).dataset.personaId!;
         this.handlePersonaAction(action, personaId);
       });
@@ -235,19 +268,7 @@ export class SavedPersonasWidget extends BaseWidget {
     });
   }
 
-  private setupContinuumListeners(): void {
-    if (this.getContinuumAPI()) {
-      this.onContinuumEvent('personas_updated', () => {
-        console.log(`🎛️ ${this.widgetName}: Personas updated`);
-        this.loadPersonas();
-      });
-      
-      this.onContinuumEvent('persona_added', (data: any) => {
-        console.log(`🎛️ ${this.widgetName}: Persona added`, data);
-        this.loadPersonas();
-      });
-    }
-  }
+  // Removed setupContinuumListeners - now using typed event handlers from BaseWidget
 
   private selectPersona(personaId: string): void {
     const persona = this.personas.find(p => p.id === personaId);
@@ -264,23 +285,60 @@ export class SavedPersonasWidget extends BaseWidget {
     }
   }
 
-  private async handlePersonaAction(action: string, personaId: string): Promise<void> {
+  // Type-safe command execution with strongly-typed actions and elegant spread pattern
+  private async handlePersonaAction(action: PersonaAction, personaId: string): Promise<void> {
     console.log(`🎛️ ${this.widgetName}: Action ${action} for persona ${personaId}`);
     
     try {
+      const baseParams = { 
+        params: { personaId },
+        timeout: 15000,
+        priority: 'normal' as const
+      };
+
+      // TypeScript ensures only valid PersonaAction values can be passed
       switch (action) {
         case 'deploy':
-          await this.executeCommand('persona_deploy', { personaId });
+          this.executeServerCommand('persona_deploy', baseParams);
           break;
         case 'retrain':
-          await this.executeCommand('persona_retrain', { personaId });
+          this.executeServerCommand('persona_retrain', { 
+            ...baseParams,
+            timeout: 30000 // Retrain takes longer
+          });
           break;
         case 'share':
-          await this.executeCommand('persona_share', { personaId });
+          this.executeServerCommand('persona_share', baseParams);
+          break;
+        case 'delete':
+          this.executeServerCommand('persona_delete', {
+            ...baseParams,
+            priority: 'high' // Delete operations should be prioritized
+          });
+          break;
+        case 'export':
+          this.triggerExport('json', { personaId }); // Use inherited server controls
           break;
       }
     } catch (error) {
       console.error(`🎛️ ${this.widgetName}: Action ${action} failed:`, error);
+    }
+  }
+
+  // Type-safe command result processing
+  protected override processCommandResult(command: string, result: unknown): void {
+    switch (command) {
+      case 'persona_deploy':
+        console.log(`🎛️ ${this.widgetName}: Persona deployed:`, result);
+        this.fetchServerData('personas'); // Refresh list
+        break;
+      case 'persona_retrain':
+        console.log(`🎛️ ${this.widgetName}: Persona retraining started:`, result);
+        this.triggerRefresh({ preserveState: true }); // Use inherited server controls
+        break;
+      case 'persona_share':
+        console.log(`🎛️ ${this.widgetName}: Persona shared:`, result);
+        break;
     }
   }
 
@@ -333,11 +391,20 @@ export class SavedPersonasWidget extends BaseWidget {
 
     marker.classList.remove('dragging');
     
-    // Update persona threshold
+    // Update persona threshold via server command (maintains data consistency)
     const persona = this.personas.find(p => p.id === personaId);
     if (persona) {
-      persona.threshold = newThreshold;
-      console.log(`🎛️ ${this.widgetName}: Updated threshold for ${persona.name} to ${newThreshold.toFixed(1)}%`);
+      console.log(`🎛️ ${this.widgetName}: Updating threshold for ${PersonaValidation.getPersonaDisplayName(persona)} to ${newThreshold.toFixed(1)}%`);
+      
+      // Use server command to maintain shared state
+      this.executeServerCommand('persona_update_threshold', {
+        params: { 
+          personaId, 
+          threshold: newThreshold 
+        },
+        timeout: 5000,
+        priority: 'normal' as const
+      });
     }
 
     document.removeEventListener('mousemove', this.handleThresholdDrag.bind(this));

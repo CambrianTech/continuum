@@ -51,6 +51,133 @@ export interface HealthUpdatedEvent extends BaseWidgetServerEvent {
   readonly changedComponents: readonly string[];
 }
 
+// Persona Data Types - Shared across all widgets
+export interface PersonaData {
+  readonly id: string;
+  readonly name: string;
+  readonly status: 'training' | 'graduated' | 'failed' | 'loaded' | 'unknown';
+  readonly specialization: string;
+  readonly graduationScore?: number;
+  readonly currentScore?: number;
+  readonly threshold?: number;
+  readonly originalThreshold?: number;
+  readonly currentIteration?: number;
+  readonly totalIterations?: number;
+  readonly failureReason?: string;
+  readonly accuracy?: number;
+  readonly created?: string;
+  readonly lastUsed?: string;
+}
+
+export type PersonaStatus = PersonaData['status'];
+export type PersonaAction = 'deploy' | 'retrain' | 'share' | 'delete' | 'export';
+
+// Server-side validation and command schemas - shared between widgets and server commands
+export interface PersonaCommandRequest {
+  readonly action: PersonaAction;
+  readonly personaId: string;
+  readonly params?: Record<string, unknown>;
+}
+
+export interface PersonaCommandResponse {
+  readonly success: boolean;
+  readonly action: PersonaAction;
+  readonly personaId: string;
+  readonly result?: PersonaData;
+  readonly error?: string;
+  readonly timestamp: number;
+}
+
+// Validation functions that work on both server and client
+export const PersonaValidation = {
+  // Server-side command validation
+  validatePersonaCommand(request: unknown): request is PersonaCommandRequest {
+    const req = request as PersonaCommandRequest;
+    return (
+      typeof req === 'object' &&
+      req !== null &&
+      typeof req.personaId === 'string' &&
+      req.personaId.length > 0 &&
+      ['deploy', 'retrain', 'share', 'delete', 'export'].includes(req.action)
+    );
+  },
+  
+  // Client-side data validation
+  validatePersonaData(data: unknown): data is PersonaData {
+    const persona = data as PersonaData;
+    return (
+      typeof persona === 'object' &&
+      persona !== null &&
+      typeof persona.id === 'string' &&
+      typeof persona.name === 'string' &&
+      typeof persona.specialization === 'string' &&
+      ['training', 'graduated', 'failed', 'loaded', 'unknown'].includes(persona.status)
+    );
+  },
+
+  // Shared business logic - works on both client and server
+  isPersonaReady(persona: PersonaData): boolean {
+    return persona.status === 'graduated' || persona.status === 'loaded';
+  },
+
+  canRetrain(persona: PersonaData): boolean {
+    return persona.status === 'failed' || persona.status === 'graduated';
+  },
+
+  getPersonaDisplayName(persona: PersonaData): string {
+    if (persona.name.includes('fine-tune-test-')) return 'Fine-Tune Test';
+    if (persona.name.includes('test-lawyer-')) return 'Legal Test';
+    return persona.name.replace(/_/g, ' ').replace(/-/g, ' ');
+  },
+
+  getPersonaStatusDisplay(status: PersonaStatus): string {
+    const statusMap: Record<PersonaStatus, string> = {
+      training: '🔄 Training',
+      graduated: '🎓 Graduated',
+      failed: '❌ Failed',
+      loaded: '✅ Ready',
+      unknown: '❓ Unknown'
+    };
+    return statusMap[status];
+  },
+
+  getPersonaSpecializationDisplay(specialization: string): string {
+    return specialization.replace(/_/g, ' ').replace(/-/g, ' ');
+  },
+
+  getAvailableActions(persona: PersonaData): PersonaAction[] {
+    const actions: PersonaAction[] = ['export']; // Always available
+    
+    if (this.isPersonaReady(persona)) {
+      actions.push('deploy', 'share');
+    }
+    
+    if (this.canRetrain(persona)) {
+      actions.push('retrain');
+    }
+    
+    if (persona.status !== 'training') {
+      actions.push('delete');
+    }
+    
+    return actions;
+  }
+} as const;
+
+// Project Data Types - Shared across all widgets
+export interface ProjectData {
+  readonly id: string;
+  readonly name: string;
+  readonly status: 'active' | 'completed' | 'paused' | 'archived';
+  readonly description?: string;
+  readonly created?: string;
+  readonly lastModified?: string;
+  readonly owner?: string;
+}
+
+export type ProjectStatus = ProjectData['status'];
+export type ProjectAction = 'open' | 'close' | 'archive' | 'delete' | 'export';
+
 // Data Events
 export type DataSourceType = 
   | 'personas' 
