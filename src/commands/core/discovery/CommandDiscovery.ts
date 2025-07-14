@@ -1,13 +1,32 @@
 /**
- * Command Discovery System using Core Module Patterns
+ * MIDDLE-OUT ARCHITECTURE - COMMAND DISCOVERY SYSTEM
  * 
- * Bridges the CommandProcessorDaemon and command execution system with the
- * universal core module discovery system. Provides type-safe command discovery,
- * dependency management, and consistent patterns with other module types.
+ * Universal command discovery using core module patterns with type-safe interfaces.
+ * Bridges CommandProcessorDaemon and execution system through modular discovery.
+ * 
+ * ISSUES IDENTIFIED:
+ * - TODO: Replace hardcoded category arrays with configuration system (line 273-274)
+ * - TODO: Replace 'any' types with proper interfaces (line 247)
+ * - TODO: Add file existence validation for command paths (line 302-304)
+ * - TODO: Extract magic strings to constants
+ * 
+ * Follows middle-out methodology: Foundation → API → Integration → Testing
  */
 
 import { ModuleDiscovery, type ModuleInfo, type ModuleDependency } from '../../../core/modules/index.js';
 import type { CommandDefinition } from '../base-command/BaseCommand.js';
+
+// TODO: Add proper type definitions to replace 'any' usage
+interface ModuleExports {
+  [key: string]: unknown;
+  default?: unknown;
+  getDefinition?: () => CommandDefinition;
+}
+
+interface CommandClass {
+  getDefinition?: () => CommandDefinition;
+  new(...args: unknown[]): unknown;
+}
 
 export interface CommandMetadata {
   name: string;
@@ -243,12 +262,13 @@ export class CommandDiscovery {
 
   /**
    * Find command class in module exports
+   * TODO: Replace 'any' types with proper CommandModule interface
    */
-  private findCommandClass(moduleExports: any): any {
+  private findCommandClass(moduleExports: ModuleExports): CommandClass | null {
     // Look for exports ending with 'Command'
     for (const [exportName, exportValue] of Object.entries(moduleExports)) {
       if (exportName.endsWith('Command') && typeof exportValue === 'function') {
-        return exportValue;
+        return exportValue as CommandClass;
       }
     }
     return null;
@@ -268,8 +288,10 @@ export class CommandDiscovery {
 
   /**
    * Get type from category
+   * TODO: Replace hardcoded arrays with dynamic configuration system
    */
   private getTypeFromCategory(category: string): string {
+    // TODO: Move to configuration file - hardcoded categories violate middle-out principles
     const coreCategories = ['core', 'system', 'kernel', 'base'];
     const integrationCategories = ['academy', 'persona', 'websocket'];
     
@@ -284,12 +306,14 @@ export class CommandDiscovery {
 
   /**
    * Get command file path from module and command name
+   * TODO: Add file existence validation with fs.existsSync
    */
   private getCommandFilePath(module: ModuleInfo, commandName: string): string {
     // Try common naming patterns
     const basePath = module.path;
     const capitalizedName = commandName.charAt(0).toUpperCase() + commandName.slice(1);
     
+    // TODO: Replace hardcoded path patterns with configuration-driven discovery
     const possiblePaths = [
       `${basePath}/${capitalizedName}Command.ts`,
       `${basePath}/${capitalizedName}.ts`,
@@ -298,6 +322,7 @@ export class CommandDiscovery {
       `${basePath}/index.ts`
     ];
 
+    // TODO: Implement file existence checking instead of assuming first path
     // Return the first path that might exist
     // In a real implementation, we'd check fs.existsSync, but for TypeScript imports
     // we'll just use the most likely pattern

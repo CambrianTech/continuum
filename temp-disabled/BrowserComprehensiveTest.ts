@@ -1,15 +1,22 @@
 /**
- * Comprehensive Browser Testing Suite
+ * DEAD CODE CANDIDATE - COMPREHENSIVE BROWSER TESTING SUITE
  * 
- * Tests all browser-related functionality for JTAG autonomous development:
+ * ⚠️  POTENTIAL DEAD CODE: This file appears to be in temp-disabled directory
+ * TODO: Determine if this comprehensive test suite is still needed or should be archived
+ * 
+ * ISSUES IDENTIFIED:
+ * - TODO: Hardcoded localhost:9000 throughout file - should use configuration
+ * - TODO: File location in temp-disabled suggests it may be dead code
+ * - TODO: No proper middle-out architecture header
+ * - TODO: Magic strings for ports, endpoints, and test data
+ * 
+ * Original functionality:
  * - API dynamic generation from server commands
  * - Visual feedback and UI polish
  * - DevTools integration and console forwarding  
  * - Tab management and browser state
  * - Ping/ready status reporting to server
  * - Complete diagnostic logging
- * 
- * GOAL: Ensure localhost:9000 is production-ready and polished
  */
 
 interface BrowserTestResult {
@@ -44,7 +51,7 @@ class ComprehensiveBrowserTester {
     console.log('==================');
     
     await this.runTest('html-generation', async () => {
-      const response = await fetch('http://localhost:9000/');
+      const response = await fetch('http://localhost:9000 // TODO: Replace hardcoded URL with configuration/');
       const html = await response.text();
       
       const hasDoctype = html.includes('<!DOCTYPE html>');
@@ -60,13 +67,13 @@ class ComprehensiveBrowserTester {
     });
     
     await this.runTest('script-availability', async () => {
-      const response = await fetch('http://localhost:9000/');
+      const response = await fetch('http://localhost:9000 // TODO: Replace hardcoded URL with configuration/');
       const html = await response.text();
       const scriptMatch = html.match(/src="([^"]*continuum\.js[^"]*)"/);
       
       if (!scriptMatch) throw new Error('No continuum.js script tag found');
       
-      const scriptUrl = `http://localhost:9000${scriptMatch[1]}`;
+      const scriptUrl = `http://localhost:9000 // TODO: Replace hardcoded URL with configuration${scriptMatch[1]}`;
       const scriptResponse = await fetch(scriptUrl);
       
       if (scriptResponse.status !== 200) {
@@ -96,7 +103,7 @@ class ComprehensiveBrowserTester {
       // const availableCommands = [];
       
       // Try to connect to WebSocket and list commands
-      const ws = new WebSocket('ws://localhost:9000');
+      const ws = new WebSocket('ws://localhost:9000 // TODO: Replace hardcoded WebSocket URL with configuration');
       
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -138,7 +145,7 @@ class ComprehensiveBrowserTester {
     
     await this.runTest('api-method-generation', async () => {
       // Test that the browser API has the expected methods
-      const response = await fetch('http://localhost:9000/src/ui/continuum.js');
+      const response = await fetch('http://localhost:9000 // TODO: Replace hardcoded URL with configuration/src/ui/continuum.js');
       const apiCode = await response.text();
       
       const hasExecute = apiCode.includes('execute');
@@ -159,7 +166,7 @@ class ComprehensiveBrowserTester {
     console.log('======================');
     
     await this.runTest('visual-polish', async () => {
-      const response = await fetch('http://localhost:9000/');
+      const response = await fetch('http://localhost:9000 // TODO: Replace hardcoded URL with configuration/');
       const html = await response.text();
       
       // Test for modern, polished visual elements
@@ -178,7 +185,7 @@ class ComprehensiveBrowserTester {
     });
     
     await this.runTest('widget-containers', async () => {
-      const response = await fetch('http://localhost:9000/');
+      const response = await fetch('http://localhost:9000 // TODO: Replace hardcoded URL with configuration/');
       const html = await response.text();
       
       // Verify all expected widget containers exist
@@ -193,7 +200,7 @@ class ComprehensiveBrowserTester {
     });
     
     await this.runTest('favicon-and-title', async () => {
-      const response = await fetch('http://localhost:9000/');
+      const response = await fetch('http://localhost:9000 // TODO: Replace hardcoded URL with configuration/');
       const html = await response.text();
       
       const hasTitle = html.includes('<title>continuum</title>');
@@ -212,7 +219,7 @@ class ComprehensiveBrowserTester {
     console.log('============================');
     
     await this.runTest('websocket-connection', async () => {
-      const ws = new WebSocket('ws://localhost:9000');
+      const ws = new WebSocket('ws://localhost:9000 // TODO: Replace hardcoded WebSocket URL with configuration');
       
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -234,7 +241,7 @@ class ComprehensiveBrowserTester {
     });
     
     await this.runTest('version-coordination', async () => {
-      const response = await fetch('http://localhost:9000/');
+      const response = await fetch('http://localhost:9000 // TODO: Replace hardcoded URL with configuration/');
       const html = await response.text();
       
       // Check version parameters and cache busting
@@ -267,7 +274,7 @@ class ComprehensiveBrowserTester {
     
     await this.runTest('ready-status-reporting', async () => {
       // Test that browser reports ready status back to server
-      const ws = new WebSocket('ws://localhost:9000');
+      const ws = new WebSocket('ws://localhost:9000 // TODO: Replace hardcoded WebSocket URL with configuration');
       
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -322,7 +329,7 @@ class ComprehensiveBrowserTester {
     console.log('=================================');
     
     await this.runTest('console-logging', async () => {
-      const response = await fetch('http://localhost:9000/src/ui/continuum.js');
+      const response = await fetch('http://localhost:9000 // TODO: Replace hardcoded URL with configuration/src/ui/continuum.js');
       const apiCode = await response.text();
       
       // Check for comprehensive logging
@@ -337,7 +344,7 @@ class ComprehensiveBrowserTester {
     });
     
     await this.runTest('error-handling', async () => {
-      const response = await fetch('http://localhost:9000/src/ui/continuum.js');
+      const response = await fetch('http://localhost:9000 // TODO: Replace hardcoded URL with configuration/src/ui/continuum.js');
       const apiCode = await response.text();
       
       // Check for error handling patterns
