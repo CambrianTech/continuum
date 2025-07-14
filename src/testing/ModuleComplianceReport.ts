@@ -6,6 +6,11 @@
  * - Daemons, Widgets, Commands, Integrations
  * - Supports whitelisting for git hook integration
  * - Provides actionable compliance metrics
+ * 
+ * KNOWN ISSUES:
+ * - Modules showing 100% compliance but being flagged as non-compliant
+ * - Logic error in IntelligentModularTestRunner categorization
+ * - All modules showing as "unexpected non-compliant" when they should be compliant
  */
 
 import { IntelligentModularTestRunner } from './IntelligentModularTestRunner';
