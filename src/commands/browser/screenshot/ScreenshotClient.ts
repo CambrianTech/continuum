@@ -3,32 +3,10 @@
  * Handles html2canvas integration and file saving
  */
 
-interface ScreenshotClientParams {
-  selector: string;
-  filename: string;
-  format: string;
-  quality: number;
-  animation: string;
-  destination: string;
-  directory: string;
-}
+import type { ScreenshotClientRequest, ScreenshotResult } from './ScreenshotTypes';
 
-interface ScreenshotResult {
-  success: boolean;
-  data?: {
-    imageData: string;
-    filename: string;
-    selector: string;
-    format: string;
-    width: number;
-    height: number;
-    dataUrl: string;
-    saved: boolean;
-    filePath: string | null;
-  };
-  error?: string;
-  timestamp: string;
-  processor: string;
+interface ScreenshotClientParams extends ScreenshotClientRequest {
+  directory: string;
 }
 
 /**
