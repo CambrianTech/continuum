@@ -34,6 +34,12 @@ Command-line interface for the JTAG browser debugging system. Provides easy CLI 
 - **network** - API connectivity, WebSocket status, and latency
 - **health** - Comprehensive system health with issue detection
 
+### Screenshot Debugging
+- **screenshot** - Take validation screenshots with red UUID indicators
+- **validation** - Create git hook validation screenshots for visual debugging
+- **interaction** - Capture before/after screenshots for UI interactions
+- **chat** - Test chat widget interactions with visual validation
+
 ### Custom Execution
 - **execute** - Run arbitrary JavaScript in browser context
 - **batch** - Execute multiple probes simultaneously
@@ -103,6 +109,24 @@ Monitor changes in real-time:
 ./continuum jtag execute --code "document.querySelector('chat-widget').render()"
 ```
 
+### Screenshot Debugging Commands
+```bash
+# Take validation screenshot with red UUID indicator
+./continuum jtag screenshot --type validation
+
+# Create git hook validation screenshot
+./continuum jtag validation --hook pre-commit
+
+# Test chat interaction with before/after screenshots
+./continuum jtag chat --message "test message" --widget "chat-widget"
+
+# Test widget interaction with visual validation
+./continuum jtag interaction --selector "button" --action click
+
+# Run complete git hook integration test
+./continuum jtag validation --test-suite
+```
+
 ## 📋 Log Integration
 
 All probe results are automatically logged to:
@@ -153,6 +177,21 @@ grep '"category": "jtag-cli"' .continuum/sessions/*/logs/browser.probe.json
 
 # Batch analysis
 ./continuum jtag batch --methods widgets,performance
+```
+
+### 5. Visual Debugging & Validation
+```bash
+# Quick validation screenshot
+./continuum jtag screenshot --type validation
+
+# Git hook integration testing
+./continuum jtag validation --test-suite
+
+# Monitor chat interactions
+./continuum jtag chat --message "test" --widget "chat-widget"
+
+# Debug specific widget interactions
+./continuum jtag interaction --selector "menu-button" --action click
 ```
 
 ## 🎯 Integration with Development Tools

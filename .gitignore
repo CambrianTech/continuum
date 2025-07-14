@@ -65,6 +65,7 @@ packages/cli/bin/debug-*.js
 
 # AI system generated files and directories
 .continuum/
+!.continuum/sessions/validation/
 .claude-pool/
 .claude-messages/
 .continuum-comm/
