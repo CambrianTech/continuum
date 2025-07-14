@@ -21,8 +21,8 @@ export function bootstrapDynamicModules(): void {
 
   // Register handler modules  
   moduleRegistry.registerModuleLoader('screenshot-handler', async () => {
-    const module = await import('../../../commands/browser/screenshot/ScreenshotHandler');
-    return new module.ScreenshotHandler();
+    const module = await import('../../../commands/browser/screenshot/ScreenshotCommand');
+    return module.ScreenshotCommand;
   });
 
   // Register widget modules
