@@ -1,7 +1,16 @@
-// ISSUES: 0 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
- * Route Manager - Clean HTTP route handling with WebSocket messaging
- * Pure routing logic, no content generation, uses WebSocket for daemon communication
+ * MIDDLE-OUT ARCHITECTURE - ROUTE MANAGER
+ * 
+ * Clean HTTP route handling with WebSocket messaging integration.
+ * Pure routing logic with modular daemon communication patterns.
+ * 
+ * ISSUES IDENTIFIED:
+ * - TODO: Replace 'any' types with proper interfaces (lines 17, 19, 28, 66, 75, 179, 182)
+ * - TODO: Replace hardcoded HTTP methods 'POST'/'PUT' with constants (line 76)
+ * - TODO: Replace hardcoded wildcard pattern '*' with constant (line 44)
+ * - TODO: Add proper Request/Response type definitions
+ * - TODO: Extract HTTP method checking to utility function
+ * - TODO: Replace complex conditional chain with strategy pattern
  * 
  * ✅ CLEANED UP: Removed hardcoded session management logic (2025-07-13)
  * ✅ CLEANED UP: Made session management modular via daemons (2025-07-13)
@@ -14,8 +23,10 @@ export interface RouteHandler {
 
 export class RouteManager {
   private routes = new Map<string, RouteHandler>();
+  // TODO: Replace 'any' types with proper MessageCallback interface
   private messageCallback: ((daemonName: string, message: any) => Promise<any>) | null = null;
 
+  // TODO: Replace 'any' types with proper MessageCallback interface
   constructor(messageCallback?: (daemonName: string, message: any) => Promise<any>) {
     this.messageCallback = messageCallback || null;
   }
@@ -25,6 +36,7 @@ export class RouteManager {
     console.log(`🔗 Registered route: ${pattern} → ${daemonName}::${handlerName}`);
   }
 
+  // TODO: Replace 'any' types with proper Request/Response interfaces
   async handleRequest(pathname: string, req: any, res: any): Promise<boolean> {
     // Use console.log since RouteManager doesn't extend BaseDaemon (no this.log available)
     console.log(`🎯🎯🎯 ROUTE MANAGER: Handling request for pathname: ${pathname} 🎯🎯🎯`);
@@ -41,6 +53,7 @@ export class RouteManager {
     let catchAllHandler: RouteHandler | null = null;
     
     for (const [pattern, handler] of this.routes) {
+      // TODO: Replace hardcoded wildcard pattern with constant
       if (pattern === '*') {
         // Save catch-all for last
         catchAllHandler = handler;
@@ -63,6 +76,7 @@ export class RouteManager {
     return false; // No route found
   }
 
+  // TODO: Replace 'any' types with proper Request/Response interfaces
   private async forwardRequestToDaemon(handler: RouteHandler, pathname: string, req: any, res: any): Promise<void> {
     if (!this.messageCallback) {
       res.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -72,7 +86,9 @@ export class RouteManager {
 
     try {
       // Parse request body if it's a POST/PUT request
+      // TODO: Replace 'any' type with proper RequestBody interface
       let body: any = null;
+      // TODO: Replace hardcoded HTTP methods with constants
       if (req.method === 'POST' || req.method === 'PUT') {
         body = await this.parseRequestBody(req);
       }

@@ -1,24 +1,27 @@
-// ISSUES: 1 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
- * Universal Command Registry - Dynamic Command Discovery & Execution
+ * MIDDLE-OUT ARCHITECTURE - UNIVERSAL COMMAND REGISTRY
+ * 
+ * Dynamic command discovery and execution with centralized parameter parsing.
+ * Eliminates hardcoded command lists through filesystem-based discovery.
+ * 
+ * ISSUES IDENTIFIED:
+ * - TODO: Replace 'any' type in extractCommandNames() parameter (line 365)
+ * - TODO: Replace hardcoded magic strings 'core' and 'kernel' with constants (lines 446-447)
+ * - TODO: Replace switch statement with strategy pattern for sorting (line 125)
+ * - TODO: Replace hardcoded file patterns 'Command.ts' with configuration (line 388)
+ * - TODO: Replace hardcoded scanPaths default 'src/commands' with configuration (line 72)
+ * - TODO: Replace hardcoded maxDepth=3 with configuration (line 461)
+ * - TODO: Extract string matching logic to separate service (lines 398-408)
  * 
  * ✅ FIXED: Universal Integration Parser called before command execution
  * 🔬 MIDDLE-OUT ARCHITECTURE: Centralized parameter parsing at registry level
  * 
- * Eliminates ALL hardcoded command lists and provides universal command discovery
- * across all clients, daemons, help systems, and integration tests.
- * 
  * Features:
  * - Dynamic filesystem-based command discovery
- * - Strong TypeScript types with no 'any' usage
  * - Promise-based execution patterns
  * - Core/kernel command dependency system
  * - Universal availability across all components
  * - Automatic registration when commands are added/removed
- * 
- * This implementation addresses technical debt documented in:
- * @see ../../TECHNICAL_DEBT.md - Systematic analysis of brittle patterns
- * @see ../../MIDDLE_OUT_SUCCESS.md - Middle-out methodology results
  */
 
 import { EventEmitter } from 'events';
@@ -69,6 +72,7 @@ export interface CommandExecutionOptions {
  */
 export class UniversalCommandRegistry extends EventEmitter {
   private commands = new Map<string, CommandMetadata>();
+  // TODO: Replace hardcoded default path with configuration
   private scanPaths: string[] = ['src/commands'];
   private logLevel: string = 'info';
   private isScanning: boolean = false;
@@ -122,6 +126,7 @@ export class UniversalCommandRegistry extends EventEmitter {
     // Sort results
     if (options.sortBy) {
       commands.sort((a, b) => {
+        // TODO: Replace switch statement with strategy pattern for better extensibility
         switch (options.sortBy) {
           case 'category':
             return a.category.localeCompare(b.category);
@@ -362,6 +367,7 @@ export class UniversalCommandRegistry extends EventEmitter {
   /**
    * Extract command names from package.json
    */
+  // TODO: Replace 'any' type with proper PackageJsonContinuum interface
   private extractCommandNames(packageJson: any): string[] {
     const commandNames: string[] = [];
     
@@ -385,6 +391,7 @@ export class UniversalCommandRegistry extends EventEmitter {
     const files = await fs.readdir(dirPath);
     
     return files.filter(file => 
+      // TODO: Replace hardcoded file patterns with configuration
       file.includes('Command.ts') && !file.includes('.test.ts') && !file.includes('.d.ts')
     );
   }
@@ -443,6 +450,7 @@ export class UniversalCommandRegistry extends EventEmitter {
         },
         filePath,
         className,
+        // TODO: Replace hardcoded 'core' and 'kernel' strings with constants
         isCore: continuum.core === true || continuum.type === 'core',
         isKernel: continuum.kernel === true || continuum.type === 'kernel',
         dependencies: continuum.dependencies || [],
@@ -458,6 +466,7 @@ export class UniversalCommandRegistry extends EventEmitter {
   /**
    * Find command directories recursively
    */
+  // TODO: Replace hardcoded maxDepth default with configuration
   private async findCommandDirectories(baseDir: string, maxDepth: number = 3): Promise<string[]> {
     const directories: string[] = [];
     const fs = await import('fs/promises');

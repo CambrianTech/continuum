@@ -1,6 +1,19 @@
 /**
- * Static Methods Test for Package.json Asset System
- * Tests only the static methods that can run in Node.js
+ * DEAD CODE CANDIDATE - STATIC METHODS TEST FOR PACKAGE.JSON ASSET SYSTEM
+ * 
+ * ⚠️  POTENTIAL DEAD CODE: This file appears to be in temp-disabled directory
+ * TODO: Determine if this static methods test is still needed or should be archived
+ * 
+ * ISSUES IDENTIFIED:
+ * - TODO: File location in temp-disabled suggests it may be dead code
+ * - TODO: No proper middle-out architecture header
+ * - TODO: Hardcoded path patterns '/dist/ui/components/' and '/src/' (lines 14, 18, 23)
+ * - TODO: Magic strings for path manipulation and class name parsing
+ * - TODO: Mock fetch implementation should be extracted to test utilities (lines 106-120)
+ * - TODO: Hardcoded test data in mock fetch
+ * - TODO: Switch-like logic in getBasePath() method should be configuration-driven
+ * 
+ * Original functionality: Tests only the static methods that can run in Node.js
  */
 
 // Extract just the static methods we need to test
@@ -11,15 +24,18 @@ class BaseWidgetStatic {
     
     // Special case for shared components
     if (className === 'Base' || className === 'Interactive' || this.name.includes('BaseWidget')) {
+      // TODO: Replace hardcoded shared components path with configuration
       return '/dist/ui/components/shared';
     }
     
     // All other widgets: /dist/ui/components/{WidgetName}
+    // TODO: Replace hardcoded path pattern with configuration
     return `/dist/ui/components/${className}`;
   }
   
   static async getWidgetFiles(): Promise<string[]> {
     try {
+      // TODO: Replace hardcoded path replacement with configuration
       const basePath = this.getBasePath().replace('/dist/', '/src/'); // Read from source
       const packagePath = `${basePath}/package.json`;
       
@@ -109,6 +125,7 @@ if (typeof fetch === 'undefined') {
     if (url.includes('Chat/package.json')) {
       return {
         ok: true,
+        // TODO: Replace hardcoded mock test data with configurable test fixtures
         json: () => Promise.resolve({
           name: '@continuum/chat-widget',
           files: ['ChatWidget.ts', 'ChatWidget.css', 'chat-icon.svg', 'notification.mp3']
