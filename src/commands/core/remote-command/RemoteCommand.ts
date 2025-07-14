@@ -120,72 +120,63 @@ export abstract class RemoteCommand extends BaseCommand {
    */
   private static async sendToClientViaWebSocket(request: RemoteExecutionRequest, context?: CommandContext): Promise<RemoteExecutionResponse> {
     const startTime = Date.now();
-    console.log(`🔍 JTAG: Delegating WebSocket communication to daemon system for ${request.command}`);
+    console.log(`🔍 JTAG: Using executeJS pipe for ${request.command}`);
     
-    let sessionId = request.sessionId || context?.sessionId;
-    
-    // Auto-fallback to SharedSessionContext when no session is provided
-    if (!sessionId) {
-      console.log(`🔍 JTAG: No explicit session provided, using SharedSessionContext fallback`);
-      try {
-        const { getSharedSessionContext } = await import('../../../services/SharedSessionContext');
-        const sharedContext = await getSharedSessionContext();
-        sessionId = sharedContext.sessionId;
-        console.log(`🔍 JTAG: Using SharedSessionContext fallback: ${sessionId}`);
-      } catch (error) {
-        console.error(`❌ JTAG: Failed to get SharedSessionContext:`, error);
+    try {
+      // Import JSExecuteCommand to use executeJS pipe
+      const { JSExecuteCommand } = await import('../../browser/js-execute/JSExecuteCommand');
+      
+      // Generate the executeJS code to call our own method
+      const executeJS = `
+        // Call the command's own executeOnClient method
+        const request = ${JSON.stringify(request)};
+        console.log('🔬 JTAG BROWSER: executeJS calling ${request.command}.executeOnClient');
+        
+        // Get the command class from window
+        const commandClass = window.${request.command}Command || window.ScreenshotCommand;
+        if (!commandClass) {
+          throw new Error('Command class not available in browser: ${request.command}');
+        }
+        
+        // Call executeOnClient and return result
+        return await commandClass.executeOnClient(request);
+      `;
+      
+      console.log(`📤 JTAG: Executing JS in browser:`, executeJS);
+      
+      // Execute in browser and get response
+      const jsResult = await JSExecuteCommand.execute({
+        script: executeJS,
+        returnResult: true
+      }, context);
+      
+      console.log(`📨 JTAG: Got JS execution result:`, JSON.stringify(jsResult, null, 2));
+      
+      if (jsResult.success && jsResult.data?.result) {
+        const executionTime = Date.now() - startTime;
+        console.log(`✅ JTAG: executeJS pipe completed in ${executionTime}ms`);
+        
+        // Return the browser result as RemoteExecutionResponse
+        return jsResult.data.result as RemoteExecutionResponse;
+      } else {
+        throw new Error(jsResult.error || 'executeJS failed');
       }
-    }
-    
-    if (!sessionId) {
-      const error = 'No session ID available for WebSocket communication';
-      console.error(`❌ JTAG: ${error}`);
+      
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ JTAG: executeJS pipe failed: ${errorMessage}`);
+      
       return {
         success: false,
-        error: `WebSocket communication failed: ${error}`,
+        error: `executeJS pipe failed: ${errorMessage}`,
         clientMetadata: {
-          userAgent: 'Unknown',
+          userAgent: 'executeJS-pipe',
           timestamp: Date.now(),
-          executionTime: 0
+          executionTime
         }
       };
     }
-    
-    console.log(`🔍 JTAG: Session ID resolved: ${sessionId}`);
-    
-    // Generate correlation ID for request/response matching
-    const correlationId = `remote_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    console.log(`🔑 JTAG: Generated correlation ID: ${correlationId}`);
-    
-    // ARCHITECTURAL SOLUTION: Return special routing instruction for CommandProcessorDaemon
-    // The daemon will handle the WebSocket communication using this.sendMessage()
-    const executionTime = Date.now() - startTime;
-    
-    console.log(`📤 JTAG: Creating routing instruction for session ${sessionId} with correlation ${correlationId}`);
-    console.log(`📤 JTAG: Request being routed:`, JSON.stringify(request, null, 2));
-    
-    return {
-      success: true,
-      data: {
-        _routeToDaemon: {
-          targetDaemon: 'websocket-server',
-          messageType: 'send_to_session',
-          data: {
-            sessionId: sessionId,
-            message: {
-              type: 'remote_execution_request',
-              data: request,
-              correlationId: correlationId
-            }
-          }
-        }
-      },
-      clientMetadata: {
-        userAgent: 'CommandProcessor-Router',
-        timestamp: Date.now(),
-        executionTime
-      }
-    };
   }
 
 
