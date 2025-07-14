@@ -285,7 +285,7 @@ class ThinContinuumCLI {
   async isDaemonRunning(): Promise<boolean> {
     try {
       console.log(`🔬 JTAG CLI: Checking daemon health via HTTP`);
-      const response = await fetch('http://localhost:9000/api/health', {
+      const response = await fetch('http://localhost:9000/api/commands/health', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -295,7 +295,7 @@ class ThinContinuumCLI {
       if (response.ok) {
         const result = await response.json();
         console.log(`🔬 JTAG CLI: Health check result:`, result);
-        return result.success || result.status === 'healthy';
+        return result.success || result.status === 'healthy' || result.server?.overall === 'healthy';
       }
       
       return false;
