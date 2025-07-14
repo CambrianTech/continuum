@@ -294,7 +294,7 @@ class ThinContinuumCLI {
       
       if (response.ok) {
         const result = await response.json();
-        console.log(`🔬 JTAG CLI: Health check result:`, result);
+        console.log(`🔬 JTAG CLI: Health check result:`, JSON.stringify(result, null, 2));
         return result.success || result.status === 'healthy' || result.server?.overall === 'healthy';
       }
       
