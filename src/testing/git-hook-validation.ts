@@ -201,6 +201,15 @@ async function runGitHookValidation(): Promise<void> {
       console.log(`📋 Adding validation files to git...`);
       execSync(`git add -f "${validationRunDir}/"`, { stdio: 'inherit' });
       
+      // Unstage any deletion changes for validation files to prevent them being removed
+      console.log(`📋 Unstaging validation file deletions...`);
+      try {
+        execSync(`git restore --staged "${validationBaseDir}/"`, { stdio: 'inherit' });
+      } catch (error) {
+        // If no staged deletions exist, this command will fail - that's expected
+        console.log(`📋 No validation file deletions to unstage`);
+      }
+      
       console.log(`✅ Validation files created and staged in: ${validationRunDir}`);
       
     } catch (error) {
