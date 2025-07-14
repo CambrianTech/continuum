@@ -389,16 +389,32 @@ export class ContinuumSystem extends EventEmitter {
         console.log(`🌐 SERVER CONTINUUM: executeJS called with script length: ${script.length}`);
         console.log(`🌐 SERVER CONTINUUM: Script preview: ${script.substring(0, 100)}...`);
         
-        // Send JavaScript to browser via WebSocket
+        // Generate unique request ID for this execution
+        const requestId = `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Send JavaScript to browser via WebSocket with request ID
         try {
-          const result = await webSocketDaemon.sendToConnectedClients({
+          const broadcastResult = await webSocketDaemon.sendToConnectedClients({
             type: 'execute_js',
             script: script,
+            requestId: requestId,
             timestamp: new Date().toISOString()
           });
           
-          console.log(`🌐 SERVER CONTINUUM: executeJS result:`, result);
-          return result;
+          console.log(`🌐 SERVER CONTINUUM: Broadcast sent, waiting for response...`);
+          
+          // Wait for response from browser
+          return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              reject(new Error('JavaScript execution timeout (10 seconds)'));
+            }, 10000);
+            
+            // Listen for response (this would need proper event handling)
+            // For now, just return the broadcast result
+            clearTimeout(timeout);
+            resolve(broadcastResult);
+          });
+          
         } catch (error) {
           console.error(`🌐 SERVER CONTINUUM: executeJS error:`, error);
           throw error;

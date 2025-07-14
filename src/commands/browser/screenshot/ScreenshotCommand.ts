@@ -241,14 +241,117 @@ export class ScreenshotCommand extends BaseCommand {
         return this.executeClient(params as ScreenshotClientRequest);
       }
       
-      // Server-side execution - test executeJS with simple alert
-      console.log(`📤 JTAG SCREENSHOT: Server-side execution starting - testing executeJS`);
+      // Server-side execution - use html2canvas for actual screenshot
+      console.log(`📤 JTAG SCREENSHOT: Server-side execution starting - html2canvas capture`);
       
-      // Simple test: just show an alert on the client
-      const testScript = `
-        alert('🚀 Screenshot command is working! executeJS is functional');
-        console.log('📸 BROWSER: Alert shown from screenshot command');
-        return 'executeJS-alert-success';
+      // Normalize parameters for consistent client execution
+      const normalizedParams: ScreenshotClientRequest = {
+        selector: (params as ScreenshotParams).selector || 'body',
+        filename: (params as ScreenshotParams).filename || `screenshot-${Date.now()}.png`,
+        format: (params as ScreenshotParams).format || ScreenshotFormat.PNG,
+        quality: (params as ScreenshotParams).quality || 0.9,
+        animation: (params as ScreenshotParams).animation || ScreenshotAnimation.NONE,
+        destination: (params as ScreenshotParams).destination || ScreenshotDestination.FILE
+      };
+      
+      // Generate script for browser execution using html2canvas
+      const screenshotScript = `
+        (async () => {
+          console.log('📸 BROWSER: Starting html2canvas screenshot capture');
+          console.log('📋 BROWSER: Params:', ${JSON.stringify(normalizedParams)});
+          
+          try {
+            // Find target element
+            const targetElement = '${normalizedParams.selector}' === 'body' ? document.body : document.querySelector('${normalizedParams.selector}');
+            if (!targetElement) {
+              throw new Error('Element not found: ${normalizedParams.selector}');
+            }
+            
+            // Load html2canvas dynamically if not already loaded
+            const loadHtml2Canvas = () => {
+              return new Promise((resolve, reject) => {
+                if (window.html2canvas) {
+                  resolve(window.html2canvas);
+                  return;
+                }
+                
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+                script.onload = () => {
+                  console.log('✅ html2canvas loaded successfully');
+                  resolve(window.html2canvas);
+                };
+                script.onerror = () => {
+                  reject(new Error('Failed to load html2canvas'));
+                };
+                document.head.appendChild(script);
+              });
+            };
+            
+            const html2canvas = await loadHtml2Canvas();
+            console.log('📦 BROWSER: html2canvas available - starting capture');
+            
+            // Capture screenshot
+            const canvas = await html2canvas(targetElement, {
+              allowTaint: true,
+              useCORS: true,
+              scale: 1,
+              logging: false
+            });
+            
+            // Convert to desired format
+            const imageData = '${normalizedParams.format}' === 'png' ? 
+              canvas.toDataURL('image/png') : 
+              canvas.toDataURL('image/${normalizedParams.format}', ${normalizedParams.quality});
+            
+            console.log('🖼️ BROWSER: Canvas captured, size:', canvas.width, 'x', canvas.height);
+            
+            // Extract base64 data from data URL
+            const base64Data = imageData.replace(/^data:image\\/[a-z]+;base64,/, '');
+            
+            // Convert base64 to Uint8Array for fileSave
+            const bytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+            
+            console.log('💾 BROWSER: Calling fileSave with', bytes.length, 'bytes');
+            
+            // Save the file using continuum.fileSave
+            const continuum = window.continuum;
+            const saveResult = await continuum.fileSave({
+              content: bytes,
+              filename: '${normalizedParams.filename}',
+              artifactType: 'screenshot'
+            });
+            
+            console.log('💾 BROWSER: FileSave result:', saveResult);
+            
+            // Return result with screenshot data and save confirmation
+            return {
+              success: true,
+              data: {
+                imageData: base64Data,
+                filename: '${normalizedParams.filename}',
+                selector: '${normalizedParams.selector}',
+                format: '${normalizedParams.format}',
+                width: canvas.width,
+                height: canvas.height,
+                dataUrl: imageData,
+                saved: saveResult.success,
+                filePath: saveResult.data?.filePath || null
+              },
+              timestamp: new Date().toISOString(),
+              processor: 'browser-html2canvas'
+            };
+            
+          } catch (error) {
+            console.error('❌ BROWSER: Screenshot capture failed:', error);
+            return {
+              success: false,
+              error: error.message,
+              timestamp: new Date().toISOString(),
+              processor: 'browser-html2canvas'
+            };
+          }
+        })()
       `;
       
       console.log(`📤 JTAG SCREENSHOT: Calling global.continuum.executeJS`);
@@ -265,7 +368,7 @@ export class ScreenshotCommand extends BaseCommand {
         throw new Error('global.continuum.executeJS does not exist');
       }
       
-      const result = await continuum.executeJS(testScript);
+      const result = await continuum.executeJS(screenshotScript);
       
       console.log(`📤 JTAG SCREENSHOT: executeJS result:`, result);
       

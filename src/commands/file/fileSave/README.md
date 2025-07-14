@@ -1,26 +1,32 @@
 # FileSave
 
-fileSave module for Continuum
+FileSave command for saving binary data (like screenshots) to files with base64 support
 
 ## 🚀 Usage
 
 ### Command Interface
 ```bash
-# Basic usage
-continuum fileSave
+# Save base64 encoded screenshot
+continuum file_save --content="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==" --filename="screenshot.png" --encoding="base64" --artifactType="screenshot"
 
-# With options (customize based on your module)
-continuum fileSave --help
-continuum fileSave --verbose
+# Save binary file
+continuum file_save --content=<buffer> --filename="file.bin" --encoding="binary"
+
+# Save to specific session
+continuum file_save --content=<data> --filename="image.png" --sessionId="session123" --artifactType="screenshot"
 ```
 
 ### Programmatic Usage
 ```typescript
 import { FileSaveCommand } from './FileSaveCommand.js';
 
-// Execute the command
+// Save base64 encoded image
 const result = await FileSaveCommand.execute({
-  // Add your parameters here
+  content: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==",
+  filename: "screenshot.png",
+  encoding: "base64",
+  artifactType: "screenshot",
+  sessionId: "session123"
 });
 
 console.log(result);
