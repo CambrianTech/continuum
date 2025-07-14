@@ -200,30 +200,7 @@ async function runGitHookValidation(): Promise<void> {
 `;
       await fs.writeFile(clientLogPath, clientLogContent);
       
-      // First, unstage any deletion changes for validation files to prevent them being removed
-      console.log(`📋 Unstaging validation file deletions...`);
-      try {
-        // Check for staged deletions and unstage them specifically
-        const stagedStatus = execSync('git diff --cached --name-status', { encoding: 'utf-8' });
-        const deletedValidationFiles = stagedStatus
-          .split('\n')
-          .filter(line => line.startsWith('D\t') && line.includes('.continuum/sessions/validation/'))
-          .map(line => line.split('\t')[1]);
-        
-        if (deletedValidationFiles.length > 0) {
-          console.log(`📋 Found ${deletedValidationFiles.length} validation files staged for deletion`);
-          for (const file of deletedValidationFiles) {
-            execSync(`git restore --staged "${file}"`, { stdio: 'inherit' });
-            console.log(`📋 Unstaged deletion: ${file}`);
-          }
-        } else {
-          console.log(`📋 No validation file deletions to unstage`);
-        }
-      } catch (error) {
-        console.log(`📋 Error checking for staged deletions: ${error}`);
-      }
-      
-      // Then add the current validation files to git (force to override .continuum/ ignore rule)
+      // Add validation files to git (force to override .continuum/ ignore rule)
       console.log(`📋 Adding validation files to git...`);
       execSync(`git add -f "${validationRunDir}/"`, { stdio: 'inherit' });
       
