@@ -78,7 +78,7 @@ npm run test:compliance || {
     # Don't exit 1 - allow commit but warn
 }
 
-printf "\rContinuum Middle-Out Validation (Layer 6/6) - JTAG Health...\n" >&2
+printf "\rContinuum Middle-Out Validation (Layer 6/7) - JTAG Health...\n" >&2
 
 # 🧅 LAYER 6: JTAG Health Check (CRITICAL - Never commit with broken debugging)
 echo "🧅 Layer 6: JTAG Health Check - Full system validation with clean startup..."
@@ -153,6 +153,42 @@ echo "🔍 Package restoration will be verified by trap on script exit..."
 
 echo "✅ JTAG debugging system verified - full clean startup + browser connected with live logging"
 
+printf "\rContinuum Middle-Out Validation (Layer 7/7) - Git Hook Validation...\n" >&2
+
+# 🧅 LAYER 7: Git Hook Validation (CRITICAL - Screenshots and proof of commit validation)
+echo "🧅 Layer 7: Git Hook Validation - Screenshot capture and validation proof..."
+
+# Check if this is a verification commit to avoid infinite loops
+if [ -f ".git/COMMIT_EDITMSG" ]; then
+    COMMIT_MSG=$(cat .git/COMMIT_EDITMSG 2>/dev/null || echo "")
+    if echo "$COMMIT_MSG" | grep -q -i "verification.*commit\|screenshot.*commit\|ui-capture.*commit\|git hook.*commit"; then
+        echo "📋 DETECTED: Verification commit - skipping validation to avoid infinite loops"
+    else
+        # Run the git hook validation system
+        echo "🔍 Running git hook validation..."
+        printf "\r  → Layer 7a: Taking validation screenshot...\r" >&2
+        if ! npx tsx src/testing/git-hook-validation.ts; then
+            echo ""
+            echo "❌ CRITICAL: Git hook validation failed!"
+            echo "💡 This validates: Screenshot capture → Validation file creation → Git staging"
+            echo "💡 Debug with: npx tsx src/testing/git-hook-validation.ts"
+            exit 1
+        fi
+        echo "✅ Git hook validation passed - screenshot and logs created"
+    fi
+else
+    echo "🔍 Running git hook validation..."
+    printf "\r  → Layer 7a: Taking validation screenshot...\r" >&2
+    if ! npx tsx src/testing/git-hook-validation.ts; then
+        echo ""
+        echo "❌ CRITICAL: Git hook validation failed!"
+        echo "💡 This validates: Screenshot capture → Validation file creation → Git staging"
+        echo "💡 Debug with: npx tsx src/testing/git-hook-validation.ts"
+        exit 1
+    fi
+    echo "✅ Git hook validation passed - screenshot and logs created"
+fi
+
 printf "\rContinuum Middle-Out Validation Complete!\n" >&2
 
 echo "✅ All layers validated! Safe to commit with confidence!"
@@ -164,6 +200,7 @@ echo "   Layer 3: ✅ Integration (Daemon coordination)"
 echo "   Layer 4: ✅ System Integration (Basic validation)"
 echo "   Layer 5: ✅ Modular Architecture (Module compliance)"
 echo "   Layer 6: ✅ JTAG Health Check (Debugging pipeline)"
+echo "   Layer 7: ✅ Git Hook Validation (Screenshots + Proof)"
 
 # 📊 SYSTEM HEALTH SCORECARD (Terminal Display)
 echo ""

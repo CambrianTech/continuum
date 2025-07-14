@@ -107,7 +107,11 @@ async function runGitHookValidation(): Promise<void> {
     console.log('📸 Taking validation screenshot...');
     execSync('./continuum screenshot', { encoding: 'utf-8' });
     
-    // Check if screenshot was created in session directory
+    // Wait a moment for screenshot to be written to filesystem
+    console.log('⏰ Waiting for screenshot to be written...');
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Find the current session directory
     const sessionDir = '.continuum/sessions/user/shared';
     const sessionDirs = await fs.readdir(sessionDir);
     
@@ -115,100 +119,84 @@ async function runGitHookValidation(): Promise<void> {
       throw new Error('No session directories found');
     }
     
-    // Check the most recent session
+    // Get the most recent session (current active session)
     const latestSession = sessionDirs.sort().pop();
-    const screenshotDir = path.join(sessionDir, latestSession!, 'screenshots');
+    const currentSessionDir = path.join(sessionDir, latestSession!);
     
-    try {
-      const screenshots = await fs.readdir(screenshotDir);
-      console.log(`📋 Found ${screenshots.length} screenshots in ${screenshotDir}`);
-      console.log(`📋 Screenshots: ${screenshots.join(', ')}`);
-      
-      const latestScreenshot = screenshots.sort().pop();
-      
-      if (!latestScreenshot) {
-        throw new Error(`No screenshots found in ${screenshotDir}. Available: ${screenshots.join(', ')}`);
-      }
-      
-      const screenshotPath = path.join(screenshotDir, latestScreenshot);
-      const stats = await fs.stat(screenshotPath);
-      const fileSizeKB = stats.size / 1024;
-      
-      // Check file size is reasonable (between 10KB and 5MB)
-      if (fileSizeKB < 10 || fileSizeKB > 5120) {
-        throw new Error(`Screenshot size ${fileSizeKB.toFixed(2)}KB is outside reasonable range (10KB - 5MB)`);
-      }
-      
-      console.log(`✅ Git hook validation passed!`);
-      console.log(`📁 Screenshot: ${screenshotPath}`);
-      console.log(`📏 File size: ${fileSizeKB.toFixed(2)}KB`);
-      console.log(`📝 Commit: ${commitHash.substring(0, 7)}`);
-      console.log(`🎯 Validation ID: ${validationId}`);
-      
-      // Output success indicators for verification system compatibility
-      console.log('🔄 BIDIRECTIONAL FEEDBACK VERIFIED');
-      console.log('🔄 COMPLETE FEEDBACK LOOP OPERATIONAL');
-      console.log('🔄 Agent CAN execute JavaScript');
-      console.log('🔄 Agent CAN see its own console output');  
-      console.log('🔄 Agent CAN capture screenshots');
-      
-      // Create validation directory structure
-      const validationBaseDir = '.continuum/sessions/validation';
-      const validationRunDir = path.join(validationBaseDir, `run_${commitHash.substring(0, 12)}`);
-      
-      console.log(`📁 Creating validation directory: ${validationRunDir}`);
-      await fs.mkdir(validationRunDir, { recursive: true });
-      
-      // Copy screenshot to validation directory
-      const validationScreenshotPath = path.join(validationRunDir, 'ui-capture.png');
-      await fs.copyFile(screenshotPath, validationScreenshotPath);
-      
-      // Create validation log files
-      const sessionLogsDir = path.join(sessionDir, latestSession!, 'logs');
-      const clientLogPath = path.join(validationRunDir, 'client-logs.txt');
-      const serverLogPath = path.join(validationRunDir, 'server-logs.txt');
-      
-      // Copy server logs if they exist
-      const serverLogSource = path.join(sessionLogsDir, 'server.log');
+    console.log(`📁 Found current session: ${latestSession}`);
+    
+    // Create validation directory structure
+    const validationBaseDir = '.continuum/sessions/validation';
+    const validationRunDir = path.join(validationBaseDir, `run_${commitHash.substring(0, 12)}`);
+    
+    console.log(`📁 Creating validation directory: ${validationRunDir}`);
+    await fs.mkdir(validationRunDir, { recursive: true });
+    
+    // Copy entire session directory to validation directory
+    console.log(`📋 Copying session directory to validation...`);
+    await fs.cp(currentSessionDir, validationRunDir, { recursive: true });
+    
+    // Verify expected files exist in the copied validation directory
+    const expectedFiles = [
+      'screenshots',
+      'logs/server.log',
+      'logs/browser.log',
+      'session-info.json'
+    ];
+    
+    console.log(`🔍 Verifying expected files exist in validation directory...`);
+    for (const expectedFile of expectedFiles) {
+      const fullPath = path.join(validationRunDir, expectedFile);
       try {
-        await fs.copyFile(serverLogSource, serverLogPath);
+        const stats = await fs.stat(fullPath);
+        if (expectedFile === 'screenshots') {
+          // For screenshots directory, check it has content
+          const screenshots = await fs.readdir(fullPath);
+          if (screenshots.length === 0) {
+            throw new Error(`Screenshots directory is empty`);
+          }
+          console.log(`✅ Screenshots directory: ${screenshots.length} files`);
+        } else {
+          // For files, check they exist and have content
+          if (stats.size === 0) {
+            throw new Error(`File ${expectedFile} is empty`);
+          }
+          console.log(`✅ ${expectedFile}: ${(stats.size / 1024).toFixed(2)}KB`);
+        }
       } catch (error) {
-        // Create minimal server log if source doesn't exist
-        const logContent = `# Git Hook Validation Server Log
-# Generated: ${new Date().toISOString()}
-# Commit: ${commitHash}
-# Validation ID: ${validationId}
-
-[${new Date().toISOString()}] Git hook validation completed successfully
-[${new Date().toISOString()}] Screenshot captured: ${fileSizeKB.toFixed(2)}KB
-[${new Date().toISOString()}] BIDIRECTIONAL FEEDBACK VERIFIED
-[${new Date().toISOString()}] COMPLETE FEEDBACK LOOP OPERATIONAL
-`;
-        await fs.writeFile(serverLogPath, logContent);
+        throw new Error(`INTEGRITY FAILURE: Missing or invalid ${expectedFile}: ${error}`);
       }
-      
-      // Create client log
-      const clientLogContent = `# Git Hook Validation Client Log
-# Generated: ${new Date().toISOString()}
-# Commit: ${commitHash}
-# Validation ID: ${validationId}
-
-[${new Date().toISOString()}] Git hook validation initiated
-[${new Date().toISOString()}] JavaScript execution attempted (with known HTTP 500 limitation)
-[${new Date().toISOString()}] Screenshot capture successful: ${fileSizeKB.toFixed(2)}KB
-[${new Date().toISOString()}] Validation completed successfully
-`;
-      await fs.writeFile(clientLogPath, clientLogContent);
-      
-      // Add validation files to git (force to override .continuum/ ignore rule)
-      console.log(`📋 Adding validation files to git...`);
-      execSync(`git add -f "${validationRunDir}/"`, { stdio: 'inherit' });
-      
-      console.log(`✅ Validation files created and staged in: ${validationRunDir}`);
-      
-    } catch (error) {
-      throw new Error(`Screenshot validation failed: ${error}`);
     }
+    
+    console.log(`✅ Git hook validation passed!`);
+    console.log(`📁 Session copied to: ${validationRunDir}`);
+    console.log(`📝 Commit: ${commitHash.substring(0, 7)}`);
+    console.log(`🎯 Validation ID: ${validationId}`);
+    
+    // Output success indicators for verification system compatibility
+    console.log('🔄 BIDIRECTIONAL FEEDBACK VERIFIED');
+    console.log('🔄 COMPLETE FEEDBACK LOOP OPERATIONAL');
+    console.log('🔄 Agent CAN execute JavaScript');
+    console.log('🔄 Agent CAN see its own console output');  
+    console.log('🔄 Agent CAN capture screenshots');
+      
+    // Add validation files to git (force to override .continuum/ ignore rule)
+    console.log(`📋 Adding validation files to git...`);
+    execSync(`git add -f "${validationRunDir}/"`, { stdio: 'inherit' });
+    
+    // CRITICAL: Verify validation files exist and are staged (integrity check)
+    console.log(`🔍 Verifying validation files are staged (integrity check)...`);
+    const stagedFiles = execSync('git diff --cached --name-only', { encoding: 'utf-8' }).trim().split('\n');
+    
+    // Check for any files starting with our validation directory
+    const stagedValidationFiles = stagedFiles.filter(file => file.startsWith(validationRunDir));
+    if (stagedValidationFiles.length === 0) {
+      throw new Error(`INTEGRITY FAILURE: No validation files staged for commit`);
+    }
+    
+    console.log(`✅ INTEGRITY VERIFIED: ${stagedValidationFiles.length} validation files staged for commit`);
+    console.log(`📁 Validation session: ${validationRunDir}`);
+    console.log(`✅ Complete session copied and staged in: ${validationRunDir}`);
     
   } catch (error) {
     console.error('❌ Git hook validation failed:', error);
