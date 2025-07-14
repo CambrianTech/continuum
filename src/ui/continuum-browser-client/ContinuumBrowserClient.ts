@@ -195,7 +195,7 @@ export class ContinuumBrowserClient implements ContinuumAPI {
   }
 
   // File saving functionality
-  async fileSave(options: { content: Uint8Array | string; filename: string; artifactType?: string }): Promise<CommandResult> {
+  async fileSave(options: { content: Uint8Array | string; filename: string; artifactType?: string; directory?: string }): Promise<CommandResult> {
     console.log(`💾 FileSave: Saving file ${options.filename}, size: ${options.content.length} bytes`);
     
     // Convert Uint8Array to base64 string if needed
@@ -206,13 +206,13 @@ export class ContinuumBrowserClient implements ContinuumAPI {
       const reader = new FileReader();
       
       contentBase64 = await new Promise<string>((resolve, reject) => {
-        reader.onload = () => {
+        reader.onload = () : void => {
           const result = reader.result as string;
           // Remove the data URL prefix to get just the base64 content
           const base64Data = result.split(',')[1];
           resolve(base64Data);
         };
-        reader.onerror = () => reject(reader.error);
+        reader.onerror = () : void => reject(reader.error);
         reader.readAsDataURL(blob);
       });
     } else {
@@ -224,7 +224,8 @@ export class ContinuumBrowserClient implements ContinuumAPI {
       filename: options.filename,
       content: contentBase64,
       encoding: 'base64',
-      artifactType: options.artifactType || 'screenshot'
+      artifactType: options.artifactType ?? 'screenshot',
+      directory: options.directory
     });
   }
 

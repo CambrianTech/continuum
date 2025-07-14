@@ -48,7 +48,7 @@ export class FileWriteCommand extends BaseFileCommand {
       // 1. Get target directory from ContinuumDirectoryDaemon
       const targetPath = await this.getTargetPath({
         filename: params.filename,
-        sessionId: params.sessionId,
+        sessionId: params.directory ? undefined : params.sessionId, // Don't use sessionId if directory is provided
         artifactType: params.artifactType,
         directory: params.directory
       });

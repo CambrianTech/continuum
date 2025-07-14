@@ -9,6 +9,9 @@ import { WidgetServerControls } from '../components/shared/WidgetServerControls'
 // Trigger widget discovery plugin to automatically import all widgets
 import 'widget-discovery';
 
+// Import screenshot client functionality
+import '../../commands/browser/screenshot/ScreenshotClient';
+
 // Create single global instance
 const continuum = new ContinuumBrowserClient();
 
