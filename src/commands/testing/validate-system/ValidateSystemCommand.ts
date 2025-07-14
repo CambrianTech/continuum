@@ -6,7 +6,7 @@
  */
 
 import { BaseCommand } from '../../core/base-command/BaseCommand';
-import { CommandResult, CommandContext } from '../../core/base-command/BaseCommand';
+import { CommandResult, ContinuumContext } from '../../core/base-command/BaseCommand';
 import { COMMAND_CATEGORIES } from '../../../types/shared/CommandTypes';
 import { ModuleComplianceFramework } from '../../../testing/module-compliance/ModuleComplianceFramework';
 import { SelfValidatingModule } from '../../../testing/self-validating/SelfValidatingModule';
@@ -45,7 +45,7 @@ export class ValidateSystemCommand extends BaseCommand {
     };
   }
   
-  static async execute(params: ValidateSystemParams, _context: CommandContext): Promise<CommandResult> {
+  static async execute(params: ValidateSystemParams, _context: ContinuumContext): Promise<CommandResult> {
     const srcPath = params.srcPath || './src';
     
     try {

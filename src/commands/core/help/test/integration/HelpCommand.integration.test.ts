@@ -5,7 +5,7 @@
 
 import { HelpCommand } from '../../HelpCommand';
 import { getGlobalCommandRegistry, initializeGlobalCommandRegistry } from '../../../../services/UniversalCommandRegistry';
-import { CommandContext } from '../../../base-command/BaseCommand';
+import { ContinuumContext } from '../../../base-command/BaseCommand';
 
 describe('HelpCommand Integration', () => {
   beforeAll(async () => {
@@ -96,7 +96,7 @@ describe('HelpCommand Integration', () => {
 
   describe('Context Integration', () => {
     test('should work with session context', async () => {
-      const context: CommandContext = {
+      const context: ContinuumContext = {
         sessionId: 'integration-test-session',
         userId: 'integration-test-user'
       };
@@ -108,7 +108,7 @@ describe('HelpCommand Integration', () => {
     });
 
     test('should work with WebSocket context', async () => {
-      const context: CommandContext = {
+      const context: ContinuumContext = {
         sessionId: 'ws-test-session',
         webSocketServer: {
           send: jest.fn(),

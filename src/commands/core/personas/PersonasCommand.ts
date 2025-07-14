@@ -3,7 +3,7 @@
  */
 
 import { DirectCommand } from '../direct-command/DirectCommand.js';
-import { CommandDefinition, CommandResult, CommandContext } from '../base-command/BaseCommand.js';
+import { CommandDefinition, CommandResult, ContinuumContext } from '../base-command/BaseCommand.js';
 
 export class PersonasCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
@@ -32,7 +32,7 @@ export class PersonasCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any = {}, _context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
     try {
       const showActiveOnly = params.active || false;
 

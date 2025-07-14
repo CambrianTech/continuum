@@ -12,7 +12,7 @@
  */
 
 import { DirectCommand } from '../direct-command/DirectCommand.js';
-import { CommandDefinition, CommandResult, CommandContext } from '../base-command/BaseCommand.js';
+import { CommandDefinition, CommandResult, ContinuumContext } from '../base-command/BaseCommand.js';
 
 export interface HealthStatus {
   component: string;
@@ -86,7 +86,7 @@ export class HealthCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any = {}, _context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
     const startTime = Date.now();
     
     // Generate server-side health report

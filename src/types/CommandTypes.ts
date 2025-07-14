@@ -5,6 +5,6 @@
 
 export type {
   CommandDefinition,
-  CommandContext,
+  ContinuumContext,
   CommandResult
 } from '../commands/core/base-command/BaseCommand';

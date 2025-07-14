@@ -3,7 +3,7 @@
  */
 
 import { DirectCommand } from '../direct-command/DirectCommand.js';
-import { CommandDefinition, CommandResult, CommandContext } from '../base-command/BaseCommand.js';
+import { CommandDefinition, CommandResult, ContinuumContext } from '../base-command/BaseCommand.js';
 
 export class ProjectsCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
@@ -21,7 +21,7 @@ export class ProjectsCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(_params: any = {}, _context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(_params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
     try {
       // Mock project data based on what we saw in the UI
       const projects = [

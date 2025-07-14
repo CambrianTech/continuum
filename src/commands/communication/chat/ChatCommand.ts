@@ -5,7 +5,7 @@
  */
 
 import { DirectCommand } from '../../core/direct-command/DirectCommand';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
 import { 
   SendMessageRequest, 
   SendMessageResponse,
@@ -41,7 +41,7 @@ export class ChatCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any, context?: CommandContext): Promise<CommandResult<ChatCommandResult>> {
+  protected static async executeOperation(params: any, context?: ContinuumContext): Promise<CommandResult<ChatCommandResult>> {
     // Parameters are already parsed by DirectCommand.execute()
     
     try {

@@ -4,7 +4,7 @@
  */
 
 import { DirectCommand } from '../../core/direct-command/DirectCommand';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 
@@ -24,7 +24,7 @@ export class WidgetListCommand extends DirectCommand {
     };
   }
 
-  async execute(_params: any, _context: CommandContext): Promise<CommandResult> {
+  async execute(_params: any, _context: ContinuumContext): Promise<CommandResult> {
     try {
       const widgets = await this.discoverAvailableWidgets();
       

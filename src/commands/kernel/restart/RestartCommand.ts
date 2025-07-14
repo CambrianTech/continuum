@@ -3,7 +3,7 @@
  */
 
 import { DirectCommand } from '../../core/direct-command/DirectCommand';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class RestartCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
@@ -23,7 +23,7 @@ export class RestartCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(_params: any = {}, _context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(_params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
     try {
       let wasRunning = false;
       

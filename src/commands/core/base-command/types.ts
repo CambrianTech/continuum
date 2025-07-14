@@ -2,7 +2,7 @@
  * Base Command Types - Shared type definitions for commands
  */
 
-export type { CommandDefinition, CommandResult, CommandContext } from './BaseCommand';
+export type { CommandDefinition, CommandResult, ContinuumContext } from './BaseCommand';
 
 // Additional shared types for command implementations
 export interface ValidationResult {

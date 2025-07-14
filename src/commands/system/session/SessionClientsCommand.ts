@@ -2,7 +2,7 @@
  * Session Clients Command - List clients connected to a session
  */
 
-import { BaseCommand, CommandDefinition, CommandResult, CommandContext } from '../../core/base-command/BaseCommand';
+import { BaseCommand, CommandDefinition, CommandResult, ContinuumContext } from '../../core/base-command/BaseCommand';
 
 export class SessionClientsCommand extends BaseCommand {
   static getDefinition(): CommandDefinition {
@@ -30,7 +30,7 @@ export class SessionClientsCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any, context: CommandContext): Promise<CommandResult> {
+  static async execute(params: any, context: ContinuumContext): Promise<CommandResult> {
     try {
       const { sessionId, format = 'table' } = params;
       
@@ -83,7 +83,7 @@ export class SessionClientsCommand extends BaseCommand {
     }
   }
 
-  private static async getSessionManager(context: CommandContext): Promise<any> {
+  private static async getSessionManager(context: ContinuumContext): Promise<any> {
     // Try to get session manager daemon from WebSocket daemon's registered daemons
     if (context?.websocket && typeof context.websocket === 'object' && 'registeredDaemons' in context.websocket) {
       const websocketWithDaemons = context.websocket as any;

@@ -5,7 +5,7 @@
  */
 
 import { DirectCommand } from '../../core/direct-command/DirectCommand';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class AcademyStatusCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
@@ -29,7 +29,7 @@ export class AcademyStatusCommand extends DirectCommand {
     };
   }
 
-  async execute(_params: any, _context: CommandContext): Promise<CommandResult> {
+  async execute(_params: any, _context: ContinuumContext): Promise<CommandResult> {
     // Force TS cache refresh
     try {
       // STUB IMPLEMENTATION: Return mock Academy status for widget testing

@@ -3,7 +3,7 @@
  */
 
 import { DirectCommand } from '../../core/direct-command/DirectCommand';
-import { CommandDefinition, CommandResult, CommandContext } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, CommandResult, ContinuumContext } from '../../core/base-command/BaseCommand';
 import { DAEMON_EVENT_BUS } from '../../../daemons/base/DaemonEventBus';
 
 interface BrowserParams {
@@ -30,7 +30,7 @@ export class BrowserCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: BrowserParams, context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(params: BrowserParams, context?: ContinuumContext): Promise<CommandResult> {
     try {
       const url = params.url || 'http://localhost:9000';
       const sessionId = params.sessionId || context?.sessionId;

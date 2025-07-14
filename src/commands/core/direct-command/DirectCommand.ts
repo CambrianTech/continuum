@@ -9,20 +9,20 @@
  * 3. Standardized error handling and result formatting
  */
 
-import { BaseCommand, CommandResult, CommandContext } from '../base-command/BaseCommand';
+import { BaseCommand, CommandResult, ContinuumContext } from '../base-command/BaseCommand';
 
 export abstract class DirectCommand extends BaseCommand {
   /**
    * Subclasses implement the core execution logic
    */
-  protected static async executeOperation(_params: any, _context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(_params: any, _context?: ContinuumContext): Promise<CommandResult> {
     throw new Error('executeOperation() must be implemented by subclass');
   }
 
   /**
    * Standard execute implementation with error handling
    */
-  static async execute(params: any, context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: any, context?: ContinuumContext): Promise<CommandResult> {
     try {
       // Parameters are automatically parsed by UniversalCommandRegistry
       return await this.executeOperation(params, context);

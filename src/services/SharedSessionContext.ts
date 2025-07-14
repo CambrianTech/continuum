@@ -7,7 +7,8 @@
  * Eliminates the need for explicit session management in CLI, REST, WebSocket, MCP, etc.
  */
 
-import { CommandContext } from '../commands/core/base-command/BaseCommand';
+import { ContinuumContext, continuumContextFactory } from '../types/shared/core/ContinuumTypes';
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -26,7 +27,7 @@ interface SharedSessionInfo {
 
 class SharedSessionContextProvider {
   private static instance: SharedSessionContextProvider;
-  private cachedContext: CommandContext | null = null;
+  private cachedContext: ContinuumContext | null = null;
   private lastRefresh: number = 0;
   private readonly CACHE_TTL = 30000; // 30 seconds
 
@@ -41,7 +42,7 @@ class SharedSessionContextProvider {
    * Get the current shared session context
    * Automatically discovers and caches the active session
    */
-  async getSharedContext(): Promise<CommandContext> {
+  async getSharedContext(): Promise<ContinuumContext> {
     const now = Date.now();
     
     // Return cached context if still valid
@@ -56,7 +57,7 @@ class SharedSessionContextProvider {
       
       if (sessionInfo) {
         this.cachedContext = {
-          sessionId: sessionInfo.sessionId,
+          sessionId: randomUUID(),
           userId: sessionInfo.userId || 'development-user',
           interface: sessionInfo.interface,
           screenshotsPath: sessionInfo.screenshots,
@@ -67,7 +68,7 @@ class SharedSessionContextProvider {
       } else {
         // Fallback context when no session is found
         this.cachedContext = {
-          sessionId: 'fallback-session',
+          sessionId: randomUUID(),
           userId: 'development-user',
           interface: 'http://localhost:9000',
           sharedSession: false,
@@ -83,13 +84,13 @@ class SharedSessionContextProvider {
       console.warn('Failed to discover shared session context:', error);
       
       // Return minimal fallback context
-      return {
-        sessionId: 'error-fallback',
+      return continuumContextFactory.create({
+        sessionId: randomUUID(),
         userId: 'development-user',
         sharedSession: false,
         error: true,
         discoveredAt: new Date().toISOString()
-      };
+      });
     }
   }
 
@@ -97,14 +98,23 @@ class SharedSessionContextProvider {
    * Merge provided context with shared context
    * Provided context takes precedence over shared context
    */
-  async mergeWithSharedContext(providedContext: CommandContext = {}): Promise<CommandContext> {
+  async mergeWithSharedContext(providedContext?: ContinuumContext): Promise<ContinuumContext> {
+    // Use factory to create default context if not provided
+    const defaultContext = continuumContextFactory.create({
+      ...(providedContext?.sessionId && { sessionId: providedContext.sessionId }),
+      environment: 'server'
+    });
+    
+    const contextToUse = providedContext ? 
+      continuumContextFactory.merge(defaultContext, providedContext) : 
+      defaultContext;
+    
     const sharedContext = await this.getSharedContext();
     
-    return {
-      ...sharedContext,
-      ...providedContext, // Provided context overrides shared context
+    return continuumContextFactory.merge(sharedContext, {
+      ...contextToUse,
       mergedFromShared: true
-    };
+    });
   }
 
   /**
@@ -186,14 +196,14 @@ export const sharedSessionContext = SharedSessionContextProvider.getInstance();
 /**
  * Get shared session context for command execution
  */
-export async function getSharedSessionContext(): Promise<CommandContext> {
+export async function getSharedSessionContext(): Promise<ContinuumContext> {
   return sharedSessionContext.getSharedContext();
 }
 
 /**
  * Merge provided context with shared session context
  */
-export async function mergeWithSharedContext(context: CommandContext = {}): Promise<CommandContext> {
+export async function mergeWithSharedContext(context?: ContinuumContext): Promise<ContinuumContext> {
   return sharedSessionContext.mergeWithSharedContext(context);
 }
 

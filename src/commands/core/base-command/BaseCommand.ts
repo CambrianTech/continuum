@@ -19,39 +19,19 @@
  * - Testing: Built-in validation and error handling
  */
 
-import { CommandResult, CommandDefinition, ParameterDefinition } from '../../../types/shared/CommandTypes';
+import type { CommandResult, CommandDefinition, ParameterDefinition } from '../../../types/shared/CommandTypes';
+import type { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
+import type { UUID } from 'crypto';
 
 // Re-export shared types for backward compatibility
-export type { CommandResult, CommandDefinition, ParameterDefinition };
+export type { CommandResult, CommandDefinition, ParameterDefinition, ContinuumContext };
 
 // Import the modular parser system
 import { IntegrationParserRegistry } from './parsers';
 
-// Common types for context properties
-export interface WebSocketServer {
-  send: (message: unknown) => void;
-  broadcast: (message: unknown) => void;
-  clients: Set<unknown>;
-}
-
-export interface ContinuumInstance {
-  version: string;
-  config: Record<string, unknown>;
-  daemons: Map<string, unknown>;
-}
-
-export interface CommandContext {
-  continuum?: ContinuumInstance;
-  webSocketServer?: WebSocketServer;
-  continuonStatus?: Record<string, unknown>;
-  sessionId?: string;
-  userId?: string;
-  [key: string]: unknown;
-}
-
 // WebSocket commands MUST have sessionId - enforced by linter
-export interface WebSocketCommandContext extends CommandContext {
-  sessionId: string; // Required, non-null for WebSocket commands
+export interface WebSocketContinuumContext extends ContinuumContext {
+  sessionId: UUID; // Required, non-null for WebSocket commands
   connectionId: string; // Required for WebSocket routing
 }
 
@@ -59,7 +39,7 @@ export interface WebSocketCommandContext extends CommandContext {
 
 export interface RegistryEntry {
   name: string;
-  execute: (context: CommandContext, parameters: Record<string, unknown>) => Promise<CommandResult>;
+  execute: (parameters: unknown, context?: ContinuumContext) => Promise<CommandResult>;
   definition: CommandDefinition;
 }
 
@@ -79,9 +59,9 @@ export abstract class BaseCommand {
    * Execute command - implement this in subclasses with typed parameters
    * Parameters are automatically parsed by UniversalCommandRegistry before calling this method
    * 
-   * Pattern: static async execute(params: MyTypedParams, context?: CommandContext): Promise<MyResult>
+   * Pattern: static async execute(params: MyTypedParams, context?: ContinuumContext): Promise<MyResult>
    */
-  static execute(_params: unknown, _context?: CommandContext): Promise<CommandResult> {
+  static execute(_params: unknown, _context?: ContinuumContext): Promise<CommandResult> {
     throw new Error('execute() must be implemented by subclass with typed parameters');
   }
 
@@ -188,7 +168,7 @@ export abstract class BaseCommand {
   protected static logExecution(
     commandName: string, 
     params: unknown, 
-    context?: CommandContext
+    context?: ContinuumContext
   ): void {
     const sessionInfo = context?.sessionId ? ` [${context.sessionId}]` : '';
     console.log(`🎯 COMMAND: ${commandName}${sessionInfo} - params:`, params);
@@ -198,7 +178,7 @@ export abstract class BaseCommand {
    * Broadcast message to WebSocket clients if available
    */
   protected static async broadcast(
-    context: CommandContext | undefined,
+    context: ContinuumContext | undefined,
     message: unknown
   ): Promise<void> {
     if (context?.webSocketServer && typeof context.webSocketServer.broadcast === 'function') {
@@ -215,15 +195,15 @@ export abstract class BaseCommand {
    * Update continuon status if available
    */
   protected static async updateStatus(
-    context: CommandContext | undefined,
+    context: ContinuumContext | undefined,
     status: string,
     data?: unknown
   ): Promise<void> {
-    if (context?.continuonStatus && typeof context.continuonStatus.update === 'function') {
+    if (context?.continuumStatus && typeof (context.continuumStatus as any).update === 'function') {
       try {
-        context.continuonStatus.update(status, data);
+        (context.continuumStatus as any).update(status, data);
       } catch (error) {
-        console.error('Failed to update continuon status:', error);
+        console.error('Failed to update continuum status:', error);
       }
     }
   }

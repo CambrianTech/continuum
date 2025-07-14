@@ -15,7 +15,7 @@
  * - Timeout and failure recovery across network boundaries
  */
 
-import { BaseCommand, CommandResult, CommandContext } from '../base-command/BaseCommand';
+import { BaseCommand, CommandResult, ContinuumContext } from '../base-command/BaseCommand';
 import {
   RemoteCommandType
 } from '../../../types/shared/CommandOperationTypes';
@@ -42,7 +42,7 @@ export abstract class RemoteCommand extends BaseCommand {
   /**
    * Server-side preparation before sending to client
    */
-  protected static async prepareForRemoteExecution(params: any, context?: CommandContext): Promise<RemoteExecutionRequest> {
+  protected static async prepareForRemoteExecution(params: any, context?: ContinuumContext): Promise<RemoteExecutionRequest> {
     // Parameters are pre-parsed by UniversalCommandRegistry
     const parsedParams = params;
     return {
@@ -63,7 +63,7 @@ export abstract class RemoteCommand extends BaseCommand {
   /**
    * Process client response on server side
    */
-  protected static async processClientResponse(response: RemoteExecutionResponse, originalParams: any, _context?: CommandContext): Promise<CommandResult> {
+  protected static async processClientResponse(response: RemoteExecutionResponse, originalParams: any, _context?: ContinuumContext): Promise<CommandResult> {
     if (!response.success) {
       return this.createErrorResult(`Client execution failed: ${response.error}`);
     }
@@ -81,7 +81,7 @@ export abstract class RemoteCommand extends BaseCommand {
   /**
    * Standard execute implementation with WebSocket coordination
    */
-  static async execute(params: any, context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: any, context?: ContinuumContext): Promise<CommandResult> {
     const startTime = Date.now();
     console.log(`🚀 JTAG: Starting RemoteCommand execution - command: ${this.getDefinition().name}`);
     console.log(`📋 JTAG: Parameters received:`, JSON.stringify(params, null, 2));
@@ -118,7 +118,7 @@ export abstract class RemoteCommand extends BaseCommand {
    * WebSocket communication infrastructure
    * ARCHITECTURE FIX: Route through daemon system instead of direct messaging
    */
-  private static async sendToClientViaWebSocket(request: RemoteExecutionRequest, context?: CommandContext): Promise<RemoteExecutionResponse> {
+  private static async sendToClientViaWebSocket(request: RemoteExecutionRequest, context?: ContinuumContext): Promise<RemoteExecutionResponse> {
     const startTime = Date.now();
     console.log(`🔍 JTAG: Using executeJS pipe for ${request.command}`);
     
@@ -190,7 +190,7 @@ export abstract class RemoteCommand extends BaseCommand {
   /**
    * Validate that WebSocket connection exists for session
    */
-  protected static async validateClientConnection(_context?: CommandContext): Promise<boolean> {
+  protected static async validateClientConnection(_context?: ContinuumContext): Promise<boolean> {
     // TODO: Check if WebSocket connection exists for context.sessionId
     // Return false if no connection, true if connected
     return true; // Mock implementation

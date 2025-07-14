@@ -25,7 +25,8 @@
  */
 
 import { EventEmitter } from 'events';
-import { CommandDefinition, CommandResult, CommandContext } from '../commands/core/base-command/BaseCommand';
+import { CommandDefinition, CommandResult } from '../commands/core/base-command/BaseCommand';
+import { ContinuumContext, continuumContextFactory } from '../types/shared/core/ContinuumTypes';
 import { 
   CommandCategory, 
   normalizeCommandCategory,
@@ -175,9 +176,18 @@ export class UniversalCommandRegistry extends EventEmitter {
   async executeCommand(
     commandName: string,
     parameters: unknown = {},
-    context: CommandContext = {},
+    context?: ContinuumContext,
     options: CommandExecutionOptions = {}
   ): Promise<CommandResult> {
+    // Use factory to create default context if not provided
+    const defaultContext = continuumContextFactory.create({
+      ...(context?.sessionId && { sessionId: context.sessionId }),
+      environment: 'server'
+    });
+    
+    const finalContext = context ? 
+      continuumContextFactory.merge(defaultContext, context) : 
+      defaultContext;
     const commandMetadata = await this.getCommandMetadata(commandName);
     
     if (!commandMetadata) {
@@ -215,7 +225,7 @@ export class UniversalCommandRegistry extends EventEmitter {
       // - Provided context overrides shared context (explicit control)
       // - Use 'connect' command to create new sessions when needed
       const { mergeWithSharedContext } = await import('./SharedSessionContext');
-      const effectiveContext = await mergeWithSharedContext(context);
+      const effectiveContext = await mergeWithSharedContext(finalContext);
 
       // Execute with timeout if specified (use parsed parameters and merged context)
       const executePromise = CommandClass.execute(parsedParameters, effectiveContext);

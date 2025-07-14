@@ -3,7 +3,7 @@
  */
 
 import { DirectCommand } from '../direct-command/DirectCommand';
-import { CommandDefinition, CommandResult, CommandContext } from '../base-command/BaseCommand';
+import { CommandDefinition, CommandResult, ContinuumContext } from '../base-command/BaseCommand';
 
 export class AgentsCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
@@ -21,7 +21,7 @@ export class AgentsCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(_params: any = {}, _context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(_params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
     try {
       // Mock agent data for now
       const agents = [

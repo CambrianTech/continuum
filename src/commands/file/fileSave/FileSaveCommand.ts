@@ -5,7 +5,7 @@
  * directory for the current session. Built on the unified file system architecture.
  */
 
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
 import { BaseFileCommand, FileSystemOperation } from '../base/BaseFileCommand';
 import * as path from 'path';
 
@@ -43,7 +43,7 @@ export class FileSaveCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: FileSaveParams, _context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: FileSaveParams, _context?: ContinuumContext): Promise<CommandResult> {
     try {
       // 1. Process content based on encoding
       let processedContent: Buffer;

@@ -51,7 +51,7 @@ export interface CommandDefinition {
   readonly deprecated?: boolean;
 }
 
-export interface CommandContext {
+export interface ContinuumContext {
   readonly sessionId: UUID;
   readonly userPersonaId: UUID;
   readonly connectionId?: string;
@@ -72,7 +72,7 @@ export interface CommandResult<T = unknown> {
 export interface CommandExecution {
   readonly command: string;
   readonly parameters: Record<string, unknown>;
-  readonly context: CommandContext;
+  readonly context: ContinuumContext;
   readonly startTime: Date;
   readonly endTime?: Date;
   readonly result?: CommandResult;

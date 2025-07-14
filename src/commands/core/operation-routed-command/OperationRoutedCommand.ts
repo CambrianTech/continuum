@@ -7,10 +7,10 @@
  * 3. Standardized error handling and result formatting
  */
 
-import { BaseCommand, CommandResult, CommandContext } from '../base-command/BaseCommand.js';
+import { BaseCommand, CommandResult, ContinuumContext } from '../base-command/BaseCommand.js';
 
 export interface OperationHandler {
-  (data: any, context?: CommandContext): Promise<CommandResult>;
+  (data: any, context?: ContinuumContext): Promise<CommandResult>;
 }
 
 export interface OperationMap {
@@ -49,7 +49,7 @@ export abstract class OperationRoutedCommand extends BaseCommand {
   /**
    * Standard execute implementation with operation routing
    */
-  static async execute(params: any, context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: any, context?: ContinuumContext): Promise<CommandResult> {
     try {
       const operation = this.extractOperation(params);
       const operationMap = this.getOperationMap();

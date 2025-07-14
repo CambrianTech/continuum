@@ -4,7 +4,7 @@
  */
 
 import { HelpCommand } from '../../HelpCommand';
-import { CommandContext, CommandResult } from '../../../base-command/BaseCommand';
+import { ContinuumContext, CommandResult } from '../../../base-command/BaseCommand';
 
 // Mock the UniversalCommandRegistry
 jest.mock('../../../../services/UniversalCommandRegistry', () => ({
@@ -158,7 +158,7 @@ describe('HelpCommand', () => {
     });
 
     test('should work with context', async () => {
-      const context: CommandContext = {
+      const context: ContinuumContext = {
         sessionId: 'test-session',
         userId: 'test-user'
       };
