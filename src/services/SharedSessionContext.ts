@@ -7,7 +7,7 @@
  * Eliminates the need for explicit session management in CLI, REST, WebSocket, MCP, etc.
  */
 
-import { ContinuumContext, continuumContextFactory, UUIDValidator } from '../types/shared/core/ContinuumTypes';
+import { ContinuumContext, continuumContextFactory, uuidValidator } from '../types/shared/core/ContinuumTypes';
 import { type UUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -68,7 +68,7 @@ class SharedSessionContextProvider {
       } else {
         // Fallback context when no session is found
         this.cachedContext = {
-          sessionId: UUIDValidator.generate(),
+          sessionId: uuidValidator.generate(),
           userId: 'development-user',
           interface: 'http://localhost:9000',
           sharedSession: false,
@@ -85,7 +85,7 @@ class SharedSessionContextProvider {
       
       // Return minimal fallback context
       return continuumContextFactory.create({
-        sessionId: UUIDValidator.generate(),
+        sessionId: uuidValidator.generate(),
         userId: 'development-user',
         sharedSession: false,
         error: true,
@@ -145,7 +145,7 @@ class SharedSessionContextProvider {
         .filter(name => {
           // Check if it's a valid UUID format (new system) or contains session-info.json
           const sessionInfoPath = path.join(sessionsPath, name, 'session-info.json');
-          return UUIDValidator.validate(name) || 
+          return uuidValidator.validate(name) || 
                  fs.existsSync(sessionInfoPath);
         });
 

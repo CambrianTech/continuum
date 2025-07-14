@@ -26,6 +26,7 @@ This directory contains the complete architectural documentation for Continuum's
 - **[LOST_AND_FOUND.md](development/LOST_AND_FOUND.md)** - **🏺 Archaeological IP recovery system with revolutionary discoveries**
 - **[error-fixing.md](development/error-fixing.md)** - Systematic error fixing methodology (coming soon)
 - **[widget-architecture.md](development/widget-architecture.md)** - **✅ IMPLEMENTED** Complete widget system: Interface layout + zero-burden development architecture
+- **[shared-types-initiative.md](development/shared-types-initiative.md)** - **✅ IMPLEMENTED** Unified type system for consistent file operations and development reliability
 
 #### 🧪 [Testing](testing/)
 - **[intelligent-modular-testing.md](testing/intelligent-modular-testing.md)** - AI-friendly module discovery, compliance, and graduation tracking

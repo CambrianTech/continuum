@@ -1,3 +1,9 @@
+// ISSUES: 1 open, last updated 2025-07-14 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+/**
+ * 🔧 IMPROVEMENTS:
+ * - [ ] Issue #1: Add SessionPaths and SessionStructure interfaces to ContinuumContext for better session directory management
+ */
+
 import { randomUUID, type UUID } from "crypto";
 
 // Common types for context properties
@@ -5,6 +11,18 @@ export interface WebSocketServer {
   send: (message: unknown) => void;
   broadcast: (message: unknown) => void;
   clients: Set<unknown>;
+}
+
+/**
+ * Session-based file paths following the established structure
+ */
+export interface SessionPaths {
+  base: string;
+  logs: string;
+  screenshots: string;
+  recordings: string;
+  files: string;
+  devtools: string;
 }
 
 export interface ContinuumContext {
@@ -19,6 +37,8 @@ export interface ContinuumContext {
   sessionStartTime?: string;
   // Environment context
   environment?: 'client' | 'server' | 'browser';
+  // Session paths for consistent file operations
+  sessionPaths?: SessionPaths;
   // Extensible for future context needs
   [key: string]: unknown;
 }
@@ -38,7 +58,7 @@ export interface ContinuumInstance {
 /**
  * UUID validation and generation utilities
  */
-export const UUIDValidator = {
+export const uuidValidator = {
   /**
    * Validate UUID format
    */
@@ -66,7 +86,7 @@ export const continuumContextFactory = {
     environment?: 'client' | 'server' | 'browser';
     [key: string]: unknown;
   } = {}): ContinuumContext => ({
-    sessionId: options.sessionId ?? UUIDValidator.generate(),
+    sessionId: options.sessionId ?? uuidValidator.generate(),
     sessionStartTime: new Date().toISOString(),
     ...options,
   }),
@@ -95,6 +115,6 @@ export const continuumContextFactory = {
     }
     
     // Use the UUID validation utility
-    return UUIDValidator.validate(ctx.sessionId);
+    return uuidValidator.validate(ctx.sessionId);
   },
 } as const;
