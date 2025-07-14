@@ -1,2 +1,0 @@
-Test file to trigger git hook validation
-Created: 2025-07-14T22:36:30.000Z
