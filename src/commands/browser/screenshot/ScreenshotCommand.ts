@@ -190,15 +190,7 @@ export class ScreenshotCommand extends BaseCommand {
     console.log(`📋 JTAG SCREENSHOT: Parameters received:`, JSON.stringify(params, null, 2));
     console.log(`📋 JTAG SCREENSHOT: Context:`, JSON.stringify(context, null, 2));
     
-    try {
-      console.log(`🔍 JTAG SCREENSHOT: Checking environment - window:${typeof window}, document:${typeof document}`);
-      
-      // Check if we're running in browser context (client-side)
-      if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-        console.log(`📸 JTAG SCREENSHOT: Running in browser context - executing client-side`);
-        return this.executeClient(params as ScreenshotClientRequest);
-      }
-      
+    try {      
       // Server-side execution - use html2canvas for actual screenshot
       console.log(`📤 JTAG SCREENSHOT: Server-side execution starting - html2canvas capture`);
       
@@ -213,7 +205,7 @@ export class ScreenshotCommand extends BaseCommand {
       };
       
       // Get the session-specific screenshots directory
-      const sessionId = context?.sessionId ?? 'unknown';
+      const sessionId = context?.sessionId ?? 'unknown-session';
       const screenshotsDir = path.join(process.cwd(), '.continuum', 'sessions', 'user', 'shared', sessionId, 'screenshots');
       
       console.log(`📁 JTAG SCREENSHOT: Session ID: ${sessionId}`);
@@ -277,104 +269,6 @@ export class ScreenshotCommand extends BaseCommand {
       };
     }
   }
-
-
-  /**
-   * Browser-side execution with html2canvas - smart file saving
-   */
-  static async executeClient(params: ScreenshotClientRequest): Promise<CommandResult> {
-    const startTime = Date.now();
-    
-    console.log(`🚀🚀🚀 JTAG BROWSER SCREENSHOT: executeClient() called from browser!`);
-    console.log(`🚀🚀🚀 JTAG BROWSER SCREENSHOT: Received params:`, JSON.stringify(params, null, 2));
-    
-    try {
-      const { selector, format, quality, filename, destination } = params;
-      const continuum = (window as any).continuum;
-      
-      console.log(`📸 JTAG BROWSER: Starting screenshot capture (client side) - selector: ${selector}, format: ${format}, filename: ${filename}`);
-      console.log(`📋 JTAG BROWSER: Destination: ${destination}`);
-      
-      // Find target element
-      const targetElement = selector === 'body' ? document.body : document.querySelector(selector);
-      if (!targetElement) {
-        throw new Error(`Element not found: ${selector}`);
-      }
-      
-      // Load html2canvas dynamically if not already loaded
-      const html2canvas = await this.loadHtml2Canvas();
-      
-      console.log(`📦 JTAG BROWSER: html2canvas available - starting capture`);
-      
-      // Capture screenshot
-      const canvas = await html2canvas(targetElement, {
-        allowTaint: true,
-        useCORS: true,
-        scale: 1,
-        logging: false
-      });
-      
-      // Convert to desired format
-      const imageData = format === ScreenshotFormat.PNG ? 
-        canvas.toDataURL('image/png') : 
-        canvas.toDataURL(`image/${format}`, quality);
-      
-      console.log(`🖼️ JTAG BROWSER: Canvas captured, converting to bytes`);
-      
-      // Extract base64 data from data URL and convert to bytes
-      const base64Data = imageData.replace(/^data:image\/[a-z]+;base64,/, '');
-      const bytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0)); //getting a warning here about atob
-      
-      const executionTime = Date.now() - startTime;
-      console.log(`✅ JTAG BROWSER: Screenshot bytes ready in ${executionTime}ms - size: ${bytes.length} bytes`);
-      
-
-      //file save adheres to commandresult already and is a promise:
-      return continuum.fileSave({
-        content: bytes,
-        filename: filename,
-        artifactType: 'screenshot'
-      });
-      
-    } catch (error) {
-      const executionTime = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`❌ JTAG BROWSER: Screenshot capture failed after ${executionTime}ms - ${errorMessage}`);
-      throw error;
-    }
-  }
-
-
-  /**
-   * Dynamically load html2canvas library and return the function
-   */
-  private static async loadHtml2Canvas(): Promise<any> {
-    return new Promise((resolve, reject) => {
-      // Check if already loaded
-      if ((window as any).html2canvas) {
-        resolve((window as any).html2canvas);
-        return;
-      }
-
-      const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
-      script.onload = (): void => {
-        console.log('✅ html2canvas loaded successfully');
-        // Return the loaded function directly, don't rely on window global
-        const html2canvas = (window as any).html2canvas;
-        if (html2canvas) {
-          resolve(html2canvas);
-        } else {
-          reject(new Error('html2canvas not available after load'));
-        }
-      };
-      script.onerror = (): void => {
-        reject(new Error('Failed to load html2canvas'));
-      };
-      document.head.appendChild(script);
-    });
-  }
-
 }
 
 export default ScreenshotCommand;
