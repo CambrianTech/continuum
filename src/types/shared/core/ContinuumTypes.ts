@@ -2,6 +2,11 @@
 /**
  * 🔧 IMPROVEMENTS:
  * - [ ] Issue #1: Add SessionPaths and SessionStructure interfaces to ContinuumContext for better session directory management
+ * - [ ] Issue #2: Implement UUID validation and generation utilities for sessionId consistency
+ * - [ ] Issue #3: Refactor ContinuumContextFactory to use new UUID utilities
+ * - [ ] Issue #4: Ensure all commands use the new ContinuumContext structure for session management
+ * - [ ] Issue #5: Add comprehensive tests for ContinuumContextFactory and UUID utilities
+ * - [ ] Issue #6: Document ContinuumContext structure and usage patterns for developers
  */
 
 import { randomUUID, type UUID } from "crypto";
