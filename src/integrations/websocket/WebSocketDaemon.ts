@@ -1,6 +1,27 @@
+// ISSUES: 1 open, last updated 2025-07-14 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// 🚨 ISSUE #1: DO NOT HARD-CODE ROUTES IN handleHttpRequest - WebSocketDaemon is PURE ROUTER ONLY
+//             CommandProcessor subscribes to /api/* - route ALL requests through RouteManager
+//             RendererDaemon handles HTML/static files - route ALL requests through RouteManager
+//             NEVER add "if (pathname === '/api/xyz')" - that breaks the subscription pattern
 /**
- * WebSocket Daemon - Pure Content-Agnostic Router
- * ONLY handles routing and connections - knows NOTHING about content
+ * THIS IS A ROUTER - DO NOT HARD CODE PATHS
+ * 
+ * WEBSOCKET DAEMON - PURE ROUTER ONLY
+ * - ROUTES ALL HTTP REQUESTS VIA ROUTEMANAGER
+ * - HANDLES WEBSOCKET CONNECTIONS
+ * - PROVIDES HTTP SERVER FOR WEBSOCKET UPGRADES
+ * 
+ * DO NOT HARD CODE PATHS LIKE:
+ * - if (pathname === '/api/health') 
+ * - if (pathname === '/api/status')
+ * - if (pathname.startsWith('/api/'))
+ * 
+ * DAEMONS SUBSCRIBE TO ROUTES:
+ * - COMMANDPROCESSOR SUBSCRIBES TO /API/*
+ * - RENDERERDAEMON SUBSCRIBES TO /* (CATCH-ALL)
+ * - ROUTEMANAGER HANDLES ALL ROUTING
+ * 
+ * THIS IS PLUMBING, NOT BUSINESS LOGIC
  */
 
 import { BaseDaemon } from '../../daemons/base/BaseDaemon';
@@ -13,6 +34,7 @@ import { PortManager } from './core/PortManager';
 import { messageRouter } from './core/MessageRouter';
 import { initializeWebSocketHandlers } from './handlers';
 import { createServer } from 'http';
+import { MESSAGE_HANDLER_REGISTRY } from './core/MessageHandlerRegistry';
 
 export interface ServerConfig {
   port?: number;
@@ -36,6 +58,8 @@ export class WebSocketDaemon extends BaseDaemon {
 
   constructor(config: ServerConfig = {}) {
     super();
+    // DEAD CODE: This log never appears in session logs - daemon may not be constructed
+    // console.log(`🔥🔥🔥 WEBSOCKET DAEMON CONSTRUCTOR CALLED - STACK:`, new Error().stack?.split('\n').slice(1, 4).join(' -> '));
     
     this.config = {
       port: config.port ?? 9000,
@@ -63,6 +87,8 @@ export class WebSocketDaemon extends BaseDaemon {
 
   protected async onStart(): Promise<void> {
     this.log(`🌐 Starting pure router on ${this.config.host}:${this.config.port}`);
+    // DEAD CODE: This log never appears in session logs - onStart() may not be called
+    // this.log(`🔥🔥🔥 WEBSOCKET DAEMON onStart() called - STACK: ${new Error().stack?.split('\n').slice(1, 4).join(' -> ')}`);
     
     // Initialize clean MessageRouter handler registration system
     initializeWebSocketHandlers();
@@ -131,6 +157,7 @@ export class WebSocketDaemon extends BaseDaemon {
   }
 
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
+    // First check for core WebSocketDaemon messages
     switch (message.type) {
       case 'register_daemon':
         return this.handleDaemonRegistration(message.data);
@@ -144,7 +171,8 @@ export class WebSocketDaemon extends BaseDaemon {
           data: {
             routes: this.routeManager.getRegisteredRoutes(),
             connections: this.wsManager.getConnectionCount(),
-            registered_daemons: Array.from(this.registeredDaemons.keys())
+            registered_daemons: Array.from(this.registeredDaemons.keys()),
+            message_handlers: MESSAGE_HANDLER_REGISTRY.getRegisteredTypes()
           }
         };
 
@@ -153,13 +181,23 @@ export class WebSocketDaemon extends BaseDaemon {
 
       case 'check_connection':
         return this.handleCheckConnection(message.data);
-
-      default:
-        return {
-          success: false,
-          error: `Unknown message type: ${message.type}`
-        };
     }
+    
+    // Check registered message handlers for other message types
+    if (MESSAGE_HANDLER_REGISTRY.hasHandlers(message.type)) {
+      const handlers = MESSAGE_HANDLER_REGISTRY.getHandlers(message.type);
+      
+      // Use first handler (highest priority)
+      if (handlers.length > 0) {
+        console.log(`📋 Delegating '${message.type}' to registered handler`);
+        return await handlers[0].handle(message.data);
+      }
+    }
+    
+    return {
+      success: false,
+      error: `No handler registered for message type: ${message.type}`
+    };
   }
 
   /**
@@ -182,77 +220,19 @@ export class WebSocketDaemon extends BaseDaemon {
     const pathname = url.pathname;
 
     try {
-      // EARLY ROUTING: Simple endpoints bypass complex command system
-      if (pathname === '/api/health') {
-        // Direct health check - no command routing needed (supports GET and POST)
-        const healthData = {
-          status: 'healthy',
-          timestamp: new Date().toISOString(),
-          daemons: Array.from(this.registeredDaemons.keys()),
-          connections: this.wsManager.getConnectionCount()
-        };
-        
-        if (req.method === 'POST') {
-          // Handle POST from browser health validation
-          let body = '';
-          req.on('data', (chunk: any) => body += chunk);
-          req.on('end', () => {
-            try {
-              const clientData = JSON.parse(body);
-              this.log(`🏥 Client health report received:`, clientData.source || 'unknown');
-              res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ ...healthData, clientReport: 'received' }));
-            } catch (error) {
-              res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify(healthData));
-            }
-          });
-        } else {
-          // Handle GET requests
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(healthData));
-        }
-        
-        this.log(`✅ Direct health check served (${req.method})`);
-        return;
-      } else if (pathname === '/api/status') {
-        // Direct status check - comprehensive system info
-        const statusData = {
-          status: 'running',
-          timestamp: new Date().toISOString(),
-          daemons: Array.from(this.registeredDaemons.keys()).map(name => ({
-            name,
-            status: 'running' // TODO: Get actual daemon status
-          })),
-          routes: this.routeManager.getRegisteredRoutes(),
-          connections: this.wsManager.getConnectionCount(),
-          version: '2.0.0'
-        };
-        
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(statusData));
-        this.log(`✅ Direct status check served (${req.method})`);
-        return;
-      } else if (pathname.startsWith('/api/')) {
-        // Route other API calls to command daemons
-        const handled = await this.routeManager.handleRequest(pathname, req, res);
-        if (!handled) {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
-          res.end('API endpoint not found');
-          this.log(`❌ No API route for: ${pathname}`);
-        } else {
-          this.log(`✅ API routed: ${pathname}`);
-        }
+      // ⚠️  PURE ROUTING ONLY - DO NOT ADD HARD-CODED ROUTES HERE ⚠️
+      // CommandProcessor subscribes to /api/* routes
+      // RendererDaemon subscribes to /* (catch-all) for HTML/static files
+      // RouteManager handles all subscription-based routing
+      // NEVER add "if (pathname === '/api/xyz')" conditions - breaks subscription pattern
+      
+      const handled = await this.routeManager.handleRequest(pathname, req, res);
+      if (!handled) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not found');
+        this.log(`❌ No route handler for: ${pathname}`);
       } else {
-        // Route all other requests (files, HTML, etc.) to appropriate daemons
-        const handled = await this.routeManager.handleRequest(pathname, req, res);
-        if (!handled) {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
-          res.end('Not found');
-          this.log(`❌ No route handler for: ${pathname}`);
-        } else {
-          this.log(`✅ Request routed: ${pathname}`);
-        }
+        this.log(`✅ Request routed: ${pathname}`);
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -972,6 +952,20 @@ export class WebSocketDaemon extends BaseDaemon {
         error: `Failed to send to connection: ${errorMessage}`
       };
     }
+  }
+
+  /**
+   * Get connection mapping for session handlers
+   */
+  getConnectionSessions(): Map<string, string> {
+    return this.connectionSessions;
+  }
+  
+  /**
+   * Expose send to connection for other handlers
+   */
+  async sendToConnectionById(connectionId: string, message: unknown): Promise<DaemonResponse> {
+    return this.handleSendToConnection({ connectionId, message });
   }
 
   /**

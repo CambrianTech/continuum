@@ -20,17 +20,54 @@ export class CLIIntegrationParser implements IntegrationParser {
   parse<T>(params: unknown): T {
     const { args } = params as { args: string[] };
     const result: Record<string, unknown> = {};
+    const positionalArgs: string[] = [];
     
-    for (const arg of args) {
+    console.log('🔍 CLIIntegrationParser.parse - input params:', params);
+    
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      
       if (typeof arg === 'string' && arg.startsWith('--')) {
-        const [key, ...valueParts] = arg.substring(2).split('=');
-        const rawValue = valueParts.join('=');
-        
-        // Smart value parsing
-        result[key] = this.parseValue(rawValue);
+        if (arg.includes('=')) {
+          // Handle --key=value format
+          const [key, ...valueParts] = arg.substring(2).split('=');
+          const rawValue = valueParts.join('=');
+          result[key] = this.parseValue(rawValue);
+        } else {
+          // Handle --key value format (next argument is the value)
+          const key = arg.substring(2);
+          const nextArg = args[i + 1];
+          
+          if (nextArg && !nextArg.startsWith('--')) {
+            // Next argument is the value
+            result[key] = this.parseValue(nextArg);
+            i++; // Skip the next argument since we consumed it
+          } else {
+            // No value, treat as boolean flag
+            result[key] = true;
+          }
+        }
+      } else {
+        // Positional argument (doesn't start with --)
+        positionalArgs.push(arg);
       }
     }
     
+    // Map positional arguments to common parameter names
+    if (positionalArgs.length > 0) {
+      // For help command: first positional arg becomes "command"
+      // For other commands: first positional arg becomes common parameter names
+      result.command = positionalArgs[0];
+      result.filename = positionalArgs[0]; // For file commands
+      result.target = positionalArgs[0];   // For reload, etc.
+      
+      // If there are multiple positional args, keep them as an array
+      if (positionalArgs.length > 1) {
+        result.args = positionalArgs;
+      }
+    }
+    
+    console.log('🔍 CLIIntegrationParser.parse - output result:', result);
     return result as T;
   }
   

@@ -1,9 +1,13 @@
+// ISSUES: 0 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
  * WebSocket Manager - Handles WebSocket connection and messaging
  * Manages connection lifecycle and message handling
+ * 
+ * ✅ CLEANED UP: Removed god object pattern - now delegates to modular command handlers (2025-07-13)
+ * ✅ CLEANED UP: Uses event system for remote execution instead of hardcoded switch (2025-07-13)
  */
 
-import { WebSocketMessage, ClientInitData } from '../types/WebSocketTypes';
+import { WebSocketMessage, ClientInitData, RemoteExecutionRequest, RemoteExecutionResponse } from '../types/WebSocketTypes';
 import { ContinuumState } from '../types/BrowserClientTypes';
 
 export class WebSocketManager {
@@ -76,7 +80,7 @@ export class WebSocketManager {
     }
   }
 
-  private handleMessage(event: MessageEvent): void {
+  private async handleMessage(event: MessageEvent): Promise<void> {
     try {
       const message = JSON.parse(event.data);
       
@@ -108,6 +112,12 @@ export class WebSocketManager {
         return;
       }
 
+      // Handle remote execution requests from server - delegate to command registry
+      if (message.type === 'remote_execution_request') {
+        await this.delegateRemoteExecution(message.data);
+        return;
+      }
+
       // Pass other messages to callback
       this.onMessage?.(message);
 
@@ -127,5 +137,69 @@ export class WebSocketManager {
 
   isOpen(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Delegate remote execution to proper command handler - modular approach
+   */
+  private async delegateRemoteExecution(data: RemoteExecutionRequest): Promise<void> {
+    const startTime = Date.now();
+    console.log(`🔍 Browser delegating remote execution: ${data.command}`, data);
+
+    try {
+      // Use event system for modular command handling
+      const event = new CustomEvent('continuum:remote_execution', {
+        detail: {
+          request: data,
+          respond: (response: RemoteExecutionResponse) => {
+            this.sendMessage({
+              type: 'remote_execution_response',
+              data: response
+            });
+          }
+        }
+      });
+
+      document.dispatchEvent(event);
+
+      // Fallback if no handler responds within timeout
+      setTimeout(() => {
+        const errorResponse: RemoteExecutionResponse = {
+          success: false,
+          error: `No handler registered for command: ${data.command}`,
+          requestId: data.requestId,
+          clientMetadata: {
+            userAgent: navigator.userAgent,
+            timestamp: Date.now(),
+            executionTime: Date.now() - startTime
+          }
+        };
+
+        this.sendMessage({
+          type: 'remote_execution_response',
+          data: errorResponse,
+          timestamp: new Date().toISOString()
+        });
+      }, 1000); // 1 second timeout for handler registration
+
+    } catch (error) {
+      console.error(`❌ Remote execution delegation failed: ${error}`);
+      
+      const response: RemoteExecutionResponse = {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        requestId: data.requestId,
+        clientMetadata: {
+          userAgent: navigator.userAgent,
+          timestamp: Date.now(),
+          executionTime: Date.now() - startTime
+        }
+      };
+
+      this.sendMessage({
+        type: 'remote_execution_response',
+        data: response
+      });
+    }
   }
 }

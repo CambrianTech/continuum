@@ -70,7 +70,7 @@ export class JtagCommand extends BaseCommand {
       
       // Execute JavaScript in browser
       const { JSExecuteCommand } = await import('../../browser/js-execute/JSExecuteCommand');
-      const executeResult = await JSExecuteCommand.execute({ code: probeCode });
+      const executeResult = await JSExecuteCommand.execute({ script: probeCode });
       
       return executeResult;
     } catch (error) {

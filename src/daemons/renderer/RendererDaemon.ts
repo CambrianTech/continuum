@@ -183,6 +183,7 @@ export class RendererDaemon extends MessageRoutedDaemon {
 
   private async handleHttpRequest(data: { pathname: string; handler: string }): Promise<DaemonResponse> {
     const { pathname, handler } = data;
+    this.log(`🔍🔍🔍 RENDERER HTTP PROBE: Received HTTP request for ${pathname} (handler: ${handler}) 🔍🔍🔍`);
     
     try {
       // Default to rendering UI for root path

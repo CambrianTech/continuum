@@ -1,4 +1,5 @@
-// ISSUES: 0 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// ISSUES: 1 open, last updated 2025-07-14 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// 🚨 ISSUE #1: Screenshot HTTP requests cause 500 error before reaching handleMessage - routing broken above CommandProcessor level
 /**
  * Command Processor Daemon - TypeScript-first command execution orchestration
  * Strongly typed, modular, and designed for mesh distribution
@@ -104,6 +105,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
   constructor(config?: {id?: string, logLevel?: string}) {
     super();
     this.id = config?.id || 'command-processor-default';
+    console.log('🟢🟢🟢 COMMAND PROCESSOR CONSTRUCTOR CALLED - ACTUAL CODE LOADING 🟢🟢🟢');
   }
 
   /**
@@ -204,7 +206,14 @@ export class CommandProcessorDaemon extends BaseDaemon {
   }
 
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
+    this.log(`🎯🎯🎯 COMMAND PROCESSOR: handleMessage called with type: ${message.type} 🎯🎯🎯`);
+    this.log(`🎯🎯🎯 COMMAND PROCESSOR: Call stack: ${new Error().stack?.split('\n').slice(1, 4).join(' -> ')}`);
     console.log(`🔍 CommandProcessor: Received message type: ${message.type}, from: ${message.from}`);
+    
+    // 🚨 SCREENSHOT DEBUG: Log all screenshot-related messages
+    if (message.type.includes('screenshot') || (message.data && JSON.stringify(message.data).includes('screenshot'))) {
+      this.log(`🚨🚨🚨 SCREENSHOT MESSAGE REACHED COMMAND PROCESSOR: ${JSON.stringify(message, null, 2)} 🚨🚨🚨`);
+    }
     
     // 🔍 SESSION DEBUG: Log full incoming message to CommandProcessor
     console.log(`🔍 [SESSION_DEBUG] CommandProcessor.handleMessage:`);
@@ -277,20 +286,36 @@ export class CommandProcessorDaemon extends BaseDaemon {
         };
 
       case 'handle_api':
+        this.log(`🎯🎯🎯 COMMAND PROCESSOR handle_api CALLED - PATH A 🎯🎯🎯`);
+        this.log(`🔥🔥🔥 Command processor received API request - PATH A 🔥🔥🔥`);
         const apiData = message.data as any; // TODO: Add proper type
+        this.log(`🎊🎊🎊 API Data pathname: ${apiData.pathname} 🎊🎊🎊`);
         const { pathname, requestInfo } = apiData;
         const pathParts = pathname.split('/').filter(Boolean);
         if (pathParts[0] === 'api' && pathParts[1] === 'commands' && pathParts[2]) {
-          // Consistent parameter structure: merge args array with top-level parameters
           const body = apiData.body || {};
-          const args = body.args || [];
-          const parameters = {
-            ...body,    // Include all top-level parameters (owner, forceNew, sessionId, etc.)
-            args: args  // Keep args array for commands that expect it
-          };
+          
+          // 🎯 SMART HTTP INTEGRATION: Support both CLI args format and proper REST JSON
+          let parameters;
+          if (body.args && Array.isArray(body.args)) {
+            // CLI-style format: {"args": ["--selector=body", "--filename=test.png"]}
+            parameters = {
+              ...body,    // Include all top-level parameters (owner, forceNew, sessionId, etc.)
+              args: body.args  // Keep args array for parser
+            };
+          } else {
+            // REST-style format: {"selector": "body", "filename": "test.png", "quality": 90}
+            // Create canonical format that parser expects
+            parameters = body; // Direct named parameters - no args array needed
+          }
           
           // Use SessionManagerDaemon to extract session info dynamically
           const sessionContext = await this.extractSessionContext(requestInfo);
+          
+          console.log(`🔍 [LAYER4_DEBUG] Command: ${pathParts[2]}`);
+          console.log(`🔍 [LAYER4_DEBUG] RequestInfo:`, JSON.stringify(requestInfo, null, 2));
+          console.log(`🔍 [LAYER4_DEBUG] Extracted sessionContext:`, sessionContext);
+          console.log(`🔍 [LAYER4_DEBUG] Final sessionId: ${sessionContext?.sessionId}`);
           
           return {
             success: true,
@@ -583,12 +608,20 @@ export class CommandProcessorDaemon extends BaseDaemon {
     );
     console.log(`🔍 [CommandProcessor] Command connector result:`, result);
     
-    // Check if this is a daemon routing request
+    // Check if this is a daemon routing request (e.g., RemoteCommand WebSocket routing)
     if (result.success && result.data && typeof result.data === 'object' && '_routeToDaemon' in result.data) {
       const daemonRequest = (result.data as any)._routeToDaemon;
       console.log(`🔍 [CommandProcessor] Command wants to route to daemon: ${daemonRequest.targetDaemon}`);
       
-      // Route to the specified daemon through WebSocket daemon
+      // Special handling for WebSocket remote execution requests
+      if (daemonRequest.messageType === 'send_to_session' && daemonRequest.data?.message?.type === 'remote_execution_request') {
+        console.log(`🔍 [CommandProcessor] Routing to remote_execution handler instead of send_to_session`);
+        // Use the new remote_execution handler that handles request-response cycle
+        daemonRequest.targetDaemon = 'session-manager';
+        daemonRequest.messageType = 'remote_execution';
+      }
+      
+      // Route to the specified daemon through standard messaging
       const daemonResponse = await this.routeToDaemon(daemonRequest);
       if (daemonResponse.success) {
         return daemonResponse.data as R;
@@ -643,6 +676,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
     this.log(`🕸️ Executing in mesh: ${request.command}`);
     return { provider: 'mesh', status: 'executed' } as R;
   }
+
 
   // Care pattern assessment methods
   private assessDignityImpact(command: string, params: string): number {

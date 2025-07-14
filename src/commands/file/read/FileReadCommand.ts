@@ -1,5 +1,10 @@
+// ISSUES: 0 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
  * FileReadCommand - Read files with session management (like cat)
+ * 
+ * ✅ FIXED: CLI parameter parsing with --file alias support
+ * ✅ ARCHITECTURE: Parameters pre-parsed by UniversalCommandRegistry
+ * 🔬 MIDDLE-OUT: Layer 3 Command System with centralized parsing
  * 
  * Used throughout the system for reading logs, configs, artifacts, etc.
  */
@@ -45,9 +50,16 @@ export class FileReadCommand extends BaseFileCommand {
 
   static async execute(params: FileReadParams, _context?: CommandContext): Promise<CommandResult> {
     try {
+      // Handle CLI aliases: --file should map to filename (parameters already parsed by registry)
+      const filename = params.filename || (params as any).file;
+      
+      if (!filename) {
+        return this.createErrorResult('Missing required parameter: filename (use --filename or --file)');
+      }
+      
       // 1. Get file path using session management
       const filePath = await this.getTargetPath({
-        filename: params.filename,
+        filename: filename,
         sessionId: params.sessionId,
         artifactType: params.artifactType,
         directory: params.directory
@@ -55,7 +67,7 @@ export class FileReadCommand extends BaseFileCommand {
       
       // 2. Check if file exists
       if (!(await this.fileExists(filePath))) {
-        return this.createErrorResult(`File not found: ${params.filename}`);
+        return this.createErrorResult(`File not found: ${filename}`);
       }
       
       // 3. Read file with proper encoding

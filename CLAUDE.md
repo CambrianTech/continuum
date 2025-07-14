@@ -1,20 +1,16 @@
-# CLAUDE - MIDDLE-OUT ARCHITECTURE - UNIVERSAL INTEGRATION BREAKTHROUGH
+# CLAUDE - MIDDLE-OUT ARCHITECTURE
 
-## **📚 ESSENTIAL READING: [middle-out/](middle-out/)**
+## **🚨 CRITICAL: ALWAYS RUN `npm start` BEFORE ANY COMMANDS**
 
-**🧅 MIDDLE-OUT ARCHITECTURE & TESTING METHODOLOGY** - The complete architectural blueprint for Continuum's dual onion system, universal command infrastructure, and modular development methodology. **READ THIS FIRST** for the full vision and implementation patterns.
+## **📚 READ: [middle-out/](middle-out/)** - Complete architecture docs
 
-**📁 Key Documentation:**
-- **[middle-out/README.md](middle-out/README.md)** - Complete navigation and overview
-- **[middle-out/architecture/universal-integration-parsers.md](middle-out/architecture/universal-integration-parsers.md)** - **🎯 NEW** Universal integration parser system
-- **[middle-out/development/testing-workflow.md](middle-out/development/testing-workflow.md)** - 6-layer testing methodology 
-- **[middle-out/jtag/README.md](middle-out/jtag/README.md)** - JTAG debugging framework
+## **🎯 LATEST FINDINGS:**
+- ✅ HTTP API now accepts proper REST JSON (`{"selector": "body"}`) instead of CLI args
+- ✅ Parser system works: CLI|REST|MCP → parser → canonical → API → parser → CLI|REST|MCP  
+- ❌ Screenshot still fails with HTTP 500 after parser fixes
+- ❌ Need to debug actual screenshot execution, not routing
 
-## **📚 AI-POWERED DEVELOPMENT: [AI-POWERED-DEVELOPMENT.md](AI-POWERED-DEVELOPMENT.md)**
-
-**🤖 AUTONOMOUS AI DEVELOPMENT** - Complete documentation of AI personas as full-stack developers with autonomous design, implementation, testing, and pull request creation capabilities.
-
-## 🚀 **ESSENTIAL WORKFLOW: npm start (ALWAYS USE THIS)**
+## 🚀 **WORKFLOW: npm start (ALWAYS)**
 
 **CRITICAL**: `npm start` is the ONLY way to run the system properly. It handles:
 1. **Clears out sessions** - `npm run clean:all`

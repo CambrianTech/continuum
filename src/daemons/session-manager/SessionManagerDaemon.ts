@@ -1,4 +1,5 @@
-// ISSUES: 0 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// ISSUES: 1 open, last updated 2025-07-14 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// 🚨 ISSUE #1: Dead routing diagnosis code removed - HTTP screenshot requests never reach CommandProcessor despite claiming handle_api
 /**
  * Session Manager Daemon - Core session isolation and artifact management
  * 
@@ -23,6 +24,10 @@ import { SessionRequest } from '../../types/SessionParameters';
 import { SessionConnectResponse } from '../../types/SessionConnectResponse';
 import { SessionExtractionRequest, SessionExtractionResponse, SessionInfo } from '../../types/shared/SessionTypes';
 import { DAEMON_EVENT_BUS } from '../base/DaemonEventBus';
+import { MESSAGE_HANDLER_REGISTRY } from '../../integrations/websocket/core/MessageHandlerRegistry';
+import { SendToSessionHandler } from './handlers/SendToSessionHandler';
+import { RemoteExecutionHandler } from './handlers/RemoteExecutionHandler';
+import { DAEMON_REGISTRY } from '../base/DaemonRegistry';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -84,6 +89,7 @@ export class SessionManagerDaemon extends BaseDaemon {
   private cleanupInterval?: NodeJS.Timeout;
   private eventListeners = new Set<(event: SessionEvent) => void>();
   private consoleLoggers = new Map<string, SessionConsoleLogger>(); // sessionId -> logger
+  private remoteExecutionHandler?: RemoteExecutionHandler;
   
   // SEMAPHORE: Prevent race conditions in session creation
   private sessionCreationLock = new Map<string, Promise<BrowserSession>>();
@@ -95,8 +101,40 @@ export class SessionManagerDaemon extends BaseDaemon {
 
   protected async onStart(): Promise<void> {
     this.log('📋 Starting Session Manager Daemon...');
+    this.log('🕵️‍♂️🕵️‍♂️🕵️‍♂️ DISCOVERY: Starting daemon reconnaissance 🕵️‍♂️🕵️‍♂️🕵️‍♂️');
+    
     await this.initializeDirectoryStructure();
+    
+    // Discover all registered daemons after initialization
+    setTimeout(() => {
+      try {
+        const { DAEMON_REGISTRY } = require('../../daemons/base/DaemonRegistry');
+        const allDaemons = DAEMON_REGISTRY.getAllDaemons();
+        this.log(`🕵️‍♂️ DISCOVERY: Found ${allDaemons.length} total daemons:`);
+        allDaemons.forEach((reg: any) => {
+          this.log(`🕵️‍♂️   - ${reg.name} (${reg.type}) - Active: ${reg.isActive}`);
+          // Check if this daemon handles HTTP
+          if (reg.daemon && typeof reg.daemon.getMessageTypes === 'function') {
+            const messageTypes = reg.daemon.getMessageTypes();
+            this.log(`🕵️‍♂️     Message types: ${messageTypes.join(', ')}`);
+            
+            // ROUTING DIAGNOSIS: Log which daemons claim to handle routing messages
+            const routingTypes = messageTypes.filter((type: string) => 
+              type.includes('http') || type.includes('api') || type.includes('route') || type.includes('handle_api')
+            );
+            this.log(`🔧 ROUTING DIAGNOSIS: ${reg.name} claims routing types: ${routingTypes.join(', ')}`);
+          } else {
+            this.log(`🕵️‍♂️     No getMessageTypes method - legacy daemon`);
+          }
+        });
+      } catch (error) {
+        this.log(`🕵️‍♂️ DISCOVERY ERROR: ${error}`);
+      }
+    }, 3000);
     this.startCleanupMonitoring();
+    
+    // Register message handlers for session-related WebSocket messages
+    await this.registerMessageHandlers();
     
     // Listen for WebSocket connections with proper typing
     DAEMON_EVENT_BUS.onEvent(SystemEventType.WEBSOCKET_CONNECTION_ESTABLISHED, async (event) => {
@@ -108,6 +146,125 @@ export class SessionManagerDaemon extends BaseDaemon {
     });
     
     this.log('✅ Session Manager ready for coordination');
+  }
+  
+  /**
+   * Register with WebSocket daemon - called by startup system
+   */
+  async registerWithWebSocketDaemon(webSocketDaemon: any): Promise<void> {
+    this.log('📋 Registering session handlers with WebSocket daemon');
+    
+    try {
+      // Create session message handler with access to connection mapping
+      const sendToSessionHandler = new SendToSessionHandler(
+        webSocketDaemon.getConnectionSessions(),
+        webSocketDaemon.sendToConnectionById.bind(webSocketDaemon)
+      );
+      
+      // Create remote execution handler for request-response WebSocket communication
+      this.remoteExecutionHandler = new RemoteExecutionHandler(
+        webSocketDaemon.getConnectionSessions(),
+        webSocketDaemon.sendToConnectionById.bind(webSocketDaemon),
+        (correlationId: string, _response: any) => {
+          // This will be called when responses arrive
+          this.log(`📨 Remote execution response received: ${correlationId}`);
+        }
+      );
+      
+      // Register handlers for session-related messages
+      MESSAGE_HANDLER_REGISTRY.registerHandler('send_to_session', sendToSessionHandler, this.name);
+      MESSAGE_HANDLER_REGISTRY.registerHandler('remote_execution', this.remoteExecutionHandler, this.name);
+      
+      // Register handler for remote execution responses from browser
+      MESSAGE_HANDLER_REGISTRY.registerHandler('remote_execution_response', {
+        priority: 100,
+        handle: async (data: any) => {
+          if (this.remoteExecutionHandler && data.correlationId) {
+            this.remoteExecutionHandler.handleResponse(data.correlationId, data);
+            return { success: true };
+          }
+          return { success: false, error: 'No remote execution handler or correlation ID' };
+        }
+      }, this.name);
+      
+      this.log('✅ Registered session message handlers with WebSocket daemon');
+    } catch (error) {
+      this.log(`❌ Failed to register message handlers: ${error}`, 'error');
+    }
+  }
+
+  /**
+   * Register message handlers with WebSocket daemon (legacy)
+   */
+  private async registerMessageHandlers(): Promise<void> {
+    try {
+      // Get WebSocket daemon to access connection methods
+      const webSocketDaemon = await this.getWebSocketDaemon();
+      
+      if (webSocketDaemon) {
+        // Create session message handler with access to connection mapping
+        const sendToSessionHandler = new SendToSessionHandler(
+          webSocketDaemon.getConnectionSessions(),
+          webSocketDaemon.sendToConnectionById.bind(webSocketDaemon)
+        );
+        
+        // Register handlers for session-related messages
+        MESSAGE_HANDLER_REGISTRY.registerHandler('send_to_session', sendToSessionHandler, this.name);
+        
+        this.log('📋 Registered session message handlers with WebSocket daemon');
+      } else {
+        this.log('⚠️ WebSocket daemon not found - session handlers not registered');
+      }
+    } catch (error) {
+      this.log(`❌ Failed to register message handlers: ${error}`, 'error');
+    }
+  }
+  
+  /**
+   * Get WebSocket daemon instance using daemon discovery
+   */
+  private async getWebSocketDaemon(): Promise<any> {
+    try {
+      // Debug: List all registered daemons
+      const allDaemons = DAEMON_REGISTRY.getAllDaemons();
+      this.log(`🔍 Daemon discovery debug - Found ${allDaemons.length} registered daemons:`);
+      allDaemons.forEach(reg => {
+        this.log(`   - ${reg.name} (${reg.type}) - Active: ${reg.isActive}`);
+      });
+      
+      // Use daemon registry for discovery
+      const webSocketDaemon = DAEMON_REGISTRY.findDaemon('websocket-server');
+      
+      if (webSocketDaemon) {
+        this.log('✅ Found WebSocket daemon via registry');
+        return webSocketDaemon;
+      } else {
+        // Try waiting for it to register (in case of startup ordering)
+        this.log('⏳ Waiting for WebSocket daemon to register...');
+        const daemon = await DAEMON_REGISTRY.waitForDaemon('websocket-server', 3000);
+        
+        if (daemon) {
+          this.log('✅ WebSocket daemon registered after waiting');
+          return daemon;
+        } else {
+          this.log('❌ WebSocket daemon not found after timeout');
+          // Debug: Check the old registry too
+          const { DAEMON_REGISTRY: OLD_REGISTRY } = await import('../base/BaseDaemon');
+          const webSocketDaemonOld = OLD_REGISTRY.get('websocket-server');
+          if (webSocketDaemonOld) {
+            this.log('✅ Found WebSocket daemon in old registry, using it');
+            return webSocketDaemonOld;
+          } else {
+            this.log('❌ WebSocket daemon not in old registry either');
+            this.log(`🔍 Old registry has: ${Array.from(OLD_REGISTRY.keys()).join(', ')}`);
+          }
+          return null;
+        }
+      }
+    } catch (error) {
+      this.log(`❌ Error finding WebSocket daemon: ${error}`, 'error');
+      return null;
+    }
   }
 
   /**
@@ -185,6 +342,17 @@ export class SessionManagerDaemon extends BaseDaemon {
   }
 
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse<any>> {
+    this.log(`🎮🎮🎮 SESSION MANAGER: Received message type: ${message.type} 🎮🎮🎮`);
+    this.log(`🎮🎮🎮 SESSION MANAGER: Call stack: ${new Error().stack?.split('\n').slice(1, 4).join(' -> ')}`);
+    
+    // TODO: REMOVE - Dead routing diagnosis code (confirmed CommandProcessor claims handle_api but never receives screenshot requests)
+    // if (message.type === 'session.extract') {
+    //   // Dead code - routing diagnosis spam removed 
+    // }
+    
+    if (message.type.includes('api') || message.type.includes('http') || message.type.includes('command')) {
+      this.log(`🎮🎮🎮 SESSION MANAGER: HTTP/API/COMMAND message details: ${JSON.stringify(message, null, 2)}`);
+    }
     try {
       switch (message.type) {
         case 'register_connection_identity':
@@ -1441,6 +1609,7 @@ export class SessionManagerDaemon extends BaseDaemon {
   ): Promise<void> {
     try {
       this.log(`🔌 Handling WebSocket connection: ${connectionId}`);
+      this.log(`🚨🚨🚨 SCREENSHOT DEBUG VARIANT-B: About to handle WebSocket connection ${connectionId} 🚨🚨🚨`);
       
       // Determine session type based on connection metadata
       const sessionType = this.determineSessionType(metadata);

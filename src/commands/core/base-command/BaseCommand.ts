@@ -60,21 +60,51 @@ export abstract class BaseCommand {
   }
 
   /**
-   * Execute command - must be implemented by subclasses
+   * Execute command - implement this in subclasses with typed parameters
+   * Parameters are automatically parsed by UniversalCommandRegistry before calling this method
+   * 
+   * Pattern: static async execute(params: MyTypedParams, context?: CommandContext): Promise<MyResult>
    */
   static execute(_params: unknown, _context?: CommandContext): Promise<CommandResult> {
-    throw new Error('execute() must be implemented by subclass');
+    throw new Error('execute() must be implemented by subclass with typed parameters');
   }
 
   /**
    * Parse parameters using modular integration parser system
    * Any format to BaseCommand's canonical JSON format
+   * 
+   * ⚠️  INTERNAL USE ONLY: Should only be called by UniversalCommandRegistry
+   * ⚠️  Individual commands should NOT call this - parameters are pre-parsed
    */
-  protected static parseParams<T = unknown>(params: unknown): T {
+  static _registryParseParams<T = unknown>(params: unknown): T {
     return IntegrationParserRegistry.parse<T>(params);
   }
 
+  /**
+   * Get typed parameters - ensures parameters are pre-parsed by registry
+   * 
+   * @param params - Parameters that should already be parsed by UniversalCommandRegistry
+   * @returns Typed parameters with runtime validation that they're pre-parsed
+   */
+  protected static args<T = unknown>(params: unknown): T {
+    // Verify parameters are already in canonical JSON format (not CLI args)
+    if (typeof params === 'object' && params !== null && 'args' in params) {
+      console.warn('⚠️  CLI args detected - parameters should be pre-parsed by registry');
+      console.warn('⚠️  This suggests UniversalCommandRegistry is not parsing properly');
+    }
+    
+    return params as T;
+  }
 
+  /**
+   * @deprecated Do not call parseParams in commands - parameters are pre-parsed by registry
+   * Use args<T>() instead for type-safe access to pre-parsed parameters
+   */
+  protected static parseParams<T = unknown>(params: unknown): T {
+    console.warn('⚠️  parseParams called in command - parameters should be pre-parsed by registry');
+    console.warn('⚠️  Use args<T>() instead for type-safe access to pre-parsed parameters');
+    return IntegrationParserRegistry.parse<T>(params);
+  }
 
   /**
    * Create standardized success result

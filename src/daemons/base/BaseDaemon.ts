@@ -15,6 +15,9 @@ import type { DaemonType } from './DaemonTypes';
 // Global daemon registry for inter-daemon communication
 export const DAEMON_REGISTRY = new Map<string, BaseDaemon>();
 
+// Import the new registry system
+import { DAEMON_REGISTRY as NEW_DAEMON_REGISTRY } from './DaemonRegistry';
+
 // Increase process max listeners to handle multiple daemons in tests
 process.setMaxListeners(50);
 
@@ -132,6 +135,9 @@ export abstract class BaseDaemon extends EventEmitter {
     // Register daemon in global registry for inter-daemon communication
     DAEMON_REGISTRY.set(this.name, this);
     
+    // Also register in new discovery system
+    NEW_DAEMON_REGISTRY.registerDaemon(this);
+    
     this.log(`Starting daemon ${this.name} v${this.version}`);
     
     try {
@@ -186,6 +192,10 @@ export abstract class BaseDaemon extends EventEmitter {
       
       // Cleanup signal handlers
       this.cleanupSignalHandlers();
+      
+      // Unregister from registries
+      DAEMON_REGISTRY.delete(this.name);
+      NEW_DAEMON_REGISTRY.unregisterDaemon(this.name);
       
       this.status = DaemonStatus.STOPPED;
       this.emit('stopped');

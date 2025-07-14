@@ -1,3 +1,5 @@
+// ISSUES: 1 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// 🎯 ARCHITECTURAL CHANGE: Converting to typed parameter execution pattern
 /**
  * Reload Command - Intelligent system refresh and browser page reload
  * 
@@ -73,20 +75,19 @@ export class ReloadCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any): Promise<CommandResult> {
-    const parsedParams = this.parseParams(params) as any;
-    const target = parsedParams.target || parsedParams._?.[0] || 'page';
-    const options = { ...parsedParams };
+  static async execute(params: ReloadRequest): Promise<CommandResult> {
+    // Parameters are automatically parsed by UniversalCommandRegistry
+    const { target = 'page', force = false, preserveState = true, timeout = 30000, component } = params;
     
     try {
-      console.log(`Executing reload: target=${target}, options=${JSON.stringify(options)}`);
+      console.log(`Executing reload: target=${target}, force=${force}, preserveState=${preserveState}`);
       
       const request: ReloadRequest = {
         target: this.validateTarget(target),
-        force: options.force || false,
-        preserveState: options.preserveState !== false, // Default to true
-        timeout: options.timeout || 30000,
-        component: options.component
+        force,
+        preserveState,
+        timeout,
+        ...(component && { component })
       };
       
       // Prevent concurrent reloads of the same target
