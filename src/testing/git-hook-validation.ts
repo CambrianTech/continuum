@@ -121,10 +121,13 @@ async function runGitHookValidation(): Promise<void> {
     
     try {
       const screenshots = await fs.readdir(screenshotDir);
+      console.log(`📋 Found ${screenshots.length} screenshots in ${screenshotDir}`);
+      console.log(`📋 Screenshots: ${screenshots.join(', ')}`);
+      
       const latestScreenshot = screenshots.sort().pop();
       
       if (!latestScreenshot) {
-        throw new Error('No screenshots found');
+        throw new Error(`No screenshots found in ${screenshotDir}. Available: ${screenshots.join(', ')}`);
       }
       
       const screenshotPath = path.join(screenshotDir, latestScreenshot);
