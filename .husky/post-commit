@@ -1,0 +1,14 @@
+#!/bin/bash
+# Post-commit hook: Clean up validation files after successful commit
+
+echo "🧹 Post-commit cleanup: Removing validation files..."
+
+# Remove validation files that were created during pre-commit validation
+if [ -d ".continuum/sessions/validation" ]; then
+    rm -rf .continuum/sessions/validation/run_*
+    echo "✅ Validation files cleaned up - repository stays clean"
+else
+    echo "📋 No validation files found to clean up"
+fi
+
+echo "✅ Post-commit cleanup complete"
