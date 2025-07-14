@@ -124,6 +124,16 @@ export class ContinuumSystem extends EventEmitter {
     // Set up session logging for all daemons
     this.setupSessionLogging();
     
+    // Set up server-side continuum global object
+    console.log('🔧 SETUP_DEBUG: About to call setupServerContinuum()');
+    try {
+      await this.setupServerContinuum();
+      console.log('🔧 SETUP_DEBUG: setupServerContinuum() completed successfully');
+    } catch (error) {
+      console.error('🔧 SETUP_DEBUG: setupServerContinuum() failed:', error);
+      throw error;
+    }
+    
     // System is now genuinely ready
     console.log('');
     console.log('✅ System ready and operational');
@@ -359,6 +369,55 @@ export class ContinuumSystem extends EventEmitter {
     }
   }
 
+  /**
+   * Set up server-side continuum global object with executeJS method
+   */
+  private async setupServerContinuum(): Promise<void> {
+    console.log('🔧 SETUP_DEBUG: setupServerContinuum() method called');
+    
+    const webSocketDaemon = this.daemons.get('websocket');
+    if (!webSocketDaemon) {
+      console.error('🔧 SETUP_DEBUG: WebSocket daemon not found!');
+      throw new Error('WebSocket daemon not found for continuum setup');
+    }
+    
+    console.log('🔧 SETUP_DEBUG: WebSocket daemon found, creating server continuum object');
+    
+    // Create server-side continuum object
+    const serverContinuum = {
+      executeJS: async (script: string): Promise<any> => {
+        console.log(`🌐 SERVER CONTINUUM: executeJS called with script length: ${script.length}`);
+        console.log(`🌐 SERVER CONTINUUM: Script preview: ${script.substring(0, 100)}...`);
+        
+        // Send JavaScript to browser via WebSocket
+        try {
+          const result = await webSocketDaemon.sendToConnectedClients({
+            type: 'execute_js',
+            script: script,
+            timestamp: new Date().toISOString()
+          });
+          
+          console.log(`🌐 SERVER CONTINUUM: executeJS result:`, result);
+          return result;
+        } catch (error) {
+          console.error(`🌐 SERVER CONTINUUM: executeJS error:`, error);
+          throw error;
+        }
+      }
+    };
+    
+    console.log('🔧 SETUP_DEBUG: About to attach serverContinuum to global scope');
+    
+    // Attach to global scope
+    (global as any).continuum = serverContinuum;
+    
+    console.log('🔧 SETUP_DEBUG: Attached to global scope, verifying...');
+    console.log('🔧 SETUP_DEBUG: global.continuum type:', typeof (global as any).continuum);
+    console.log('🔧 SETUP_DEBUG: global.continuum.executeJS type:', typeof (global as any).continuum?.executeJS);
+    
+    console.log('🌐 SERVER CONTINUUM: Global continuum object created with executeJS method');
+  }
+
   private setupSessionLogging(): void {
     const sessionManager = this.daemons.get('session-manager');
     const browserManager = this.daemons.get('browser-manager');
@@ -450,7 +509,7 @@ export class ContinuumSystem extends EventEmitter {
     
     console.log('');
     console.log('╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗');
-    console.log('║ 🛑 CONTINUUM SYSTEM SHUTDOWN                                                                                         ║');
+    console.log('║ 🛑 CONTINUUM SYSTEM SHUTDOWN                                                                                     ║');
     console.log(`║ Version: ${pkg.version.padEnd(20)} Shutdown Time: ${shutdownStartTime.padEnd(25)} Process: ${process.pid.toString().padEnd(15)} ║`);
     console.log('╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝');
     

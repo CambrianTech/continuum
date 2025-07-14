@@ -7,8 +7,8 @@
  * ✅ CLEANED UP: Uses event system for remote execution instead of hardcoded switch (2025-07-13)
  */
 
-import { WebSocketMessage, ClientInitData, RemoteExecutionRequest, RemoteExecutionResponse } from '../types/WebSocketTypes';
-import { ContinuumState } from '../types/BrowserClientTypes';
+import type { WebSocketMessage, ClientInitData, RemoteExecutionRequest, RemoteExecutionResponse } from '../types/WebSocketTypes';
+import type { ContinuumState } from '../types/BrowserClientTypes';
 
 export class WebSocketManager {
   private ws: WebSocket | null = null;
@@ -115,6 +115,20 @@ export class WebSocketManager {
       // Handle remote execution requests from server - delegate to command registry
       if (message.type === 'remote_execution_request') {
         await this.delegateRemoteExecution(message.data);
+        return;
+      }
+
+      // Handle execute_js messages from server
+      if (message.type === 'execute_js') {
+        console.log('🚀 Executing JavaScript from server:', message.script);
+        try {
+          // Wrap in async function to handle return statements and promises
+          const wrappedScript = `(async function() { ${message.script} })()`;
+          const result = await eval(wrappedScript);
+          console.log('✅ JavaScript execution result:', result);
+        } catch (error) {
+          console.error('❌ JavaScript execution error:', error);
+        }
         return;
       }
 

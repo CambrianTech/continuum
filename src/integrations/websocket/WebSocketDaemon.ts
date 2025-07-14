@@ -969,6 +969,26 @@ export class WebSocketDaemon extends BaseDaemon {
   }
 
   /**
+   * Send message to all connected clients (broadcast)
+   */
+  async sendToConnectedClients(message: unknown): Promise<DaemonResponse> {
+    try {
+      console.log(`📡 WEBSOCKET: Broadcasting message to all connected clients`);
+      this.wsManager.broadcast(message);
+      return {
+        success: true,
+        data: { broadcastSent: true, connectionCount: this.wsManager.getConnectionCount() }
+      };
+    } catch (error) {
+      console.error('📡 WEBSOCKET: Broadcast failed:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+
+  /**
    * Check if a WebSocket connection exists and is active
    * Used to prevent race conditions when sending messages to connections
    */
