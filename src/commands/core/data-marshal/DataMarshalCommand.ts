@@ -117,7 +117,7 @@ export class DataMarshalCommand extends BaseCommand {
 
   static async execute(params: any, context?: any): Promise<CommandResult> {
     try {
-      const options = DataMarshalCommand.parseParams<DataMarshalOptions>(params);
+      const options = params;
       
       const {
         operation,

@@ -1,3 +1,5 @@
+// ISSUES: 1 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// 🎯 ARCHITECTURAL CHANGE: Converting to typed parameter execution pattern
 /**
  * Help Command - Placeholder
  * 
@@ -36,8 +38,13 @@ export class HelpCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any, context?: CommandContext): Promise<CommandResult> {
-    const { command } = this.parseParams<{ command?: string }>(params);
+  static async execute(params: { command?: string }, context?: CommandContext): Promise<CommandResult> {
+    // Parameters are automatically parsed by UniversalCommandRegistry
+    const { command } = params;
+    
+    // 🔍 DEBUG: Log parameter parsing for help command
+    console.log(`🔍 [HelpCommand] Typed params:`, JSON.stringify(params, null, 2));
+    console.log(`🔍 [HelpCommand] Extracted command:`, command);
     
     try {
       // Use dynamic command discovery to get all available commands

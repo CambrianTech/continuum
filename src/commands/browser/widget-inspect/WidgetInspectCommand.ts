@@ -1,3 +1,5 @@
+// ISSUES: 1 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// 🎯 ARCHITECTURAL CHANGE: Converting to typed parameter execution pattern
 /**
  * Widget Inspect Command - Comprehensive widget analysis and health reporting
  * 
@@ -133,9 +135,9 @@ export class WidgetInspectCommand {
     };
   }
 
-  static async execute(params: any, _context?: any): Promise<CommandResult> {
+  static async execute(params: WidgetInspectOptions, _context?: any): Promise<CommandResult> {
     try {
-      const options = WidgetInspectCommand.parseParams(params);
+      // Parameters are automatically parsed by UniversalCommandRegistry
       
       const {
         selector = 'continuum-sidebar, chat-widget, [class*="widget"], [class*="Widget"]',
@@ -145,7 +147,7 @@ export class WidgetInspectCommand {
         contentPreviewLength = 200,
         generateUUID = true,
         timeout = 10000
-      } = options;
+      } = params;
 
       // Generate inspection UUID
       const inspectionUUID = generateUUID ? 
@@ -190,44 +192,6 @@ export class WidgetInspectCommand {
     }
   }
 
-  /**
-   * Parse command parameters from various input formats
-   */
-  protected static parseParams(params: any): WidgetInspectOptions {
-    // Handle command line args (--key=value format)
-    if (params && params.args && Array.isArray(params.args)) {
-      const result: any = {};
-      for (const arg of params.args) {
-        if (typeof arg === 'string' && arg.startsWith('--')) {
-          const [key, value] = arg.split('=', 2);
-          const cleanKey = key.replace('--', '');
-          
-          // Convert string values to appropriate types
-          if (value === 'true') result[cleanKey] = true;
-          else if (value === 'false') result[cleanKey] = false;
-          else if (!isNaN(Number(value))) result[cleanKey] = Number(value);
-          else result[cleanKey] = value;
-        }
-      }
-      return result;
-    }
-    
-    // Handle object parameters
-    if (typeof params === 'object' && params !== null) {
-      return params;
-    }
-    
-    // Handle JSON string
-    if (typeof params === 'string') {
-      try {
-        return JSON.parse(params);
-      } catch {
-        return { selector: params }; // Treat as selector string
-      }
-    }
-    
-    return {};
-  }
 
   /**
    * Create JavaScript inspection script with all the widget analysis logic

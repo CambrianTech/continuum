@@ -26,6 +26,10 @@ export class RouteManager {
   }
 
   async handleRequest(pathname: string, req: any, res: any): Promise<boolean> {
+    // Use console.log since RouteManager doesn't extend BaseDaemon (no this.log available)
+    console.log(`🎯🎯🎯 ROUTE MANAGER: Handling request for pathname: ${pathname} 🎯🎯🎯`);
+    console.log(`🎯🎯🎯 ROUTE MANAGER: Available routes:`, Array.from(this.routes.entries()));
+    
     // Exact match first
     const exactHandler = this.routes.get(pathname);
     if (exactHandler) {
@@ -44,6 +48,7 @@ export class RouteManager {
       }
       
       if (this.matchesPattern(pathname, pattern)) {
+        console.log(`🔥🔥🔥 ROUTE MANAGER: Pattern ${pattern} matches ${pathname}, forwarding to ${handler.daemonName}::${handler.handlerName} 🔥🔥🔥`);
         await this.forwardRequestToDaemon(handler, pathname, req, res);
         return true;
       }
@@ -88,6 +93,8 @@ export class RouteManager {
           }
         }
       };
+      
+      console.log(`🚀🚀🚀 ROUTE MANAGER: Sending message to ${handler.daemonName}:`, message.type, `for ${pathname} 🚀🚀🚀`);
 
       const response = await this.messageCallback(handler.daemonName, message);
       

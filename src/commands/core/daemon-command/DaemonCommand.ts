@@ -1,3 +1,5 @@
+// ISSUES: 1 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// 🎯 ARCHITECTURAL CHANGE: Converting to typed parameter execution pattern
 /**
  * DaemonCommand - Base class for commands that delegate to daemons
  * 
@@ -40,13 +42,12 @@ export abstract class DaemonCommand extends BaseCommand {
    */
   static async execute(params: any, context?: CommandContext): Promise<CommandResult> {
     try {
-      const parsedParams = this.parseParams(params);
-      
+      // Parameters are automatically parsed by UniversalCommandRegistry
       // Create daemon request
       const daemonRequest: DaemonRequest = {
         targetDaemon: this.getTargetDaemon(),
         messageType: this.getMessageType(),
-        data: this.prepareDaemonData(parsedParams, context)
+        data: this.prepareDaemonData(params, context)
       };
       
       // Return a result that tells CommandProcessor to route through daemon

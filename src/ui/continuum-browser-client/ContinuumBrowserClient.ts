@@ -8,6 +8,7 @@ import type { ContinuumAPI, ContinuumState, CommandResult } from './types/Browse
 import type { CommandExecuteData } from './types/WebSocketTypes';
 import { ConsoleForwarder } from './console/ConsoleForwarder';
 import { WebSocketManager } from './connection/WebSocketManager';
+import './commands/ScreenshotExecutor'; // Auto-registers screenshot handler
 
 export class ContinuumBrowserClient implements ContinuumAPI {
   public readonly version: string;

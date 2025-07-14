@@ -1,5 +1,9 @@
+// ISSUES: 1 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
  * Universal Command Registry - Dynamic Command Discovery & Execution
+ * 
+ * ✅ FIXED: Universal Integration Parser called before command execution
+ * 🔬 MIDDLE-OUT ARCHITECTURE: Centralized parameter parsing at registry level
  * 
  * Eliminates ALL hardcoded command lists and provides universal command discovery
  * across all clients, daemons, help systems, and integration tests.
@@ -187,16 +191,29 @@ export class UniversalCommandRegistry extends EventEmitter {
         return createErrorResult(`Command '${commandName}' does not have execute method`);
       }
 
-      // Parameter validation if requested
+      // Parse parameters using Universal Integration Parser system
+      let parsedParameters = parameters;
+      if (CommandClass._registryParseParams) {
+        parsedParameters = CommandClass._registryParseParams(parameters);
+      }
+
+      // Parameter validation if requested (use parsed parameters)
       if (options.validateParameters) {
-        const validationResult = this.validateParameters(parameters, commandMetadata.definition);
+        const validationResult = this.validateParameters(parsedParameters, commandMetadata.definition);
         if (!validationResult.valid) {
           return createErrorResult(`Parameter validation failed: ${validationResult.errors.join(', ')}`);
         }
       }
 
-      // Execute with timeout if specified
-      const executePromise = CommandClass.execute(parameters, context);
+      // Universal Session Context Architecture:
+      // - All commands default to shared session context (seamless integration)
+      // - Provided context overrides shared context (explicit control)
+      // - Use 'connect' command to create new sessions when needed
+      const { mergeWithSharedContext } = await import('./SharedSessionContext');
+      const effectiveContext = await mergeWithSharedContext(context);
+
+      // Execute with timeout if specified (use parsed parameters and merged context)
+      const executePromise = CommandClass.execute(parsedParameters, effectiveContext);
       
       if (options.timeout) {
         const timeoutPromise = new Promise<CommandResult>((_, reject) => {

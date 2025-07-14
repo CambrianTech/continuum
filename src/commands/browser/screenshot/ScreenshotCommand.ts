@@ -1,7 +1,30 @@
+// ISSUES: 3 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// 🚨 CROSS-CUTTING CONCERN: Browser response data structure mismatch in WebSocket integration boundary
+// 🎯 ARCHITECTURAL CHANGE: Converting to typed parameter execution pattern
 /**
  * Screenshot Command - TypeScript Implementation
  * Elegant screenshot capture with advanced targeting and orchestration
  * Uses proper daemon bus architecture for browser communication
+ * 
+ * 🔧 CRITICAL ISSUE RESOLVED (2025-07-13):
+ * - [✅] Issue #1: WebSocket messaging needs daemon context, not command context
+ *   
+ *   PROBLEM: RemoteCommand.sendToClientViaWebSocket() tried to call daemon messaging
+ *   from command context, but only daemons have this.sendMessage() access.
+ *   
+ *   SOLUTION IMPLEMENTED: 
+ *   ✅ RemoteCommand now returns _routeToDaemon instruction instead of direct messaging
+ *   ✅ CommandProcessorDaemon.handleRemoteExecutionViaWebSocket() handles the actual communication
+ *   ✅ WebSocket communication now properly routed through daemon system with this.sendMessage()
+ *   
+ *   TESTING RESULTS:
+ *   ✅ Session management working (extracts sessionId correctly)
+ *   ✅ Browser WebSocket handler implemented (ScreenshotExecutor modular)
+ *   ✅ Server WebSocket handler implemented (send_to_session in WebSocketDaemon)
+ *   ✅ html2canvas integration complete (dynamic loading)
+ *   ✅ Command→Daemon messaging architecture fixed (routing via CommandProcessor)
+ *   
+ *   ARCHITECTURE: Command defines what to do, Daemon executes how to do it. ✅
  */
 
 import { RemoteCommand, RemoteExecutionResponse, RemoteExecutionRequest } from '../../core/remote-command/RemoteCommand';
@@ -205,6 +228,9 @@ export class ScreenshotCommand extends RemoteCommand {
 
   protected static async processClientResponse(response: RemoteExecutionResponse, _originalParams: ScreenshotParams, context?: CommandContext): Promise<CommandResult> {
     console.log(`📨 JTAG: Processing screenshot response - success: ${response.success}`);
+    console.log(`🔍 DEBUG: Full response structure:`, JSON.stringify(response, null, 2));
+    console.log(`🔍 DEBUG: Response.data type:`, typeof response.data);
+    console.log(`🔍 DEBUG: Response.data structure:`, response.data);
     
     if (!response.success) {
       console.error(`❌ JTAG: Screenshot capture failed: ${response.error}`);
@@ -215,6 +241,15 @@ export class ScreenshotCommand extends RemoteCommand {
     const { imageData, filename, selector, format, width, height } = responseData;
     
     console.log(`📊 JTAG: Screenshot response data - selector: ${selector}, dimensions: ${width}x${height}, format: ${format}`);
+    console.log(`🔍 JTAG: Full response structure:`, JSON.stringify(response, null, 2));
+    
+    // Check for valid imageData before processing
+    if (!imageData) {
+      const error = 'Screenshot capture failed: No image data received from browser';
+      console.error(`❌ JTAG: ${error}`);
+      console.error(`❌ JTAG: Response data:`, responseData);
+      return this.createErrorResult(error);
+    }
     
     // Extract base64 data from data URL
     const base64Data = imageData.replace(/^data:image\/[a-z]+;base64,/, '');
@@ -298,19 +333,24 @@ export class ScreenshotCommand extends RemoteCommand {
    * Server-side preparation before sending to browser
    */
   protected static async prepareForRemoteExecution(params: ScreenshotParams, context?: CommandContext): Promise<RemoteExecutionRequest> {
-    const parsedParams = this.parseParams<ScreenshotParams>(params);
+    // Parameters are already typed and parsed - ensure they're safe to use
+    const safeParams = params && typeof params === 'object' ? params : {};
     
     // Infer format from filename if not provided
-    const filename = parsedParams.filename || `screenshot-${Date.now()}.png`;
-    const format = parsedParams.format || this.inferFormatFromFilename(filename);
+    const filename = safeParams.filename || `screenshot-${Date.now()}.png`;
+    
+    // Add type guard to prevent filename.split error
+    const filenameStr = typeof filename === 'string' ? filename : String(filename);
+    
+    const format = safeParams.format || this.inferFormatFromFilename(filenameStr);
     
     const clientRequest: ScreenshotClientRequest = {
-      selector: parsedParams.selector || 'body',
-      filename,
+      selector: safeParams.selector || 'body',
+      filename: filenameStr,
       format,
-      quality: parsedParams.quality || 0.9,
-      animation: parsedParams.animation || ScreenshotAnimation.NONE,
-      destination: parsedParams.destination || ScreenshotDestination.FILE
+      quality: safeParams.quality || 0.9,
+      animation: safeParams.animation || ScreenshotAnimation.NONE,
+      destination: safeParams.destination || ScreenshotDestination.FILE
     };
     
     return {

@@ -43,8 +43,8 @@ export abstract class RemoteCommand extends BaseCommand {
    * Server-side preparation before sending to client
    */
   protected static async prepareForRemoteExecution(params: any, context?: CommandContext): Promise<RemoteExecutionRequest> {
-    const parsedParams = this.parseParams(params);
-    
+    // Parameters are pre-parsed by UniversalCommandRegistry
+    const parsedParams = params;
     return {
       command: this.getDefinition().name as RemoteCommandType,
       params: parsedParams,
@@ -116,16 +116,27 @@ export abstract class RemoteCommand extends BaseCommand {
 
   /**
    * WebSocket communication infrastructure
+   * ARCHITECTURE FIX: Route through daemon system instead of direct messaging
    */
   private static async sendToClientViaWebSocket(request: RemoteExecutionRequest, context?: CommandContext): Promise<RemoteExecutionResponse> {
     const startTime = Date.now();
-    console.log(`🔍 JTAG: Initiating WebSocket communication for ${request.command}`);
+    console.log(`🔍 JTAG: Delegating WebSocket communication to daemon system for ${request.command}`);
     
-    // Generate correlation ID for request/response matching
-    const correlationId = `remote_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    console.log(`🔑 JTAG: Generated correlation ID: ${correlationId}`);
+    let sessionId = request.sessionId || context?.sessionId;
     
-    const sessionId = request.sessionId || context?.sessionId;
+    // Auto-fallback to SharedSessionContext when no session is provided
+    if (!sessionId) {
+      console.log(`🔍 JTAG: No explicit session provided, using SharedSessionContext fallback`);
+      try {
+        const { getSharedSessionContext } = await import('../../../services/SharedSessionContext');
+        const sharedContext = await getSharedSessionContext();
+        sessionId = sharedContext.sessionId;
+        console.log(`🔍 JTAG: Using SharedSessionContext fallback: ${sessionId}`);
+      } catch (error) {
+        console.error(`❌ JTAG: Failed to get SharedSessionContext:`, error);
+      }
+    }
+    
     if (!sessionId) {
       const error = 'No session ID available for WebSocket communication';
       console.error(`❌ JTAG: ${error}`);
@@ -140,20 +151,39 @@ export abstract class RemoteCommand extends BaseCommand {
       };
     }
     
-    console.log(`🔍 JTAG: Session ID: ${sessionId}`);
+    console.log(`🔍 JTAG: Session ID resolved: ${sessionId}`);
     
-    // For now, return a proper error since real WebSocket integration needs more infrastructure
+    // Generate correlation ID for request/response matching
+    const correlationId = `remote_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    console.log(`🔑 JTAG: Generated correlation ID: ${correlationId}`);
+    
+    // ARCHITECTURAL SOLUTION: Return special routing instruction for CommandProcessorDaemon
+    // The daemon will handle the WebSocket communication using this.sendMessage()
     const executionTime = Date.now() - startTime;
-    const errorMessage = 'Real WebSocket communication not yet implemented - needs browser message handler';
-    console.error(`❌ JTAG: ${errorMessage} after ${executionTime}ms`);
+    
+    console.log(`📤 JTAG: Creating routing instruction for session ${sessionId} with correlation ${correlationId}`);
+    console.log(`📤 JTAG: Request being routed:`, JSON.stringify(request, null, 2));
     
     return {
-      success: false,
-      error: `WebSocket communication failed: ${errorMessage}`,
+      success: true,
+      data: {
+        _routeToDaemon: {
+          targetDaemon: 'websocket-server',
+          messageType: 'send_to_session',
+          data: {
+            sessionId: sessionId,
+            message: {
+              type: 'remote_execution_request',
+              data: request,
+              correlationId: correlationId
+            }
+          }
+        }
+      },
       clientMetadata: {
-        userAgent: 'Unknown',
+        userAgent: 'CommandProcessor-Router',
         timestamp: Date.now(),
-        executionTime: 0
+        executionTime
       }
     };
   }

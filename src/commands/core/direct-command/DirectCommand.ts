@@ -1,8 +1,10 @@
+// ISSUES: 1 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// 🎯 ARCHITECTURAL CHANGE: Converting to typed parameter execution pattern
 /**
  * DirectCommand - Base class for commands with direct execution
  * 
  * Handles the common pattern of:
- * 1. Parse parameters with type safety
+ * 1. Receive typed parameters (auto-parsed by registry)
  * 2. Execute single operation directly
  * 3. Standardized error handling and result formatting
  */
@@ -22,8 +24,8 @@ export abstract class DirectCommand extends BaseCommand {
    */
   static async execute(params: any, context?: CommandContext): Promise<CommandResult> {
     try {
-      const parsedParams = this.parseParams(params);
-      return await this.executeOperation(parsedParams, context);
+      // Parameters are automatically parsed by UniversalCommandRegistry
+      return await this.executeOperation(params, context);
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

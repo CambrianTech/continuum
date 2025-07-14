@@ -15,7 +15,9 @@
       "command-discovery",
       "command-execution", 
       "dynamic-registry",
-      "iterator-pattern"
+      "iterator-pattern",
+      "session-management",
+      "shared-session-context"
     ],
     "core": true,
     "kernel": true,
