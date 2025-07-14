@@ -6,7 +6,7 @@
  */
 
 import { DaemonCommand } from '../../core/daemon-command/DaemonCommand';
-import { CommandDefinition, CommandContext } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, ContinuumContext } from '../../core/base-command/BaseCommand';
 
 export class ConnectCommand extends DaemonCommand {
   static getDefinition(): CommandDefinition {
@@ -87,7 +87,7 @@ export class ConnectCommand extends DaemonCommand {
   /**
    * Prepare the data to send to SessionManagerDaemon
    */
-  protected static prepareDaemonData(params: any, context?: CommandContext): any {
+  protected static prepareDaemonData(params: any, context?: ContinuumContext): any {
     return {
       sessionType: params.sessionType || 'development',
       owner: params.owner || 'shared',

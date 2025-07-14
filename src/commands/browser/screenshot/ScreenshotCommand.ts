@@ -28,7 +28,7 @@
  */
 
 import { BaseCommand } from '../../core/base-command/BaseCommand';
-import type { CommandDefinition, CommandResult, CommandContext } from '../../core/base-command/BaseCommand';
+import type { CommandDefinition, CommandResult, ContinuumContext } from '../../core/base-command/BaseCommand';
 import { normalizeCommandCategory } from '../../../types/shared/CommandTypes';
 import { 
   ScreenshotFormat, 
@@ -183,7 +183,7 @@ export class ScreenshotCommand extends BaseCommand {
     return definition;
   }
 
-  static async execute(params: ScreenshotParams | ScreenshotClientRequest, context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: ScreenshotParams | ScreenshotClientRequest, context?: ContinuumContext): Promise<CommandResult> {
     const startTime = Date.now();
     console.log(`🚀 JTAG SCREENSHOT: ScreenshotCommand.execute() called`);
     console.log(`🚀 JTAG SCREENSHOT: Starting ScreenshotCommand execution (server side)`);

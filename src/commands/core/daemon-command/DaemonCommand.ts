@@ -7,7 +7,7 @@
  * and specify which daemon handles the operation.
  */
 
-import { BaseCommand, CommandResult, CommandContext } from '../base-command/BaseCommand';
+import { BaseCommand, CommandResult, ContinuumContext } from '../base-command/BaseCommand';
 
 export interface DaemonRequest {
   targetDaemon: string;
@@ -33,14 +33,14 @@ export abstract class DaemonCommand extends BaseCommand {
   /**
    * Subclasses must override to prepare the data to send to the daemon
    */
-  protected static prepareDaemonData(_params: any, _context?: CommandContext): any {
+  protected static prepareDaemonData(_params: any, _context?: ContinuumContext): any {
     throw new Error('prepareDaemonData() must be implemented by subclass');
   }
   
   /**
    * Standard execute that delegates to daemon
    */
-  static async execute(params: any, context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: any, context?: ContinuumContext): Promise<CommandResult> {
     try {
       // Parameters are automatically parsed by UniversalCommandRegistry
       // Create daemon request

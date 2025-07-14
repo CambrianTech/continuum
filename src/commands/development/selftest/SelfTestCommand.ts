@@ -12,7 +12,7 @@
  * Original functionality: System self-testing and health verification
  */
 
-import { BaseCommand, CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { BaseCommand, CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class SelfTestCommand extends BaseCommand {
   static getDefinition(): CommandDefinition {
@@ -30,7 +30,7 @@ export class SelfTestCommand extends BaseCommand {
     };
   }
 
-  static async execute(_params: any, _context?: CommandContext): Promise<CommandResult> {
+  static async execute(_params: any, _context?: ContinuumContext): Promise<CommandResult> {
     return this.createSuccessResult(
       'SelfTest placeholder - original moved to junk.jun.29/legacy-typescript/development/selftest/',
       {

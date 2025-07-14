@@ -2,7 +2,7 @@
  * Session Fork Command - Fork an existing session
  */
 
-import { BaseCommand, CommandDefinition, CommandResult, CommandContext } from '../../core/base-command/BaseCommand';
+import { BaseCommand, CommandDefinition, CommandResult, ContinuumContext } from '../../core/base-command/BaseCommand';
 
 export class SessionForkCommand extends BaseCommand {
   static getDefinition(): CommandDefinition {
@@ -34,7 +34,7 @@ export class SessionForkCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any, context: CommandContext): Promise<CommandResult> {
+  static async execute(params: any, context: ContinuumContext): Promise<CommandResult> {
     try {
       const { sessionId, newOwner = 'system', type = 'development' } = params;
       
@@ -77,7 +77,7 @@ export class SessionForkCommand extends BaseCommand {
     }
   }
 
-  private static async getSessionManager(context: CommandContext): Promise<any> {
+  private static async getSessionManager(context: ContinuumContext): Promise<any> {
     // Try to get session manager daemon from WebSocket daemon's registered daemons
     if (context?.websocket && typeof context.websocket === 'object' && 'registeredDaemons' in context.websocket) {
       const websocketWithDaemons = context.websocket as any;

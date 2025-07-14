@@ -5,7 +5,7 @@
  */
 
 import { DirectCommand } from '../../core/direct-command/DirectCommand';
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class AcademySpawnCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
@@ -30,7 +30,7 @@ export class AcademySpawnCommand extends DirectCommand {
     };
   }
 
-  async execute(params: any, context: CommandContext): Promise<CommandResult> {
+  async execute(params: any, context: ContinuumContext): Promise<CommandResult> {
     try {
       if (!params.persona_name) {
         return {

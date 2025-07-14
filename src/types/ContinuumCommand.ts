@@ -284,7 +284,7 @@ export class ContinuumCommand extends BaseModule {
  */
 
 import { BaseCommand } from '../../core/base-command/BaseCommand.js';
-import { CommandResult, CommandContext } from '../../core/base-command/BaseCommand.js';
+import { CommandResult, ContinuumContext } from '../../core/base-command/BaseCommand.js';
 
 export interface ${className}Params {
   // Define command parameters here
@@ -292,7 +292,7 @@ export interface ${className}Params {
 
 export class ${className} extends BaseCommand {
   
-  static async execute(params: ${className}Params, context: CommandContext): Promise<CommandResult> {
+  static async execute(params: ${className}Params, context: ContinuumContext): Promise<CommandResult> {
     try {
       // Implement command logic here
       

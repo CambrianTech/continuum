@@ -32,7 +32,7 @@ abstract class BaseCommand {
    * Auto-parsing execute - handles all parameter conversion
    * Subclasses should NOT override this method
    */
-  static async execute(params: unknown, context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: unknown, context?: ContinuumContext): Promise<CommandResult> {
     // 1. Auto-parse using Universal Integration Parser system
     const typedParams = this._registryParseParams(params);
     
@@ -44,7 +44,7 @@ abstract class BaseCommand {
    * Typed execute - implement this in subclasses
    * Receives pre-parsed, typed parameters
    */
-  static async executeTyped<T = unknown>(_params: T, _context?: CommandContext): Promise<CommandResult> {
+  static async executeTyped<T = unknown>(_params: T, _context?: ContinuumContext): Promise<CommandResult> {
     throw new Error('executeTyped() must be implemented by subclass');
   }
 }
@@ -98,7 +98,7 @@ export class MyCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: MyParams, context?: CommandContext): Promise<MyResult> {
+  static async execute(params: MyParams, context?: ContinuumContext): Promise<MyResult> {
     // Parameters are automatically parsed - just use them!
     const { requiredField, optionalField = 'default' } = params;
     

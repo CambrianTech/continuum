@@ -6,7 +6,7 @@
  */
 
 import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
-import { CommandDefinition, CommandResult, CommandContext } from '../../core/base-command/BaseCommand.js';
+import { CommandDefinition, CommandResult, ContinuumContext } from '../../core/base-command/BaseCommand.js';
 
 export interface UniversalUser {
   id: string;
@@ -64,7 +64,7 @@ export class UsersCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any = {}, _context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
     try {
       // Get all users from the system
       const allUsers = await this.getAllUsers();

@@ -9,7 +9,7 @@
  * Used throughout the system for reading logs, configs, artifacts, etc.
  */
 
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
 import { BaseFileCommand } from '../base/BaseFileCommand';
 import * as fs from 'fs/promises';
 
@@ -48,7 +48,7 @@ export class FileReadCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: FileReadParams, _context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: FileReadParams, _context?: ContinuumContext): Promise<CommandResult> {
     try {
       // Handle CLI aliases: --file should map to filename (parameters already parsed by registry)
       const filename = params.filename || (params as any).file;

@@ -17,10 +17,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ScreenshotCommand } from '../../ScreenshotCommand';
 import type { ScreenshotParams, ScreenshotClientResponse } from '../../types/ScreenshotTypes';
-import type { CommandContext, RemoteExecutionResponse } from '../../../core/remote-command/types/RemoteCommandTypes';
+import type { ContinuumContext, RemoteExecutionResponse } from '../../../core/remote-command/types/RemoteCommandTypes';
 
 describe('ScreenshotCommand', () => {
-  let mockContext: CommandContext;
+  let mockContext: ContinuumContext;
 
   beforeEach(() => {
     vi.clearAllMocks();

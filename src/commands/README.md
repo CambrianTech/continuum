@@ -81,7 +81,7 @@ await connection
 ### **DirectCommand Pattern** (Server-Only Execution)
 ```typescript
 export class HealthCommand extends DirectCommand {
-  protected static async executeOperation(params: any, context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any, context?: ContinuumContext): Promise<CommandResult> {
     // Direct server-side execution
     const serverReport = await this.generateServerHealthReport(params.component);
     const clientReport = await this.requestClientHealthReport();

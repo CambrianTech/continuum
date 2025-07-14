@@ -6,7 +6,8 @@
  */
 
 import { DirectCommand } from '../direct-command/DirectCommand';
-import { CommandResult, WebSocketCommandContext, CommandDefinition } from '../base-command/BaseCommand';
+import { CommandResult, ContinuumContext, CommandDefinition } from '../base-command/BaseCommand';
+import type { UUID } from 'crypto';
 import { Console } from '../../../types/shared/ConsoleTypes';
 
 export class ConsoleCommand extends DirectCommand {
@@ -104,7 +105,7 @@ export class ConsoleCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any = {}, context: WebSocketCommandContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, context?: ContinuumContext): Promise<CommandResult> {
     try {
       // Convert whatever the client sends into our well-defined shared type
       // This ensures server-side type safety regardless of client format
@@ -137,7 +138,7 @@ export class ConsoleCommand extends DirectCommand {
       const logEntry = {
         ...enhancedLogData,
         serverTimestamp,
-        sessionId: context.sessionId || logData.sessionId
+        sessionId: context?.sessionId || logData.sessionId
       };
       
       const timePrefix = `[${new Date().toLocaleTimeString()}]`;
@@ -160,7 +161,7 @@ export class ConsoleCommand extends DirectCommand {
       let sessionLogged = false;
       try {
         // sessionId is now guaranteed to be non-null by TypeScript
-        let sessionId = context.sessionId;
+        let sessionId = context?.sessionId;
         
         // If no sessionId provided, use the current/default shared development session
         if (!sessionId) {
@@ -207,7 +208,7 @@ export class ConsoleCommand extends DirectCommand {
                 .sort((a, b) => b.mtime - a.mtime)
                 .map(s => s.dir);
               
-              sessionId = sortedSessions[0];
+              sessionId = sortedSessions[0] as UUID;
               console.log(`📝 No sessionId in context - using most recent shared session: ${sessionId}`);
             }
           } catch (error) {
@@ -275,7 +276,7 @@ export class ConsoleCommand extends DirectCommand {
                     Buffer.from(probe.executeJSBase64, 'base64').toString('utf-8') : 
                     probe.executeJS,
                   timestamp: serverTimestamp,
-                  sessionId: context.sessionId
+                  sessionId: context?.sessionId
                 };
                 
                 // Formatted JSON for probe file (pretty-printed)

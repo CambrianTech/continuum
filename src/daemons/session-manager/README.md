@@ -159,7 +159,7 @@ interface ArtifactRequest {
 
 ```typescript
 class ExampleCommand extends DirectCommand {
-  protected static async executeOperation(params: any, context?: CommandContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any, context?: ContinuumContext): Promise<CommandResult> {
     // 1. Command performs its logic
     const data = await this.performCommandLogic(params);
     

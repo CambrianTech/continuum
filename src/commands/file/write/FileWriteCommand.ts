@@ -5,7 +5,7 @@
  * All file writes go through this command to ensure proper organization
  */
 
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
 import { BaseFileCommand, FileSystemOperation } from '../base/BaseFileCommand';
 // Removed direct fs import - now delegates to ContinuumFileSystemDaemon via BaseFileCommand
 import * as path from 'path';
@@ -43,7 +43,7 @@ export class FileWriteCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: FileWriteParams, _context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: FileWriteParams, _context?: ContinuumContext): Promise<CommandResult> {
     try {
       // 1. Get target directory from ContinuumDirectoryDaemon
       const targetPath = await this.getTargetPath({

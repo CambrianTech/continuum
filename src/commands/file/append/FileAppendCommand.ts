@@ -4,7 +4,7 @@
  * Used for logs, continuous data collection, etc.
  */
 
-import { CommandDefinition, CommandContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
 import { BaseFileCommand } from '../base/BaseFileCommand';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -43,7 +43,7 @@ export class FileAppendCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: FileAppendParams, _context?: CommandContext): Promise<CommandResult> {
+  static async execute(params: FileAppendParams, _context?: ContinuumContext): Promise<CommandResult> {
     try {
       // 1. Get target path using session management
       const targetPath = await this.getTargetPath({

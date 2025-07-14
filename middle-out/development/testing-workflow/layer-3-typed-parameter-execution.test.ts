@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach } from '@jest/globals';
-import { BaseCommand, CommandResult, CommandContext } from '../../../src/commands/core/base-command/BaseCommand';
+import { BaseCommand, CommandResult, ContinuumContext } from '../../../src/commands/core/base-command/BaseCommand';
 import { EmotionCommand } from '../../../src/commands/ui/emotion/EmotionCommand';
 
 // Test command for typed parameter execution testing
@@ -43,7 +43,7 @@ class TestTypedCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: TestParams, context?: CommandContext): Promise<TestResult> {
+  static async execute(params: TestParams, context?: ContinuumContext): Promise<TestResult> {
     // Parameters should be automatically parsed and typed
     const {
       name,
@@ -60,7 +60,7 @@ class TestTypedCommand extends BaseCommand {
 }
 
 describe('Layer 3: Typed Parameter Execution', () => {
-  let mockContext: CommandContext;
+  let mockContext: ContinuumContext;
 
   beforeEach(() => {
     mockContext = {
