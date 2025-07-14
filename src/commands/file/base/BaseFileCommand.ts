@@ -74,7 +74,7 @@ export abstract class BaseFileCommand extends BaseCommand {
       if (!item.isDirectory()) continue;
       
       // Direct match for portal/validation sessions
-      if (item.name.includes(sessionId)) {
+      if (item.name === sessionId || item.name.includes(sessionId)) {
         return path.join(typeDir, item.name);
       }
       
@@ -85,7 +85,7 @@ export abstract class BaseFileCommand extends BaseCommand {
           const subItems = await this.delegateToContinuumFileSystemDaemon(FileSystemOperation.READ_DIRECTORY, { path: subDir, withFileTypes: true });
           
           for (const subItem of subItems) {
-            if (subItem.isDirectory() && subItem.name.includes(sessionId)) {
+            if (subItem.isDirectory() && (subItem.name === sessionId || subItem.name.includes(sessionId))) {
               return path.join(subDir, subItem.name);
             }
           }

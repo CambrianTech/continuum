@@ -6,7 +6,7 @@
 import type { ScreenshotClientRequest, ScreenshotResult } from './ScreenshotTypes';
 
 interface ScreenshotClientParams extends ScreenshotClientRequest {
-  directory: string;
+  // Directory will be determined by session context, not passed explicitly
 }
 
 /**
@@ -51,12 +51,12 @@ export async function clientScreenshot(params: ScreenshotClientParams): Promise<
     console.log('💾 BROWSER: Calling fileSave with', bytes.length, 'bytes');
     
     // Save the file using continuum.fileSave
+    // Directory will be determined by session context in FileWriteCommand
     const continuum = (window as any).continuum;
     const saveResult = await continuum.fileSave({
       content: bytes,
       filename: params.filename,
-      artifactType: 'screenshot',
-      directory: params.directory
+      artifactType: 'screenshot'
     });
     
     console.log('💾 BROWSER: FileSave result:', saveResult);

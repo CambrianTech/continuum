@@ -204,13 +204,11 @@ export class ScreenshotCommand extends BaseCommand {
         destination: (params as ScreenshotParams).destination ?? ScreenshotDestination.FILE
       };
       
-      // Get the session-specific screenshots directory
+      // Session ID will be handled by FileWriteCommand through context
       const sessionId = context?.sessionId ?? 'unknown-session';
-      const screenshotsDir = path.join(process.cwd(), '.continuum', 'sessions', 'user', 'shared', sessionId, 'screenshots');
       
       console.log(`📁 JTAG SCREENSHOT: Session ID: ${sessionId}`);
       console.log(`📁 JTAG SCREENSHOT: Context:`, JSON.stringify(context, null, 2));
-      console.log(`📁 JTAG SCREENSHOT: Screenshots directory: ${screenshotsDir}`);
       
       // Call the client-side screenshot function (loaded globally in browser bundle)
       const screenshotScript = `
@@ -222,8 +220,7 @@ export class ScreenshotCommand extends BaseCommand {
             format: '${normalizedParams.format}',
             quality: ${normalizedParams.quality},
             animation: '${normalizedParams.animation}',
-            destination: '${normalizedParams.destination}',
-            directory: '${screenshotsDir}'
+            destination: '${normalizedParams.destination}'
           });
         })()
       `;

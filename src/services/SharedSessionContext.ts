@@ -7,8 +7,8 @@
  * Eliminates the need for explicit session management in CLI, REST, WebSocket, MCP, etc.
  */
 
-import { ContinuumContext, continuumContextFactory } from '../types/shared/core/ContinuumTypes';
-import { randomUUID } from 'crypto';
+import { ContinuumContext, continuumContextFactory, UUIDValidator } from '../types/shared/core/ContinuumTypes';
+import { type UUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -57,7 +57,7 @@ class SharedSessionContextProvider {
       
       if (sessionInfo) {
         this.cachedContext = {
-          sessionId: randomUUID(),
+          sessionId: sessionInfo.sessionId as UUID,
           userId: sessionInfo.userId || 'development-user',
           interface: sessionInfo.interface,
           screenshotsPath: sessionInfo.screenshots,
@@ -68,7 +68,7 @@ class SharedSessionContextProvider {
       } else {
         // Fallback context when no session is found
         this.cachedContext = {
-          sessionId: randomUUID(),
+          sessionId: UUIDValidator.generate(),
           userId: 'development-user',
           interface: 'http://localhost:9000',
           sharedSession: false,
@@ -85,7 +85,7 @@ class SharedSessionContextProvider {
       
       // Return minimal fallback context
       return continuumContextFactory.create({
-        sessionId: randomUUID(),
+        sessionId: UUIDValidator.generate(),
         userId: 'development-user',
         sharedSession: false,
         error: true,
@@ -142,16 +142,21 @@ class SharedSessionContextProvider {
       const sessionDirs = fs.readdirSync(sessionsPath, { withFileTypes: true })
         .filter(dirent => dirent.isDirectory())
         .map(dirent => dirent.name)
-        .filter(name => name.startsWith('development-shared-'));
+        .filter(name => {
+          // Check if it's a valid UUID format (new system) or contains session-info.json
+          const sessionInfoPath = path.join(sessionsPath, name, 'session-info.json');
+          return UUIDValidator.validate(name) || 
+                 fs.existsSync(sessionInfoPath);
+        });
 
       console.log(`🔍 SharedSessionContext: Found ${sessionDirs.length} session directories:`, sessionDirs);
 
       if (sessionDirs.length === 0) {
-        console.log(`🔍 SharedSessionContext: No development-shared sessions found`);
+        console.log(`🔍 SharedSessionContext: No valid sessions found`);
         return null;
       }
 
-      // Use the most recently modified session
+      // Use the most recently modified session (cookie-based session would be most recent)
       const sessionDir = sessionDirs
         .map(dir => ({
           name: dir,
@@ -159,6 +164,8 @@ class SharedSessionContextProvider {
           mtime: fs.statSync(path.join(sessionsPath, dir)).mtime
         }))
         .sort((a, b) => b.mtime.getTime() - a.mtime.getTime())[0];
+
+      console.log(`🔍 SharedSessionContext: Using most recent session: ${sessionDir.name}`);
 
       const sessionPath = sessionDir.path;
       const sessionId = sessionDir.name;
