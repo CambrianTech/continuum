@@ -194,6 +194,40 @@ export class ContinuumBrowserClient implements ContinuumAPI {
     });
   }
 
+  // File saving functionality
+  async fileSave(options: { content: Uint8Array | string; filename: string; artifactType?: string }): Promise<CommandResult> {
+    console.log(`💾 FileSave: Saving file ${options.filename}, size: ${options.content.length} bytes`);
+    
+    // Convert Uint8Array to base64 string if needed
+    let contentBase64: string;
+    if (options.content instanceof Uint8Array) {
+      // Use FileReader to safely convert large binary data to base64
+      const blob = new Blob([options.content]);
+      const reader = new FileReader();
+      
+      contentBase64 = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          const result = reader.result as string;
+          // Remove the data URL prefix to get just the base64 content
+          const base64Data = result.split(',')[1];
+          resolve(base64Data);
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+    } else {
+      contentBase64 = btoa(options.content);
+    }
+    
+    // Use the write command to save the file (avoid recursion)
+    return await this.execute('write', {
+      filename: options.filename,
+      content: contentBase64,
+      encoding: 'base64',
+      artifactType: options.artifactType || 'screenshot'
+    });
+  }
+
   // Dynamic method attachment
   attachMethod(name: string, method: (...args: unknown[]) => unknown): void {
     this.dynamicMethods.set(name, method);

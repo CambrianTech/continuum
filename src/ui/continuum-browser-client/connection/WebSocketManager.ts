@@ -126,8 +126,28 @@ export class WebSocketManager {
           const wrappedScript = `(async function() { ${message.script} })()`;
           const result = await eval(wrappedScript);
           console.log('✅ JavaScript execution result:', result);
+          
+          // Send result back to server if there's a request ID
+          if (message.requestId) {
+            this.sendMessage({
+              type: 'execute_js_result',
+              requestId: message.requestId,
+              result: result,
+              timestamp: new Date().toISOString()
+            });
+          }
         } catch (error) {
           console.error('❌ JavaScript execution error:', error);
+          
+          // Send error back to server if there's a request ID
+          if (message.requestId) {
+            this.sendMessage({
+              type: 'execute_js_result',
+              requestId: message.requestId,
+              error: error instanceof Error ? error.message : String(error),
+              timestamp: new Date().toISOString()
+            });
+          }
         }
         return;
       }

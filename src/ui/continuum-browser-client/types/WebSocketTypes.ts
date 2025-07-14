@@ -9,6 +9,10 @@ export interface WebSocketMessage {
   timestamp?: string; // Optional - sendMessage will add it
   clientId?: string | null;
   sessionId?: string | null;
+  requestId?: string;
+  script?: string;
+  result?: unknown;
+  error?: string;
 }
 
 export interface ClientInitData extends Record<string, unknown> {
