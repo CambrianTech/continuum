@@ -1,11 +1,15 @@
+// ISSUES: 0 open, last updated 2025-07-14 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
  * BaseFileCommand - Shared functionality for all file operations
  * 
  * Provides common methods for file path resolution, session integration,
  * and ContinuumDirectoryDaemon communication
+ * 
+ * Now uses shared types and simplified session-based path resolution
  */
 
 import { BaseCommand } from '../../core/base-command/BaseCommand';
+import { ArtifactType } from '../../../types/shared/FileOperations';
 import * as path from 'path';
 
 // Strongly typed enums for daemon operations
@@ -45,69 +49,32 @@ export abstract class BaseFileCommand extends BaseCommand {
   }
 
   /**
-   * Find session path by session ID using daemon organization
+   * DEPRECATED: Complex findSessionPath logic replaced with simple session structure
+   * Use getTargetPath() instead which uses predictable session paths
    */
   protected static async findSessionPath(sessionId: string): Promise<string | null> {
+    console.warn('findSessionPath is deprecated. Use getTargetPath() for predictable session structure.');
     const continuumRoot = await this.getContinuumRoot();
-    const sessionTypes = ['portal', 'validation', 'user', 'personas'];
-    
-    for (const type of sessionTypes) {
-      const typeDir = path.join(continuumRoot, 'sessions', type);
-      try {
-        const sessionPath = await this.searchSessionInDirectory(typeDir, sessionId, type);
-        if (sessionPath) return sessionPath;
-      } catch {
-        // Skip if session type directory doesn't exist
-      }
-    }
-    
-    return null;
-  }
-
-  /**
-   * Search for session in a specific directory type
-   */
-  private static async searchSessionInDirectory(typeDir: string, sessionId: string, type: string): Promise<string | null> {
-    const items = await this.delegateToContinuumFileSystemDaemon(FileSystemOperation.READ_DIRECTORY, { path: typeDir, withFileTypes: true });
-    
-    for (const item of items) {
-      if (!item.isDirectory()) continue;
-      
-      // Direct match for portal/validation sessions
-      if (item.name === sessionId || item.name.includes(sessionId)) {
-        return path.join(typeDir, item.name);
-      }
-      
-      // For personas and user directories, look one level deeper
-      if (type === 'personas' || type === 'user') {
-        try {
-          const subDir = path.join(typeDir, item.name);
-          const subItems = await this.delegateToContinuumFileSystemDaemon(FileSystemOperation.READ_DIRECTORY, { path: subDir, withFileTypes: true });
-          
-          for (const subItem of subItems) {
-            if (subItem.isDirectory() && (subItem.name === sessionId || subItem.name.includes(sessionId))) {
-              return path.join(subDir, subItem.name);
-            }
-          }
-        } catch {
-          // Skip if can't read subdirectory
-        }
-      }
-    }
-    
-    return null;
+    return path.join(continuumRoot, 'sessions', 'user', 'shared', sessionId);
   }
 
   /**
    * Get artifact subdirectory name following daemon conventions
+   * Now uses shared ArtifactType enum for consistency
    */
-  protected static getArtifactSubdirectory(artifactType?: string): string {
+  protected static getArtifactSubdirectory(artifactType?: ArtifactType | string): string {
     switch (artifactType) {
+      case ArtifactType.SCREENSHOT:
       case 'screenshot': return 'screenshots';
+      case ArtifactType.LOG:
       case 'log': return 'logs';
+      case ArtifactType.RECORDING:
       case 'recording': return 'recordings';
+      case ArtifactType.FILE:
       case 'file': return 'files';
+      case ArtifactType.DEVTOOLS:
       case 'devtools': return 'devtools';
+      case ArtifactType.METADATA:
       case 'metadata': return 'metadata';
       default: return 'files';
     }
@@ -128,13 +95,14 @@ export abstract class BaseFileCommand extends BaseCommand {
   }
 
   /**
-   * Get target path for file operation using session management
+   * Get target path for file operation using simple session context-based path resolution
+   * Replaces complex findSessionPath logic with predictable session structure
    */
   protected static async getTargetPath(params: {
     filename: string;
     sessionId: string | undefined;
-    artifactType: string | undefined;
-    directory: string | undefined;
+    artifactType: ArtifactType | string | undefined;
+    directory?: string | undefined;
   }): Promise<string> {
     // If directory is explicitly provided, use it
     if (params.directory) {
@@ -146,19 +114,21 @@ export abstract class BaseFileCommand extends BaseCommand {
     // If no session ID, write to general location
     if (!params.sessionId) {
       const defaultDir = params.artifactType ? 
-        path.join(continuumRoot, params.artifactType + 's') : 
+        path.join(continuumRoot, this.getArtifactSubdirectory(params.artifactType)) : 
         path.join(continuumRoot, 'files');
       return path.join(defaultDir, params.filename);
     }
 
-    // Find session and write to appropriate artifact subdirectory
-    const sessionPath = await this.findSessionPath(params.sessionId);
-    if (!sessionPath) {
-      throw new Error(`Session ${params.sessionId} not found`);
+    // Use predictable session structure: .continuum/sessions/user/shared/{sessionId}
+    const sessionPath = path.join(continuumRoot, 'sessions', 'user', 'shared', params.sessionId);
+    
+    // Add artifact subdirectory if specified
+    if (params.artifactType) {
+      const artifactSubdir = this.getArtifactSubdirectory(params.artifactType);
+      return path.join(sessionPath, artifactSubdir, params.filename);
     }
-
-    const artifactSubdir = this.getArtifactSubdirectory(params.artifactType);
-    return path.join(sessionPath, artifactSubdir, params.filename);
+    
+    return path.join(sessionPath, params.filename);
   }
 
   /**

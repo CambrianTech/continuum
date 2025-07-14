@@ -1,24 +1,20 @@
+// ISSUES: 0 open, last updated 2025-07-14 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
  * FileWriteCommand - Unified file writing with session management
  * 
  * Used by screenshot, artifactory, logging, session management, etc.
  * All file writes go through this command to ensure proper organization
+ * 
+ * Now uses shared FileOperationParams and FileOperationResult interfaces
+ * for consistency across all file operations.
  */
 
 import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
 import { BaseFileCommand, FileSystemOperation } from '../base/BaseFileCommand';
+import { FileOperationParams, FileOperationResult, ArtifactType } from '../../../types/shared/FileOperations';
+import type { UUID } from 'crypto';
 // Removed direct fs import - now delegates to ContinuumFileSystemDaemon via BaseFileCommand
 import * as path from 'path';
-
-export interface FileWriteParams {
-  content: string | Buffer;
-  filename: string;
-  sessionId?: string;
-  artifactType?: 'screenshot' | 'log' | 'recording' | 'file' | 'devtools' | 'metadata';
-  directory?: string; // Override default location
-  encoding?: BufferEncoding;
-  marshalId?: string; // For command chaining correlation
-}
 
 export class FileWriteCommand extends BaseFileCommand {
   static getDefinition(): CommandDefinition {
@@ -43,7 +39,7 @@ export class FileWriteCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: FileWriteParams, context?: ContinuumContext): Promise<CommandResult> {
+  static async execute(params: FileOperationParams, context?: ContinuumContext): Promise<CommandResult> {
     try {
       // Use session ID from context if not provided in params
       const sessionId = params.sessionId || context?.sessionId;
@@ -53,10 +49,16 @@ export class FileWriteCommand extends BaseFileCommand {
         path.join(process.cwd(), '.continuum', 'sessions', 'user', 'shared', sessionId) :
         path.join(process.cwd(), '.continuum');
       
-      // Determine target path - if filename contains path separators, use it as relative path
-      const targetPath = params.directory ? 
-        path.join(params.directory, params.filename) :
-        path.join(sessionBasePath, params.filename);
+      // Determine target path based on artifact type
+      let targetPath: string;
+      if (params.artifactType && sessionId) {
+        // Use artifact-specific subdirectory in session
+        const artifactSubdir = this.getArtifactSubdirectory(params.artifactType);
+        targetPath = path.join(sessionBasePath, artifactSubdir, params.filename);
+      } else {
+        // Use filename as-is (may include relative path)
+        targetPath = path.join(sessionBasePath, params.filename);
+      }
       
       // 2. Ensure target directory exists
       await this.ensureDirectoryExists(path.dirname(targetPath));
@@ -77,17 +79,20 @@ export class FileWriteCommand extends BaseFileCommand {
         size: Buffer.isBuffer(params.content) ? params.content.length : Buffer.byteLength(params.content, encoding || 'utf8')
       });
       
+      // Create standardized file operation result
+      const fileResult: FileOperationResult = {
+        filename: params.filename,
+        filepath: targetPath,
+        size: Buffer.isBuffer(params.content) ? params.content.length : Buffer.byteLength(params.content, encoding || 'utf8'),
+        artifactType: params.artifactType || ArtifactType.FILE,
+        sessionId: sessionId as UUID,
+        timestamp: new Date().toISOString(),
+        success: true
+      };
+      
       return this.createSuccessResult(
         `File written successfully: ${params.filename}`,
-        {
-          filename: params.filename,
-          filepath: targetPath,
-          size: Buffer.isBuffer(params.content) ? params.content.length : Buffer.byteLength(params.content, encoding),
-          artifactType: params.artifactType,
-          sessionId: sessionId,
-          marshalId: params.marshalId,
-          timestamp: new Date().toISOString()
-        }
+        fileResult
       );
 
     } catch (error) {

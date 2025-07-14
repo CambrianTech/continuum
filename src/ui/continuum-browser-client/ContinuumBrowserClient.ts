@@ -1,6 +1,10 @@
+// ISSUES: 0 open, last updated 2025-07-14 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
  * Continuum Browser Client - Main API Implementation
  * Lifecycle-aware single global API for browser-server communication
+ * 
+ * Now uses shared FileOperationParams interface for consistent file operations
+ * across browser client and server commands.
  */
 
 import packageJson from '../../../package.json';
@@ -8,6 +12,7 @@ import type { ContinuumAPI, ContinuumState, CommandResult } from './types/Browse
 import type { CommandExecuteData } from './types/WebSocketTypes';
 import { ConsoleForwarder } from './console/ConsoleForwarder';
 import { WebSocketManager } from './connection/WebSocketManager';
+import { FileOperationParams, ArtifactType } from '../../types/shared/FileOperations';
 import './commands/ScreenshotExecutor'; // Auto-registers screenshot handler
 
 export class ContinuumBrowserClient implements ContinuumAPI {
@@ -204,13 +209,11 @@ export class ContinuumBrowserClient implements ContinuumAPI {
     });
   }
 
-  // File saving functionality
-  async fileSave(options: { content: Uint8Array | string; filename: string; artifactType?: string }): Promise<CommandResult> {
-    // Use the write command to save the file with relative path
-    // Session context will determine the base directory
-    const relativePath = options.artifactType === 'screenshot' ? 
-      `screenshots/${options.filename}` : 
-      options.filename;
+  // File saving functionality using shared FileOperationParams interface
+  async fileSave(options: Pick<FileOperationParams, 'content' | 'filename' | 'artifactType'>): Promise<CommandResult> {
+    // Use the write command to save the file
+    // FileWriteCommand will handle artifact subdirectory automatically
+    const relativePath = options.filename;
     
     console.log(`💾 FileSave: Saving file ${relativePath}, size: ${options.content.length} bytes`);
     
@@ -239,7 +242,7 @@ export class ContinuumBrowserClient implements ContinuumAPI {
       filename: relativePath,
       content: contentBase64,
       encoding: 'base64',
-      artifactType: options.artifactType ?? 'screenshot'
+      artifactType: options.artifactType ?? ArtifactType.SCREENSHOT
     });
   }
 
