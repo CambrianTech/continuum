@@ -197,11 +197,7 @@ async function runGitHookValidation(): Promise<void> {
 `;
       await fs.writeFile(clientLogPath, clientLogContent);
       
-      // Add validation files to git (force to override .continuum/ ignore rule)
-      console.log(`📋 Adding validation files to git...`);
-      execSync(`git add -f "${validationRunDir}/"`, { stdio: 'inherit' });
-      
-      // Unstage any deletion changes for validation files to prevent them being removed
+      // First, unstage any deletion changes for validation files to prevent them being removed
       console.log(`📋 Unstaging validation file deletions...`);
       try {
         // Check for staged deletions and unstage them specifically
@@ -223,6 +219,10 @@ async function runGitHookValidation(): Promise<void> {
       } catch (error) {
         console.log(`📋 Error checking for staged deletions: ${error}`);
       }
+      
+      // Then add the current validation files to git (force to override .continuum/ ignore rule)
+      console.log(`📋 Adding validation files to git...`);
+      execSync(`git add -f "${validationRunDir}/"`, { stdio: 'inherit' });
       
       console.log(`✅ Validation files created and staged in: ${validationRunDir}`);
       
