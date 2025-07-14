@@ -15,6 +15,9 @@ export class ContinuumBrowserClient implements ContinuumAPI {
   public sessionId: string | null = null;
   public clientId: string | null = null;
   
+  private readonly SESSION_COOKIE_NAME = 'continuum_session_id';
+  private readonly SESSION_COOKIE_MAX_AGE = 30 * 24 * 60 * 60 * 1000; // 30 days in ms
+  
   private _state: ContinuumState = 'initializing';
   private stateCallbacks: ((state: ContinuumState) => void)[] = [];
   private readyCallbacks: (() => void)[] = [];
@@ -26,6 +29,9 @@ export class ContinuumBrowserClient implements ContinuumAPI {
 
   constructor() {
     this.version = packageJson.version;
+    
+    // Initialize session from cookie before WebSocket connection
+    this.initializeSessionFromCookie();
 
     (window as any).continuum = this; // Attach to global for easy access
     
@@ -57,7 +63,11 @@ export class ContinuumBrowserClient implements ContinuumAPI {
     this.webSocketManager.setCallbacks({
       onStateChange: (state) => this.setState(state),
       onClientId: (clientId) => { this.clientId = clientId; },
-      onSessionId: (sessionId) => { this.sessionId = sessionId; },
+      onSessionId: (sessionId) => { 
+        this.sessionId = sessionId;
+        // Save session ID to cookie for persistence
+        this.saveSessionToCookie(sessionId);
+      },
       onMessage: (message) => this.handleCustomMessage(message)
     });
   }
@@ -195,8 +205,14 @@ export class ContinuumBrowserClient implements ContinuumAPI {
   }
 
   // File saving functionality
-  async fileSave(options: { content: Uint8Array | string; filename: string; artifactType?: string; directory?: string }): Promise<CommandResult> {
-    console.log(`💾 FileSave: Saving file ${options.filename}, size: ${options.content.length} bytes`);
+  async fileSave(options: { content: Uint8Array | string; filename: string; artifactType?: string }): Promise<CommandResult> {
+    // Use the write command to save the file with relative path
+    // Session context will determine the base directory
+    const relativePath = options.artifactType === 'screenshot' ? 
+      `screenshots/${options.filename}` : 
+      options.filename;
+    
+    console.log(`💾 FileSave: Saving file ${relativePath}, size: ${options.content.length} bytes`);
     
     // Convert Uint8Array to base64 string if needed
     let contentBase64: string;
@@ -219,13 +235,11 @@ export class ContinuumBrowserClient implements ContinuumAPI {
       contentBase64 = btoa(options.content);
     }
     
-    // Use the write command to save the file (avoid recursion)
     return await this.execute('write', {
-      filename: options.filename,
+      filename: relativePath,
       content: contentBase64,
       encoding: 'base64',
-      artifactType: options.artifactType ?? 'screenshot',
-      directory: options.directory
+      artifactType: options.artifactType ?? 'screenshot'
     });
   }
 
@@ -252,5 +266,37 @@ export class ContinuumBrowserClient implements ContinuumAPI {
     } else {
       this.readyCallbacks.push(callback);
     }
+  }
+  
+  // Session cookie management
+  private initializeSessionFromCookie(): void {
+    const cookieSessionId = this.getSessionFromCookie();
+    if (cookieSessionId) {
+      this.sessionId = cookieSessionId;
+      console.log(`🍪 ContinuumBrowserClient: Restored session from cookie: ${cookieSessionId}`);
+    }
+  }
+  
+  private getSessionFromCookie(): string | null {
+    const cookies = document.cookie.split(';');
+    for (const cookie of cookies) {
+      const [name, value] = cookie.trim().split('=');
+      if (name === this.SESSION_COOKIE_NAME) {
+        return decodeURIComponent(value);
+      }
+    }
+    return null;
+  }
+  
+  private saveSessionToCookie(sessionId: string): void {
+    if (!sessionId) return;
+    
+    const expirationDate = new Date();
+    expirationDate.setTime(expirationDate.getTime() + this.SESSION_COOKIE_MAX_AGE);
+    
+    const cookieValue = `${this.SESSION_COOKIE_NAME}=${encodeURIComponent(sessionId)}; expires=${expirationDate.toUTCString()}; path=/; SameSite=Strict`;
+    document.cookie = cookieValue;
+    
+    console.log(`🍪 ContinuumBrowserClient: Saved session to cookie: ${sessionId}`);
   }
 }

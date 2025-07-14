@@ -18,6 +18,7 @@
 import { BaseDaemon } from '../base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
+import { ContinuumContext, continuumContextFactory } from '../../types/shared/core/ContinuumTypes';
 import { SystemEventType, MessageType, SessionCreatedPayload, SessionJoinedPayload } from '../base/EventTypes';
 import { SessionConsoleLogger } from './modules/SessionConsoleLogger';
 import { SessionRequest } from '../../types/SessionParameters';
@@ -676,7 +677,16 @@ export class SessionManagerDaemon extends BaseDaemon {
     // 3. Check for session cookie (modern web standard)
     const cookieHeader = headers['cookie'] || headers['Cookie'];
     if (cookieHeader) {
-      // Modern cookie parsing - supports sessionId format
+      // Check for continuum_session_id cookie (browser client standard)
+      const continuumSessionMatch = cookieHeader.match(/continuum_session_id=([^;]+)/);
+      if (continuumSessionMatch) {
+        return {
+          sessionId: decodeURIComponent(continuumSessionMatch[1]),
+          source: 'cookie'
+        };
+      }
+      
+      // Fallback: check for sessionId cookie
       const sessionMatch = cookieHeader.match(/sessionId=([^;]+)/);
       if (sessionMatch) {
         return {
@@ -1297,11 +1307,11 @@ export class SessionManagerDaemon extends BaseDaemon {
     sessionContext?: string;
   }): Promise<BrowserSession> {
     const { type, owner } = options;
-    const sessionId = this.generateSessionId(type, owner, options.sessionContext);
-    const storageDir = await this.createSessionStorage(type, owner, sessionId, options.sessionContext);
+    const sessionContext = this.generateSessionContext(type, owner, options.sessionContext);
+    const storageDir = await this.createSessionStorage(type, owner, sessionContext.sessionId, options.sessionContext);
 
     const session: BrowserSession = {
-      id: sessionId,
+      id: sessionContext.sessionId,
       type,
       owner,
       created: new Date(),
@@ -1326,13 +1336,13 @@ export class SessionManagerDaemon extends BaseDaemon {
       cleanupAfterMs: options.cleanupAfterMs ?? (2 * 60 * 60 * 1000) // 2 hours default
     };
 
-    this.sessions.set(sessionId, session);
-    this.log(`📋 Created session: ${sessionId} for ${owner} (${type})`);
+    this.sessions.set(sessionContext.sessionId, session);
+    this.log(`📋 Created session: ${sessionContext.sessionId} for ${owner} (${type})`);
     
     // Emit session created event with full session info (local event)
     this.emitEvent({
       type: 'session_created',
-      sessionId,
+      sessionId: sessionContext.sessionId,
       session,
       timestamp: new Date(),
       metadata: {
@@ -1350,7 +1360,7 @@ export class SessionManagerDaemon extends BaseDaemon {
       serverLogPath: session.artifacts.logs.server[0] || ''
     };
     DAEMON_EVENT_BUS.emitEvent(SystemEventType.SESSION_CREATED, sessionCreatedEvent);
-    this.log(`🌐 REFRESH_DEBUG: Emitted core SESSION_CREATED event for ${sessionId} (${type})`);
+    this.log(`🌐 REFRESH_DEBUG: Emitted core SESSION_CREATED event for ${sessionContext.sessionId} (${type})`);
     
     return session;
   }
@@ -1479,11 +1489,14 @@ export class SessionManagerDaemon extends BaseDaemon {
     }
   }
 
-  private generateSessionId(type: string, owner: string, context?: string): string {
-    const timestamp = Date.now().toString(36);
-    const random = Math.random().toString(36).substr(2, 5);
-    const contextSuffix = context ? `-${context}` : '';
-    return `${type}-${owner}-${timestamp}-${random}${contextSuffix}`;
+  private generateSessionContext(type: string, owner: string, context?: string): ContinuumContext {
+    // Create a proper ContinuumContext with UUID-based sessionId
+    return continuumContextFactory.create({
+      sessionType: type as 'development' | 'production' | 'test',
+      sessionOwner: owner,
+      environment: 'server',
+      ...(context && { sessionContext: context })
+    });
   }
 
   private async createSessionStorage(

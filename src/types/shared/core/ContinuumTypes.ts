@@ -35,6 +35,25 @@ export interface ContinuumInstance {
 /**
  * Context factory utilities for managing ContinuumContext instances
  */
+/**
+ * UUID validation and generation utilities
+ */
+export const UUIDValidator = {
+  /**
+   * Validate UUID format
+   */
+  validate: (uuid: string): uuid is UUID => {
+    return typeof uuid === 'string' && 
+           uuid.length === 36 && 
+           /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uuid);
+  },
+  
+  /**
+   * Generate a new UUID
+   */
+  generate: (): UUID => randomUUID(),
+} as const;
+
 export const continuumContextFactory = {
   /**
    * Create a new ContinuumContext with required fields
@@ -47,7 +66,7 @@ export const continuumContextFactory = {
     environment?: 'client' | 'server' | 'browser';
     [key: string]: unknown;
   } = {}): ContinuumContext => ({
-    sessionId: options.sessionId ?? randomUUID(),
+    sessionId: options.sessionId ?? UUIDValidator.generate(),
     sessionStartTime: new Date().toISOString(),
     ...options,
   }),
@@ -75,15 +94,7 @@ export const continuumContextFactory = {
       return false;
     }
     
-    // Validate UUID format - UUID is a string with specific format
-    try {
-      const uuid = ctx.sessionId;
-      // UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
-      return typeof uuid === 'string' && 
-             uuid.length === 36 && 
-             /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uuid);
-    } catch {
-      return false;
-    }
+    // Use the UUID validation utility
+    return UUIDValidator.validate(ctx.sessionId);
   },
 } as const;

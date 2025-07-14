@@ -43,15 +43,20 @@ export class FileWriteCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: FileWriteParams, _context?: ContinuumContext): Promise<CommandResult> {
+  static async execute(params: FileWriteParams, context?: ContinuumContext): Promise<CommandResult> {
     try {
-      // 1. Get target directory from ContinuumDirectoryDaemon
-      const targetPath = await this.getTargetPath({
-        filename: params.filename,
-        sessionId: params.directory ? undefined : params.sessionId, // Don't use sessionId if directory is provided
-        artifactType: params.artifactType,
-        directory: params.directory
-      });
+      // Use session ID from context if not provided in params
+      const sessionId = params.sessionId || context?.sessionId;
+      
+      // Get the session base directory from context
+      const sessionBasePath = sessionId ? 
+        path.join(process.cwd(), '.continuum', 'sessions', 'user', 'shared', sessionId) :
+        path.join(process.cwd(), '.continuum');
+      
+      // Determine target path - if filename contains path separators, use it as relative path
+      const targetPath = params.directory ? 
+        path.join(params.directory, params.filename) :
+        path.join(sessionBasePath, params.filename);
       
       // 2. Ensure target directory exists
       await this.ensureDirectoryExists(path.dirname(targetPath));
@@ -67,7 +72,7 @@ export class FileWriteCommand extends BaseFileCommand {
       // 4. Log the write operation via daemon delegation
       await this.logFileOperation('write', targetPath, {
         artifactType: params.artifactType,
-        sessionId: params.sessionId,
+        sessionId: sessionId,
         marshalId: params.marshalId,
         size: Buffer.isBuffer(params.content) ? params.content.length : Buffer.byteLength(params.content, encoding || 'utf8')
       });
@@ -79,7 +84,7 @@ export class FileWriteCommand extends BaseFileCommand {
           filepath: targetPath,
           size: Buffer.isBuffer(params.content) ? params.content.length : Buffer.byteLength(params.content, encoding),
           artifactType: params.artifactType,
-          sessionId: params.sessionId,
+          sessionId: sessionId,
           marshalId: params.marshalId,
           timestamp: new Date().toISOString()
         }
