@@ -180,29 +180,28 @@ async function runGitHookValidation(): Promise<void> {
     console.log('🔄 Agent CAN see its own console output');  
     console.log('🔄 Agent CAN capture screenshots');
       
-    // Add validation files to git (force to override .continuum/ ignore rule)
-    console.log(`📋 Adding validation files to git...`);
+    // Verify validation files exist (integrity check - but don't stage them)
+    console.log(`🔍 Verifying validation files exist (integrity check)...`);
+    
+    // Check that validation files can be staged (prove git add works)
+    console.log(`📋 Testing git add capability...`);
     execSync(`git add -f "${validationRunDir}/"`, { stdio: 'inherit' });
     
-    // CRITICAL: Verify validation files exist and are staged (integrity check)
-    console.log(`🔍 Verifying validation files are staged (integrity check)...`);
     const stagedFiles = execSync('git diff --cached --name-only', { encoding: 'utf-8' }).trim().split('\n');
-    
-    // Check for any files starting with our validation directory
     const stagedValidationFiles = stagedFiles.filter(file => file.startsWith(validationRunDir));
+    
     if (stagedValidationFiles.length === 0) {
-      throw new Error(`INTEGRITY FAILURE: No validation files staged for commit`);
+      throw new Error(`INTEGRITY FAILURE: No validation files could be staged`);
     }
     
-    console.log(`✅ INTEGRITY VERIFIED: ${stagedValidationFiles.length} validation files staged for commit`);
-    console.log(`📁 Validation session: ${validationRunDir}`);
-    console.log(`✅ Complete session copied and staged in: ${validationRunDir}`);
+    console.log(`✅ INTEGRITY VERIFIED: ${stagedValidationFiles.length} validation files can be staged`);
     
-    // Clean up validation files after integrity verification (no baggage in commit)
-    console.log(`🧹 Cleaning up validation files (integrity verified, no baggage needed)...`);
+    // Unstage validation files immediately (don't commit them)
+    console.log(`📋 Unstaging validation files (integrity verified, keeping commit clean)...`);
     execSync(`git reset HEAD -- "${validationRunDir}/"`, { stdio: 'inherit' });
-    await fs.rm(validationRunDir, { recursive: true, force: true });
-    console.log(`✅ Validation files cleaned up - commit will be clean`);
+    
+    console.log(`📁 Validation session: ${validationRunDir}`);
+    console.log(`✅ Complete session verified - post-commit hook will clean up files`);
     
   } catch (error) {
     console.error('❌ Git hook validation failed:', error);
