@@ -198,6 +198,12 @@ async function runGitHookValidation(): Promise<void> {
     console.log(`📁 Validation session: ${validationRunDir}`);
     console.log(`✅ Complete session copied and staged in: ${validationRunDir}`);
     
+    // Clean up validation files after integrity verification (no baggage in commit)
+    console.log(`🧹 Cleaning up validation files (integrity verified, no baggage needed)...`);
+    execSync(`git reset HEAD -- "${validationRunDir}/"`, { stdio: 'inherit' });
+    await fs.rm(validationRunDir, { recursive: true, force: true });
+    console.log(`✅ Validation files cleaned up - commit will be clean`);
+    
   } catch (error) {
     console.error('❌ Git hook validation failed:', error);
     process.exit(1);
