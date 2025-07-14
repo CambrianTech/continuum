@@ -41,17 +41,17 @@ if [ -d ".continuum/sessions" ]; then
     TOTAL_BEFORE=$(find .continuum/sessions -type d -name "*-*" 2>/dev/null | wc -l | tr -d ' ')
     
     if [ "$DELETE_ALL" = true ]; then
-        echo -e "${YELLOW}🗑️  Deleting all sessions...${NC}"
-        rm -rf .continuum/sessions/*
-        echo -e "${GREEN}✅ All sessions deleted${NC}"
+        echo -e "${YELLOW}🗑️  Deleting all sessions (except validation)...${NC}"
+        find .continuum/sessions -mindepth 1 -maxdepth 1 -type d -not -name "validation" -exec rm -rf {} \; 2>/dev/null || true
+        echo -e "${GREEN}✅ All sessions deleted (validation preserved)${NC}"
     else
         echo -e "${YELLOW}🕐 Keeping sessions from last ${KEEP_HOURS} hour(s)...${NC}"
         
         # Calculate minutes
         KEEP_MINUTES=$((KEEP_HOURS * 60))
         
-        # Find and delete old sessions
-        find .continuum/sessions -type d -name "*-*" -mmin +${KEEP_MINUTES} -exec rm -rf {} \; 2>/dev/null || true
+        # Find and delete old sessions (but never delete validation directory)
+        find .continuum/sessions -type d -name "*-*" -not -path "*/validation/*" -mmin +${KEEP_MINUTES} -exec rm -rf {} \; 2>/dev/null || true
         
         # Count remaining sessions
         TOTAL_AFTER=$(find .continuum/sessions -type d -name "*-*" 2>/dev/null | wc -l | tr -d ' ')

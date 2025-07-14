@@ -1,0 +1,991 @@
+# Continuum Session Log
+# Session: f049624d-a58b-4c81-a7a3-b9498e09153b
+# Created: 2025-07-14T23:55:16.621Z
+# Type: development
+# Owner: shared
+#
+# Session started at 2025-07-14T23:55:16.621Z
+
+[2025-07-14T23:55:17.122Z] LOG: 🔄 Enabling console forwarding...
+[2025-07-14T23:55:17.140Z] LOG: ✅ Console forwarding enabled
+[2025-07-14T23:55:17.140Z] LOG: 🌐 Continuum v0.2.2900 lifecycle starting...
+[2025-07-14T23:55:17.140Z] LOG: 🌐 Continuum Browser Client: Single global instance created
+[2025-07-14T23:55:17.140Z] LOG: 🔬 console.probe() method added for AI diagnostics
+[2025-07-14T23:55:17.140Z] LOG: 🔄 Continuum state: initializing → connecting
+[2025-07-14T23:55:17.140Z] LOG: 🎮 Widget Server Controls: Dynamic command discovery system initialized
+[2025-07-14T23:55:17.140Z] LOG: 🏠 RoomDataManager: Loaded room type configuration
+[2025-07-14T23:55:17.140Z] WARN: 🏠 RoomDataManager: Server API not available, falling back to static data
+[2025-07-14T23:55:17.140Z] LOG: 📋 Sidebar config loaded: {
+  "tabs": [
+    {
+      "title": "General",
+      "panelName": "general"
+    },
+    {
+      "title": "Academy",
+      "panelName": "academy"
+    }
+  ],
+  "defaultTab": "general",
+  "sections": {
+    "general": {
+      "widgets": [
+        {
+          "type": "session-costs",
+          "config": {}
+        },
+        {
+          "type": "user-selector",
+          "config": {}
+        }
+      ]
+    },
+    "academy": {
+      "widgets": [
+        {
+          "type": "saved-personas",
+          "config": {}
+        },
+        {
+          "type": "user-selector",
+          "config": {
+            "title": "Available Agents"
+          }
+        }
+      ]
+    }
+  }
+}
+[2025-07-14T23:55:17.140Z] LOG: 🔮 Sidebar: Initializing sophisticated Continuon consciousness...
+[2025-07-14T23:55:17.140Z] LOG: ✅ Sidebar container ready for child widgets
+[2025-07-14T23:55:17.140Z] LOG: 🔔 Sidebar: widget_ready {
+  "event": "widget_ready",
+  "data": {
+    "type": "continuum-sidebar",
+    "capabilities": [
+      "system-awareness",
+      "emotional-feedback",
+      "user-interaction"
+    ]
+  }
+}
+[2025-07-14T23:55:17.140Z] LOG: ✅ Sidebar: System awareness configured with graceful API handling
+[2025-07-14T23:55:17.140Z] LOG: 🎛️ Sidebar: About to call render()
+[2025-07-14T23:55:17.140Z] LOG: 🧠 Sidebar: Setting up system awareness with simple notifications
+[2025-07-14T23:55:17.140Z] LOG: 🎨 Sidebar: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.151Z] WARN: ⚠️ HEALTH CHECK: Warning message test
+[2025-07-14T23:55:17.151Z] LOG: ✅ HEALTH CHECK: Health check complete
+[2025-07-14T23:55:17.140Z] LOG: 📁 SidebarWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.140Z] LOG: 🎨 SidebarWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/Sidebar/SidebarWidget.css]
+[2025-07-14T23:55:17.140Z] LOG: 🏠 RoomDataManager: Loaded default rooms from config
+[2025-07-14T23:55:17.140Z] LOG: 🏠 RoomDataManager: Room changed: none → General Chat
+[2025-07-14T23:55:17.140Z] LOG: 🏠 RoomDataManager: Initialized with 4 rooms
+[2025-07-14T23:55:17.141Z] LOG: 🔌 WebSocket connected
+[2025-07-14T23:55:17.141Z] LOG: 🔄 Continuum state: connecting → connected
+[2025-07-14T23:55:17.141Z] LOG: 🔌 Continuum API connected to server
+[2025-07-14T23:55:17.141Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.141Z] LOG: 🎯 Session: f049624d-a58b-4c81-a7a3-b9498e09153b
+[2025-07-14T23:55:17.141Z] LOG: 🍪 ContinuumBrowserClient: Saved session to cookie: f049624d-a58b-4c81-a7a3-b9498e09153b
+[2025-07-14T23:55:17.141Z] LOG: 🔌 Client ID: ws_1752537317055_gotb79gzd
+[2025-07-14T23:55:17.141Z] LOG: 🔄 Continuum state: connected → ready
+[2025-07-14T23:55:17.141Z] LOG: ✅ Continuum API ready for use
+[2025-07-14T23:55:17.141Z] LOG: 🚽 Flushing 31 queued console messages
+[2025-07-14T23:55:17.141Z] LOG: 🏥 Performing console forwarding health check...
+[2025-07-14T23:55:17.141Z] ERROR: ❌ HEALTH CHECK: Error message test
+   Stack: Error
+    at console.error (http://localhost:9000/src/ui/continuum-browser.js:363:12)
+    at ConsoleForwarder.performHealthCheck (http://localhost:9000/src/ui/continuum-browser.js:458:13)
+    at ContinuumBrowserClient.handleStateChange (http://localhost:9000/src/ui/continuum-browser.js:821:31)
+    at ContinuumBrowserClient.setState (http://localhost:9000/src/ui/continuum-browser.js:809:12)
+    at WebSocketManager.onStateChange (http://localhost:9000/src/ui/continuum-browser.js:790:38)
+    at WebSocketManager.handleMessage (http://localhost:9000/src/ui/continuum-browser.js:528:31)
+    at ws.onmessage (http://localhost:9000/src/ui/continuum-browser.js:497:14)
+[2025-07-14T23:55:17.141Z] LOG: 💬 Chat: Loading chat events configuration...
+[2025-07-14T23:55:17.151Z] TRACE: 🔍 HEALTH CHECK: Trace message test
+[2025-07-14T23:55:17.151Z] LOG: 🎨 BROWSER_DEBUG: Testing widget discovery via WidgetDaemon...
+[2025-07-14T23:55:17.151Z] LOG: 📨 Received custom message: {
+  "type": "response",
+  "data": {
+    "initialized": true,
+    "server_time": "2025-07-14T23:55:17.060Z",
+    "client_id": "ws_1752537317055_gotb79gzd",
+    "server_info": {
+      "name": "Continuum WebSocket Server",
+      "version": "1.0.0",
+      "supported_operations": [
+        "ping",
+        "get_stats",
+        "client_init",
+        "execute_command",
+        "message"
+      ]
+    },
+    "daemon_status": {
+      "connected": true,
+      "type": "typescript"
+    }
+  },
+  "timestamp": "2025-07-14T23:55:17.060Z"
+}
+[2025-07-14T23:55:17.151Z] LOG: ✅ Loaded CSS: /src/ui/components/Sidebar/SidebarWidget.css (8382 chars)
+[2025-07-14T23:55:17.151Z] LOG: ✅ SidebarWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.151Z] LOG: 🎨 Sidebar: CSS loaded, length: 9735 chars
+[2025-07-14T23:55:17.151Z] LOG: 📁 SidebarWidget: Found 1 HTML files in manifest
+[2025-07-14T23:55:17.151Z] LOG: 💬 Chat: Chat events configuration loaded
+[2025-07-14T23:55:17.151Z] LOG: 💬 Chat: Initializing chat for room: General Chat (chat)
+[2025-07-14T23:55:17.151Z] LOG: 🎨 ChatWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.151Z] LOG: 📁 ChatWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.151Z] LOG: 🎨 ChatWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/Chat/ChatWidget.css]
+[2025-07-14T23:55:17.152Z] LOG: 🎨 ChatWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.152Z] LOG: 📁 ChatWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.152Z] LOG: 🎨 ChatWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/Chat/ChatWidget.css]
+[2025-07-14T23:55:17.152Z] LOG: 🔔 ChatWidget: message_received {
+  "event": "message_received"
+}
+[2025-07-14T23:55:17.152Z] LOG: 🔔 ChatWidget: agent_typing {
+  "event": "agent_typing"
+}
+[2025-07-14T23:55:17.152Z] LOG: 🔔 ChatWidget: agent_stop_typing {
+  "event": "agent_stop_typing"
+}
+[2025-07-14T23:55:17.152Z] LOG: 🔔 ChatWidget: room_participants_updated {
+  "event": "room_participants_updated"
+}
+[2025-07-14T23:55:17.152Z] LOG: 🔔 ChatWidget: message_status_updated {
+  "event": "message_status_updated"
+}
+[2025-07-14T23:55:17.153Z] LOG: 💬 Chat: Universal user system ready
+[2025-07-14T23:55:17.153Z] LOG: 🎛️ ChatWidget: About to call render()
+[2025-07-14T23:55:17.153Z] LOG: 🎨 ChatWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.153Z] LOG: 📁 ChatWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.153Z] LOG: 🎨 BROWSER_DEBUG: Widget discovery via WidgetDaemon result: {
+  "discoveredWidgets": 2,
+  "readyWidgets": 2,
+  "failedWidgets": 0,
+  "discoveryTime": 2
+}
+[2025-07-14T23:55:17.153Z] LOG: 🎨 ChatWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/Chat/ChatWidget.css]
+[2025-07-14T23:55:17.153Z] LOG: 🧪 SERIALIZATION_TEST: Testing object logging: {
+  "test": "serialization",
+  "number": 42,
+  "nested": {
+    "key": "value",
+    "array": [
+      1,
+      2,
+      3
+    ]
+  },
+  "boolean": true
+}
+[2025-07-14T23:55:17.153Z] 🛸 PROBE: 🔬 AI_DIAGNOSTIC_TEST: Probing DOM and browser state (dom-analysis)
+  JS: JSON.stringify({ title: document.title, url: window.location.href, bodyChildren: document.body?.children.length || 0, scripts: document.scripts.length, stylesheets: document.styleSheets.length, readyState: document.readyState })
+  Result: {"title":"continuum","url":"http://localhost:9000/","bodyChildren":3,"scripts":2,"stylesheets":3,"readyState":"complete"}
+
+[2025-07-14T23:55:17.153Z] 🛸 PROBE: 🔍 WIDGET_INVESTIGATION: Checking widget custom elements status (widget-debug)
+  JS: JSON.stringify({ sidebarElement: !!document.querySelector("continuum-sidebar"), chatElement: !!document.querySelector("chat-widget"), sidebarInnerHTML: document.querySelector("continuum-sidebar")?.innerHTML?.substring(0, 100) || "empty", chatInnerHTML: document.querySelector("chat-widget")?.innerHTML?.substring(0, 100) || "empty", customElementsSupported: !!window.customElements, bodyHTML: document.body?.innerHTML?.substring(0, 300) || "no body" })
+  Result: {"sidebarElement":true,"chatElement":true,"sidebarInnerHTML":"empty","chatInnerHTML":"empty","customElementsSupported":true,"bodyHTML":"\n    <div class=\"app-container\">\n        <!-- TypeScript Widgets - Custom Elements -->\n        <continuum-sidebar></continuum-sidebar>\n        <chat-widget></chat-widget>\n    </div>\n    \n    <!-- Widget modules bundled with continuum-browser.js - no separate loading needed -->\n    \n    <!-- All scri"}
+
+[2025-07-14T23:55:17.153Z] 🛸 PROBE: 🔍 CUSTOM_ELEMENT_PROBE: Checking widget class registration (custom-elements)
+  JS: JSON.stringify({ customElementsRegistry: Object.keys(window.customElements || {}), sidebarClass: typeof window.customElements?.get("continuum-sidebar"), chatClass: typeof window.customElements?.get("chat-widget"), globalClasses: Object.keys(window).filter(k => k.includes("Widget") || k.includes("Sidebar")).slice(0, 10) })
+  Result: {"customElementsRegistry":[],"sidebarClass":"function","chatClass":"function","globalClasses":["WidgetServerControls"]}
+
+[2025-07-14T23:55:17.153Z] LOG: ✅ Loaded HTML template: /src/ui/components/Sidebar/SidebarWidget.html (Zero 404s!)
+[2025-07-14T23:55:17.153Z] LOG: 🏗️ SidebarHeader: Constructor called
+[2025-07-14T23:55:17.153Z] LOG: 🏗️ SidebarHeader: Shadow DOM attached
+[2025-07-14T23:55:17.153Z] LOG: 🎛️ SidebarHeader: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.153Z] LOG: 🎛️ SidebarHeader: About to call initializeWidget()
+[2025-07-14T23:55:17.153Z] LOG: 🏗️ SidebarTabs: Constructor called
+[2025-07-14T23:55:17.153Z] LOG: 🏗️ SidebarTabs: Shadow DOM attached
+[2025-07-14T23:55:17.153Z] LOG: 🎛️ SidebarTabs: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.153Z] LOG: 🎛️ SidebarTabs: About to call initializeWidget()
+[2025-07-14T23:55:17.153Z] LOG: 🎨 SidebarTabs: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.153Z] LOG: 📁 SidebarTabs: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.153Z] LOG: 🎨 SidebarTabs: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SidebarTabs/SidebarTabs.css]
+[2025-07-14T23:55:17.153Z] LOG: 🔧 SidebarTabs widget ready
+[2025-07-14T23:55:17.153Z] LOG: 🏗️ SidebarPanelWidget: Constructor called
+[2025-07-14T23:55:17.153Z] LOG: 🎛️ SidebarPanelWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.153Z] LOG: 🏗️ SidebarPanelWidget: Shadow DOM attached
+[2025-07-14T23:55:17.153Z] LOG: 🎨 SidebarPanelWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.153Z] LOG: 🎛️ SidebarPanelWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.153Z] LOG: 🎨 SidebarPanelWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SidebarPanelWidget/SidebarPanelWidget.css]
+[2025-07-14T23:55:17.153Z] LOG: 📁 SidebarPanelWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.153Z] LOG: 🗂️ SidebarPanelWidget widget ready
+[2025-07-14T23:55:17.153Z] LOG: 🎛️ Sidebar: Setting up resize handlers...
+[2025-07-14T23:55:17.153Z] LOG: 🎛️ Sidebar: Resize handlers setup complete
+[2025-07-14T23:55:17.153Z] LOG: 🎨 SidebarTabs: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.154Z] LOG: 🎨 SidebarTabs: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SidebarTabs/SidebarTabs.css]
+[2025-07-14T23:55:17.153Z] LOG: 🔧 Configuring SidebarTabs with: [{
+  "title": "General",
+  "panelName": "general"
+}, {
+  "title": "Academy",
+  "panelName": "academy"
+}]
+[2025-07-14T23:55:17.154Z] LOG: 🎨 SidebarPanelWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.154Z] LOG: 📁 SidebarTabs: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.154Z] LOG: 📁 SidebarPanelWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.154Z] LOG: 🎨 SidebarPanelWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SidebarPanelWidget/SidebarPanelWidget.css]
+[2025-07-14T23:55:17.154Z] LOG: 🔧 Configuring SidebarPanel with: {
+  "general": {
+    "widgets": [
+      {
+        "type": "session-costs",
+        "config": {}
+      },
+      {
+        "type": "user-selector",
+        "config": {}
+      }
+    ]
+  },
+  "academy": {
+    "widgets": [
+      {
+        "type": "saved-personas",
+        "config": {}
+      },
+      {
+        "type": "user-selector",
+        "config": {
+          "title": "Available Agents"
+        }
+      }
+    ]
+  }
+}
+[2025-07-14T23:55:17.154Z] LOG: 📁 SidebarPanelWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.154Z] LOG: 🎨 SidebarPanelWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SidebarPanelWidget/SidebarPanelWidget.css]
+[2025-07-14T23:55:17.154Z] LOG: 🎨 SidebarPanelWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.154Z] LOG: 🎛️ SidebarHeader: About to call render()
+[2025-07-14T23:55:17.154Z] LOG: 🎛️ Sidebar: Event listeners initialized
+[2025-07-14T23:55:17.154Z] LOG: 🎨 SidebarHeader: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.154Z] LOG: 🎨 SidebarHeader: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SidebarHeader/SidebarHeader.css]
+[2025-07-14T23:55:17.154Z] LOG: 🎛️ SidebarTabs: About to call render()
+[2025-07-14T23:55:17.154Z] LOG: 🎨 SidebarTabs: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.154Z] LOG: 📁 SidebarHeader: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.154Z] LOG: 📁 SidebarTabs: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.154Z] LOG: 🎨 SidebarTabs: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SidebarTabs/SidebarTabs.css]
+[2025-07-14T23:55:17.154Z] LOG: 🎛️ SidebarPanelWidget: About to call render()
+[2025-07-14T23:55:17.154Z] LOG: 🎨 SidebarPanelWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.154Z] LOG: 📁 SidebarPanelWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.154Z] LOG: 🎨 SidebarPanelWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SidebarPanelWidget/SidebarPanelWidget.css]
+[2025-07-14T23:55:17.154Z] LOG: 🎛️ Sidebar: connectedCallback() complete
+[2025-07-14T23:55:17.163Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.163Z] LOG: ✅ Loaded CSS: /src/ui/components/SidebarTabs/SidebarTabs.css (645 chars)
+[2025-07-14T23:55:17.163Z] LOG: ✅ Loaded CSS: /src/ui/components/Chat/ChatWidget.css (6680 chars)
+[2025-07-14T23:55:17.163Z] LOG: ✅ ChatWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.163Z] LOG: 🎨 ChatWidget: CSS loaded, length: 8033 chars
+[2025-07-14T23:55:17.163Z] LOG: ✅ Loaded CSS: /src/ui/components/SidebarTabs/SidebarTabs.css (645 chars)
+[2025-07-14T23:55:17.163Z] LOG: ✅ Loaded CSS: /src/ui/components/SidebarPanelWidget/SidebarPanelWidget.css (2676 chars)
+[2025-07-14T23:55:17.163Z] LOG: 📁 ChatWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.170Z] LOG: ✅ Loaded CSS: /src/ui/components/Chat/ChatWidget.css (6680 chars)
+[2025-07-14T23:55:17.170Z] LOG: ✅ Loaded CSS: /src/ui/components/SidebarTabs/SidebarTabs.css (645 chars)
+[2025-07-14T23:55:17.170Z] LOG: ✅ Loaded CSS: /src/ui/components/SidebarHeader/SidebarHeader.css (2007 chars)
+[2025-07-14T23:55:17.174Z] LOG: ✅ Loaded CSS: /src/ui/components/SidebarPanelWidget/SidebarPanelWidget.css (2676 chars)
+[2025-07-14T23:55:17.174Z] LOG: ✅ Loaded CSS: /src/ui/components/Chat/ChatWidget.css (6680 chars)
+[2025-07-14T23:55:17.174Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.174Z] LOG: ✅ ChatWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.174Z] LOG: 🎨 ChatWidget: CSS loaded, length: 8033 chars
+[2025-07-14T23:55:17.174Z] LOG: 📁 ChatWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.219Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.219Z] LOG: ✅ ChatWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.219Z] LOG: 🎨 ChatWidget: CSS loaded, length: 8033 chars
+[2025-07-14T23:55:17.219Z] LOG: 📁 ChatWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.219Z] LOG: 🎛️ ChatWidget: connectedCallback() complete
+[2025-07-14T23:55:17.219Z] LOG: ✅ Loaded CSS: /src/ui/components/SidebarPanelWidget/SidebarPanelWidget.css (2676 chars)
+[2025-07-14T23:55:17.231Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.231Z] LOG: ✅ SidebarTabs: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.231Z] LOG: 🎨 SidebarTabs: CSS loaded, length: 1998 chars
+[2025-07-14T23:55:17.231Z] LOG: 📁 SidebarTabs: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.231Z] LOG: 📑 SidebarTabs renderContent() called
+[2025-07-14T23:55:17.231Z] LOG: 📑 Current tabs array: [{
+  "title": "General",
+  "panelName": "general",
+  "dataKey": "general",
+  "active": true
+}, {
+  "title": "Academy",
+  "panelName": "academy",
+  "dataKey": "academy",
+  "active": false
+}]
+[2025-07-14T23:55:17.231Z] LOG: 📑 Generated HTML content: 
+            <div class="room-tabs">
+                
+                    <div class="room-tab active" 
+                         data-room="general">
+                        General
+                    </div>
+                
+                    <div class="room-tab " 
+                         data-room="academy">
+                        Academy
+                    </div>
+                
+            </div>
+        
+[2025-07-14T23:55:17.231Z] LOG: ✅ Loaded CSS: /src/ui/components/SidebarPanelWidget/SidebarPanelWidget.css (2676 chars)
+[2025-07-14T23:55:17.231Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.231Z] LOG: ✅ SidebarPanelWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.231Z] LOG: 🎨 SidebarPanelWidget: CSS loaded, length: 4029 chars
+[2025-07-14T23:55:17.231Z] LOG: 📁 SidebarPanelWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.231Z] LOG: 🗂️ SidebarPanelWidget renderContent() called
+[2025-07-14T23:55:17.231Z] LOG: 🗂️ Current panels array: [{
+  "panelName": "general",
+  "widgets": [
+    {
+      "type": "session-costs",
+      "config": {}
+    },
+    {
+      "type": "user-selector",
+      "config": {}
+    }
+  ],
+  "active": true
+}, {
+  "panelName": "academy",
+  "widgets": [
+    {
+      "type": "saved-personas",
+      "config": {}
+    },
+    {
+      "type": "user-selector",
+      "config": {
+        "title": "Available Agents"
+      }
+    }
+  ],
+  "active": false
+}]
+[2025-07-14T23:55:17.231Z] LOG: 🗂️ Active panel: general
+[2025-07-14T23:55:17.231Z] LOG: 🗂️ Generated HTML content: 
+            <div class="sidebar-panels">
+                
+            <div class="sidebar-panel active" 
+                 data-panel="general"
+                 style="display: block">
+                <session-costs></session-costs><user-selector></user-selector>
+            </div>
+        
+            <div class="sidebar-panel " 
+                 data-panel="academy"
+                 style="display: none">
+                <saved-personas></saved-personas><user-selector></user-selector>
+            </div>
+        
+            </div>
+        
+[2025-07-14T23:55:17.231Z] LOG: 🏗️ SessionCostsWidget: Constructor called
+[2025-07-14T23:55:17.231Z] LOG: 🏗️ SessionCostsWidget: Shadow DOM attached
+[2025-07-14T23:55:17.231Z] LOG: 🎛️ BaseWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.231Z] LOG: 🎛️ BaseWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.231Z] LOG: 🏗️ UsersAgentsWidget: Constructor called
+[2025-07-14T23:55:17.231Z] LOG: 🏗️ UsersAgentsWidget: Shadow DOM attached
+[2025-07-14T23:55:17.231Z] LOG: 🎛️ BaseWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.231Z] LOG: 🎛️ BaseWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.231Z] LOG: 🏗️ SavedPersonasWidget: Constructor called
+[2025-07-14T23:55:17.231Z] LOG: 🏗️ SavedPersonasWidget: Shadow DOM attached
+[2025-07-14T23:55:17.231Z] LOG: 🎛️ SavedPersonas: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.231Z] LOG: 🎛️ SavedPersonas: About to call initializeWidget()
+[2025-07-14T23:55:17.231Z] LOG: 🏗️ UsersAgentsWidget: Constructor called
+[2025-07-14T23:55:17.240Z] LOG: 🏗️ UsersAgentsWidget: Shadow DOM attached
+[2025-07-14T23:55:17.240Z] LOG: 🎛️ BaseWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.240Z] LOG: 🎛️ BaseWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.240Z] LOG: 🗂️ SidebarPanelWidget: Event listeners setup
+[2025-07-14T23:55:17.240Z] LOG: 🎛️ BaseWidget: About to call render()
+[2025-07-14T23:55:17.240Z] LOG: 🎨 BaseWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.240Z] LOG: 🎛️ BaseWidget: About to call render()
+[2025-07-14T23:55:17.240Z] LOG: 🎨 SessionCostsWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SessionCosts/SessionCosts.css]
+[2025-07-14T23:55:17.240Z] LOG: 🎨 BaseWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.240Z] LOG: 📁 UsersAgentsWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.240Z] LOG: 📁 SessionCostsWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.240Z] LOG: 🎨 UsersAgentsWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/UsersAgents/UsersAgents.css]
+[2025-07-14T23:55:17.240Z] LOG: 🎛️ BaseWidget: About to call render()
+[2025-07-14T23:55:17.240Z] LOG: 🎨 BaseWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.240Z] LOG: 📁 UsersAgentsWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.240Z] LOG: 🎨 UsersAgentsWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/UsersAgents/UsersAgents.css]
+[2025-07-14T23:55:17.240Z] LOG: 🎛️ SavedPersonas: About to call render()
+[2025-07-14T23:55:17.240Z] LOG: 🎨 SavedPersonas: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.240Z] LOG: 📁 SavedPersonasWidget: Found 3 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.240Z] LOG: 🎨 SavedPersonasWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SavedPersonas/SavedPersonas.css, /src/ui/components/SavedPersonas/SavedPersonasWidget.css, /src/ui/components/SavedPersonas/styles.css]
+[2025-07-14T23:55:17.240Z] WARN: 📊 SessionCosts: Failed to load metrics, using mock data: Error: Command 'session-info' not found
+Error: Command 'session-info' not found
+    at HTMLDocument.responseHandler (http://localhost:9000/src/ui/continuum-browser.js:883:20)
+    at WebSocketManager.handleMessage (http://localhost:9000/src/ui/continuum-browser.js:536:18)
+    at ws.onmessage (http://localhost:9000/src/ui/continuum-browser.js:497:14)
+[2025-07-14T23:55:17.240Z] LOG: ✅ SidebarTabs: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.240Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.240Z] LOG: 🎨 SidebarTabs: CSS loaded, length: 1998 chars
+[2025-07-14T23:55:17.240Z] LOG: 📁 SidebarTabs: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.240Z] LOG: 📑 SidebarTabs renderContent() called
+[2025-07-14T23:55:17.240Z] LOG: 📑 Current tabs array: [{
+  "title": "General",
+  "panelName": "general",
+  "dataKey": "general",
+  "active": true
+}, {
+  "title": "Academy",
+  "panelName": "academy",
+  "dataKey": "academy",
+  "active": false
+}]
+[2025-07-14T23:55:17.241Z] LOG: 📑 Generated HTML content: 
+            <div class="room-tabs">
+                
+                    <div class="room-tab active" 
+                         data-room="general">
+                        General
+                    </div>
+                
+                    <div class="room-tab " 
+                         data-room="academy">
+                        Academy
+                    </div>
+                
+            </div>
+        
+[2025-07-14T23:55:17.257Z] LOG: ✅ Loaded 6 real users from server
+[2025-07-14T23:55:17.257Z] LOG: ✅ Loaded CSS: /src/ui/components/SessionCosts/SessionCosts.css (1615 chars)
+[2025-07-14T23:55:17.257Z] LOG: ✅ Loaded CSS: /src/ui/components/UsersAgents/UsersAgents.css (3680 chars)
+[2025-07-14T23:55:17.257Z] LOG: ✅ Loaded CSS: /src/ui/components/SavedPersonas/SavedPersonas.css (7175 chars)
+[2025-07-14T23:55:17.257Z] LOG: ✅ Loaded CSS: /src/ui/components/SavedPersonas/SavedPersonasWidget.css (6399 chars)
+[2025-07-14T23:55:17.257Z] LOG: ✅ Loaded CSS: /src/ui/components/SavedPersonas/styles.css (2541 chars)
+[2025-07-14T23:55:17.276Z] LOG: ✅ Loaded CSS: /src/ui/components/UsersAgents/UsersAgents.css (3680 chars)
+[2025-07-14T23:55:17.276Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.276Z] LOG: ✅ SidebarPanelWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.276Z] LOG: 🎨 SidebarPanelWidget: CSS loaded, length: 4029 chars
+[2025-07-14T23:55:17.276Z] LOG: 📁 SidebarPanelWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.276Z] LOG: 🗂️ SidebarPanelWidget renderContent() called
+[2025-07-14T23:55:17.276Z] LOG: 🗂️ Generated HTML content: 
+            <div class="sidebar-panels">
+                
+            <div class="sidebar-panel active" 
+                 data-panel="general"
+                 style="display: block">
+                <session-costs></session-costs><user-selector></user-selector>
+            </div>
+        
+            <div class="sidebar-panel " 
+                 data-panel="academy"
+                 style="display: none">
+                <saved-personas></saved-personas><user-selector></user-selector>
+            </div>
+        
+            </div>
+        
+[2025-07-14T23:55:17.276Z] LOG: 🗂️ Active panel: general
+[2025-07-14T23:55:17.276Z] LOG: 🏗️ SessionCostsWidget: Constructor called
+[2025-07-14T23:55:17.276Z] LOG: 🎛️ BaseWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.276Z] LOG: 🏗️ SessionCostsWidget: Shadow DOM attached
+[2025-07-14T23:55:17.276Z] LOG: 🎛️ BaseWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.276Z] LOG: 🏗️ UsersAgentsWidget: Constructor called
+[2025-07-14T23:55:17.276Z] LOG: 🏗️ UsersAgentsWidget: Shadow DOM attached
+[2025-07-14T23:55:17.276Z] LOG: 🎛️ BaseWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.276Z] LOG: 🎛️ BaseWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.276Z] LOG: 🗂️ Current panels array: [{
+  "panelName": "general",
+  "widgets": [
+    {
+      "type": "session-costs",
+      "config": {}
+    },
+    {
+      "type": "user-selector",
+      "config": {}
+    }
+  ],
+  "active": true
+}, {
+  "panelName": "academy",
+  "widgets": [
+    {
+      "type": "saved-personas",
+      "config": {}
+    },
+    {
+      "type": "user-selector",
+      "config": {
+        "title": "Available Agents"
+      }
+    }
+  ],
+  "active": false
+}]
+[2025-07-14T23:55:17.287Z] WARN: 📊 SessionCosts: Failed to load metrics, using mock data: Error: Command 'session-info' not found
+Error: Command 'session-info' not found
+    at HTMLDocument.responseHandler (http://localhost:9000/src/ui/continuum-browser.js:883:20)
+    at WebSocketManager.handleMessage (http://localhost:9000/src/ui/continuum-browser.js:536:18)
+    at ws.onmessage (http://localhost:9000/src/ui/continuum-browser.js:497:14)
+[2025-07-14T23:55:17.287Z] LOG: 🏗️ SavedPersonasWidget: Constructor called
+[2025-07-14T23:55:17.287Z] LOG: 🏗️ SavedPersonasWidget: Shadow DOM attached
+[2025-07-14T23:55:17.287Z] LOG: 🎛️ SavedPersonas: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.287Z] LOG: 🎛️ SavedPersonas: About to call initializeWidget()
+[2025-07-14T23:55:17.287Z] LOG: 🏗️ UsersAgentsWidget: Constructor called
+[2025-07-14T23:55:17.287Z] LOG: 🏗️ UsersAgentsWidget: Shadow DOM attached
+[2025-07-14T23:55:17.287Z] LOG: 🎛️ BaseWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.287Z] LOG: 🎛️ BaseWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.287Z] LOG: 🎛️ BaseWidget: Disconnecting from DOM
+[2025-07-14T23:55:17.287Z] LOG: 🎛️ BaseWidget: Disconnecting from DOM
+[2025-07-14T23:55:17.287Z] LOG: 🎛️ BaseWidget: Disconnecting from DOM
+[2025-07-14T23:55:17.287Z] LOG: 🎛️ SavedPersonas: Disconnecting from DOM
+[2025-07-14T23:55:17.287Z] LOG: 🗂️ SidebarPanelWidget: Event listeners setup
+[2025-07-14T23:55:17.287Z] LOG: 🎛️ BaseWidget: About to call render()
+[2025-07-14T23:55:17.287Z] LOG: 🎨 BaseWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.287Z] LOG: 📁 SessionCostsWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.287Z] LOG: 🎨 SessionCostsWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SessionCosts/SessionCosts.css]
+[2025-07-14T23:55:17.288Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.288Z] LOG: ✅ SidebarPanelWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.288Z] LOG: 🎨 SidebarPanelWidget: CSS loaded, length: 4029 chars
+[2025-07-14T23:55:17.288Z] LOG: 📁 SidebarPanelWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.288Z] LOG: 🗂️ Active panel: general
+[2025-07-14T23:55:17.288Z] LOG: 🗂️ SidebarPanelWidget renderContent() called
+[2025-07-14T23:55:17.288Z] LOG: 🗂️ Generated HTML content: 
+            <div class="sidebar-panels">
+                
+            <div class="sidebar-panel active" 
+                 data-panel="general"
+                 style="display: block">
+                <session-costs></session-costs><user-selector></user-selector>
+            </div>
+        
+            <div class="sidebar-panel " 
+                 data-panel="academy"
+                 style="display: none">
+                <saved-personas></saved-personas><user-selector></user-selector>
+            </div>
+        
+            </div>
+        
+[2025-07-14T23:55:17.288Z] LOG: 🏗️ SessionCostsWidget: Constructor called
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ BaseWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ BaseWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.288Z] LOG: 🏗️ SessionCostsWidget: Shadow DOM attached
+[2025-07-14T23:55:17.287Z] LOG: 🎨 BaseWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.287Z] LOG: 🎨 UsersAgentsWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/UsersAgents/UsersAgents.css]
+[2025-07-14T23:55:17.287Z] LOG: 🎛️ BaseWidget: About to call render()
+[2025-07-14T23:55:17.287Z] LOG: 🎛️ BaseWidget: About to call render()
+[2025-07-14T23:55:17.287Z] LOG: 📁 UsersAgentsWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.287Z] LOG: 🎨 BaseWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.288Z] LOG: 🎨 UsersAgentsWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/UsersAgents/UsersAgents.css]
+[2025-07-14T23:55:17.288Z] LOG: 📁 UsersAgentsWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ SavedPersonas: About to call render()
+[2025-07-14T23:55:17.288Z] LOG: 🎨 SavedPersonas: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.288Z] LOG: 🎨 SavedPersonasWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SavedPersonas/SavedPersonas.css, /src/ui/components/SavedPersonas/SavedPersonasWidget.css, /src/ui/components/SavedPersonas/styles.css]
+[2025-07-14T23:55:17.288Z] LOG: 📁 SavedPersonasWidget: Found 3 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.288Z] LOG: 🏗️ UsersAgentsWidget: Constructor called
+[2025-07-14T23:55:17.288Z] LOG: 🏗️ UsersAgentsWidget: Shadow DOM attached
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ BaseWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.288Z] LOG: 🏗️ SavedPersonasWidget: Constructor called
+[2025-07-14T23:55:17.288Z] LOG: 🏗️ SavedPersonasWidget: Shadow DOM attached
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ BaseWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ SavedPersonas: About to call initializeWidget()
+[2025-07-14T23:55:17.288Z] LOG: 🏗️ UsersAgentsWidget: Constructor called
+[2025-07-14T23:55:17.288Z] LOG: 🏗️ UsersAgentsWidget: Shadow DOM attached
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ BaseWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ SavedPersonas: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ BaseWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ BaseWidget: Disconnecting from DOM
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ SavedPersonas: Disconnecting from DOM
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ BaseWidget: Disconnecting from DOM
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ BaseWidget: About to call render()
+[2025-07-14T23:55:17.289Z] LOG: 🎨 BaseWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.288Z] LOG: 🗂️ SidebarPanelWidget: Event listeners setup
+[2025-07-14T23:55:17.289Z] LOG: 📁 SessionCostsWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.288Z] LOG: 🎛️ BaseWidget: Disconnecting from DOM
+[2025-07-14T23:55:17.288Z] LOG: 🗂️ Current panels array: [{
+  "panelName": "general",
+  "widgets": [
+    {
+      "type": "session-costs",
+      "config": {}
+    },
+    {
+      "type": "user-selector",
+      "config": {}
+    }
+  ],
+  "active": true
+}, {
+  "panelName": "academy",
+  "widgets": [
+    {
+      "type": "saved-personas",
+      "config": {}
+    },
+    {
+      "type": "user-selector",
+      "config": {
+        "title": "Available Agents"
+      }
+    }
+  ],
+  "active": false
+}]
+[2025-07-14T23:55:17.289Z] LOG: 🎨 SessionCostsWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SessionCosts/SessionCosts.css]
+[2025-07-14T23:55:17.289Z] LOG: 🎛️ BaseWidget: About to call render()
+[2025-07-14T23:55:17.289Z] LOG: 📁 UsersAgentsWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.289Z] LOG: 🎨 BaseWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.289Z] LOG: 🎨 UsersAgentsWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/UsersAgents/UsersAgents.css]
+[2025-07-14T23:55:17.289Z] LOG: 🎛️ SavedPersonas: About to call render()
+[2025-07-14T23:55:17.289Z] LOG: 🎨 SavedPersonas: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.289Z] LOG: 📁 SavedPersonasWidget: Found 3 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.302Z] LOG: 🎨 BaseWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.302Z] LOG: 🎛️ BaseWidget: About to call render()
+[2025-07-14T23:55:17.302Z] LOG: 📁 UsersAgentsWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.302Z] LOG: 🎨 UsersAgentsWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/UsersAgents/UsersAgents.css]
+[2025-07-14T23:55:17.302Z] LOG: 🎨 SavedPersonasWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SavedPersonas/SavedPersonas.css, /src/ui/components/SavedPersonas/SavedPersonasWidget.css, /src/ui/components/SavedPersonas/styles.css]
+[2025-07-14T23:55:17.302Z] WARN: 📊 SessionCosts: Failed to load metrics, using mock data: Error: Command 'session-info' not found
+Error: Command 'session-info' not found
+    at HTMLDocument.responseHandler (http://localhost:9000/src/ui/continuum-browser.js:883:20)
+    at WebSocketManager.handleMessage (http://localhost:9000/src/ui/continuum-browser.js:536:18)
+    at ws.onmessage (http://localhost:9000/src/ui/continuum-browser.js:497:14)
+[2025-07-14T23:55:17.302Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.302Z] LOG: ✅ SidebarHeader: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.303Z] LOG: 🎨 SidebarHeader: CSS loaded, length: 3360 chars
+[2025-07-14T23:55:17.303Z] LOG: 📁 SidebarHeader: Found 1 HTML files in manifest
+[2025-07-14T23:55:17.303Z] LOG: ✅ Loaded CSS: /src/ui/components/SessionCosts/SessionCosts.css (1615 chars)
+[2025-07-14T23:55:17.303Z] LOG: ✅ Loaded CSS: /src/ui/components/UsersAgents/UsersAgents.css (3680 chars)
+[2025-07-14T23:55:17.303Z] LOG: ✅ Loaded CSS: /src/ui/components/SavedPersonas/SavedPersonas.css (7175 chars)
+[2025-07-14T23:55:17.303Z] LOG: ✅ Loaded CSS: /src/ui/components/SavedPersonas/SavedPersonasWidget.css (6399 chars)
+[2025-07-14T23:55:17.303Z] LOG: ✅ Loaded CSS: /src/ui/components/SavedPersonas/styles.css (2541 chars)
+[2025-07-14T23:55:17.320Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.320Z] LOG: ✅ SidebarTabs: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.320Z] LOG: 🎨 SidebarTabs: CSS loaded, length: 1998 chars
+[2025-07-14T23:55:17.320Z] LOG: 📁 SidebarTabs: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.320Z] LOG: 📑 Current tabs array: [{
+  "title": "General",
+  "panelName": "general",
+  "dataKey": "general",
+  "active": true
+}, {
+  "title": "Academy",
+  "panelName": "academy",
+  "dataKey": "academy",
+  "active": false
+}]
+[2025-07-14T23:55:17.320Z] LOG: 🎛️ SidebarTabs: connectedCallback() complete
+[2025-07-14T23:55:17.320Z] LOG: 📑 Generated HTML content: 
+            <div class="room-tabs">
+                
+                    <div class="room-tab active" 
+                         data-room="general">
+                        General
+                    </div>
+                
+                    <div class="room-tab " 
+                         data-room="academy">
+                        Academy
+                    </div>
+                
+            </div>
+        
+[2025-07-14T23:55:17.320Z] LOG: ✅ Loaded CSS: /src/ui/components/SessionCosts/SessionCosts.css (1615 chars)
+[2025-07-14T23:55:17.320Z] LOG: ✅ Loaded HTML template: /src/ui/components/SidebarHeader/SidebarHeader.html (Zero 404s!)
+[2025-07-14T23:55:17.320Z] LOG: ✅ Loaded CSS: /src/ui/components/UsersAgents/UsersAgents.css (3680 chars)
+[2025-07-14T23:55:17.320Z] LOG: 🎛️ SidebarHeader: connectedCallback() complete
+[2025-07-14T23:55:17.320Z] LOG: ✅ Loaded CSS: /src/ui/components/SavedPersonas/SavedPersonas.css (7175 chars)
+[2025-07-14T23:55:17.320Z] LOG: ✅ Loaded CSS: /src/ui/components/SavedPersonas/SavedPersonasWidget.css (6399 chars)
+[2025-07-14T23:55:17.320Z] LOG: 📑 SidebarTabs renderContent() called
+[2025-07-14T23:55:17.334Z] LOG: 🏗️ SessionCostsWidget: Constructor called
+[2025-07-14T23:55:17.334Z] LOG: 🏗️ SessionCostsWidget: Shadow DOM attached
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ BaseWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.334Z] LOG: 🗂️ Generated HTML content: 
+            <div class="sidebar-panels">
+                
+            <div class="sidebar-panel active" 
+                 data-panel="general"
+                 style="display: block">
+                <session-costs></session-costs><user-selector></user-selector>
+            </div>
+        
+            <div class="sidebar-panel " 
+                 data-panel="academy"
+                 style="display: none">
+                <saved-personas></saved-personas><user-selector></user-selector>
+            </div>
+        
+            </div>
+        
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ BaseWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.334Z] LOG: ✅ Loaded CSS: /src/ui/components/SavedPersonas/styles.css (2541 chars)
+[2025-07-14T23:55:17.334Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.334Z] LOG: ✅ SidebarPanelWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.334Z] LOG: 🎨 SidebarPanelWidget: CSS loaded, length: 4029 chars
+[2025-07-14T23:55:17.334Z] LOG: 📁 SidebarPanelWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.334Z] LOG: 🗂️ SidebarPanelWidget renderContent() called
+[2025-07-14T23:55:17.334Z] LOG: 🗂️ Current panels array: [{
+  "panelName": "general",
+  "widgets": [
+    {
+      "type": "session-costs",
+      "config": {}
+    },
+    {
+      "type": "user-selector",
+      "config": {}
+    }
+  ],
+  "active": true
+}, {
+  "panelName": "academy",
+  "widgets": [
+    {
+      "type": "saved-personas",
+      "config": {}
+    },
+    {
+      "type": "user-selector",
+      "config": {
+        "title": "Available Agents"
+      }
+    }
+  ],
+  "active": false
+}]
+[2025-07-14T23:55:17.334Z] LOG: 🗂️ Active panel: general
+[2025-07-14T23:55:17.334Z] LOG: 🏗️ UsersAgentsWidget: Constructor called
+[2025-07-14T23:55:17.334Z] LOG: 🏗️ UsersAgentsWidget: Shadow DOM attached
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ BaseWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ BaseWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.334Z] LOG: 🏗️ SavedPersonasWidget: Constructor called
+[2025-07-14T23:55:17.334Z] LOG: 🏗️ SavedPersonasWidget: Shadow DOM attached
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ SavedPersonas: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ SavedPersonas: About to call initializeWidget()
+[2025-07-14T23:55:17.334Z] LOG: 🏗️ UsersAgentsWidget: Constructor called
+[2025-07-14T23:55:17.334Z] LOG: 🏗️ UsersAgentsWidget: Shadow DOM attached
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ BaseWidget: connectedCallback() triggered - connecting to DOM
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ BaseWidget: About to call initializeWidget()
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ BaseWidget: Disconnecting from DOM
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ BaseWidget: Disconnecting from DOM
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ BaseWidget: Disconnecting from DOM
+[2025-07-14T23:55:17.334Z] LOG: 🗂️ SidebarPanelWidget: Event listeners setup
+[2025-07-14T23:55:17.334Z] LOG: 🎨 BaseWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ BaseWidget: About to call render()
+[2025-07-14T23:55:17.334Z] LOG: 🎨 SavedPersonas: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.334Z] LOG: 🎛️ SavedPersonas: Disconnecting from DOM
+[2025-07-14T23:55:17.345Z] LOG: 📁 SessionCostsWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.345Z] LOG: 🎨 SessionCostsWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SessionCosts/SessionCosts.css]
+[2025-07-14T23:55:17.345Z] LOG: 🎛️ BaseWidget: About to call render()
+[2025-07-14T23:55:17.345Z] LOG: 🎨 BaseWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.345Z] LOG: 📁 UsersAgentsWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.345Z] LOG: 🎨 UsersAgentsWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/UsersAgents/UsersAgents.css]
+[2025-07-14T23:55:17.345Z] LOG: 🎛️ BaseWidget: About to call render()
+[2025-07-14T23:55:17.345Z] LOG: 📁 UsersAgentsWidget: Found 1 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.345Z] LOG: 🎨 UsersAgentsWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/UsersAgents/UsersAgents.css]
+[2025-07-14T23:55:17.345Z] LOG: 🎛️ SidebarPanelWidget: connectedCallback() complete
+[2025-07-14T23:55:17.345Z] LOG: 🎨 BaseWidget: Starting render() - about to loadCSS()
+[2025-07-14T23:55:17.345Z] LOG: 🎛️ SavedPersonas: About to call render()
+[2025-07-14T23:55:17.345Z] LOG: 📁 SavedPersonasWidget: Found 3 CSS files in manifest (Zero 404s!)
+[2025-07-14T23:55:17.345Z] LOG: 🎨 SavedPersonasWidget: Loading CSS files: [/src/ui/components/shared/BaseWidget.css, /src/ui/components/SavedPersonas/SavedPersonas.css, /src/ui/components/SavedPersonas/SavedPersonasWidget.css, /src/ui/components/SavedPersonas/styles.css]
+[2025-07-14T23:55:17.345Z] LOG: ✅ Loaded CSS: /src/ui/components/UsersAgents/UsersAgents.css (3680 chars)
+[2025-07-14T23:55:17.345Z] WARN: 📊 SessionCosts: Failed to load metrics, using mock data: Error: Command 'session-info' not found
+Error: Command 'session-info' not found
+    at HTMLDocument.responseHandler (http://localhost:9000/src/ui/continuum-browser.js:883:20)
+    at WebSocketManager.handleMessage (http://localhost:9000/src/ui/continuum-browser.js:536:18)
+    at ws.onmessage (http://localhost:9000/src/ui/continuum-browser.js:497:14)
+[2025-07-14T23:55:17.345Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.345Z] LOG: ✅ SessionCostsWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.345Z] LOG: 🎨 BaseWidget: CSS loaded, length: 2968 chars
+[2025-07-14T23:55:17.345Z] LOG: 📁 SessionCostsWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.346Z] LOG: 🎛️ BaseWidget: connectedCallback() complete
+[2025-07-14T23:55:17.346Z] LOG: ✅ Loaded CSS: /src/ui/components/UsersAgents/UsersAgents.css (3680 chars)
+[2025-07-14T23:55:17.346Z] LOG: 🔔 BaseWidget: session_updated {
+  "event": "session_updated"
+}
+[2025-07-14T23:55:17.357Z] LOG: ✅ UsersAgentsWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.357Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.357Z] LOG: 🎨 BaseWidget: CSS loaded, length: 5033 chars
+[2025-07-14T23:55:17.357Z] LOG: 📁 UsersAgentsWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.357Z] LOG: 🔔 BaseWidget: personas_updated {
+  "event": "personas_updated"
+}
+[2025-07-14T23:55:17.357Z] LOG: 🎛️ BaseWidget: connectedCallback() complete
+[2025-07-14T23:55:17.357Z] LOG: ✅ Loaded CSS: /src/ui/components/UsersAgents/UsersAgents.css (3680 chars)
+[2025-07-14T23:55:17.357Z] LOG: ✅ Loaded CSS: /src/ui/components/SessionCosts/SessionCosts.css (1615 chars)
+[2025-07-14T23:55:17.357Z] LOG: ✅ Loaded CSS: /src/ui/components/SavedPersonas/SavedPersonasWidget.css (6399 chars)
+[2025-07-14T23:55:17.357Z] LOG: ✅ Loaded CSS: /src/ui/components/SavedPersonas/SavedPersonas.css (7175 chars)
+[2025-07-14T23:55:17.357Z] LOG: ✅ Loaded CSS: /src/ui/components/SavedPersonas/styles.css (2541 chars)
+[2025-07-14T23:55:17.363Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.363Z] LOG: 🎨 BaseWidget: CSS loaded, length: 5033 chars
+[2025-07-14T23:55:17.363Z] LOG: 📁 UsersAgentsWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.363Z] LOG: 🔔 BaseWidget: personas_updated {
+  "event": "personas_updated"
+}
+[2025-07-14T23:55:17.363Z] LOG: 🎛️ BaseWidget: connectedCallback() complete
+[2025-07-14T23:55:17.363Z] LOG: ✅ Loaded CSS: /src/ui/components/UsersAgents/UsersAgents.css (3680 chars)
+[2025-07-14T23:55:17.363Z] LOG: ✅ UsersAgentsWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.371Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.371Z] LOG: ✅ SavedPersonasWidget: Loaded 4 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.371Z] LOG: 🎨 SavedPersonas: CSS loaded, length: 17470 chars
+[2025-07-14T23:55:17.371Z] LOG: 🎛️ SavedPersonas: connectedCallback() complete
+[2025-07-14T23:55:17.371Z] LOG: 📁 SavedPersonasWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.371Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.371Z] LOG: ✅ SessionCostsWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.371Z] LOG: 🎨 BaseWidget: CSS loaded, length: 2968 chars
+[2025-07-14T23:55:17.371Z] LOG: 📁 SessionCostsWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.373Z] LOG: 🔔 BaseWidget: session_updated {
+  "event": "session_updated"
+}
+[2025-07-14T23:55:17.373Z] LOG: 🎛️ BaseWidget: connectedCallback() complete
+[2025-07-14T23:55:17.381Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.381Z] LOG: ✅ UsersAgentsWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.381Z] LOG: 🎨 BaseWidget: CSS loaded, length: 5033 chars
+[2025-07-14T23:55:17.382Z] LOG: 📁 UsersAgentsWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.382Z] LOG: 🔔 BaseWidget: personas_updated {
+  "event": "personas_updated"
+}
+[2025-07-14T23:55:17.382Z] LOG: 🎛️ BaseWidget: connectedCallback() complete
+[2025-07-14T23:55:17.382Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.382Z] LOG: ✅ UsersAgentsWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.382Z] LOG: 🎨 BaseWidget: CSS loaded, length: 5033 chars
+[2025-07-14T23:55:17.382Z] LOG: 📁 UsersAgentsWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.382Z] LOG: 🔔 BaseWidget: personas_updated {
+  "event": "personas_updated"
+}
+[2025-07-14T23:55:17.382Z] LOG: 🎛️ BaseWidget: connectedCallback() complete
+[2025-07-14T23:55:17.390Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.391Z] LOG: ✅ SavedPersonasWidget: Loaded 4 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.391Z] LOG: 🎨 SavedPersonas: CSS loaded, length: 17470 chars
+[2025-07-14T23:55:17.391Z] LOG: 📁 SavedPersonasWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.392Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.392Z] LOG: 🎛️ SavedPersonas: connectedCallback() complete
+[2025-07-14T23:55:17.392Z] LOG: ✅ SessionCostsWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.392Z] LOG: 🎨 BaseWidget: CSS loaded, length: 2968 chars
+[2025-07-14T23:55:17.392Z] LOG: 📁 SessionCostsWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.392Z] LOG: 🔔 BaseWidget: session_updated {
+  "event": "session_updated"
+}
+[2025-07-14T23:55:17.395Z] LOG: 🎛️ BaseWidget: connectedCallback() complete
+[2025-07-14T23:55:17.398Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.398Z] LOG: ✅ UsersAgentsWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.399Z] LOG: 🎨 BaseWidget: CSS loaded, length: 5033 chars
+[2025-07-14T23:55:17.399Z] LOG: 📁 UsersAgentsWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.399Z] LOG: 🔔 BaseWidget: personas_updated {
+  "event": "personas_updated"
+}
+[2025-07-14T23:55:17.399Z] LOG: 🎛️ BaseWidget: connectedCallback() complete
+[2025-07-14T23:55:17.399Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.399Z] LOG: ✅ UsersAgentsWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.399Z] LOG: 🎨 BaseWidget: CSS loaded, length: 5033 chars
+[2025-07-14T23:55:17.399Z] LOG: 📁 UsersAgentsWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.399Z] LOG: 🔔 BaseWidget: personas_updated {
+  "event": "personas_updated"
+}
+[2025-07-14T23:55:17.402Z] LOG: 🎛️ BaseWidget: connectedCallback() complete
+[2025-07-14T23:55:17.406Z] LOG: 🎨 SavedPersonas: CSS loaded, length: 17470 chars
+[2025-07-14T23:55:17.406Z] LOG: 📁 SavedPersonasWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.406Z] LOG: 🎛️ SavedPersonas: connectedCallback() complete
+[2025-07-14T23:55:17.406Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.405Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.406Z] LOG: 🎨 BaseWidget: CSS loaded, length: 2968 chars
+[2025-07-14T23:55:17.405Z] LOG: ✅ SavedPersonasWidget: Loaded 4 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.406Z] LOG: ✅ SessionCostsWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.406Z] LOG: 📁 SessionCostsWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.406Z] LOG: 🔔 BaseWidget: session_updated {
+  "event": "session_updated"
+}
+[2025-07-14T23:55:17.409Z] LOG: 🎛️ BaseWidget: connectedCallback() complete
+[2025-07-14T23:55:17.413Z] LOG: 🎨 BaseWidget: CSS loaded, length: 5033 chars
+[2025-07-14T23:55:17.413Z] LOG: 📁 UsersAgentsWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.412Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.412Z] LOG: ✅ UsersAgentsWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.413Z] LOG: 🔔 BaseWidget: personas_updated {
+  "event": "personas_updated"
+}
+[2025-07-14T23:55:17.413Z] LOG: 🎛️ BaseWidget: connectedCallback() complete
+[2025-07-14T23:55:17.413Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.413Z] LOG: ✅ UsersAgentsWidget: Loaded 2 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.413Z] LOG: 🎨 BaseWidget: CSS loaded, length: 5033 chars
+[2025-07-14T23:55:17.415Z] LOG: 📁 UsersAgentsWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.415Z] LOG: 🔔 BaseWidget: personas_updated {
+  "event": "personas_updated"
+}
+[2025-07-14T23:55:17.415Z] LOG: 🎛️ BaseWidget: connectedCallback() complete
+[2025-07-14T23:55:17.416Z] LOG: ✅ Loaded CSS: /src/ui/components/shared/BaseWidget.css (1352 chars)
+[2025-07-14T23:55:17.416Z] LOG: ✅ SavedPersonasWidget: Loaded 4 CSS files successfully (Zero 404s!)
+[2025-07-14T23:55:17.416Z] LOG: 🎨 SavedPersonas: CSS loaded, length: 17470 chars
+[2025-07-14T23:55:17.416Z] LOG: 📁 SavedPersonasWidget: No HTML files in manifest - using renderContent() fallback
+[2025-07-14T23:55:17.416Z] LOG: 🎛️ SavedPersonas: connectedCallback() complete
+[2025-07-14T23:55:17.556Z] LOG: 🤖 Found 0 persona widgets to configure
+[2025-07-14T23:55:18.950Z] LOG: 📸 BROWSER: Starting html2canvas screenshot capture
+[2025-07-14T23:55:18.950Z] LOG: 🚀 Executing JavaScript from server: 
+        (async () => {
+          // Call the client screenshot function with parameters
+          return await window.clientScreenshot({
+            selector: 'body',
+            filename: 'screenshot-1752537318947.png',
+            format: 'png',
+            quality: 0.9,
+            animation: 'none',
+            destination: 'file'
+          });
+        })()
+      
+[2025-07-14T23:55:18.950Z] LOG: 📋 BROWSER: Params: {
+  "selector": "body",
+  "filename": "screenshot-1752537318947.png",
+  "format": "png",
+  "quality": 0.9,
+  "animation": "none",
+  "destination": "file"
+}
+[2025-07-14T23:55:18.951Z] LOG: ✅ JavaScript execution result: null
+[2025-07-14T23:55:18.953Z] LOG: 📨 Received custom message: {
+  "type": "error",
+  "data": {
+    "error": "Unknown message type: execute_js_result",
+    "availableTypes": [
+      "ping",
+      "get_stats",
+      "client_init",
+      "execute_command",
+      "message"
+    ],
+    "hint": "Component must register handler via MessageRouter.registerHandler()"
+  },
+  "timestamp": "2025-07-14T23:55:18.950Z",
+  "requestId": "exec_1752537318948_ymm59a57d"
+}
+[2025-07-14T23:55:18.959Z] LOG: ✅ html2canvas loaded successfully
+[2025-07-14T23:55:18.959Z] LOG: 📦 BROWSER: html2canvas available - starting capture
+[2025-07-14T23:55:18.960Z] LOG: 🏗️ SidebarWidget: Constructor called
+[2025-07-14T23:55:18.960Z] LOG: 🏗️ SidebarWidget: Shadow DOM attached
+[2025-07-14T23:55:18.960Z] LOG: 🏗️ SidebarHeader: Shadow DOM attached
+[2025-07-14T23:55:18.960Z] LOG: 🏗️ SidebarHeader: Constructor called
+[2025-07-14T23:55:18.963Z] LOG: 🏗️ SidebarTabs: Constructor called
+[2025-07-14T23:55:18.964Z] LOG: 🏗️ SidebarTabs: Shadow DOM attached
+[2025-07-14T23:55:18.966Z] LOG: 🏗️ SidebarPanelWidget: Shadow DOM attached
+[2025-07-14T23:55:18.966Z] LOG: 🏗️ SidebarPanelWidget: Constructor called
+[2025-07-14T23:55:18.966Z] LOG: 🏗️ SessionCostsWidget: Constructor called
+[2025-07-14T23:55:18.967Z] LOG: 🏗️ SessionCostsWidget: Shadow DOM attached
+[2025-07-14T23:55:18.970Z] LOG: 🏗️ UsersAgentsWidget: Constructor called
+[2025-07-14T23:55:18.970Z] LOG: 🏗️ UsersAgentsWidget: Shadow DOM attached
+[2025-07-14T23:55:19.001Z] LOG: 🏗️ SavedPersonasWidget: Shadow DOM attached
+[2025-07-14T23:55:19.001Z] LOG: 🏗️ SavedPersonasWidget: Constructor called
+[2025-07-14T23:55:19.006Z] LOG: 🏗️ UsersAgentsWidget: Constructor called
+[2025-07-14T23:55:19.006Z] LOG: 🏗️ UsersAgentsWidget: Shadow DOM attached
+[2025-07-14T23:55:19.045Z] LOG: 🏗️ ChatWidget: Constructor called, about to call super()
+[2025-07-14T23:55:19.045Z] LOG: 🏗️ ChatWidget: Shadow DOM attached
+[2025-07-14T23:55:19.045Z] LOG: 🏗️ ChatWidget: Constructor called
+[2025-07-14T23:55:19.045Z] LOG: 🏗️ ChatWidget: Constructor complete
+[2025-07-14T23:55:19.045Z] LOG: 🏗️ ChatWidget: super() completed, setting properties
+[2025-07-14T23:55:19.068Z] WARN: 📊 SessionCosts: Failed to load metrics, using mock data: Error: Command 'session-info' not found
+Error: Command 'session-info' not found
+    at HTMLDocument.responseHandler (http://localhost:9000/src/ui/continuum-browser.js:883:20)
+    at WebSocketManager.handleMessage (http://localhost:9000/src/ui/continuum-browser.js:536:18)
+    at ws.onmessage (http://localhost:9000/src/ui/continuum-browser.js:497:14)
+[2025-07-14T23:55:19.187Z] LOG: 🖼️ BROWSER: Canvas captured, size: 2066 x 1337
+[2025-07-14T23:55:19.214Z] LOG: 💾 BROWSER: Calling fileSave with 174769 bytes
+[2025-07-14T23:55:19.214Z] LOG: 💾 FileSave: Saving file screenshot-1752537318947.png, size: 174769 bytes
+[2025-07-14T23:55:19.296Z] LOG: 💾 BROWSER: FileSave result: {
+  "filename": "screenshot-1752537318947.png",
+  "filepath": "/Volumes/FlashGordon/cambrian/continuum/.continuum/sessions/user/shared/f049624d-a58b-4c81-a7a3-b9498e09153b/screenshots/screenshot-1752537318947.png",
+  "size": 174769,
+  "artifactType": "screenshot",
+  "sessionId": "f049624d-a58b-4c81-a7a3-b9498e09153b",
+  "timestamp": "2025-07-14T23:55:19.292Z",
+  "success": true
+}
