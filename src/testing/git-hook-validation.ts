@@ -180,28 +180,58 @@ async function runGitHookValidation(): Promise<void> {
     console.log('🔄 Agent CAN see its own console output');  
     console.log('🔄 Agent CAN capture screenshots');
       
-    // Verify validation files exist (integrity check - but don't stage them)
-    console.log(`🔍 Verifying validation files exist (integrity check)...`);
-    
-    // Check that validation files can be staged (prove git add works)
-    console.log(`📋 Testing git add capability...`);
+    // Add validation files to git (force to override .continuum/ ignore rule)
+    console.log(`📋 Adding validation files to git...`);
     execSync(`git add -f "${validationRunDir}/"`, { stdio: 'inherit' });
     
+    // CRITICAL: Verify validation files are staged for commit (KEY TO GET IN)
+    console.log(`🔍 Verifying validation files are staged for commit...`);
     const stagedFiles = execSync('git diff --cached --name-only', { encoding: 'utf-8' }).trim().split('\n');
     const stagedValidationFiles = stagedFiles.filter(file => file.startsWith(validationRunDir));
     
     if (stagedValidationFiles.length === 0) {
-      throw new Error(`INTEGRITY FAILURE: No validation files could be staged`);
+      throw new Error(`🚨 COMMIT REJECTED: No validation files staged - validation session is your KEY to get in!`);
     }
     
-    console.log(`✅ INTEGRITY VERIFIED: ${stagedValidationFiles.length} validation files can be staged`);
+    // CRITICAL: Verify the validation files have the RIGHT STUFF (logs and images)
+    console.log(`🔍 STRICT VALIDATION: Checking validation files have required content...`);
     
-    // Unstage validation files immediately (don't commit them)
-    console.log(`📋 Unstaging validation files (integrity verified, keeping commit clean)...`);
-    execSync(`git reset HEAD -- "${validationRunDir}/"`, { stdio: 'inherit' });
+    // Check screenshots exist and have content
+    const screenshotDir = path.join(validationRunDir, 'screenshots');
+    const screenshots = await fs.readdir(screenshotDir);
+    if (screenshots.length === 0) {
+      throw new Error(`🚨 COMMIT REJECTED: No screenshots found - images are required for validation!`);
+    }
     
+    let hasValidScreenshot = false;
+    for (const screenshot of screenshots) {
+      const screenshotPath = path.join(screenshotDir, screenshot);
+      const stats = await fs.stat(screenshotPath);
+      if (stats.size > 1000) { // At least 1KB for a real screenshot
+        hasValidScreenshot = true;
+        break;
+      }
+    }
+    
+    if (!hasValidScreenshot) {
+      throw new Error(`🚨 COMMIT REJECTED: Screenshots are empty or invalid - real images required!`);
+    }
+    
+    // Check logs exist and have content
+    const requiredLogs = ['server.log', 'browser.log'];
+    for (const logFile of requiredLogs) {
+      const logPath = path.join(validationRunDir, 'logs', logFile);
+      const stats = await fs.stat(logPath);
+      if (stats.size < 100) { // At least 100 bytes for meaningful logs
+        throw new Error(`🚨 COMMIT REJECTED: ${logFile} is too small or empty - real logs required!`);
+      }
+    }
+    
+    console.log(`✅ VALIDATION KEY ACCEPTED: ${stagedValidationFiles.length} validation files with required content`);
     console.log(`📁 Validation session: ${validationRunDir}`);
-    console.log(`✅ Complete session verified - post-commit hook will clean up files`);
+    console.log(`🔑 Required screenshots: ${screenshots.length} files`);
+    console.log(`📝 Required logs: server.log, browser.log verified`);
+    console.log(`✅ Complete session copied and staged - COMMIT APPROVED`);
     
   } catch (error) {
     console.error('❌ Git hook validation failed:', error);

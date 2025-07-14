@@ -79,7 +79,6 @@ test-continuum-web.cjs
 ai-venv/
 
 # Continuum persistent state
-.continuum/
 continuum.log
 continuum_restart.log
 
