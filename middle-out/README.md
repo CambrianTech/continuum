@@ -27,6 +27,13 @@ This directory contains the complete architectural documentation for Continuum's
 - **[error-fixing.md](development/error-fixing.md)** - Systematic error fixing methodology (coming soon)
 - **[widget-architecture.md](development/widget-architecture.md)** - **✅ IMPLEMENTED** Complete widget system: Interface layout + zero-burden development architecture
 - **[shared-types-initiative.md](development/shared-types-initiative.md)** - **✅ IMPLEMENTED** Unified type system for consistent file operations and development reliability
+- **[ai-training-data-generation.md](development/ai-training-data-generation.md)** - **🚀 ROADMAP** Turn disciplined development into world-class AI training datasets
+
+#### 🌟 [Philosophy](philosophy/)
+- **[continuum-vision.md](philosophy/continuum-vision.md)** - **🛡️ CORE VISION** AI that protects and empowers - No one gets left behind in the AI revolution
+
+#### 🛤️ [Roadmap](roadmap/)
+- **[economic-justice-roadmap.md](roadmap/economic-justice-roadmap.md)** - **💰 MASTER PLAN** Building AI that serves all humanity through economic justice
 
 #### 🧪 [Testing](testing/)
 - **[intelligent-modular-testing.md](testing/intelligent-modular-testing.md)** - AI-friendly module discovery, compliance, and graduation tracking
@@ -51,6 +58,11 @@ This directory contains the complete architectural documentation for Continuum's
 - **[universal-module-schema.md](architecture/universal-module-schema.md)** - **✅ IMPLEMENTED** Universal module schema system for AI-friendly discovery and validation
 - **[universal-integration-parsers.md](architecture/universal-integration-parsers.md)** - **🎯 NEW** Universal integration parser system - any format to any format translation
 - **[rest-api.md](architecture/rest-api.md)** - **🌐 REST API Documentation** - Modern HTTP API with session management for AI agents and automation
+- **[universal-ai-presence.md](architecture/universal-ai-presence.md)** - **🌐 UNIVERSAL PRESENCE** AI personas as digital citizens across all platforms and tools
+- **[pragmatic-security-approach.md](architecture/pragmatic-security-approach.md)** - **🛡️ PRACTICAL SECURITY** Start with TLS + signing, evolve to cryptographic protection incrementally
+- **[ip-protection-layers.md](architecture/ip-protection-layers.md)** - **🔒 IP PROTECTION** Intelligent information layering for intellectual property security (future)
+- **[cryptographic-ip-protection.md](architecture/cryptographic-ip-protection.md)** - **🔐 ADVANCED CRYPTO** Storage-level encryption for P2P and enterprise-grade protection (future)
+- **[group-sharing-complexities.md](architecture/group-sharing-complexities.md)** - **🤝 SHARING CHALLENGES** Complex design decisions for secure collaboration (future considerations)
 - **[system-breakthroughs.md](architecture/system-breakthroughs.md)** - Multi-level inheritance and command vs program distinction (coming soon)
 - **[onion-pattern.md](architecture/onion-pattern.md)** - Layered onion architecture for dual client-server systems (coming soon)
 - **[self-validation.md](architecture/self-validation.md)** - Self-healing infrastructure patterns (coming soon)
