@@ -98,6 +98,7 @@ interface ReadmeDefinition {
  * Supports README-driven definitions and sophisticated browser orchestration
  */
 export class ScreenshotCommand extends BaseCommand {
+
   static getDefinition(): CommandDefinition {
     console.log(`🔬 JTAG: getDefinition() called for ScreenshotCommand`);
     
@@ -240,18 +241,42 @@ export class ScreenshotCommand extends BaseCommand {
         return this.executeClient(params as ScreenshotClientRequest);
       }
       
-      // Server-side execution - simplified for now
-      console.log(`📤 JTAG SCREENSHOT: Running on server - returning test result`);
+      // Server-side execution - test executeJS with simple alert
+      console.log(`📤 JTAG SCREENSHOT: Server-side execution starting - testing executeJS`);
+      
+      // Simple test: just show an alert on the client
+      const testScript = `
+        alert('🚀 Screenshot command is working! executeJS is functional');
+        console.log('📸 BROWSER: Alert shown from screenshot command');
+        return 'executeJS-alert-success';
+      `;
+      
+      console.log(`📤 JTAG SCREENSHOT: Calling global.continuum.executeJS`);
+      console.log(`📤 JTAG SCREENSHOT: Process PID: ${process.pid}`);
+      console.log(`📤 JTAG SCREENSHOT: global object keys:`, Object.keys(global));
+      console.log(`📤 JTAG SCREENSHOT: global.continuum type:`, typeof (global as any).continuum);
+      
+      const continuum = (global as any).continuum;
+      if (!continuum) {
+        throw new Error('global.continuum does not exist');
+      }
+      
+      if (!continuum.executeJS) {
+        throw new Error('global.continuum.executeJS does not exist');
+      }
+      
+      const result = await continuum.executeJS(testScript);
+      
+      console.log(`📤 JTAG SCREENSHOT: executeJS result:`, result);
       
       const executionTime = Date.now() - startTime;
-      console.log(`✅ JTAG SCREENSHOT: Simplified screenshot completed in ${executionTime}ms`);
       
       return {
         success: true,
-        data: 'test-screenshot.png',
+        data: result,
         timestamp: new Date().toISOString(),
         executionTime,
-        processor: 'server-test'
+        processor: 'server-executeJS'
       };
       
     } catch (error) {
@@ -268,11 +293,15 @@ export class ScreenshotCommand extends BaseCommand {
     }
   }
 
+
   /**
    * Browser-side execution with html2canvas - smart file saving
    */
   static async executeClient(params: ScreenshotClientRequest): Promise<CommandResult> {
     const startTime = Date.now();
+    
+    console.log(`🚀🚀🚀 JTAG BROWSER SCREENSHOT: executeClient() called from browser!`);
+    console.log(`🚀🚀🚀 JTAG BROWSER SCREENSHOT: Received params:`, JSON.stringify(params, null, 2));
     
     try {
       const { selector, format, quality, filename, destination } = params;

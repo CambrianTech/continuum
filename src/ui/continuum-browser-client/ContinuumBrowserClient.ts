@@ -26,6 +26,8 @@ export class ContinuumBrowserClient implements ContinuumAPI {
 
   constructor() {
     this.version = packageJson.version;
+
+    (window as any).continuum = this; // Attach to global for easy access
     
     // Initialize component modules
     this.consoleForwarder = new ConsoleForwarder(
@@ -158,16 +160,16 @@ export class ContinuumBrowserClient implements ContinuumAPI {
       }, 10000);
 
       // Listen for response
-      const responseHandler = (event: Event) => {
+      const responseHandler = (event: Event) : void => {
         const message = (event as CustomEvent).detail;
         if (message.requestId === requestId) {
           clearTimeout(timeout);
           document.removeEventListener('continuum:command_response', responseHandler);
           
           if (message.success) {
-            resolve(message.data || { success: true });
+            resolve(message.data ?? { success: true });
           } else {
-            reject(new Error(message.error || 'Command failed'));
+            reject(new Error(message.error ?? 'Command failed'));
           }
         }
       };
