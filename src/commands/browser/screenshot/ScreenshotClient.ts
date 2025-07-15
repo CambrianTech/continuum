@@ -10,10 +10,11 @@ interface ScreenshotClientParams extends ScreenshotClientRequest {
 }
 
 /**
- * Capture screenshot using html2canvas and save via continuum.fileSave
+ * Capture screenshot using html2canvas with AI-friendly features
+ * Supports element targeting, scaling, cropping, and compression
  */
 export async function clientScreenshot(params: ScreenshotClientParams): Promise<ScreenshotResult> {
-  console.log('📸 BROWSER: Starting html2canvas screenshot capture');
+  console.log('📸 BROWSER: Starting AI-enhanced screenshot capture');
   console.log('📋 BROWSER: Params:', params);
   
   try {
@@ -23,24 +24,57 @@ export async function clientScreenshot(params: ScreenshotClientParams): Promise<
       throw new Error(`Element not found: ${params.selector}`);
     }
     
+    // Get element info for AI context
+    const elementRect = targetElement.getBoundingClientRect();
+    const elementName = params.elementName || getElementName(targetElement);
+    
+    console.log(`🎯 BROWSER: Targeting element '${elementName}' at ${elementRect.width}x${elementRect.height}`);
+    
     // Load html2canvas dynamically if not already loaded
     const html2canvas = await loadHtml2Canvas();
     console.log('📦 BROWSER: html2canvas available - starting capture');
     
-    // Capture screenshot
+    // Capture screenshot with AI-friendly scale
+    const scale = params.scale || 1;
     const canvas = await html2canvas(targetElement, {
       allowTaint: true,
       useCORS: true,
-      scale: 1,
+      scale: scale,
       logging: false
     });
     
-    // Convert to desired format
-    const imageData = params.format === 'png' ? 
-      canvas.toDataURL('image/png') : 
-      canvas.toDataURL(`image/${params.format}`, params.quality);
+    const originalWidth = canvas.width;
+    const originalHeight = canvas.height;
     
-    console.log('🖼️ BROWSER: Canvas captured, size:', canvas.width, 'x', canvas.height);
+    console.log(`🖼️ BROWSER: Canvas captured, original size: ${originalWidth}x${originalHeight}`);
+    
+    // Apply AI-friendly processing
+    const processedCanvas = await processCanvas(canvas, params);
+    const finalWidth = processedCanvas.width;
+    const finalHeight = processedCanvas.height;
+    
+    console.log(`🎨 BROWSER: Processing complete, final size: ${finalWidth}x${finalHeight}`);
+    
+    // Convert to desired format with quality control
+    let imageData: string;
+    let quality = params.quality || 0.9;
+    
+    do {
+      imageData = params.format === 'png' ? 
+        processedCanvas.toDataURL('image/png') : 
+        processedCanvas.toDataURL(`image/${params.format}`, quality);
+      
+      // Check file size if maxFileSize is specified
+      if (params.maxFileSize) {
+        const estimatedSize = (imageData.length * 3) / 4; // Base64 to bytes estimate
+        if (estimatedSize > params.maxFileSize && quality > 0.1) {
+          quality -= 0.1;
+          console.log(`📉 BROWSER: Reducing quality to ${quality} for file size limit`);
+          continue;
+        }
+      }
+      break;
+    } while (true);
     
     // Extract base64 data from data URL
     const base64Data = imageData.replace(/^data:image\/[a-z]+;base64,/, '');
@@ -48,10 +82,9 @@ export async function clientScreenshot(params: ScreenshotClientParams): Promise<
     // Convert base64 to Uint8Array for fileSave
     const bytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
     
-    console.log('💾 BROWSER: Calling fileSave with', bytes.length, 'bytes');
+    console.log(`💾 BROWSER: Final image: ${bytes.length} bytes, quality: ${quality}`);
     
     // Save the file using continuum.fileSave
-    // Directory will be determined by session context in FileWriteCommand
     const continuum = (window as any).continuum;
     const saveResult = await continuum.fileSave({
       content: bytes,
@@ -61,7 +94,7 @@ export async function clientScreenshot(params: ScreenshotClientParams): Promise<
     
     console.log('💾 BROWSER: FileSave result:', saveResult);
     
-    // Return result with screenshot data and save confirmation
+    // Return AI-friendly result with comprehensive metadata
     return {
       success: true,
       data: {
@@ -69,14 +102,24 @@ export async function clientScreenshot(params: ScreenshotClientParams): Promise<
         filename: params.filename,
         selector: params.selector,
         format: params.format,
-        width: canvas.width,
-        height: canvas.height,
+        width: finalWidth,
+        height: finalHeight,
+        elementName: elementName,
+        originalWidth: originalWidth,
+        originalHeight: originalHeight,
+        scale: scale,
+        cropped: !!(params.cropX || params.cropY || params.cropWidth || params.cropHeight),
+        compressed: quality < 0.9,
+        fileSizeBytes: bytes.length,
         dataUrl: imageData,
         saved: saveResult.success,
-        filePath: saveResult.data?.filePath || null
+        filePath: saveResult.data?.filePath || null,
+        fullPath: saveResult.data?.fullPath || null,
+        relativePath: saveResult.data?.relativePath || null,
+        bytes: (params.destination === 'bytes' || params.destination === 'both') ? bytes : undefined
       },
       timestamp: new Date().toISOString(),
-      processor: 'browser-html2canvas'
+      processor: 'browser-html2canvas-ai'
     };
     
   } catch (error) {
@@ -85,7 +128,7 @@ export async function clientScreenshot(params: ScreenshotClientParams): Promise<
       success: false,
       error: error instanceof Error ? error.message : String(error),
       timestamp: new Date().toISOString(),
-      processor: 'browser-html2canvas'
+      processor: 'browser-html2canvas-ai'
     };
   }
 }
@@ -117,6 +160,88 @@ async function loadHtml2Canvas(): Promise<any> {
     };
     document.head.appendChild(script);
   });
+}
+
+/**
+ * Process canvas with AI-friendly features: scaling, cropping, compression
+ */
+async function processCanvas(canvas: HTMLCanvasElement, params: ScreenshotClientParams): Promise<HTMLCanvasElement> {
+  const processedCanvas = document.createElement('canvas');
+  const ctx = processedCanvas.getContext('2d')!;
+  
+  // Determine final dimensions
+  let sourceX = params.cropX || 0;
+  let sourceY = params.cropY || 0;
+  let sourceWidth = params.cropWidth || canvas.width;
+  let sourceHeight = params.cropHeight || canvas.height;
+  
+  // Clamp crop dimensions to canvas bounds
+  sourceX = Math.max(0, Math.min(sourceX, canvas.width));
+  sourceY = Math.max(0, Math.min(sourceY, canvas.height));
+  sourceWidth = Math.min(sourceWidth, canvas.width - sourceX);
+  sourceHeight = Math.min(sourceHeight, canvas.height - sourceY);
+  
+  // Apply target dimensions (scale down if needed)
+  let targetWidth = params.width || sourceWidth;
+  let targetHeight = params.height || sourceHeight;
+  
+  // Maintain aspect ratio if only one dimension specified
+  if (params.width && !params.height) {
+    targetHeight = (sourceHeight * params.width) / sourceWidth;
+  } else if (params.height && !params.width) {
+    targetWidth = (sourceWidth * params.height) / sourceHeight;
+  }
+  
+  // Don't scale up, only down for AI efficiency
+  targetWidth = Math.min(targetWidth, sourceWidth);
+  targetHeight = Math.min(targetHeight, sourceHeight);
+  
+  processedCanvas.width = targetWidth;
+  processedCanvas.height = targetHeight;
+  
+  // Draw the processed image
+  ctx.drawImage(
+    canvas,
+    sourceX, sourceY, sourceWidth, sourceHeight,
+    0, 0, targetWidth, targetHeight
+  );
+  
+  return processedCanvas;
+}
+
+/**
+ * Get human-readable element name for AI context
+ */
+function getElementName(element: Element): string {
+  // Try to get a meaningful name for the element
+  if (element.id) return `#${element.id}`;
+  if (element.classList.length > 0) return `.${element.classList[0]}`;
+  if (element.tagName === 'BODY') return 'page';
+  if (element.tagName === 'MAIN') return 'main-content';
+  if (element.tagName === 'HEADER') return 'header';
+  if (element.tagName === 'FOOTER') return 'footer';
+  if (element.tagName === 'NAV') return 'navigation';
+  if (element.tagName === 'ASIDE') return 'sidebar';
+  if (element.tagName === 'ARTICLE') return 'article';
+  if (element.tagName === 'SECTION') return 'section';
+  
+  // For form elements
+  if (element.tagName === 'FORM') return 'form';
+  if (element.tagName === 'INPUT') return 'input-field';
+  if (element.tagName === 'BUTTON') return 'button';
+  if (element.tagName === 'SELECT') return 'dropdown';
+  if (element.tagName === 'TEXTAREA') return 'text-area';
+  
+  // For content elements
+  if (element.tagName === 'H1') return 'heading-1';
+  if (element.tagName === 'H2') return 'heading-2';
+  if (element.tagName === 'H3') return 'heading-3';
+  if (element.tagName === 'P') return 'paragraph';
+  if (element.tagName === 'UL') return 'list';
+  if (element.tagName === 'TABLE') return 'table';
+  if (element.tagName === 'IMG') return 'image';
+  
+  return element.tagName.toLowerCase();
 }
 
 // Make function available globally for eval execution

@@ -194,14 +194,34 @@ export class ScreenshotCommand extends BaseCommand {
       // Server-side execution - use html2canvas for actual screenshot
       console.log(`📤 JTAG SCREENSHOT: Server-side execution starting - html2canvas capture`);
       
-      // Normalize parameters for consistent client execution
+      // Normalize parameters for consistent client execution with AI-friendly features
+      const inputParams = params as ScreenshotParams;
+      
+      // Map querySelector to selector (querySelector takes precedence)
+      const targetSelector = inputParams.querySelector ?? inputParams.selector ?? 'body';
+      
+      // Map elementName to querySelector for backward compatibility
+      const elementQuery = inputParams.elementName ?? inputParams.querySelector;
+      
       const normalizedParams: ScreenshotClientRequest = {
-        selector: (params as ScreenshotParams).selector ?? 'body',
-        filename: (params as ScreenshotParams).filename ?? `screenshot-${Date.now()}.png`,
-        format: (params as ScreenshotParams).format ?? ScreenshotFormat.PNG,
-        quality: (params as ScreenshotParams).quality ?? 0.9,
-        animation: (params as ScreenshotParams).animation ?? ScreenshotAnimation.NONE,
-        destination: (params as ScreenshotParams).destination ?? ScreenshotDestination.FILE
+        selector: targetSelector,
+        filename: inputParams.filename ?? `screenshot-${Date.now()}.png`,
+        format: inputParams.format ?? ScreenshotFormat.PNG,
+        quality: inputParams.quality ?? 0.9,
+        animation: inputParams.animation ?? ScreenshotAnimation.NONE,
+        destination: inputParams.destination ?? ScreenshotDestination.FILE,
+        
+        // AI-friendly features - provide undefined explicitly for optional properties
+        width: inputParams.width ?? undefined,
+        height: inputParams.height ?? undefined,
+        scale: inputParams.scale ?? undefined,
+        cropX: inputParams.cropX ?? undefined,
+        cropY: inputParams.cropY ?? undefined,
+        cropWidth: inputParams.cropWidth ?? undefined,
+        cropHeight: inputParams.cropHeight ?? undefined,
+        elementName: elementQuery ?? undefined,
+        querySelector: elementQuery ?? undefined,
+        maxFileSize: inputParams.maxFileSize ?? undefined
       };
       
       // Session ID will be handled by FileWriteCommand through context
@@ -210,17 +230,27 @@ export class ScreenshotCommand extends BaseCommand {
       console.log(`📁 JTAG SCREENSHOT: Session ID: ${sessionId}`);
       console.log(`📁 JTAG SCREENSHOT: Context:`, JSON.stringify(context, null, 2));
       
-      // Call the client-side screenshot function (loaded globally in browser bundle)
+      // Call the client-side screenshot function with AI-friendly features
       const screenshotScript = `
         (async () => {
-          // Call the client screenshot function with parameters
+          // Call the client screenshot function with AI-enhanced parameters
           return await window.clientScreenshot({
             selector: '${normalizedParams.selector}',
             filename: '${normalizedParams.filename}',
             format: '${normalizedParams.format}',
             quality: ${normalizedParams.quality},
             animation: '${normalizedParams.animation}',
-            destination: '${normalizedParams.destination}'
+            destination: '${normalizedParams.destination}',
+            width: ${normalizedParams.width || 'undefined'},
+            height: ${normalizedParams.height || 'undefined'},
+            scale: ${normalizedParams.scale || 'undefined'},
+            cropX: ${normalizedParams.cropX || 'undefined'},
+            cropY: ${normalizedParams.cropY || 'undefined'},
+            cropWidth: ${normalizedParams.cropWidth || 'undefined'},
+            cropHeight: ${normalizedParams.cropHeight || 'undefined'},
+            elementName: '${normalizedParams.elementName || ''}',
+            querySelector: '${normalizedParams.querySelector || ''}',
+            maxFileSize: ${normalizedParams.maxFileSize || 'undefined'}
           });
         })()
       `;

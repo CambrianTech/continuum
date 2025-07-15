@@ -68,6 +68,10 @@ This directory contains the complete architectural documentation for Continuum's
 - **[self-validation.md](architecture/self-validation.md)** - Self-healing infrastructure patterns (coming soon)
 - **[lambda-fluent-api.md](architecture/lambda-fluent-api.md)** - Future vision architecture patterns (coming soon)
 
+#### 🎯 [Architecture Patterns](architecture-patterns/)
+- **[module-structure.md](architecture-patterns/module-structure.md)** - **🆕 NEW** Standardized module structure with shared/client/server organization and inheritance patterns
+- **[incremental-migration.md](architecture-patterns/incremental-migration.md)** - **🆕 NEW** Zero-disruption migration strategy for architectural improvements without breaking existing systems
+
 #### 🌐 [Distributed Systems](distributed/)
 - **[command-execution.md](distributed/command-execution.md)** - Global distributed command execution patterns (coming soon)
 

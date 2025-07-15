@@ -1,5 +1,6 @@
 #!/usr/bin/env tsx
-// ISSUES: 0 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// ISSUES: 1 open, last updated 2025-07-15 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// ISSUE #1: CLI is not actually thin - has excessive debug output, health checks, and complex formatting logic
 /**
  * Continuum CLI - Ultra-thin pipe that knows NOTHING about commands
  * 
@@ -9,10 +10,18 @@
  * ✅ CLEANED UP: Removed daemon management logic (2025-07-13)
  * ✅ CLEANED UP: Made CLI ultra-thin HTTP client only (2025-07-13)
  * ✅ CLEANED UP: Added fail-fast validation for command names (2025-07-13)
+ * ✅ MODULARIZED: Added pluggable formatter system for command output (2025-07-15)
  */
+
+import { FormatterRegistry } from './formatters/FormatterRegistry';
 
 class ThinContinuumCLI {
   // Ultra-thin CLI connects to existing daemon, never creates daemons
+  private formatterRegistry: FormatterRegistry;
+
+  constructor() {
+    this.formatterRegistry = new FormatterRegistry();
+  }
 
   /**
    * Universal argument parsing - no special cases, everything is a command
@@ -101,6 +110,8 @@ class ThinContinuumCLI {
       // Check if command returned help/definition format - make it user-friendly
       if (this.isHelpResponse(result, command)) {
         await this.formatHelpResponse(result, command, rawArgs);
+      } else if (this.formatterRegistry.format(result, command)) {
+        // Formatted by registered formatter
       } else if (result.data && typeof result.data === 'string') {
         console.log(result.data);
       } else {
@@ -319,10 +330,10 @@ class ThinContinuumCLI {
     
     const { command, rawArgs } = this.parseArgs(args);
     
-    // Check if daemon is running (except for start/stop commands)
-    if (!['start', 'stop', 'restart'].includes(command)) {
+    // Only check daemon health for daemon management commands
+    if (['start', 'stop', 'restart'].includes(command)) {
       const isRunning = await this.isDaemonRunning();
-      if (!isRunning) {
+      if (!isRunning && command !== 'start') {
         console.error('❌ Daemon not running. Please run: ./continuum start');
         process.exit(1);
       }
@@ -350,6 +361,7 @@ For command-specific help:
 💡 CLI knows nothing about command parameters - all logic is in command modules.
 `);
   }
+
 }
 
 // Run CLI if called directly
