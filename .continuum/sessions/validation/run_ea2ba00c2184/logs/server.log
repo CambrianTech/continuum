@@ -1,0 +1,37 @@
+# Continuum Session Log
+# Session: 68bfabfd-c534-4d37-bd3b-6d546e823023
+# Created: 2025-07-15T22:58:31.349Z
+# Type: development
+# Owner: shared
+#
+# Session started at 2025-07-15T22:58:31.349Z
+
+[2025-07-15T22:58:31.352Z] [session-manager:75037] INFO: Session logging enabled: .continuum/sessions/user/shared/68bfabfd-c534-4d37-bd3b-6d546e823023/logs/server.log
+[2025-07-15T22:58:31.352Z] [session-manager:75037] INFO: 🔌 Enabled server logging for session 68bfabfd-c534-4d37-bd3b-6d546e823023: .continuum/sessions/user/shared/68bfabfd-c534-4d37-bd3b-6d546e823023/logs/server.log
+[2025-07-15T22:58:31.353Z] [session-manager:75037] INFO: ⚠️ Connection ws_1752620310884_x3ttv97at no longer exists, skipping session_ready (likely client disconnected during session setup)
+[2025-07-15T22:58:31.570Z] [session-manager:75037] INFO: 🎮🎮🎮 SESSION MANAGER: Received message type: session.extract 🎮🎮🎮
+[2025-07-15T22:58:31.571Z] [session-manager:75037] INFO: 🎮🎮🎮 SESSION MANAGER: Call stack:     at SessionManagerDaemon.handleMessage (/Volumes/FlashGordon/cambrian/continuum/src/daemons/session-manager/SessionManagerDaemon.ts:347:53) ->     at CommandProcessorDaemon.sendViaIPC (/Volumes/FlashGordon/cambrian/continuum/src/daemons/base/BaseDaemon.ts:476:43) ->     at CommandProcessorDaemon.sendMessage (/Volumes/FlashGordon/cambrian/continuum/src/daemons/base/BaseDaemon.ts:273:23)
+[2025-07-15T22:58:31.597Z] [session-manager:75037] INFO: 🎮🎮🎮 SESSION MANAGER: Received message type: session.connect 🎮🎮🎮
+[2025-07-15T22:58:31.597Z] [session-manager:75037] INFO: 🎮🎮🎮 SESSION MANAGER: Call stack:     at SessionManagerDaemon.handleMessage (/Volumes/FlashGordon/cambrian/continuum/src/daemons/session-manager/SessionManagerDaemon.ts:347:53) ->     at CommandProcessorDaemon.sendViaIPC (/Volumes/FlashGordon/cambrian/continuum/src/daemons/base/BaseDaemon.ts:476:43) ->     at CommandProcessorDaemon.sendMessage (/Volumes/FlashGordon/cambrian/continuum/src/daemons/base/BaseDaemon.ts:273:23)
+[2025-07-15T22:58:31.597Z] [session-manager:75037] INFO: 🔍 FOCUS_DEBUG: focus=false, killZombies=false
+[2025-07-15T22:58:31.597Z] [session-manager:75037] INFO: 🔍 After destructuring: owner=shared, sessionPreference=current, sessionType=development, focus=false, killZombies=false
+[2025-07-15T22:58:31.597Z] [session-manager:75037] INFO: 📋 REFRESH_DEBUG: Emitted session_joined event for 68bfabfd-c534-4d37-bd3b-6d546e823023 (development)
+[2025-07-15T22:58:31.597Z] [session-manager:75037] INFO: 🔍 handleConnect called with: {"sessionType":"development","owner":"shared","forceNew":false,"focus":false,"killZombies":false,"connectionId":"cli","source":"http"}
+[2025-07-15T22:58:31.597Z] [session-manager:75037] INFO: 🔄 Joining existing shared development session: 68bfabfd-c534-4d37-bd3b-6d546e823023
+[2025-07-15T22:58:31.816Z] [session-manager:75037] INFO: 🔌 Handling WebSocket connection: ws_1752620311814_7q750xdq1
+[2025-07-15T22:58:31.816Z] [session-manager:75037] INFO: ♻️ Reusing existing development session: 68bfabfd-c534-4d37-bd3b-6d546e823023
+[2025-07-15T22:58:31.816Z] [session-manager:75037] INFO: ✅ Sent session_ready to connection ws_1752620311814_7q750xdq1 for session 68bfabfd-c534-4d37-bd3b-6d546e823023
+[2025-07-15T22:58:31.816Z] [session-manager:75037] INFO: 🚨🚨🚨 SCREENSHOT DEBUG VARIANT-B: About to handle WebSocket connection ws_1752620311814_7q750xdq1 🚨🚨🚨
+[2025-07-15T22:58:32.214Z] [session-manager:75037] INFO: 🔌 Handling WebSocket connection: ws_1752620312199_94frzfyg1
+[2025-07-15T22:58:32.214Z] [session-manager:75037] INFO: 🚨🚨🚨 SCREENSHOT DEBUG VARIANT-B: About to handle WebSocket connection ws_1752620312199_94frzfyg1 🚨🚨🚨
+[2025-07-15T22:58:32.214Z] [session-manager:75037] INFO: ♻️ Reusing existing development session: 68bfabfd-c534-4d37-bd3b-6d546e823023
+[2025-07-15T22:58:32.215Z] [session-manager:75037] INFO: ✅ Sent session_ready to connection ws_1752620312199_94frzfyg1 for session 68bfabfd-c534-4d37-bd3b-6d546e823023
+[2025-07-15T22:58:32.308Z] [session-manager:75037] INFO: 🔌 WebSocket disconnected: ws_1752620312199_94frzfyg1
+[2025-07-15T22:58:33.186Z] [session-manager:75037] INFO: 🎮🎮🎮 SESSION MANAGER: Received message type: session.extract 🎮🎮🎮
+[2025-07-15T22:58:33.186Z] [session-manager:75037] INFO: 🎮🎮🎮 SESSION MANAGER: Call stack:     at SessionManagerDaemon.handleMessage (/Volumes/FlashGordon/cambrian/continuum/src/daemons/session-manager/SessionManagerDaemon.ts:347:53) ->     at CommandProcessorDaemon.sendViaIPC (/Volumes/FlashGordon/cambrian/continuum/src/daemons/base/BaseDaemon.ts:476:43) ->     at CommandProcessorDaemon.sendMessage (/Volumes/FlashGordon/cambrian/continuum/src/daemons/base/BaseDaemon.ts:273:23)
+[2025-07-15T22:58:33.884Z] [session-manager:75037] INFO: 🎮🎮🎮 SESSION MANAGER: Received message type: session.extract 🎮🎮🎮
+[2025-07-15T22:58:33.884Z] [session-manager:75037] INFO: 🎮🎮🎮 SESSION MANAGER: Call stack:     at SessionManagerDaemon.handleMessage (/Volumes/FlashGordon/cambrian/continuum/src/daemons/session-manager/SessionManagerDaemon.ts:347:53) ->     at CommandProcessorDaemon.sendViaIPC (/Volumes/FlashGordon/cambrian/continuum/src/daemons/base/BaseDaemon.ts:476:43) ->     at CommandProcessorDaemon.sendMessage (/Volumes/FlashGordon/cambrian/continuum/src/daemons/base/BaseDaemon.ts:273:23)
+[2025-07-15T22:58:34.676Z] [session-manager:75037] INFO: 🎮🎮🎮 SESSION MANAGER: Received message type: session.extract 🎮🎮🎮
+[2025-07-15T22:58:34.676Z] [session-manager:75037] INFO: 🎮🎮🎮 SESSION MANAGER: Call stack:     at SessionManagerDaemon.handleMessage (/Volumes/FlashGordon/cambrian/continuum/src/daemons/session-manager/SessionManagerDaemon.ts:347:53) ->     at CommandProcessorDaemon.sendViaIPC (/Volumes/FlashGordon/cambrian/continuum/src/daemons/base/BaseDaemon.ts:476:43) ->     at CommandProcessorDaemon.sendMessage (/Volumes/FlashGordon/cambrian/continuum/src/daemons/base/BaseDaemon.ts:273:23)
+[2025-07-15T22:58:35.401Z] [session-manager:75037] INFO: 🎮🎮🎮 SESSION MANAGER: Call stack:     at SessionManagerDaemon.handleMessage (/Volumes/FlashGordon/cambrian/continuum/src/daemons/session-manager/SessionManagerDaemon.ts:347:53) ->     at CommandProcessorDaemon.sendViaIPC (/Volumes/FlashGordon/cambrian/continuum/src/daemons/base/BaseDaemon.ts:476:43) ->     at CommandProcessorDaemon.sendMessage (/Volumes/FlashGordon/cambrian/continuum/src/daemons/base/BaseDaemon.ts:273:23)
+[2025-07-15T22:58:35.401Z] [session-manager:75037] INFO: 🎮🎮🎮 SESSION MANAGER: Received message type: session.extract 🎮🎮🎮

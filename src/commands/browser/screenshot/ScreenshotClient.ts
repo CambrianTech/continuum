@@ -18,10 +18,11 @@ export async function clientScreenshot(params: ScreenshotClientParams): Promise<
   console.log('📋 BROWSER: Params:', params);
   
   try {
-    // Find target element
-    const targetElement = params.selector === 'body' ? document.body : document.querySelector(params.selector);
+    // Find target element - prioritize querySelector over selector
+    const targetSelector = params.querySelector || params.selector;
+    const targetElement = targetSelector === 'body' ? document.body : document.querySelector(targetSelector);
     if (!targetElement) {
-      throw new Error(`Element not found: ${params.selector}`);
+      throw new Error(`Element not found: ${targetSelector}`);
     }
     
     // Get element info for AI context
@@ -100,7 +101,7 @@ export async function clientScreenshot(params: ScreenshotClientParams): Promise<
       data: {
         imageData: base64Data,
         filename: params.filename,
-        selector: params.selector,
+        selector: targetSelector,
         format: params.format,
         width: finalWidth,
         height: finalHeight,

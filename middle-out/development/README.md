@@ -29,6 +29,9 @@ This directory contains the complete development methodology documentation for b
 - **[error-fixing.md](error-fixing.md)** - Systematic error fixing methodology (coming soon)
 - **[widget-architecture.md](widget-architecture.md)** - Widget system breakthrough patterns (coming soon)
 
+### **📸 Visual Development Tools**
+- **[../jtag/widget-screenshot-testing.md](../jtag/widget-screenshot-testing.md)** - **🎯 Visual widget validation with JTAG screenshots** - Get immediate visual feedback on UI changes
+
 ## 🎯 **Key Development Principles**
 
 ### **⚡ NPM Intelligence Revolution**
@@ -85,7 +88,27 @@ npm run test:layer=6  # Browser Integration
 2. **Fix compilation errors** - TypeScript must be clean before testing
 3. **Layer-by-layer progression** - Don't skip layers in middle-out
 4. **Validate with JTAG** - Use debugging tools for real-time validation
-5. **Git hook protection** - Commits are validated automatically
+5. **📸 Visual validation** - Use screenshots for immediate UI feedback
+6. **Git hook protection** - Commits are validated automatically
+
+### **📸 Visual Development Workflow**
+```bash
+# Start development with visual feedback
+npm start
+
+# Make widget changes
+# ... edit widget code ...
+
+# Rebuild browser bundle
+npm run build:browser-ts
+
+# Capture visual state
+./continuum screenshot --querySelector="chat-widget" --filename="debug-chat.png"
+./continuum screenshot --querySelector="continuum-sidebar" --filename="debug-sidebar.png"
+
+# Check screenshots in session folder
+ls .continuum/sessions/user/shared/*/screenshots/
+```
 
 ### **NPM Intelligence Application**
 ```typescript

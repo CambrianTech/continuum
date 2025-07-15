@@ -50,6 +50,40 @@ open .continuum/sessions/user/shared/*/screenshots/
 tail -f .continuum/sessions/user/shared/*/logs/server.log
 ```
 
+## 📸 **CLAUDE VISUAL DEVELOPMENT FEEDBACK**
+
+**BREAKTHROUGH**: Claude can now get immediate visual feedback on development changes!
+
+### **🎯 Screenshot-Driven Development**
+```bash
+# Get visual feedback on UI changes
+./continuum screenshot --querySelector="chat-widget" --filename="claude-debug-chat.png"
+./continuum screenshot --querySelector="continuum-sidebar" --filename="claude-debug-sidebar.png"
+./continuum screenshot --querySelector="body" --filename="claude-debug-full.png"
+```
+
+### **📁 Screenshot Storage Location**
+All screenshots are automatically saved to:
+```
+.continuum/sessions/user/shared/{SESSION_ID}/screenshots/
+```
+
+### **🔄 Visual Development Cycle**
+1. **Make changes** - Edit widget or UI code
+2. **Rebuild** - `npm run build:browser-ts`
+3. **Capture state** - Screenshot relevant components
+4. **Analyze visually** - Check if changes worked
+5. **Iterate** - Repeat until satisfied
+
+### **🎨 Verified UI Selectors**
+- **`chat-widget`** - Chat interface component
+- **`continuum-sidebar`** - Main sidebar navigation  
+- **`body`** - Full page capture
+- **`div`** - Generic container elements
+- **`.app-container`** - Main application container
+
+**Claude can now develop with confidence using visual validation!**
+
 ### **Full Validation (Before Commit):**
 ```bash
 npm run jtag                                     # Full validation (git hook)
