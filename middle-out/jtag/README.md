@@ -79,8 +79,78 @@ This visibility enables debugging complex distributed issues across the browser-
 3. **Take visual snapshots**: `screenshot ${directories.screenshots}/debug-${timestamp}.png`
 4. **Execute commands**: `curl ${interface}/api/commands/health` for system status
 5. **Manage sessions**: Use session management commands for lifecycle control
+6. **📸 Test UI components**: Use verified selectors for widget validation
+7. **🎯 Visual feedback**: Get immediate visual confirmation of changes
 
 **No more blind development – complete system visibility achieved.**
+
+## 📸 **Screenshot Testing Integration (New!)**
+
+### **Visual Validation System**
+JTAG now includes comprehensive screenshot testing for visual validation and UI debugging:
+
+#### **Verified UI Component Selectors**
+- **`chat-widget`** - Chat interface component
+- **`continuum-sidebar`** - Main sidebar navigation
+- **`body`** - Full page capture
+- **`div`** - Generic container elements
+- **`.app-container`** - Main application container
+
+#### **Development Workflow Integration**
+```bash
+# Visual validation during development
+./continuum screenshot --querySelector="chat-widget" --filename="chat-debug.png"
+./continuum screenshot --querySelector="continuum-sidebar" --filename="sidebar-debug.png"
+
+# Full page validation
+./continuum screenshot --querySelector="body" --filename="full-page-debug.png"
+```
+
+#### **Session-Based Screenshot Storage**
+All screenshots are automatically saved to:
+```
+.continuum/sessions/user/shared/{SESSION_ID}/screenshots/
+```
+
+#### **Git Hook Integration**
+Screenshots are automatically captured during git hooks for:
+- **Pre-commit validation** - Verify UI state before commits
+- **UI regression detection** - Visual comparison across commits
+- **Widget interaction testing** - Validate component behavior
+- **Error state documentation** - Visual debugging evidence
+
+### **AI Development with Visual Feedback**
+The screenshot system enables AI developers to:
+
+1. **Get immediate visual feedback** on UI changes
+2. **Validate widget behavior** with specific selectors
+3. **Debug UI issues** with visual evidence
+4. **Document UI states** for regression testing
+5. **Confirm accessibility** with visual validation
+
+### **Log File Locations**
+All JTAG debugging data is organized by session:
+
+```
+.continuum/sessions/user/shared/{SESSION_ID}/
+├── logs/
+│   ├── server.log      # Server daemon activity
+│   ├── browser.log     # Browser console forwarding
+│   └── browser.error.json # Structured error data
+├── screenshots/         # Visual validation images
+├── files/              # Session file storage
+├── recordings/         # Session recordings (future)
+└── devtools/           # DevTools data (future)
+```
+
+### **Error Analysis Pattern**
+When debugging with JTAG + Screenshots:
+
+1. **Check server logs** for daemon errors
+2. **Review browser logs** for client-side issues
+3. **Capture screenshots** for visual state validation
+4. **Correlate timing** between logs and visual changes
+5. **Document fixes** with before/after screenshots
 
 ## 📋 Framework Components
 

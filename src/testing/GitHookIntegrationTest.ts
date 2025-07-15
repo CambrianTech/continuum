@@ -127,6 +127,59 @@ export class GitHookIntegrationTest {
   }
 
   /**
+   * Run verified UI component selector tests
+   */
+  async runVerifiedSelectorTests(): Promise<GitHookTestResult[]> {
+    const results: GitHookTestResult[] = [];
+    
+    // Test verified selectors that exist in the DOM
+    const verifiedSelectors = [
+      { selector: 'chat-widget', description: 'Chat widget custom element' },
+      { selector: 'continuum-sidebar', description: 'Sidebar custom element' },
+      { selector: 'div', description: 'First div element' },
+      { selector: 'body', description: 'Full page body' },
+      { selector: '.app-container', description: 'Main app container' }
+    ];
+
+    const commitHash = await this.getCurrentCommitHash();
+    
+    for (const { selector, description } of verifiedSelectors) {
+      try {
+        console.log(`🎯 Testing selector: ${selector} (${description})`);
+        
+        const screenshots = await this.validator.testWidgetInteraction({
+          commitHash,
+          hookType: 'pre-commit',
+          sessionId: this.context.sessionId,
+          widgetSelector: selector,
+          interactionType: 'click'
+        });
+
+        const fs = await import('fs');
+        const afterStats = await fs.promises.stat(screenshots.after);
+        const fileSizeKB = afterStats.size / 1024;
+        
+        console.log(`✅ ${selector} screenshot: ${fileSizeKB.toFixed(2)}KB`);
+        
+        results.push({
+          success: true,
+          screenshotPath: screenshots.after,
+          fileSize: fileSizeKB,
+          validationId: this.validator['validationId']
+        });
+      } catch (error) {
+        console.log(`❌ ${selector} failed: ${error instanceof Error ? error.message : String(error)}`);
+        results.push({
+          success: false,
+          error: `Selector ${selector} failed: ${error instanceof Error ? error.message : String(error)}`
+        });
+      }
+    }
+    
+    return results;
+  }
+
+  /**
    * Run widget interaction test
    */
   async runWidgetInteractionTest(): Promise<GitHookTestResult> {
