@@ -115,6 +115,14 @@ async function runGitHookValidation(): Promise<void> {
     console.log('🎯 Testing element selector targeting...');
     execSync('./continuum screenshot --querySelector="div" --filename=content-test.png --width=500', { encoding: 'utf-8' });
     
+    // Run verified widget selector tests
+    console.log('🎯 Running verified widget selector tests...');
+    execSync('./continuum screenshot --selector="chat-widget" --filename="chat-widget-validation.png"', { encoding: 'utf-8' });
+    execSync('./continuum screenshot --selector="continuum-sidebar" --filename="continuum-sidebar-validation.png"', { encoding: 'utf-8' });
+    execSync('./continuum screenshot --selector="div" --filename="div-element-validation.png"', { encoding: 'utf-8' });
+    execSync('./continuum screenshot --selector="body" --filename="body-full-page-validation.png"', { encoding: 'utf-8' });
+    execSync('./continuum screenshot --selector=".app-container" --filename="app-container-validation.png"', { encoding: 'utf-8' });
+    
     // Wait a moment for screenshots to be written to filesystem
     console.log('⏰ Waiting for screenshots to be written...');
     await new Promise(resolve => setTimeout(resolve, 3000));
