@@ -107,9 +107,17 @@ async function runGitHookValidation(): Promise<void> {
     console.log('📸 Taking validation screenshot...');
     execSync('./continuum screenshot', { encoding: 'utf-8' });
     
-    // Wait a moment for screenshot to be written to filesystem
-    console.log('⏰ Waiting for screenshot to be written...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Test AI-enhanced querySelector functionality
+    console.log('🎯 Testing querySelector functionality...');
+    execSync('./continuum screenshot --querySelector=body --filename=body-test.png --width=400 --height=300', { encoding: 'utf-8' });
+    
+    // Test different selector types
+    console.log('🎯 Testing element selector targeting...');
+    execSync('./continuum screenshot --querySelector="div" --filename=content-test.png --width=500', { encoding: 'utf-8' });
+    
+    // Wait a moment for screenshots to be written to filesystem
+    console.log('⏰ Waiting for screenshots to be written...');
+    await new Promise(resolve => setTimeout(resolve, 3000));
     
     // Find the current session directory
     const sessionDir = '.continuum/sessions/user/shared';
@@ -203,18 +211,31 @@ async function runGitHookValidation(): Promise<void> {
       throw new Error(`🚨 COMMIT REJECTED: No screenshots found - images are required for validation!`);
     }
     
+    // Validate at least basic screenshots exist
+    const requiredScreenshots = ['body-test.png', 'content-test.png'];
     let hasValidScreenshot = false;
+    let hasQuerySelectorScreenshots = 0;
+    
     for (const screenshot of screenshots) {
       const screenshotPath = path.join(screenshotDir, screenshot);
       const stats = await fs.stat(screenshotPath);
       if (stats.size > 1000) { // At least 1KB for a real screenshot
         hasValidScreenshot = true;
-        break;
+        
+        // Check if this is one of our querySelector test screenshots
+        if (requiredScreenshots.includes(screenshot)) {
+          hasQuerySelectorScreenshots++;
+        }
       }
     }
     
     if (!hasValidScreenshot) {
       throw new Error(`🚨 COMMIT REJECTED: Screenshots are empty or invalid - real images required!`);
+    }
+    
+    // Validate querySelector functionality is working
+    if (hasQuerySelectorScreenshots < 2) {
+      throw new Error(`🚨 COMMIT REJECTED: querySelector functionality validation failed - missing test screenshots!`);
     }
     
     // Check logs exist and have content

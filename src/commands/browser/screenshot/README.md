@@ -193,25 +193,44 @@ continuum screenshot --filename="test.png" --destination="both"
 # + Returns base64 image data for immediate use
 ```
 
-### **Universal Usage Examples**
+### **AI-Optimized Usage Examples**
 ```typescript
-// Return bytes only (for immediate processing)
+// Low-res screenshot for AI analysis
 {
   "selector": ".main-content",
-  "destination": "bytes"
+  "destination": "bytes",
+  "width": 400,
+  "height": 300,
+  "maxFileSize": 50000
 }
 
-// Save to session artifacts  
+// Widget screenshot with cropping
 {
-  "filename": "dashboard.png",
-  "destination": "file"
+  "selector": ".widget-container",
+  "filename": "widget.png",
+  "cropX": 10,
+  "cropY": 10,
+  "cropWidth": 300,
+  "cropHeight": 200,
+  "elementName": "settings-widget"
 }
 
-// Both save and return (for command composition)
+// High-quality design screenshot
 {
-  "filename": "analysis.png", 
+  "filename": "ui-design.png",
   "destination": "both",
-  "animation": "animated"
+  "scale": 2.0,
+  "format": "png",
+  "quality": 1.0
+}
+
+// AI script automation friendly
+{
+  "selector": "#button-after-click",
+  "destination": "bytes",
+  "width": 200,
+  "height": 100,
+  "elementName": "clicked-button-state"
 }
 ```
 
