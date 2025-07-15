@@ -37,8 +37,8 @@ done
 
 # Clean session directories
 if [ -d ".continuum/sessions" ]; then
-    # Count total sessions before cleaning
-    TOTAL_BEFORE=$(find .continuum/sessions -type d -name "*-*" 2>/dev/null | wc -l | tr -d ' ')
+    # Count total sessions before cleaning (exclude validation)
+    TOTAL_BEFORE=$(find .continuum/sessions -type d -name "*-*" -not -path "*/validation/*" 2>/dev/null | wc -l | tr -d ' ')
     
     if [ "$DELETE_ALL" = true ]; then
         echo -e "${YELLOW}🗑️  Deleting all sessions (except validation)...${NC}"
@@ -53,8 +53,8 @@ if [ -d ".continuum/sessions" ]; then
         # Find and delete old sessions (but never delete validation directory)
         find .continuum/sessions -type d -name "*-*" -not -path "*/validation/*" -mmin +${KEEP_MINUTES} -exec rm -rf {} \; 2>/dev/null || true
         
-        # Count remaining sessions
-        TOTAL_AFTER=$(find .continuum/sessions -type d -name "*-*" 2>/dev/null | wc -l | tr -d ' ')
+        # Count remaining sessions (exclude validation)
+        TOTAL_AFTER=$(find .continuum/sessions -type d -name "*-*" -not -path "*/validation/*" 2>/dev/null | wc -l | tr -d ' ')
         DELETED=$((TOTAL_BEFORE - TOTAL_AFTER))
         
         echo -e "${GREEN}✅ Cleaned ${DELETED} old sessions (kept ${TOTAL_AFTER} recent)${NC}"
