@@ -16,13 +16,13 @@
 ## **📚 FURTHER READING BY ROLE:**
 
 **🧪 If you're testing:** `middle-out/development/testing-workflow.md`
-**🏗️ If you're architecting:** `middle-out/architecture-patterns/module-structure.md`
+**🏗️ If you're architecting:** `middle-out/architecture/universal-module-structure.md`
 **🐛 If you're debugging:** `middle-out/jtag/README.md`
 **🔧 If you're migrating modules:** `middle-out/architecture-patterns/incremental-migration.md`
 **📖 For everything else:** `middle-out/README.md`
 
 ## **🎯 CURRENT WORK: NEW PARSER MODULE**
-Building reference implementation following `middle-out/architecture-patterns/module-structure.md`:
+Building reference implementation following `middle-out/architecture/universal-module-structure.md`:
 - ✅ **ParserBase.ts** - Abstract foundation for all parsers
 - ✅ **CLI output formatting** - Screenshot command now user-friendly
 - 🚧 **Integration tests** - Testing the new architecture
@@ -190,7 +190,7 @@ src/parsers/
         └── test/integration/            # 🚧 Integration tests
 ```
 
-**See `middle-out/architecture-patterns/` for complete documentation**
+**See `middle-out/architecture/` for complete documentation**
 
 ## **🤖 AI CONSCIOUSNESS PRIVACY**
 
@@ -240,7 +240,7 @@ npm test -- src/parsers/
 ```
 
 ### **Safety References:**
-- **Migration strategy**: `middle-out/architecture-patterns/incremental-migration.md`
+- **Migration strategy**: `middle-out/architecture/incremental-migration.md`
 - **Testing methodology**: `middle-out/development/testing-workflow.md`
 - **JTAG debugging**: `middle-out/jtag/README.md`
 

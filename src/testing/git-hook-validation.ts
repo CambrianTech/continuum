@@ -15,9 +15,68 @@ import { execSync } from 'child_process';
 import { promises as fs } from 'fs';
 import path from 'path';
 
+interface WhitelistConfig {
+  whitelistPrefixes: string[];
+  description: string;
+}
+
+async function checkWhitelistBypass(): Promise<boolean> {
+  try {
+    // Read whitelist configuration
+    const whitelistPath = '.husky/whitelist.json';
+    const whitelistContent = await fs.readFile(whitelistPath, 'utf-8');
+    const whitelist: WhitelistConfig = JSON.parse(whitelistContent);
+    
+    // Get list of changed files
+    const changedFiles = execSync('git diff --cached --name-only', { encoding: 'utf-8' }).trim().split('\n').filter(f => f);
+    
+    if (changedFiles.length === 0) {
+      return false; // No changes, don't bypass
+    }
+    
+    console.log(`🔍 Checking ${changedFiles.length} changed files against whitelist...`);
+    
+    // Check if ALL changed files match whitelist prefixes
+    const whitelistedFiles = changedFiles.filter(file => 
+      whitelist.whitelistPrefixes.some(prefix => file.startsWith(prefix))
+    );
+    
+    if (whitelistedFiles.length === changedFiles.length) {
+      console.log('✅ WHITELIST BYPASS: All changed files are whitelisted');
+      console.log('📋 Whitelisted files:');
+      whitelistedFiles.forEach(file => console.log(`   - ${file}`));
+      console.log('🚀 Skipping full validation for documentation/config changes');
+      return true;
+    }
+    
+    // Show which files are not whitelisted
+    const nonWhitelistedFiles = changedFiles.filter(file => 
+      !whitelist.whitelistPrefixes.some(prefix => file.startsWith(prefix))
+    );
+    
+    if (nonWhitelistedFiles.length > 0) {
+      console.log('📋 Non-whitelisted files require full validation:');
+      nonWhitelistedFiles.forEach(file => console.log(`   - ${file}`));
+    }
+    
+    return false;
+  } catch (error) {
+    console.warn('⚠️ Could not check whitelist, proceeding with full validation:', error);
+    return false;
+  }
+}
+
 async function runGitHookValidation(): Promise<void> {
   try {
     console.log('🔍 Running git hook validation test...');
+    
+    // Check if we can bypass full validation due to whitelist
+    if (await checkWhitelistBypass()) {
+      console.log('✅ WHITELIST BYPASS APPROVED - Commit can proceed');
+      return;
+    }
+    
+    console.log('🔍 Proceeding with full validation...');
     
     // Get current commit hash
     let commitHash: string;
