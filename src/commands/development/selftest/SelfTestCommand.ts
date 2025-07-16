@@ -13,6 +13,7 @@
  */
 
 import { BaseCommand, CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
+import { SelfTestParams, SelfTestResult, HealthCheckResult } from './types';
 
 export class SelfTestCommand extends BaseCommand {
   static getDefinition(): CommandDefinition {
@@ -21,7 +22,11 @@ export class SelfTestCommand extends BaseCommand {
       category: 'development',
       icon: '🔧',
       description: 'Run system health checks (placeholder - needs modern implementation)',
-      parameters: { verbose: { type: 'boolean' as const, description: 'Enable verbose output for tests', required: false } },
+      parameters: { 
+        verbose: { type: 'boolean' as const, description: 'Enable verbose output for tests', required: false },
+        checks: { type: 'string' as const, description: 'Comma-separated list of specific checks to run', required: false },
+        timeout: { type: 'number' as const, description: 'Timeout in seconds for each check', required: false }
+      },
       examples: [
         { description: 'Basic system test', command: 'selftest' },
         { description: 'Verbose system test', command: 'selftest --verbose' }
@@ -30,20 +35,45 @@ export class SelfTestCommand extends BaseCommand {
     };
   }
 
-  static async execute(_params: any, _context?: ContinuumContext): Promise<CommandResult> {
-    return this.createSuccessResult(
-      'SelfTest placeholder - original moved to junk.jun.29/legacy-typescript/development/selftest/',
+  static async execute(params: SelfTestParams, _context?: ContinuumContext): Promise<CommandResult> {
+    const startTime = Date.now();
+    
+    // Placeholder implementation - TODO: Add real health checks
+    const checks: HealthCheckResult[] = [
       {
-        message: 'TODO: Implement modern selftest command',
-        legacyLocation: 'junk.jun.29/legacy-typescript/development/selftest/SelfTestCommand.ts',
-        requiredWork: [
-          'Implement daemon health checks',
-          'Add WebSocket connection testing', 
-          'Verify widget loading and mounting',
-          'Test command execution pipeline',
-          'Add browser automation validation'
-        ]
+        name: 'daemon-communication',
+        status: 'skipped',
+        message: 'Daemon communication test not implemented'
+      },
+      {
+        name: 'websocket-connection',
+        status: 'skipped', 
+        message: 'WebSocket connection test not implemented'
+      },
+      {
+        name: 'widget-loading',
+        status: 'skipped',
+        message: 'Widget loading test not implemented'
       }
+    ];
+    
+    if (params.verbose) {
+      console.log('🔧 Running SelfTest command in verbose mode');
+      console.log('🔧 Checks requested:', params.checks || 'all');
+      console.log('🔧 Timeout:', params.timeout || 'default');
+    }
+    
+    const result: SelfTestResult = {
+      success: true,
+      message: 'SelfTest placeholder - original moved to junk.jun.29/legacy-typescript/development/selftest/',
+      checks,
+      timestamp: new Date().toISOString(),
+      duration: Date.now() - startTime
+    };
+    
+    return this.createSuccessResult(
+      result.message,
+      result
     );
   }
 }

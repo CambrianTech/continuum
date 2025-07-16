@@ -1,25 +1,26 @@
 {
-  "name": "emotion-command",
+  "name": "info-command",
   "version": "1.0.0",
-  "description": "Emotion expression command for Continuum",
+  "description": "System information and status command",
   "main": "index.ts",
   "type": "module",
   "continuum": {
     "type": "command",
-    "command": "emotion",
-    "category": "ui",
+    "command": "info",
+    "category": "core",
     "capabilities": [
-      "emotion-expression",
-      "continuon-animation",
-      "websocket-broadcast"
+      "system-info",
+      "status-display",
+      "version-info"
     ],
     "dependencies": [],
     "interfaces": [],
-    "permissions": ["websocket-broadcast"]
+    "permissions": ["system-read"]
   },
   "keywords": [
-    "emotion",
-    "core",
+    "info",
+    "system",
+    "status",
     "continuum"
   ],
   "author": "Continuum AI Platform",
