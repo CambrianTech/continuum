@@ -112,37 +112,16 @@ export abstract class ScreenshotBase {
   }
 
   /**
-   * Get human-readable element name for AI context
+   * Get element name for logging (simplified)
    */
   protected static getElementName(element: Element): string {
-    // Try to get a meaningful name for the element
+    // Return ID if available (most specific)
     if (element.id) return `#${element.id}`;
+    
+    // Return first class if available
     if (element.classList.length > 0) return `.${element.classList[0]}`;
-    if (element.tagName === 'BODY') return 'page';
-    if (element.tagName === 'MAIN') return 'main-content';
-    if (element.tagName === 'HEADER') return 'header';
-    if (element.tagName === 'FOOTER') return 'footer';
-    if (element.tagName === 'NAV') return 'navigation';
-    if (element.tagName === 'ASIDE') return 'sidebar';
-    if (element.tagName === 'ARTICLE') return 'article';
-    if (element.tagName === 'SECTION') return 'section';
     
-    // For form elements
-    if (element.tagName === 'FORM') return 'form';
-    if (element.tagName === 'INPUT') return 'input-field';
-    if (element.tagName === 'BUTTON') return 'button';
-    if (element.tagName === 'SELECT') return 'dropdown';
-    if (element.tagName === 'TEXTAREA') return 'text-area';
-    
-    // For content elements
-    if (element.tagName === 'H1') return 'heading-1';
-    if (element.tagName === 'H2') return 'heading-2';
-    if (element.tagName === 'H3') return 'heading-3';
-    if (element.tagName === 'P') return 'paragraph';
-    if (element.tagName === 'UL') return 'list';
-    if (element.tagName === 'TABLE') return 'table';
-    if (element.tagName === 'IMG') return 'image';
-    
+    // Otherwise return the tag name
     return element.tagName.toLowerCase();
   }
 
