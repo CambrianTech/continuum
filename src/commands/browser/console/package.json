@@ -1,8 +1,36 @@
 {
-  "name": "@continuum/browser-console-command",
+  "name": "browser-console-command",
   "version": "1.0.0",
   "description": "Browser console interaction command with session integration",
-  "main": "BrowserConsoleCommand.js",
+  "main": "index.ts",
   "type": "module",
-  "keywords": ["browser", "console", "session", "logging", "devtools", "monitoring"]
+  "continuum": {
+    "type": "command",
+    "command": "browser-console",
+    "category": "browser",
+    "capabilities": [
+      "console-interaction",
+      "session-integration",
+      "devtools-protocol",
+      "console-monitoring"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": [
+      "browser-access",
+      "devtools-protocol",
+      "session-read"
+    ]
+  },
+  "keywords": ["browser", "console", "session", "logging", "devtools", "monitoring"],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

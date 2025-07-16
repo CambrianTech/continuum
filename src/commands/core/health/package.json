@@ -1,18 +1,21 @@
 {
-  "name": "health-core",
+  "name": "health-command",
   "version": "1.0.0",
-  "description": "health core for Continuum",
-  "main": "HealthCommand.ts",
+  "description": "System health monitoring command for Continuum",
+  "main": "index.ts",
   "type": "module",
   "continuum": {
-    "core": "health",
-    "category": "Core",
+    "type": "command",
+    "command": "health",
+    "category": "core",
     "capabilities": [
-      "auto-generated"
+      "system-monitoring",
+      "daemon-health",
+      "resource-monitoring"
     ],
     "dependencies": [],
     "interfaces": [],
-    "permissions": []
+    "permissions": ["system-read"]
   },
   "keywords": [
     "health",

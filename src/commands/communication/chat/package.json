@@ -1,19 +1,23 @@
 {
-  "name": "chat-core",
+  "name": "chat-command",
   "version": "1.0.0",
-  "description": "chat core for Continuum",
-  "main": "ChatCommand.ts",
+  "description": "Chat messaging command for Continuum",
+  "main": "index.ts",
   "type": "module",
   "continuum": {
-    "core": "chat",
-    "category": "Core",
+    "type": "command",
+    "command": "chat",
+    "category": "communication",
     "capabilities": [
-      "messaging"
+      "messaging",
+      "chat-rooms",
+      "real-time-communication"
     ],
     "dependencies": [],
     "interfaces": [],
     "permissions": [
-      "network"
+      "network",
+      "daemon-communication"
     ]
   },
   "keywords": [
