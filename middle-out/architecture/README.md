@@ -12,9 +12,10 @@ This directory contains the foundational architectural documentation for Continu
 - **[onion-pattern.md](onion-pattern.md)** - Layered onion architecture for dual client-server systems (coming soon)
 
 ### **🔬 System Design Patterns**
+- **[universal-module-structure.md](universal-module-structure.md)** - **✅ IMPLEMENTED** Universal `/shared|client|server|remote` pattern for all module types
+- **[lambda-fluent-api.md](lambda-fluent-api.md)** - **✅ IMPLEMENTED** Distributed fluent API architecture with integration support
 - **[system-breakthroughs.md](system-breakthroughs.md)** - Multi-level inheritance and command vs program distinction (coming soon)
 - **[self-validation.md](self-validation.md)** - Self-healing infrastructure patterns (coming soon)
-- **[lambda-fluent-api.md](lambda-fluent-api.md)** - Future vision architecture patterns (coming soon)
 
 ## 🎯 **Key Architectural Achievements**
 
