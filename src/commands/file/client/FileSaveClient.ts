@@ -7,7 +7,8 @@
  * - Provides clean API for screenshot and other file saves
  */
 
-import { ArtifactType } from '../../../types/shared/FileOperations';
+import { FileClient } from './FileClient';
+import { ArtifactType } from '../shared/FileTypes';
 
 export interface FileSaveClientOptions {
   content: string | Uint8Array;
@@ -29,9 +30,9 @@ export interface FileSaveClientResult {
 }
 
 /**
- * Client-side file save implementation
+ * Client-side file save implementation extending FileClient
  */
-export class FileSaveClient {
+export class FileSaveClient extends FileClient {
   private static instance: FileSaveClient | null = null;
 
   /**
@@ -55,10 +56,10 @@ export class FileSaveClient {
       console.log(`💾 FileSaveClient: Saving file ${options.filename}, size: ${options.content.length} bytes`);
 
       // Convert content to base64 for server transport
-      const base64Content = await this.convertToBase64(options.content);
+      const base64Content = await FileSaveClient.convertToBase64(options.content);
 
       // Execute the server-side write command
-      const result = await continuum.execute('write', {
+      const result = await continuum.execute('file_write', {
         filename: options.filename,
         content: base64Content,
         encoding: 'base64',
@@ -79,33 +80,7 @@ export class FileSaveClient {
     }
   }
 
-  /**
-   * Convert content to base64 string
-   */
-  private async convertToBase64(content: string | Uint8Array): Promise<string> {
-    if (typeof content === 'string') {
-      return btoa(content);
-    }
-
-    // Handle Uint8Array using FileReader for large files
-    if (content instanceof Uint8Array) {
-      const blob = new Blob([content]);
-      const reader = new FileReader();
-      
-      return new Promise<string>((resolve, reject) => {
-        reader.onload = (): void => {
-          const result = reader.result as string;
-          // Remove the data URL prefix to get just the base64 content
-          const base64Data = result.split(',')[1];
-          resolve(base64Data);
-        };
-        reader.onerror = (): void => reject(reader.error);
-        reader.readAsDataURL(blob);
-      });
-    }
-
-    throw new Error('Unsupported content type');
-  }
+  // convertToBase64 method now inherited from FileClient
 }
 
 /**

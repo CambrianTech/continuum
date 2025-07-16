@@ -12,7 +12,7 @@ import type { ContinuumAPI, ContinuumState, CommandResult } from './types/Browse
 import type { CommandExecuteData } from './types/WebSocketTypes';
 import { ConsoleForwarder } from './console/ConsoleForwarder';
 import { WebSocketManager } from './connection/WebSocketManager';
-import { FileOperationParams } from '../../types/shared/FileOperations';
+import type { FileOperationParams } from '../../commands/file/shared/FileTypes';
 import { FileSaveClient } from '../../commands/file/client/FileSaveClient';
 import '../../commands/browser/screenshot/client/ScreenshotClient'; // Auto-registers screenshot handler
 
@@ -222,10 +222,10 @@ export class ContinuumBrowserClient implements ContinuumAPI {
     if (result.success) {
       return {
         success: true,
-        data: result.data || {}
+        data: result.data ?? {}
       };
     } else {
-      throw new Error(result.error || 'File save failed');
+      throw new Error(result.error ?? 'File save failed');
     }
   }
 
