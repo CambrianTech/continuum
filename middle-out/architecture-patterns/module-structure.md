@@ -6,6 +6,27 @@ Continuum uses a **module-first architecture** where each module is self-contain
 
 ## Pattern Structure
 
+### Simple Module Pattern (Recommended for most cases)
+```
+src/[module]/
+├── shared/
+│   ├── Base[Module].ts         # Abstract base class
+│   ├── [Module]Types.ts        # Shared types
+│   └── [Module]Registry.ts     # Registration system
+├── client/
+│   └── Client[Module].ts       # Client-specific base (extends Base[Module])
+├── server/
+│   └── Server[Module].ts       # Server-specific base (extends Base[Module])
+└── [command-name]/
+    ├── shared/
+    │   └── [Command]Types.ts
+    ├── client/
+    │   └── [Command]Client.ts    # extends Client[Module]
+    └── server/
+        └── [Command]Server.ts    # extends Server[Module]
+```
+
+### Complex Module Pattern (For modules with many external integrations)
 ```
 src/[module]/
 ├── shared/
@@ -25,6 +46,20 @@ src/[module]/
         └── server/
             └── [Integration]Server[Module].ts    # extends Server[Module]
 ```
+
+### When to Use Which Pattern
+
+**Use Simple Module Pattern when:**
+- Module has 2-10 command implementations
+- Commands are related to the core module functionality
+- You want minimal nesting and simple imports
+- Examples: file commands, browser commands, core commands
+
+**Use Complex Module Pattern when:**
+- Module has many external system integrations (10+)
+- Integrations are distinct external systems (MCP, plugins, parsers)
+- You need clear separation between core and integrations
+- Examples: parsers module, daemons module, AI integrations
 
 ## Current Module Examples
 
@@ -201,7 +236,7 @@ class CLIClientParser extends Base[Module]<CLIInput, CLIOutput> {
 src/ui/continuum-browser-client/ContinuumBrowserClient.ts     # 386 lines
 src/ui/continuum-server-client/ContinuumServerClient.ts       # ~300 lines
 src/commands/browser/screenshot/ScreenshotCommand.ts          # 368 lines
-src/commands/file/fileSave/FileSaveCommand.ts                 # 152 lines
+src/commands/file/fileSave/server/FileSaveCommand.ts           # 152 lines
 ```
 
 **After Modular Pattern** (shared abstractions):
