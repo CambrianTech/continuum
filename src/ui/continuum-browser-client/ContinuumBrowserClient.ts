@@ -13,7 +13,7 @@ import type { CommandExecuteData } from './types/WebSocketTypes';
 import { ConsoleForwarder } from './console/ConsoleForwarder';
 import { WebSocketManager } from './connection/WebSocketManager';
 import { FileOperationParams, ArtifactType } from '../../types/shared/FileOperations';
-import './commands/ScreenshotExecutor'; // Auto-registers screenshot handler
+import '../../commands/browser/screenshot/client/ScreenshotClient'; // Auto-registers screenshot handler
 
 export class ContinuumBrowserClient implements ContinuumAPI {
   public readonly version: string;
