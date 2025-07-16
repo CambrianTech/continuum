@@ -1,3 +1,0 @@
-Testing full integrity system
-Created: 2025-07-14T23:04:50.000Z
-This should trigger all 7 layers including critical proof generation

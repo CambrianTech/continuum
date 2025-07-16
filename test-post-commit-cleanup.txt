@@ -1,3 +1,0 @@
-Testing post-commit cleanup approach
-Created: 2025-07-14T23:27:00.000Z
-This should validate with screenshots, commit validation files, then clean up in post-commit hook

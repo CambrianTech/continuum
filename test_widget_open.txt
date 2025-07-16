@@ -1,1 +1,0 @@
-Testing widget opening with simple open command
