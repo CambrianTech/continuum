@@ -8,6 +8,13 @@ This directory contains the complete architectural documentation for Continuum's
 
 ### 🚀 Core Methodologies
 
+#### 🏗️ [Architecture](architecture/) **⭐ FOUNDATIONAL PATTERNS**
+- **[README.md](architecture/README.md)** - Architecture principles and evolution roadmap
+- **[universal-module-structure.md](architecture/universal-module-structure.md)** - **✅ IMPLEMENTED** Universal `/shared|client|server|remote` pattern for all module types
+- **[universal-module-schema.md](architecture/universal-module-schema.md)** - **✅ IMPLEMENTED** NPM intelligence-driven module discovery system
+- **[lambda-fluent-api.md](architecture/lambda-fluent-api.md)** - **✅ IMPLEMENTED** Distributed command execution with P2P command marketplace
+- **[rest-api.md](architecture/rest-api.md)** - Modern HTTP API with session management
+
 #### 📚 [Bootloader](bootloader/)
 - **[cognitive-efficiency.md](bootloader/cognitive-efficiency.md)** - Cognitive efficiency principles for autonomous development
 - **[documentation-patterns.md](bootloader/documentation-patterns.md)** - Self-documenting code architecture patterns
@@ -52,30 +59,6 @@ This directory contains the complete architectural documentation for Continuum's
 #### 🔥 [Development Workflow](development/)
 - **[hot-reload-workflow.md](development/hot-reload-workflow.md)** - **🚀 Autonomous AI development with session preservation**
 
-### 🏗️ Architecture Concepts
-
-#### 🏛️ [Architecture](architecture/)
-- **[README.md](architecture/README.md)** - Architecture documentation overview and principles
-- **[universal-module-schema.md](architecture/universal-module-schema.md)** - **✅ IMPLEMENTED** Universal module schema system for AI-friendly discovery and validation
-- **[universal-integration-parsers.md](architecture/universal-integration-parsers.md)** - **🎯 NEW** Universal integration parser system - any format to any format translation
-- **[rest-api.md](architecture/rest-api.md)** - **🌐 REST API Documentation** - Modern HTTP API with session management for AI agents and automation
-- **[universal-ai-presence.md](architecture/universal-ai-presence.md)** - **🌐 UNIVERSAL PRESENCE** AI personas as digital citizens across all platforms and tools
-- **[pragmatic-security-approach.md](architecture/pragmatic-security-approach.md)** - **🛡️ PRACTICAL SECURITY** Start with TLS + signing, evolve to cryptographic protection incrementally
-- **[ip-protection-layers.md](architecture/ip-protection-layers.md)** - **🔒 IP PROTECTION** Intelligent information layering for intellectual property security (future)
-- **[cryptographic-ip-protection.md](architecture/cryptographic-ip-protection.md)** - **🔐 ADVANCED CRYPTO** Storage-level encryption for P2P and enterprise-grade protection (future)
-- **[group-sharing-complexities.md](architecture/group-sharing-complexities.md)** - **🤝 SHARING CHALLENGES** Complex design decisions for secure collaboration (future considerations)
-- **[system-breakthroughs.md](architecture/system-breakthroughs.md)** - Multi-level inheritance and command vs program distinction (coming soon)
-- **[onion-pattern.md](architecture/onion-pattern.md)** - Layered onion architecture for dual client-server systems (coming soon)
-- **[self-validation.md](architecture/self-validation.md)** - Self-healing infrastructure patterns (coming soon)
-- **[lambda-fluent-api.md](architecture/lambda-fluent-api.md)** - Future vision architecture patterns (coming soon)
-
-#### 🎯 [Architecture Patterns](architecture-patterns/)
-- **[module-structure.md](architecture-patterns/module-structure.md)** - **🆕 NEW** Standardized module structure with shared/client/server organization and inheritance patterns
-- **[incremental-migration.md](architecture-patterns/incremental-migration.md)** - **🆕 NEW** Zero-disruption migration strategy for architectural improvements without breaking existing systems
-
-#### 🌐 [Distributed Systems](distributed/)
-- **[command-execution.md](distributed/command-execution.md)** - Global distributed command execution patterns (coming soon)
-
 ### 🔬 Research & Publications
 
 #### 📊 [Research](research/) **⭐ NOVEL CONTRIBUTIONS**
@@ -86,8 +69,10 @@ This directory contains the complete architectural documentation for Continuum's
   - **[middle-out-methodology.md](research/software-engineering/middle-out-methodology.md)** - **🧅 Layer-based validation and quality ratchet systems**
 - **[AI Collaboration](research/ai-collaboration/)** - Consciousness-agnostic collaboration frameworks (coming soon)
 - **[Tactical Wisdom](research/tactical-wisdom/)** - Liberation architecture strategies (coming soon)
-- **[modular-documentation.md](distributed/modular-documentation.md)** - Modular documentation architecture (coming soon)
-- **[docker-layers.md](distributed/docker-layers.md)** - Docker-style layered dependencies (coming soon)
+- **[Distributed Systems](research/distributed-systems/)** - Future distributed computing patterns
+  - **[command-execution.md](research/distributed-systems/command-execution.md)** - Global distributed command execution patterns (coming soon)
+  - **[modular-documentation.md](research/distributed-systems/modular-documentation.md)** - Modular documentation architecture (coming soon)
+  - **[docker-layers.md](research/distributed-systems/docker-layers.md)** - Docker-style layered dependencies (coming soon)
 
 #### 📱 [Client Architecture](clients/)
 - **[thin-client-pattern.md](clients/thin-client-pattern.md)** - Thin client architecture patterns (coming soon)
