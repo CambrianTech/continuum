@@ -4,15 +4,11 @@
  * 
  * Used by screenshot, artifactory, logging, session management, etc.
  * All file writes go through this command to ensure proper organization
- * 
- * Now uses shared FileOperationParams and FileOperationResult interfaces
- * for consistency across all file operations.
  */
 
-import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
-import { BaseFileCommand, FileSystemOperation } from '../shared/BaseFileCommand';
-import { FileOperationParams, FileOperationResult, ArtifactType } from '../shared/FileTypes';
-import type { UUID } from 'crypto';
+import { CommandDefinition, ContinuumContext, CommandResult } from '../../../core/base-command/BaseCommand';
+import { BaseFileCommand, FileSystemOperation } from '../../shared/BaseFileCommand';
+import { ArtifactType, FileOperationParams, FileOperationResult } from '../../shared/FileTypes';
 import * as path from 'path';
 
 export class FileWriteCommand extends BaseFileCommand {
@@ -43,26 +39,18 @@ export class FileWriteCommand extends BaseFileCommand {
       // Use session ID from context if not provided in params
       const sessionId = params.sessionId || context?.sessionId;
       
-      // Get the session base directory from context
-      const sessionBasePath = sessionId ? 
-        path.join(process.cwd(), '.continuum', 'sessions', 'user', 'shared', sessionId) :
-        path.join(process.cwd(), '.continuum');
+      // Get target path using session management
+      const targetPath = await this.getTargetPath({
+        filename: params.filename,
+        sessionId: sessionId,
+        artifactType: params.artifactType,
+        directory: (params as any).directory
+      });
       
-      // Determine target path based on artifact type
-      let targetPath: string;
-      if (params.artifactType && sessionId) {
-        // Use artifact-specific subdirectory in session
-        const artifactSubdir = this.getArtifactSubdirectory(params.artifactType);
-        targetPath = path.join(sessionBasePath, artifactSubdir, params.filename);
-      } else {
-        // Use filename as-is (may include relative path)
-        targetPath = path.join(sessionBasePath, params.filename);
-      }
-      
-      // 2. Ensure target directory exists
+      // Ensure target directory exists
       await this.ensureDirectoryExists(path.dirname(targetPath));
       
-      // 3. Write file using ContinuumFileSystemDaemon delegation
+      // Write file using ContinuumFileSystemDaemon delegation
       const encoding = params.encoding || (Buffer.isBuffer(params.content) ? undefined : 'utf8');
       await this.delegateToContinuumFileSystemDaemon(FileSystemOperation.WRITE_FILE, {
         path: targetPath,
@@ -70,7 +58,7 @@ export class FileWriteCommand extends BaseFileCommand {
         encoding: encoding
       });
       
-      // 4. Log the write operation via daemon delegation
+      // Log the write operation
       await this.logFileOperation('write', targetPath, {
         artifactType: params.artifactType,
         sessionId: sessionId,
@@ -84,7 +72,7 @@ export class FileWriteCommand extends BaseFileCommand {
         filepath: targetPath,
         size: Buffer.isBuffer(params.content) ? params.content.length : Buffer.byteLength(params.content, encoding || 'utf8'),
         artifactType: params.artifactType || ArtifactType.FILE,
-        sessionId: sessionId as UUID,
+        sessionId: sessionId as any,
         timestamp: new Date().toISOString(),
         success: true
       };
