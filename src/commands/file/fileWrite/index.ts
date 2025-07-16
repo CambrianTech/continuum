@@ -7,4 +7,4 @@
  */
 
 // Server exports
-export { FileWriteCommand } from './server/FileWriteCommand';
+export { FileWriteCommand } from './FileWriteCommand';

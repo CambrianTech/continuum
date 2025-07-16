@@ -2,7 +2,7 @@
   "name": "file-save-command",
   "version": "1.0.0",
   "description": "File save command for binary data and base64 content",
-  "main": "server/FileSaveCommand.ts",
+  "main": "index.ts",
   "type": "module",
   "continuum": {
     "type": "command",

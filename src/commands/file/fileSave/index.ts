@@ -16,4 +16,4 @@ export type {
 export { FileSaveClient, saveFile } from './client/FileSaveClient';
 
 // Server exports
-export { FileSaveCommand } from './server/FileSaveCommand';
+export { FileSaveCommand } from './FileSaveCommand';
