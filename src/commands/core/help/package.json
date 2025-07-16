@@ -1,18 +1,21 @@
 {
-  "name": "help-core",
+  "name": "help-command",
   "version": "1.0.0",
-  "description": "help core for Continuum",
-  "main": "HelpCommand.ts",
+  "description": "Command help and documentation system for Continuum",
+  "main": "index.ts",
   "type": "module",
   "continuum": {
-    "core": "help",
+    "type": "command",
+    "command": "help",
     "category": "core",
     "capabilities": [
-      "auto-generated"
+      "command-discovery",
+      "documentation",
+      "command-help"
     ],
     "dependencies": [],
     "interfaces": [],
-    "permissions": []
+    "permissions": ["system-read"]
   },
   "keywords": [
     "help",
