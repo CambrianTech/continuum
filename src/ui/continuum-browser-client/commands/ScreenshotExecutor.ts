@@ -101,22 +101,51 @@ export class ScreenshotExecutor {
     const filename = (params.filename as string) || `screenshot-${Date.now()}.${format}`;
 
     // Find target element
-    const element = document.querySelector(selector);
+    const element = selector === 'body' ? document.body : document.querySelector(selector);
     if (!element) {
       throw new Error(`Screenshot target not found: ${selector}`);
     }
 
     console.log(`📸 Capturing screenshot of: ${selector}`);
     
-    // Capture screenshot
-    const canvas = await html2canvas(element as HTMLElement, {
+    // Always capture full body for consistent color rendering
+    const canvas = await html2canvas(document.body, {
       useCORS: true,
       allowTaint: true,
       scale: 1
     });
 
+    // Calculate element coordinates relative to body for cropping
+    const elementRect = element.getBoundingClientRect();
+    const bodyRect = document.body.getBoundingClientRect();
+    const relativeX = Math.max(0, elementRect.left - bodyRect.left);
+    const relativeY = Math.max(0, elementRect.top - bodyRect.top);
+    const relativeWidth = Math.min(elementRect.width, canvas.width - relativeX);
+    const relativeHeight = Math.min(elementRect.height, canvas.height - relativeY);
+    
+    console.log(`📏 Element coordinates: ${relativeX},${relativeY} ${relativeWidth}x${relativeHeight}`);
+    
+    // For body captures, skip cropping to maintain full page
+    let finalCanvas = canvas;
+    if (selector !== 'body') {
+      const croppedCanvas = document.createElement('canvas');
+      const croppedCtx = croppedCanvas.getContext('2d')!;
+      
+      croppedCanvas.width = relativeWidth;
+      croppedCanvas.height = relativeHeight;
+      
+      croppedCtx.drawImage(
+        canvas,
+        relativeX, relativeY, relativeWidth, relativeHeight,
+        0, 0, relativeWidth, relativeHeight
+      );
+      
+      finalCanvas = croppedCanvas;
+      console.log(`✂️ Cropped to element coordinates`);
+    }
+
     // Convert to base64
-    const imageData = canvas.toDataURL(`image/${format}`);
+    const imageData = finalCanvas.toDataURL(`image/${format}`);
     
     console.log(`✅ Screenshot captured: ${imageData.length} bytes`);
 
@@ -125,8 +154,8 @@ export class ScreenshotExecutor {
       format,
       selector,
       filename,
-      width: canvas.width,
-      height: canvas.height
+      width: finalCanvas.width,
+      height: finalCanvas.height
     };
   }
 

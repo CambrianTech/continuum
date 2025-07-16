@@ -35,22 +35,53 @@ export async function clientScreenshot(params: ScreenshotClientParams): Promise<
     const html2canvas = await loadHtml2Canvas();
     console.log('📦 BROWSER: html2canvas available - starting capture');
     
-    // Capture screenshot with AI-friendly scale
+    // Always capture full body for consistent color rendering
     const scale = params.scale || 1;
-    const canvas = await html2canvas(targetElement, {
+    const canvas = await html2canvas(document.body, {
       allowTaint: true,
       useCORS: true,
       scale: scale,
       logging: false
     });
     
-    const originalWidth = canvas.width;
-    const originalHeight = canvas.height;
+    // Calculate element coordinates relative to body for cropping
+    const bodyRect = document.body.getBoundingClientRect();
+    const relativeX = Math.max(0, (elementRect.left - bodyRect.left) * scale);
+    const relativeY = Math.max(0, (elementRect.top - bodyRect.top) * scale);
+    const relativeWidth = Math.min(elementRect.width * scale, canvas.width - relativeX);
+    const relativeHeight = Math.min(elementRect.height * scale, canvas.height - relativeY);
+    
+    console.log(`📏 BROWSER: Element coordinates: ${relativeX},${relativeY} ${relativeWidth}x${relativeHeight}`);
+    
+    // For body captures, skip cropping to maintain full page
+    const needsCropping = targetSelector !== 'body';
+    
+    // Create cropped canvas if targeting specific element
+    let finalCanvas = canvas;
+    if (needsCropping) {
+      const croppedCanvas = document.createElement('canvas');
+      const croppedCtx = croppedCanvas.getContext('2d')!;
+      
+      croppedCanvas.width = relativeWidth;
+      croppedCanvas.height = relativeHeight;
+      
+      croppedCtx.drawImage(
+        canvas,
+        relativeX, relativeY, relativeWidth, relativeHeight,
+        0, 0, relativeWidth, relativeHeight
+      );
+      
+      finalCanvas = croppedCanvas;
+      console.log(`✂️ BROWSER: Cropped to element coordinates`);
+    }
+    
+    const originalWidth = finalCanvas.width;
+    const originalHeight = finalCanvas.height;
     
     console.log(`🖼️ BROWSER: Canvas captured, original size: ${originalWidth}x${originalHeight}`);
     
     // Apply AI-friendly processing
-    const processedCanvas = await processCanvas(canvas, params);
+    const processedCanvas = await processCanvas(finalCanvas, params);
     const finalWidth = processedCanvas.width;
     const finalHeight = processedCanvas.height;
     
