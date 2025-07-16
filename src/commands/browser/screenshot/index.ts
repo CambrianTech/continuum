@@ -27,7 +27,7 @@ export { ScreenshotBase } from './shared/ScreenshotBase';
 export { ScreenshotClient, clientScreenshot } from './client/ScreenshotClient';
 
 // Server exports
-export { ScreenshotCommand } from './server/ScreenshotCommand';
+export { ScreenshotCommand } from './ScreenshotCommand';
 
 // Backward compatibility (deprecated)
 export { clientScreenshot as legacyClientScreenshot } from './client/ScreenshotClient';

@@ -2,7 +2,7 @@
   "name": "file-write-command",
   "version": "1.0.0",
   "description": "File write command for text content",
-  "main": "server/FileWriteCommand.ts",
+  "main": "index.ts",
   "type": "module",
   "continuum": {
     "type": "command",
