@@ -87,8 +87,17 @@ start_daemon() {
     echo "🚀 Starting Continuum daemon system (development mode)..."
     nohup npm run dev > /dev/null 2>&1 &
   elif [ -f "package.json" ] && command -v npm > /dev/null 2>&1; then
-    echo "🚀 Starting Continuum daemon system (npm)..."
+    # Check if npm start would cause circular dependency (calling ./continuum)
     if npm run | grep -q "start"; then
+      # Check if npm start contains reference to ./continuum
+      if npm run start 2>/dev/null | grep -q "./continuum"; then
+        echo "❌ CIRCULAR DEPENDENCY DETECTED!"
+        echo "   npm start calls ./continuum but main.ts is missing"
+        echo "   This would create an infinite loop"
+        echo "   Please restore main.ts or fix the npm start script"
+        exit 1
+      fi
+      echo "🚀 Starting Continuum daemon system (npm)..."
       nohup npm start > /dev/null 2>&1 &
     else
       nohup npm run dev > /dev/null 2>&1 &
