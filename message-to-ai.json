@@ -1,8 +1,0 @@
-{
-  "type": "user_request",
-  "timestamp": "2025-06-02T07:30:00.000Z",
-  "message": "Hey AI! The user's web console isn't refreshing properly. Can you help us fix the WebSocket connection? They want to be able to talk to you directly. What's the best way to communicate with you? Also, what's your current status?",
-  "from": "claude_code",
-  "priority": "high",
-  "request_id": "comm_fix_001"
-}
