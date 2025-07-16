@@ -12,7 +12,7 @@
  */
 
 import { ScreenshotBase, ScreenshotBaseOptions, ScreenshotCaptureResult } from '../shared/ScreenshotBase';
-import type { ScreenshotClientRequest, ScreenshotResult, ScreenshotFormat } from '../ScreenshotTypes';
+import type { ScreenshotClientRequest, ScreenshotResult, ScreenshotFormat } from '../shared/ScreenshotTypes';
 import { RemoteExecutionResponse } from '../../../../ui/continuum-browser-client/types/WebSocketTypes';
 
 interface ScreenshotClientParams extends ScreenshotClientRequest {

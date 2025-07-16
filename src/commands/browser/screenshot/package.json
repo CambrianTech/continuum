@@ -15,8 +15,8 @@
     ],
     "actions": ["screenshot", "capture", "snap"],
     "exports": {
-      "ScreenshotCommand": "./ScreenshotCommand.ts",
-      "ScreenshotHandler": "./ScreenshotHandler.ts"
+      "ScreenshotCommand": "./server/ScreenshotCommand.ts",
+      "ScreenshotHandler": "./server/ScreenshotHandler.ts"
     },
     "dependencies": [],
     "interfaces": [],

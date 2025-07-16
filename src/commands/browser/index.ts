@@ -5,8 +5,12 @@
  * This file should export all commands in this category.
  */
 
-// TODO: Export all browser commands here
-// Example:
-// export { SomeCommand } from './some-command/SomeCommand.js';
+// Screenshot command module
+export * from './screenshot';
 
-console.warn('browser-commands: Module structure created but commands not yet exported');
+// Other browser commands
+export { BrowserCommand } from './browser/BrowserCommand';
+export { BrowserConsoleCommand } from './console/BrowserConsoleCommand';
+export { JSExecuteCommand } from './js-execute/JSExecuteCommand';
+export { PromisejsCommand } from './promisejs/PromisejsCommand';
+export { WidgetInspectCommand } from './widget-inspect/WidgetInspectCommand';

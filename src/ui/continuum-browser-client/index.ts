@@ -10,7 +10,7 @@ import { WidgetServerControls } from '../components/shared/WidgetServerControls'
 import 'widget-discovery';
 
 // Import screenshot client functionality
-import '../../commands/browser/screenshot/ScreenshotClient';
+import '../../commands/browser/screenshot/client/ScreenshotClient';
 
 // Create single global instance
 const continuum = new ContinuumBrowserClient();

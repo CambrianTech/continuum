@@ -8,7 +8,7 @@
  * - Unified element targeting system
  */
 
-import { ScreenshotFormat } from '../ScreenshotTypes';
+import { ScreenshotFormat } from './ScreenshotTypes';
 
 export interface ScreenshotBaseOptions {
   selector?: string;
