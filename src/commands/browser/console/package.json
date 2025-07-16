@@ -6,7 +6,7 @@
   "type": "module",
   "continuum": {
     "type": "command",
-    "command": "browser-console",
+    "command": "console",
     "category": "browser",
     "capabilities": [
       "console-interaction",

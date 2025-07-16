@@ -5,8 +5,8 @@
  * Integrates with session console logging to capture execution results
  */
 
-import { BaseCommand, CommandDefinition } from '../../core/base-command/BaseCommand';
-import { CommandResult } from '../../../types/CommandTypes';
+import { BaseCommand } from '../../core/base-command/BaseCommand';
+import type { CommandDefinition, CommandResult } from '../../core/base-command/BaseCommand';
 
 export interface JSExecuteOptions {
   script: string;

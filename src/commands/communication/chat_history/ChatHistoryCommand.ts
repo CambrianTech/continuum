@@ -3,7 +3,7 @@
  */
 
 import { BaseCommand } from '../../core/base-command/BaseCommand';
-import { CommandDefinition, CommandResult } from '../../../types/CommandTypes';
+import type { CommandDefinition, CommandResult } from '../../core/base-command/BaseCommand';
 
 // Default room from JSON configuration - first room alphabetically  
 const DEFAULT_ROOM_ID = 'general';
