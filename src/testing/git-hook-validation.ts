@@ -186,8 +186,9 @@ async function runGitHookValidation(): Promise<void> {
     console.log('⏰ Waiting for screenshots to be written...');
     await new Promise(resolve => setTimeout(resolve, 3000));
     
-    // Find the current session directory
-    const sessionDir = '.continuum/sessions/user/shared';
+    // Find the current session directory (use working directory like BaseFileCommand)
+    const workingDir = process.cwd();
+    const sessionDir = path.join(workingDir, '.continuum', 'sessions', 'user', 'shared');
     const sessionDirs = await fs.readdir(sessionDir);
     
     if (sessionDirs.length === 0) {

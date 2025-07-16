@@ -53,8 +53,9 @@ export abstract class BaseFileCommand extends BaseCommand {
     } catch (error) {
       // Fallback during development
       console.warn('ContinuumDirectoryDaemon delegation failed, using fallback:', error);
-      const homeDir = typeof process !== 'undefined' ? (process.env.HOME || process.env.USERPROFILE || process.cwd()) : '';
-      return pathUtils.join(homeDir, '.continuum');
+      // Use working directory for git hook validation, not user home directory
+      const workingDir = typeof process !== 'undefined' ? process.cwd() : '';
+      return pathUtils.join(workingDir, '.continuum');
     }
   }
 
@@ -317,8 +318,9 @@ export abstract class BaseFileCommand extends BaseCommand {
     
     switch (operation) {
       case DirectoryOperation.GET_ROOT_DIRECTORY:
-        const homeDir = process.env.HOME || process.env.USERPROFILE || process.cwd();
-        const rootPath = pathUtils.join(homeDir, '.continuum');
+        // Use working directory for git hook validation, not user home directory
+        const workingDir = process.cwd();
+        const rootPath = pathUtils.join(workingDir, '.continuum');
         await fs.mkdir(rootPath, { recursive: true });
         return { rootPath };
       default:

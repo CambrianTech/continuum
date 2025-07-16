@@ -12,8 +12,8 @@ import type { ContinuumAPI, ContinuumState, CommandResult } from './types/Browse
 import type { CommandExecuteData } from './types/WebSocketTypes';
 import { ConsoleForwarder } from './console/ConsoleForwarder';
 import { WebSocketManager } from './connection/WebSocketManager';
-import type { FileOperationParams } from '../../commands/file/shared/FileTypes';
-import { FileSaveClient } from '../../commands/file/client/FileSaveClient';
+import type { FileOperationParams } from '../../commands/file/client-exports';
+import { FileSaveClient } from '../../commands/file/client-exports';
 import '../../commands/browser/screenshot/client/ScreenshotClient'; // Auto-registers screenshot handler
 
 export class ContinuumBrowserClient implements ContinuumAPI {

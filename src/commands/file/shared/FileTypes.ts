@@ -126,3 +126,28 @@ export interface FileCommandContext {
   artifactType: ArtifactType;
   metadata?: Record<string, any>;
 }
+
+/**
+ * FileSave client options
+ */
+export interface FileSaveClientOptions {
+  content: string | Uint8Array;
+  filename: string;
+  artifactType?: ArtifactType | undefined;
+}
+
+/**
+ * FileSave client result
+ */
+export interface FileSaveClientResult {
+  success: boolean;
+  data?: {
+    filename: string;
+    filepath: string;
+    size: number;
+    artifactType: ArtifactType;
+    sessionId: string;
+    timestamp: string;
+  };
+  error?: string;
+}

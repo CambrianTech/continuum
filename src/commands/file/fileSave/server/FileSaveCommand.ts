@@ -6,20 +6,10 @@
  * directory for the current session. Built on the unified file system architecture.
  */
 
-import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
-import { BaseFileCommand, FileSystemOperation } from '../shared/BaseFileCommand';
-import { ArtifactType } from '../shared/FileTypes';
+import { CommandDefinition, ContinuumContext, CommandResult } from '../../../core/base-command/BaseCommand';
+import { BaseFileCommand, FileSystemOperation } from '../../shared/BaseFileCommand';
+import { ArtifactType, FileSaveClientResult } from '../../shared/FileTypes';
 import * as path from 'path';
-
-export interface FileSaveParams {
-  content: string | Buffer;
-  filename: string;
-  sessionId?: string;
-  encoding?: 'base64' | 'binary' | 'utf8';
-  artifactType?: ArtifactType;
-  directory?: string; // Override default location
-  marshalId?: string; // For command chaining correlation
-}
 
 export class FileSaveCommand extends BaseFileCommand {
   static getDefinition(): CommandDefinition {
@@ -45,9 +35,12 @@ export class FileSaveCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: FileSaveParams, _context?: ContinuumContext): Promise<CommandResult> {
+  static async execute(params: any, context?: ContinuumContext): Promise<CommandResult> {
     try {
-      // 1. Process content based on encoding
+      // 1. Get session ID from context if not provided in params
+      const sessionId = params.sessionId || context?.sessionId;
+
+      // 2. Process content based on encoding
       let processedContent: Buffer;
       
       if (Buffer.isBuffer(params.content)) {
@@ -67,50 +60,53 @@ export class FileSaveCommand extends BaseFileCommand {
         throw new Error('Content must be a string or Buffer');
       }
 
-      // 2. Default artifact type to screenshot if not specified
+      // 3. Default artifact type to screenshot if not specified
       const artifactType = params.artifactType || ArtifactType.SCREENSHOT;
 
-      // 3. Get target directory (defaults to screenshots directory for session)
+      // 4. Get target directory (defaults to screenshots directory for session)
       const targetPath = await this.getTargetPath({
         filename: params.filename,
-        sessionId: params.sessionId,
+        sessionId: sessionId,
         artifactType: artifactType,
         directory: params.directory
       });
       
-      // 4. Ensure target directory exists
+      // 5. Ensure target directory exists
       await this.ensureDirectoryExists(path.dirname(targetPath));
       
-      // 5. Write file using ContinuumFileSystemDaemon delegation
+      // 6. Write file using ContinuumFileSystemDaemon delegation
       await this.delegateToContinuumFileSystemDaemon(FileSystemOperation.WRITE_FILE, {
         path: targetPath,
         content: processedContent,
         encoding: undefined // Binary data, no encoding
       });
       
-      // 6. Log the save operation via daemon delegation
+      // 7. Log the save operation via daemon delegation
       await this.logFileOperation('save', targetPath, {
         artifactType: artifactType,
-        sessionId: params.sessionId,
+        sessionId: sessionId,
         marshalId: params.marshalId,
         size: processedContent.length,
         originalEncoding: params.encoding,
         contentType: this.detectContentType(params.filename)
       });
       
-      return this.createSuccessResult(
-        `File saved successfully: ${params.filename}`,
-        {
+      // 8. Create result using the specific FileSaveClientResult type
+      const result: FileSaveClientResult = {
+        success: true,
+        data: {
           filename: params.filename,
           filepath: targetPath,
           size: processedContent.length,
           artifactType: artifactType,
-          sessionId: params.sessionId,
-          marshalId: params.marshalId,
-          contentType: this.detectContentType(params.filename),
-          encoding: params.encoding || 'binary',
+          sessionId: sessionId as any,
           timestamp: new Date().toISOString()
         }
+      };
+      
+      return this.createSuccessResult(
+        `File saved successfully: ${params.filename}`,
+        result
       );
 
     } catch (error) {
