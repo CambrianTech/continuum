@@ -12,7 +12,8 @@ import type { ContinuumAPI, ContinuumState, CommandResult } from './types/Browse
 import type { CommandExecuteData } from './types/WebSocketTypes';
 import { ConsoleForwarder } from './console/ConsoleForwarder';
 import { WebSocketManager } from './connection/WebSocketManager';
-import { FileOperationParams, ArtifactType } from '../../types/shared/FileOperations';
+import { FileOperationParams } from '../../types/shared/FileOperations';
+import { FileSaveClient } from '../../commands/file/client/FileSaveClient';
 import '../../commands/browser/screenshot/client/ScreenshotClient'; // Auto-registers screenshot handler
 
 export class ContinuumBrowserClient implements ContinuumAPI {
@@ -209,41 +210,23 @@ export class ContinuumBrowserClient implements ContinuumAPI {
     });
   }
 
-  // File saving functionality using shared FileOperationParams interface
+  // File saving functionality - delegates to FileSaveClient
   async fileSave(options: Pick<FileOperationParams, 'content' | 'filename' | 'artifactType'>): Promise<CommandResult> {
-    // Use the write command to save the file
-    // FileWriteCommand will handle artifact subdirectory automatically
-    const relativePath = options.filename;
-    
-    console.log(`💾 FileSave: Saving file ${relativePath}, size: ${options.content.length} bytes`);
-    
-    // Convert Uint8Array to base64 string if needed
-    let contentBase64: string;
-    if (options.content instanceof Uint8Array) {
-      // Use FileReader to safely convert large binary data to base64
-      const blob = new Blob([options.content]);
-      const reader = new FileReader();
-      
-      contentBase64 = await new Promise<string>((resolve, reject) => {
-        reader.onload = () : void => {
-          const result = reader.result as string;
-          // Remove the data URL prefix to get just the base64 content
-          const base64Data = result.split(',')[1];
-          resolve(base64Data);
-        };
-        reader.onerror = () : void => reject(reader.error);
-        reader.readAsDataURL(blob);
-      });
-    } else {
-      contentBase64 = btoa(options.content);
-    }
-    
-    return await this.execute('write', {
-      filename: relativePath,
-      content: contentBase64,
-      encoding: 'base64',
-      artifactType: options.artifactType ?? ArtifactType.SCREENSHOT
+    const fileSaveClient = FileSaveClient.getInstance();
+    const result = await fileSaveClient.saveFile({
+      content: options.content,
+      filename: options.filename,
+      artifactType: options.artifactType || undefined
     });
+    
+    if (result.success) {
+      return {
+        success: true,
+        data: result.data || {}
+      };
+    } else {
+      throw new Error(result.error || 'File save failed');
+    }
   }
 
   // Dynamic method attachment
