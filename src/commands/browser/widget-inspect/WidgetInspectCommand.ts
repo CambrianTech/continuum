@@ -12,8 +12,7 @@
  * Used by JTAG for autonomous development validation.
  */
 
-// import { BaseCommand } from '../../core/base-command/BaseCommand';
-import { CommandResult } from '../../../types/CommandTypes';
+import type { CommandResult } from '../../core/base-command/BaseCommand';
 
 export interface WidgetInspectOptions {
   selector?: string;

@@ -3,7 +3,7 @@
  */
 
 import { BaseCommand } from '../../core/base-command/BaseCommand';
-import { CommandDefinition, CommandResult } from '../../../types/CommandTypes';
+import type { CommandDefinition, CommandResult } from '../../core/base-command/BaseCommand';
 
 export class AiModelChatCommand extends BaseCommand {
   static getDefinition(): CommandDefinition {

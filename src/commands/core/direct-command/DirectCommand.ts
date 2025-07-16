@@ -24,8 +24,9 @@ export abstract class DirectCommand extends BaseCommand {
    */
   static async execute(params: any, context?: ContinuumContext): Promise<CommandResult> {
     try {
-      // Parameters are automatically parsed by UniversalCommandRegistry
-      return await this.executeOperation(params, context);
+      // Parse CLI args to JSON format if needed
+      const parsedParams = this._registryParseParams(params);
+      return await this.executeOperation(parsedParams, context);
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

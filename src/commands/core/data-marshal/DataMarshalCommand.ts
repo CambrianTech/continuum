@@ -13,7 +13,7 @@
  */
 
 import { BaseCommand } from '../base-command/BaseCommand';
-import { CommandResult } from '../../../types/CommandTypes';
+import type { CommandResult } from '../base-command/BaseCommand';
 import { COMMAND_CATEGORIES } from '../../../types/shared/CommandTypes';
 import {
   DataMarshalOperation,

@@ -5,8 +5,8 @@
  * Enables reading console output and executing console commands with session tracking
  */
 
-import { BaseCommand, CommandDefinition } from '../../core/base-command/BaseCommand';
-import { CommandResult } from '../../../types/CommandTypes';
+import { DirectCommand } from '../../core/direct-command/DirectCommand.js';
+import { CommandDefinition, CommandResult, ContinuumContext } from '../../core/base-command/BaseCommand.js';
 
 export interface BrowserConsoleOptions {
   action: 'read' | 'clear' | 'execute' | 'monitor';
@@ -17,10 +17,10 @@ export interface BrowserConsoleOptions {
   follow?: boolean; // For monitor action - stream updates
 }
 
-export class BrowserConsoleCommand extends BaseCommand {
+export class BrowserConsoleCommand extends DirectCommand {
   static getDefinition(): CommandDefinition {
     return {
-      name: 'browser-console',
+      name: 'console',
       description: 'Interact with browser console through session logging system',
       category: 'browser',
       parameters: {
@@ -63,96 +63,85 @@ export class BrowserConsoleCommand extends BaseCommand {
       examples: [
         {
           description: 'Read recent console output from session',
-          command: 'browser-console --action=read --lines=20'
+          command: 'console --action=read --lines=20'
         },
         {
           description: 'Execute console command with session tracking',
-          command: 'browser-console --action=execute --script="console.log(\"Hello from console command!\")"'
+          command: 'console --action=execute --script="console.log(\"Hello from console command!\")"'
         },
         {
           description: 'Monitor console for errors only',
-          command: 'browser-console --action=monitor --filter=error --follow=true'
+          command: 'console --action=monitor --filter=error --follow=true'
         }
       ]
     };
   }
 
-  async execute(options: BrowserConsoleOptions): Promise<CommandResult> {
-    try {
-      const { action, sessionId, lines = 50, filter = 'all' } = options;
+  protected static async executeOperation(params: BrowserConsoleOptions, _context?: ContinuumContext): Promise<CommandResult> {
+    // Apply defaults and validate required parameters
+    const options = this.applyDefaults<BrowserConsoleOptions>(params, {
+      lines: 50,
+      filter: 'all'
+    });
 
-      switch (action) {
-        case 'read':
-          return await this.readConsoleOutput(sessionId, lines, filter);
-          
-        case 'clear':
-          return await this.clearConsole(sessionId);
-          
-        case 'execute':
-          if (!options.script) {
-            return {
-              success: false,
-              error: 'Script parameter required for execute action'
-            };
-          }
-          return await this.executeConsoleScript(sessionId, options.script);
-          
-        case 'monitor':
-          return await this.monitorConsole(sessionId, filter, options.follow || false);
-          
-        default:
-          return {
-            success: false,
-            error: `Unknown console action: ${action}`
-          };
-      }
+    this.validateRequiredParams(options, ['action']);
 
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        success: false,
-        error: `Browser console command failed: ${errorMessage}`
-      };
+    const { action, sessionId, lines, filter } = options;
+
+    switch (action) {
+      case 'read':
+        return await BrowserConsoleCommand.readConsoleOutput(sessionId, lines || 50, filter || 'all');
+        
+      case 'clear':
+        return await BrowserConsoleCommand.clearConsole(sessionId);
+        
+      case 'execute':
+        if (!options.script) {
+          return this.createErrorResult('Script parameter required for execute action');
+        }
+        return await BrowserConsoleCommand.executeConsoleScript(sessionId, options.script);
+        
+      case 'monitor':
+        return await BrowserConsoleCommand.monitorConsole(sessionId, filter || 'all', options.follow || false);
+        
+      default:
+        return this.createErrorResult(`Unknown console action: ${action}`);
     }
   }
 
   /**
    * Read console output from session browser log
    */
-  private async readConsoleOutput(sessionId: string | undefined, lines: number, filter: string): Promise<CommandResult> {
+  private static async readConsoleOutput(sessionId: string | undefined, lines: number, filter: string): Promise<CommandResult> {
     try {
       // TODO: Integrate with SessionManagerDaemon to read actual browser.log
       // This would read from session.artifacts.logs.client[0]
       
-      const consoleOutput = await this.getSessionConsoleLog(sessionId);
-      const filteredOutput = this.filterConsoleOutput(consoleOutput, filter);
+      const consoleOutput = await BrowserConsoleCommand.getSessionConsoleLog(sessionId);
+      const filteredOutput = BrowserConsoleCommand.filterConsoleOutput(consoleOutput, filter);
       const recentOutput = filteredOutput.slice(-lines);
 
-      return {
-        success: true,
-        data: {
+      return this.createSuccessResult(
+        `Retrieved ${recentOutput.length} console lines (filter: ${filter})`,
+        {
           sessionId: sessionId || 'auto-detected',
           lines: recentOutput.length,
           filter,
           output: recentOutput,
           totalAvailable: filteredOutput.length
-        },
-        message: `Retrieved ${recentOutput.length} console lines (filter: ${filter})`
-      };
+        }
+      );
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        success: false,
-        error: `Failed to read console output: ${errorMessage}`
-      };
+      return this.createErrorResult(`Failed to read console output: ${errorMessage}`);
     }
   }
 
   /**
    * Clear browser console via DevTools
    */
-  private async clearConsole(sessionId: string | undefined): Promise<CommandResult> {
+  private static async clearConsole(sessionId: string | undefined): Promise<CommandResult> {
     try {
       // Generate UUID for tracking the clear operation
       const clearUUID = `clear-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -163,31 +152,27 @@ export class BrowserConsoleCommand extends BaseCommand {
         console.log('🧹 Console cleared [UUID: ${clearUUID}]');
       `;
       
-      await this.executeInBrowser(clearScript, sessionId);
+      await BrowserConsoleCommand.executeInBrowser(clearScript, sessionId);
 
-      return {
-        success: true,
-        data: {
+      return this.createSuccessResult(
+        `Console cleared [${clearUUID}]`,
+        {
           sessionId: sessionId || 'auto-detected',
           clearUUID,
           timestamp: new Date().toISOString()
-        },
-        message: `Console cleared [${clearUUID}]`
-      };
+        }
+      );
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        success: false,
-        error: `Failed to clear console: ${errorMessage}`
-      };
+      return this.createErrorResult(`Failed to clear console: ${errorMessage}`);
     }
   }
 
   /**
    * Execute JavaScript via console with session tracking
    */
-  private async executeConsoleScript(sessionId: string | undefined, script: string): Promise<CommandResult> {
+  private static async executeConsoleScript(sessionId: string | undefined, script: string): Promise<CommandResult> {
     try {
       const executionUUID = `console-exec-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       
@@ -208,33 +193,29 @@ export class BrowserConsoleCommand extends BaseCommand {
         }
       `;
 
-      const result = await this.executeInBrowser(wrappedScript, sessionId);
+      const result = await BrowserConsoleCommand.executeInBrowser(wrappedScript, sessionId);
 
-      return {
-        success: true,
-        data: {
+      return this.createSuccessResult(
+        `Console script executed [${executionUUID}]`,
+        {
           sessionId: sessionId || 'auto-detected',
           executionUUID,
           script: script.length > 100 ? script.substring(0, 100) + '...' : script,
           result,
           timestamp: new Date().toISOString()
-        },
-        message: `Console script executed [${executionUUID}]`
-      };
+        }
+      );
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        success: false,
-        error: `Console script execution failed: ${errorMessage}`
-      };
+      return this.createErrorResult(`Console script execution failed: ${errorMessage}`);
     }
   }
 
   /**
    * Monitor console output with optional live streaming
    */
-  private async monitorConsole(sessionId: string | undefined, filter: string, follow: boolean): Promise<CommandResult> {
+  private static async monitorConsole(sessionId: string | undefined, filter: string, follow: boolean): Promise<CommandResult> {
     try {
       // Start monitoring console via session console logger
       const monitorId = `monitor-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -242,12 +223,12 @@ export class BrowserConsoleCommand extends BaseCommand {
       // TODO: Integrate with SessionConsoleLogger for live monitoring
       // This would set up a listener for new console messages
       
-      const currentOutput = await this.getSessionConsoleLog(sessionId);
-      const filteredOutput = this.filterConsoleOutput(currentOutput, filter);
+      const currentOutput = await BrowserConsoleCommand.getSessionConsoleLog(sessionId);
+      const filteredOutput = BrowserConsoleCommand.filterConsoleOutput(currentOutput, filter);
 
-      return {
-        success: true,
-        data: {
+      return this.createSuccessResult(
+        `Console monitoring ${follow ? 'started' : 'snapshot taken'} [${monitorId}]`,
+        {
           sessionId: sessionId || 'auto-detected',
           monitorId,
           filter,
@@ -255,23 +236,19 @@ export class BrowserConsoleCommand extends BaseCommand {
           currentLines: filteredOutput.length,
           latestEntries: filteredOutput.slice(-10), // Last 10 entries
           monitoring: follow ? 'active' : 'snapshot'
-        },
-        message: `Console monitoring ${follow ? 'started' : 'snapshot taken'} [${monitorId}]`
-      };
+        }
+      );
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        success: false,
-        error: `Console monitoring failed: ${errorMessage}`
-      };
+      return this.createErrorResult(`Console monitoring failed: ${errorMessage}`);
     }
   }
 
   /**
    * Get session console log content
    */
-  private async getSessionConsoleLog(_sessionId: string | undefined): Promise<string[]> {
+  private static async getSessionConsoleLog(_sessionId: string | undefined): Promise<string[]> {
     // TODO: Integrate with SessionManagerDaemon
     // This would read from the actual session browser.log file
     
@@ -288,7 +265,7 @@ export class BrowserConsoleCommand extends BaseCommand {
   /**
    * Filter console output by level
    */
-  private filterConsoleOutput(output: string[], filter: string): string[] {
+  private static filterConsoleOutput(output: string[], filter: string): string[] {
     if (filter === 'all') {
       return output;
     }
@@ -300,7 +277,7 @@ export class BrowserConsoleCommand extends BaseCommand {
   /**
    * Execute JavaScript in browser via DevTools
    */
-  private async executeInBrowser(script: string, sessionId: string | undefined): Promise<any> {
+  private static async executeInBrowser(script: string, sessionId: string | undefined): Promise<any> {
     // TODO: Integrate with ChromiumDevToolsAdapter
     // This would use the same DevTools connection as SessionConsoleLogger
     
