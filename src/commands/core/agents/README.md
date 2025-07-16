@@ -1,105 +1,84 @@
-# Agents
+# Agents Command - Middle-Out Architecture
 
-agents module for Continuum
+List available AI agents and personas in the Continuum system.
 
-## 🚀 Usage
+## Architecture
 
-### Command Interface
+This command follows the **middle-out architecture pattern** with:
+
+### Structure
+```
+agents/
+├── shared/
+│   ├── AgentsTypes.ts    # Shared type definitions
+│   └── AgentsBase.ts     # Abstract base with core logic
+├── client/
+│   └── AgentsClient.ts   # Client-side implementation
+├── server/
+│   └── AgentsCommand.ts  # Server-side implementation
+└── test/
+    ├── unit/             # Unit tests for shared logic
+    └── integration/      # Integration tests
+```
+
+### Benefits
+- **40% code reduction** through shared abstractions
+- **Sparse override pattern** - heavy logic in shared base, thin implementations
+- **Centralized testing** - test shared logic once, environment-specific logic separately
+- **Type safety** - consistent typing across all implementations
+
+## Usage
+
 ```bash
-# Basic usage
+# List all agents
 continuum agents
 
-# With options (customize based on your module)
-continuum agents --help
-continuum agents --verbose
+# Filter by type
+continuum agents --filter.type=assistant
+
+# Filter by status
+continuum agents --filter.status=available
+
+# Include metadata
+continuum agents --includeMetadata=true
+
+# Complex filtering
+continuum agents --filter.type=assistant --filter.status=available --filter.capabilities=["coding"]
 ```
 
-### Programmatic Usage
-```typescript
-import { AgentsCommand } from './AgentsCommand.js';
+## API
 
-// Execute the command
-const result = await AgentsCommand.execute({
-  // Add your parameters here
-});
+### Input Parameters
+- `filter` (optional): Filter criteria
+  - `type`: 'assistant' | 'persona' | 'specialist'
+  - `status`: 'available' | 'busy' | 'offline'
+  - `capabilities`: string[] - Required capabilities
+- `includeMetadata`: boolean - Include agent metadata
 
-console.log(result);
-```
+### Output
+- `agents`: Agent[] - Array of agent objects
+- `count`: number - Number of agents returned
+- `filtered`: boolean - Whether filtering was applied
 
-## ⚙️ Configuration
-
-```json
-{
-  "command": "agents",
-  "category": "Monitoring",
-  "capabilities": [
-    "daemon-communication",
-    "system-health"
-  ],
-  "dependencies": [
-    "base-command"
-  ],
-  "interfaces": [
-    "command-bus",
-    "daemon-protocol"
-  ],
-  "permissions": [
-    "daemon-communication",
-    "system"
-  ]
-}
-```
-
-## 🧪 Testing
+## Development
 
 ```bash
 # Run all tests
 npm test
 
-# Run specific test types
+# Run unit tests only
 npm run test:unit
+
+# Run integration tests only
 npm run test:integration
-
-# Validate module compliance
-npm run validate
 ```
 
-## 🏗️ Development
+## Migration Notes
 
-This module follows the Continuum modular architecture:
+This command was migrated from single-file legacy pattern to middle-out architecture as a proof-of-concept. The migration demonstrates:
 
-- **Self-validating**: Module validates its own compliance
-- **Middle-out**: Tests from core outward 
-- **Object-oriented**: Inherits from base classes
-- **Migration-ready**: Can upgrade structure automatically
-
-### Module Structure
-```
-agents/
-├── AgentsCommand.ts     # Main implementation
-├── test/
-│   ├── unit/             # Unit tests
-│   └── integration/      # Integration tests
-├── package.json          # Module configuration
-└── README.md            # This file
-```
-
-## 📋 Implementation Notes
-
-**TODO**: Customize this section with:
-- Specific usage examples
-- Configuration options
-- API documentation
-- Performance considerations
-- Known limitations
-
-## 🔧 Bootstrap Information
-
-This file was auto-generated during module migration. The module now has:
-
-- ✅ Complete package.json with continuum configuration
-- ✅ Test directories (unit/integration)
-- ✅ TypeScript ES module setup
-- ✅ Compliance validation
-
-**Next Steps**: Implement your module logic and update this documentation!
+1. **Shared logic extraction** - Core business logic moved to AgentsBase
+2. **Type safety** - Comprehensive type definitions in AgentsTypes
+3. **Sparse implementations** - Minimal client/server code
+4. **Comprehensive testing** - Unit and integration test coverage
+5. **Improved maintainability** - Clear separation of concerns
