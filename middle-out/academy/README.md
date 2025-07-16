@@ -10,6 +10,7 @@ The Academy transforms AI training from passive learning into competitive develo
 
 ### **🏗️ Architecture & Implementation**
 - **[architecture-overview.md](architecture-overview.md)** - Complete Academy architecture with implemented classes, stubs to complete, and development roadmap
+- **[evolutionary-ai-architecture.md](evolutionary-ai-architecture.md)** - **🧬 NEW** Digital civilization with evolutionary pressure - genetic algorithms applied to LoRA-based AI personas
 
 ### **🔍 Persona Discovery & Assembly**
 - **[persona-discovery.md](persona-discovery.md)** - **🆕 NEW** Efficient vector search + benchmark-driven ranking for autonomous persona selection

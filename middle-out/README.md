@@ -83,6 +83,7 @@ This directory contains the complete architectural documentation for Continuum's
 
 #### 🎓 [Academy Training](academy/)
 - **[README.md](academy/README.md)** - Complete Academy training system overview
+- **[evolutionary-ai-architecture.md](academy/evolutionary-ai-architecture.md)** - **🧬 NEW** Digital civilization with evolutionary pressure - genetic algorithms applied to LoRA-based AI personas
 - **[persona-discovery.md](academy/persona-discovery.md)** - **🆕 NEW** Efficient vector search + benchmark-driven persona selection algorithms
 - **[autonomous-selection.md](academy/autonomous-selection.md)** - **🆕 NEW** Hyperintelligent genome assembly with deep component understanding
 - **[algorithmic-testing.md](academy/algorithmic-testing.md)** - **🆕 NEW** Test-driven algorithm validation with real performance metrics

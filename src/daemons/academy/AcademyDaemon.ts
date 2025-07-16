@@ -8,12 +8,20 @@ import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { DaemonType } from '../base/DaemonTypes';
 import { LocalAcademyTrainer } from './LocalAcademyTrainer';
 import { LoRADiscovery } from './LoRADiscovery';
+import { LocalEvolutionEngine } from './EvolutionEngine';
+import { 
+  PersonaGenome, 
+  EvolutionaryPressure, 
+  EcosystemMetrics,
+  AcademyEcosystem 
+} from './shared/AcademyTypes';
 
 export interface AcademyStatus {
   isActive: boolean;
-  currentPersonas: any[];
+  currentPersonas: PersonaGenome[];
   trainingProgress: Record<string, number>;
-  academyMode: 'idle' | 'training' | 'evaluating';
+  academyMode: 'idle' | 'training' | 'evaluating' | 'evolving';
+  ecosystem: AcademyEcosystem;
 }
 
 export interface VectorSpaceEvolution {
@@ -69,19 +77,43 @@ export class AcademyDaemon extends BaseDaemon {
   private p2pNetworkStatus!: P2PNetworkStatus;
   private localTrainer!: LocalAcademyTrainer;
   private loraDiscovery!: LoRADiscovery;
+  private evolutionEngine!: LocalEvolutionEngine;
+  private academyEcosystem!: AcademyEcosystem;
 
   protected async onStart(): Promise<void> {
     this.log('🎓 Starting Academy Daemon...');
     
+    // Initialize Academy ecosystem
+    this.academyEcosystem = {
+      personas: new Map(),
+      activeSessions: new Map(),
+      challengeLibrary: [],
+      evolutionHistory: [],
+      ecosystemMetrics: {
+        totalPersonas: 0,
+        activePersonas: 0,
+        averageFitness: 0,
+        generationNumber: 0,
+        diversityIndex: 0,
+        innovationRate: 0,
+        graduationRate: 0,
+        extinctionRate: 0,
+        emergentCapabilities: [],
+        ecosystemAge: 0
+      }
+    };
+
     // Initialize Academy state
     this.academyStatus = {
       isActive: true,
       currentPersonas: [],
       trainingProgress: {},
-      academyMode: 'idle'
+      academyMode: 'idle',
+      ecosystem: this.academyEcosystem
     };
 
-    // Initialize local training components
+    // Initialize evolution engine and training components
+    this.evolutionEngine = new LocalEvolutionEngine();
     this.localTrainer = new LocalAcademyTrainer();
     this.loraDiscovery = new LoRADiscovery();
 
@@ -157,6 +189,18 @@ export class AcademyDaemon extends BaseDaemon {
 
       case 'get_comprehensive_status':
         return await this.getComprehensiveStatus(message.data);
+        
+      case 'start_evolution':
+        return await this.startEvolution(message.data);
+        
+      case 'get_evolution_status':
+        return await this.getEvolutionStatus(message.data);
+        
+      case 'get_ecosystem_metrics':
+        return await this.getEcosystemMetrics(message.data);
+        
+      case 'get_persona_lineage':
+        return await this.getPersonaLineage(message.data);
         
       case 'get_capabilities':
         return {
@@ -541,6 +585,445 @@ export class AcademyDaemon extends BaseDaemon {
   }
 
   /**
+   * Start evolution process - The Digital Cambrian Explosion begins!
+   */
+  private async startEvolution(data: any): Promise<DaemonResponse> {
+    const { generations = 5, population_size = 10, evolutionary_pressure } = data;
+    
+    this.log(`🧬 Starting Academy Evolution: ${generations} generations, ${population_size} personas`);
+    
+    try {
+      this.academyStatus.academyMode = 'evolving';
+      
+      // Create initial population if ecosystem is empty
+      if (this.academyEcosystem.personas.size === 0) {
+        await this.createInitialPopulation(population_size);
+      }
+      
+      // Get current personas
+      const currentPersonas = Array.from(this.academyEcosystem.personas.values());
+      
+      // Set up evolutionary pressure
+      const pressure: EvolutionaryPressure = evolutionary_pressure || {
+        survivalRate: 0.6,
+        selectionCriteria: {
+          performance: 0.4,
+          innovation: 0.2,
+          adaptation: 0.2,
+          collaboration: 0.15,
+          teaching: 0.05
+        },
+        environmentalFactors: ['competition', 'resource_scarcity'],
+        competitionLevel: 0.5,
+        collaborationRequirement: 0.3
+      };
+      
+      // Run evolution for specified generations
+      let evolvedPersonas = currentPersonas;
+      for (let generation = 1; generation <= generations; generation++) {
+        this.log(`⚡ Running Evolution Generation ${generation}/${generations}`);
+        
+        // Create sandboxed sessions for each persona
+        await this.createEvolutionSessions(evolvedPersonas);
+        
+        // Run one generation of evolution
+        evolvedPersonas = await this.evolutionEngine.runGeneration(evolvedPersonas, pressure);
+        
+        // Update ecosystem with new personas
+        await this.updateEcosystem(evolvedPersonas);
+        
+        // Clean up sessions after generation
+        await this.cleanupEvolutionSessions();
+        
+        this.log(`✅ Generation ${generation} complete: ${evolvedPersonas.length} personas`);
+      }
+      
+      this.academyStatus.academyMode = 'idle';
+      this.academyStatus.currentPersonas = evolvedPersonas;
+      
+      return {
+        success: true,
+        data: {
+          message: `Evolution completed successfully: ${generations} generations`,
+          final_population: evolvedPersonas.length,
+          ecosystem_metrics: this.evolutionEngine.getEcosystemMetrics(),
+          ecosystem_health: this.evolutionEngine.getEcosystemHealth(),
+          generations_completed: generations
+        }
+      };
+      
+    } catch (error) {
+      this.academyStatus.academyMode = 'idle';
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`❌ Evolution failed: ${errorMessage}`, 'error');
+      
+      return {
+        success: false,
+        error: errorMessage
+      };
+    }
+  }
+  
+  /**
+   * Get current evolution status
+   */
+  private async getEvolutionStatus(data: any): Promise<DaemonResponse> {
+    const { include_personas = false } = data;
+    
+    const status = {
+      mode: this.academyStatus.academyMode,
+      ecosystem_metrics: this.evolutionEngine.getEcosystemMetrics(),
+      ecosystem_health: this.evolutionEngine.getEcosystemHealth(),
+      total_personas: this.academyEcosystem.personas.size,
+      active_sessions: this.academyEcosystem.activeSessions.size,
+      personas: include_personas ? Array.from(this.academyEcosystem.personas.values()) : undefined
+    };
+    
+    return {
+      success: true,
+      data: status
+    };
+  }
+  
+  /**
+   * Get ecosystem metrics
+   */
+  private async getEcosystemMetrics(data: any): Promise<DaemonResponse> {
+    const { detailed = false } = data;
+    
+    const metrics = this.evolutionEngine.getEcosystemMetrics();
+    const health = this.evolutionEngine.getEcosystemHealth();
+    
+    const response = {
+      metrics,
+      health,
+      timestamp: new Date().toISOString()
+    };
+    
+    if (detailed) {
+      response['detailed_analysis'] = {
+        role_distribution: this.calculateRoleDistribution(),
+        specialization_distribution: this.calculateSpecializationDistribution(),
+        lineage_statistics: this.calculateLineageStatistics()
+      };
+    }
+    
+    return {
+      success: true,
+      data: response
+    };
+  }
+  
+  /**
+   * Get persona lineage information
+   */
+  private async getPersonaLineage(data: any): Promise<DaemonResponse> {
+    const { persona_id } = data;
+    
+    if (persona_id) {
+      const persona = this.academyEcosystem.personas.get(persona_id);
+      if (!persona) {
+        return {
+          success: false,
+          error: `Persona not found: ${persona_id}`
+        };
+      }
+      
+      return {
+        success: true,
+        data: {
+          persona_id,
+          lineage: persona.lineage,
+          evolution: persona.evolution,
+          ancestors: this.getAncestorDetails(persona),
+          descendants: this.getDescendantDetails(persona)
+        }
+      };
+    }
+    
+    // Return lineage tree for all personas
+    const lineageTree = this.buildLineageTree();
+    
+    return {
+      success: true,
+      data: {
+        lineage_tree: lineageTree,
+        total_lineages: lineageTree.length,
+        average_generation: this.calculateAverageGeneration()
+      }
+    };
+  }
+  
+  /**
+   * Create initial population for evolution
+   */
+  private async createInitialPopulation(size: number): Promise<void> {
+    this.log(`🌱 Creating initial population of ${size} personas`);
+    
+    const specializations = ['typescript', 'testing', 'architecture', 'ui_design', 'debugging', 'optimization'];
+    const names = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta', 'Eta', 'Theta', 'Iota', 'Kappa'];
+    
+    for (let i = 0; i < size; i++) {
+      const specialization = specializations[i % specializations.length];
+      const name = `${specialization}${names[i % names.length]}`;
+      
+      // Create persona genome using existing spawn logic
+      const spawnResult = await this.spawnPersona({
+        persona_name: name,
+        specialization: specialization,
+        evolution_mode: 'spawning'
+      });
+      
+      if (spawnResult.success && spawnResult.data) {
+        // Convert spawn result to PersonaGenome format
+        const personaGenome = this.convertSpawnResultToGenome(spawnResult.data, specialization);
+        this.academyEcosystem.personas.set(personaGenome.id, personaGenome);
+      }
+    }
+    
+    this.log(`✅ Initial population created: ${this.academyEcosystem.personas.size} personas`);
+  }
+  
+  /**
+   * Create sandboxed sessions for evolution
+   */
+  private async createEvolutionSessions(personas: PersonaGenome[]): Promise<void> {
+    this.log(`🏗️ Creating sandboxed sessions for ${personas.length} personas`);
+    
+    for (const persona of personas) {
+      // Create isolated session for each persona
+      const sessionId = `evolution_${persona.id}_${Date.now()}`;
+      
+      // TODO: Integrate with actual session system
+      // For now, we'll track sessions in our ecosystem
+      this.academyEcosystem.activeSessions.set(sessionId, {
+        id: sessionId,
+        sessionType: 'individual',
+        participants: [persona],
+        challenges: [],
+        results: [],
+        startTime: new Date(),
+        evolutionaryPressure: {
+          survivalRate: 0.6,
+          selectionCriteria: {
+            performance: 0.4,
+            innovation: 0.2,
+            adaptation: 0.2,
+            collaboration: 0.15,
+            teaching: 0.05
+          },
+          environmentalFactors: ['competition'],
+          competitionLevel: 0.5,
+          collaborationRequirement: 0.3
+        },
+        sessionOutcome: {
+          survivors: [],
+          graduates: [],
+          mutations: [],
+          newRoles: {},
+          emergentBehaviors: [],
+          ecosystem_health: {
+            diversity: 0,
+            innovation: 0,
+            collaboration: 0,
+            sustainability: 0,
+            growth: 0
+          }
+        }
+      });
+    }
+  }
+  
+  /**
+   * Update ecosystem with evolved personas
+   */
+  private async updateEcosystem(personas: PersonaGenome[]): Promise<void> {
+    // Clear existing personas
+    this.academyEcosystem.personas.clear();
+    
+    // Add evolved personas
+    for (const persona of personas) {
+      this.academyEcosystem.personas.set(persona.id, persona);
+    }
+    
+    // Update ecosystem metrics
+    this.academyEcosystem.ecosystemMetrics = this.evolutionEngine.getEcosystemMetrics();
+  }
+  
+  /**
+   * Clean up evolution sessions
+   */
+  private async cleanupEvolutionSessions(): Promise<void> {
+    this.academyEcosystem.activeSessions.clear();
+  }
+  
+  /**
+   * Convert spawn result to PersonaGenome format
+   */
+  private convertSpawnResultToGenome(spawnData: any, specialization: string): PersonaGenome {
+    // This converts the existing spawn format to our new PersonaGenome format
+    // TODO: Implement proper conversion logic
+    return {
+      id: spawnData.persona_id,
+      identity: {
+        name: spawnData.persona_name,
+        role: 'student',
+        generation: 0,
+        specialization: specialization,
+        personality: {
+          creativity: 0.5,
+          analytical: 0.5,
+          helpfulness: 0.8,
+          competitiveness: 0.4,
+          patience: 0.6,
+          innovation: 0.5
+        },
+        goals: [`master_${specialization}`, 'collaborate_effectively']
+      },
+      knowledge: {
+        domain: specialization,
+        expertise: [specialization],
+        competencies: { [specialization]: 0.6 },
+        experiencePoints: 0
+      },
+      behavior: {
+        adaptationRate: 0.5,
+        communicationStyle: 'direct',
+        decisionMakingStyle: 'analytical',
+        riskTolerance: 0.4,
+        collaborationPreference: 0.6
+      },
+      evolution: {
+        generation: 0,
+        parentGenomes: [],
+        mutationHistory: [],
+        evolutionStage: 'spawning',
+        fitnessScore: 0.5,
+        adaptationSuccess: 0,
+        survivalRounds: 0,
+        evolutionPressure: []
+      },
+      substrate: {
+        loraIds: spawnData.lora_stack?.layers?.map(l => l.name) || [],
+        memoryPatterns: ['working_memory'],
+        processingStyle: 'sequential',
+        adaptationMechanisms: ['reinforcement_learning'],
+        vectorPosition: Array.from({ length: 10 }, () => Math.random())
+      },
+      reproduction: {
+        mutationRate: 0.1,
+        reproductionEligibility: true,
+        breedingSuccess: 0,
+        offspringCount: 0
+      },
+      lineage: {
+        ancestors: [],
+        descendants: [],
+        siblings: [],
+        generation: 0,
+        lineageStrength: 0.5,
+        emergentTraits: []
+      }
+    };
+  }
+  
+  // Helper methods for analysis
+  private calculateRoleDistribution(): Record<string, number> {
+    const distribution: Record<string, number> = {};
+    for (const persona of this.academyEcosystem.personas.values()) {
+      distribution[persona.identity.role] = (distribution[persona.identity.role] || 0) + 1;
+    }
+    return distribution;
+  }
+  
+  private calculateSpecializationDistribution(): Record<string, number> {
+    const distribution: Record<string, number> = {};
+    for (const persona of this.academyEcosystem.personas.values()) {
+      const spec = persona.identity.specialization;
+      distribution[spec] = (distribution[spec] || 0) + 1;
+    }
+    return distribution;
+  }
+  
+  private calculateLineageStatistics(): any {
+    const personas = Array.from(this.academyEcosystem.personas.values());
+    const generations = personas.map(p => p.evolution.generation);
+    
+    return {
+      total_personas: personas.length,
+      max_generation: Math.max(...generations),
+      avg_generation: generations.reduce((a, b) => a + b, 0) / generations.length,
+      lineages_with_descendants: personas.filter(p => p.lineage.descendants.length > 0).length
+    };
+  }
+  
+  private getAncestorDetails(persona: PersonaGenome): any[] {
+    return persona.lineage.ancestors.map(ancestorId => {
+      const ancestor = this.academyEcosystem.personas.get(ancestorId);
+      return ancestor ? {
+        id: ancestorId,
+        name: ancestor.identity.name,
+        generation: ancestor.evolution.generation,
+        specialization: ancestor.identity.specialization
+      } : { id: ancestorId, name: 'Unknown', generation: -1, specialization: 'unknown' };
+    });
+  }
+  
+  private getDescendantDetails(persona: PersonaGenome): any[] {
+    return persona.lineage.descendants.map(descendantId => {
+      const descendant = this.academyEcosystem.personas.get(descendantId);
+      return descendant ? {
+        id: descendantId,
+        name: descendant.identity.name,
+        generation: descendant.evolution.generation,
+        specialization: descendant.identity.specialization
+      } : { id: descendantId, name: 'Unknown', generation: -1, specialization: 'unknown' };
+    });
+  }
+  
+  private buildLineageTree(): any[] {
+    const personas = Array.from(this.academyEcosystem.personas.values());
+    const tree = [];
+    
+    // Build family trees starting from generation 0
+    const founders = personas.filter(p => p.evolution.generation === 0);
+    
+    for (const founder of founders) {
+      tree.push({
+        id: founder.id,
+        name: founder.identity.name,
+        generation: founder.evolution.generation,
+        specialization: founder.identity.specialization,
+        descendants: this.buildDescendantTree(founder, personas)
+      });
+    }
+    
+    return tree;
+  }
+  
+  private buildDescendantTree(ancestor: PersonaGenome, allPersonas: PersonaGenome[]): any[] {
+    const descendants = allPersonas.filter(p => 
+      p.lineage.ancestors.includes(ancestor.id)
+    );
+    
+    return descendants.map(descendant => ({
+      id: descendant.id,
+      name: descendant.identity.name,
+      generation: descendant.evolution.generation,
+      specialization: descendant.identity.specialization,
+      descendants: this.buildDescendantTree(descendant, allPersonas)
+    }));
+  }
+  
+  private calculateAverageGeneration(): number {
+    const personas = Array.from(this.academyEcosystem.personas.values());
+    if (personas.length === 0) return 0;
+    
+    const totalGeneration = personas.reduce((sum, p) => sum + p.evolution.generation, 0);
+    return totalGeneration / personas.length;
+  }
+
+  /**
    * Get current Academy capabilities
    */
   public getCapabilities(): string[] {
@@ -548,6 +1031,9 @@ export class AcademyDaemon extends BaseDaemon {
       'academy-management',
       'persona-training',
       'persona-spawning',
+      'persona-evolution',
+      'ecosystem-monitoring',
+      'lineage-tracking',
       'vector-space-evolution',
       'local-lora-discovery',
       'adversarial-training',
@@ -567,6 +1053,10 @@ export class AcademyDaemon extends BaseDaemon {
       'get_training_progress',
       'start_training',
       'start_evolution_session',
+      'start_evolution',
+      'get_evolution_status',
+      'get_ecosystem_metrics',
+      'get_persona_lineage',
       'stop_training',
       'spawn_persona',
       'get_comprehensive_status'
