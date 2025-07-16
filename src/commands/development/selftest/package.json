@@ -1,25 +1,27 @@
 {
-  "name": "emotion-command",
+  "name": "selftest-command",
   "version": "1.0.0",
-  "description": "Emotion expression command for Continuum",
+  "description": "System self-testing and health verification command",
   "main": "index.ts",
   "type": "module",
   "continuum": {
     "type": "command",
-    "command": "emotion",
-    "category": "ui",
+    "command": "selftest",
+    "category": "development",
     "capabilities": [
-      "emotion-expression",
-      "continuon-animation",
-      "websocket-broadcast"
+      "health-check",
+      "daemon-validation",
+      "websocket-testing",
+      "widget-verification"
     ],
     "dependencies": [],
     "interfaces": [],
-    "permissions": ["websocket-broadcast"]
+    "permissions": ["system-read"]
   },
   "keywords": [
-    "emotion",
-    "core",
+    "selftest",
+    "health",
+    "development",
     "continuum"
   ],
   "author": "Continuum AI Platform",
