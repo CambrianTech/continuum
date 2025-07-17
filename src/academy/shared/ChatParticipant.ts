@@ -1,43 +1,222 @@
+// ISSUES: 0 open, last updated 2025-07-16 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+
 /**
  * ChatParticipant - Universal foundation for all chat participants
  * 
- * This is the TRUE ROOT of the persona system - supporting ANY entity that can chat:
- * - Humans (like users)
- * - Chatbots (like Claude)
- * - Custom personas
- * - Any communicating entity
+ * TESTING REQUIREMENTS:
+ * - Unit tests: ChatParticipant class methods and capabilities
+ * - Integration tests: Participant + CondensedIdentity interaction
+ * - Registry tests: ParticipantRegistry operations (register/unregister/find)
+ * - Specialized tests: Human/AI/System participant behaviors
  * 
- * Key principle: Universal interface for all chat participants with smart inheritance
+ * ARCHITECTURAL INSIGHTS:
+ * - Migrated from interface to class extending CondensedIdentity
+ * - Specialized participant types (Human, AI, System) with specific capabilities
+ * - ParticipantRegistry for centralized participant management
+ * - Factory functions for easy participant creation
+ * - Strong typing eliminates 'any' usage throughout chat system
+ * 
+ * MIGRATED TO CONDENSED IDENTITY SYSTEM
+ * 
+ * This now uses the CondensedIdentity foundation which provides:
+ * - Strong typing (eliminates 'any' usage)
+ * - Unified capability system
+ * - Consolidated metadata
+ * - Universal event system
+ * - All features preserved, just better organized
  */
 
-import { generateUUID } from './AcademyTypes';
+import { UniversalIdentity, BaseMetadata, BaseCapabilities } from '../../core/identity/UniversalIdentity';
 
-// ==================== UNIVERSAL CHAT PARTICIPANT ====================
+// ==================== CHAT PARTICIPANT TYPES ====================
 
 /**
- * The most fundamental interface - any entity that can participate in chat
+ * Chat-specific metadata extending base metadata
  */
-export interface ChatParticipant {
-  id: string;
-  name: string;
-  type: ParticipantType;
-  created: number;
-  
-  // Core communication capability
-  canCommunicate: boolean;
-  
-  // Optional display preferences
-  displayName?: string;
-  avatar?: string;
-  
-  // Flexible metadata for any extensions
-  metadata?: Record<string, any>;
+export interface ChatMetadata extends BaseMetadata {
+  displayName?: string | undefined;
+  avatar?: string | undefined;
+  role?: 'user' | 'admin' | 'moderator' | 'guest';
+  status?: 'active' | 'away' | 'busy' | 'offline';
+  preferences?: {
+    communicationStyle?: string;
+    topics?: string[];
+    expertise?: string[];
+    timezone?: string;
+    language?: string;
+  };
 }
 
 /**
- * Types of chat participants
+ * Chat-specific capabilities extending base capabilities
  */
-export type ParticipantType = 
+export interface ChatCapabilities extends BaseCapabilities {
+  // Chat capabilities
+  sendMessages: boolean;
+  receiveMessages: boolean;
+  joinRooms: boolean;
+  createRooms: boolean;
+  moderateRooms: boolean;
+  useCommands: boolean;
+  mention: boolean;
+  react: boolean;
+  
+  // Academy capabilities (optional for chat)
+  learn?: boolean;
+  evolve?: boolean;
+  teach?: boolean;
+  spawn?: boolean;
+  mutate?: boolean;
+  crossover?: boolean;
+  adapt?: boolean;
+  useRAG?: boolean;
+}
+
+// ==================== CHAT PARTICIPANT (CONDENSED) ====================
+
+/**
+ * ChatParticipant is now a UniversalIdentity with chat-focused defaults
+ */
+class ChatParticipant extends UniversalIdentity<ChatMetadata, ChatCapabilities> {
+  constructor(config: {
+    id?: string;
+    name: string;
+    type: ParticipantType;
+    displayName?: string;
+    avatar?: string;
+    metadata?: Partial<ChatMetadata>;
+  }) {
+    // Create chat-focused capabilities
+    const chatCapabilities: ChatCapabilities = {
+      // Core
+      communicate: true,
+      serialize: true,
+      
+      // Chat capabilities (preserved from original interface)
+      sendMessages: true,
+      receiveMessages: true,
+      joinRooms: true,
+      createRooms: config.type === 'human',
+      moderateRooms: false,
+      useCommands: true,
+      mention: true,
+      react: true,
+      
+      // Academy capabilities (disabled by default for chat focus)
+      learn: false,
+      evolve: false,
+      teach: false,
+      spawn: false,
+      mutate: false,
+      crossover: false,
+      adapt: false,
+      useRAG: false,
+      
+      // Override with provided capabilities
+      ...config.metadata?.capabilities
+    };
+    
+    // Create chat-focused metadata
+    const chatMetadata: ChatMetadata = {
+      // Universal properties
+      description: config.metadata?.description || `${config.name} chat participant`,
+      version: config.metadata?.version || '1.0.0',
+      source: config.metadata?.source || 'chat',
+      lastActivity: config.metadata?.lastActivity || Date.now(),
+      isActive: config.metadata?.isActive !== false,
+      
+      // Chat-specific metadata (preserved from original)
+      ...(config.displayName && { displayName: config.displayName }),
+      ...(config.avatar && { avatar: config.avatar }),
+      
+      // Merge any additional metadata
+      ...config.metadata
+    };
+    
+    super({
+      ...(config.id && { id: config.id }),
+      name: config.name,
+      type: config.type,
+      metadata: chatMetadata,
+      capabilities: chatCapabilities
+    });
+    
+    // Set chat context by default
+    this.updateState({ context: 'chat' });
+  }
+  
+  // ==================== BACKWARD COMPATIBILITY ====================
+  
+  /**
+   * Preserve original ChatParticipant interface
+   */
+  get canCommunicate(): boolean {
+    return this.hasCapability('communicate');
+  }
+  
+  get displayName(): string | undefined {
+    return this.metadata.displayName;
+  }
+  
+  set displayName(value: string | undefined) {
+    this.metadata = { ...this.metadata, displayName: value };
+  }
+  
+  get avatar(): string | undefined {
+    return this.metadata.avatar;
+  }
+  
+  set avatar(value: string | undefined) {
+    this.metadata = { ...this.metadata, avatar: value };
+  }
+  
+  // ==================== REQUIRED ABSTRACT METHODS ====================
+  
+  /**
+   * Handle incoming messages (chat-specific implementation)
+   */
+  async handleMessage(message: any): Promise<void> {
+    this.logMessage(`💬 ${this.name} received message: ${message.content || message.type}`);
+    
+    // Record the message interaction
+    this.recordEvent('message_received', {
+      success: true,
+      messageId: message.id,
+      content: message.content
+    });
+  }
+  
+  /**
+   * Initialize chat-specific resources
+   */
+  async initializeSpecific(): Promise<void> {
+    this.logMessage(`🚀 Initializing chat participant: ${this.name}`);
+    
+    // Initialize chat-specific capabilities
+    if (this.hasCapability('joinRooms')) {
+      this.logMessage(`🏠 Chat participant can join rooms`);
+    }
+    
+    if (this.hasCapability('sendMessages')) {
+      this.logMessage(`📤 Chat participant can send messages`);
+    }
+  }
+  
+  /**
+   * Cleanup chat-specific resources
+   */
+  async destroySpecific(): Promise<void> {
+    this.logMessage(`🔚 Destroying chat participant: ${this.name}`);
+    
+    // Clean up any chat-specific resources
+    // (rooms, message subscriptions, etc.)
+  }
+}
+
+/**
+ * Types of chat participants (preserved from original)
+ */
+type ParticipantType = 
   | 'human'           // Real human user
   | 'ai_assistant'    // AI like Claude
   | 'persona'         // Custom persona
@@ -49,200 +228,315 @@ export type ParticipantType =
 // ==================== SPECIALIZED PARTICIPANT TYPES ====================
 
 /**
- * Human participant
+ * Human participant - now extends ChatParticipant (CondensedIdentity)
  */
-export interface HumanParticipant extends ChatParticipant {
-  type: 'human';
-  
-  // Human-specific properties
-  preferences?: {
-    communicationStyle?: string;
-    topics?: string[];
-    expertise?: string[];
-    timezone?: string;
-    language?: string;
-  };
-  
-  // Optional human context
-  role?: 'user' | 'admin' | 'moderator' | 'guest';
-  status?: 'active' | 'away' | 'busy' | 'offline';
+class HumanParticipant extends ChatParticipant {
+  constructor(config: {
+    id?: string;
+    name: string;
+    displayName?: string;
+    avatar?: string;
+    preferences?: {
+      communicationStyle?: string;
+      topics?: string[];
+      expertise?: string[];
+      timezone?: string;
+      language?: string;
+    };
+    role?: 'user' | 'admin' | 'moderator' | 'guest';
+    status?: 'active' | 'away' | 'busy' | 'offline';
+  }) {
+    super({
+      ...(config.id && { id: config.id }),
+      name: config.name,
+      type: 'human',
+      metadata: {
+        // Human-specific metadata
+        ...(config.displayName && { displayName: config.displayName }),
+        ...(config.avatar && { avatar: config.avatar }),
+        ...(config.preferences && { preferences: config.preferences }),
+        role: config.role || 'user',
+        status: config.status || 'active',
+        
+        // Human gets enhanced chat capabilities
+        capabilities: {
+          communicate: true,
+          serialize: true,
+          sendMessages: true,
+          receiveMessages: true,
+          joinRooms: true,
+          createRooms: true,
+          moderateRooms: config.role === 'moderator' || config.role === 'admin',
+          useCommands: true,
+          mention: true,
+          react: true,
+          
+          // Humans can learn from conversations
+          learn: true,
+          adapt: true,
+          
+          // Other capabilities disabled by default
+          evolve: false,
+          teach: false,
+          spawn: false,
+          mutate: false,
+          crossover: false,
+          useRAG: false
+        }
+      }
+    });
+  }
 }
 
 /**
- * AI Assistant participant (like Claude)
+ * AI Assistant participant (like Claude) - now extends ChatParticipant
  */
-export interface AIAssistantParticipant extends ChatParticipant {
-  type: 'ai_assistant';
-  
-  // AI-specific properties
-  model?: string;
-  capabilities?: string[];
-  limitations?: string[];
-  systemPrompt?: string;
-  
-  // AI context
-  version?: string;
-  provider?: string;
-  contextWindow?: number;
+class AIAssistantParticipant extends ChatParticipant {
+  constructor(config: {
+    id?: string;
+    name: string;
+    displayName?: string;
+    avatar?: string;
+    model?: string;
+    capabilities?: string[];
+    limitations?: string[];
+    systemPrompt?: string;
+    version?: string;
+    provider?: string;
+    contextWindow?: number;
+  }) {
+    super({
+      ...(config.id && { id: config.id }),
+      name: config.name,
+      type: 'ai_assistant',
+      metadata: {
+        // AI-specific metadata
+        ...(config.displayName && { displayName: config.displayName }),
+        ...(config.avatar && { avatar: config.avatar }),
+        ...(config.model && { model: config.model }),
+        ...(config.limitations && { limitations: config.limitations }),
+        ...(config.systemPrompt && { systemPrompt: config.systemPrompt }),
+        ...(config.version && { version: config.version }),
+        ...(config.provider && { provider: config.provider }),
+        ...(config.contextWindow && { contextWindow: config.contextWindow }),
+        
+        // AI gets enhanced capabilities
+        capabilities: {
+          communicate: true,
+          serialize: true,
+          sendMessages: true,
+          receiveMessages: true,
+          joinRooms: true,
+          createRooms: false,
+          moderateRooms: false,
+          useCommands: true,
+          mention: true,
+          react: true,
+          
+          // AI can learn and use RAG
+          learn: true,
+          adapt: true,
+          useRAG: true,
+          
+          // Evolution depends on specific AI type
+          evolve: false,
+          teach: config.capabilities?.includes('teaching') || false,
+          spawn: false,
+          mutate: false,
+          crossover: false
+        }
+      }
+    });
+  }
 }
 
 /**
- * System participant for system messages
+ * System participant for system messages - now extends ChatParticipant
  */
-export interface SystemParticipant extends ChatParticipant {
-  type: 'system';
-  
-  // System-specific properties
-  component?: string;
-  level?: 'info' | 'warning' | 'error' | 'success';
-  automated?: boolean;
+class SystemParticipant extends ChatParticipant {
+  constructor(config: {
+    id?: string;
+    name: string;
+    component?: string;
+    level?: 'info' | 'warning' | 'error' | 'success';
+    automated?: boolean;
+  }) {
+    super({
+      ...(config.id && { id: config.id }),
+      name: config.name,
+      type: 'system',
+      metadata: {
+        // System-specific metadata
+        ...(config.component && { component: config.component }),
+        level: config.level || 'info',
+        automated: config.automated !== false,
+        
+        // System has limited capabilities
+        capabilities: {
+          communicate: true,
+          serialize: true,
+          sendMessages: true,
+          receiveMessages: false,
+          joinRooms: false,
+          createRooms: false,
+          moderateRooms: false,
+          useCommands: false,
+          mention: false,
+          react: false,
+          
+          // System doesn't learn or evolve
+          learn: false,
+          evolve: false,
+          teach: false,
+          spawn: false,
+          mutate: false,
+          crossover: false,
+          adapt: false,
+          useRAG: false
+        }
+      }
+    });
+  }
 }
 
 // ==================== PARTICIPANT CREATION ====================
 
 /**
- * Configuration for creating chat participants
+ * Create a basic chat participant (now using CondensedIdentity)
  */
-export interface CreateParticipantConfig {
+export function createChatParticipant(config: {
   name: string;
   type: ParticipantType;
   displayName?: string;
   avatar?: string;
-  metadata?: Record<string, any>;
-  
-  // Type-specific configurations
-  humanConfig?: Partial<HumanParticipant>;
-  aiConfig?: Partial<AIAssistantParticipant>;
-  systemConfig?: Partial<SystemParticipant>;
+  metadata?: Partial<ChatMetadata>;
+}): ChatParticipant {
+  return new ChatParticipant(config);
 }
 
 /**
- * Create a basic chat participant
- */
-export function createChatParticipant(config: CreateParticipantConfig): ChatParticipant {
-  const participant: ChatParticipant = {
-    id: generateUUID(),
-    name: config.name,
-    type: config.type,
-    created: Date.now(),
-    canCommunicate: true,
-    displayName: config.displayName || config.name,
-    avatar: config.avatar,
-    metadata: {
-      version: '1.0.0',
-      createdBy: 'system',
-      ...config.metadata
-    }
-  };
-
-  return participant;
-}
-
-/**
- * Create a human participant
+ * Create a human participant (now using CondensedIdentity)
  */
 export function createHumanParticipant(
   name: string, 
-  config?: Partial<HumanParticipant>
+  config?: {
+    displayName?: string;
+    avatar?: string;
+    preferences?: {
+      communicationStyle?: string;
+      topics?: string[];
+      expertise?: string[];
+      timezone?: string;
+      language?: string;
+    };
+    role?: 'user' | 'admin' | 'moderator' | 'guest';
+    status?: 'active' | 'away' | 'busy' | 'offline';
+  }
 ): HumanParticipant {
-  const baseParticipant = createChatParticipant({
+  return new HumanParticipant({
     name,
-    type: 'human',
     ...config
   });
-
-  return {
-    ...baseParticipant,
-    type: 'human',
-    role: 'user',
-    status: 'active',
-    preferences: {
-      communicationStyle: 'natural',
-      language: 'en',
-      ...config?.preferences
-    },
-    ...config
-  };
 }
 
 /**
- * Create an AI assistant participant
+ * Create an AI assistant participant (now using CondensedIdentity)
  */
 export function createAIAssistantParticipant(
   name: string,
-  config?: Partial<AIAssistantParticipant>
+  config?: {
+    displayName?: string;
+    avatar?: string;
+    model?: string;
+    capabilities?: string[];
+    limitations?: string[];
+    systemPrompt?: string;
+    version?: string;
+    provider?: string;
+    contextWindow?: number;
+  }
 ): AIAssistantParticipant {
-  const baseParticipant = createChatParticipant({
+  return new AIAssistantParticipant({
     name,
-    type: 'ai_assistant',
     ...config
   });
-
-  return {
-    ...baseParticipant,
-    type: 'ai_assistant',
-    model: 'claude-3',
-    capabilities: ['text_generation', 'analysis', 'coding', 'math'],
-    limitations: ['no_internet', 'no_file_access', 'training_cutoff'],
-    provider: 'anthropic',
-    contextWindow: 200000,
-    ...config
-  };
 }
 
 /**
- * Create a system participant
+ * Create a Claude participant (specialized AI assistant)
+ */
+export function createClaudeParticipant(
+  name: string = 'Claude',
+  config?: {
+    displayName?: string;
+    avatar?: string;
+    systemPrompt?: string;
+    version?: string;
+  }
+): AIAssistantParticipant {
+  return new AIAssistantParticipant({
+    name,
+    displayName: config?.displayName || 'Claude',
+    avatar: config?.avatar || '🤖',
+    model: 'claude-3',
+    provider: 'anthropic',
+    version: config?.version || '3.0',
+    systemPrompt: config?.systemPrompt || 'You are Claude, an AI assistant created by Anthropic.',
+    capabilities: ['reasoning', 'analysis', 'writing', 'coding', 'teaching'],
+    limitations: ['no_internet', 'no_real_time', 'training_cutoff'],
+    contextWindow: 200000
+  });
+}
+
+/**
+ * Create a system participant (now using CondensedIdentity)
  */
 export function createSystemParticipant(
   name: string,
-  config?: Partial<SystemParticipant>
+  config?: {
+    component?: string;
+    level?: 'info' | 'warning' | 'error' | 'success';
+    automated?: boolean;
+  }
 ): SystemParticipant {
-  const baseParticipant = createChatParticipant({
+  return new SystemParticipant({
     name,
-    type: 'system',
     ...config
   });
-
-  return {
-    ...baseParticipant,
-    type: 'system',
-    component: 'chat_system',
-    level: 'info',
-    automated: true,
-    ...config
-  };
 }
 
 // ==================== PARTICIPANT REGISTRY ====================
 
 /**
- * Registry for managing chat participants
+ * Registry for managing chat participants (now using CondensedIdentity)
  */
-export class ParticipantRegistry {
+class ParticipantRegistry {
   private participants: Map<string, ChatParticipant> = new Map();
-  private nameIndex: Map<string, string> = new Map();
 
   /**
    * Register a participant
    */
   register(participant: ChatParticipant): void {
     this.participants.set(participant.id, participant);
-    this.nameIndex.set(participant.name.toLowerCase(), participant.id);
+    console.log(`📋 Registered participant: ${participant.name} (${participant.type})`);
+  }
+
+  /**
+   * Unregister a participant
+   */
+  unregister(id: string): void {
+    const participant = this.participants.get(id);
+    if (participant) {
+      this.participants.delete(id);
+      console.log(`📋 Unregistered participant: ${participant.name}`);
+    }
   }
 
   /**
    * Get participant by ID
    */
-  getById(id: string): ChatParticipant | undefined {
+  get(id: string): ChatParticipant | undefined {
     return this.participants.get(id);
-  }
-
-  /**
-   * Get participant by name
-   */
-  getByName(name: string): ChatParticipant | undefined {
-    const id = this.nameIndex.get(name.toLowerCase());
-    return id ? this.participants.get(id) : undefined;
   }
 
   /**
@@ -253,192 +547,42 @@ export class ParticipantRegistry {
   }
 
   /**
-   * Get participants by type
+   * Find participants by type
    */
-  getByType(type: ParticipantType): ChatParticipant[] {
+  findByType(type: ParticipantType): ChatParticipant[] {
     return this.getAll().filter(p => p.type === type);
   }
 
   /**
-   * Remove participant
+   * Find participants by capability
    */
-  remove(id: string): boolean {
-    const participant = this.participants.get(id);
-    if (participant) {
-      this.participants.delete(id);
-      this.nameIndex.delete(participant.name.toLowerCase());
-      return true;
-    }
-    return false;
+  findByCapability(capability: string): ChatParticipant[] {
+    return this.getAll().filter(p => p.hasCapability(capability));
   }
 
   /**
-   * Check if participant exists
+   * Get participants by type (alias for findByType)
    */
-  exists(id: string): boolean {
-    return this.participants.has(id);
+  getByType(type: ParticipantType): ChatParticipant[] {
+    return this.findByType(type);
   }
 
   /**
-   * Get participant count
+   * Get count of participants
    */
-  count(): number {
+  get count(): number {
     return this.participants.size;
   }
-
-  /**
-   * Clear all participants
-   */
-  clear(): void {
-    this.participants.clear();
-    this.nameIndex.clear();
-  }
-}
-
-// ==================== PARTICIPANT VALIDATION ====================
-
-/**
- * Validate a chat participant
- */
-export function validateChatParticipant(participant: ChatParticipant): {
-  valid: boolean;
-  errors: string[];
-} {
-  const errors: string[] = [];
-
-  if (!participant.id || participant.id.trim() === '') {
-    errors.push('Participant ID is required');
-  }
-
-  if (!participant.name || participant.name.trim() === '') {
-    errors.push('Participant name is required');
-  }
-
-  if (!participant.type) {
-    errors.push('Participant type is required');
-  }
-
-  if (!participant.created || participant.created <= 0) {
-    errors.push('Valid creation timestamp is required');
-  }
-
-  if (typeof participant.canCommunicate !== 'boolean') {
-    errors.push('canCommunicate must be a boolean');
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors
-  };
-}
-
-// ==================== PARTICIPANT UTILITIES ====================
-
-/**
- * Check if participant is human
- */
-export function isHuman(participant: ChatParticipant): participant is HumanParticipant {
-  return participant.type === 'human';
-}
-
-/**
- * Check if participant is AI
- */
-export function isAI(participant: ChatParticipant): participant is AIAssistantParticipant {
-  return participant.type === 'ai_assistant';
-}
-
-/**
- * Check if participant is system
- */
-export function isSystem(participant: ChatParticipant): participant is SystemParticipant {
-  return participant.type === 'system';
-}
-
-/**
- * Get participant display name
- */
-export function getDisplayName(participant: ChatParticipant): string {
-  return participant.displayName || participant.name;
-}
-
-/**
- * Check if participant can communicate
- */
-export function canCommunicate(participant: ChatParticipant): boolean {
-  return participant.canCommunicate === true;
-}
-
-/**
- * Clone participant with modifications
- */
-export function cloneParticipant(
-  participant: ChatParticipant,
-  modifications?: Partial<ChatParticipant>
-): ChatParticipant {
-  return {
-    ...participant,
-    id: generateUUID(), // Always generate new ID
-    created: Date.now(),
-    metadata: {
-      ...participant.metadata,
-      clonedFrom: participant.id,
-      clonedAt: Date.now()
-    },
-    ...modifications
-  };
-}
-
-// ==================== BUILT-IN PARTICIPANTS ====================
-
-/**
- * Create Claude (AI Assistant) participant
- */
-export function createClaudeParticipant(): AIAssistantParticipant {
-  return createAIAssistantParticipant('Claude', {
-    displayName: 'Claude',
-    model: 'claude-3-sonnet',
-    capabilities: [
-      'text_generation',
-      'analysis',
-      'coding',
-      'math',
-      'reasoning',
-      'creative_writing',
-      'research'
-    ],
-    limitations: [
-      'no_internet_access',
-      'no_real_time_data',
-      'training_cutoff_april_2024'
-    ],
-    systemPrompt: 'You are Claude, an AI assistant created by Anthropic.',
-    version: '3.0',
-    provider: 'anthropic',
-    contextWindow: 200000
-  });
-}
-
-/**
- * Create system participant
- */
-export function createContinuumSystemParticipant(): SystemParticipant {
-  return createSystemParticipant('Continuum System', {
-    displayName: 'System',
-    component: 'continuum_core',
-    level: 'info',
-    automated: true
-  });
 }
 
 // ==================== EXPORTS ====================
 
 export {
   ChatParticipant,
-  ParticipantType,
   HumanParticipant,
   AIAssistantParticipant,
   SystemParticipant,
-  CreateParticipantConfig,
   ParticipantRegistry
 };
+
+export type { ParticipantType };

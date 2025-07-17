@@ -19,7 +19,7 @@ import {
  */
 export class ChallengeLibrary {
   private challengeTemplates: ChallengeTemplate[] = [];
-  private generatedChallenges: Challenge[] = [];
+  // private generatedChallenges: Challenge[] = [];
   
   constructor() {
     this.initializeChallengeTemplates();
@@ -79,7 +79,7 @@ export class ChallengeLibrary {
   /**
    * Generate cross-domain challenges that require collaboration
    */
-  private generateCrossDomainChallenges(personas: PersonaGenome[], pressure: EvolutionaryPressure): Challenge[] {
+  private generateCrossDomainChallenges(_personas: PersonaGenome[], pressure: EvolutionaryPressure): Challenge[] {
     const challenges: Challenge[] = [];
     
     // Only generate collaborative challenges if pressure requires it

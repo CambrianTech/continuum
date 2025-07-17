@@ -280,10 +280,15 @@ export class GenomeProcessor {
    * Crossover behavior patterns
    */
   private crossoverBehavior(parent1: PersonaBehavior, parent2: PersonaBehavior): PersonaBehavior {
+    // Genome crossover with persona-chat integration - following middle-out/architecture-patterns/linter-driven-compression.md
+    const selectedLearningStyle = Math.random() < 0.5 ? parent1.learningStyle : parent2.learningStyle;
+    const selectedTeachingStyle = Math.random() < 0.5 ? parent1.teachingStyle : parent2.teachingStyle;
+    
     return {
-      learningStyle: Math.random() < 0.5 ? parent1.learningStyle : parent2.learningStyle,
-      teachingStyle: Math.random() < 0.5 ? parent1.teachingStyle : parent2.teachingStyle,
-      adaptationRate: (parent1.adaptationRate || 0.5 + parent2.adaptationRate || 0.5) / 2,
+      // Use conditional spread for optional properties
+      ...(selectedLearningStyle && { learningStyle: selectedLearningStyle }),
+      ...(selectedTeachingStyle && { teachingStyle: selectedTeachingStyle }),
+      adaptationRate: ((parent1.adaptationRate || 0.5) + (parent2.adaptationRate || 0.5)) / 2,
       communicationStyle: Math.random() < 0.5 ? parent1.communicationStyle : parent2.communicationStyle,
       decisionMakingStyle: Math.random() < 0.5 ? parent1.decisionMakingStyle : parent2.decisionMakingStyle,
       riskTolerance: (parent1.riskTolerance + parent2.riskTolerance) / 2,

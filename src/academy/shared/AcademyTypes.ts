@@ -5,26 +5,23 @@
  * in the Academy module, following the middle-out modular pattern.
  */
 
-import { PersonaBase } from './PersonaBase';
+// import { PersonaBase } from './PersonaBase'; // Removed - not needed after interface redesign
 
 // ==================== PERSONA GENOME TYPES ====================
 
 /**
  * PersonaGenome - Enhanced persona with evolutionary capabilities
  * 
- * This extends PersonaBase with genomic features for the Academy evolution system.
- * Key principle: PersonaBase is the foundation, PersonaGenome adds evolution.
+ * This contains genomic features for the Academy evolution system.
+ * Can be used with PersonaBase or as standalone evolutionary data.
  */
-export interface PersonaGenome extends PersonaBase {
-  // Inherited from PersonaBase:
-  // - id: string
-  // - name: string  
-  // - prompt: string
-  // - description?: string
-  // - created: number
-  // - rag?: PersonaRAG
-  // - metadata?: PersonaMetadata
-
+export interface PersonaGenome {
+  // Core identity properties
+  id: string;
+  name: string;
+  type?: string;
+  created: number;
+  
   // Enhanced identity with genomic features
   identity: PersonaIdentity;
   
@@ -35,6 +32,12 @@ export interface PersonaGenome extends PersonaBase {
   substrate: PersonaSubstrate;
   reproduction: PersonaReproduction;
   lineage: PersonaLineage;
+  
+  // Optional PersonaBase compatibility
+  prompt?: string;
+  description?: string;
+  rag?: any;
+  metadata?: any;
 }
 
 export interface PersonaIdentity {
@@ -119,7 +122,7 @@ export interface PersonalityTraits {
 }
 
 export interface MutationEvent {
-  timestamp: Date;
+  timestamp: number; // Consistent timestamp type - Date.now() format for better serialization
   type: 'spontaneous' | 'induced' | 'crossover';
   changes: Record<string, any>;
   trigger: string;
@@ -233,7 +236,7 @@ export interface EcosystemHealth {
 
 export interface EvolutionGeneration {
   generation: number;
-  timestamp: Date;
+  timestamp: number; // Consistent timestamp type - Date.now() format for better serialization
   populationSize: number;
   survivors: number;
   offspring: number;

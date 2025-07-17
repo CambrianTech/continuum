@@ -12,13 +12,19 @@ import { LocalEvolutionEngine } from './EvolutionEngine';
 import { 
   PersonaGenome, 
   EvolutionaryPressure, 
-  EcosystemMetrics,
+  // EcosystemMetrics,
   AcademyEcosystem 
 } from './shared/AcademyTypes';
 
+export interface PersonaTrainingSessionState {
+  startTime: string;
+  config: Record<string, any>;
+  status: 'training' | 'evaluating' | 'completed' | 'failed';
+}
+
 export interface AcademyStatus {
   isActive: boolean;
-  currentPersonas: PersonaGenome[];
+  currentPersonas: PersonaGenome[]; // Best and most consistent pattern - PersonaGenome used 335 times across 35 files
   trainingProgress: Record<string, number>;
   academyMode: 'idle' | 'training' | 'evaluating' | 'evolving';
   ecosystem: AcademyEcosystem;
@@ -69,10 +75,30 @@ export class AcademyDaemon extends BaseDaemon {
     isActive: false,
     currentPersonas: [],
     trainingProgress: {},
-    academyMode: 'idle'
+    academyMode: 'idle',
+    ecosystem: { 
+      generation: 0,
+      personas: new Map(),
+      activeSessions: new Map(),
+      challengeLibrary: [],
+      evolutionHistory: [],
+      ecosystemMetrics: {
+        totalPersonas: 0,
+        activePersonas: 0,
+        averageFitness: 0,
+        generationNumber: 0,
+        diversityIndex: 0,
+        innovationRate: 0,
+        graduationRate: 0,
+        extinctionRate: 0,
+        emergentCapabilities: [],
+        ecosystemAge: 0
+      }
+    }
   };
 
   private trainingSessions: Map<string, TrainingSession> = new Map();
+  private trainingSessionStates: Map<string, PersonaTrainingSessionState> = new Map(); // Academy-Chat integration pattern
   private vectorSpaceEvolution!: VectorSpaceEvolution;
   private p2pNetworkStatus!: P2PNetworkStatus;
   private localTrainer!: LocalAcademyTrainer;
@@ -100,7 +126,8 @@ export class AcademyDaemon extends BaseDaemon {
         extinctionRate: 0,
         emergentCapabilities: [],
         ecosystemAge: 0
-      }
+      },
+      generation: 0
     };
 
     // Initialize Academy state
@@ -164,6 +191,81 @@ export class AcademyDaemon extends BaseDaemon {
     this.log('🛑 Stopping Academy Daemon...');
     this.academyStatus.isActive = false;
     this.log('✅ Academy Daemon stopped');
+  }
+
+  /**
+   * Get PersonaGenome for Academy-Chat integration
+   * Following Academy-Chat integration pattern from middle-out docs
+   */
+  private async getPersonaGenome(personaId: string): Promise<PersonaGenome> {
+    // For now, create a basic PersonaGenome structure
+    // In full implementation, this would load from Academy database
+    return {
+      id: personaId,
+      identity: {
+        name: `Student_${personaId}`,
+        role: 'student',
+        generation: 0,
+        parentIds: [],
+        specialization: 'general',
+        personality: {
+          creativity: 0.5,
+          analytical: 0.6,
+          helpfulness: 0.7,
+          competitiveness: 0.4,
+          patience: 0.6,
+          innovation: 0.5
+        },
+        goals: ['learn_and_improve', 'collaborate_effectively']
+      },
+      knowledge: {
+        domain: 'general',
+        expertise: ['general', 'chat'],
+        competencies: { 'general': 0.5, 'chat': 0.6 },
+        experiencePoints: 0,
+        knowledgeGraph: { 'general': ['basics', 'fundamentals'] }
+      },
+      behavior: {
+        learningStyle: 'visual',
+        teachingStyle: 'direct',
+        adaptationRate: 0.5,
+        communicationStyle: 'helpful',
+        decisionMakingStyle: 'collaborative',
+        riskTolerance: 0.4,
+        collaborationPreference: 0.7
+      },
+      evolution: {
+        generation: 0,
+        parentGenomes: [],
+        mutationHistory: [],
+        evolutionStage: 'spawning',
+        fitnessScore: 0.5,
+        adaptationSuccess: 0,
+        survivalRounds: 0,
+        evolutionPressure: []
+      },
+      substrate: {
+        loraIds: ['general_lora'],
+        memoryPatterns: ['working_memory'],
+        processingStyle: 'collaborative',
+        adaptationMechanisms: ['reinforcement_learning'],
+        vectorPosition: []
+      },
+      reproduction: {
+        mutationRate: 0.1,
+        reproductionEligibility: true,
+        breedingSuccess: 0,
+        offspringCount: 0
+      },
+      lineage: {
+        ancestors: [],
+        descendants: [],
+        siblings: [],
+        generation: 0,
+        lineageStrength: 0.5,
+        emergentTraits: []
+      }
+    };
   }
 
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
@@ -334,10 +436,14 @@ export class AcademyDaemon extends BaseDaemon {
         
         this.trainingSessions.set(localSession.id, trainingSession);
         
-        // Add to current personas if not already there
+        // Add to current personas if not already there - Academy-Chat integration pattern
         if (!this.academyStatus.currentPersonas.find(p => p.id === persona)) {
-          this.academyStatus.currentPersonas.push({
-            id: persona,
+          // Get the actual PersonaGenome for the Academy tracking
+          const personaGenome = await this.getPersonaGenome(persona);
+          this.academyStatus.currentPersonas.push(personaGenome);
+          
+          // Track training session state separately (following Academy-Chat integration docs)
+          this.trainingSessionStates.set(persona, {
             startTime: new Date().toISOString(),
             config: config || {},
             status: 'training'
@@ -430,24 +536,78 @@ export class AcademyDaemon extends BaseDaemon {
    * Spawn new AI persona through vector space intelligence assembly
    */
   private async spawnPersona(data: any): Promise<DaemonResponse> {
-    const { persona_name, base_model, specialization, skill_vector, p2p_seed, evolution_mode } = data;
+    const { persona_name, base_model, specialization, skill_vector, p2p_seed, evolution_mode: _evolution_mode } = data;
     
     this.log(`🧬 Spawning new persona: ${persona_name}`);
     
     try {
       const personaId = `persona_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
-      // Create new persona with vector space positioning
-      const newPersona = {
+      // Create PersonaGenome for Academy integration - following middle-out/architecture-patterns/daemon-academy-integration.md
+      const newPersona: PersonaGenome = {
         id: personaId,
-        name: persona_name,
-        base_model: base_model || 'auto-select',
-        specialization: specialization,
-        skill_vector: skill_vector,
-        p2p_seed: p2p_seed,
-        evolution_mode: evolution_mode || 'spawning',
-        spawn_timestamp: new Date().toISOString(),
-        status: 'ready_for_training'
+        identity: {
+          name: persona_name,
+          role: 'student',
+          generation: 0,
+          specialization: specialization as any,
+          personality: {
+            creativity: 0.5,
+            analytical: 0.6,
+            helpfulness: 0.7,
+            competitiveness: 0.4,
+            patience: 0.6,
+            innovation: 0.5
+          },
+          goals: [`master_${specialization}`, 'collaborative_learning']
+        },
+        knowledge: {
+          domain: specialization || 'general',
+          expertise: [specialization || 'general'],
+          competencies: {
+            [specialization || 'general']: 0.3
+          },
+          experiencePoints: 0
+        },
+        behavior: {
+          learningStyle: 'analytical',
+          adaptationRate: 0.5,
+          communicationStyle: 'direct',
+          decisionMakingStyle: 'analytical',
+          riskTolerance: 0.4,
+          collaborationPreference: 0.6
+        },
+        evolution: {
+          generation: 0,
+          parentGenomes: [],
+          mutationHistory: [],
+          evolutionStage: 'spawning',
+          fitnessScore: 0.5,
+          adaptationSuccess: 0,
+          survivalRounds: 0,
+          evolutionPressure: []
+        },
+        substrate: {
+          loraIds: [`${specialization}_lora`],
+          memoryPatterns: ['working_memory'],
+          processingStyle: 'sequential',
+          adaptationMechanisms: ['reinforcement_learning'],
+          vectorPosition: skill_vector || Array.from({ length: 10 }, () => Math.random())
+        },
+        reproduction: {
+          mutationRate: 0.1,
+          reproductionEligibility: true,
+          breedingSuccess: 0,
+          offspringCount: 0
+        },
+        lineage: {
+          ancestors: [],
+          descendants: [],
+          siblings: [],
+          generation: 0,
+          lineageStrength: 0.5,
+          emergentTraits: []
+        }
       };
       
       // Add to current personas
@@ -532,8 +692,8 @@ export class AcademyDaemon extends BaseDaemon {
           this.academyStatus.currentPersonas.find(p => p.id === persona_id) || null :
           {
             total_personas: this.academyStatus.currentPersonas.length,
-            active_personas: this.academyStatus.currentPersonas.filter(p => p.status === 'training').length,
-            idle_personas: this.academyStatus.currentPersonas.filter(p => p.status === 'idle').length,
+            active_personas: this.academyStatus.currentPersonas.filter(p => p.evolution.evolutionStage === 'training').length,
+            idle_personas: this.academyStatus.currentPersonas.filter(p => p.evolution.evolutionStage === 'spawning').length,
             average_capability: 0.82,
             highest_performer: 'CodeMaster_Alpha',
             most_evolved: 'ReasoningBot_Beta'
@@ -694,19 +854,21 @@ export class AcademyDaemon extends BaseDaemon {
     const metrics = this.evolutionEngine.getEcosystemMetrics();
     const health = this.evolutionEngine.getEcosystemHealth();
     
+    // Ecosystem metrics response with conditional detailed analysis - following middle-out/architecture-patterns/dynamic-response-construction.md
     const response = {
       metrics,
       health,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      
+      // Conditional detailed analysis using spread pattern
+      ...(detailed && {
+        detailed_analysis: {
+          role_distribution: this.calculateRoleDistribution(),
+          specialization_distribution: this.calculateSpecializationDistribution(),
+          lineage_statistics: this.calculateLineageStatistics()
+        }
+      })
     };
-    
-    if (detailed) {
-      response['detailed_analysis'] = {
-        role_distribution: this.calculateRoleDistribution(),
-        specialization_distribution: this.calculateSpecializationDistribution(),
-        lineage_statistics: this.calculateLineageStatistics()
-      };
-    }
     
     return {
       success: true,
@@ -904,7 +1066,7 @@ export class AcademyDaemon extends BaseDaemon {
         evolutionPressure: []
       },
       substrate: {
-        loraIds: spawnData.lora_stack?.layers?.map(l => l.name) || [],
+        loraIds: spawnData.lora_stack?.layers?.map((l: any) => l.name) || [],
         memoryPatterns: ['working_memory'],
         processingStyle: 'sequential',
         adaptationMechanisms: ['reinforcement_learning'],

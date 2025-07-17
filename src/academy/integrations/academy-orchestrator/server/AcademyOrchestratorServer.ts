@@ -304,7 +304,7 @@ class AcademyOrchestratorServer {
         name: request.name,
         specialization: request.specialization as any, // TODO: Fix specialization type
         role: request.role,
-        mutationRate: request.mutationRate || 0.1
+        // mutationRate: request.mutationRate || 0.1  // Remove for now, not in CreatePersonaRequest
       });
 
       if (!createResult.success) {

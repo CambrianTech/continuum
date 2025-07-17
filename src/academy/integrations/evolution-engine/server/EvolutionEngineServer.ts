@@ -5,7 +5,7 @@
  * It contains the 80-90% shared logic for running evolution cycles.
  */
 
-import { PersonaGenome, EvolutionaryPressure, generateUUID } from '../../../shared/AcademyTypes';
+import { PersonaGenome, EvolutionaryPressure, generateUUID, MutationEvent } from '../../../shared/AcademyTypes';
 import { 
   EvolutionEngineConfig,
   EvolutionEngineRequest,
@@ -14,15 +14,14 @@ import {
   GenerationMetrics,
   EcosystemMetrics,
   EvolutionSession,
-  SessionOutcome,
+  // SessionOutcome,
   EcosystemHealth,
   Challenge,
   ChallengeResult,
-  MutationEvent,
-  MutationType,
-  VectorSpaceEvolution,
+  // MutationType,
+  // VectorSpaceEvolution,
   DEFAULT_EVOLUTION_CONFIG,
-  DEFAULT_EVOLUTIONARY_PRESSURE,
+  // DEFAULT_EVOLUTIONARY_PRESSURE,
   validateEvolutionRequest
 } from '../shared/EvolutionEngineTypes';
 
@@ -214,7 +213,7 @@ export class EvolutionEngineServer {
     challenge: Challenge
   ): Promise<ChallengeResult> {
     // Simulate challenge execution
-    const startTime = Date.now();
+    console.log('🔄 Starting evolution generation at:', new Date().toISOString());
     
     // Base success probability based on persona's fitness and competencies
     const competencyMatch = persona.knowledge.competencies[challenge.domain] || 0.5;
@@ -376,6 +375,7 @@ export class EvolutionEngineServer {
     survivors: PersonaGenome[],
     pressure: EvolutionaryPressure
   ): Promise<PersonaGenome[]> {
+    console.log('🧬 Generating new personas under pressure:', (pressure as any).type || 'unknown');
     const newPersonas: PersonaGenome[] = [];
     const targetCount = this.config.populationSize - survivors.length;
 
@@ -429,7 +429,7 @@ export class EvolutionEngineServer {
       prompt: `Hybrid of ${parent1.name} and ${parent2.name}`,
       type: 'persona',
       created: Date.now(),
-      canCommunicate: true,
+      // canCommunicate: true, // Removed - not part of PersonaGenome interface
       identity: {
         role: 'student',
         generation: Math.max(parent1.identity.generation, parent2.identity.generation) + 1,
@@ -444,7 +444,7 @@ export class EvolutionEngineServer {
         experiencePoints: Math.floor((parent1.knowledge.experiencePoints + parent2.knowledge.experiencePoints) / 2)
       },
       behavior: {
-        adaptationRate: (parent1.behavior.adaptationRate + parent2.behavior.adaptationRate) / 2,
+        adaptationRate: ((parent1.behavior.adaptationRate || 0.5) + (parent2.behavior.adaptationRate || 0.5)) / 2,
         communicationStyle: Math.random() > 0.5 ? parent1.behavior.communicationStyle : parent2.behavior.communicationStyle,
         decisionMakingStyle: Math.random() > 0.5 ? parent1.behavior.decisionMakingStyle : parent2.behavior.decisionMakingStyle,
         riskTolerance: (parent1.behavior.riskTolerance + parent2.behavior.riskTolerance) / 2,
@@ -531,15 +531,11 @@ export class EvolutionEngineServer {
       
       mutated.identity.personality[trait] = newValue;
       mutations.push({
-        id: generateUUID(),
-        personaId: mutatedId,
-        mutationType: 'personality_shift',
-        targetTrait: trait,
-        oldValue,
-        newValue,
-        timestamp: Date.now(),
-        success: true,
-        impact: Math.abs(mutation)
+        timestamp: Date.now(), // Consistent timestamp type - number format
+        type: 'induced',
+        changes: { [trait]: { from: oldValue, to: newValue } },
+        trigger: `personality_shift:${trait}`,
+        outcome: Math.abs(mutation) > 0.1 ? 'beneficial' : 'neutral'
       });
     }
 
@@ -554,15 +550,11 @@ export class EvolutionEngineServer {
         
         mutated.knowledge.competencies[competency] = newValue;
         mutations.push({
-          id: generateUUID(),
-          personaId: mutatedId,
-          mutationType: 'competency_enhancement',
-          targetTrait: competency,
-          oldValue,
-          newValue,
-          timestamp: Date.now(),
-          success: true,
-          impact: Math.abs(mutation)
+          timestamp: Date.now(), // Consistent timestamp type - number format
+          type: 'induced',
+          changes: { [competency]: { from: oldValue, to: newValue } },
+          trigger: `competency_enhancement:${competency}`,
+          outcome: Math.abs(mutation) > 0.05 ? 'beneficial' : 'neutral'
         });
       }
     }
@@ -846,4 +838,5 @@ export class EvolutionEngineServer {
 
 // ==================== EXPORTS ====================
 
-export { EvolutionEngineServer };
+// Note: Class is exported inline above, no need to re-export
+// export { EvolutionEngineServer };

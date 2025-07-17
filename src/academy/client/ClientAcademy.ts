@@ -52,7 +52,7 @@ export abstract class ClientAcademy<TInput, TOutput> extends AcademyBase<TInput,
       }, '*');
     }
     
-    this.logMessage(`🏗️ Created client session: ${sessionId} for ${persona.identity.name}`);
+    this.logMessage(`🏗️ Created client session: ${sessionId} for ${(persona.identity as any).displayName || persona.id}`);
     
     return sessionId;
   }
@@ -124,9 +124,9 @@ export abstract class ClientAcademy<TInput, TOutput> extends AcademyBase<TInput,
         }
       };
       
-      this.websocket.addEventListener('message', messageHandler);
+      this.websocket?.addEventListener('message', messageHandler);
       
-      this.websocket.send(JSON.stringify({
+      this.websocket?.send(JSON.stringify({
         id: messageId,
         message
       }));
@@ -266,7 +266,7 @@ export interface ClientSessionConfig {
 export function checkBrowserSupport(): boolean {
   return !!(
     window.WebSocket &&
-    window.postMessage &&
+    typeof window.postMessage === 'function' &&
     document.createElement('iframe').sandbox &&
     window.localStorage
   );

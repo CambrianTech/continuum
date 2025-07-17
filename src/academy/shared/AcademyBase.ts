@@ -1,5 +1,19 @@
+// ISSUES: 0 open, last updated 2025-07-16 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+
 /**
  * AcademyBase - Abstract base class for all Academy implementations
+ * 
+ * TESTING REQUIREMENTS:
+ * - Unit tests: AcademyBase abstract class methods
+ * - Integration tests: Academy + persona management
+ * - Evolution tests: Persona evolution and orchestration
+ * - Ecosystem tests: Academy ecosystem monitoring
+ * 
+ * ARCHITECTURAL INSIGHTS:
+ * - Implements middle-out modular pattern with centralized shared logic
+ * - Handles persona management, evolution orchestration, ecosystem monitoring
+ * - Separation of burden: 80-90% shared complexity, 5-10% specific overrides
+ * - Abstract base for client/server/integration implementations
  * 
  * This implements the middle-out modular pattern where shared logic is centralized
  * and specific implementations (client/server/integrations) extend this base.
@@ -161,7 +175,7 @@ export abstract class AcademyBase<TInput, TOutput> {
     for (const founder of founders) {
       tree.push({
         id: founder.id,
-        name: founder.identity.name,
+        name: (founder.identity as any).name || 'Unknown',
         generation: founder.evolution.generation,
         specialization: founder.identity.specialization,
         descendants: this.buildDescendantTree(founder, personas)
@@ -178,7 +192,7 @@ export abstract class AcademyBase<TInput, TOutput> {
     const persona = this.createPersonaGenome(config);
     this.personas.set(persona.id, persona);
     
-    this.logMessage(`🧬 Spawned persona: ${persona.identity.name} (${persona.identity.specialization})`);
+    this.logMessage(`🧬 Spawned persona: ${(persona.identity as any).name || persona.id} (${persona.identity.specialization})`);
     
     return persona;
   }
@@ -261,9 +275,19 @@ export abstract class AcademyBase<TInput, TOutput> {
    */
   protected createPersonaGenome(config: PersonaSpawnConfig): PersonaGenome {
     return {
+      // ChatParticipant properties
       id: this.generateUUID(),
+      name: config.name,
+      type: 'persona',
+      created: Date.now(),
+      // canCommunicate: true, // Removed - not part of PersonaGenome interface
+      
+      // PersonaBase properties
+      prompt: (config as any).prompt || `You are ${config.name}, a specialized ${config.specialization} persona.`,
+      description: (config as any).description || `A ${config.specialization} specialist persona.`,
+      
+      // PersonaGenome properties
       identity: {
-        name: config.name,
         role: config.role || 'student',
         generation: 0,
         specialization: config.specialization,
@@ -380,7 +404,7 @@ export abstract class AcademyBase<TInput, TOutput> {
    */
   protected simpleOffspring(parent1: PersonaGenome, parent2: PersonaGenome): PersonaGenome {
     const childConfig: PersonaSpawnConfig = {
-      name: `${parent1.identity.name}_${parent2.identity.name}_child`,
+      name: `${(parent1.identity as any).name || parent1.id}_${(parent2.identity as any).name || parent2.id}_child`,
       specialization: Math.random() < 0.5 ? parent1.identity.specialization : parent2.identity.specialization,
       role: 'student'
     };
@@ -466,7 +490,7 @@ export abstract class AcademyBase<TInput, TOutput> {
       const ancestor = this.personas.get(ancestorId);
       return ancestor ? {
         id: ancestorId,
-        name: ancestor.identity.name,
+        name: (ancestor.identity as any).name || ancestor.id,
         generation: ancestor.evolution.generation,
         specialization: ancestor.identity.specialization
       } : { id: ancestorId, name: 'Unknown', generation: -1, specialization: 'unknown' };
@@ -481,7 +505,7 @@ export abstract class AcademyBase<TInput, TOutput> {
       const descendant = this.personas.get(descendantId);
       return descendant ? {
         id: descendantId,
-        name: descendant.identity.name,
+        name: (descendant.identity as any).name || descendant.id,
         generation: descendant.evolution.generation,
         specialization: descendant.identity.specialization
       } : { id: descendantId, name: 'Unknown', generation: -1, specialization: 'unknown' };
@@ -498,7 +522,7 @@ export abstract class AcademyBase<TInput, TOutput> {
     
     return descendants.map(descendant => ({
       id: descendant.id,
-      name: descendant.identity.name,
+      name: (descendant.identity as any).name || descendant.id,
       generation: descendant.evolution.generation,
       specialization: descendant.identity.specialization,
       descendants: this.buildDescendantTree(descendant, allPersonas)

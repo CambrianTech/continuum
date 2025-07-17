@@ -12,7 +12,6 @@
  */
 
 import { PersonaBase } from '../../academy/shared/PersonaBase';
-import { ChatParticipant } from '../../academy/shared/ChatParticipant';
 import { generateUUID } from '../../academy/shared/AcademyTypes';
 
 // ==================== CHAT MESSAGE SYSTEM ====================
@@ -379,12 +378,12 @@ export const BUILT_IN_COMMANDS: ChatCommand[] = [
         const targetId = args[0];
         const participant = await context.chatSystem.getParticipant(targetId);
         if (participant) {
-          await context.reply(`**${participant.name}** (${participant.type})\n${participant.description || 'No description'}`);
+          await context.reply(`**${participant.name}** (${participant.type})\n${participant.metadata?.description || 'No description'}`); 
         } else {
           await context.reply(`Persona '${targetId}' not found.`);
         }
       } else {
-        await context.reply(`**${sender.name}** (${sender.type})\n${sender.description || 'No description'}`);
+        await context.reply(`**${sender.name}** (${sender.type})\n${sender.metadata?.description || 'No description'}`);
       }
       
       return { success: true };
@@ -466,8 +465,12 @@ export interface ChatPersonaExtensions {
 
 /**
  * Enhanced PersonaBase for chat interactions
+ * Type unification principle: Same semantic meaning should use same type
  */
-export interface ChatPersona extends PersonaBase {
+export interface ChatPersona {
+  // Use PersonaBase as foundation - extending a class requires composition
+  persona: PersonaBase;
+  
   // Chat extensions
   chat?: ChatPersonaExtensions;
   
@@ -523,17 +526,22 @@ export function createChatMessage(
   type: MessageType = 'text',
   roomId?: string
 ): ChatMessage {
-  return {
+  const message: ChatMessage = {
     id: generateUUID(),
     sender,
     content,
     timestamp: Date.now(),
     type,
-    roomId,
     attachments: [],
     reactions: [],
     mentions: []
   };
+  
+  if (roomId) {
+    message.roomId = roomId;
+  }
+  
+  return message;
 }
 
 /**
@@ -573,17 +581,4 @@ export function createChatWidgetConfig(
 
 // ==================== EXPORTS ====================
 
-export {
-  ChatMessage,
-  ChatRoom,
-  ChatCommand,
-  ChatCommandContext,
-  ChatCommandResult,
-  ChatSystem,
-  ChatWidget,
-  ChatWidgetConfig,
-  ChatPersona,
-  MessageType,
-  ChatRoomSettings,
-  ChatWidgetFeatures
-};
+// Note: Types are exported inline above, no need to re-export

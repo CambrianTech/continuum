@@ -13,7 +13,6 @@
  */
 
 import { PersonaBase } from '../../academy/shared/PersonaBase';
-import { ChatParticipant } from '../../academy/shared/ChatParticipant';
 import { ChatMessage, ChatRoom, ChatSystem } from './ChatArchitecture';
 import { generateUUID } from '../../academy/shared/AcademyTypes';
 
@@ -80,11 +79,11 @@ export class PersonaToLegacyAdapter {
       id: persona.id,
       name: persona.name,
       type: persona.type,
-      avatar: persona.avatar,
-      isOnline: persona.canCommunicate,
+      avatar: persona.metadata?.avatar,
+      isOnline: persona.hasCapability('communicate'),
       lastSeen: Date.now(),
-      displayName: persona.displayName || persona.name,
-      status: persona.canCommunicate ? 'online' : 'offline',
+      displayName: persona.metadata?.displayName || persona.name,
+      status: persona.hasCapability('communicate') ? 'online' : 'offline',
       metadata: {
         ...persona.metadata,
         isPersona: true,
@@ -95,22 +94,19 @@ export class PersonaToLegacyAdapter {
   }
 
   static fromLegacyParticipant(legacy: LegacyChatParticipant): PersonaBase {
-    return {
+    // Create using PersonaBase constructor for proper type safety
+    return new PersonaBase({
       id: legacy.id,
       name: legacy.name,
       type: (legacy.type as any) || 'custom',
-      created: Date.now(),
-      canCommunicate: legacy.isOnline !== false,
-      displayName: legacy.displayName || legacy.name,
-      avatar: legacy.avatar,
+      prompt: legacy.metadata?.prompt || `You are ${legacy.name}, a chat participant.`,
       metadata: {
         ...legacy.metadata,
         migratedFromLegacy: true,
-        originalType: legacy.type
-      },
-      prompt: legacy.metadata?.prompt || `You are ${legacy.name}, a chat participant.`,
-      description: `Migrated from legacy chat participant: ${legacy.name}`
-    };
+        originalType: legacy.type,
+        description: `Migrated from legacy chat participant: ${legacy.name}`
+      }
+    });
   }
 }
 
@@ -126,7 +122,7 @@ export class MessageAdapter {
       content: message.content,
       timestamp: message.timestamp,
       type: message.type as any,
-      roomId: message.roomId,
+      ...(message.roomId && { roomId: message.roomId }),
       attachments: message.attachments || [],
       reactions: message.reactions || []
     };
@@ -139,7 +135,7 @@ export class MessageAdapter {
       content: legacy.content,
       timestamp: legacy.timestamp,
       type: (legacy.type as any) || 'text',
-      roomId: legacy.roomId,
+      ...(legacy.roomId && { roomId: legacy.roomId }),
       attachments: legacy.attachments || [],
       reactions: legacy.reactions || [],
       mentions: []
@@ -155,7 +151,7 @@ export class RoomAdapter {
     return {
       id: room.id,
       name: room.name,
-      description: room.description,
+      ...(room.description && { description: room.description }),
       participants: room.participants.map(p => PersonaToLegacyAdapter.toLegacyParticipant(p)),
       messages: [], // Messages handled separately
       created: room.created,
@@ -168,7 +164,7 @@ export class RoomAdapter {
     return {
       id: legacy.id,
       name: legacy.name,
-      description: legacy.description,
+      ...(legacy.description && { description: legacy.description }),
       created: legacy.created,
       participants: legacy.participants.map(p => PersonaToLegacyAdapter.fromLegacyParticipant(p)),
       moderators: [legacy.participants[0]?.id || ''], // First participant as moderator
@@ -205,7 +201,7 @@ export class RoomAdapter {
 export class ChatMigrationStrategy {
   private legacyMode: boolean = true;
   private hybridMode: boolean = false;
-  private personaMode: boolean = false;
+  private personaMode: boolean = false; // Future use - persona-chat integration phase
 
   /**
    * Phase 1: Legacy Mode (Current State)
@@ -252,7 +248,8 @@ export class ChatMigrationStrategy {
   getCurrentPhase(): 'legacy' | 'hybrid' | 'persona' {
     if (this.legacyMode) return 'legacy';
     if (this.hybridMode) return 'hybrid';
-    return 'persona';
+    if (this.personaMode) return 'persona';
+    return 'legacy'; // Default fallback
   }
 
   /**
@@ -385,7 +382,7 @@ export class ChatCompatibilityWrapper {
         sender,
         content,
         type: 'text',
-        roomId
+        ...(roomId && { roomId })
       });
       
       // Convert to legacy format
@@ -451,7 +448,7 @@ export class ChatCompatibilityWrapper {
       content,
       timestamp: Date.now(),
       type: 'text',
-      roomId
+      ...(roomId && { roomId })
     };
   }
 }
@@ -538,14 +535,6 @@ export const CHAT_MIGRATION_ROADMAP = {
 
 // ==================== EXPORTS ====================
 
-export {
-  LegacyChatParticipant,
-  LegacyChatMessage,
-  LegacyChatRoom,
-  PersonaToLegacyAdapter,
-  MessageAdapter,
-  RoomAdapter,
-  ChatMigrationStrategy,
-  ChatCompatibilityWrapper,
-  ChatFeature
-};
+// Types already exported inline above
+
+// Classes are already exported inline above
