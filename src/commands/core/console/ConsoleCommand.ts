@@ -9,8 +9,16 @@ import { DirectCommand } from '../direct-command/DirectCommand';
 import { CommandResult, ContinuumContext, CommandDefinition } from '../base-command/BaseCommand';
 import type { UUID } from 'crypto';
 import { Console } from '../../../types/shared/ConsoleTypes';
+import { UniversalLogger } from '../../../logging/UniversalLogger';
 
 export class ConsoleCommand extends DirectCommand {
+  /**
+   * Get original console methods to avoid infinite loops with UniversalLogger override
+   */
+  private static getOriginalConsole() {
+    return (UniversalLogger as any).originalConsole || console;
+  }
+
   /**
    * Normalize any client input format into our well-defined shared type
    * Server-side only - ensures type safety regardless of what client sends
@@ -112,7 +120,7 @@ export class ConsoleCommand extends DirectCommand {
       const logData: Console.LogEntry = this.normalizeToSharedType(params);
       
       if (!logData.level || !logData.message) {
-        console.log(`🎯 MISSING PARAMS: level=${logData.level}, message=${logData.message}`);
+        this.getOriginalConsole().log(`🎯 MISSING PARAMS: level=${logData.level}, message=${logData.message}`);
         return this.createErrorResult('Console forwarding requires level and message parameters');
       }
 
@@ -128,9 +136,9 @@ export class ConsoleCommand extends DirectCommand {
             const executeJSBase64 = (probeArg as any).executeJSBase64;
             const decodedJS = Buffer.from(executeJSBase64, 'base64').toString('utf-8');
             // Add decoded JS to server logs for debugging (but keep base64 in stored logs)
-            console.log(`🔬 PROBE JS Code: ${decodedJS}`);
+            this.getOriginalConsole().log(`🔬 PROBE JS Code: ${decodedJS}`);
           } catch (error) {
-            console.warn(`⚠️ Failed to decode probe JavaScript: ${error}`);
+            this.getOriginalConsole().warn(`⚠️ Failed to decode probe JavaScript: ${error}`);
           }
         }
       }
@@ -144,17 +152,17 @@ export class ConsoleCommand extends DirectCommand {
       const timePrefix = `[${new Date().toLocaleTimeString()}]`;
 
       // Log to server console (always) with timestamp and full metadata
-      console.log(`[${timePrefix} console.${logData.level}]: ${logData.message}`);
+      this.getOriginalConsole().log(`[${timePrefix} console.${logData.level}]: ${logData.message}`);
       if (logData.arguments && logData.arguments.length > 0) {
-        console.log(`   Args:`, logData.arguments);
+        this.getOriginalConsole().log(`   Args:`, logData.arguments);
       }
       
       // Log enhanced metadata including stack trace if available
       if (logData.metadata?.stackTrace) {
-        console.log(`   Stack Trace:`, logData.metadata.stackTrace);
+        this.getOriginalConsole().log(`   Stack Trace:`, logData.metadata.stackTrace);
       }
       if (logData.metadata?.url) {
-        console.log(`   URL:`, logData.metadata.url);
+        this.getOriginalConsole().log(`   URL:`, logData.metadata.url);
       }
 
       // Write to session-specific log files with level-based JSON format
@@ -209,15 +217,15 @@ export class ConsoleCommand extends DirectCommand {
                 .map(s => s.dir);
               
               sessionId = sortedSessions[0] as UUID;
-              console.log(`📝 No sessionId in context - using most recent shared session: ${sessionId}`);
+              this.getOriginalConsole().log(`📝 No sessionId in context - using most recent shared session: ${sessionId}`);
             }
           } catch (error) {
-            console.log(`📝 Could not find existing sessions: ${error}`);
+            this.getOriginalConsole().log(`📝 Could not find existing sessions: ${error}`);
           }
           
           // If still no session, we can't log to session files
           if (!sessionId) {
-            console.log(`📝 No active session found - logging to server console only`);
+            this.getOriginalConsole().log(`📝 No active session found - logging to server console only`);
             return this.createSuccessResult('Console message forwarded to server console', {
               forwarded: true,
               serverTimestamp,
@@ -331,7 +339,7 @@ export class ConsoleCommand extends DirectCommand {
               fs.appendFile(allLogsPath, humanReadableEntry)    // browser.log (human-readable)
             ]);
             
-            console.log(`✅ Wrote to browser logs: ${sessionId} (${logData.level})`);
+            this.getOriginalConsole().log(`✅ Wrote to browser logs: ${sessionId} (${logData.level})`);
             sessionLogged = true;
             break; // Found the session, stop looking
           } catch (accessError) {
@@ -341,11 +349,11 @@ export class ConsoleCommand extends DirectCommand {
         }
         
         if (!sessionLogged) {
-          console.warn(`⚠️ Session ${sessionId} logs directory not found - console message not logged to session file`);
+          this.getOriginalConsole().warn(`⚠️ Session ${sessionId} logs directory not found - console message not logged to session file`);
         }
         
       } catch (error) {
-        console.warn(`⚠️ Failed to write to session browser log: ${error instanceof Error ? error.message : String(error)}`);
+        this.getOriginalConsole().warn(`⚠️ Failed to write to session browser log: ${error instanceof Error ? error.message : String(error)}`);
       }
 
       return this.createSuccessResult(
