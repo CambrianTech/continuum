@@ -30,12 +30,43 @@
 **🔧 If you're migrating modules:** `middle-out/architecture-patterns/incremental-migration.md`
 **📖 For everything else:** `middle-out/README.md`
 
-## **🎯 CURRENT WORK: NEW PARSER MODULE**
-Building reference implementation following `middle-out/architecture/universal-module-structure.md`:
-- ✅ **ParserBase.ts** - Abstract foundation for all parsers
-- ✅ **CLI output formatting** - Screenshot command now user-friendly
-- 🚧 **Integration tests** - Testing the new architecture
-- 🚧 **CLI integration** - Universal output formatting for all commands
+## **🎯 CURRENT WORK: SYMMETRIC DAEMON ARCHITECTURE**
+Building the first unified client/server daemon following `middle-out/architecture/symmetric-daemon-architecture.md`:
+
+### **🔄 LOGGER DAEMON UNIFICATION (Phase 1)**
+**Target**: Merge ConsoleForwarder (browser) + ConsoleOverrides (server) into single symmetric daemon
+
+**Current State:**
+- ✅ **Stack-based context architecture** - Context tracking across execution layers
+- ✅ **ProcessBasedDaemon foundation** - Async queue with mutex/semaphore
+- ✅ **ServerAsyncLogger** - Server-side async logging with daemon integration
+- ✅ **Universal module structure** - `/shared`, `/server`, `/client`, `/tests` pattern
+- ✅ **Comprehensive test suite** - AsyncQueue, LoggerDaemon, console overrides
+
+**Next Phase - Symmetric Implementation:**
+- 🚧 **Migrate ConsoleForwarder** - Move browser console forwarder to `src/daemons/logger/client/`
+- 🚧 **Unified LoggerMessage types** - Same message protocol for browser and server
+- 🚧 **Symmetric console overrides** - Same interface, different transport (WebSocket vs AsyncQueue)
+- 🚧 **Cross-context testing** - Browser ↔ Server logging integration tests
+
+**The Vision:**
+```
+Browser: console.log → ClientLoggerDaemon → WebSocket → ServerLoggerDaemon
+Server:  console.log → ServerLoggerDaemon → AsyncQueue → Files
+```
+
+**Same daemon pattern, different execution context. This becomes the template for all future daemon migrations.**
+
+### **🎯 BREAKTHROUGH: UNIFIED MENTAL MODEL**
+- **Same DaemonMessage<T>** - Used by both browser and server
+- **Same ProcessBasedDaemon** - Works with WebSocket (browser) or AsyncQueue (server)  
+- **Same testing patterns** - Mock transport, test daemon logic
+- **Same debugging** - Message tracing across contexts
+
+**Future Daemons to Migrate:**
+1. **SessionManager** - Browser session UI + server session state
+2. **BrowserManager** - Browser automation + server browser control
+3. **CommandProcessor** - Browser command routing + server execution
 
 ## **🔧 HOW TO TEST AND STUFF:**
 

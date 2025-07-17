@@ -29,6 +29,7 @@ export type ContinuumEnvironment = 'browser' | 'server' | 'remote' | 'agent' | '
 export interface ExecutionFrame {
   environment: ContinuumEnvironment;
   location: string; // Component, command, or daemon name
+  description?: string; // Human-readable description of this execution frame
   timestamp: string;
   metadata?: Record<string, unknown>;
 }
@@ -146,6 +147,7 @@ export const continuumContextFactory = {
   push: (context: ContinuumContext, frame: {
     environment: ContinuumEnvironment;
     location: string;
+    description?: string;
     metadata?: Record<string, unknown>;
   }): ContinuumContext => {
     const newFrame: ExecutionFrame = {
