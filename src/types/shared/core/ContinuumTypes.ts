@@ -11,6 +11,11 @@
 
 import { randomUUID, type UUID } from "crypto";
 
+/**
+ * Core execution environment type - fundamental to all Continuum operations
+ */
+export type ContinuumEnvironment = 'browser' | 'server';
+
 // Common types for context properties
 export interface WebSocketServer {
   send: (message: unknown) => void;

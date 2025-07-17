@@ -104,6 +104,13 @@ export class SessionManagerDaemon extends BaseDaemon {
     this.log('📋 Starting Session Manager Daemon...');
     this.log('🕵️‍♂️🕵️‍♂️🕵️‍♂️ DISCOVERY: Starting daemon reconnaissance 🕵️‍♂️🕵️‍♂️🕵️‍♂️');
     
+    // Test UniversalLogger with all log levels
+    const { UniversalLogger } = await import('../../logging/UniversalLogger');
+    UniversalLogger.log('server', 'SessionManagerDaemon', 'Session Manager Daemon v3.0 started - session management only', 'info');
+    UniversalLogger.log('server', 'SessionManagerDaemon', 'Debug: Initializing directory structure', 'debug');
+    UniversalLogger.log('server', 'SessionManagerDaemon', 'Warning: This is a test warning message', 'warn');
+    UniversalLogger.log('server', 'SessionManagerDaemon', 'Error: This is a test error message', 'error');
+    
     await this.initializeDirectoryStructure();
     
     // Discover all registered daemons after initialization
