@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.2975",
+  "version": "0.2.2980",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {

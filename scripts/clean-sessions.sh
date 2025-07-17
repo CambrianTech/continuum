@@ -74,6 +74,15 @@ echo -e "${YELLOW}🧹 Cleaning orphaned logs...${NC}"
 find .continuum -name "*.log" -type f -mmin +$((KEEP_HOURS * 60)) -not -path "*sessions*" -delete 2>/dev/null || true
 echo -e "${GREEN}✅ Orphaned logs cleaned${NC}"
 
+# Clean global logs directory
+echo -e "${YELLOW}🧹 Cleaning global logs...${NC}"
+if [ "$DELETE_ALL" = true ]; then
+    rm -rf .continuum/logs 2>/dev/null || true
+else
+    find .continuum/logs -type f -mmin +$((KEEP_HOURS * 60)) -delete 2>/dev/null || true
+fi
+echo -e "${GREEN}✅ Global logs cleaned${NC}"
+
 # Clean dist directory and build artifacts
 echo -e "${YELLOW}🧹 Cleaning build artifacts...${NC}"
 rm -rf dist/ 2>/dev/null || true

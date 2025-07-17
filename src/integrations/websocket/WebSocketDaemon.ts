@@ -973,7 +973,10 @@ export class WebSocketDaemon extends BaseDaemon {
    */
   async sendToConnectedClients(message: unknown): Promise<DaemonResponse> {
     try {
-      console.log(`📡 WEBSOCKET: Broadcasting message to all connected clients`);
+      // Use UniversalLogger for server logging
+      const { UniversalLogger } = await import('../../logging/UniversalLogger');
+      UniversalLogger.log('server', 'WebSocketDaemon', '📡 WEBSOCKET: Broadcasting message to all connected clients', 'info');
+      
       this.wsManager.broadcast(message);
       return {
         success: true,
