@@ -60,7 +60,7 @@ export abstract class BaseDaemon extends EventEmitter {
   
   constructor(context?: ContinuumContext) {
     super();
-    this.context = context || {
+    this.context = context ?? {
       sessionId: generateUUID(),
       environment: 'server'
     } as ContinuumContext;
