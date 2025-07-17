@@ -4,7 +4,7 @@
  * Global logs go to .continuum/logs, session logs go to session/logs directory
  */
 
-import { appendFileSync, mkdirSync, statSync } from 'fs';
+import { appendFileSync, mkdirSync, statSync, readdirSync, existsSync } from 'fs';
 import * as path from 'path';
 import type { ContinuumContext, ContinuumEnvironment } from '../types/shared/core/ContinuumTypes';
 
@@ -128,21 +128,37 @@ export class UniversalLogger {
       this.writeLogFiles(context.sessionPaths.logs, source, message, level, timestamp, name);
     }
     
-    // Special handling for session-specific logging when context.sessionId is provided
-    if (context?.sessionId && name === 'browser') {
+    // Special handling for session-specific browser logging: 
+    // Since ConsoleCommand handles session detection, we need to get the current session
+    if (name === 'browser') {
       try {
-        const path = require('path');
-        const fs = require('fs');
-        const sessionLogPath = path.join('.continuum/sessions/user/shared', context.sessionId, 'logs');
-        
-        // Ensure directory exists
-        if (!fs.existsSync(sessionLogPath)) {
-          fs.mkdirSync(sessionLogPath, { recursive: true });
+        // Find the most recent session directory
+        const sessionsPath = '.continuum/sessions/user/shared';
+        if (existsSync(sessionsPath)) {
+          const sessionDirs = readdirSync(sessionsPath).filter((dir: string) => 
+            statSync(path.join(sessionsPath, dir)).isDirectory()
+          );
+          
+          if (sessionDirs.length > 0) {
+            // Get the most recent session directory
+            const sessionStats = sessionDirs.map((dir: string) => {
+              const sessionPath = path.join(sessionsPath, dir);
+              return { dir, mtime: statSync(sessionPath).mtime.getTime() };
+            }).sort((a: any, b: any) => b.mtime - a.mtime);
+            
+            const currentSessionId = sessionStats[0].dir;
+            const sessionLogPath = path.join(sessionsPath, currentSessionId, 'logs');
+            
+            // Ensure directory exists
+            if (!existsSync(sessionLogPath)) {
+              mkdirSync(sessionLogPath, { recursive: true });
+            }
+            
+            this.writeLogFiles(sessionLogPath, source, message, level, timestamp, name);
+          }
         }
-        
-        this.writeLogFiles(sessionLogPath, source, message, level, timestamp, name);
       } catch (error) {
-        console.error('Failed to write to session-specific browser.log:', error);
+        // Silently continue if session-specific logging fails
       }
     }
   }
@@ -170,7 +186,7 @@ export class UniversalLogger {
    * Write human-readable .log file with header
    */
   private static writeHumanLog(logDir: string, source: string, message: string, level: string, timestamp: string, name: string) {
-    const humanLogEntry = `[${timestamp}] [${source}] ${level.toUpperCase()}: ${message}\n`;
+    const humanLogEntry = `UL: [${timestamp}] [${source}] ${level.toUpperCase()}: ${message}\n`;
     const humanLogPath = path.join(logDir, `${name}.log`);
     this.ensureLogFileWithHeader(humanLogPath, name);
     appendFileSync(humanLogPath, humanLogEntry);
