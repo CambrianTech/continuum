@@ -4,8 +4,8 @@
  */
 
 import { BaseDaemon } from './BaseDaemon';
-import { DaemonMessage, DaemonResponse } from './DaemonProtocol';
-import { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
+import type { DaemonMessage, DaemonResponse } from './DaemonProtocol';
+import type { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
 import { AsyncQueue } from './AsyncQueue';
 
 export interface ProcessBasedDaemonConfig {
@@ -157,7 +157,7 @@ export abstract class ProcessBasedDaemon<TMessage = unknown> extends BaseDaemon 
     return {
       size: this.queue.size(),
       isProcessing: this.isProcessing,
-      maxSize: this.config.queueSize || 10000
+      maxSize: this.config.queueSize ?? 10000
     };
   }
 }
