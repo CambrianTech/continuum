@@ -19,14 +19,14 @@ export interface BuildEvent {
   type: 'npm_start' | 'npm_build' | 'git_hook' | 'system_startup' | 'browser_launch';
   trigger: string; // What triggered this event
   expected: boolean; // Was this event expected?
-  duration_ms?: number;
+  durationMs?: number; // Best and most consistent pattern - camelCase over snake_case
   context: {
-    hook_type?: 'pre-commit' | 'pre-push';
+    hookType?: 'pre-commit' | 'pre-push'; // Best and most consistent pattern - camelCase over snake_case
     command?: string;
-    session_id?: string;
-    process_id: number;
+    sessionId?: string; // Best and most consistent pattern - camelCase used 1402 times across 184 files
+    processId: number; // Best and most consistent pattern - camelCase over snake_case
   };
-  efficiency_notes?: string[];
+  efficiencyNotes?: string[]; // Best and most consistent pattern - camelCase over snake_case
 }
 
 export interface EfficiencyReport {
@@ -101,15 +101,15 @@ export class BuildEfficiencyMonitor {
       notes.push('Multiple browser launches detected - possible redundancy');
     }
 
-    if (event.context.hook_type === 'pre-push' && event.type === 'npm_start') {
+    if (event.context.hookType === 'pre-push' && event.type === 'npm_start') {
       notes.push('Pre-push should reuse pre-commit validation - optimization opportunity');
     }
 
-    if (event.duration_ms && event.duration_ms > 30000) {
-      notes.push(`Slow ${event.type} (${event.duration_ms}ms) - performance investigation needed`);
+    if (event.durationMs && event.durationMs > 30000) {
+      notes.push(`Slow ${event.type} (${event.durationMs}ms) - performance investigation needed`);
     }
 
-    event.efficiency_notes = notes;
+    event.efficiencyNotes = notes;
   }
 
   /**
@@ -127,8 +127,8 @@ export class BuildEfficiencyMonitor {
    */
   private alertRedundantBuild(event: BuildEvent): void {
     console.warn(`⚠️ BUILD EFFICIENCY ALERT: Unexpected ${event.type} triggered by ${event.trigger}`);
-    if (event.efficiency_notes?.length) {
-      event.efficiency_notes.forEach(note => console.warn(`   💡 ${note}`));
+    if (event.efficiencyNotes?.length) {
+      event.efficiencyNotes.forEach(note => console.warn(`   💡 ${note}`));
     }
   }
 
@@ -184,14 +184,14 @@ export class BuildEfficiencyMonitor {
     }
 
     // Check git hook efficiency
-    const gitHookEvents = events.filter(e => e.context.hook_type);
+    const gitHookEvents = events.filter(e => e.context.hookType);
     const redundantHookBuilds = gitHookEvents.filter(e => !e.expected);
     if (redundantHookBuilds.length > 0) {
       recommendations.push('Git hooks have redundant builds - optimize pre-push to reuse pre-commit results');
     }
 
     // Check for slow builds
-    const slowBuilds = events.filter(e => e.duration_ms && e.duration_ms > 20000);
+    const slowBuilds = events.filter(e => e.durationMs && e.durationMs > 20000);
     if (slowBuilds.length > 0) {
       recommendations.push('Some builds are slow (>20s) - investigate performance bottlenecks');
     }

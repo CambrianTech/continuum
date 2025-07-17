@@ -293,7 +293,7 @@ export type PersonaManagerRequest =
   | PersonaUpdateRequest
   | PersonaCrossoverRequest
   | PersonaSearchRequest
-  | PersonaDeleteRequest
+  // | PersonaDeleteRequest  // TODO: Define this type
   | PersonaExportRequest
   | PersonaImportRequest;
 
@@ -302,16 +302,17 @@ export type PersonaManagerResponse =
   | PersonaUpdateResponse
   | PersonaCrossoverResponse
   | PersonaSearchResponse
-  | PersonaDeleteResponse
+  // | PersonaDeleteResponse  // TODO: Define this type
   | PersonaExportResponse
   | PersonaImportResponse;
 
 // ==================== CONSTANTS ====================
 
-export const PERSONA_MANAGER_CONSTANTS = {
-  DEFAULT_POPULATION_SIZE: 10,
-  DEFAULT_MUTATION_RATE: 0.1,
-  DEFAULT_CROSSOVER_RATE: 0.3,
-  MIN_FITNESS_THRESHOLD: 0.1,
-  MAX_GENERATION_STAGNATION: 5
-} as const;
+// Note: Constants already exported above - removing duplicate
+// export const PERSONA_MANAGER_CONSTANTS = {
+//   DEFAULT_POPULATION_SIZE: 10,
+//   DEFAULT_MUTATION_RATE: 0.1,
+//   DEFAULT_CROSSOVER_RATE: 0.3,
+//   MIN_FITNESS_THRESHOLD: 0.1,
+//   MAX_GENERATION_STAGNATION: 5
+// } as const;

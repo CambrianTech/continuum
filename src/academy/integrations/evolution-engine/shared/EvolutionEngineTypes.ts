@@ -5,7 +5,7 @@
  * following the middle-out modular pattern.
  */
 
-import { PersonaGenome, EvolutionaryPressure } from '../../../shared/AcademyTypes';
+import { PersonaGenome, EvolutionaryPressure, MutationEvent } from '../../../shared/AcademyTypes';
 
 // ==================== EVOLUTION ENGINE TYPES ====================
 
@@ -170,14 +170,15 @@ export interface ChallengeResult {
 /**
  * Mutation event
  */
-export interface MutationEvent {
+// Using unified MutationEvent from AcademyTypes - same semantic meaning should use same type
+
+export interface EvolutionMutationEvent extends MutationEvent {
   id: string;
   personaId: string;
   mutationType: MutationType;
   targetTrait: string;
   oldValue: any;
   newValue: any;
-  timestamp: number;
   success: boolean;
   impact: number;
 }
@@ -314,20 +315,21 @@ export function validateEvolutionRequest(request: EvolutionEngineRequest): {
 
 // ==================== EXPORTS ====================
 
-export {
-  EvolutionEngineConfig,
-  EvolutionEngineRequest,
-  EvolutionEngineResponse,
-  GenerationResult,
-  GenerationMetrics,
-  EcosystemMetrics,
-  EvolutionSession,
-  SessionOutcome,
-  EcosystemHealth,
-  Challenge,
-  SuccessCriteria,
-  ChallengeResult,
-  MutationEvent,
-  MutationType,
-  VectorSpaceEvolution
-};
+// Note: Types are exported inline above, no need to re-export
+// export {
+//   EvolutionEngineConfig,
+//   EvolutionEngineRequest,
+//   EvolutionEngineResponse,
+//   GenerationResult,
+//   GenerationMetrics,
+//   EcosystemMetrics,
+//   EvolutionSession,
+//   SessionOutcome,
+//   EcosystemHealth,
+//   Challenge,
+//   SuccessCriteria,
+//   ChallengeResult,
+//   MutationEvent,
+//   MutationType,
+//   VectorSpaceEvolution
+// };

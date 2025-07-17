@@ -216,6 +216,7 @@ export interface AcademyEcosystem {
   challengeLibrary: Challenge[];
   evolutionHistory: EvolutionEvent[];
   ecosystemMetrics: EcosystemMetrics;
+  generation: number;
 }
 
 export interface EvolutionEvent {

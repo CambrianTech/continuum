@@ -74,7 +74,7 @@ export abstract class ServerAcademy<TInput, TOutput> extends AcademyBase<TInput,
       this.sessionProcesses.delete(sessionId);
     });
     
-    this.logMessage(`🏗️ Created server session: ${sessionId} for ${persona.identity.name}`);
+    this.logMessage(`🏗️ Created server session: ${sessionId} for ${persona.name}`);
     
     return sessionId;
   }

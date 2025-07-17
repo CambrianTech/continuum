@@ -12,13 +12,10 @@ import {
   PersonaGenome, 
   Challenge, 
   ChallengeResult, 
-  TrainingSession,
+  // TrainingSession,
   EvolutionaryPressure,
-  SessionOutcome,
   EcosystemMetrics,
-  PersonaRole,
   MutationEvent,
-  generateUUID,
   PerformanceMetrics,
   EcosystemHealth
 } from "./shared/AcademyTypes";
@@ -142,7 +139,7 @@ export abstract class EvolutionEngine {
   /**
    * Reproduce survivors to create offspring
    */
-  protected async reproduce(survivors: PersonaGenome[], pressure: EvolutionaryPressure): Promise<PersonaGenome[]> {
+  protected async reproduce(survivors: PersonaGenome[], _pressure: EvolutionaryPressure): Promise<PersonaGenome[]> {
     const offspring: PersonaGenome[] = [];
     const targetOffspringCount = Math.floor(survivors.length * 1.5); // 50% more than survivors
     
@@ -208,7 +205,7 @@ export abstract class EvolutionEngine {
   /**
    * Apply mutations to offspring
    */
-  protected applyMutations(offspring: PersonaGenome[], pressure: EvolutionaryPressure): PersonaGenome[] {
+  protected applyMutations(offspring: PersonaGenome[], _pressure: EvolutionaryPressure): PersonaGenome[] {
     return offspring.map(child => {
       if (Math.random() < child.reproduction.mutationRate) {
         const mutatedChild = this.genomeProcessor.mutate(child);

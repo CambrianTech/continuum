@@ -12,9 +12,10 @@
  */
 
 import { PersonaGenome, EvolutionaryPressure } from '../../../shared/AcademyTypes';
-import { EvolutionEngineResponse } from '../../evolution-engine/shared/EvolutionEngineTypes';
-import { SessionInfo } from '../../session-manager/shared/SessionManagerTypes';
-import { PersonaManagerResponse } from '../../persona-manager/shared/PersonaManagerTypes';
+// Remove unused imports to fix TypeScript errors
+// import { EvolutionEngineResponse } from '../../evolution-engine/shared/EvolutionEngineTypes';
+// import { SessionInfo } from '../../session-manager/shared/SessionManagerTypes';
+// import { PersonaManagerResponse } from '../../persona-manager/shared/PersonaManagerTypes';
 
 // ==================== ORCHESTRATOR TYPES ====================
 
@@ -520,33 +521,34 @@ export function validateSpawnPersonaRequest(request: SpawnPersonaRequest): {
 
 // ==================== EXPORTS ====================
 
-export type {
-  AcademyOrchestratorConfig,
-  EvolutionConfig,
-  SessionConfig,
-  StartEvolutionRequest,
-  StartEvolutionResponse,
-  GetEvolutionStatusRequest,
-  GetEvolutionStatusResponse,
-  StopEvolutionRequest,
-  StopEvolutionResponse,
-  SpawnPersonaRequest,
-  SpawnPersonaResponse,
-  GetComprehensiveStatusRequest,
-  GetComprehensiveStatusResponse,
-  EvolutionStatus,
-  EvolutionPhase,
-  EvolutionMetrics,
-  EvolutionResult,
-  GenerationSummary,
-  AcademyStatus,
-  AcademyMode,
-  SystemMetrics,
-  HealthStatus,
-  HealthLevel,
-  ComponentHealth,
-  HealthAlert,
-  AcademyEvent,
-  AcademyEventData,
-  AcademyEventHandler
-};
+// Note: Types are exported inline above, no need to re-export
+// export type {
+//   AcademyOrchestratorConfig,
+//   EvolutionConfig,
+//   SessionConfig,
+//   StartEvolutionRequest,
+//   StartEvolutionResponse,
+//   GetEvolutionStatusRequest,
+//   GetEvolutionStatusResponse,
+//   StopEvolutionRequest,
+//   StopEvolutionResponse,
+//   SpawnPersonaRequest,
+//   SpawnPersonaResponse,
+//   GetComprehensiveStatusRequest,
+//   GetComprehensiveStatusResponse,
+//   EvolutionStatus,
+//   EvolutionPhase,
+//   EvolutionMetrics,
+//   EvolutionResult,
+//   GenerationSummary,
+//   AcademyStatus,
+//   AcademyMode,
+//   SystemMetrics,
+//   HealthStatus,
+//   HealthLevel,
+//   ComponentHealth,
+//   HealthAlert,
+//   AcademyEvent,
+//   AcademyEventData,
+//   AcademyEventHandler
+// };

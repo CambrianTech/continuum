@@ -11,11 +11,11 @@
  */
 
 import { 
-  ChatParticipant,
+  // ChatParticipant,
   HumanParticipant,
   AIAssistantParticipant,
   createHumanParticipant,
-  createAIAssistantParticipant,
+  // createAIAssistantParticipant,
   createClaudeParticipant,
   ParticipantRegistry
 } from './ChatParticipant';
@@ -23,14 +23,14 @@ import {
 import { 
   PersonaBase,
   PersonaTemplates,
-  createPersona,
-  createTypedPersona
+  createPersona
+  // createTypedPersona
 } from './PersonaBase';
 
 import { 
   PersonaImporter,
   importPersonaFromPrompt,
-  importPersonaFromBase,
+  // importPersonaFromBase,
   importPersonaFromTemplate
 } from './PersonaImporter';
 
@@ -71,7 +71,7 @@ export class ChatIntegrationDemo {
       id: human.id,
       name: human.name,
       type: human.type,
-      preferences: human.preferences
+      preferences: human.metadata.preferences
     });
 
     // 2. Create AI assistant participant (Claude)
@@ -81,8 +81,8 @@ export class ChatIntegrationDemo {
       id: claude.id,
       name: claude.name,
       type: claude.type,
-      model: claude.model,
-      capabilities: claude.capabilities
+      model: claude.metadata.model,
+      capabilities: claude.getCapabilities()
     });
 
     // 3. Create custom persona from prompt
@@ -115,10 +115,10 @@ export class ChatIntegrationDemo {
     // Register all participants
     this.registry.register(human);
     this.registry.register(claude);
-    this.registry.register(customPersona);
-    this.registry.register(teacherPersona);
+    this.registry.register(customPersona as any); // PersonaBase → ChatParticipant conversion
+    this.registry.register(teacherPersona as any); // PersonaBase → ChatParticipant conversion
 
-    console.log(`✅ All participants registered! Total: ${this.registry.count()}`);
+    console.log(`✅ All participants registered! Total: ${this.registry.count}`);
   }
 
   /**
@@ -140,19 +140,19 @@ export class ChatIntegrationDemo {
     
     const human = this.registry.getByType('human')[0] as HumanParticipant;
     const ai = this.registry.getByType('ai_assistant')[0] as AIAssistantParticipant;
-    const persona = this.registry.getByType('persona')[0] as PersonaBase;
+    const persona = this.registry.getByType('persona')[0] as unknown as PersonaBase;
 
     // All use the same base interface but have different capabilities
     console.log('Human participant:', {
       name: human.name,
-      hasPreferences: !!human.preferences,
-      communicationStyle: human.preferences?.communicationStyle
+      hasPreferences: !!human.metadata.preferences,
+      communicationStyle: human.metadata.preferences?.communicationStyle
     });
 
     console.log('AI participant:', {
       name: ai.name,
-      hasCapabilities: !!ai.capabilities,
-      model: ai.model
+      hasCapabilities: !!ai.getCapabilities(),
+      model: ai.metadata.model
     });
 
     console.log('Persona participant:', {
@@ -174,11 +174,11 @@ export class ChatIntegrationDemo {
     // Convert human to persona (for representation in Academy)
     const humanPersona = createPersona({
       name: `${human.name} (Human Persona)`,
-      prompt: `You represent ${human.name}, a human with expertise in ${human.preferences?.expertise?.join(', ')}. You communicate in a ${human.preferences?.communicationStyle} style.`,
+      prompt: `You represent ${human.name}, a human with expertise in ${human.metadata.preferences?.expertise?.join(', ')}. You communicate in a ${human.metadata.preferences?.communicationStyle} style.`,
       description: `Persona representation of human user ${human.name}`,
       type: 'assistant',
-      communicationStyle: human.preferences?.communicationStyle as any || 'professional',
-      capabilities: human.preferences?.expertise || ['general']
+      communicationStyle: human.metadata.preferences?.communicationStyle as any || 'professional',
+      capabilities: human.metadata.preferences?.expertise || ['general']
     });
 
     console.log('👤➡️🎭 Human converted to persona:', {
@@ -194,7 +194,7 @@ export class ChatIntegrationDemo {
     // Convert AI to persona (for specialization)
     const aiPersona = createPersona({
       name: `${ai.name} (Specialized)`,
-      prompt: `You are ${ai.name}, specialized for TypeScript development. You leverage your ${ai.capabilities?.join(', ')} capabilities to provide expert TypeScript guidance.`,
+      prompt: `You are ${ai.name}, specialized for TypeScript development. You leverage your AI capabilities to provide expert TypeScript guidance.`,
       description: `Specialized version of ${ai.name} for TypeScript development`,
       type: 'specialist',
       communicationStyle: 'technical',
@@ -209,8 +209,8 @@ export class ChatIntegrationDemo {
     });
 
     // Register the new personas
-    this.registry.register(humanPersona);
-    this.registry.register(aiPersona);
+    this.registry.register(humanPersona as any); // PersonaBase → ChatParticipant conversion
+    this.registry.register(aiPersona as any); // PersonaBase → ChatParticipant conversion
   }
 
   /**
@@ -220,7 +220,7 @@ export class ChatIntegrationDemo {
     console.log('\n🎓 Demo 4: Importing personas into Academy');
     
     // Get some personas to import
-    const personas = this.registry.getByType('persona') as PersonaBase[];
+    const personas = this.registry.getByType('persona') as unknown as PersonaBase[];
     
     console.log(`📥 Importing ${personas.length} personas into Academy...`);
     
@@ -251,7 +251,7 @@ export class ChatIntegrationDemo {
       const sample = genomicPersonas[0];
       console.log('\n🧬 Sample genomic persona features:', {
         name: sample.name,
-        basePrompt: sample.prompt.substring(0, 50) + '...',
+        basePrompt: (sample.prompt || 'No prompt').substring(0, 50) + '...',
         personality: sample.identity.personality,
         competencies: sample.knowledge.competencies,
         evolutionStage: sample.evolution.evolutionStage,
@@ -405,7 +405,7 @@ export async function integrationExample(): Promise<void> {
     participants.map(p => ({
       name: p.name,
       type: p.type,
-      canCommunicate: p.canCommunicate
+      canCommunicate: p.hasCapability ? p.hasCapability('communicate') : (p as any).canCommunicate
     }))
   );
 }
@@ -434,9 +434,10 @@ export async function evolutionPipelineExample(): Promise<void> {
 
 // ==================== EXPORTS ====================
 
-export {
-  ChatIntegrationDemo,
-  quickPersonaDemo,
-  integrationExample,
-  evolutionPipelineExample
-};
+// Note: Items are exported inline above, no need to re-export
+// export {
+//   ChatIntegrationDemo,
+//   quickPersonaDemo,
+//   integrationExample,
+//   evolutionPipelineExample
+// };

@@ -14,7 +14,7 @@ interface BuildLogEntry {
   event: string;
   trigger: string;
   expected: boolean;
-  process_id: number;
+  processId: number; // Best and most consistent pattern - camelCase over snake_case
   context?: Record<string, any>;
 }
 
@@ -35,7 +35,7 @@ class BuildLogger {
       event,
       trigger,
       expected,
-      process_id: process.pid,
+      processId: process.pid, // Best and most consistent pattern - camelCase over snake_case
       ...(context && { context })
     };
 
@@ -55,7 +55,7 @@ class BuildLogger {
     const status = entry.expected ? 'EXPECTED' : 'UNEXPECTED';
     const contextStr = entry.context ? ` | ${JSON.stringify(entry.context)}` : '';
     
-    return `[${time}] ${status} | ${entry.event} | ${entry.trigger} | PID:${entry.process_id}${contextStr}`;
+    return `[${time}] ${status} | ${entry.event} | ${entry.trigger} | PID:${entry.processId}${contextStr}`;
   }
 
   /**
@@ -104,7 +104,7 @@ export function logBuild(trigger: string, expected: boolean = true): void {
 }
 
 export function logGitHook(hookType: 'pre-commit' | 'pre-push', expected: boolean = true): void {
-  buildLogger.log('git_hook', hookType, expected, { hook_type: hookType });
+  buildLogger.log('git_hook', hookType, expected, { hookType: hookType }); // Best and most consistent pattern - camelCase over snake_case
 }
 
 export function logBrowserLaunch(trigger: string, expected: boolean = true): void {
