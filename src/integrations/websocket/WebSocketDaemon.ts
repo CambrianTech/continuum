@@ -423,6 +423,15 @@ export class WebSocketDaemon extends BaseDaemon {
           }
         }
         
+        // Import ContinuumContext factory
+        const { continuumContextFactory } = await import('../../types/shared/core/ContinuumTypes');
+        
+        // Create proper ContinuumContext from sessionId
+        const continuumContext = continuumContextFactory.create({
+          sessionId: sessionId as any, // TODO: Fix UUID type casting
+          environment: 'server'
+        });
+        
         // Convert WebSocket message to DaemonMessage format
         const daemonMessage = {
           id: `ws-${Date.now()}`,
@@ -439,7 +448,8 @@ export class WebSocketDaemon extends BaseDaemon {
               websocket: {
                 registeredDaemons: this.registeredDaemons
               },
-              requestId: requestId
+              requestId: requestId,
+              continuumContext: continuumContext // Add proper ContinuumContext
             }
           }
         };

@@ -23,6 +23,7 @@ export interface TypedCommandRequest<T = unknown> {
   readonly command: string;
   readonly parameters: T;
   readonly context: Record<string, any>;
+  readonly continuumContext?: any;
   readonly routing?: CommandRouting;
 }
 
@@ -235,11 +236,26 @@ export class CommandProcessorDaemon extends BaseDaemon {
       return commandInfo;
     }
     
-    // Execute command dynamically
+    // SET GLOBAL CONTEXT: So console.log can pick it up
+    if (commandInfo.continuumContext) {
+      const { SessionContext } = await import('../../context/SessionContext');
+      return await SessionContext.withContinuumContext(commandInfo.continuumContext, async () => {
+        // Execute command dynamically within context
+        return await this.executeCommand({
+          command: commandInfo.command!,
+          parameters: commandInfo.parameters,
+          context: commandInfo.context,
+          continuumContext: commandInfo.continuumContext
+        });
+      });
+    }
+    
+    // Execute command dynamically (fallback without context)
     return await this.executeCommand({
       command: commandInfo.command!,
       parameters: commandInfo.parameters,
-      context: commandInfo.context
+      context: commandInfo.context,
+      continuumContext: commandInfo.continuumContext
     });
   }
   
@@ -248,6 +264,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
     command?: string;
     parameters?: any;
     context?: any;
+    continuumContext?: any;
     error?: string;
   }> {
     switch (message.type) {
@@ -263,11 +280,16 @@ export class CommandProcessorDaemon extends BaseDaemon {
         const extractedContext = directData.context || {};
         console.log(`🔍 [SESSION_DEBUG]   final extracted context: ${JSON.stringify(extractedContext, null, 2)}`);
         
+        // Extract ContinuumContext if available
+        const continuumContext = extractedContext.continuumContext || null;
+        console.log(`🔍 [SESSION_DEBUG]   continuumContext: ${JSON.stringify(continuumContext, null, 2)}`);
+        
         return {
           success: true,
           command: directData.command,
           parameters: directData.parameters,
-          context: extractedContext
+          context: extractedContext,
+          continuumContext: continuumContext
         };
 
       case 'execute_command':
@@ -604,7 +626,7 @@ export class CommandProcessorDaemon extends BaseDaemon {
     const result = await this.commandConnector.executeCommand(
       request.command,
       request.parameters,
-      request.context
+      request.continuumContext || request.context
     );
     console.log(`🔍 [CommandProcessor] Command connector result:`, result);
     
