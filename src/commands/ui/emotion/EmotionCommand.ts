@@ -29,7 +29,7 @@ export class EmotionCommand extends BaseCommand {
     return emotionDefinition;
   }
 
-  static async execute(params: EmotionParams, context?: EmotionContext): Promise<EmotionResult> {
+  static async execute(params: EmotionParams, context: EmotionContext): Promise<EmotionResult> {
     try {
       // Parameters are automatically parsed by UniversalCommandRegistry
       const {
@@ -63,11 +63,11 @@ export class EmotionCommand extends BaseCommand {
       };
 
       // Execute emotion through context
-      if (context?.webSocketServer) {
+      if (context.webSocketServer) {
         await this.broadcastEmotion(context.webSocketServer, emotionConfig);
       }
 
-      if (context?.continuonStatus) {
+      if (context.continuonStatus) {
         await this.updateContinuonStatus(context.continuonStatus, feeling as ValidEmotion, emotionConfig);
       }
 

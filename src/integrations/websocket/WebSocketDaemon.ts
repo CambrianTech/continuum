@@ -28,6 +28,7 @@ import { BaseDaemon } from '../../daemons/base/BaseDaemon';
 import { DaemonMessage, DaemonResponse } from '../../daemons/base/DaemonProtocol';
 import { DaemonType } from '../../daemons/base/DaemonTypes';
 import { SystemEventType } from '../../daemons/base/EventTypes';
+import type { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
 import { RouteManager } from './core/RouteManager';
 import { WebSocketManager } from './core/WebSocketManager';
 import { PortManager } from './core/PortManager';
@@ -56,8 +57,8 @@ export class WebSocketDaemon extends BaseDaemon {
   // Track connection to session mapping for command context
   private connectionSessions = new Map<string, string>(); // connectionId -> sessionId
 
-  constructor(config: ServerConfig = {}) {
-    super();
+  constructor(context: ContinuumContext, config: ServerConfig = {}) {
+    super(context);
     // DEAD CODE: This log never appears in session logs - daemon may not be constructed
     // console.log(`🔥🔥🔥 WEBSOCKET DAEMON CONSTRUCTOR CALLED - STACK:`, new Error().stack?.split('\n').slice(1, 4).join(' -> '));
     
@@ -985,7 +986,8 @@ export class WebSocketDaemon extends BaseDaemon {
     try {
       // Use UniversalLogger for server logging
       const { UniversalLogger } = await import('../../logging/UniversalLogger');
-      UniversalLogger.log('server', 'WebSocketDaemon', '📡 WEBSOCKET: Broadcasting message to all connected clients', 'info');
+      
+      UniversalLogger.log('server', 'WebSocketDaemon', '📡 WEBSOCKET: Broadcasting message to all connected clients', 'info', this.context);
       
       this.wsManager.broadcast(message);
       return {
@@ -1098,16 +1100,23 @@ export class WebSocketDaemon extends BaseDaemon {
 
 // Main execution (direct execution detection)
 if (process.argv[1] && process.argv[1].endsWith('WebSocketDaemon.ts')) {
-  const daemon = new WebSocketDaemon();
+  (async () => {
+    const { continuumContextFactory } = await import('../../types/shared/core/ContinuumTypes');
+    const context = continuumContextFactory.create({
+      sessionId: 'standalone-websocket' as any,
+      environment: 'server'
+    });
+    const daemon = new WebSocketDaemon(context);
   
-  process.on('SIGINT', async () => {
-    console.log('\n🛑 Received shutdown signal...');
-    await daemon.stop();
-    process.exit(0);
-  });
+    process.on('SIGINT', async () => {
+      console.log('\n🛑 Received shutdown signal...');
+      await daemon.stop();
+      process.exit(0);
+    });
 
-  daemon.start().catch(error => {
-    console.error('❌ Failed to start WebSocket Daemon:', error);
-    process.exit(1);
-  });
+    daemon.start().catch(error => {
+      console.error('❌ Failed to start WebSocket Daemon:', error);
+      process.exit(1);
+    });
+  })();
 }

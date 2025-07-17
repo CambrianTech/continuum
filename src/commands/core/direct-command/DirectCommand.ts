@@ -15,14 +15,14 @@ export abstract class DirectCommand extends BaseCommand {
   /**
    * Subclasses implement the core execution logic
    */
-  protected static async executeOperation(_params: any, _context?: ContinuumContext): Promise<CommandResult> {
+  protected static async executeOperation(_params: any, _context: ContinuumContext): Promise<CommandResult> {
     throw new Error('executeOperation() must be implemented by subclass');
   }
 
   /**
    * Standard execute implementation with error handling
    */
-  static async execute(params: any, context?: ContinuumContext): Promise<CommandResult> {
+  static async execute(params: any, context: ContinuumContext): Promise<CommandResult> {
     try {
       // Parse CLI args to JSON format if needed
       const parsedParams = this._registryParseParams(params);

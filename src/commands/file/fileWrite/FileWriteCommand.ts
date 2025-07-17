@@ -34,10 +34,10 @@ export class FileWriteCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: FileOperationParams, context?: ContinuumContext): Promise<CommandResult> {
+  static async execute(params: FileOperationParams, context: ContinuumContext): Promise<CommandResult> {
     try {
       // Use session ID from context if not provided in params
-      const sessionId = params.sessionId || context?.sessionId;
+      const sessionId = params.sessionId || context.sessionId;
       
       // Get target path using session management
       const targetPath = await this.getTargetPath({

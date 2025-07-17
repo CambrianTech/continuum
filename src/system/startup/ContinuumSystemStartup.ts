@@ -16,6 +16,7 @@ import { AcademyDaemon } from '../../daemons/academy/AcademyDaemon';
 import { WidgetDaemon } from '../../daemons/widget/WidgetDaemon';
 // import { PersonaDaemon } from '../../daemons/persona/PersonaDaemon';
 import { ChatRoomDaemon } from '../../daemons/chatroom/ChatRoomDaemon';
+import { ContinuumContext, continuumContextFactory } from '../../types/shared/core/ContinuumTypes';
 // import { DaemonMessage } from '../../daemons/base/DaemonProtocol';
 // import { DaemonMessageUtils } from '../../daemons/base/DaemonMessageUtils';
 // import { UniversalLogger } from '../../logging/UniversalLogger';
@@ -23,21 +24,28 @@ import { ChatRoomDaemon } from '../../daemons/chatroom/ChatRoomDaemon';
 export class ContinuumSystem extends EventEmitter {
   private daemons = new Map();
   private readyDaemons = new Set<string>();
+  private systemContext: ContinuumContext;
 
   constructor() {
     super();
     
-    // Create daemons in dependency order
+    // Create system-level context for all daemons
+    this.systemContext = continuumContextFactory.create({
+      sessionId: 'system' as any, // TODO: Make this proper UUID
+      environment: 'server'
+    });
+    
+    // Create daemons in dependency order - pass context where supported
     this.daemons.set('continuum-directory', new ContinuumDirectoryDaemon());
-    this.daemons.set('session-manager', new SessionManagerDaemon());
+    this.daemons.set('session-manager', new SessionManagerDaemon(this.systemContext, '.continuum/sessions'));
     this.daemons.set('static-file', new StaticFileDaemon());
-    this.daemons.set('websocket', new WebSocketDaemon());
+    this.daemons.set('websocket', new WebSocketDaemon(this.systemContext));
     this.daemons.set('renderer', new RendererDaemon());
     this.daemons.set('command-processor', new CommandProcessorDaemon());
     this.daemons.set('widget', new WidgetDaemon());
     this.daemons.set('chatroom', new ChatRoomDaemon());
     // PersonaDaemon needs special handling - it's created per persona, not as a system daemon
-    // this.daemons.set('persona', new PersonaDaemon());
+    // this.daemons.set('persona', new PersonaDaemon(this.systemContext));
     this.daemons.set('academy', new AcademyDaemon());
     this.daemons.set('browser-manager', new BrowserManagerDaemon());
   }

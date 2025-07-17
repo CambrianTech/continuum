@@ -72,7 +72,7 @@ export class ChatSendCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any, context?: ContinuumContext): Promise<CommandResult<ChatSendResult>> {
+  protected static async executeOperation(params: any, context: ContinuumContext): Promise<CommandResult<ChatSendResult>> {
     try {
       // Create chat send parameters
       const chatParams: ChatSendParams = {
@@ -127,13 +127,13 @@ export class ChatSendCommand extends DirectCommand {
   /**
    * Get current user as ChatParticipant
    */
-  private static getCurrentUser(context?: ContinuumContext): ChatParticipant {
+  private static getCurrentUser(context: ContinuumContext): ChatParticipant {
     // Factory pattern for ChatParticipant creation - persona-chat integration
     return createChatParticipant({
-      name: context?.sessionId || 'Anonymous User',
+      name: context.sessionId || 'Anonymous User',
       type: 'human',
       metadata: {
-        sessionId: context?.sessionId,
+        sessionId: context.sessionId,
         userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'Node.js'
       }
     });
@@ -149,7 +149,7 @@ export class ChatSendCommand extends DirectCommand {
   /**
    * Get WebSocket URL for client connection
    */
-  private static getWebSocketUrl(_context?: ContinuumContext): string {
+  private static getWebSocketUrl(_context: ContinuumContext): string {
     // TODO: Get from configuration
     const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
     const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -160,7 +160,7 @@ export class ChatSendCommand extends DirectCommand {
   /**
    * Get daemon instance for server execution
    */
-  private static async getDaemon(_context?: ContinuumContext): Promise<any> {
+  private static async getDaemon(_context: ContinuumContext): Promise<any> {
     // TODO: Get actual daemon from context or registry
     // const { BaseDaemon } = await import('../../../daemons/base/BaseDaemon');
     

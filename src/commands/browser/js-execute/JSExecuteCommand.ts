@@ -120,7 +120,7 @@ export class JSExecuteCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any, _context?: any): Promise<CommandResult> {
+  static async execute(params: any, _context: any): Promise<CommandResult> {
     try {
       // Parse parameters from command line args
       const options = JSExecuteCommand.parseJSParams(params);

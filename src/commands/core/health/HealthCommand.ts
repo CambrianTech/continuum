@@ -86,7 +86,7 @@ export class HealthCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, _context: ContinuumContext): Promise<CommandResult> {
     const startTime = Date.now();
     
     // Generate server-side health report

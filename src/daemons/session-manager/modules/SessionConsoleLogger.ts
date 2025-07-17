@@ -6,6 +6,7 @@
 import { ChromiumDevToolsAdapter } from '../../browser-manager/adapters/ChromiumDevToolsAdapter';
 import { ConsoleMessage } from '../../browser-manager/types/index';
 import { UniversalLogger } from '../../../logging/UniversalLogger';
+import { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
 
 export class SessionConsoleLogger {
   private devTools: ChromiumDevToolsAdapter | null = null;
@@ -14,7 +15,7 @@ export class SessionConsoleLogger {
   /**
    * Connect to browser and start capturing console logs
    */
-  async startLogging(debugUrl: string, targetId?: string): Promise<void> {
+  async startLogging(debugUrl: string, targetId?: string, context?: ContinuumContext): Promise<void> {
     if (this.isLogging) {
       return; // Already logging
     }
@@ -32,7 +33,9 @@ export class SessionConsoleLogger {
       console.log(`🔌 Session console logging started: ${debugUrl}`);
       
       // Log the connection via UniversalLogger
-      UniversalLogger.log('browser', 'SessionConsoleLogger', `🔌 DevTools console logging enabled: ${debugUrl}`);
+      if (context) {
+        UniversalLogger.log('browser', 'SessionConsoleLogger', `🔌 DevTools console logging enabled: ${debugUrl}`, 'info', context);
+      }
     } catch (error) {
       console.error('❌ Failed to start session console logging:', error);
       throw error;
@@ -42,7 +45,7 @@ export class SessionConsoleLogger {
   /**
    * Stop console logging and disconnect
    */
-  async stopLogging(): Promise<void> {
+  async stopLogging(context?: ContinuumContext): Promise<void> {
     if (!this.isLogging || !this.devTools) {
       return;
     }
@@ -55,12 +58,23 @@ export class SessionConsoleLogger {
       console.log('🔌 Session console logging stopped');
       
       // Log the disconnection via UniversalLogger
-      UniversalLogger.log('browser', 'SessionConsoleLogger', `🔌 DevTools console logging disabled`);
+      if (context) {
+        UniversalLogger.log('browser', 'SessionConsoleLogger', `🔌 DevTools console logging disabled`, 'info', context);
+      }
     } catch (error) {
       console.error('⚠️ Error stopping session console logging:', error);
     } finally {
       this.devTools = null;
     }
+  }
+
+  private context?: ContinuumContext;
+
+  /**
+   * Set context for logging
+   */
+  setContext(context: ContinuumContext): void {
+    this.context = context;
   }
 
   /**
@@ -75,7 +89,9 @@ export class SessionConsoleLogger {
                                'info';
 
       // Use UniversalLogger to write to session-specific browser.log
-      UniversalLogger.log('browser', 'DevToolsConsole', `🌐 ${message.text}`, universalLogLevel);
+      if (this.context) {
+        UniversalLogger.log('browser', 'DevToolsConsole', `🌐 ${message.text}`, universalLogLevel, this.context);
+      }
 
       // Also log to daemon console for debugging
       console.log(`📝 Browser console → session log: [${message.level.toUpperCase()}] ${message.text}`);

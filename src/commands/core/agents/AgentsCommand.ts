@@ -21,7 +21,7 @@ export class AgentsCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(_params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
+  protected static async executeOperation(_params: any = {}, _context: ContinuumContext): Promise<CommandResult> {
     try {
       // Mock agent data for now
       const agents = [
