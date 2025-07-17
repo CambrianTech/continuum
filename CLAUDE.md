@@ -1,6 +1,15 @@
 # CLAUDE - MIDDLE-OUT ARCHITECTURE
 
-## **🚨 CRITICAL: ALWAYS RUN `npm start` BEFORE ANY COMMANDS**
+## **🚨🚨🚨 CRITICAL: ALWAYS RUN `npm start` BEFORE ANY COMMANDS 🚨🚨🚨**
+## **🚨🚨🚨 CRITICAL: ALWAYS RUN `npm start` BEFORE ANY COMMANDS 🚨🚨🚨**
+## **🚨🚨🚨 CRITICAL: ALWAYS RUN `npm start` BEFORE ANY COMMANDS 🚨🚨🚨**
+
+## **🔄 BEFORE ANYTHING: npm start**
+## **🔄 AFTER CHANGES: npm start**
+## **🔄 WHEN IN DOUBT: npm start**
+## **🔄 BROKEN SOMETHING: npm start**
+## **🔄 TESTING ANYTHING: npm start**
+## **🔄 DEBUGGING ISSUE: npm start**
 
 ## **📋 DEBUGGING RULE #1: CHECK LOGS IMMEDIATELY**
 
@@ -33,6 +42,15 @@ Building reference implementation following `middle-out/architecture/universal-m
 ### **Immediate Testing (Right Now):**
 ```bash
 npm start                                        # Start system (ALWAYS FIRST)
+npm start                                        # YES, RUN IT AGAIN IF UNSURE
+
+# CRITICAL: Check if we broke logging (check session logs directory)
+ls -la .continuum/sessions/user/shared/*/logs/
+# MUST HAVE: browser.log, browser.log.json, browser.info.json, browser.error.json, browser.warn.json, browser.probe.json
+# MUST HAVE: server.log, server.log.json, server.info.json, server.error.json, server.warn.json, server.debug.json
+# ALL BROWSER & SERVER LOG FILES ARE CRITICAL FOR AI FEEDBACK AND DEVELOPMENT
+# IF ANY MISSING: WE TOTALLY BROKE LOGGING - STASH CHANGES IMMEDIATELY
+
 ./continuum screenshot                           # Test basic output
 ./continuum screenshot --querySelector=body     # Test querySelector
 npm test -- src/parsers/                        # Test parser module
@@ -40,6 +58,9 @@ npm test -- src/parsers/                        # Test parser module
 
 ### **See Your Changes:**
 ```bash
+# FIRST: Make sure system is running
+npm start
+
 # Take a screenshot to see what you built
 ./continuum screenshot --filename=test-changes.png
 
@@ -70,7 +91,7 @@ All screenshots are automatically saved to:
 
 ### **🔄 Visual Development Cycle**
 1. **Make changes** - Edit widget or UI code
-2. **Rebuild** - `npm run build:browser-ts`
+2. **Restart system** - `npm start` (ALWAYS!)
 3. **Capture state** - Screenshot relevant components
 4. **Analyze visually** - Check if changes worked
 5. **Iterate** - Repeat until satisfied
@@ -86,6 +107,7 @@ All screenshots are automatically saved to:
 
 ### **Full Validation (Before Commit):**
 ```bash
+npm start                                        # ALWAYS START HERE
 npm run jtag                                     # Full validation (git hook)
 npm test                                         # All tests
 ```
@@ -215,6 +237,9 @@ The git hook runs comprehensive validation - see `middle-out/jtag/` for details:
 
 ### **How to See What You Built:**
 ```bash
+# FIRST: Restart the system
+npm start
+
 # Take screenshots of your changes
 ./continuum screenshot --filename=my-changes.png
 
@@ -228,6 +253,9 @@ tail -f .continuum/sessions/user/shared/*/logs/browser.log
 
 ### **How to Validate Your Work:**
 ```bash
+# FIRST: Restart the system
+npm start
+
 # Run full validation (what git hook does)
 npm run jtag
 
