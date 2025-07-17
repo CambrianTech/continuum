@@ -12,6 +12,7 @@ import type { LogEntry } from '../../types/shared/WebSocketCommunication';
 import { DaemonStatus } from './DaemonProtocol';
 import type { DaemonType } from './DaemonTypes';
 import type { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
+import { generateUUID } from '../../academy/shared/AcademyTypes';
 
 // Global daemon registry for inter-daemon communication
 export const DAEMON_REGISTRY = new Map<string, BaseDaemon>();
@@ -60,7 +61,7 @@ export abstract class BaseDaemon extends EventEmitter {
   constructor(context?: ContinuumContext) {
     super();
     this.context = context || {
-      sessionId: 'system' as any,
+      sessionId: generateUUID(),
       environment: 'server'
     } as ContinuumContext;
     this.ensureValidWorkingDirectory();

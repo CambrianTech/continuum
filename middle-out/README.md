@@ -14,6 +14,7 @@ This directory contains the complete architectural documentation for Continuum's
 - **[universal-module-schema.md](architecture/universal-module-schema.md)** - **✅ IMPLEMENTED** NPM intelligence-driven module discovery system
 - **[lambda-fluent-api.md](architecture/lambda-fluent-api.md)** - **✅ IMPLEMENTED** Distributed command execution with P2P command marketplace
 - **[process-isolation-architecture.md](architecture/process-isolation-architecture.md)** - **📋 PLANNED** OS-level process isolation with environment-based sandboxing
+- **[symmetric-daemon-architecture.md](architecture/symmetric-daemon-architecture.md)** - **🔄 ACTIVE** Unified client/server daemon pattern for cognitive simplicity
 - **[rest-api.md](architecture/rest-api.md)** - Modern HTTP API with session management
 
 #### 📚 [Bootloader](bootloader/)

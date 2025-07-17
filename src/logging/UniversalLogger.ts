@@ -33,14 +33,17 @@ export class UniversalLogger {
   }
 
   /**
-   * Override console methods to route to UniversalLogger
-   * Similar to browser ConsoleForwarder pattern
-   * IMPORTANT: This writes directly to avoid infinite loops with UniversalLogger.log()
+   * Override console methods to route to async LoggerDaemon
+   * Uses stack-based context and async queue processing
    */
-  static overrideConsole() {
+  static async overrideConsole() {
     if (this.consoleOverridden) {
       return;
     }
+
+    // Initialize async logger
+    const { loggerClient } = await import('../daemons/logger/LoggerClient');
+    await loggerClient.initialize();
 
     // Store original console methods
     this.originalConsole = {
@@ -51,38 +54,65 @@ export class UniversalLogger {
       debug: console.debug.bind(console)
     };
 
-    // Override console methods - call original + write JSON directly (no infinite loop)
+    // Override console methods - call original + route through async logger
     console.log = (...args: any[]) => {
       this.originalConsole!.log(...args);
-      this.writeConsoleLogDirect('info', args);
+      this.writeConsoleLogAsync('info', args);
     };
 
     console.info = (...args: any[]) => {
       this.originalConsole!.info(...args);
-      this.writeConsoleLogDirect('info', args);
+      this.writeConsoleLogAsync('info', args);
     };
 
     console.warn = (...args: any[]) => {
       this.originalConsole!.warn(...args);
-      this.writeConsoleLogDirect('warn', args);
+      this.writeConsoleLogAsync('warn', args);
     };
 
     console.error = (...args: any[]) => {
       this.originalConsole!.error(...args);
-      this.writeConsoleLogDirect('error', args);
+      this.writeConsoleLogAsync('error', args);
     };
 
     console.debug = (...args: any[]) => {
       this.originalConsole!.debug(...args);
-      this.writeConsoleLogDirect('debug', args);
+      this.writeConsoleLogAsync('debug', args);
     };
 
     this.consoleOverridden = true;
   }
 
   /**
+   * Write console log through async LoggerDaemon
+   * Uses stack-based context and fire-and-forget async processing
+   */
+  private static writeConsoleLogAsync(level: 'info' | 'warn' | 'error' | 'debug', args: any[]) {
+    try {
+      // Get context from stack or create default
+      const context = this.getContextFromStack();
+      const message = this.formatConsoleArgs(args);
+      const source = this.getSourceFromStack();
+
+      // Import and use async logger - fire and forget
+      import('../daemons/logger/LoggerClient').then(({ loggerClient }) => {
+        loggerClient.log(context, level, message, source).catch(() => {
+          // Fallback to original direct logging if async fails
+          this.writeConsoleLogDirect(level, args);
+        });
+      }).catch(() => {
+        // Fallback to original direct logging if import fails
+        this.writeConsoleLogDirect(level, args);
+      });
+    } catch (error) {
+      // Fallback to original direct logging if anything fails
+      this.writeConsoleLogDirect(level, args);
+    }
+  }
+
+  /**
    * Write console log directly to files without calling UniversalLogger.log()
-   * to avoid infinite loops. Uses SessionContext for session-aware routing.
+   * Fallback method for when async logging fails
    */
   private static writeConsoleLogDirect(level: string, args: any[]) {
     this.init();
@@ -113,6 +143,50 @@ export class UniversalLogger {
   }
 
   /**
+   * Get context from execution stack or create default
+   */
+  private static getContextFromStack(): ContinuumContext {
+    try {
+      // Try to get current context from SessionContext
+      const sessionId = SessionContext.getCurrentSessionSync();
+      if (sessionId) {
+        const { continuumContextFactory } = require('../types/shared/core/ContinuumTypes');
+        return continuumContextFactory.create({
+          sessionId: sessionId as any, // TODO: Fix UUID type casting
+          environment: 'server' // Default environment
+        });
+      }
+    } catch (error) {
+      // Ignore errors getting context
+    }
+
+    // Create default context
+    const { continuumContextFactory } = require('../types/shared/core/ContinuumTypes');
+    return continuumContextFactory.create({
+      environment: 'server'
+    });
+  }
+
+  /**
+   * Get source from execution stack
+   */
+  private static getSourceFromStack(): string {
+    try {
+      const context = this.getContextFromStack();
+      
+      // Use execution stack to determine source
+      if (context.executionStack && context.executionStack.length > 0) {
+        const currentFrame = context.executionStack[context.executionStack.length - 1];
+        return currentFrame.location || 'unknown';
+      }
+    } catch (error) {
+      // Ignore errors getting source
+    }
+
+    return 'console';
+  }
+
+  /**
    * Format console arguments to string
    */
   private static formatConsoleArgs(args: any[]): string {
@@ -131,7 +205,21 @@ export class UniversalLogger {
     }).join(' ');
   }
 
-  static log(name: ContinuumEnvironment, source: string, message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info', context: ContinuumContext) {
+  static async log(name: ContinuumEnvironment, source: string, message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info', context: ContinuumContext) {
+    try {
+      // Use async logger with stack-based context
+      const { loggerClient } = await import('../daemons/logger/LoggerClient');
+      await loggerClient.log(context, level, message, source);
+    } catch (error) {
+      // Fallback to original sync logging if async fails
+      this.logSync(name, source, message, level, context);
+    }
+  }
+
+  /**
+   * Synchronous logging fallback
+   */
+  static logSync(name: ContinuumEnvironment, source: string, message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info', context: ContinuumContext) {
     this.init();
     
     const timestamp = new Date().toISOString();
@@ -157,6 +245,20 @@ export class UniversalLogger {
       } catch (error) {
         // Silently continue if session-specific logging fails
       }
+    }
+  }
+
+  /**
+   * Restore original console methods
+   */
+  static restoreConsole() {
+    if (this.originalConsole && this.consoleOverridden) {
+      console.log = this.originalConsole.log;
+      console.info = this.originalConsole.info;
+      console.warn = this.originalConsole.warn;
+      console.error = this.originalConsole.error;
+      console.debug = this.originalConsole.debug;
+      this.consoleOverridden = false;
     }
   }
 
