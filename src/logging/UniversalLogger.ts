@@ -4,9 +4,10 @@
  * Global logs go to .continuum/logs, session logs go to session/logs directory
  */
 
-import { appendFileSync, mkdirSync, statSync, readdirSync, existsSync } from 'fs';
+import { appendFileSync, mkdirSync, existsSync, statSync } from 'fs';
 import * as path from 'path';
 import type { ContinuumContext, ContinuumEnvironment } from '../types/shared/core/ContinuumTypes';
+import { SessionContext } from '../context/SessionContext';
 
 export class UniversalLogger {
   private static globalLogDir = '.continuum/logs';
@@ -81,7 +82,7 @@ export class UniversalLogger {
 
   /**
    * Write console log directly to files without calling UniversalLogger.log()
-   * to avoid infinite loops
+   * to avoid infinite loops. Uses SessionContext for session-aware routing.
    */
   private static writeConsoleLogDirect(level: string, args: any[]) {
     this.init();
@@ -91,8 +92,24 @@ export class UniversalLogger {
     const source = 'console';
     const name = 'server';
 
-    // Write only to global logs to avoid infinite loops
-    this.writeLogFiles(this.globalLogDir, source, message, level, timestamp, name);
+    // Get current session from SessionContext
+    const sessionId = SessionContext.getCurrentSessionSync();
+    const contextStr = sessionId ? ` [session:${sessionId}]` : '';
+
+    // Always write to global logs
+    this.writeLogFiles(this.globalLogDir, source, `${message}${contextStr}`, level, timestamp, name);
+
+    // If we have a session, also write to session-specific logs
+    if (sessionId) {
+      try {
+        const sessionLogPath = `.continuum/sessions/user/shared/${sessionId}/logs`;
+        if (existsSync(sessionLogPath)) {
+          this.writeLogFiles(sessionLogPath, source, message, level, timestamp, name);
+        }
+      } catch (error) {
+        // Silently continue if session-specific logging fails
+      }
+    }
   }
 
   /**
@@ -118,7 +135,10 @@ export class UniversalLogger {
     this.init();
     
     const timestamp = new Date().toISOString();
-    const contextStr = context ? ` [session:${context.sessionId}]` : '';
+    
+    // Use explicit context first, then fall back to SessionContext
+    const sessionId = context?.sessionId ?? SessionContext.getCurrentSessionSync();
+    const contextStr = sessionId ? ` [session:${sessionId}]` : '';
     
     // Always log globally to .continuum/logs 
     this.writeLogFiles(this.globalLogDir, source, `${message}${contextStr}`, level, timestamp, name);
@@ -127,35 +147,12 @@ export class UniversalLogger {
     if (context && context.sessionPaths?.logs) {
       this.writeLogFiles(context.sessionPaths.logs, source, message, level, timestamp, name);
     }
-    
-    // Special handling for session-specific browser logging: 
-    // Since ConsoleCommand handles session detection, we need to get the current session
-    if (name === 'browser') {
+    // Or if we have a session, log to session directory
+    else if (sessionId) {
       try {
-        // Find the most recent session directory
-        const sessionsPath = '.continuum/sessions/user/shared';
-        if (existsSync(sessionsPath)) {
-          const sessionDirs = readdirSync(sessionsPath).filter((dir: string) => 
-            statSync(path.join(sessionsPath, dir)).isDirectory()
-          );
-          
-          if (sessionDirs.length > 0) {
-            // Get the most recent session directory
-            const sessionStats = sessionDirs.map((dir: string) => {
-              const sessionPath = path.join(sessionsPath, dir);
-              return { dir, mtime: statSync(sessionPath).mtime.getTime() };
-            }).sort((a: any, b: any) => b.mtime - a.mtime);
-            
-            const currentSessionId = sessionStats[0].dir;
-            const sessionLogPath = path.join(sessionsPath, currentSessionId, 'logs');
-            
-            // Ensure directory exists
-            if (!existsSync(sessionLogPath)) {
-              mkdirSync(sessionLogPath, { recursive: true });
-            }
-            
-            this.writeLogFiles(sessionLogPath, source, message, level, timestamp, name);
-          }
+        const sessionLogPath = `.continuum/sessions/user/shared/${sessionId}/logs`;
+        if (existsSync(sessionLogPath)) {
+          this.writeLogFiles(sessionLogPath, source, message, level, timestamp, name);
         }
       } catch (error) {
         // Silently continue if session-specific logging fails

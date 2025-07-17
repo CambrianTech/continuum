@@ -13,8 +13,15 @@ import { randomUUID, type UUID } from "crypto";
 
 /**
  * Core execution environment type - fundamental to all Continuum operations
+ * 
+ * Environment types define where code execution originates and drives log file naming:
+ * - 'browser': Human user interactions through web interface → browser.log
+ * - 'server': Local server-side operations and daemons → server.log  
+ * - 'remote': Commands from other machines (git hooks, remote clients) → remote.log
+ * - 'agent': External AI users (agent-based users like Claude) → agent.log
+ * - 'persona': Internal AI personas/identities within Continuum → persona.log
  */
-export type ContinuumEnvironment = 'browser' | 'server';
+export type ContinuumEnvironment = 'browser' | 'server' | 'remote' | 'agent' | 'persona';
 
 // Common types for context properties
 export interface WebSocketServer {
