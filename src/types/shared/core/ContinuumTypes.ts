@@ -23,6 +23,16 @@ import { randomUUID, type UUID } from "crypto";
  */
 export type ContinuumEnvironment = 'browser' | 'server' | 'remote' | 'agent' | 'persona';
 
+/**
+ * Stack frame for execution context tracking
+ */
+export interface ExecutionFrame {
+  environment: ContinuumEnvironment;
+  location: string; // Component, command, or daemon name
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+}
+
 // Common types for context properties
 export interface WebSocketServer {
   send: (message: unknown) => void;
@@ -52,8 +62,10 @@ export interface ContinuumContext {
   sessionType?: 'development' | 'production' | 'test';
   sessionOwner?: string;
   sessionStartTime?: string;
-  // Environment context
-  environment?: 'client' | 'server' | 'browser';
+  // Environment context (current execution environment)
+  environment?: ContinuumEnvironment;
+  // Execution stack for call tracing
+  executionStack?: ExecutionFrame[];
   // Session paths for consistent file operations
   sessionPaths?: SessionPaths;
   // Extensible for future context needs
@@ -100,7 +112,7 @@ export const continuumContextFactory = {
     userId?: string;
     sessionType?: 'development' | 'production' | 'test';
     sessionOwner?: string;
-    environment?: 'client' | 'server' | 'browser';
+    environment?: ContinuumEnvironment;
     [key: string]: unknown;
   } = {}): ContinuumContext => ({
     sessionId: options.sessionId ?? uuidValidator.generate(),
@@ -117,6 +129,61 @@ export const continuumContextFactory = {
     // Preserve critical fields
     sessionId: override.sessionId ?? base.sessionId,
   }),
+
+  /**
+   * Clone context with different environment
+   * Preserves session, user, and other context but changes execution environment
+   */
+  withEnvironment: (context: ContinuumContext, environment: ContinuumEnvironment): ContinuumContext => ({
+    ...context,
+    environment,
+  }),
+
+  /**
+   * Push new execution frame onto context stack
+   * Creates proper call stack trace through system layers
+   */
+  push: (context: ContinuumContext, frame: {
+    environment: ContinuumEnvironment;
+    location: string;
+    metadata?: Record<string, unknown>;
+  }): ContinuumContext => {
+    const newFrame: ExecutionFrame = {
+      ...frame,
+      timestamp: new Date().toISOString(),
+    };
+    
+    return {
+      ...context,
+      environment: frame.environment,
+      executionStack: [...(context.executionStack || []), newFrame],
+    };
+  },
+
+  /**
+   * Pop execution frame from context stack
+   * Returns to previous execution environment
+   */
+  pop: (context: ContinuumContext): ContinuumContext => {
+    const stack = context.executionStack || [];
+    if (stack.length === 0) {
+      return context;
+    }
+    
+    const newStack = stack.slice(0, -1);
+    const previousEnvironment = newStack.length > 0 ? newStack[newStack.length - 1].environment : context.environment;
+    
+    const result: ContinuumContext = {
+      ...context,
+      executionStack: newStack,
+    };
+    
+    if (previousEnvironment) {
+      result.environment = previousEnvironment;
+    }
+    
+    return result;
+  },
 
   /**
    * Validate that a context has required fields

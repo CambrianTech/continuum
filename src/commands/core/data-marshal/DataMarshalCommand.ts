@@ -115,7 +115,7 @@ export class DataMarshalCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any, context?: any): Promise<CommandResult> {
+  static async execute(params: any, context: any): Promise<CommandResult> {
     try {
       const options = params;
       
@@ -453,7 +453,7 @@ export class DataMarshalCommand extends BaseCommand {
   private static async emitMarshalEvent(
     eventType: string,
     payload: any,
-    context?: any
+    context: any
   ): Promise<void> {
     try {
       // Use DaemonEventBus for system-wide event distribution
@@ -463,7 +463,7 @@ export class DataMarshalCommand extends BaseCommand {
       await eventBus.emit(`data-marshal:${eventType}`, {
         ...payload,
         timestamp: new Date().toISOString(),
-        sessionId: context?.sessionId
+        sessionId: context.sessionId
       });
       
       console.log(`📡 DataMarshal event emitted: data-marshal:${eventType}`, payload);
@@ -476,7 +476,7 @@ export class DataMarshalCommand extends BaseCommand {
    * Static method for screenshot command integration
    * Screenshots can call this directly for marshalling
    */
-  static async marshalScreenshotData(screenshotResult: any, context?: any): Promise<CommandResult> {
+  static async marshalScreenshotData(screenshotResult: any, context: any): Promise<CommandResult> {
     return DataMarshalCommand.execute({
       operation: 'encode',
       data: screenshotResult,
@@ -485,7 +485,7 @@ export class DataMarshalCommand extends BaseCommand {
       destination: 'file-system',
       metadata: {
         artifactType: 'screenshot',
-        sessionId: context?.sessionId
+        sessionId: context.sessionId
       }
     }, context);
   }
@@ -493,7 +493,7 @@ export class DataMarshalCommand extends BaseCommand {
   /**
    * Chain screenshot to file save workflow
    */
-  static async chainScreenshotToFile(screenshotData: any, context?: any): Promise<CommandResult> {
+  static async chainScreenshotToFile(screenshotData: any, context: any): Promise<CommandResult> {
     try {
       // First marshal the screenshot data
       const marshalResult = await DataMarshalCommand.marshalScreenshotData(screenshotData, context);

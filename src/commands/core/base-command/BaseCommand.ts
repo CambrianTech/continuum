@@ -39,7 +39,7 @@ export interface WebSocketContinuumContext extends ContinuumContext {
 
 export interface RegistryEntry {
   name: string;
-  execute: (parameters: unknown, context?: ContinuumContext) => Promise<CommandResult>;
+  execute: (parameters: unknown, context: ContinuumContext) => Promise<CommandResult>;
   definition: CommandDefinition;
 }
 
@@ -59,9 +59,9 @@ export abstract class BaseCommand {
    * Execute command - implement this in subclasses with typed parameters
    * Parameters are automatically parsed by UniversalCommandRegistry before calling this method
    * 
-   * Pattern: static async execute(params: MyTypedParams, context?: ContinuumContext): Promise<MyResult>
+   * Pattern: static async execute(params: MyTypedParams, context: ContinuumContext): Promise<MyResult>
    */
-  static execute(_params: unknown, _context?: ContinuumContext): Promise<CommandResult> {
+  static execute(_params: unknown, _context: ContinuumContext): Promise<CommandResult> {
     throw new Error('execute() must be implemented by subclass with typed parameters');
   }
 
@@ -168,9 +168,9 @@ export abstract class BaseCommand {
   protected static logExecution(
     commandName: string, 
     params: unknown, 
-    context?: ContinuumContext
+    context: ContinuumContext
   ): void {
-    const sessionInfo = context?.sessionId ? ` [${context.sessionId}]` : '';
+    const sessionInfo = context.sessionId ? ` [${context.sessionId}]` : '';
     console.log(`🎯 COMMAND: ${commandName}${sessionInfo} - params:`, params);
   }
 
@@ -178,10 +178,10 @@ export abstract class BaseCommand {
    * Broadcast message to WebSocket clients if available
    */
   protected static async broadcast(
-    context: ContinuumContext | undefined,
+    context: ContinuumContext,
     message: unknown
   ): Promise<void> {
-    if (context?.webSocketServer && typeof context.webSocketServer.broadcast === 'function') {
+    if (context.webSocketServer && typeof context.webSocketServer.broadcast === 'function') {
       try {
         const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
         context.webSocketServer.broadcast(messageStr);

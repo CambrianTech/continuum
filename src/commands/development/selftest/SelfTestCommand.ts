@@ -35,7 +35,7 @@ export class SelfTestCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: SelfTestParams, _context?: ContinuumContext): Promise<CommandResult> {
+  static async execute(params: SelfTestParams, _context: ContinuumContext): Promise<CommandResult> {
     const startTime = Date.now();
     
     // Placeholder implementation - TODO: Add real health checks

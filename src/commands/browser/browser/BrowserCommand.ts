@@ -30,10 +30,10 @@ export class BrowserCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: BrowserParams, context?: ContinuumContext): Promise<CommandResult> {
+  protected static async executeOperation(params: BrowserParams, context: ContinuumContext): Promise<CommandResult> {
     try {
       const url = params.url || 'http://localhost:9000';
-      const sessionId = params.sessionId || context?.sessionId;
+      const sessionId = params.sessionId || context.sessionId;
 
       // Send browser creation request to BrowserManagerDaemon
       const browserRequest = {

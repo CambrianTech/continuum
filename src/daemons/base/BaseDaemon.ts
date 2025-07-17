@@ -11,6 +11,7 @@ import type { DaemonMessage, DaemonResponse} from './DaemonProtocol';
 import type { LogEntry } from '../../types/shared/WebSocketCommunication';
 import { DaemonStatus } from './DaemonProtocol';
 import type { DaemonType } from './DaemonTypes';
+import type { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
 
 // Global daemon registry for inter-daemon communication
 export const DAEMON_REGISTRY = new Map<string, BaseDaemon>();
@@ -53,8 +54,15 @@ export abstract class BaseDaemon extends EventEmitter {
   // Session-specific logging support
   private sessionLogPath: string | null = null;
   
-  constructor() {
+  // Context for proper logging and operations
+  protected context: ContinuumContext;
+  
+  constructor(context?: ContinuumContext) {
     super();
+    this.context = context || {
+      sessionId: 'system' as any,
+      environment: 'server'
+    } as ContinuumContext;
     this.ensureValidWorkingDirectory();
     this.setupSignalHandlers();
   }

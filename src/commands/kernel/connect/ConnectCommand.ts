@@ -87,7 +87,7 @@ export class ConnectCommand extends DaemonCommand {
   /**
    * Prepare the data to send to SessionManagerDaemon
    */
-  protected static prepareDaemonData(params: any, context?: ContinuumContext): any {
+  protected static prepareDaemonData(params: any, context: ContinuumContext): any {
     return {
       sessionType: params.sessionType || 'development',
       owner: params.owner || 'shared',

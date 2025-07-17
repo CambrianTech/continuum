@@ -77,7 +77,7 @@ export class BrowserConsoleCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: BrowserConsoleOptions, _context?: ContinuumContext): Promise<CommandResult> {
+  protected static async executeOperation(params: BrowserConsoleOptions, _context: ContinuumContext): Promise<CommandResult> {
     // Apply defaults and validate required parameters
     const options = this.applyDefaults<BrowserConsoleOptions>(params, {
       lines: 50,

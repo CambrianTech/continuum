@@ -9,7 +9,7 @@ interface PersonaMeshMessage {
   persona: string;          // Persona identifier (prompt-based, genomic, MCP, RAG)
   intent: string;          // What the persona is trying to accomplish
   action: any;             // The actual command/action to execute
-  context?: any;           // Additional context for the action
+  context: any;           // Additional context for the action
   collaboration?: {        // Collaboration metadata
     chainId?: string;      // If part of a collaboration chain
     dependencies?: string[]; // Other personas this depends on

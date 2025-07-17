@@ -131,13 +131,13 @@ export class UniversalLogger {
     }).join(' ');
   }
 
-  static log(name: ContinuumEnvironment, source: string, message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info', context?: ContinuumContext) {
+  static log(name: ContinuumEnvironment, source: string, message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info', context: ContinuumContext) {
     this.init();
     
     const timestamp = new Date().toISOString();
     
-    // Use explicit context first, then fall back to SessionContext
-    const sessionId = context?.sessionId ?? SessionContext.getCurrentSessionSync();
+    // Use explicit context (now required)
+    const sessionId = context.sessionId;
     const contextStr = sessionId ? ` [session:${sessionId}]` : '';
     
     // Always log globally to .continuum/logs 

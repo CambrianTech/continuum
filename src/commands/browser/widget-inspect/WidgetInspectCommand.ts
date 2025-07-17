@@ -134,7 +134,7 @@ export class WidgetInspectCommand {
     };
   }
 
-  static async execute(params: WidgetInspectOptions, _context?: any): Promise<CommandResult> {
+  static async execute(params: WidgetInspectOptions, _context: any): Promise<CommandResult> {
     try {
       // Parameters are automatically parsed by UniversalCommandRegistry
       

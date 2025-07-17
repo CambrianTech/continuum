@@ -41,7 +41,7 @@ export class ChatCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any, context?: ContinuumContext): Promise<CommandResult<ChatCommandResult>> {
+  protected static async executeOperation(params: any, context: ContinuumContext): Promise<CommandResult<ChatCommandResult>> {
     // Parameters are already parsed by DirectCommand.execute()
     
     try {
@@ -49,10 +49,10 @@ export class ChatCommand extends DirectCommand {
         // Send message to real ChatRoomDaemon
         const sendRequest: SendMessageRequest = {
           room_id: params.room || DEFAULT_ROOM_ID,
-          sender_id: context?.sessionId || 'unknown',
+          sender_id: context.sessionId || 'unknown',
           content: params.message,
           message_type: MessageType.TEXT,
-          session_id: context?.sessionId,
+          session_id: context.sessionId,
           correlationId: `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           timestamp: Date.now()
         };
@@ -67,7 +67,7 @@ export class ChatCommand extends DirectCommand {
             messageId: result.message_id,
             content: params.message,
             room: params.room || DEFAULT_ROOM_ID,
-            sender: context?.sessionId || 'unknown',
+            sender: context.sessionId || 'unknown',
             timestamp: new Date().toISOString(),
             chatRoomResult: result
           },
@@ -89,7 +89,7 @@ export class ChatCommand extends DirectCommand {
 
       // Get real room list from ChatRoomDaemon
       const roomsResult = await this.listChatRooms({
-        user_id: context?.sessionId || 'unknown',
+        user_id: context.sessionId || 'unknown',
         correlationId: `list_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         timestamp: Date.now()
       });
@@ -97,7 +97,7 @@ export class ChatCommand extends DirectCommand {
       return this.createSuccessResult({
         status: 'Chat system ready',
         available_rooms: roomsResult.rooms || [],
-        sessionId: context?.sessionId || 'unknown',
+        sessionId: context.sessionId || 'unknown',
         totalRooms: roomsResult.total_count || 0
       });
       

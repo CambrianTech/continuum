@@ -23,7 +23,7 @@ export class StopCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(_params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
+  protected static async executeOperation(_params: any = {}, _context: ContinuumContext): Promise<CommandResult> {
     try {
       // Check if daemons are running
       try {

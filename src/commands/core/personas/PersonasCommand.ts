@@ -32,7 +32,7 @@ export class PersonasCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, _context: ContinuumContext): Promise<CommandResult> {
     try {
       const showActiveOnly = params.active || false;
 

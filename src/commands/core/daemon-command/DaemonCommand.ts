@@ -33,14 +33,14 @@ export abstract class DaemonCommand extends BaseCommand {
   /**
    * Subclasses must override to prepare the data to send to the daemon
    */
-  protected static prepareDaemonData(_params: any, _context?: ContinuumContext): any {
+  protected static prepareDaemonData(_params: any, _context: ContinuumContext): any {
     throw new Error('prepareDaemonData() must be implemented by subclass');
   }
   
   /**
    * Standard execute that delegates to daemon
    */
-  static async execute(params: any, context?: ContinuumContext): Promise<CommandResult> {
+  static async execute(params: any, context: ContinuumContext): Promise<CommandResult> {
     try {
       // Parameters are automatically parsed by UniversalCommandRegistry
       // Create daemon request

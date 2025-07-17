@@ -21,7 +21,7 @@ export class ProjectsCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(_params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
+  protected static async executeOperation(_params: any = {}, _context: ContinuumContext): Promise<CommandResult> {
     try {
       // Mock project data based on what we saw in the UI
       const projects = [

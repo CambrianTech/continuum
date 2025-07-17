@@ -23,7 +23,7 @@ export class RestartCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(_params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
+  protected static async executeOperation(_params: any = {}, _context: ContinuumContext): Promise<CommandResult> {
     try {
       let wasRunning = false;
       

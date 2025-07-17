@@ -9,6 +9,7 @@ import { DirectCommand } from '../direct-command/DirectCommand';
 import { CommandResult, CommandDefinition } from '../base-command/BaseCommand';
 import { Console } from '../../../types/shared/ConsoleTypes';
 import { UniversalLogger } from '../../../logging/UniversalLogger';
+import { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
 
 export class ConsoleCommand extends DirectCommand {
   /**
@@ -112,7 +113,7 @@ export class ConsoleCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any = {}): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, context: ContinuumContext): Promise<CommandResult> {
     try {
       // Convert whatever the client sends into our well-defined shared type
       // This ensures server-side type safety regardless of client format
@@ -190,7 +191,8 @@ export class ConsoleCommand extends DirectCommand {
           'browser',
           logData.source || 'ConsoleCommand',
           formattedMessage,
-          universalLogLevel as 'info' | 'warn' | 'error' | 'debug'
+          universalLogLevel as 'info' | 'warn' | 'error' | 'debug',
+          context
         );
         
         

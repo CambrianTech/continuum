@@ -35,10 +35,10 @@ export class FileSaveCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: any, context?: ContinuumContext): Promise<CommandResult> {
+  static async execute(params: any, context: ContinuumContext): Promise<CommandResult> {
     try {
       // 1. Get session ID from context if not provided in params
-      const sessionId = params.sessionId || context?.sessionId;
+      const sessionId = params.sessionId || context.sessionId;
 
       // 2. Process content based on encoding
       let processedContent: Buffer;

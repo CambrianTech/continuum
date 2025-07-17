@@ -95,8 +95,8 @@ export class SessionManagerDaemon extends BaseDaemon {
   // SEMAPHORE: Prevent race conditions in session creation
   private sessionCreationLock = new Map<string, Promise<BrowserSession>>();
 
-  constructor(artifactRoot: string = '.continuum/sessions') {
-    super();
+  constructor(context: ContinuumContext, artifactRoot: string = '.continuum/sessions') {
+    super(context);
     this.artifactRoot = artifactRoot;
   }
 
@@ -106,10 +106,11 @@ export class SessionManagerDaemon extends BaseDaemon {
     
     // Test UniversalLogger with all log levels
     const { UniversalLogger } = await import('../../logging/UniversalLogger');
-    UniversalLogger.log('server', 'SessionManagerDaemon', 'Session Manager Daemon v3.0 started - session management only', 'info');
-    UniversalLogger.log('server', 'SessionManagerDaemon', 'Debug: Initializing directory structure', 'debug');
-    UniversalLogger.log('server', 'SessionManagerDaemon', 'Warning: This is a test warning message', 'warn');
-    UniversalLogger.log('server', 'SessionManagerDaemon', 'Error: This is a test error message', 'error');
+    
+    UniversalLogger.log('server', 'SessionManagerDaemon', 'Session Manager Daemon v3.0 started - session management only', 'info', this.context);
+    UniversalLogger.log('server', 'SessionManagerDaemon', 'Debug: Initializing directory structure', 'debug', this.context);
+    UniversalLogger.log('server', 'SessionManagerDaemon', 'Warning: This is a test warning message', 'warn', this.context);
+    UniversalLogger.log('server', 'SessionManagerDaemon', 'Error: This is a test error message', 'error', this.context);
     
     await this.initializeDirectoryStructure();
     

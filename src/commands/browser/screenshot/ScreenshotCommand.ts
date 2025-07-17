@@ -183,7 +183,7 @@ export class ScreenshotCommand extends BaseCommand {
     return definition;
   }
 
-  static async execute(params: ScreenshotParams | ScreenshotClientRequest, context?: ContinuumContext): Promise<CommandResult> {
+  static async execute(params: ScreenshotParams | ScreenshotClientRequest, context: ContinuumContext): Promise<CommandResult> {
     const startTime = Date.now();
     console.log(`🚀 JTAG SCREENSHOT: ScreenshotCommand.execute() called`);
     console.log(`🚀 JTAG SCREENSHOT: Starting ScreenshotCommand execution (server side)`);
@@ -225,7 +225,7 @@ export class ScreenshotCommand extends BaseCommand {
       };
       
       // Session ID will be handled by FileWriteCommand through context
-      const sessionId = context?.sessionId ?? 'unknown-session';
+      const sessionId = context.sessionId ?? 'unknown-session';
       
       console.log(`📁 JTAG SCREENSHOT: Session ID: ${sessionId}`);
       console.log(`📁 JTAG SCREENSHOT: Context:`, JSON.stringify(context, null, 2));

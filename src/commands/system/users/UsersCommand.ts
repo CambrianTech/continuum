@@ -64,7 +64,7 @@ export class UsersCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any = {}, _context?: ContinuumContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}, _context: ContinuumContext): Promise<CommandResult> {
     try {
       // Get all users from the system
       const allUsers = await this.getAllUsers();

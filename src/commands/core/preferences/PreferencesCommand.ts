@@ -113,7 +113,7 @@ export class PreferencesCommand extends OperationRoutedCommand {
   }
 
   // Override execute to ensure initialization
-  static async execute(params: any, context?: any): Promise<CommandResult> {
+  static async execute(params: any, context: any): Promise<CommandResult> {
     await this.ensureInitialized();
     return await super.execute(params, context);
   }

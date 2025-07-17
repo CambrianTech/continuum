@@ -38,7 +38,7 @@ export class HelpCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: { command?: string }, context?: ContinuumContext): Promise<CommandResult> {
+  static async execute(params: { command?: string }, context: ContinuumContext): Promise<CommandResult> {
     // Parameters are automatically parsed by UniversalCommandRegistry
     const { command } = params;
     
@@ -96,7 +96,7 @@ export class HelpCommand extends BaseCommand {
   /**
    * Discover available commands dynamically - NO HARDCODED LISTS
    */
-  private static async discoverAvailableCommands(_context?: ContinuumContext): Promise<string[]> {
+  private static async discoverAvailableCommands(_context: ContinuumContext): Promise<string[]> {
     try {
       const { getGlobalCommandRegistry } = await import('../../../services/UniversalCommandRegistry');
       const registry = getGlobalCommandRegistry();
@@ -110,7 +110,7 @@ export class HelpCommand extends BaseCommand {
   /**
    * Get definition for a specific command
    */
-  private static async getCommandDefinition(command: string, _context?: ContinuumContext): Promise<CommandDefinition | null> {
+  private static async getCommandDefinition(command: string, _context: ContinuumContext): Promise<CommandDefinition | null> {
     try {
       const { getGlobalCommandRegistry } = await import('../../../services/UniversalCommandRegistry');
       const registry = getGlobalCommandRegistry();
@@ -124,7 +124,7 @@ export class HelpCommand extends BaseCommand {
   /**
    * Categorize commands by their category property
    */
-  private static async categorizeCommands(commands: string[], context?: ContinuumContext): Promise<Record<string, string[]>> {
+  private static async categorizeCommands(commands: string[], context: ContinuumContext): Promise<Record<string, string[]>> {
     const categories: Record<string, string[]> = {};
     
     for (const command of commands) {

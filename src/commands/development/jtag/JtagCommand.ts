@@ -4,7 +4,7 @@
  * Just forwards CLI arguments to browser JTAG system
  */
 
-import { BaseCommand, CommandResult } from '../../core/base-command/BaseCommand';
+import { BaseCommand, CommandResult, ContinuumContext } from '../../core/base-command/BaseCommand';
 import { COMMAND_CATEGORIES } from '../../../types/shared/CommandTypes';
 
 export class JtagCommand extends BaseCommand {
@@ -38,7 +38,7 @@ export class JtagCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: any): Promise<CommandResult> {
+  static async execute(params: any, context: ContinuumContext): Promise<CommandResult> {
     try {
       console.log(`🔍 JTAG received:`, JSON.stringify(params));
       
@@ -70,7 +70,7 @@ export class JtagCommand extends BaseCommand {
       
       // Execute JavaScript in browser
       const { JSExecuteCommand } = await import('../../browser/js-execute/JSExecuteCommand');
-      const executeResult = await JSExecuteCommand.execute({ script: probeCode });
+      const executeResult = await JSExecuteCommand.execute({ script: probeCode }, context);
       
       return executeResult;
     } catch (error) {

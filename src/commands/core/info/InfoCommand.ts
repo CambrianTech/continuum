@@ -38,7 +38,7 @@ export class InfoCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: InfoParams, context?: ContinuumContext): Promise<CommandResult> {
+  static async execute(params: InfoParams, context: ContinuumContext): Promise<CommandResult> {
     try {
       // Gather system information
       const systemInfo: SystemInfo = {
@@ -61,7 +61,7 @@ export class InfoCommand extends BaseCommand {
       
       const continuumInfo: ContinuumInfo = {
         version: systemInfo.version,
-        sessionId: context?.sessionId || 'unknown',
+        sessionId: context.sessionId || 'unknown',
         daemons: params.includeDaemons ? daemons : [],
         commands: 30, // TODO: Get actual command count
         uptime: process.uptime()
