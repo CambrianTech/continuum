@@ -5,19 +5,11 @@
 
 import { ChromiumDevToolsAdapter } from '../../browser-manager/adapters/ChromiumDevToolsAdapter';
 import { ConsoleMessage } from '../../browser-manager/types/index';
-import * as fs from 'fs/promises';
+import { UniversalLogger } from '../../../logging/UniversalLogger';
 
 export class SessionConsoleLogger {
   private devTools: ChromiumDevToolsAdapter | null = null;
-  private sessionLogPath: string | null = null;
   private isLogging: boolean = false;
-
-  /**
-   * Set the session browser log path for console output
-   */
-  setSessionLogPath(logPath: string): void {
-    this.sessionLogPath = logPath;
-  }
 
   /**
    * Connect to browser and start capturing console logs
@@ -39,10 +31,8 @@ export class SessionConsoleLogger {
       this.isLogging = true;
       console.log(`🔌 Session console logging started: ${debugUrl}`);
       
-      // Log the connection to session file
-      if (this.sessionLogPath) {
-        await this.writeToSessionLog(`[${new Date().toISOString()}] 🔌 DevTools console logging enabled: ${debugUrl}`);
-      }
+      // Log the connection via UniversalLogger
+      UniversalLogger.log('browser', 'SessionConsoleLogger', `🔌 DevTools console logging enabled: ${debugUrl}`);
     } catch (error) {
       console.error('❌ Failed to start session console logging:', error);
       throw error;
@@ -64,10 +54,8 @@ export class SessionConsoleLogger {
       this.isLogging = false;
       console.log('🔌 Session console logging stopped');
       
-      // Log the disconnection to session file
-      if (this.sessionLogPath) {
-        await this.writeToSessionLog(`[${new Date().toISOString()}] 🔌 DevTools console logging disabled`);
-      }
+      // Log the disconnection via UniversalLogger
+      UniversalLogger.log('browser', 'SessionConsoleLogger', `🔌 DevTools console logging disabled`);
     } catch (error) {
       console.error('⚠️ Error stopping session console logging:', error);
     } finally {
@@ -79,38 +67,20 @@ export class SessionConsoleLogger {
    * Handle console messages from DevTools and write to session log
    */
   private async handleConsoleMessage(message: ConsoleMessage): Promise<void> {
-    if (!this.sessionLogPath) {
-      return; // No session log path configured
-    }
-
     try {
-      // Format the console message like the git hook does
-      const timestamp = new Date(message.timestamp).toISOString();
-      const level = message.level.toUpperCase();
-      const formattedMessage = `🌐 [${timestamp}] ${level}: ${message.text}`;
+      // Map DevTools console level to UniversalLogger level
+      const universalLogLevel = message.level === 'log' ? 'info' : 
+                               message.level === 'warn' ? 'warn' :
+                               message.level === 'error' ? 'error' :
+                               'info';
 
-      // Write to session browser log
-      await this.writeToSessionLog(formattedMessage);
+      // Use UniversalLogger to write to session-specific browser.log
+      UniversalLogger.log('browser', 'DevToolsConsole', `🌐 ${message.text}`, universalLogLevel);
 
       // Also log to daemon console for debugging
-      console.log(`📝 Browser console → session log: [${level}] ${message.text}`);
+      console.log(`📝 Browser console → session log: [${message.level.toUpperCase()}] ${message.text}`);
     } catch (error) {
       console.error('❌ Failed to write console message to session log:', error);
-    }
-  }
-
-  /**
-   * Write message to session browser log file
-   */
-  private async writeToSessionLog(message: string): Promise<void> {
-    if (!this.sessionLogPath) {
-      return;
-    }
-
-    try {
-      await fs.appendFile(this.sessionLogPath, message + '\n');
-    } catch (error) {
-      console.error(`❌ Session log write failed to ${this.sessionLogPath}:`, error);
     }
   }
 
@@ -119,12 +89,5 @@ export class SessionConsoleLogger {
    */
   isActive(): boolean {
     return this.isLogging;
-  }
-
-  /**
-   * Get current session log path
-   */
-  getSessionLogPath(): string | null {
-    return this.sessionLogPath;
   }
 }

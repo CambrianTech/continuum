@@ -11,7 +11,6 @@ export interface ConsoleLoggingRequest {
   sessionId: string;
   debugUrl: string;
   targetId?: string;
-  logPath: string;
 }
 
 export class SessionConsoleManager {
@@ -21,7 +20,7 @@ export class SessionConsoleManager {
    * Start console logging for a session
    */
   async startLogging(request: ConsoleLoggingRequest): Promise<{ success: boolean; error?: string }> {
-    const { sessionId, debugUrl, targetId, logPath } = request;
+    const { sessionId, debugUrl, targetId } = request;
 
     try {
       // Check if already logging for this session
@@ -31,9 +30,8 @@ export class SessionConsoleManager {
 
       // Create and configure logger
       const logger = new SessionConsoleLogger();
-      logger.setSessionLogPath(logPath);
 
-      // Start logging
+      // Start logging (UniversalLogger will handle session-specific file writing)
       await logger.startLogging(debugUrl, targetId);
       this.loggers.set(sessionId, logger);
 

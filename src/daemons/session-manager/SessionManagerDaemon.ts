@@ -1155,10 +1155,8 @@ export class SessionManagerDaemon extends BaseDaemon {
 
       // Create and configure console logger
       const logger = new SessionConsoleLogger();
-      const browserLogPath = session.artifacts.logs.client[0];
-      logger.setSessionLogPath(browserLogPath);
 
-      // Start logging
+      // Start logging (UniversalLogger will handle session-specific file writing)
       await logger.startLogging(debugUrl, targetId);
       this.consoleLoggers.set(sessionId, logger);
 
@@ -1169,7 +1167,6 @@ export class SessionManagerDaemon extends BaseDaemon {
         data: {
           sessionId,
           debugUrl,
-          logPath: browserLogPath,
           message: 'Console logging started successfully'
         }
       };
@@ -1581,8 +1578,7 @@ export class SessionManagerDaemon extends BaseDaemon {
     const sessionStartTime = new Date().toISOString();
     const sessionStartMessage = `# Continuum Session Log\n# Session: ${sessionId}\n# Created: ${sessionStartTime}\n# Type: ${type}\n# Owner: ${owner}\n${sessionContext ? `# Context: ${sessionContext}\n` : ''}#\n# Session started at ${sessionStartTime}\n\n`;
     
-    // Create browser.log
-    await fs.writeFile(path.join(sessionPath, 'logs', 'browser.log'), sessionStartMessage);
+    // Note: browser.log will be created by UniversalLogger when first used
     
     // Create server.log  
     await fs.writeFile(path.join(sessionPath, 'logs', 'server.log'), sessionStartMessage);

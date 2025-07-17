@@ -6,8 +6,7 @@
  */
 
 import { DirectCommand } from '../direct-command/DirectCommand';
-import { CommandResult, ContinuumContext, CommandDefinition } from '../base-command/BaseCommand';
-import type { UUID } from 'crypto';
+import { CommandResult, CommandDefinition } from '../base-command/BaseCommand';
 import { Console } from '../../../types/shared/ConsoleTypes';
 import { UniversalLogger } from '../../../logging/UniversalLogger';
 
@@ -113,7 +112,7 @@ export class ConsoleCommand extends DirectCommand {
     };
   }
 
-  protected static async executeOperation(params: any = {}, context?: ContinuumContext): Promise<CommandResult> {
+  protected static async executeOperation(params: any = {}): Promise<CommandResult> {
     try {
       // Convert whatever the client sends into our well-defined shared type
       // This ensures server-side type safety regardless of client format
@@ -128,7 +127,6 @@ export class ConsoleCommand extends DirectCommand {
       const serverTimestamp = new Date().toISOString();
       
       // Decode base64 JavaScript if present (for probe level)
-      const enhancedLogData = { ...logData };
       if (logData.level === Console.Level.PROBE && logData.arguments?.length > 0) {
         const probeArg = logData.arguments[0];
         if (probeArg && typeof probeArg === 'object' && 'executeJSBase64' in probeArg) {
@@ -143,11 +141,6 @@ export class ConsoleCommand extends DirectCommand {
         }
       }
       
-      const logEntry = {
-        ...enhancedLogData,
-        serverTimestamp,
-        sessionId: context?.sessionId || logData.sessionId
-      };
       
       const timePrefix = `[${new Date().toLocaleTimeString()}]`;
 
@@ -165,195 +158,46 @@ export class ConsoleCommand extends DirectCommand {
         this.getOriginalConsole().log(`   URL:`, logData.metadata.url);
       }
 
-      // Write to session-specific log files with level-based JSON format
-      let sessionLogged = false;
-      try {
-        // sessionId is now guaranteed to be non-null by TypeScript
-        let sessionId = context?.sessionId;
-        
-        // If no sessionId provided, use the current/default shared development session
-        if (!sessionId) {
-          // Try to find the most recent development session using async operations
-          try {
-            const fs = await import('fs/promises');
-            const { join } = await import('path');
-            
-            const sessionsPath = '.continuum/sessions/user/shared';
-            
-            // Use async operations to avoid blocking
-            const allEntries = await fs.readdir(sessionsPath);
-            const sessionDirs: string[] = [];
-            
-            // Check each entry asynchronously
-            for (const entry of allEntries) {
-              try {
-                const fullPath = join(sessionsPath, entry);
-                const stat = await fs.stat(fullPath);
-                if (stat.isDirectory() && entry.startsWith('development-shared-')) {
-                  sessionDirs.push(entry);
-                }
-              } catch (statError) {
-                // Skip entries we can't access
-                continue;
-              }
-            }
-            
-            if (sessionDirs.length > 0) {
-              // Sort by modification time to get the most recent
-              const sessionStats = await Promise.all(
-                sessionDirs.map(async (dir) => {
-                  try {
-                    const fullPath = join(sessionsPath, dir);
-                    const stat = await fs.stat(fullPath);
-                    return { dir, mtime: stat.mtimeMs };
-                  } catch (error) {
-                    return { dir, mtime: 0 };
-                  }
-                })
-              );
-              
-              const sortedSessions = sessionStats
-                .sort((a, b) => b.mtime - a.mtime)
-                .map(s => s.dir);
-              
-              sessionId = sortedSessions[0] as UUID;
-              this.getOriginalConsole().log(`📝 No sessionId in context - using most recent shared session: ${sessionId}`);
-            }
-          } catch (error) {
-            this.getOriginalConsole().log(`📝 Could not find existing sessions: ${error}`);
-          }
-          
-          // If still no session, we can't log to session files
-          if (!sessionId) {
-            this.getOriginalConsole().log(`📝 No active session found - logging to server console only`);
-            return this.createSuccessResult('Console message forwarded to server console', {
-              forwarded: true,
-              serverTimestamp,
-              logData,
-              sessionLogged: false
-            });
-          }
-        }
+      // No longer write to session-specific files - UniversalLogger handles this
+      const sessionLogged = true; // UniversalLogger will handle session-specific logging
 
-        const fs = await import('fs/promises');
-        const { join } = await import('path');
+      // ADDITIONAL: Use UniversalLogger to create browser.log.json (comprehensive JSON file)
+      // This ADDS to existing browser logging, doesn't replace it
+      try {
+        // Format message for UniversalLogger
+        let formattedMessage = logData.message;
         
-        // Try to find the specific session's logs directory
-        const sessionBasePaths = [
-          '.continuum/sessions/user/shared',
-          '.continuum/sessions/user/development', 
-          '.continuum/sessions/shared/development',
-          '.continuum/sessions/shared/shared'
-        ];
-        
-        for (const basePath of sessionBasePaths) {
-          const sessionLogsDir = join(basePath, sessionId, 'logs');
-          try {
-            // Check if this session's logs directory exists
-            await fs.access(sessionLogsDir);
-            
-            // Write to level-specific JSON log files following naming convention
-            const levelLogPath = join(sessionLogsDir, `browser.${logData.level}.json`);
-            const allLogsPath = join(sessionLogsDir, 'browser.log');
-            
-            // Handle probe logs specially for better readability
-            let jsonLogEntry: string;
-            let humanReadableEntry: string;
-            
-            if (logData.level === Console.Level.PROBE) {
-              // For probe logs, format for human readability with decoded JS
-              // Probe data is in message as JSON string or first argument
-              let probeData: any = null;
-              try {
-                probeData = JSON.parse(logData.message);
-              } catch (error) {
-                // Fallback: check arguments for probe data object
-                probeData = logData.arguments?.[0];
-              }
-              
-              if (probeData && typeof probeData === 'object') {
-                const probe = probeData as any;
-                
-                // Create readable probe entry
-                const readableProbe = {
-                  message: probe.message,
-                  category: probe.category,
-                  tags: probe.tags,
-                  data: probe.data,
-                  executeJS: probe.executeJSBase64 ? 
-                    Buffer.from(probe.executeJSBase64, 'base64').toString('utf-8') : 
-                    probe.executeJS,
-                  timestamp: serverTimestamp,
-                  sessionId: context?.sessionId
-                };
-                
-                // Formatted JSON for probe file (pretty-printed)
-                jsonLogEntry = JSON.stringify(readableProbe, null, 2) + '\n';
-                
-                // Human-readable format for browser.log
-                humanReadableEntry = `[${serverTimestamp}] 🛸 PROBE: ${probe.message}`;
-                if (probe.category) {
-                  humanReadableEntry += ` (${probe.category})`;
-                }
-                humanReadableEntry += '\n';
-                
-                // Add JS execution if present
-                if (readableProbe.executeJS) {
-                  humanReadableEntry += `  JS: ${readableProbe.executeJS}\n`;
-                }
-                
-                // Add execution result if present
-                if (probe.data?.jsExecutionResult) {
-                  humanReadableEntry += `  Result: ${probe.data.jsExecutionResult}\n`;
-                }
-                
-                humanReadableEntry += '\n';
-              } else {
-                // Fallback for malformed probe data
-                jsonLogEntry = JSON.stringify(logEntry, null, 2) + '\n';
-                humanReadableEntry = `[${serverTimestamp}] 🛸 PROBE: ${logData.message}\n`;
-              }
-            } else {
-              // Standard log format for non-probe logs with enhanced metadata
-              jsonLogEntry = JSON.stringify(logEntry) + '\n';
-              
-              humanReadableEntry = `[${serverTimestamp}] ${logData.level.toUpperCase()}: ${logData.message}`;
-              
-              // Add arguments if present using Console.MessageUtils for proper formatting
-              if (logData.arguments && logData.arguments.length > 0) {
-                const formattedArgs = Console.MessageUtils.argumentsToString(logData.arguments);
-                humanReadableEntry += ` ${formattedArgs}`;
-              }
-              
-              // Add stack trace for errors to human-readable log
-              if (logData.level === Console.Level.ERROR && logData.metadata?.stackTrace) {
-                humanReadableEntry += `\n   Stack: ${logData.metadata.stackTrace}`;
-              }
-              
-              humanReadableEntry += '\n';
-            }
-            
-            // Write to both formats: level-specific JSON and human-readable for browser.log
-            await Promise.all([
-              fs.appendFile(levelLogPath, jsonLogEntry),        // browser.probe.json (readable JSON) or browser.warn.json (compact JSON)
-              fs.appendFile(allLogsPath, humanReadableEntry)    // browser.log (human-readable)
-            ]);
-            
-            this.getOriginalConsole().log(`✅ Wrote to browser logs: ${sessionId} (${logData.level})`);
-            sessionLogged = true;
-            break; // Found the session, stop looking
-          } catch (accessError) {
-            // This session path doesn't exist, try next base path
-            continue;
-          }
+        // Add arguments if present
+        if (logData.arguments && logData.arguments.length > 0) {
+          const formattedArgs = Console.MessageUtils.argumentsToString(logData.arguments);
+          formattedMessage += ` ${formattedArgs}`;
         }
         
-        if (!sessionLogged) {
-          this.getOriginalConsole().warn(`⚠️ Session ${sessionId} logs directory not found - console message not logged to session file`);
+        // Add stack trace for errors
+        if (logData.level === Console.Level.ERROR && logData.metadata?.stackTrace) {
+          formattedMessage += `\n   Stack: ${logData.metadata.stackTrace}`;
         }
         
-      } catch (error) {
-        this.getOriginalConsole().warn(`⚠️ Failed to write to session browser log: ${error instanceof Error ? error.message : String(error)}`);
+        // Map Console.Level to UniversalLogger level
+        const universalLogLevel = logData.level === Console.Level.LOG ? 'info' : 
+                                 logData.level === Console.Level.WARN ? 'warn' :
+                                 logData.level === Console.Level.ERROR ? 'error' :
+                                 logData.level === Console.Level.DEBUG ? 'debug' :
+                                 'info';
+        
+        // Call UniversalLogger to create browser.log.json (using working pattern from SessionManagerDaemon)
+        UniversalLogger.log(
+          'browser',
+          logData.source || 'ConsoleCommand',
+          formattedMessage,
+          universalLogLevel as 'info' | 'warn' | 'error' | 'debug'
+        );
+        
+        
+        this.getOriginalConsole().log(`✅ Also logged to UniversalLogger: browser.${universalLogLevel}`);
+        
+      } catch (universalError) {
+        this.getOriginalConsole().warn(`⚠️ Failed to log to UniversalLogger: ${universalError instanceof Error ? universalError.message : String(universalError)}`);
       }
 
       return this.createSuccessResult(

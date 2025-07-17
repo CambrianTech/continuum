@@ -682,9 +682,8 @@ export class BrowserManagerDaemon extends MessageRoutedDaemon {
       
       // Create and configure console logger
       const consoleLogger = new SessionConsoleLogger();
-      consoleLogger.setSessionLogPath(browserLogPath);
       
-      // Start capturing console logs
+      // Start capturing console logs (UniversalLogger will handle file writing)
       await consoleLogger.startLogging(devToolsUrl);
       
       // Track the logger for cleanup
