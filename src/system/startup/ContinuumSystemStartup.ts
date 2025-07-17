@@ -18,6 +18,7 @@ import { WidgetDaemon } from '../../daemons/widget/WidgetDaemon';
 import { ChatRoomDaemon } from '../../daemons/chatroom/ChatRoomDaemon';
 // import { DaemonMessage } from '../../daemons/base/DaemonProtocol';
 // import { DaemonMessageUtils } from '../../daemons/base/DaemonMessageUtils';
+// import { UniversalLogger } from '../../logging/UniversalLogger';
 
 export class ContinuumSystem extends EventEmitter {
   private daemons = new Map();
@@ -75,6 +76,10 @@ export class ContinuumSystem extends EventEmitter {
     console.log('║   1. continuum-directory → 2. session-manager → 3. static-file → 4. websocket → 5. renderer → 6. command-processor → 7. academy → 8. browser ║');
     console.log('╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝');
     console.log('');
+    
+    // Console override temporarily disabled due to infinite loop issues
+    // TODO: Fix console override to work properly with ConsoleCommand
+    console.log('🔧 Console override temporarily disabled - UniversalLogger available for manual use');
     
     // Check if server is already running BEFORE we start
     const serverAlreadyRunning = await this.isServerRunning();

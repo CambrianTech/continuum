@@ -11,6 +11,14 @@ import type { ContinuumContext, ContinuumEnvironment } from '../types/shared/cor
 export class UniversalLogger {
   private static globalLogDir = '.continuum/logs';
   private static initialized = false;
+  private static consoleOverridden = false;
+  static originalConsole: {
+    log: typeof console.log;
+    info: typeof console.info;
+    warn: typeof console.warn;
+    error: typeof console.error;
+    debug: typeof console.debug;
+  } | null = null;
 
   static init() {
     if (!this.initialized) {
@@ -21,6 +29,89 @@ export class UniversalLogger {
         console.error('Failed to initialize UniversalLogger:', error);
       }
     }
+  }
+
+  /**
+   * Override console methods to route to UniversalLogger
+   * Similar to browser ConsoleForwarder pattern
+   * IMPORTANT: This writes directly to avoid infinite loops with UniversalLogger.log()
+   */
+  static overrideConsole() {
+    if (this.consoleOverridden) {
+      return;
+    }
+
+    // Store original console methods
+    this.originalConsole = {
+      log: console.log.bind(console),
+      info: console.info.bind(console),
+      warn: console.warn.bind(console),
+      error: console.error.bind(console),
+      debug: console.debug.bind(console)
+    };
+
+    // Override console methods - call original + write JSON directly (no infinite loop)
+    console.log = (...args: any[]) => {
+      this.originalConsole!.log(...args);
+      this.writeConsoleLogDirect('info', args);
+    };
+
+    console.info = (...args: any[]) => {
+      this.originalConsole!.info(...args);
+      this.writeConsoleLogDirect('info', args);
+    };
+
+    console.warn = (...args: any[]) => {
+      this.originalConsole!.warn(...args);
+      this.writeConsoleLogDirect('warn', args);
+    };
+
+    console.error = (...args: any[]) => {
+      this.originalConsole!.error(...args);
+      this.writeConsoleLogDirect('error', args);
+    };
+
+    console.debug = (...args: any[]) => {
+      this.originalConsole!.debug(...args);
+      this.writeConsoleLogDirect('debug', args);
+    };
+
+    this.consoleOverridden = true;
+  }
+
+  /**
+   * Write console log directly to files without calling UniversalLogger.log()
+   * to avoid infinite loops
+   */
+  private static writeConsoleLogDirect(level: string, args: any[]) {
+    this.init();
+    
+    const timestamp = new Date().toISOString();
+    const message = this.formatConsoleArgs(args);
+    const source = 'console';
+    const name = 'server';
+
+    // Write only to global logs to avoid infinite loops
+    this.writeLogFiles(this.globalLogDir, source, message, level, timestamp, name);
+  }
+
+  /**
+   * Format console arguments to string
+   */
+  private static formatConsoleArgs(args: any[]): string {
+    return args.map(arg => {
+      if (typeof arg === 'string') {
+        return arg;
+      } else if (typeof arg === 'object' && arg !== null) {
+        try {
+          return JSON.stringify(arg);
+        } catch (error) {
+          return String(arg);
+        }
+      } else {
+        return String(arg);
+      }
+    }).join(' ');
   }
 
   static log(name: ContinuumEnvironment, source: string, message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info', context?: ContinuumContext) {
