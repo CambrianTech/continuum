@@ -15,6 +15,7 @@ This directory contains the complete architectural documentation for Continuum's
 - **[lambda-fluent-api.md](architecture/lambda-fluent-api.md)** - **✅ IMPLEMENTED** Distributed command execution with P2P command marketplace
 - **[process-isolation-architecture.md](architecture/process-isolation-architecture.md)** - **📋 PLANNED** OS-level process isolation with environment-based sandboxing
 - **[symmetric-daemon-architecture.md](architecture/symmetric-daemon-architecture.md)** - **🔄 ACTIVE** Unified client/server daemon pattern for cognitive simplicity
+- **[token-based-elegance-metrics.md](architecture/token-based-elegance-metrics.md)** - **🧬 BREAKTHROUGH** Universal intelligence metrics: token efficiency + attention entropy + persona genome optimization for self-improving AI systems
 - **[rest-api.md](architecture/rest-api.md)** - Modern HTTP API with session management
 
 #### 📚 [Bootloader](bootloader/)
