@@ -5,12 +5,7 @@
 
 import { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
 import { 
-  LoggerMessage, 
-  LogEntry, 
-  LogLevel,
-  LoggerMessageFactory,
-  OriginalConsole,
-  ConsoleUtils
+  LoggerMessage
 } from '../shared/LoggerMessageTypes';
 
 /**
@@ -23,13 +18,12 @@ interface WebSocketTransport {
 
 export class ClientLoggerDaemon {
   public readonly context: ContinuumContext;
-  private consoleForwarding = false;
-  private originalConsole: OriginalConsole = {} as OriginalConsole;
   private webSocketTransport: WebSocketTransport | null = null;
 
   constructor(context: ContinuumContext) {
     this.context = context;
-    this.enableConsoleForwarding();
+    // Console forwarding is now handled by ClientConsoleManager
+    // This daemon only processes log messages received from the manager
   }
 
   /**
@@ -52,104 +46,25 @@ export class ClientLoggerDaemon {
     this.logToBrowserConsole(loggerMessage);
   }
 
-  /**
-   * Enable console forwarding
-   */
-  private enableConsoleForwarding(): void {
-    if (this.consoleForwarding) {
-      console.warn('⚠️ Console forwarding is already enabled');
-      return;
-    }
-
-    // Store original console methods
-    this.originalConsole = {
-      log: console.log.bind(console),
-      warn: console.warn.bind(console),
-      error: console.error.bind(console),
-      info: console.info.bind(console),
-      debug: console.debug ? console.debug.bind(console) : console.log.bind(console),
-      trace: console.trace.bind(console)
-    };
-
-    // Override console methods
-    console.log = (...args: unknown[]): void => {
-      this.originalConsole.log(...args);
-      this.forwardConsole('log', args);
-    };
-
-    console.warn = (...args: unknown[]): void => {
-      this.originalConsole.warn(...args);
-      this.forwardConsole('warn', args);
-    };
-
-    console.error = (...args: unknown[]): void => {
-      this.originalConsole.error(...args);
-      this.forwardConsole('error', args);
-    };
-
-    console.info = (...args: unknown[]): void => {
-      this.originalConsole.info(...args);
-      this.forwardConsole('info', args);
-    };
-
-    console.debug = (...args: unknown[]): void => {
-      this.originalConsole.debug(...args);
-      this.forwardConsole('debug', args);
-    };
-
-    console.trace = (...args: unknown[]): void => {
-      this.originalConsole.trace(...args);
-      this.forwardConsole('trace', args);
-    };
-
-    this.consoleForwarding = true;
-  }
-
-  /**
-   * Forward console call to processing
-   */
-  private forwardConsole(level: LogLevel, args: unknown[]): void {
-    try {
-      const entry: LogEntry = ConsoleUtils.createLogEntry(level, args, this.context, 'browser-console');
-
-      const logMessage = LoggerMessageFactory.createLogMessage(entry);
-      
-      // Process the message (fire and forget)
-      this.processLogMessage(logMessage).catch(error => {
-        this.originalConsole.error('Failed to forward console message:', error);
-      });
-    } catch (error) {
-      this.originalConsole.error('Failed to forward console message:', error);
-    }
-  }
 
   // Serialization methods removed - now using unified ConsoleUtils
 
   /**
    * Log to browser console (fallback/local logging)
+   * DISABLED: Let server-side forwarding handle all console output with proper stack traces
    */
-  private logToBrowserConsole(loggerMessage: LoggerMessage): void {
-    if (loggerMessage.type !== 'log') return;
-
-    const entry = loggerMessage.payload as LogEntry;
-    const method = this.originalConsole[entry.level as keyof OriginalConsole] || this.originalConsole.log;
-    
-    const prefix = `[${entry.source}]`;
-    method(prefix, entry.message, entry.data || '');
+  private logToBrowserConsole(_loggerMessage: LoggerMessage): void {
+    // Disabled to prevent duplicate output and allow server-side stack traces to be the primary output
+    // The ClientConsoleManager already handles both console.* calls and forwarding
+    return;
   }
 
   /**
-   * Clean up and restore original console methods
+   * Clean up (console methods are now managed by ClientConsoleManager)
    */
   cleanup(): void {
-    if (this.consoleForwarding) {
-      console.log = this.originalConsole.log;
-      console.warn = this.originalConsole.warn;
-      console.error = this.originalConsole.error;
-      console.info = this.originalConsole.info;
-      console.debug = this.originalConsole.debug;
-      console.trace = this.originalConsole.trace;
-      this.consoleForwarding = false;
-    }
+    // Console cleanup is now handled by ClientConsoleManager
+    // This daemon only needs to cleanup WebSocket transport
+    this.webSocketTransport = null;
   }
 }
