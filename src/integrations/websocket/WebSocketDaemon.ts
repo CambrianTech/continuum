@@ -849,67 +849,31 @@ export class WebSocketDaemon extends BaseDaemon {
   */
 
   /**
-   * Handle browser console messages and write them to session browser.log
-   * This enables browser console capture via WebSocket instead of DevTools
+   * Handle browser console messages - delegate to LoggerDaemon
+   * This removes cross-cutting concern from WebSocketDaemon
    */
   private async handleBrowserConsoleMessage(connectionId: string, message: any): Promise<void> {
     try {
       // Get the session ID for this connection from our mapping
       const sessionId = this.connectionSessions.get(connectionId);
       if (!sessionId) {
-        this.log(`⚠️ No session found for connection ${connectionId} - logging to server console only`, 'warn');
-        this.log(`🔍 [CONSOLE_DEBUG] Console message from ${connectionId}: ${JSON.stringify(message.data)}`);
-        return;
+        this.log(`⚠️ No session found for connection ${connectionId} - forwarding without session context`, 'warn');
       }
 
-      // Get session manager to find browser log path
-      const sessionManager = this.registeredDaemons.get('session-manager');
-      if (!sessionManager) {
-        this.log(`⚠️ Session manager not available for console logging`, 'warn');
-        return;
-      }
-
-      // Get session info to find browser log path
-      const sessionInfo = await sessionManager.handleMessage({
-        type: 'get_session_info',
-        data: { sessionId: sessionId }
+      // Forward to LoggerDaemon using the forwarder
+      const { BrowserConsoleForwarder } = await import('../../daemons/logger/server/BrowserConsoleForwarder');
+      await BrowserConsoleForwarder.forwardConsoleMessage(connectionId, sessionId, {
+        level: message.data?.level || 'info',
+        message: message.data?.message,
+        data: message.data,
+        timestamp: message.data?.timestamp
       });
 
-      if (!sessionInfo.success) {
-        this.log(`⚠️ Could not get session info for console logging: ${sessionInfo.error}`, 'warn');
-        return;
-      }
-
-      const browserLogPath = sessionInfo.data?.artifacts?.logs?.client?.[0];
-      if (!browserLogPath) {
-        this.log(`⚠️ No browser log path found for session ${sessionId}`, 'warn');
-        return;
-      }
-
-      // Use console.log with session context - LoggerDaemon console override handles routing
-      const logMessage = message.data?.message || JSON.stringify(message.data);
-      const logLevel = message.data?.level || 'info';
-      
-      // Log via console - LoggerDaemon console override captures and routes with session context
-      switch (logLevel) {
-        case 'error':
-          console.error(logMessage);
-          break;
-        case 'warn':
-          console.warn(logMessage);
-          break;
-        case 'debug':
-          console.debug(logMessage);
-          break;
-        default:
-          console.log(logMessage);
-      }
-      
-      this.log(`📝 Browser console message logged via UniversalLogger`);
+      this.log(`📝 Browser console message forwarded to LoggerDaemon`);
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ Failed to handle browser console message: ${errorMessage}`, 'error');
+      this.log(`❌ Failed to forward browser console message: ${errorMessage}`, 'error');
     }
   }
 

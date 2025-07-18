@@ -15,10 +15,6 @@ export interface RouteMessage {
   [key: string]: unknown;
 }
 
-export interface SessionLogData {
-  sessionId?: string;
-  logPath?: string;
-}
 
 export interface MessageRouteHandler<T = unknown> {
   (data: T): Promise<DaemonResponse>;
@@ -40,11 +36,6 @@ export abstract class MessageRoutedDaemon extends BaseDaemon {
 
   protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
     try {
-      // Handle built-in message types first
-      if (message.type === 'set_session_log') {
-        return this.handleSetSessionLog(message.data);
-      }
-      
       // Handle primary routed message type
       if (message.type === this.primaryMessageType) {
         return await this.handleRoutedMessage(message.data as RouteMessage);
@@ -110,46 +101,4 @@ export abstract class MessageRoutedDaemon extends BaseDaemon {
     return Object.keys(this.getRouteMap());
   }
   
-  /**
-   * Handle built-in set_session_log message
-   */
-  private handleSetSessionLog(data: unknown): DaemonResponse {
-    if (!data || typeof data !== 'object') {
-      return {
-        success: false,
-        error: 'Invalid data for set_session_log'
-      };
-    }
-    
-    const { sessionId, logPath } = data as SessionLogData;
-    
-    if (!logPath) {
-      return {
-        success: false,
-        error: 'logPath is required for set_session_log'
-      };
-    }
-    
-    try {
-      // Use the BaseDaemon method to set session log path
-      this.setSessionLogPath(logPath);
-      this.log(`📝 Session logging enabled for ${sessionId}: ${logPath}`);
-      
-      return {
-        success: true,
-        data: {
-          sessionId,
-          logPath,
-          daemon: this.name,
-          message: 'Session logging enabled'
-        }
-      };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        success: false,
-        error: `Failed to set session log: ${errorMessage}`
-      };
-    }
-  }
 }
