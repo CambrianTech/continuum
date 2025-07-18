@@ -6,7 +6,7 @@
 
 import { appendFileSync, mkdirSync, existsSync, statSync } from 'fs';
 import * as path from 'path';
-import type { ContinuumContext, ContinuumEnvironment } from '../types/shared/core/ContinuumTypes';
+import type { ContinuumContext, ContinuumEnvironment } from '../../types/shared/core/ContinuumTypes';
 // REMOVED: SessionContext import - no longer needed since LoggerDaemon handles console override
 
 export class UniversalLogger {
@@ -59,7 +59,7 @@ export class UniversalLogger {
   static async log(name: ContinuumEnvironment, source: string, message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info', context: ContinuumContext) {
     try {
       // Use async logger with stack-based context
-      const { loggerClient } = await import('../daemons/logger/server/LoggerClient');
+      const { loggerClient } = await import('./server/LoggerClient');
       await loggerClient.log(context, level, message, source);
     } catch (error) {
       // Fallback to original sync logging if async fails

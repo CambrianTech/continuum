@@ -10,7 +10,7 @@ import { CommandResult, CommandDefinition } from '../base-command/BaseCommand';
 import { Console } from '../../../types/shared/ConsoleTypes';
 import { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
 import { ConsoleOverrideSemaphore } from '../../../daemons/logger/shared/ConsoleOverrideSemaphore';
-import { UniversalLogger } from '../../../logging/UniversalLogger';
+import { UniversalLogger } from '../../../daemons/logger/UniversalLogger';
 
 export class ConsoleCommand extends DirectCommand {
   /**

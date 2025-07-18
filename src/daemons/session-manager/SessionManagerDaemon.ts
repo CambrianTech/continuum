@@ -109,7 +109,7 @@ export class SessionManagerDaemon extends BaseDaemon {
     this.log('🕵️‍♂️🕵️‍♂️🕵️‍♂️ DISCOVERY: Starting daemon reconnaissance 🕵️‍♂️🕵️‍♂️🕵️‍♂️');
     
     // Test UniversalLogger with all log levels
-    const { UniversalLogger } = await import('../../logging/UniversalLogger');
+    const { UniversalLogger } = await import('../logger/UniversalLogger');
     
     UniversalLogger.log('server', 'SessionManagerDaemon', 'Session Manager Daemon v3.0 started - session management only', 'info', this.context);
     UniversalLogger.log('server', 'SessionManagerDaemon', 'Debug: Initializing directory structure', 'debug', this.context);
