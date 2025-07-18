@@ -7,19 +7,12 @@
 import { appendFileSync, mkdirSync, existsSync, statSync } from 'fs';
 import * as path from 'path';
 import type { ContinuumContext, ContinuumEnvironment } from '../types/shared/core/ContinuumTypes';
-import { SessionContext } from '../context/SessionContext';
+// REMOVED: SessionContext import - no longer needed since LoggerDaemon handles console override
 
 export class UniversalLogger {
   private static globalLogDir = '.continuum/logs';
   private static initialized = false;
-  private static consoleOverridden = false;
-  static originalConsole: {
-    log: typeof console.log;
-    info: typeof console.info;
-    warn: typeof console.warn;
-    error: typeof console.error;
-    debug: typeof console.debug;
-  } | null = null;
+  // REMOVED: consoleOverridden and originalConsole - LoggerDaemon handles console override
 
   static init() {
     if (!this.initialized) {
@@ -33,183 +26,35 @@ export class UniversalLogger {
   }
 
   /**
-   * Override console methods to route to async LoggerDaemon
-   * Uses stack-based context and async queue processing
+   * CONSOLE OVERRIDE REMOVED: LoggerDaemon is now "The Console Daemon"
+   * All console override functionality has been moved to LoggerDaemon with semaphore protection
+   * This method is deprecated and will be removed in a future version
    */
   static async overrideConsole() {
-    if (this.consoleOverridden) {
-      return;
-    }
-
-    // Only enable console override on server-side (Node.js)
-    if (typeof window !== 'undefined') {
-      console.log('🔧 UniversalLogger: Skipping console override in browser environment');
-      return;
-    }
-
-    // Initialize async logger
-    const { loggerClient } = await import('../daemons/logger/server/LoggerClient');
-    await loggerClient.initialize();
-
-    // Store original console methods
-    this.originalConsole = {
-      log: console.log.bind(console),
-      info: console.info.bind(console),
-      warn: console.warn.bind(console),
-      error: console.error.bind(console),
-      debug: console.debug.bind(console)
-    };
-
-    // Override console methods - call original + route through async logger
-    console.log = (...args: any[]) => {
-      this.originalConsole!.log(...args);
-      this.writeConsoleLogAsync('info', args);
-    };
-
-    console.info = (...args: any[]) => {
-      this.originalConsole!.info(...args);
-      this.writeConsoleLogAsync('info', args);
-    };
-
-    console.warn = (...args: any[]) => {
-      this.originalConsole!.warn(...args);
-      this.writeConsoleLogAsync('warn', args);
-    };
-
-    console.error = (...args: any[]) => {
-      this.originalConsole!.error(...args);
-      this.writeConsoleLogAsync('error', args);
-    };
-
-    console.debug = (...args: any[]) => {
-      this.originalConsole!.debug(...args);
-      this.writeConsoleLogAsync('debug', args);
-    };
-
-    this.consoleOverridden = true;
+    console.log('🔧 UniversalLogger: Console override removed - LoggerDaemon is now "The Console Daemon"');
+    console.log('🔧 UniversalLogger: This method is deprecated and will be removed');
   }
 
   /**
-   * Write console log through async LoggerDaemon
-   * Uses stack-based context and fire-and-forget async processing
+   * REMOVED: Console override functionality moved to LoggerDaemon
+   * This method is no longer needed since LoggerDaemon handles console override
    */
-  private static writeConsoleLogAsync(level: 'info' | 'warn' | 'error' | 'debug', args: any[]) {
-    try {
-      // Get context from stack or create default
-      const context = this.getContextFromStack();
-      const message = this.formatConsoleArgs(args);
-      const source = this.getSourceFromStack();
-
-      // Import and use async logger - fire and forget
-      import('../daemons/logger/server/LoggerClient').then(({ loggerClient }) => {
-        loggerClient.log(context, level, message, source).catch(() => {
-          // Fallback to original direct logging if async fails
-          this.writeConsoleLogDirect(level, args);
-        });
-      }).catch(() => {
-        // Fallback to original direct logging if import fails
-        this.writeConsoleLogDirect(level, args);
-      });
-    } catch (error) {
-      // Fallback to original direct logging if anything fails
-      this.writeConsoleLogDirect(level, args);
-    }
-  }
 
   /**
-   * Write console log directly to files without calling UniversalLogger.log()
-   * Fallback method for when async logging fails
+   * REMOVED: writeConsoleLogDirect - No longer needed since LoggerDaemon handles console override
    */
-  private static writeConsoleLogDirect(level: string, args: any[]) {
-    this.init();
-    
-    const timestamp = new Date().toISOString();
-    const message = this.formatConsoleArgs(args);
-    const source = 'console';
-    const name = 'server';
-
-    // Get current session from SessionContext
-    const sessionId = SessionContext.getCurrentSessionSync();
-    const contextStr = sessionId ? ` [session:${sessionId}]` : '';
-
-    // Always write to global logs
-    this.writeLogFiles(this.globalLogDir, source, `${message}${contextStr}`, level, timestamp, name);
-
-    // If we have a session, also write to session-specific logs
-    if (sessionId) {
-      try {
-        const sessionLogPath = `.continuum/sessions/user/shared/${sessionId}/logs`;
-        if (existsSync(sessionLogPath)) {
-          this.writeLogFiles(sessionLogPath, source, message, level, timestamp, name);
-        }
-      } catch (error) {
-        // Silently continue if session-specific logging fails
-      }
-    }
-  }
 
   /**
-   * Get context from execution stack or create default
+   * REMOVED: getContextFromStack - No longer needed since LoggerDaemon handles console override
    */
-  private static getContextFromStack(): ContinuumContext {
-    try {
-      // Try to get current context from SessionContext
-      const sessionId = SessionContext.getCurrentSessionSync();
-      if (sessionId) {
-        const { continuumContextFactory } = require('../types/shared/core/ContinuumTypes');
-        return continuumContextFactory.create({
-          sessionId: sessionId as any, // TODO: Fix UUID type casting
-          environment: 'server' // Default environment
-        });
-      }
-    } catch (error) {
-      // Ignore errors getting context
-    }
-
-    // Create default context
-    const { continuumContextFactory } = require('../types/shared/core/ContinuumTypes');
-    return continuumContextFactory.create({
-      environment: 'server'
-    });
-  }
 
   /**
-   * Get source from execution stack
+   * REMOVED: getSourceFromStack - No longer needed since LoggerDaemon handles console override
    */
-  private static getSourceFromStack(): string {
-    try {
-      const context = this.getContextFromStack();
-      
-      // Use execution stack to determine source
-      if (context.executionStack && context.executionStack.length > 0) {
-        const currentFrame = context.executionStack[context.executionStack.length - 1];
-        return currentFrame.location || 'unknown';
-      }
-    } catch (error) {
-      // Ignore errors getting source
-    }
-
-    return 'console';
-  }
 
   /**
-   * Format console arguments to string
+   * REMOVED: formatConsoleArgs - No longer needed since LoggerDaemon handles console override
    */
-  private static formatConsoleArgs(args: any[]): string {
-    return args.map(arg => {
-      if (typeof arg === 'string') {
-        return arg;
-      } else if (typeof arg === 'object' && arg !== null) {
-        try {
-          return JSON.stringify(arg);
-        } catch (error) {
-          return String(arg);
-        }
-      } else {
-        return String(arg);
-      }
-    }).join(' ');
-  }
 
   static async log(name: ContinuumEnvironment, source: string, message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info', context: ContinuumContext) {
     try {
@@ -255,17 +100,12 @@ export class UniversalLogger {
   }
 
   /**
-   * Restore original console methods
+   * REMOVED: Console override functionality moved to LoggerDaemon
+   * This method is deprecated and will be removed in a future version
    */
   static restoreConsole() {
-    if (this.originalConsole && this.consoleOverridden) {
-      console.log = this.originalConsole.log;
-      console.info = this.originalConsole.info;
-      console.warn = this.originalConsole.warn;
-      console.error = this.originalConsole.error;
-      console.debug = this.originalConsole.debug;
-      this.consoleOverridden = false;
-    }
+    console.log('🔧 UniversalLogger: Console restore removed - LoggerDaemon handles console override');
+    console.log('🔧 UniversalLogger: This method is deprecated and will be removed');
   }
 
   /**

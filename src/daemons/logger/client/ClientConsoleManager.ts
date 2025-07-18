@@ -47,7 +47,7 @@ export class ClientConsoleManager {
       return;
     }
 
-    // Store original console methods
+    // Store original console methods for internal use
     this.originalConsole = {
       log: console.log.bind(console),
       warn: console.warn.bind(console),
@@ -57,46 +57,11 @@ export class ClientConsoleManager {
       trace: console.trace.bind(console)
     };
 
-    // THE DEFINITIVE SOLUTION: Monkey-patch with direct function replacement
-    // This is the approach that actually preserves caller location in Chrome DevTools
-    
-    // Store references to original methods
-    const _log = console.log;
-    const _warn = console.warn;  
-    const _error = console.error;
-    const _info = console.info;
-    const _trace = console.trace;
-    
-    // Replace console methods with functions that forward asynchronously
-    const self = this;
-    
-    console.log = function(...args: unknown[]) {
-      _log.apply(console, args);
-      // Forward in microtask to avoid polluting stack
-      queueMicrotask(() => self.forwardConsole('log', args));
-    };
-    
-    console.warn = function(...args: unknown[]) {
-      _warn.apply(console, args);
-      queueMicrotask(() => self.forwardConsole('warn', args));
-    };
-    
-    console.error = function(...args: unknown[]) {
-      _error.apply(console, args);
-      queueMicrotask(() => self.forwardConsole('error', args));
-    };
-    
-    console.info = function(...args: unknown[]) {
-      _info.apply(console, args);
-      queueMicrotask(() => self.forwardConsole('info', args));
-    };
-    
-    console.trace = function(...args: unknown[]) {
-      _trace.apply(console, args);
-      queueMicrotask(() => self.forwardConsole('trace', args));
-    };
+    // CONSOLE OVERRIDE REMOVED: LoggerDaemon is now "The Console Daemon"
+    // ClientConsoleManager only handles message forwarding, not console override
+    // Console override is handled by LoggerDaemon with semaphore protection
 
-    console.log('🔄 Enabling console forwarding...');
+    console.log('🔄 Console forwarding initialized (no console override)');
 
     // Add AI-friendly probe method for diagnostic logging with optional JS execution
     (console as any).probe = (messageOrProbeData: string | ProbeData, data?: Record<string, unknown>): void => {
@@ -147,10 +112,13 @@ export class ClientConsoleManager {
     };
 
     this.consoleForwarding = true;
-    console.log('✅ Console forwarding enabled');
+    console.log('✅ Console forwarding enabled (without console override)');
     console.log('🔬 console.probe() method added for AI diagnostics');
   }
 
+  /**
+   * Forward console messages to server (called by probe or manual forwarding)
+   */
   private forwardConsole(type: string, args: unknown[]): void {
     try {
       // Convert type string to proper Console.Level enum
@@ -283,11 +251,7 @@ export class ClientConsoleManager {
    */
   destroy(): void {
     if (this.consoleForwarding) {
-      console.log = this.originalConsole.log;
-      console.warn = this.originalConsole.warn;
-      console.error = this.originalConsole.error;
-      console.info = this.originalConsole.info;
-      console.trace = this.originalConsole.trace;
+      // Remove probe method only (no console override to restore)
       delete (console as any).probe;
       this.consoleForwarding = false;
     }
