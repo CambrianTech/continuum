@@ -106,13 +106,13 @@ export class SessionManagerDaemon extends BaseDaemon {
     this.log('📋 Starting Session Manager Daemon...');
     this.log('🕵️‍♂️🕵️‍♂️🕵️‍♂️ DISCOVERY: Starting daemon reconnaissance 🕵️‍♂️🕵️‍♂️🕵️‍♂️');
     
-    // Test UniversalLogger with all log levels
-    const { UniversalLogger } = await import('../logger/UniversalLogger');
+    // Test LoggerDaemon with all log levels
+    const { LoggerDaemon } = await import('../logger/server/LoggerDaemon');
     
-    UniversalLogger.log('server', 'SessionManagerDaemon', 'Session Manager Daemon v3.0 started - session management only', 'info', this.context);
-    UniversalLogger.log('server', 'SessionManagerDaemon', 'Debug: Initializing directory structure', 'debug', this.context);
-    UniversalLogger.log('server', 'SessionManagerDaemon', 'Warning: This is a test warning message', 'warn', this.context);
-    UniversalLogger.log('server', 'SessionManagerDaemon', 'Error: This is a test error message', 'error', this.context);
+    await LoggerDaemon.log('Session Manager Daemon v3.0 started - session management only', 'info', 'SessionManagerDaemon', undefined, this.context);
+    await LoggerDaemon.log('Debug: Initializing directory structure', 'debug', 'SessionManagerDaemon', undefined, this.context);
+    await LoggerDaemon.log('Warning: This is a test warning message', 'warn', 'SessionManagerDaemon', undefined, this.context);
+    await LoggerDaemon.log('Error: This is a test error message', 'error', 'SessionManagerDaemon', undefined, this.context);
     
     await this.initializeDirectoryStructure();
     

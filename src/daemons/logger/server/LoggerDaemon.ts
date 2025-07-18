@@ -18,7 +18,6 @@ import {
 } from '../shared/LoggerMessageTypes';
 import { ConsoleOverrideSemaphore } from '../shared/ConsoleOverrideSemaphore';
 import * as fs from 'fs/promises';
-import * as path from 'path';
 
 export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
   readonly name = 'logger';
@@ -170,32 +169,131 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
   }
 
   /**
-   * Write multiple log entries to session files
+   * THE ONE METHOD - Write log entries to both global and session directories
    */
   private async writeBatchedEntries(entries: LogEntry[]): Promise<void> {
     if (entries.length === 0) return;
 
-    const sessionId = entries[0].context.sessionId;
-    const sessionDir = this.getSessionLogDirectory(sessionId);
-    
-    // Group by log level for separate files
-    const levelGroups = new Map<LogLevel, LogEntry[]>();
     for (const entry of entries) {
-      if (!levelGroups.has(entry.level)) {
-        levelGroups.set(entry.level, []);
+      await this.writeOneLogEntry(entry);
+    }
+  }
+
+  /**
+   * THE ONE ENTRY POINT - Write single log entry to all required locations
+   */
+  private async writeOneLogEntry(entry: LogEntry): Promise<void> {
+    const timestamp = new Date(entry.timestamp).toISOString();
+    const sessionId = entry.context.sessionId || 'system';
+    
+    // Write to global logs (with session context)
+    await this.writeToLocation('.continuum/logs', entry, timestamp, true);
+    
+    // Write to session logs (without session context) if not system
+    if (sessionId !== 'system') {
+      const sessionPath = `.continuum/sessions/user/shared/${sessionId}/logs`;
+      await this.writeToLocation(sessionPath, entry, timestamp, false);
+    }
+  }
+
+  /**
+   * THE ONE METHOD - Write to one location using EXACTLY the same logic as browser (sync version)
+   */
+  private async writeToLocation(logDir: string, entry: LogEntry, timestamp: string, includeSessionContext: boolean): Promise<void> {
+    const syncFs = await import('fs');
+    const path = await import('path');
+    
+    const message = typeof entry.message === 'string' ? entry.message : JSON.stringify(entry.message);
+    const contextStr = includeSessionContext && entry.context.sessionId ? ` [session:${entry.context.sessionId}]` : '';
+    
+    try {
+      syncFs.mkdirSync(logDir, { recursive: true });
+
+      // Write human-readable log (EXACT SAME as browser)
+      const humanLogEntry = `UL: [${timestamp}] [${entry.source}] ${entry.level.toUpperCase()}: ${message}${contextStr}\n`;
+      const humanLogPath = path.join(logDir, 'server.log');
+      this.ensureLogFileWithHeaderSync(humanLogPath, 'server', syncFs);
+      syncFs.appendFileSync(humanLogPath, humanLogEntry);
+
+      // Write JSON logs (EXACT SAME as browser)
+      this.writeJsonLogsSync(logDir, entry.source, message, entry.level, timestamp, 'server', syncFs, path);
+
+    } catch (error) {
+      // Don't use console.error - would cause circular dependency
+      // Just fail silently or use original console
+      this.originalConsole.error(`Failed to write to log path ${logDir}:`, error);
+    }
+  }
+
+  /**
+   * Ensure log file exists with proper header (sync version)
+   */
+  private ensureLogFileWithHeaderSync(logPath: string, name: string, syncFs: any): void {
+    try {
+      syncFs.statSync(logPath);
+    } catch {
+      // File doesn't exist, create with header
+      const header = `# Universal Logger ${name} log\n# Created: ${new Date().toISOString()}\n# Type: development\n# Owner: shared\n#\n# Session started at ${new Date().toISOString()}\n#\n`;
+      syncFs.writeFileSync(logPath, header);
+    }
+  }
+
+  /**
+   * Write JSON logs (EXACT SAME template format as browser, sync version)
+   */
+  private writeJsonLogsSync(logDir: string, source: string, message: string, level: string, timestamp: string, name: string, syncFs: any, path: any): void {
+    // Parse message as JSON if possible
+    let messageContent: any = message;
+    try {
+      const parsed = JSON.parse(message);
+      messageContent = parsed;
+    } catch {
+      // Not JSON, keep as string
+    }
+
+    const jsonLogEntry = {
+      level,
+      message: messageContent,
+      timestamp,
+      source,
+      serverContext: {
+        daemon: source,
+        processId: process.pid,
+        timestamp
       }
-      levelGroups.get(entry.level)!.push(entry);
+    };
+
+    // Write level-specific JSON file with template
+    const jsonFile = path.join(logDir, `${name}.${level}.json`);
+    this.appendToJsonTemplateSync(jsonFile, jsonLogEntry, level, name, syncFs);
+  }
+
+  /**
+   * Append to JSON template file (EXACT SAME format as browser, sync version)
+   */
+  private appendToJsonTemplateSync(filePath: string, entry: any, level: string, name: string, syncFs: any): void {
+    let template: any;
+    
+    try {
+      const existing = syncFs.readFileSync(filePath, 'utf8');
+      template = JSON.parse(existing);
+    } catch {
+      // File doesn't exist, create template
+      template = {
+        meta: {
+          version: '1.0.0',
+          created: new Date().toISOString(),
+          type: 'development',
+          owner: 'shared',
+          logType: level,
+          name: name
+        },
+        entries: []
+      };
     }
 
-    // Write to combined log and level-specific files
-    const allEntriesText = entries.map(entry => this.formatLogEntry(entry)).join('\n') + '\n';
-    await this.writeToFile(path.join(sessionDir, 'server.log'), allEntriesText);
-
-    // Write to level-specific JSON files
-    for (const [level, levelEntries] of levelGroups) {
-      const jsonData = levelEntries.map(entry => this.formatLogEntryJSON(entry)).join('\n') + '\n';
-      await this.writeToFile(path.join(sessionDir, `server.${level}.json`), jsonData);
-    }
+    template.entries.push(entry);
+    syncFs.writeFileSync(filePath, JSON.stringify(template, null, 2));
   }
 
   /**
@@ -282,43 +380,7 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
     }, this.config.flushInterval);
   }
 
-  /**
-   * Get session log directory
-   */
-  private getSessionLogDirectory(sessionId: string): string {
-    // This should match your existing session directory structure
-    return path.join(process.cwd(), '.continuum', 'sessions', 'user', 'shared', sessionId, 'logs');
-  }
-
-  /**
-   * Write to file with proper file handle management
-   */
-  private async writeToFile(filePath: string, content: string): Promise<void> {
-    const dir = path.dirname(filePath);
-    await fs.mkdir(dir, { recursive: true });
-    await fs.appendFile(filePath, content, 'utf8');
-  }
-
-  /**
-   * Format log entry for human-readable log file
-   */
-  private formatLogEntry(entry: LogEntry): string {
-    return `UL: [${entry.timestamp}] [${entry.source}] ${entry.level.toUpperCase()}: ${entry.message} [session:${entry.context.sessionId}]`;
-  }
-
-  /**
-   * Format log entry for JSON log file
-   */
-  private formatLogEntryJSON(entry: LogEntry): string {
-    return JSON.stringify({
-      level: entry.level,
-      message: entry.message,
-      timestamp: entry.timestamp,
-      source: entry.source,
-      context: entry.context,
-      data: entry.data
-    });
-  }
+  // Removed unused methods - now using UniversalLogger.writeLogFiles for consistency
 
   /**
    * Clean shutdown - flush all buffers and close file handles
@@ -405,18 +467,67 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
   }
 
   /**
-   * Log console message through daemon queue
+   * Public async log method - THE ONE METHOD for all logging
+   * Replaces all UniversalLogger calls
    */
-  private logConsoleMessage(level: LogLevel, args: any[]): void {
+  public static async log(
+    message: string, 
+    level: LogLevel = 'info',
+    source: string = 'unknown',
+    sessionId?: string,
+    context?: ContinuumContext
+  ): Promise<void> {
     try {
-      const message = this.formatConsoleArgs(args);
       const logEntry: LogEntry = {
         level,
         message,
         timestamp: Date.now(),
-        sessionId: this.context?.sessionId || 'server',
+        sessionId: sessionId || context?.sessionId || 'system',
+        source,
+        context: context || { sessionId: (sessionId || 'system') as any, environment: 'server' }
+      };
+
+      // Get the singleton instance and queue the message
+      const instance = LoggerDaemon.getInstance();
+      if (instance) {
+        instance.enqueueMessage({
+          id: instance.generateMessageId(),
+          from: 'logger',
+          to: 'logger',
+          type: 'log',
+          data: {
+            type: 'log',
+            payload: logEntry
+          },
+          timestamp: new Date()
+        });
+      } else {
+        // Fallback to console if daemon not available
+        console.log(`[${new Date().toISOString()}] [${source}] ${level.toUpperCase()}: ${message}`);
+      }
+    } catch (error) {
+      // Fallback to console to avoid infinite loops
+      console.error('❌ LoggerDaemon.log error:', error);
+    }
+  }
+
+  /**
+   * Log console message through daemon queue (for console override)
+   */
+  private logConsoleMessage(level: LogLevel, args: any[]): void {
+    try {
+      const message = this.formatConsoleArgs(args);
+      
+      // Try to extract session context from call stack
+      const sessionContext = this.extractSessionFromCallStack();
+      
+      const logEntry: LogEntry = {
+        level,
+        message,
+        timestamp: Date.now(),
+        sessionId: sessionContext?.sessionId || 'system',
         source: 'console',
-        context: this.context || { sessionId: 'server' as any, environment: 'server' }
+        context: sessionContext || { sessionId: 'system' as any, environment: 'server' }
       };
 
       // Queue the message for async processing
@@ -438,6 +549,48 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
         originalConsole.error('❌ LoggerDaemon console override error:', error);
       }
     }
+  }
+
+  /**
+   * Extract session context from call stack
+   */
+  private extractSessionFromCallStack(): ContinuumContext | null {
+    try {
+      const stack = new Error().stack;
+      if (!stack) return null;
+
+      // Look for session indicators in the stack
+      const sessionMatch = stack.match(/session[:-]([a-f0-9-]{36})/i);
+      if (sessionMatch) {
+        return {
+          sessionId: sessionMatch[1] as any,
+          environment: 'server'
+        };
+      }
+      
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Singleton instance access
+   */
+  private static instance: LoggerDaemon | null = null;
+  
+  public static getInstance(): LoggerDaemon | null {
+    return LoggerDaemon.instance;
+  }
+  
+  protected async onStart(): Promise<void> {
+    LoggerDaemon.instance = this;
+    await super.onStart();
+  }
+  
+  protected async onStop(): Promise<void> {
+    LoggerDaemon.instance = null;
+    await super.onStop();
   }
 
   /**

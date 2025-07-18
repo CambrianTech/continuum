@@ -4,7 +4,7 @@
  * Global logs go to .continuum/logs, session logs go to session/logs directory
  */
 
-import { appendFileSync, mkdirSync, existsSync, statSync, readFileSync, writeFileSync } from 'fs';
+import { appendFileSync, mkdirSync, existsSync, statSync, readFileSync, writeFileSync, readdirSync } from 'fs';
 import * as path from 'path';
 import type { ContinuumContext, ContinuumEnvironment } from '../../types/shared/core/ContinuumTypes';
 // REMOVED: SessionContext import - no longer needed since LoggerDaemon handles console override
@@ -109,10 +109,35 @@ export class UniversalLogger {
   }
 
   /**
+   * Async logging method - bypasses console overrides to avoid infinite loops
+   */
+  public static logAsync(message: string, level: string = 'info'): void {
+    const timestamp = new Date().toISOString();
+    const source = 'WebSocketDaemon';
+    
+    // Write to global logs
+    this.writeLogFiles(this.globalLogDir, source, message, level, timestamp, 'browser');
+    
+    // Try to write to session logs if we can determine session context
+    try {
+      const sessionDirs = readdirSync('.continuum/sessions/user/shared');
+      if (sessionDirs.length > 0) {
+        // Use the most recent session directory
+        const sessionLogPath = `.continuum/sessions/user/shared/${sessionDirs[0]}/logs`;
+        if (existsSync(sessionLogPath)) {
+          this.writeLogFiles(sessionLogPath, source, message, level, timestamp, 'browser');
+        }
+      }
+    } catch (error) {
+      // Silently continue if session-specific logging fails
+    }
+  }
+
+  /**
    * THE ONE FUNCTION - handles any log path with proper type separation
    * Creates: $NAME.log, $NAME.error.json, $NAME.info.json, $NAME.log.json
    */
-  private static writeLogFiles(logDir: string, source: string, message: string, level: string, timestamp: string, name: string, contextStr: string = '') {
+  public static writeLogFiles(logDir: string, source: string, message: string, level: string, timestamp: string, name: string, contextStr: string = '') {
     try {
       mkdirSync(logDir, { recursive: true });
 
