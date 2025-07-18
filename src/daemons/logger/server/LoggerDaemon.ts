@@ -16,6 +16,7 @@ import {
   ConfigureRequest,
   LogLevel
 } from '../shared/LoggerMessageTypes';
+import { ConsoleOverrideSemaphore } from '../shared/ConsoleOverrideSemaphore';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -32,6 +33,17 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
     enableBatching: true,
     logLevel: 'info' as LogLevel
   };
+  
+  // Store original console methods to avoid infinite loops
+  private originalConsole = {
+    log: console.log,
+    warn: console.warn,
+    error: console.error,
+    info: console.info,
+    debug: console.debug
+  };
+
+  // private consoleOverridden = false; // TODO: Re-enable with console override
 
   constructor(context?: ContinuumContext) {
     super(context, {
@@ -46,6 +58,9 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
 
     // Start periodic flush timer
     this.startPeriodicFlush();
+    
+    // LoggerDaemon is THE Console Daemon - it owns all console override logic
+    // Console override will be enabled separately after daemon system is stable
   }
 
   /**
@@ -224,7 +239,7 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
   private async handleRotateMessage(rotateRequest: RotateRequest): Promise<void> {
     // Implementation for log rotation
     // This is a placeholder - would implement actual rotation logic
-    console.log('Log rotation requested:', rotateRequest);
+    this.originalConsole.log('Log rotation requested:', rotateRequest);
   }
 
   /**
@@ -262,7 +277,7 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
       try {
         await this.flushAllBuffers();
       } catch (error) {
-        console.error('Periodic flush error:', error);
+        this.originalConsole.error('Periodic flush error:', error);
       }
     }, this.config.flushInterval);
   }
@@ -309,6 +324,9 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
    * Clean shutdown - flush all buffers and close file handles
    */
   async stop(): Promise<void> {
+    // Release console override semaphore
+    this.disableConsoleOverride();
+    
     await this.flushAllBuffers();
     
     // Close all file handles
@@ -316,11 +334,128 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
       try {
         await handle.close();
       } catch (error) {
-        console.error(`Error closing file handle for ${filePath}:`, error);
+        this.originalConsole.error(`Error closing file handle for ${filePath}:`, error);
       }
     }
     this.openFileHandles.clear();
     
     await super.stop();
+  }
+
+  /**
+   * Enable console override using the global semaphore
+   * LoggerDaemon is THE Console Daemon - it owns all console override logic
+   * Call this after daemon system is stable
+   */
+  public enableConsoleOverride(): void {
+    try {
+      // Acquire the global console override semaphore
+      ConsoleOverrideSemaphore.acquire('LoggerDaemon');
+      
+      // Get the original console methods from the semaphore
+      const originalConsole = ConsoleOverrideSemaphore.getOriginalConsole();
+      if (!originalConsole) {
+        throw new Error('Failed to get original console methods from semaphore');
+      }
+
+      // Override console methods to route through LoggerDaemon
+      console.log = (...args: any[]) => {
+        originalConsole.log(...args);
+        this.logConsoleMessage('info', args);
+      };
+
+      console.info = (...args: any[]) => {
+        originalConsole.info(...args);
+        this.logConsoleMessage('info', args);
+      };
+
+      console.warn = (...args: any[]) => {
+        originalConsole.warn(...args);
+        this.logConsoleMessage('warn', args);
+      };
+
+      console.error = (...args: any[]) => {
+        originalConsole.error(...args);
+        this.logConsoleMessage('error', args);
+      };
+
+      console.debug = (...args: any[]) => {
+        originalConsole.debug(...args);
+        this.logConsoleMessage('debug', args);
+      };
+
+      originalConsole.log('✅ LoggerDaemon: Console override enabled with semaphore protection');
+    } catch (error) {
+      // If semaphore acquisition fails, log the error but don't crash the daemon
+      console.error('❌ LoggerDaemon: Failed to acquire console override semaphore:', error);
+    }
+  }
+
+  /**
+   * Disable console override by releasing the semaphore
+   */
+  private disableConsoleOverride(): void {
+    try {
+      if (ConsoleOverrideSemaphore.isActive() && ConsoleOverrideSemaphore.getCurrentSource() === 'LoggerDaemon') {
+        ConsoleOverrideSemaphore.release('LoggerDaemon');
+      }
+    } catch (error) {
+      console.error('❌ LoggerDaemon: Failed to release console override semaphore:', error);
+    }
+  }
+
+  /**
+   * Log console message through daemon queue
+   */
+  private logConsoleMessage(level: LogLevel, args: any[]): void {
+    try {
+      const message = this.formatConsoleArgs(args);
+      const logEntry: LogEntry = {
+        level,
+        message,
+        timestamp: Date.now(),
+        sessionId: this.context?.sessionId || 'server',
+        source: 'console',
+        context: this.context || { sessionId: 'server' as any, environment: 'server' }
+      };
+
+      // Queue the message for async processing
+      this.enqueueMessage({
+        id: this.generateMessageId(),
+        from: 'logger',
+        to: 'logger',
+        type: 'log',
+        data: {
+          type: 'log',
+          payload: logEntry
+        },
+        timestamp: new Date()
+      });
+    } catch (error) {
+      // Fallback to original console to avoid infinite loops
+      const originalConsole = ConsoleOverrideSemaphore.getOriginalConsole();
+      if (originalConsole) {
+        originalConsole.error('❌ LoggerDaemon console override error:', error);
+      }
+    }
+  }
+
+  /**
+   * Format console arguments to string
+   */
+  private formatConsoleArgs(args: any[]): string {
+    return args.map(arg => {
+      if (typeof arg === 'string') {
+        return arg;
+      } else if (typeof arg === 'object' && arg !== null) {
+        try {
+          return JSON.stringify(arg);
+        } catch (error) {
+          return String(arg);
+        }
+      } else {
+        return String(arg);
+      }
+    }).join(' ');
   }
 }

@@ -8,15 +8,16 @@
 import { DirectCommand } from '../direct-command/DirectCommand';
 import { CommandResult, CommandDefinition } from '../base-command/BaseCommand';
 import { Console } from '../../../types/shared/ConsoleTypes';
-import { UniversalLogger } from '../../../logging/UniversalLogger';
 import { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
+import { ConsoleOverrideSemaphore } from '../../../daemons/logger/shared/ConsoleOverrideSemaphore';
+import { UniversalLogger } from '../../../logging/UniversalLogger';
 
 export class ConsoleCommand extends DirectCommand {
   /**
-   * Get original console methods to avoid infinite loops with UniversalLogger override
+   * Get original console methods to avoid infinite loops with console override
    */
   private static getOriginalConsole() {
-    return (UniversalLogger as any).originalConsole || console;
+    return ConsoleOverrideSemaphore.getOriginalConsole() || console;
   }
 
   /**
@@ -159,11 +160,12 @@ export class ConsoleCommand extends DirectCommand {
         this.getOriginalConsole().log(`   URL:`, logData.metadata.url);
       }
 
-      // No longer write to session-specific files - UniversalLogger handles this
-      const sessionLogged = true; // UniversalLogger will handle session-specific logging
+      // No longer write to session-specific files - LoggerDaemon handles this
+      const sessionLogged = true; // LoggerDaemon will handle session-specific logging
 
-      // ADDITIONAL: Use UniversalLogger to create browser.log.json (comprehensive JSON file)
+      // Use UniversalLogger.logSync to create browser.log.json (comprehensive JSON file)
       // This ADDS to existing browser logging, doesn't replace it
+      // Using logSync to avoid console override loops
       try {
         // Format message for UniversalLogger
         let formattedMessage = logData.message;
@@ -186,8 +188,8 @@ export class ConsoleCommand extends DirectCommand {
                                  logData.level === Console.Level.DEBUG ? 'debug' :
                                  'info';
         
-        // Call UniversalLogger to create browser.log.json (using working pattern from SessionManagerDaemon)
-        UniversalLogger.log(
+        // Call UniversalLogger.logSync to avoid console override loops
+        UniversalLogger.logSync(
           'browser',
           logData.source || 'ConsoleCommand',
           formattedMessage,
@@ -195,11 +197,10 @@ export class ConsoleCommand extends DirectCommand {
           context
         );
         
+        this.getOriginalConsole().log(`✅ Also logged to UniversalLogger.logSync: browser.${universalLogLevel}`);
         
-        this.getOriginalConsole().log(`✅ Also logged to UniversalLogger: browser.${universalLogLevel}`);
-        
-      } catch (universalError) {
-        this.getOriginalConsole().warn(`⚠️ Failed to log to UniversalLogger: ${universalError instanceof Error ? universalError.message : String(universalError)}`);
+      } catch (loggerError) {
+        this.getOriginalConsole().warn(`⚠️ Failed to log to UniversalLogger.logSync: ${loggerError instanceof Error ? loggerError.message : String(loggerError)}`);
       }
 
       return this.createSuccessResult(

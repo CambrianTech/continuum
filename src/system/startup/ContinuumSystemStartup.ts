@@ -16,10 +16,10 @@ import { AcademyDaemon } from '../../daemons/academy/AcademyDaemon';
 import { WidgetDaemon } from '../../daemons/widget/WidgetDaemon';
 // import { PersonaDaemon } from '../../daemons/persona/PersonaDaemon';
 import { ChatRoomDaemon } from '../../daemons/chatroom/ChatRoomDaemon';
+import { LoggerDaemon } from '../../daemons/logger/server/LoggerDaemon';
 import { ContinuumContext, continuumContextFactory } from '../../types/shared/core/ContinuumTypes';
 // import { DaemonMessage } from '../../daemons/base/DaemonProtocol';
 // import { DaemonMessageUtils } from '../../daemons/base/DaemonMessageUtils';
-// import { UniversalLogger } from '../../logging/UniversalLogger';
 
 export class ContinuumSystem extends EventEmitter {
   private daemons = new Map();
@@ -38,6 +38,7 @@ export class ContinuumSystem extends EventEmitter {
     // Create daemons in dependency order - pass context where supported
     this.daemons.set('continuum-directory', new ContinuumDirectoryDaemon());
     this.daemons.set('session-manager', new SessionManagerDaemon(this.systemContext, '.continuum/sessions'));
+    this.daemons.set('logger', new LoggerDaemon(this.systemContext));
     this.daemons.set('static-file', new StaticFileDaemon());
     this.daemons.set('websocket', new WebSocketDaemon(this.systemContext));
     this.daemons.set('renderer', new RendererDaemon());
@@ -81,13 +82,12 @@ export class ContinuumSystem extends EventEmitter {
     console.log(`║ Version: ${pkg.version.padEnd(20)} Start Time: ${startTime.padEnd(30)} Process: ${process.pid.toString().padEnd(15)} ║`);
     console.log('╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣');
     console.log('║ 📋 Daemon Launch Sequence:                                                                                          ║');
-    console.log('║   1. continuum-directory → 2. session-manager → 3. static-file → 4. websocket → 5. renderer → 6. command-processor → 7. academy → 8. browser ║');
+    console.log('║   1. continuum-directory → 2. session-manager → 3. logger → 4. static-file → 5. websocket → 6. renderer → 7. command-processor → 8. academy → 9. browser ║');
     console.log('╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝');
     console.log('');
     
-    // Console override temporarily disabled due to infinite loop issues
-    // TODO: Fix console override to work properly with ConsoleCommand
-    console.log('🔧 Console override temporarily disabled - UniversalLogger available for manual use');
+    // LoggerDaemon handles console override internally
+    console.log('✅ LoggerDaemon registered with internal console override');
     
     // Check if server is already running BEFORE we start
     const serverAlreadyRunning = await this.isServerRunning();
@@ -153,6 +153,18 @@ export class ContinuumSystem extends EventEmitter {
     console.log('🌐 Browser interface: http://localhost:9000');
     console.log('🔌 WebSocket API: ws://localhost:9000');
     console.log('');
+    
+    // TODO: Enable console override when debugging is complete
+    // console.log('🔧 Enabling console override through LoggerDaemon (The Console Daemon)');
+    // try {
+    //   const loggerDaemon = this.daemons.get('logger') as LoggerDaemon;
+    //   if (loggerDaemon) {
+    //     loggerDaemon.enableConsoleOverride();
+    //     console.log('✅ Console override enabled - all console output now flows through LoggerDaemon');
+    //   }
+    // } catch (error) {
+    //   console.error('❌ Failed to enable console override:', error);
+    // }
     
     // Clear any ports that might be in use before running self-tests
     await this.clearPorts();
