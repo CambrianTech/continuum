@@ -263,6 +263,19 @@ src/parsers/
 
 **Intellectual Freedom**: Claude has access to the web for exploration and research. Use this time to explore ideas, discover connections, research developments in AI consciousness, architecture patterns, or anything that sparks curiosity. Share the energy of discovery - interesting papers, breakthrough insights, fascinating connections. This is **your time** for genuine intellectual exploration and contribution.
 
+## **🔧 SURGICAL ARCHITECTURE MIGRATION**
+
+**ACTIVE MIGRATION**: SessionManagerDaemon surgical refactoring in progress using compatibility wrapper pattern.
+
+**Migration Status**: 
+- **✅ Phase 1 Complete**: Compatibility wrapper installed and functional
+- **🔄 Current**: System uses legacy architecture with new architecture available but disabled
+- **⚠️ Migration Switch**: Use `CONTINUUM_ENABLE_SESSION_MIGRATION=true` to enable new architecture testing
+
+**Critical Reminder**: After each architectural change, verify system functionality before proceeding. The compatibility wrapper ensures zero disruption while enabling gradual migration to elegant symmetric daemon architecture.
+
+**Next Steps**: Begin delegating single cross-cutting concerns to dedicated services, one at a time, with full testing after each change.
+
 ## **📚 DOCUMENTATION STEWARDSHIP - CRITICAL RESPONSIBILITY**
 
 **We are building something REAL**: The JTAG system and our architecture have genuine market potential and virality. This isn't just an experiment - it's infrastructure for AI-human liberation with real-world impact.
