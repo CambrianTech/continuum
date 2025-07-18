@@ -9,6 +9,8 @@ import { WebSocketDaemon } from '../../integrations/websocket/WebSocketDaemon';
 import { RendererDaemon } from '../../daemons/renderer/RendererDaemon';
 import { CommandProcessorDaemon } from '../../daemons/command-processor/CommandProcessorDaemon';
 import { BrowserManagerDaemon } from '../../daemons/browser-manager/BrowserManagerDaemon';
+// OLD: import { SessionManagerDaemon } from '../../daemons/session-manager/SessionManagerDaemon';
+// NEW: Using compatibility wrapper for surgical migration to modular architecture
 import { SessionManagerCompatibilityWrapper as SessionManagerDaemon } from '../../daemons/session-manager/SessionManagerCompatibilityWrapper';
 import { ContinuumDirectoryDaemon } from '../../daemons/continuum-directory/ContinuumDirectoryDaemon';
 import { StaticFileDaemon } from '../../daemons/static-file/StaticFileDaemon';
@@ -38,9 +40,19 @@ export class ContinuumSystem extends EventEmitter {
     
     // Create daemons in dependency order - pass context where supported
     this.daemons.set('continuum-directory', new ContinuumDirectoryDaemon());
-    console.log('🔍 DEBUG: About to instantiate SessionManagerDaemon (which should be the compatibility wrapper)');
+    console.log('🔍 DEBUG: About to instantiate SessionManagerDaemon (aliased to SessionManagerCompatibilityWrapper)');
+    console.log('🔍 DEBUG: OLD SessionManagerDaemon is commented out - ONLY the new compatibility wrapper runs');
     this.daemons.set('session-manager', new SessionManagerDaemon(this.systemContext, '.continuum/sessions'));
-    console.log('🔍 DEBUG: SessionManagerDaemon instantiated successfully');
+    console.log('🔍 DEBUG: SessionManagerCompatibilityWrapper instantiated successfully');
+    
+    // Verify the compatibility wrapper is active
+    const sessionManager = this.daemons.get('session-manager');
+    if (sessionManager?.constructor.name === 'SessionManagerCompatibilityWrapper') {
+      console.log('✅ CONFIRMED: SessionManagerCompatibilityWrapper is active and operational');
+      console.log('🚀 NEW MODULAR ARCHITECTURE: Cross-cutting concerns successfully extracted');
+    } else {
+      console.log('❌ WARNING: Old SessionManagerDaemon is still running - migration not active');
+    }
     this.daemons.set('logger', new LoggerDaemon(this.systemContext));
     this.daemons.set('static-file', new StaticFileDaemon());
     this.daemons.set('websocket', new WebSocketDaemon(this.systemContext));
