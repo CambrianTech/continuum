@@ -5,7 +5,7 @@
 
 import { ChromiumDevToolsAdapter } from '../../browser-manager/adapters/ChromiumDevToolsAdapter';
 import { ConsoleMessage } from '../../browser-manager/types/index';
-import { UniversalLogger } from '../../../logging/UniversalLogger';
+import { UniversalLogger } from '../../logger/UniversalLogger';
 import { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
 
 export class SessionConsoleLogger {

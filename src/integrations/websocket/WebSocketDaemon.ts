@@ -985,7 +985,7 @@ export class WebSocketDaemon extends BaseDaemon {
   async sendToConnectedClients(message: unknown): Promise<DaemonResponse> {
     try {
       // Use UniversalLogger for server logging
-      const { UniversalLogger } = await import('../../logging/UniversalLogger');
+      const { UniversalLogger } = await import('../../daemons/logger/UniversalLogger');
       
       UniversalLogger.log('server', 'WebSocketDaemon', '📡 WEBSOCKET: Broadcasting message to all connected clients', 'info', this.context);
       
