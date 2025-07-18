@@ -154,17 +154,17 @@ export class ContinuumSystem extends EventEmitter {
     console.log('🔌 WebSocket API: ws://localhost:9000');
     console.log('');
     
-    // TODO: Enable console override when debugging is complete
-    // console.log('🔧 Enabling console override through LoggerDaemon (The Console Daemon)');
-    // try {
-    //   const loggerDaemon = this.daemons.get('logger') as LoggerDaemon;
-    //   if (loggerDaemon) {
-    //     loggerDaemon.enableConsoleOverride();
-    //     console.log('✅ Console override enabled - all console output now flows through LoggerDaemon');
-    //   }
-    // } catch (error) {
-    //   console.error('❌ Failed to enable console override:', error);
-    // }
+    // Enable console override now that logging system is stable
+    console.log('🔧 Enabling console override through LoggerDaemon (The Console Daemon)');
+    try {
+      const loggerDaemon = this.daemons.get('logger') as LoggerDaemon;
+      if (loggerDaemon) {
+        loggerDaemon.enableConsoleOverride();
+        console.log('✅ Console override enabled - all console output now flows through LoggerDaemon');
+      }
+    } catch (error) {
+      console.error('❌ Failed to enable console override:', error);
+    }
     
     // Clear any ports that might be in use before running self-tests
     await this.clearPorts();
@@ -321,8 +321,10 @@ export class ContinuumSystem extends EventEmitter {
     // Register static file routes first (they take precedence)
     staticFileDaemon.registerWithWebSocketDaemon(webSocketDaemon);
     
-    // Register specific command endpoints only - CommandProcessorDaemon registers its own endpoints
-    webSocketDaemon.registerRouteHandler('/api/commands/*', 'command-processor', 'handle_api');
+    // Register command processor routes
+    if (commandProcessorDaemon && 'registerWithWebSocketDaemon' in commandProcessorDaemon) {
+      (commandProcessorDaemon as any).registerWithWebSocketDaemon(webSocketDaemon);
+    }
     
     // Register widget daemon with WebSocket for command routing
     const widgetDaemon = this.daemons.get('widget') as WidgetDaemon;

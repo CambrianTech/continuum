@@ -936,6 +936,15 @@ export class CommandProcessorDaemon extends BaseDaemon {
       this.jtagLogs = this.jtagLogs.slice(-1000);
     }
   }
+
+  /**
+   * Register with WebSocketDaemon to handle command routes
+   */
+  public registerWithWebSocketDaemon(wsDaemon: { registerRouteHandler: (pattern: string, daemonName: string, messageType: string) => void }): void {
+    // Register handler for API command endpoints
+    wsDaemon.registerRouteHandler('/api/commands/*', this.name, 'handle_api');
+    console.log(`🔗 CommandProcessorDaemon registered route: /api/commands/* → ${this.name}::handle_api`);
+  }
 }
 
 // Main execution when run directly (direct execution detection)

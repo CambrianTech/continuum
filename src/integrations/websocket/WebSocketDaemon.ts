@@ -886,14 +886,26 @@ export class WebSocketDaemon extends BaseDaemon {
         return;
       }
 
-      // Format the console message for logging
-      const timestamp = new Date().toISOString();
-      const logEntry = `[${timestamp}] Console Message from ${connectionId}:\n   Type: ${message.data?.level || 'log'}\n   Message: ${message.data?.message || JSON.stringify(message.data)}\n   Data: ${JSON.stringify(message.data)}\n`;
-
-      // Write to browser log file
-      await this.writeToBrowserLog(browserLogPath, logEntry);
+      // Use console.log with session context - LoggerDaemon console override handles routing
+      const logMessage = message.data?.message || JSON.stringify(message.data);
+      const logLevel = message.data?.level || 'info';
       
-      this.log(`📝 Browser console message logged to ${browserLogPath}`);
+      // Log via console - LoggerDaemon console override captures and routes with session context
+      switch (logLevel) {
+        case 'error':
+          console.error(logMessage);
+          break;
+        case 'warn':
+          console.warn(logMessage);
+          break;
+        case 'debug':
+          console.debug(logMessage);
+          break;
+        default:
+          console.log(logMessage);
+      }
+      
+      this.log(`📝 Browser console message logged via UniversalLogger`);
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -901,18 +913,6 @@ export class WebSocketDaemon extends BaseDaemon {
     }
   }
 
-  /**
-   * Write console message to browser log file
-   */
-  private async writeToBrowserLog(logPath: string, content: string): Promise<void> {
-    try {
-      const fs = await import('fs/promises');
-      await fs.appendFile(logPath, content);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log(`❌ Failed to write to browser log ${logPath}: ${errorMessage}`, 'error');
-    }
-  }
 
   // SESSION MAPPING REMOVED - pure router doesn't track session connections
 
@@ -984,10 +984,8 @@ export class WebSocketDaemon extends BaseDaemon {
    */
   async sendToConnectedClients(message: unknown): Promise<DaemonResponse> {
     try {
-      // Use UniversalLogger for server logging
-      const { UniversalLogger } = await import('../../daemons/logger/UniversalLogger');
-      
-      UniversalLogger.log('server', 'WebSocketDaemon', '📡 WEBSOCKET: Broadcasting message to all connected clients', 'info', this.context);
+      // Use console.log - LoggerDaemon console override handles routing with context
+      console.log('📡 WEBSOCKET: Broadcasting message to all connected clients');
       
       this.wsManager.broadcast(message);
       return {

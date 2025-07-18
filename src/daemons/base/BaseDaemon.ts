@@ -5,10 +5,8 @@
 
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
-import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import type { DaemonMessage, DaemonResponse} from './DaemonProtocol';
-import type { LogEntry } from '../../types/shared/WebSocketCommunication';
 import { DaemonStatus } from './DaemonProtocol';
 import type { DaemonType } from './DaemonTypes';
 import type { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
@@ -301,14 +299,14 @@ export abstract class BaseDaemon extends EventEmitter {
   }
 
   /**
-   * Log message with daemon context - writes to both console and session log
+   * Log message with daemon context - LoggerDaemon console override handles all file writing
    */
   protected log(message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info'): void {
     const timestamp = new Date().toISOString();
     const safeLevel = typeof level === 'string' ? level : 'info';
     const logMessage = `[${timestamp}] [${this.name}:${this.processId}] ${safeLevel.toUpperCase()}: ${message}`;
     
-    // Console output (existing behavior)
+    // Console output only - LoggerDaemon console override handles all file writing
     switch (safeLevel) {
       case 'error':
         console.error(logMessage);
@@ -323,13 +321,6 @@ export abstract class BaseDaemon extends EventEmitter {
         console.log(logMessage);
     }
 
-    // Session-specific log file (NEW: live logging with level-specific JSON files)
-    if (this.sessionLogPath) {
-      this.writeToSessionLog(logMessage, safeLevel).catch(error => {
-        console.error(`Failed to write to session log: ${error.message}`);
-      });
-    }
-
     // Emit log event for external log aggregation
     this.emit('log', { level, message, timestamp });
   }
@@ -339,55 +330,7 @@ export abstract class BaseDaemon extends EventEmitter {
    * Example: .continuum/sessions/user/shared/development-shared-mcvfaoy0-o0mlp/logs/server.log
    * Returns: development-shared-mcvfaoy0-o0mlp
    */
-  private extractSessionIdFromPath(sessionLogPath: string): string {
-    const pathParts = sessionLogPath.split(path.sep);
-    const logsIndex = pathParts.lastIndexOf('logs');
-    if (logsIndex > 0) {
-      return pathParts[logsIndex - 1];
-    }
-    return 'unknown-session';
-  }
 
-  /**
-   * Write log message to session-specific log files (both text and level-specific JSON)
-   */
-  private async writeToSessionLog(logMessage: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info'): Promise<void> {
-    if (!this.sessionLogPath) return;
-    
-    try {
-      // Write to legacy text log file (for compatibility)
-      await fsPromises.appendFile(this.sessionLogPath, logMessage + '\n');
-      
-      // Create unified LogEntry matching browser structure
-      const logEntry: LogEntry = {
-        consoleLogLevel: level,
-        consoleMessage: logMessage.replace(/^\[.*?\] \[.*?\] \w+: /, ''), // Remove timestamp and daemon prefix
-        serverContext: {
-          daemonName: this.name,
-          processId: this.processId,
-          timestamp: new Date().toISOString()
-        },
-        serverTimestamp: new Date().toISOString(),
-        sessionId: this.extractSessionIdFromPath(this.sessionLogPath)
-      };
-      
-      // Write to server log files following naming convention
-      const logsDir = path.dirname(this.sessionLogPath);
-      const levelLogPath = path.join(logsDir, `server.${level}.json`);
-      const allJsonLogPath = path.join(logsDir, 'server.log.json');
-      const jsonLogEntry = JSON.stringify(logEntry) + '\n';
-      
-      // Write to both level-specific JSON and all-levels JSON
-      await Promise.all([
-        fsPromises.appendFile(levelLogPath, jsonLogEntry),    // server.info.json
-        fsPromises.appendFile(allJsonLogPath, jsonLogEntry)   // server.log.json
-      ]);
-      
-    } catch (error) {
-      // Don't log to session file if there's an error (would cause recursion)
-      console.error(`Session log write failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
 
   /**
    * Send health check heartbeat
