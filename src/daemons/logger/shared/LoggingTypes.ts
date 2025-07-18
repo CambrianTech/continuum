@@ -3,7 +3,7 @@
  * Used across client, server, and remote logging implementations
  */
 
-import { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
+import { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
