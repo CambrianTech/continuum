@@ -192,8 +192,8 @@ export namespace Console {
       const mainMessage = serializedArgs.length > 0 ? this.argumentsToString([serializedArgs[0]]) : '';
       const additionalArgs = serializedArgs.slice(1);
       
-      // Capture actual stack trace and browser context
-      const stackTrace = this.captureStackTrace();
+      // Use provided stack trace if available, otherwise capture it
+      const stackTrace = metadata?.stackTrace || this.captureStackTrace();
       const browserContext = this.captureBrowserContext();
       
       return {
@@ -221,7 +221,16 @@ export namespace Console {
           const filteredLines = lines.filter(line => 
             !line.includes('MessageUtils.captureStackTrace') &&
             !line.includes('MessageUtils.createLogEntry') &&
-            !line.includes('ConsoleForwarder.forwardConsole')
+            !line.includes('ConsoleForwarder.forwardConsole') &&
+            !line.includes('ClientConsoleManager.forwardConsole') &&
+            !line.includes('ClientConsoleManager.') &&
+            !line.includes('ClientLoggerDaemon.') &&
+            !line.includes('console.log') &&
+            !line.includes('console.warn') &&
+            !line.includes('console.error') &&
+            !line.includes('console.info') &&
+            !line.includes('console.debug') &&
+            !line.includes('console.trace')
           );
           return filteredLines.join('\n');
         }

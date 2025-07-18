@@ -143,8 +143,13 @@ export class ClientConsoleManager {
       // Convert type string to proper Console.Level enum
       const level = type as Console.Level;
       
+      // Capture stack trace BEFORE going deeper into the call chain
+      const stackTrace = this.captureCallerStackTrace();
+      
       // Create properly formatted log entry using shared types
-      const logEntry = Console.MessageUtils.createLogEntry(level, args);
+      const logEntry = Console.MessageUtils.createLogEntry(level, args, {
+        stackTrace // Pass the captured stack trace
+      });
 
       // Add session ID to the log entry (use context)
       const consoleLogEntry: Console.LogEntry = {
@@ -178,6 +183,43 @@ export class ClientConsoleManager {
   }
 
   // Serialization methods removed - now using unified ConsoleUtils
+
+  /**
+   * Capture stack trace from the actual calling location (not our console forwarding methods)
+   */
+  private captureCallerStackTrace(): string {
+    try {
+      const error = new Error();
+      if (error.stack) {
+        const lines = error.stack.split('\n');
+        const filteredLines = lines.filter(line => 
+          // Filter out our own console management methods
+          !line.includes('ClientConsoleManager.forwardConsole') &&
+          !line.includes('ClientConsoleManager.captureCallerStackTrace') &&
+          !line.includes('ClientConsoleManager.') &&
+          !line.includes('ClientLoggerDaemon.') &&
+          !line.includes('console.log') &&
+          !line.includes('console.warn') &&
+          !line.includes('console.error') &&
+          !line.includes('console.info') &&
+          !line.includes('console.debug') &&
+          !line.includes('console.trace') &&
+          !line.includes('console.probe') &&
+          // Filter out the Error constructor and other internal methods
+          !line.includes('Error.captureStackTrace') &&
+          !line.includes('at new Error') &&
+          !line.includes('at Object.') && // Common for arrow functions
+          line.trim().length > 0
+        );
+        
+        // Return the first few meaningful lines to show the actual call location
+        return filteredLines.slice(0, 5).join('\n');
+      }
+    } catch (e) {
+      // Fallback if stack capture fails
+    }
+    return '';
+  }
 
   private queueConsoleMessage(logEntry: Console.LogEntry): void {
     this.consoleMessageQueue.push(logEntry);
