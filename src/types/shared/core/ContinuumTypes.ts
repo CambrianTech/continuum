@@ -9,7 +9,22 @@
  * - [ ] Issue #6: Document ContinuumContext structure and usage patterns for developers
  */
 
-import { randomUUID, type UUID } from "crypto";
+// Browser-compatible UUID type - flexible to support both UUIDs and string IDs
+export type UUID = string;
+
+// Browser-compatible UUID generation
+function generateUUID(): UUID {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID() as UUID;
+  } else {
+    // Fallback for browser environments
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    }) as UUID;
+  }
+}
 
 /**
  * Core execution environment type - fundamental to all Continuum operations
@@ -101,7 +116,7 @@ export const uuidValidator = {
   /**
    * Generate a new UUID
    */
-  generate: (): UUID => randomUUID(),
+  generate: (): UUID => generateUUID(),
 } as const;
 
 export const continuumContextFactory = {

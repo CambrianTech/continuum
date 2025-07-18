@@ -12,6 +12,7 @@ export { LoggerClient, loggerClient } from './server/LoggerClient';
 // Client exports
 export { ClientLoggerDaemon } from './client/ClientLoggerDaemon';
 export { ClientLoggerClient, clientLoggerClient } from './client/ClientLoggerClient';
+export { ClientConsoleManager } from './client/ClientConsoleManager';
 
 // Shared exports
 export { 

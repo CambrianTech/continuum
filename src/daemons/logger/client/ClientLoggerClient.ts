@@ -57,9 +57,12 @@ export class ClientLoggerClient {
       timestamp: Date.now(),
       sessionId: this.clientLoggerDaemon.context.sessionId,
       source: 'client-direct',
-      context: this.clientLoggerDaemon.context,
-      data
+      context: this.clientLoggerDaemon.context
     };
+    
+    if (data) {
+      entry.data = data;
+    }
 
     const logMessage = LoggerMessageFactory.createLogMessage(entry);
     

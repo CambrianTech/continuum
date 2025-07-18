@@ -11,7 +11,10 @@
  * Like OS user accounts but for AI collaboration era
  */
 
-export type UUID = string; // UUIDv4 - TODO: Create proper UUID type
+import { UUID } from './ContinuumTypes';
+
+// Re-export UUID for backward compatibility
+export type { UUID };
 
 export enum UserPersonaType {
   HUMAN = 'human',
