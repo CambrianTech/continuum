@@ -11,13 +11,25 @@ import { SessionManagerDaemon as LegacySessionManagerDaemon } from './SessionMan
 import { SessionManagerDaemon as NewSessionManagerDaemon } from './server/SessionManagerDaemon';
 import { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
+import { WebSocketRoutingService } from './server/WebSocketRoutingService';
 
 export class SessionManagerCompatibilityWrapper extends LegacySessionManagerDaemon {
   private newSessionManager: NewSessionManagerDaemon | null = null;
   private migrationEnabled = false;
+  private webSocketRoutingService: WebSocketRoutingService;
 
   constructor(context: ContinuumContext, artifactRoot: string = '.continuum/sessions') {
     super(context, artifactRoot);
+    
+    // Initialize WebSocket routing service (always enabled - first cross-cutting concern extraction)
+    this.webSocketRoutingService = new WebSocketRoutingService({
+      context,
+      logger: {
+        log: (message: string, level: 'info' | 'debug' | 'warn' | 'error' = 'info') => {
+          this.log(`[WebSocketRouting] ${message}`, level);
+        }
+      }
+    });
     
     // Only enable migration if environment variable is set
     this.migrationEnabled = process.env.CONTINUUM_ENABLE_SESSION_MIGRATION === 'true';
@@ -28,12 +40,17 @@ export class SessionManagerCompatibilityWrapper extends LegacySessionManagerDaem
     } else {
       console.log('🔄 Session Manager Migration: DISABLED (use CONTINUUM_ENABLE_SESSION_MIGRATION=true to enable)');
     }
+    
+    console.log('🔧 First Cross-Cutting Concern Extraction: WebSocket routing service initialized');
   }
 
   /**
    * Start both old and new systems during migration
    */
   protected async onStart(): Promise<void> {
+    // Initialize WebSocket routing service first
+    await this.webSocketRoutingService.initialize();
+    
     // Always start the legacy system first
     await super.onStart();
     
@@ -67,6 +84,9 @@ export class SessionManagerCompatibilityWrapper extends LegacySessionManagerDaem
     
     // Stop legacy system
     await super.onStop();
+    
+    // Cleanup WebSocket routing service last
+    await this.webSocketRoutingService.cleanup();
   }
 
   /**
@@ -108,12 +128,24 @@ export class SessionManagerCompatibilityWrapper extends LegacySessionManagerDaem
   }
 
   /**
+   * Register with WebSocket daemon - delegate to routing service
+   */
+  async registerWithWebSocketDaemon(webSocketDaemon: any): Promise<void> {
+    // Delegate to the WebSocket routing service
+    await this.webSocketRoutingService.registerWithWebSocketDaemon(webSocketDaemon);
+    
+    // Also call the legacy method to maintain compatibility
+    await super.registerWithWebSocketDaemon(webSocketDaemon);
+  }
+
+  /**
    * Get migration status for debugging
    */
-  getMigrationStatus(): { enabled: boolean; newSystemReady: boolean } {
+  getMigrationStatus(): { enabled: boolean; newSystemReady: boolean; webSocketServiceReady: boolean } {
     return {
       enabled: this.migrationEnabled,
-      newSystemReady: this.newSessionManager !== null
+      newSystemReady: this.newSessionManager !== null,
+      webSocketServiceReady: this.webSocketRoutingService !== null
     };
   }
 }

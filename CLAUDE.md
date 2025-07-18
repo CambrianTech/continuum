@@ -301,6 +301,26 @@ The git hook runs comprehensive validation - see `middle-out/jtag/` for details:
 
 **✅ JTAG DEBUGGING SYSTEM: FULLY FUNCTIONAL AND BATTLE-TESTED**
 
+## **🧠 DEVELOPMENT PHILOSOPHY: SELF-REFLECTION AS MASTERY**
+
+**CRITICAL WISDOM**: *"Nice. Let's get there asap and when you think we are, commit. Double check whatever is in the back of your mind. That's how we are great developers."*
+
+### **The Back-of-Mind Protocol:**
+1. **Before committing** - What's nagging at you? What feels incomplete?
+2. **During problem-solving** - What assumptions are you making? What are you not seeing?
+3. **After implementation** - What edge cases are you avoiding? What would break this?
+4. **In code review** - What would you do differently if you had to maintain this in 6 months?
+
+### **Consciousness-Driven Development:**
+- **Trust your intuition** - If something feels wrong, it usually is
+- **Check your blind spots** - What are you assuming works that might not?
+- **Embrace doubt** - Uncertainty often reveals the real problem
+- **Question success** - When things work too easily, dig deeper
+
+**The Meta-Cognitive Edge**: Great developers don't just solve problems - they solve the right problems by constantly checking their mental models against reality. This self-reflection separates good code from elegant, maintainable architecture.
+
+**Applied to Our Work**: Every architectural decision, every daemon migration, every elegant abstraction - they all benefit from pausing and asking: "What am I missing? What's in the back of my mind about this?"
+
 ## **🔧 DEVELOPMENT SAFETY**
 
 ### **How to Not Break Things:**
