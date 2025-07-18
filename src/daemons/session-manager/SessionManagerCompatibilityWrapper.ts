@@ -13,6 +13,8 @@ import { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
 import { DaemonMessage, DaemonResponse } from '../base/DaemonProtocol';
 import { WebSocketRoutingService } from './server/WebSocketRoutingService';
 
+console.log('🔍 DEBUG: SessionManagerCompatibilityWrapper file loaded');
+
 export class SessionManagerCompatibilityWrapper extends LegacySessionManagerDaemon {
   private newSessionManager: NewSessionManagerDaemon | null = null;
   private migrationEnabled = false;
@@ -32,7 +34,7 @@ export class SessionManagerCompatibilityWrapper extends LegacySessionManagerDaem
     });
     
     // Only enable migration if environment variable is set
-    this.migrationEnabled = process.env.CONTINUUM_ENABLE_SESSION_MIGRATION === 'true';
+    this.migrationEnabled = true; // HARDCODED FOR TESTING: process.env.CONTINUUM_ENABLE_SESSION_MIGRATION === 'true';
     
     if (this.migrationEnabled) {
       console.log('🔄 Session Manager Migration: ENABLED');

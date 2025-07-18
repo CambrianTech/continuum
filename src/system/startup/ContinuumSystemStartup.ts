@@ -17,7 +17,8 @@ import { WidgetDaemon } from '../../daemons/widget/WidgetDaemon';
 // import { PersonaDaemon } from '../../daemons/persona/PersonaDaemon';
 import { ChatRoomDaemon } from '../../daemons/chatroom/ChatRoomDaemon';
 import { LoggerDaemon } from '../../daemons/logger/server/LoggerDaemon';
-import { ContinuumContext, continuumContextFactory } from '../../types/shared/core/ContinuumTypes';
+import type { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
+import { continuumContextFactory } from '../../types/shared/core/ContinuumTypes';
 // import { DaemonMessage } from '../../daemons/base/DaemonProtocol';
 // import { DaemonMessageUtils } from '../../daemons/base/DaemonMessageUtils';
 
@@ -31,13 +32,15 @@ export class ContinuumSystem extends EventEmitter {
     
     // Create system-level context for all daemons
     this.systemContext = continuumContextFactory.create({
-      sessionId: 'system' as any, // TODO: Make this proper UUID
+      sessionId: 'system', // TODO: Make this proper UUID
       environment: 'server'
     });
     
     // Create daemons in dependency order - pass context where supported
     this.daemons.set('continuum-directory', new ContinuumDirectoryDaemon());
+    console.log('🔍 DEBUG: About to instantiate SessionManagerDaemon (which should be the compatibility wrapper)');
     this.daemons.set('session-manager', new SessionManagerDaemon(this.systemContext, '.continuum/sessions'));
+    console.log('🔍 DEBUG: SessionManagerDaemon instantiated successfully');
     this.daemons.set('logger', new LoggerDaemon(this.systemContext));
     this.daemons.set('static-file', new StaticFileDaemon());
     this.daemons.set('websocket', new WebSocketDaemon(this.systemContext));
@@ -51,10 +54,11 @@ export class ContinuumSystem extends EventEmitter {
     this.daemons.set('browser-manager', new BrowserManagerDaemon());
   }
   
-  private getPackageInfo(): { version: string; name: string } {
+  private async getPackageInfo(): Promise<{ version: string; name: string }> {
     try {
-      const fs = require('fs');
-      const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+      const fs = await import('fs/promises');
+      const pkgContent = await fs.readFile('package.json', 'utf-8');
+      const pkg = JSON.parse(pkgContent);
       return { version: pkg.version, name: pkg.name };
     } catch (error) {
       return { version: 'unknown', name: 'continuum' };
@@ -75,7 +79,7 @@ export class ContinuumSystem extends EventEmitter {
 
   async start(): Promise<void> {
     const startTime = new Date().toISOString();
-    const pkg = this.getPackageInfo();
+    const pkg = await this.getPackageInfo();
     
     console.log('╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗');
     console.log('║ 🌟 CONTINUUM SYSTEM STARTUP                                                                                          ║');
@@ -161,6 +165,12 @@ export class ContinuumSystem extends EventEmitter {
       if (loggerDaemon) {
         loggerDaemon.enableConsoleOverride();
         console.log('✅ Console override enabled - all console output now flows through LoggerDaemon');
+        
+        // Now that console override is enabled, debug the session manager
+        console.log('🔍 POST-OVERRIDE DEBUG: Checking SessionManagerDaemon type');
+        const sessionManager = this.daemons.get('session-manager');
+        console.log('🔍 POST-OVERRIDE DEBUG: SessionManager constructor name:', sessionManager?.constructor.name);
+        console.log('🔍 POST-OVERRIDE DEBUG: Is it SessionManagerCompatibilityWrapper?', sessionManager?.constructor.name === 'SessionManagerCompatibilityWrapper');
       }
     } catch (error) {
       console.error('❌ Failed to enable console override:', error);
@@ -323,7 +333,7 @@ export class ContinuumSystem extends EventEmitter {
     
     // Register command processor routes
     if (commandProcessorDaemon && 'registerWithWebSocketDaemon' in commandProcessorDaemon) {
-      (commandProcessorDaemon as any).registerWithWebSocketDaemon(webSocketDaemon);
+      commandProcessorDaemon.registerWithWebSocketDaemon(webSocketDaemon);
     }
     
     // Register widget daemon with WebSocket for command routing
@@ -353,8 +363,8 @@ export class ContinuumSystem extends EventEmitter {
       }
       
       // Test WebSocket connection
-      const WebSocket = (await import('ws')).default;
-      const ws = new WebSocket('ws://localhost:9000');
+      const webSocket = (await import('ws')).default;
+      const ws = new webSocket('ws://localhost:9000');
       
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -548,7 +558,7 @@ export class ContinuumSystem extends EventEmitter {
 
   async stop(): Promise<void> {
     const shutdownStartTime = new Date().toISOString();
-    const pkg = this.getPackageInfo();
+    const pkg = await this.getPackageInfo();
     
     console.log('');
     console.log('╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗');
