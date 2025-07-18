@@ -9,7 +9,7 @@ import { WebSocketDaemon } from '../../integrations/websocket/WebSocketDaemon';
 import { RendererDaemon } from '../../daemons/renderer/RendererDaemon';
 import { CommandProcessorDaemon } from '../../daemons/command-processor/CommandProcessorDaemon';
 import { BrowserManagerDaemon } from '../../daemons/browser-manager/BrowserManagerDaemon';
-import { SessionManagerDaemon } from '../../daemons/session-manager/SessionManagerDaemon';
+import { SessionManagerCompatibilityWrapper as SessionManagerDaemon } from '../../daemons/session-manager/SessionManagerCompatibilityWrapper';
 import { ContinuumDirectoryDaemon } from '../../daemons/continuum-directory/ContinuumDirectoryDaemon';
 import { StaticFileDaemon } from '../../daemons/static-file/StaticFileDaemon';
 import { AcademyDaemon } from '../../daemons/academy/AcademyDaemon';
