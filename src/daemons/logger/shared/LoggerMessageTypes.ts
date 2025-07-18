@@ -4,19 +4,25 @@
  */
 
 import { DaemonMessage } from '../../base/DaemonProtocol';
-import { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
+import { LogLevel, LogEntry } from './ConsoleTypes';
 
-export type LogLevel = 'log' | 'debug' | 'info' | 'warn' | 'error' | 'trace';
-
-export interface LogEntry {
-  level: LogLevel;
-  message: string;
-  timestamp: number;
-  sessionId: string;
-  source: string;
-  context: ContinuumContext;
-  data?: Record<string, unknown> | undefined;
+// Browser-compatible UUID generation
+function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  } else {
+    // Fallback for browser environments
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
 }
+
+// Re-export unified types for convenience
+export { ConsoleUtils } from './ConsoleTypes';
+export type { LogLevel, LogEntry, ProbeData, OriginalConsole } from './ConsoleTypes';
 
 export interface LoggerMessage {
   type: 'log' | 'flush' | 'rotate' | 'configure';
@@ -68,7 +74,7 @@ export class LoggerMessageFactory {
     
     // Full DaemonMessage overload
     return {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       from: logEntryOrFrom as string,
       to: to!,
       type: 'log',
@@ -87,7 +93,7 @@ export class LoggerMessageFactory {
     flushRequest: FlushRequest = {}
   ): LoggerDaemonMessage {
     return {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       from,
       to,
       type: 'flush',
@@ -106,7 +112,7 @@ export class LoggerMessageFactory {
     rotateRequest: RotateRequest = {}
   ): LoggerDaemonMessage {
     return {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       from,
       to,
       type: 'rotate',
@@ -125,7 +131,7 @@ export class LoggerMessageFactory {
     configureRequest: ConfigureRequest
   ): LoggerDaemonMessage {
     return {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       from,
       to,
       type: 'configure',

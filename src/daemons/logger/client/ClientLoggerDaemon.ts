@@ -8,20 +8,10 @@ import {
   LoggerMessage, 
   LogEntry, 
   LogLevel,
-  LoggerMessageFactory
+  LoggerMessageFactory,
+  OriginalConsole,
+  ConsoleUtils
 } from '../shared/LoggerMessageTypes';
-
-/**
- * Browser-specific console override interface
- */
-interface OriginalConsole {
-  log: (...args: unknown[]) => void;
-  warn: (...args: unknown[]) => void;
-  error: (...args: unknown[]) => void;
-  info: (...args: unknown[]) => void;
-  debug: (...args: unknown[]) => void;
-  trace: (...args: unknown[]) => void;
-}
 
 /**
  * WebSocket-based transport for client-server communication
@@ -120,15 +110,7 @@ export class ClientLoggerDaemon {
    */
   private forwardConsole(level: LogLevel, args: unknown[]): void {
     try {
-      const entry: LogEntry = {
-        level,
-        message: args.map(arg => this.serializeArg(arg)).join(' '),
-        timestamp: Date.now(),
-        sessionId: this.context.sessionId,
-        source: 'browser-console',
-        context: this.context,
-        data: args.length > 0 ? { args } : undefined
-      };
+      const entry: LogEntry = ConsoleUtils.createLogEntry(level, args, this.context, 'browser-console');
 
       const logMessage = LoggerMessageFactory.createLogMessage(entry);
       
@@ -141,23 +123,7 @@ export class ClientLoggerDaemon {
     }
   }
 
-  /**
-   * Serialize arguments for logging
-   */
-  private serializeArg(arg: unknown): string {
-    if (arg === null) return 'null';
-    if (arg === undefined) return 'undefined';
-    if (typeof arg === 'string') return arg;
-    if (typeof arg === 'number' || typeof arg === 'boolean') return String(arg);
-    if (typeof arg === 'function') return `[Function: ${arg.name || 'anonymous'}]`;
-    if (arg instanceof Error) return `${arg.name}: ${arg.message}`;
-    
-    try {
-      return JSON.stringify(arg, null, 2);
-    } catch {
-      return String(arg);
-    }
-  }
+  // Serialization methods removed - now using unified ConsoleUtils
 
   /**
    * Log to browser console (fallback/local logging)
