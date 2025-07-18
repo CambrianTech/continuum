@@ -3,10 +3,10 @@
  * First implementation of ProcessBasedDaemon architecture
  */
 
-import { ProcessBasedDaemon } from '../base/ProcessBasedDaemon';
-import { DaemonResponse } from '../base/DaemonProtocol';
-import { DaemonType } from '../base/DaemonTypes';
-import { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
+import { ProcessBasedDaemon } from '../../base/ProcessBasedDaemon';
+import { DaemonResponse } from '../../base/DaemonProtocol';
+import { DaemonType } from '../../base/DaemonTypes';
+import { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
 import { 
   LoggerDaemonMessage, 
   LoggerMessage, 
@@ -15,7 +15,7 @@ import {
   RotateRequest,
   ConfigureRequest,
   LogLevel
-} from './LoggerMessageTypes';
+} from '../shared/LoggerMessageTypes';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -301,7 +301,7 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
       timestamp: entry.timestamp,
       source: entry.source,
       context: entry.context,
-      metadata: entry.metadata
+      data: entry.data
     });
   }
 

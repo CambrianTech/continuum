@@ -5,7 +5,7 @@
 
 import { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
 import { LoggerInterface, LogLevel } from '../shared/LoggingTypes';
-import { loggerClient } from '../../daemons/logger/LoggerClient';
+import { loggerClient } from '../../daemons/logger/server/LoggerClient';
 
 export class ServerAsyncLogger implements LoggerInterface {
   private initialized = false;

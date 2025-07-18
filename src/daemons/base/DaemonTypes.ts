@@ -20,6 +20,8 @@ export enum DaemonType {
   ACADEMY = 'academy',
   DATABASE = 'database',
   WIDGET = 'widget',
+  LOGGER = 'logger',
+  CLIENT_LOGGER = 'client-logger',
   
   // Mesh and persona daemons
   MESH = 'mesh',
@@ -75,6 +77,8 @@ export const DAEMON_CATEGORIES: Record<DaemonType, DaemonCategory> = {
   [DaemonType.ACADEMY]: DaemonCategory.SERVICE,
   [DaemonType.DATABASE]: DaemonCategory.SERVICE,
   [DaemonType.WIDGET]: DaemonCategory.SERVICE,
+  [DaemonType.LOGGER]: DaemonCategory.SERVICE,
+  [DaemonType.CLIENT_LOGGER]: DaemonCategory.SERVICE,
   
   [DaemonType.MESH]: DaemonCategory.INTEGRATION,
   [DaemonType.PERSONA]: DaemonCategory.INTEGRATION,

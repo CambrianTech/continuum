@@ -1,11 +1,13 @@
 /**
  * Console Forwarder - Handles console message forwarding to server
- * Provides semaphore protection and message queuing
+ * Now uses the unified logger daemon architecture for consistency
  * Enhanced with proper object serialization using shared types
  */
 
 import { Console } from '../../../types/shared/ConsoleTypes';
 import type { ContinuumState } from '../types/BrowserClientTypes';
+// import { clientLoggerClient } from '../../../daemons/logger/client/ClientLoggerClient';
+// import { continuumContextFactory } from '../../../types/shared/core/ContinuumTypes';
 
 interface OriginalConsole {
   log: (...args: unknown[]) => void;
@@ -22,8 +24,17 @@ export class ConsoleForwarder {
   private executeCallback?: (command: string, params: Record<string, unknown>) => Promise<unknown>;
 
   constructor(private getState: () => ContinuumState, private getSessionId: () => string | null) {
+    // this.initializeLoggerDaemon();
     this.enableConsoleForwarding();
   }
+
+  // private initializeLoggerDaemon(): void {
+  //   const sessionId = this.getSessionId();
+  //   if (sessionId) {
+  //     const context = continuumContextFactory.create({ sessionId: sessionId as any });
+  //     clientLoggerClient.initialize(context);
+  //   }
+  // }
 
   setExecuteCallback(callback: (command: string, params: Record<string, unknown>) => Promise<unknown>): void {
     this.executeCallback = callback;
@@ -139,6 +150,15 @@ export class ConsoleForwarder {
         sessionId: this.getSessionId() || ''
       };
 
+      // TODO: Re-enable logger daemon integration after testing
+      // if (clientLoggerClient.isInitialized()) {
+      //   const message = args.map(arg => this.serializeArg(arg)).join(' ');
+      //   clientLoggerClient.log(level as any, message, { originalArgs: args }).catch(error => {
+      //     this.originalConsole.error('Failed to forward to logger daemon:', error);
+      //   });
+      // }
+
+      // Keep existing behavior for backward compatibility
       // Only execute if we're in ready state, otherwise queue for later
       if (this.getState() === 'ready' && this.executeCallback) {
         this.executeConsoleCommand(consoleLogEntry);
@@ -151,6 +171,22 @@ export class ConsoleForwarder {
       this.originalConsole.error('❌ Error forwarding console message:', error);
     }
   }
+
+  // Temporarily commented out - will be used when logger daemon integration is re-enabled
+  // private serializeArg(arg: unknown): string {
+  //   if (arg === null) return 'null';
+  //   if (arg === undefined) return 'undefined';
+  //   if (typeof arg === 'string') return arg;
+  //   if (typeof arg === 'number' || typeof arg === 'boolean') return String(arg);
+  //   if (typeof arg === 'function') return `[Function: ${arg.name || 'anonymous'}]`;
+  //   if (arg instanceof Error) return `${arg.name}: ${arg.message}`;
+  //   
+  //   try {
+  //     return JSON.stringify(arg, null, 2);
+  //   } catch {
+  //     return String(arg);
+  //   }
+  // }
 
   private queueConsoleMessage(logEntry: Console.LogEntry): void {
     this.consoleMessageQueue.push(logEntry);

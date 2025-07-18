@@ -4,8 +4,8 @@
  */
 
 import { ContinuumContext } from '../types/shared/core/ContinuumTypes';
-import { loggerClient } from '../daemons/logger/LoggerClient';
-import { LogLevel } from '../daemons/logger/LoggerMessageTypes';
+import { loggerClient } from '../daemons/logger/server/LoggerClient';
+import { LogLevel } from '../daemons/logger/shared/LoggerMessageTypes';
 
 export class AsyncLogger {
   /**

@@ -1,19 +1,28 @@
 /**
- * Logger Daemon Module - ProcessBasedDaemon for async logging
- * Entry point for the logger daemon module
+ * Logger Daemon Module - Symmetric ProcessBasedDaemon for async logging
+ * Entry point for the logger daemon module (server and client)
+ * 
+ * NOTE: Server and client implementations temporarily disabled for testing
  */
 
-export { LoggerDaemon } from './LoggerDaemon';
-export { LoggerClient, loggerClient } from './LoggerClient';
+// Server exports
+export { LoggerDaemon } from './server/LoggerDaemon';
+export { LoggerClient, loggerClient } from './server/LoggerClient';
+
+// Client exports
+export { ClientLoggerDaemon } from './client/ClientLoggerDaemon';
+export { ClientLoggerClient, clientLoggerClient } from './client/ClientLoggerClient';
+
+// Shared exports
 export { 
   LoggerMessageFactory
-} from './LoggerMessageTypes';
+} from './shared/LoggerMessageTypes';
 export type { 
   LoggerMessage, 
   LogLevel, 
   LogEntry, 
   LoggerDaemonMessage 
-} from './LoggerMessageTypes';
+} from './shared/LoggerMessageTypes';
 
 // Re-export shared types for convenience
 export type { 
@@ -23,5 +32,5 @@ export type {
 } from '../../logging/shared/LoggingTypes';
 
 // Default export for main daemon class
-import { LoggerDaemon } from './LoggerDaemon';
+import { LoggerDaemon } from './server/LoggerDaemon';
 export default LoggerDaemon;
