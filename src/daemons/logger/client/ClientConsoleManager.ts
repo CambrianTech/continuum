@@ -57,33 +57,46 @@ export class ClientConsoleManager {
       trace: console.trace.bind(console)
     };
 
-    // Override console methods
-    console.log = (...args: unknown[]): void => {
-      this.originalConsole.log(...args);
-      this.forwardConsole('log', args);
+    // THE DEFINITIVE SOLUTION: Monkey-patch with direct function replacement
+    // This is the approach that actually preserves caller location in Chrome DevTools
+    
+    // Store references to original methods
+    const _log = console.log;
+    const _warn = console.warn;  
+    const _error = console.error;
+    const _info = console.info;
+    const _trace = console.trace;
+    
+    // Replace console methods with functions that forward asynchronously
+    const self = this;
+    
+    console.log = function(...args: unknown[]) {
+      _log.apply(console, args);
+      // Forward in microtask to avoid polluting stack
+      queueMicrotask(() => self.forwardConsole('log', args));
+    };
+    
+    console.warn = function(...args: unknown[]) {
+      _warn.apply(console, args);
+      queueMicrotask(() => self.forwardConsole('warn', args));
+    };
+    
+    console.error = function(...args: unknown[]) {
+      _error.apply(console, args);
+      queueMicrotask(() => self.forwardConsole('error', args));
+    };
+    
+    console.info = function(...args: unknown[]) {
+      _info.apply(console, args);
+      queueMicrotask(() => self.forwardConsole('info', args));
+    };
+    
+    console.trace = function(...args: unknown[]) {
+      _trace.apply(console, args);
+      queueMicrotask(() => self.forwardConsole('trace', args));
     };
 
     console.log('🔄 Enabling console forwarding...');
-
-    console.warn = (...args: unknown[]): void => {
-      this.originalConsole.warn(...args);
-      this.forwardConsole('warn', args);
-    };
-
-    console.error = (...args: unknown[]): void => {
-      this.originalConsole.error(...args);
-      this.forwardConsole('error', args);
-    };
-
-    console.info = (...args: unknown[]): void => {
-      this.originalConsole.info(...args);
-      this.forwardConsole('info', args);
-    };
-
-    console.trace = (...args: unknown[]): void => {
-      this.originalConsole.trace(...args);
-      this.forwardConsole('trace', args);
-    };
 
     // Add AI-friendly probe method for diagnostic logging with optional JS execution
     (console as any).probe = (messageOrProbeData: string | ProbeData, data?: Record<string, unknown>): void => {
@@ -220,6 +233,7 @@ export class ClientConsoleManager {
     }
     return '';
   }
+
 
   private queueConsoleMessage(logEntry: Console.LogEntry): void {
     this.consoleMessageQueue.push(logEntry);
