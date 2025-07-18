@@ -88,9 +88,21 @@ export class ClientConsoleManager {
           // eslint-disable-next-line no-eval
           // @ts-ignore - eval needed for dynamic probe execution in browser context
           const result = eval(probeData.executeJS);
+          
+          // If result is a JSON string, parse it back to an object for proper logging
+          let processedResult = result;
+          if (typeof result === 'string') {
+            try {
+              processedResult = JSON.parse(result);
+            } catch (error) {
+              // If it's not valid JSON, keep as string
+              processedResult = result;
+            }
+          }
+          
           probeData.data = {
             ...probeData.data,
-            executeJSResult: result,
+            executeJSResult: processedResult,
             jsCode: probeData.executeJS  // Keep original for local logging
           };
         } catch (error) {

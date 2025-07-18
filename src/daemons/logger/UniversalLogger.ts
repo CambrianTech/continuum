@@ -4,7 +4,7 @@
  * Global logs go to .continuum/logs, session logs go to session/logs directory
  */
 
-import { appendFileSync, mkdirSync, existsSync, statSync } from 'fs';
+import { appendFileSync, mkdirSync, existsSync, statSync, readFileSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import type { ContinuumContext, ContinuumEnvironment } from '../../types/shared/core/ContinuumTypes';
 // REMOVED: SessionContext import - no longer needed since LoggerDaemon handles console override
@@ -80,7 +80,7 @@ export class UniversalLogger {
     const contextStr = sessionId ? ` [session:${sessionId}]` : '';
     
     // Always log globally to .continuum/logs 
-    this.writeLogFiles(this.globalLogDir, source, `${message}${contextStr}`, level, timestamp, name);
+    this.writeLogFiles(this.globalLogDir, source, message, level, timestamp, name, contextStr);
 
     // If context provided, also log to session directory
     if (context && context.sessionPaths?.logs) {
@@ -112,14 +112,14 @@ export class UniversalLogger {
    * THE ONE FUNCTION - handles any log path with proper type separation
    * Creates: $NAME.log, $NAME.error.json, $NAME.info.json, $NAME.log.json
    */
-  private static writeLogFiles(logDir: string, source: string, message: string, level: string, timestamp: string, name: string) {
+  private static writeLogFiles(logDir: string, source: string, message: string, level: string, timestamp: string, name: string, contextStr: string = '') {
     try {
       mkdirSync(logDir, { recursive: true });
 
-      // Write human-readable log
-      this.writeHumanLog(logDir, source, message, level, timestamp, name);
+      // Write human-readable log (includes context for global logs)
+      this.writeHumanLog(logDir, source, message + contextStr, level, timestamp, name);
       
-      // Write JSON logs
+      // Write JSON logs (uses original message without context string)
       this.writeJsonLogs(logDir, source, message, level, timestamp, name);
 
     } catch (error) {
@@ -138,12 +138,22 @@ export class UniversalLogger {
   }
 
   /**
-   * Write JSON log files (level-specific and all-levels)
+   * Write JSON log files (level-specific and all-levels) as proper JSON arrays
    */
   private static writeJsonLogs(logDir: string, source: string, message: string, level: string, timestamp: string, name: string) {
+    // Try to parse message as JSON - if it's a JSON string, use the parsed object
+    let messageContent: any = message;
+    try {
+      const parsed = JSON.parse(message);
+      messageContent = parsed;
+    } catch (error) {
+      // Not JSON, keep as string
+      messageContent = message;
+    }
+
     const jsonLogEntry = {
       level,
-      message,
+      message: messageContent,
       timestamp,
       source,
       serverContext: {
@@ -153,15 +163,90 @@ export class UniversalLogger {
       }
     };
 
-    const jsonLine = JSON.stringify(jsonLogEntry) + '\n';
-
     // Write to level-specific JSON file ($NAME.error.json, $NAME.info.json, etc.) - created on demand
     const levelJsonPath = path.join(logDir, `${name}.${level}.json`);
-    appendFileSync(levelJsonPath, jsonLine);
+    this.appendToJsonArray(levelJsonPath, jsonLogEntry, name, level);
 
     // Write to all-levels JSON file ($NAME.log.json) - ALL levels - created on demand
     const allJsonPath = path.join(logDir, `${name}.log.json`);
-    appendFileSync(allJsonPath, jsonLine);
+    this.appendToJsonArray(allJsonPath, jsonLogEntry, name, 'log');
+  }
+
+  /**
+   * Load JSON template for log files
+   */
+  private static loadLogTemplate(): any {
+    try {
+      const templatePath = path.join(__dirname, 'templates', 'log-template.json');
+      const templateContent = readFileSync(templatePath, 'utf8');
+      return JSON.parse(templateContent);
+    } catch (error) {
+      console.error('Failed to load log template, using fallback:', error);
+      // Fallback template if file can't be loaded
+      return {
+        meta: {
+          version: '1.0.0'
+        },
+        entries: []
+      };
+    }
+  }
+
+  /**
+   * Append entry to JSON array file with proper structure
+   */
+  private static appendToJsonArray(filePath: string, entry: any, name: string, logType: string) {
+    try {
+      let fileContent: any;
+      
+      // Check if file exists and has content
+      if (existsSync(filePath)) {
+        try {
+          const content = readFileSync(filePath, 'utf8');
+          if (content.trim()) {
+            fileContent = JSON.parse(content);
+          }
+        } catch (error) {
+          // File exists but is corrupted, start fresh
+          fileContent = null;
+        }
+      }
+
+      // If no valid content, create new structure from template
+      if (!fileContent) {
+        const template = this.loadLogTemplate();
+        const createdTime = new Date().toISOString();
+        
+        fileContent = {
+          ...template,
+          meta: {
+            ...template.meta,
+            created: createdTime,
+            type: 'development',
+            owner: 'shared',
+            logType: logType,
+            name: name
+          }
+        };
+      }
+
+      // Add new entry
+      fileContent.entries.push(entry);
+
+      // Write back to file
+      writeFileSync(filePath, JSON.stringify(fileContent, null, 2));
+
+    } catch (error) {
+      console.error(`Failed to append to JSON array ${filePath}:`, error);
+      
+      // Fallback: write as NDJSON if JSON array approach fails
+      const jsonLine = JSON.stringify(entry) + '\n';
+      try {
+        appendFileSync(filePath, jsonLine);
+      } catch (fallbackError) {
+        console.error(`Fallback NDJSON write also failed:`, fallbackError);
+      }
+    }
   }
 
   /**
