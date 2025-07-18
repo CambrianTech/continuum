@@ -104,8 +104,18 @@ class ThinContinuumCLI {
         throw new Error(error);
       }
       
-      const result = await response.json();
-      console.log(`🔬 JTAG CLI: Command execution result:`, result);
+      // Handle response body safely
+      const responseText = await response.text();
+      console.log(`🔬 JTAG CLI: Raw response text:`, responseText);
+      
+      let result;
+      try {
+        result = responseText ? JSON.parse(responseText) : {};
+        console.log(`🔬 JTAG CLI: Parsed JSON result:`, result);
+      } catch (jsonError) {
+        console.log(`⚠️ JTAG CLI: Response is not valid JSON, treating as plain text`);
+        result = { data: responseText };
+      }
       
       // Check if command returned help/definition format - make it user-friendly
       if (this.isHelpResponse(result, command)) {
