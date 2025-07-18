@@ -30,7 +30,7 @@ export type {
   LoggingConfig, 
   LoggerInterface, 
   BaseLogEntry 
-} from '../../logging/shared/LoggingTypes';
+} from './shared/LoggingTypes';
 
 // Default export for main daemon class
 import { LoggerDaemon } from './server/LoggerDaemon';
