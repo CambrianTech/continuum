@@ -14,6 +14,7 @@ import {
   FlushRequest, 
   RotateRequest,
   ConfigureRequest,
+  BrowserConsoleMessage,
   LogLevel
 } from '../shared/LoggerMessageTypes';
 import { ConsoleOverrideSemaphore } from '../shared/ConsoleOverrideSemaphore';
@@ -81,6 +82,9 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
           break;
         case 'configure':
           await this.handleConfigureMessage(payload as ConfigureRequest);
+          break;
+        case 'browser_console':
+          await this.handleBrowserConsoleMessage(payload as BrowserConsoleMessage);
           break;
         default:
           throw new Error(`Unknown message type: ${type}`);
@@ -402,6 +406,34 @@ export class LoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
     this.openFileHandles.clear();
     
     await super.stop();
+  }
+
+  /**
+   * Handle browser console messages from WebSocket connections
+   * This replaces the console handling in WebSocketDaemon
+   */
+  private async handleBrowserConsoleMessage(message: BrowserConsoleMessage): Promise<void> {
+    try {
+      // Convert browser console message to LogEntry
+      const sessionId = message.sessionId || 'unknown';
+      const logEntry: LogEntry = {
+        level: message.level,
+        message: message.message,
+        timestamp: Date.now(),
+        sessionId,
+        source: 'browser',
+        context: { sessionId },
+        data: message.data || {}
+      };
+
+      // Process the log entry using existing infrastructure
+      await this.handleLogMessage(logEntry);
+      
+      this.originalConsole.log(`📝 Browser console message from ${message.connectionId} logged to session ${sessionId}`);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.originalConsole.error(`❌ Failed to handle browser console message: ${errorMessage}`);
+    }
   }
 
   /**

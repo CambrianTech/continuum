@@ -25,8 +25,8 @@ export { ConsoleUtils } from './ConsoleTypes';
 export type { LogLevel, LogEntry, ProbeData, OriginalConsole } from './ConsoleTypes';
 
 export interface LoggerMessage {
-  type: 'log' | 'flush' | 'rotate' | 'configure';
-  payload: LogEntry | FlushRequest | RotateRequest | ConfigureRequest;
+  type: 'log' | 'flush' | 'rotate' | 'configure' | 'browser_console';
+  payload: LogEntry | FlushRequest | RotateRequest | ConfigureRequest | BrowserConsoleMessage;
 }
 
 export interface FlushRequest {
@@ -44,6 +44,15 @@ export interface ConfigureRequest {
   enableBatching?: boolean;
   batchSize?: number;
   flushInterval?: number;
+}
+
+export interface BrowserConsoleMessage {
+  connectionId: string;
+  sessionId?: string;
+  level: LogLevel;
+  message: string;
+  data?: any;
+  timestamp?: string;
 }
 
 // Typed daemon messages for logger
