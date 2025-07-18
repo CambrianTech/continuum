@@ -42,7 +42,7 @@ export class UniversalLogger {
     }
 
     // Initialize async logger
-    const { loggerClient } = await import('../daemons/logger/LoggerClient');
+    const { loggerClient } = await import('../daemons/logger/server/LoggerClient');
     await loggerClient.initialize();
 
     // Store original console methods
@@ -95,7 +95,7 @@ export class UniversalLogger {
       const source = this.getSourceFromStack();
 
       // Import and use async logger - fire and forget
-      import('../daemons/logger/LoggerClient').then(({ loggerClient }) => {
+      import('../daemons/logger/server/LoggerClient').then(({ loggerClient }) => {
         loggerClient.log(context, level, message, source).catch(() => {
           // Fallback to original direct logging if async fails
           this.writeConsoleLogDirect(level, args);
@@ -208,7 +208,7 @@ export class UniversalLogger {
   static async log(name: ContinuumEnvironment, source: string, message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info', context: ContinuumContext) {
     try {
       // Use async logger with stack-based context
-      const { loggerClient } = await import('../daemons/logger/LoggerClient');
+      const { loggerClient } = await import('../daemons/logger/server/LoggerClient');
       await loggerClient.log(context, level, message, source);
     } catch (error) {
       // Fallback to original sync logging if async fails

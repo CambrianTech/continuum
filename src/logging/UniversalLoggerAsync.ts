@@ -7,7 +7,7 @@
 import { ContinuumContext, ContinuumEnvironment, continuumContextFactory } from '../types/shared/core/ContinuumTypes';
 import { SessionContext } from '../context/SessionContext';
 import { AsyncLogger } from './AsyncLogger';
-import { LogLevel } from '../daemons/logger/LoggerMessageTypes';
+import { LogLevel } from '../daemons/logger/shared/LoggerMessageTypes';
 
 export class UniversalLoggerAsync {
   private static initialized = false;

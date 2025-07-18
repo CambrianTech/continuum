@@ -3,18 +3,19 @@
  * Uses DaemonMessage<T> generic pattern for type safety
  */
 
-import { DaemonMessage } from '../base/DaemonProtocol';
-import { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
+import { DaemonMessage } from '../../base/DaemonProtocol';
+import { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type LogLevel = 'log' | 'debug' | 'info' | 'warn' | 'error' | 'trace';
 
 export interface LogEntry {
   level: LogLevel;
   message: string;
-  timestamp: string;
+  timestamp: number;
+  sessionId: string;
   source: string;
   context: ContinuumContext;
-  metadata?: Record<string, unknown>;
+  data?: Record<string, unknown> | undefined;
 }
 
 export interface LoggerMessage {
@@ -44,20 +45,36 @@ export type LoggerDaemonMessage = DaemonMessage<LoggerMessage>;
 
 // Factory functions for creating typed messages
 export class LoggerMessageFactory {
+  static createLogMessage(logEntry: LogEntry): LoggerMessage;
   static createLogMessage(
     from: string,
     to: string,
     logEntry: LogEntry,
+    priority?: 'low' | 'normal' | 'high' | 'critical'
+  ): LoggerDaemonMessage;
+  static createLogMessage(
+    logEntryOrFrom: LogEntry | string,
+    to?: string,
+    logEntry?: LogEntry,
     priority: 'low' | 'normal' | 'high' | 'critical' = 'normal'
-  ): LoggerDaemonMessage {
+  ): LoggerMessage | LoggerDaemonMessage {
+    // Simple overload for direct LoggerMessage
+    if (typeof logEntryOrFrom === 'object' && !to) {
+      return {
+        type: 'log',
+        payload: logEntryOrFrom
+      };
+    }
+    
+    // Full DaemonMessage overload
     return {
       id: crypto.randomUUID(),
-      from,
-      to,
+      from: logEntryOrFrom as string,
+      to: to!,
       type: 'log',
       data: {
         type: 'log',
-        payload: logEntry
+        payload: logEntry!
       },
       timestamp: new Date(),
       priority

@@ -3,8 +3,8 @@
  * Provides simple API while abstracting the underlying process communication
  */
 
-import { ContinuumContext } from '../../types/shared/core/ContinuumTypes';
-import { LoggerMessageFactory, LogLevel, LogEntry } from './LoggerMessageTypes';
+import { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
+import { LoggerMessageFactory, LogLevel, LogEntry } from '../shared/LoggerMessageTypes';
 import { LoggerDaemon } from './LoggerDaemon';
 
 export class LoggerClient {
@@ -52,10 +52,11 @@ export class LoggerClient {
     const logEntry: LogEntry = {
       level,
       message,
-      timestamp: new Date().toISOString(),
+      timestamp: Date.now(),
+      sessionId: context.sessionId,
       source,
       context,
-      ...(metadata && { metadata })
+      ...(metadata && { data: metadata })
     };
 
     const logMessage = LoggerMessageFactory.createLogMessage(
