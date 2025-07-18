@@ -29,6 +29,8 @@ import { MESSAGE_HANDLER_REGISTRY } from '../../integrations/websocket/core/Mess
 import { SendToSessionHandler } from './handlers/SendToSessionHandler';
 import { RemoteExecutionHandler } from './handlers/RemoteExecutionHandler';
 import { DAEMON_REGISTRY } from '../base/DaemonRegistry';
+import { DirectoryService } from './services/DirectoryService';
+import { CleanupService } from './services/CleanupService';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -86,18 +88,20 @@ export class SessionManagerDaemon extends BaseDaemon {
   
   private sessions = new Map<string, BrowserSession>();
   private connectionIdentities = new Map<string, ConnectionIdentity>();
-  private artifactRoot: string;
   private cleanupInterval?: NodeJS.Timeout;
   private eventListeners = new Set<(event: SessionEvent) => void>();
   private consoleLoggers = new Map<string, SessionConsoleLogger>(); // sessionId -> logger
   private remoteExecutionHandler?: RemoteExecutionHandler;
+  private directoryService: DirectoryService;
+  private cleanupService: CleanupService;
   
   // SEMAPHORE: Prevent race conditions in session creation
   private sessionCreationLock = new Map<string, Promise<BrowserSession>>();
 
   constructor(context: ContinuumContext, artifactRoot: string = '.continuum/sessions') {
     super(context);
-    this.artifactRoot = artifactRoot;
+    this.directoryService = new DirectoryService(context, artifactRoot);
+    this.cleanupService = new CleanupService(context, this.sessions, this.log.bind(this));
   }
 
   protected async onStart(): Promise<void> {
@@ -140,7 +144,9 @@ export class SessionManagerDaemon extends BaseDaemon {
         this.log(`🕵️‍♂️ DISCOVERY ERROR: ${error}`);
       }
     }, 3000);
-    this.startCleanupMonitoring();
+    // DELEGATED: Cleanup monitoring now handled by CleanupService
+    this.log('📅 [DELEGATED] Starting cleanup monitoring via CleanupService');
+    this.cleanupService.startCleanupMonitoring();
     
     // Register message handlers for session-related WebSocket messages
     await this.registerMessageHandlers();
@@ -296,6 +302,10 @@ export class SessionManagerDaemon extends BaseDaemon {
 
   protected async onStop(): Promise<void> {
     this.log('🛑 Stopping Session Manager...');
+    
+    // DELEGATED: Cleanup monitoring now handled by CleanupService
+    this.log('🛑 [DELEGATED] Stopping cleanup monitoring via CleanupService');
+    this.cleanupService.stopCleanupMonitoring();
     
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
@@ -1471,9 +1481,10 @@ export class SessionManagerDaemon extends BaseDaemon {
       }
     });
 
-    // Cleanup artifacts if requested
+    // DELEGATED: Cleanup artifacts now handled by CleanupService
     if (!options.preserveArtifacts) {
-      await this.cleanupSessionArtifacts(session);
+      this.log(`🧹 [DELEGATED] Cleaning up artifacts via CleanupService`);
+      await this.cleanupService.cleanupSessionArtifacts(session);
     }
 
     this.sessions.delete(sessionId);
@@ -1484,11 +1495,10 @@ export class SessionManagerDaemon extends BaseDaemon {
   
   private async initializeDirectoryStructure(): Promise<void> {
     try {
-      const baseDirs = ['portal', 'validation', 'user', 'personas'];
-      for (const dir of baseDirs) {
-        await fs.mkdir(path.join(this.artifactRoot, dir), { recursive: true });
-      }
-      this.log('📁 Session directory structure initialized');
+      // DELEGATED: Directory initialization now handled by DirectoryService
+      this.log('📁 [DELEGATED] Initializing directory structure via DirectoryService');
+      await this.directoryService.initializeDirectoryStructure();
+      this.log('✅ [DELEGATED] Session directory structure initialized');
     } catch (error) {
       this.log(`❌ Failed to initialize session directories: ${error}`, 'error');
     }
@@ -1510,54 +1520,14 @@ export class SessionManagerDaemon extends BaseDaemon {
     sessionId: string,
     sessionContext?: string
   ): Promise<string> {
-    // Build organized path based on session type
-    let sessionPath: string;
+    // DELEGATED: Directory creation now handled by DirectoryService
+    this.log(`📁 [DELEGATED] Creating session storage via DirectoryService`, 'info');
     
-    switch (type) {
-      case 'portal':
-        sessionPath = path.join(this.artifactRoot, 'portal', sessionId);
-        break;
-      case 'git-hook':
-        const branchContext = sessionContext ? `-${sessionContext}` : '';
-        sessionPath = path.join(this.artifactRoot, 'validation', `${sessionId}${branchContext}`);
-        break;
-      case 'development':
-      case 'test':
-        sessionPath = path.join(this.artifactRoot, 'user', owner, sessionId);
-        break;
-      case 'persona':
-        sessionPath = path.join(this.artifactRoot, 'personas', owner, sessionId);
-        break;
-      default:
-        sessionPath = path.join(this.artifactRoot, 'misc', sessionId);
-    }
+    const artifacts = await this.directoryService.createSessionStorage(
+      sessionId, type, owner, sessionContext
+    );
     
-    // Debug: Log what we're trying to create
-    const absoluteSessionPath = path.resolve(sessionPath);
-    this.log(`📁 Creating session directory: ${sessionPath} (absolute: ${absoluteSessionPath})`, 'info');
-    this.log(`📂 Current working directory: ${process.cwd()}`, 'info');
-    
-    try {
-      await fs.mkdir(sessionPath, { recursive: true });
-      this.log(`✅ Successfully created session directory: ${sessionPath}`, 'info');
-    } catch (error) {
-      this.log(`❌ Failed to create session directory: ${error}`, 'error');
-      throw error;
-    }
-    
-    // Create subdirectories
-    const subdirs = ['logs', 'screenshots', 'files', 'recordings', 'devtools'];
-    for (const subdir of subdirs) {
-      const subdirPath = path.join(sessionPath, subdir);
-      try {
-        await fs.mkdir(subdirPath, { recursive: true });
-        this.log(`✅ Created subdirectory: ${subdirPath}`, 'info');
-      } catch (error) {
-        this.log(`❌ Failed to create subdirectory ${subdirPath}: ${error}`, 'error');
-      }
-    }
-    
-    // Create session metadata
+    // Create session metadata for backward compatibility
     const metadata = {
       sessionId, type, owner, sessionContext,
       created: new Date().toISOString(),
@@ -1571,20 +1541,13 @@ export class SessionManagerDaemon extends BaseDaemon {
     };
     
     await fs.writeFile(
-      path.join(sessionPath, 'session-info.json'), 
+      path.join(artifacts.storageDir, 'session-info.json'), 
       JSON.stringify(metadata, null, 2)
     );
     
-    // Create initial log files with session start timestamp
-    const sessionStartTime = new Date().toISOString();
-    const sessionStartMessage = `# Continuum Session Log\n# Session: ${sessionId}\n# Created: ${sessionStartTime}\n# Type: ${type}\n# Owner: ${owner}\n${sessionContext ? `# Context: ${sessionContext}\n` : ''}#\n# Session started at ${sessionStartTime}\n\n`;
+    this.log(`✅ [DELEGATED] Session storage created: ${artifacts.storageDir}`, 'info');
     
-    // Note: browser.log will be created by UniversalLogger when first used
-    
-    // Create server.log  
-    await fs.writeFile(path.join(sessionPath, 'logs', 'server.log'), sessionStartMessage);
-    
-    return sessionPath;
+    return artifacts.storageDir;
   }
 
   private generateArtifactFilename(type: string, source: string, timestamp: Date): string {
@@ -1593,29 +1556,9 @@ export class SessionManagerDaemon extends BaseDaemon {
     return `${dateStr}-${source}-${type}.${extension}`;
   }
 
-  private startCleanupMonitoring(): void {
-    this.cleanupInterval = setInterval(async () => {
-      const now = Date.now();
-      for (const [sessionId, session] of Array.from(this.sessions.entries())) {
-        if (!session.shouldAutoCleanup || !session.isActive) continue;
-        
-        const age = now - session.lastActive.getTime();
-        if (age > session.cleanupAfterMs) {
-          this.log(`🧹 Auto-cleaning session: ${sessionId} (${Math.round(age / 60000)}min old)`);
-          await this.closeSession(sessionId, { preserveArtifacts: false });
-        }
-      }
-    }, 5 * 60 * 1000); // Check every 5 minutes
-  }
-
-  private async cleanupSessionArtifacts(session: BrowserSession): Promise<void> {
-    try {
-      await fs.rm(session.artifacts.storageDir, { recursive: true, force: true });
-      this.log(`🗑️ Cleaned up artifacts for session ${session.id}`);
-    } catch (error) {
-      this.log(`⚠️ Failed to cleanup artifacts for ${session.id}: ${error}`, 'warn');
-    }
-  }
+  // REMOVED: Cleanup methods are now delegated to CleanupService
+  // - startCleanupMonitoring() -> cleanupService.startCleanupMonitoring()
+  // - cleanupSessionArtifacts() -> cleanupService.cleanupSessionArtifacts()
 
   /**
    * Handle new WebSocket connection from WebSocketDaemon event
