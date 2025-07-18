@@ -41,6 +41,12 @@ export class UniversalLogger {
       return;
     }
 
+    // Only enable console override on server-side (Node.js)
+    if (typeof window !== 'undefined') {
+      console.log('🔧 UniversalLogger: Skipping console override in browser environment');
+      return;
+    }
+
     // Initialize async logger
     const { loggerClient } = await import('../daemons/logger/server/LoggerClient');
     await loggerClient.initialize();
