@@ -124,6 +124,7 @@ export class WebSocketManager {
         try {
           // Wrap in async function to handle return statements and promises
           const wrappedScript = `(async function() { ${message.script} })()`;
+          // eslint-disable-next-line no-eval
           const result = await eval(wrappedScript);
           console.log('✅ JavaScript execution result:', result);
           
