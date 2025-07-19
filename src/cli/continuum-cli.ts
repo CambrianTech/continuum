@@ -11,6 +11,7 @@
  * ✅ CLEANED UP: Made CLI ultra-thin HTTP client only (2025-07-13)
  * ✅ CLEANED UP: Added fail-fast validation for command names (2025-07-13)
  * ✅ MODULARIZED: Added pluggable formatter system for command output (2025-07-15)
+ * ✅ STRONGLY TYPED: Unified command execution interface (2025-07-19)
  */
 
 import { FormatterRegistry } from './formatters/FormatterRegistry';
@@ -104,14 +105,17 @@ class ThinContinuumCLI {
         throw new Error(error);
       }
       
-      // Handle response body safely
+      // Handle strongly typed response
       const responseText = await response.text();
       console.log(`🔬 JTAG CLI: Raw response text:`, responseText);
       
-      let result;
+      let result: any;
       try {
-        result = responseText ? JSON.parse(responseText) : {};
-        console.log(`🔬 JTAG CLI: Parsed JSON result:`, result);
+        const parsed = responseText ? JSON.parse(responseText) : {};
+        
+        result = parsed;
+        
+        console.log(`🔬 JTAG CLI: Typed response:`, result);
       } catch (jsonError) {
         console.log(`⚠️ JTAG CLI: Response is not valid JSON, treating as plain text`);
         result = { data: responseText };
@@ -136,12 +140,13 @@ class ThinContinuumCLI {
         console.log(`💡 Command '${command}' needs parameters. Showing help:\n`);
         
         try {
-          // Auto-call help command via HTTP
+          // Auto-call help command via HTTP using typed execution
           console.log(`🔬 JTAG CLI: Calling help command via HTTP`);
-          const helpResponse = await fetch(`http://localhost:9000/api/commands/help`, {
+          const helpPayload = { args: [command] };
+          const helpResponse = await fetch(`http://localhost:9000/api/exec`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ args: [command] })
+            body: JSON.stringify(helpPayload)
           });
           
           if (helpResponse.ok) {
@@ -196,12 +201,13 @@ class ThinContinuumCLI {
    */
   private async showCommandDefinition(commandName: string): Promise<void> {
     try {
-      // Try to get definition via HTTP
+      // Try to get definition via HTTP using typed execution
       console.log(`🔬 JTAG CLI: Getting command definition via HTTP for: ${commandName}`);
-      const response = await fetch(`http://localhost:9000/api/commands/${commandName}`, {
+      const defPayload = { args: ['--definition'] };
+      const response = await fetch(`http://localhost:9000/api/exec`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ args: ['--definition'] })
+        body: JSON.stringify(defPayload)
       });
 
       if (response.ok) {

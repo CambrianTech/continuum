@@ -128,6 +128,104 @@ export interface CommandResult<T = any> {
 }
 
 /**
+ * Strongly typed command execution interface
+ * Unifies all command execution patterns across HTTP/WebSocket/IPC
+ */
+export interface CommandExecution {
+  /** Command name (e.g., 'js', 'screenshot', 'help') */
+  command: string;
+  /** Raw arguments passed to command */
+  args: string[];
+  /** Parsed parameters (command-specific) */
+  parameters?: Record<string, unknown>;
+  /** Execution context */
+  context?: {
+    sessionId?: string;
+    userId?: string;
+    source: 'cli' | 'browser' | 'api' | 'daemon';
+    transport: 'http' | 'websocket' | 'ipc';
+  };
+  /** Request tracking */
+  requestId?: string;
+  timestamp: string;
+}
+
+/**
+ * Command execution response - unified across all transports
+ */
+export interface CommandExecutionResponse<T = any> {
+  /** Whether execution succeeded */
+  success: boolean;
+  /** Response data (command-specific) */
+  data?: T;
+  /** Error message if failed */
+  error?: string;
+  /** Original request ID for correlation */
+  requestId?: string;
+  /** Execution metadata */
+  executionTime?: number;
+  processor?: string;
+  timestamp: string;
+  /** Optional warnings */
+  warnings?: string[];
+}
+
+/**
+ * Command execution request factory
+ */
+export const CommandExecutionFactory = {
+  /**
+   * Create a command execution request
+   */
+  create: (
+    command: string,
+    args: string[] = [],
+    context?: Partial<CommandExecution['context']>,
+    requestId?: string
+  ): CommandExecution => ({
+    command,
+    args,
+    context: {
+      source: 'cli',
+      transport: 'http',
+      ...context
+    },
+    requestId: requestId || `exec-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    timestamp: new Date().toISOString()
+  }),
+
+  /**
+   * Create success response
+   */
+  success: <T>(
+    data: T,
+    requestId?: string,
+    executionTime?: number
+  ): CommandExecutionResponse<T> => ({
+    success: true,
+    data,
+    ...(requestId && { requestId }),
+    ...(executionTime !== undefined && { executionTime }),
+    timestamp: new Date().toISOString()
+  }),
+
+  /**
+   * Create error response
+   */
+  error: (
+    error: string,
+    requestId?: string,
+    executionTime?: number
+  ): CommandExecutionResponse => ({
+    success: false,
+    error,
+    ...(requestId && { requestId }),
+    ...(executionTime !== undefined && { executionTime }),
+    timestamp: new Date().toISOString()
+  })
+} as const;
+
+/**
  * Widget Commands - All widget-related operations
  */
 export enum WidgetCommandType {
@@ -428,6 +526,28 @@ export const CommandFactory = {
     }
   })
 } as const;
+
+/**
+ * Command execution type guards
+ */
+export function isCommandExecution(obj: any): obj is CommandExecution {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    typeof obj.command === 'string' &&
+    Array.isArray(obj.args) &&
+    typeof obj.timestamp === 'string'
+  );
+}
+
+export function isCommandExecutionResponse(obj: any): obj is CommandExecutionResponse {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    typeof obj.success === 'boolean' &&
+    typeof obj.timestamp === 'string'
+  );
+}
 
 /**
  * Command Type Guards - Runtime type checking

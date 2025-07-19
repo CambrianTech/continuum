@@ -6,7 +6,7 @@
   "type": "module",
   "continuum": {
     "type": "command",
-    "command": "js-execute",
+    "command": "js",
     "category": "browser",
     "capabilities": [
       "javascript-execution",

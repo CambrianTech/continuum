@@ -317,18 +317,21 @@ export class CommandProcessorDaemon extends BaseDaemon {
         if (pathParts[0] === 'api' && pathParts[1] === 'commands' && pathParts[2]) {
           const body = apiData.body || {};
           
-          // 🎯 SMART HTTP INTEGRATION: Support both CLI args format and proper REST JSON
+          // 🎯 SMART HTTP INTEGRATION: Support strongly typed CommandExecution and legacy formats
           let parameters;
+          
           if (body.args && Array.isArray(body.args)) {
-            // CLI-style format: {"args": ["--selector=body", "--filename=test.png"]}
+            // Legacy CLI-style format: {"args": ["--selector=body", "--filename=test.png"]}
             parameters = {
               ...body,    // Include all top-level parameters (owner, forceNew, sessionId, etc.)
               args: body.args  // Keep args array for parser
             };
+            console.log(`🔄 Using legacy args format`);
           } else {
             // REST-style format: {"selector": "body", "filename": "test.png", "quality": 90}
             // Create canonical format that parser expects
             parameters = body; // Direct named parameters - no args array needed
+            console.log(`🌐 Using REST format`);
           }
           
           // Use SessionManagerDaemon to extract session info dynamically
