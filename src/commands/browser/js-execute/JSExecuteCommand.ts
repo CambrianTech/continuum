@@ -25,6 +25,13 @@ export class JSExecuteCommand extends BaseCommand {
     // Handle object with args array (from continuum script)
     if (params && params.args && Array.isArray(params.args)) {
       const result: any = {};
+      
+      // Check if first arg is the script (positional argument)
+      if (params.args.length > 0 && !params.args[0].startsWith('--')) {
+        result.script = params.args[0];
+      }
+      
+      // Parse any --key=value style arguments
       for (const arg of params.args) {
         if (typeof arg === 'string' && arg.startsWith('--')) {
           const [key, value] = arg.split('=', 2);
@@ -128,9 +135,7 @@ export class JSExecuteCommand extends BaseCommand {
       const { 
         script, 
         sessionId, 
-        generateUUID = true, 
-        waitForResult = true, 
-        timeout = 30000
+        generateUUID = true
       } = options;
       
       if (!script) {
@@ -165,15 +170,22 @@ export class JSExecuteCommand extends BaseCommand {
         }
       `;
 
-      // Execute JavaScript via browser WebSocket command
-      const executeOptions: { timeout: number; waitForResult: boolean; sessionId?: string } = {
-        timeout,
-        waitForResult
-      };
-      if (sessionId) {
-        executeOptions.sessionId = sessionId;
+      // Execute JavaScript via global.continuum.executeJS (same pattern as ScreenshotCommand)
+      console.log(`📤 JTAG JS: Calling global.continuum.executeJS`);
+      console.log(`📤 JTAG JS: Process PID: ${process.pid}`);
+      console.log(`📤 JTAG JS: global object keys:`, Object.keys(global));
+      console.log(`📤 JTAG JS: global.continuum type:`, typeof (global as any).continuum);
+      
+      const continuum = (global as any).continuum;
+      if (!continuum) {
+        throw new Error('global.continuum does not exist');
       }
-      const executionResult = await JSExecuteCommand.executeInBrowserViaWebSocket(wrappedScript, executeOptions);
+      
+      if (!continuum.executeJS) {
+        throw new Error('global.continuum.executeJS does not exist');
+      }
+      
+      const executionResult = await continuum.executeJS(wrappedScript);
       return {
         success: true,
         data: {
@@ -216,83 +228,6 @@ export class JSExecuteCommand extends BaseCommand {
     }
   }
 
-  /**
-   * Execute JavaScript in browser via real DevTools connection
-   */
-  private static async executeInBrowserViaWebSocket(script: string, options: {
-    sessionId?: string;
-    timeout: number;
-    waitForResult: boolean;
-  }): Promise<any> {
-    try {
-      console.log(`🌍 JTAG Real Browser Execute: ${script.substring(0, 100)}...`);
-      
-      // Use real browser execution via DevTools Protocol
-      const { ChromiumDevToolsAdapter } = await import('../../../daemons/browser-manager/adapters/ChromiumDevToolsAdapter');
-      const adapter = new ChromiumDevToolsAdapter();
-      
-      // Get debug URL from browser manager (assuming localhost:9222 for now)
-      const debugUrl = 'ws://localhost:9222';
-      
-      try {
-        await adapter.connect(debugUrl);
-        console.log(`🔗 Connected to browser DevTools at ${debugUrl}`);
-        
-        // Execute script via real DevTools Protocol
-        const result = await adapter.evaluateScript(script);
-        
-        await adapter.disconnect();
-        
-        console.log(`✅ JTAG Real Browser Execute Complete: Script executed in real browser`);
-        return {
-          success: true,
-          executedAt: new Date().toISOString(),
-          method: 'devtools-real-execution',
-          result: result,
-          scriptLength: script.length,
-          timeout: options.timeout,
-          sessionId: options.sessionId || 'default'
-        };
-        
-      } catch (devToolsError) {
-        console.error(`❌ DevTools connection failed: ${devToolsError}`);
-        
-        // Fallback: Send via WebSocket to browser portal if DevTools fails
-        const webSocketResult = await JSExecuteCommand.sendViaBrowserWebSocket(script, options);
-        return webSocketResult;
-      }
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`❌ JTAG Browser Execute Failed: ${errorMessage}`);
-      throw new Error(`Browser execution failed: ${errorMessage}`);
-    }
-  }
-  
-  /**
-   * Fallback: Send script to browser via WebSocket portal connection
-   */
-  private static async sendViaBrowserWebSocket(script: string, options: {
-    sessionId?: string;
-    timeout: number;
-    waitForResult: boolean;
-  }): Promise<any> {
-    // Send JavaScript to connected browser via WebSocket
-    // This should trigger the browser's WebSocket client to execute the script
-    console.log(`📡 Sending script to browser via WebSocket portal...`);
-    
-    // TODO: Get WebSocket server and broadcast to connected browsers
-    // For now, return indication that we need browser connection
-    return {
-      success: false,
-      executedAt: new Date().toISOString(),
-      method: 'websocket-fallback',
-      error: 'No browser connection available - need active browser at localhost:9000',
-      scriptLength: script.length,
-      timeout: options.timeout,
-      sessionId: options.sessionId || 'default'
-    };
-  }
 
   /**
    * Log message to session logs (integrates with session manager)

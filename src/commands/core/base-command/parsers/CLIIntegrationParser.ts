@@ -60,6 +60,7 @@ export class CLIIntegrationParser implements IntegrationParser {
       result.command = positionalArgs[0];
       result.filename = positionalArgs[0]; // For file commands
       result.target = positionalArgs[0];   // For reload, etc.
+      result.script = positionalArgs[0];   // For js-execute command
       
       // If there are multiple positional args, keep them as an array
       if (positionalArgs.length > 1) {

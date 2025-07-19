@@ -7,7 +7,9 @@
 import { EventEmitter } from 'events';
 import { WebSocketDaemon } from '../../integrations/websocket/WebSocketDaemon';
 import { RendererDaemon } from '../../daemons/renderer/RendererDaemon';
-import { CommandProcessorDaemon } from '../../daemons/command-processor/CommandProcessorDaemon';
+// OLD: import { CommandProcessorDaemon } from '../../daemons/command-processor/CommandProcessorDaemon';
+// NEW: Using compatibility wrapper for surgical migration to symmetric daemon architecture
+import { CommandProcessorCompatibilityWrapper as CommandProcessorDaemon } from '../../daemons/command-processor/CommandProcessorCompatibilityWrapper';
 import { BrowserManagerDaemon } from '../../daemons/browser-manager/BrowserManagerDaemon';
 // OLD: import { SessionManagerDaemon } from '../../daemons/session-manager/SessionManagerDaemon';
 // NEW: Using compatibility wrapper for surgical migration to modular architecture
@@ -57,7 +59,19 @@ export class ContinuumSystem extends EventEmitter {
     this.daemons.set('static-file', new StaticFileDaemon());
     this.daemons.set('websocket', new WebSocketDaemon(this.systemContext));
     this.daemons.set('renderer', new RendererDaemon());
+    console.log('🔍 DEBUG: About to instantiate CommandProcessorDaemon (aliased to CommandProcessorCompatibilityWrapper)');
+    console.log('🔍 DEBUG: OLD CommandProcessorDaemon is wrapped - new symmetric architecture available with flag');
     this.daemons.set('command-processor', new CommandProcessorDaemon());
+    console.log('🔍 DEBUG: CommandProcessorCompatibilityWrapper instantiated successfully');
+    
+    // Verify the compatibility wrapper is active
+    const commandProcessor = this.daemons.get('command-processor');
+    if (commandProcessor?.constructor.name === 'CommandProcessorCompatibilityWrapper') {
+      console.log('✅ CONFIRMED: CommandProcessorCompatibilityWrapper is active and operational');
+      console.log('🚀 PHASE 3: Zero-downtime migration wrapper installed for symmetric daemon architecture');
+    } else {
+      console.log('❌ WARNING: Old CommandProcessorDaemon is still running - wrapper not active');
+    }
     this.daemons.set('widget', new WidgetDaemon());
     this.daemons.set('chatroom', new ChatRoomDaemon());
     // PersonaDaemon needs special handling - it's created per persona, not as a system daemon
