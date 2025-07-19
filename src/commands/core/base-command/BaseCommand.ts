@@ -22,6 +22,7 @@
 import type { CommandResult, CommandDefinition, ParameterDefinition } from '../../../types/shared/CommandTypes';
 import type { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
 import type { UUID } from 'crypto';
+import { CLIClientParser } from '../../../parsers/integrations/cli-parser/client/CLIClientParser';
 
 // Re-export shared types for backward compatibility
 export type { CommandResult, CommandDefinition, ParameterDefinition, ContinuumContext };
@@ -90,13 +91,8 @@ export abstract class BaseCommand {
     executor: (params: T, context: ContinuumContext) => Promise<CommandResult>
   ): Promise<CommandResult> {
     try {
-      // Step 1: Basic type checking
-      if (typeof rawParams !== 'object' || rawParams === null) {
-        throw new Error('Parameters must be a non-null object');
-      }
-      
-      // Step 2: Parse CLI arguments if present (for backward compatibility)
-      const parsedParams = BaseCommand.parseCliArgumentsIfPresent(rawParams);
+      // Step 1 & 2: Parse CLI arguments automatically (includes validation)
+      const parsedParams = BaseCommand.preprocessParameters(rawParams);
       
       // Step 3: Validate with custom type guard
       validator(parsedParams);
@@ -115,38 +111,37 @@ export abstract class BaseCommand {
   }
 
   /**
-   * Parse CLI arguments to extract typed parameters (internal helper)
+   * Parse CLI arguments using the shared CLI parser
+   * Public method available to all commands for consistent CLI parsing
    */
-  private static parseCliArgumentsIfPresent(params: any): any {
-    // If no args array, return as-is
-    if (!params.args || !Array.isArray(params.args)) {
-      return params;
-    }
-
-    const result: any = { ...params };
-    const remainingArgs: string[] = [];
-    
-    // Parse CLI-style args
-    for (const arg of params.args) {
-      if (typeof arg === 'string' && arg.startsWith('--')) {
-        const [key, value] = arg.split('=', 2);
-        const cleanKey = key.replace('--', '');
-        if (cleanKey === 'args' && value) {
-          // Handle --args as array
-          result[cleanKey] = value.split(',');
-        } else {
-          result[cleanKey] = value || true; // Support flags without values
-        }
-      } else {
-        // Keep non-CLI args (positional arguments)
-        remainingArgs.push(arg);
-      }
+  public static parseCliArguments(params: Record<string, unknown>): Record<string, unknown> {
+    // Handle CLI-style arguments if present in args array
+    if (params.args && Array.isArray(params.args)) {
+      const cliParser = new CLIClientParser();
+      const parsedArgs = cliParser.parseInput({ args: params.args as string[] });
+      
+      // Merge CLI parsed args with existing params (CLI args take precedence)
+      return { ...params, ...parsedArgs };
     }
     
-    // Replace args with only the non-CLI args
-    result.args = remainingArgs;
-    return result;
+    // Return as-is if no CLI args to parse
+    return params;
   }
+  
+  /**
+   * Automatic parameter preprocessing for clean command pattern
+   * Handles CLI parsing transparently so commands don't need to know about it
+   */
+  protected static preprocessParameters(parameters: unknown): Record<string, unknown> {
+    // Basic validation
+    if (typeof parameters !== 'object' || parameters === null) {
+      throw new Error('Parameters must be a non-null object');
+    }
+    
+    // Automatic CLI parsing (transparent to commands)
+    return BaseCommand.parseCliArguments(parameters as Record<string, unknown>);
+  }
+  
 
   /**
    * Parse parameters using modular integration parser system
