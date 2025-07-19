@@ -34,9 +34,84 @@ import {
   ScreenshotFormat, 
   ScreenshotDestination, 
   ScreenshotAnimation,
-  type ScreenshotParams,
   type ScreenshotClientRequest,
 } from './shared/ScreenshotTypes';
+
+// ✅ STRONGLY TYPED PARAMETERS - Eliminates 'any' types
+// Unified interface covering both ScreenshotParams and ScreenshotClientRequest
+interface ScreenshotParameters {
+  selector?: string;
+  filename?: string;
+  format?: ScreenshotFormat;
+  quality?: number;
+  animation?: ScreenshotAnimation;
+  destination?: ScreenshotDestination;
+  subdirectory?: string;
+  
+  // AI-friendly features
+  width?: number;
+  height?: number;
+  scale?: number;
+  cropX?: number;
+  cropY?: number;
+  cropWidth?: number;
+  cropHeight?: number;
+  elementName?: string;
+  querySelector?: string;
+  maxFileSize?: number;
+}
+
+/**
+ * Type guard for ScreenshotParameters
+ */
+function validateScreenshotParameters(params: unknown): params is ScreenshotParameters {
+  if (typeof params !== 'object' || params === null) {
+    return false;
+  }
+  
+  const obj = params as Record<string, unknown>;
+  
+  // All parameters are optional, but validate types if present
+  if (obj.selector !== undefined && typeof obj.selector !== 'string') {
+    return false;
+  }
+  if (obj.filename !== undefined && typeof obj.filename !== 'string') {
+    return false;
+  }
+  if (obj.format !== undefined && !Object.values(ScreenshotFormat).includes(obj.format as ScreenshotFormat)) {
+    return false;
+  }
+  if (obj.quality !== undefined && (typeof obj.quality !== 'number' || obj.quality < 0 || obj.quality > 1)) {
+    return false;
+  }
+  if (obj.animation !== undefined && !Object.values(ScreenshotAnimation).includes(obj.animation as ScreenshotAnimation)) {
+    return false;
+  }
+  if (obj.destination !== undefined && !Object.values(ScreenshotDestination).includes(obj.destination as ScreenshotDestination)) {
+    return false;
+  }
+  if (obj.subdirectory !== undefined && typeof obj.subdirectory !== 'string') {
+    return false;
+  }
+  
+  // Validate numeric AI-friendly features
+  const numericFields = ['width', 'height', 'scale', 'cropX', 'cropY', 'cropWidth', 'cropHeight', 'maxFileSize'];
+  for (const field of numericFields) {
+    if (obj[field] !== undefined && typeof obj[field] !== 'number') {
+      return false;
+    }
+  }
+  
+  // Validate string AI-friendly features
+  if (obj.elementName !== undefined && typeof obj.elementName !== 'string') {
+    return false;
+  }
+  if (obj.querySelector !== undefined && typeof obj.querySelector !== 'string') {
+    return false;
+  }
+  
+  return true;
+}
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -183,45 +258,60 @@ export class ScreenshotCommand extends BaseCommand {
     return definition;
   }
 
-  static async execute(params: ScreenshotParams | ScreenshotClientRequest, context: ContinuumContext): Promise<CommandResult> {
+  /**
+   * ✅ JOEL'S CLEAN APPROACH - Single execute method with internal typing
+   * Validation at the top, then typed params for rest of method
+   */
+  static async execute(parameters: unknown, context: ContinuumContext): Promise<CommandResult> {
+    // === VALIDATION SECTION (top of method) ===
+    if (typeof parameters !== 'object' || parameters === null) {
+      return { success: false, error: 'Parameters must be a non-null object', timestamp: new Date().toISOString() };
+    }
+    
+    const parsedParams = ScreenshotCommand.parseCliArguments(parameters as Record<string, unknown>);
+    
+    if (!validateScreenshotParameters(parsedParams)) {
+      return { success: false, error: 'Invalid screenshot parameters. Check format, quality (0-1), and parameter types.', timestamp: new Date().toISOString() };
+    }
+    
+    // === TYPED BUSINESS LOGIC SECTION (rest of method) ===
+    // Now params is strongly typed for the entire rest of the method
+    const params = parsedParams as ScreenshotParameters;
+    
     const startTime = Date.now();
-    console.log(`🚀 JTAG SCREENSHOT: ScreenshotCommand.execute() called`);
-    console.log(`🚀 JTAG SCREENSHOT: Starting ScreenshotCommand execution (server side)`);
-    console.log(`📋 JTAG SCREENSHOT: Parameters received:`, JSON.stringify(params, null, 2));
+    console.log(`🚀 JTAG SCREENSHOT: Clean typed execution`);
+    console.log(`📋 JTAG SCREENSHOT: Typed params:`, JSON.stringify(params, null, 2));
     console.log(`📋 JTAG SCREENSHOT: Context:`, JSON.stringify(context, null, 2));
     
-    try {      
+    try {
       // Server-side execution - use html2canvas for actual screenshot
       console.log(`📤 JTAG SCREENSHOT: Server-side execution starting - html2canvas capture`);
       
-      // Normalize parameters for consistent client execution with AI-friendly features
-      const inputParams = params as ScreenshotParams;
-      
       // Map querySelector to selector (querySelector takes precedence)
-      const targetSelector = inputParams.querySelector ?? inputParams.selector ?? 'body';
+      const targetSelector = params.querySelector ?? params.selector ?? 'body';
       
       // Map elementName to querySelector for backward compatibility
-      const elementQuery = inputParams.elementName ?? inputParams.querySelector;
+      const elementQuery = params.elementName ?? params.querySelector;
       
       const normalizedParams: ScreenshotClientRequest = {
         selector: targetSelector,
-        filename: inputParams.filename ?? `screenshot-${Date.now()}.png`,
-        format: inputParams.format ?? ScreenshotFormat.PNG,
-        quality: inputParams.quality ?? 0.9,
-        animation: inputParams.animation ?? ScreenshotAnimation.NONE,
-        destination: inputParams.destination ?? ScreenshotDestination.FILE,
+        filename: params.filename ?? `screenshot-${Date.now()}.png`,
+        format: params.format ?? ScreenshotFormat.PNG,
+        quality: params.quality ?? 0.9,
+        animation: params.animation ?? ScreenshotAnimation.NONE,
+        destination: params.destination ?? ScreenshotDestination.FILE,
         
         // AI-friendly features - provide undefined explicitly for optional properties
-        width: inputParams.width ?? undefined,
-        height: inputParams.height ?? undefined,
-        scale: inputParams.scale ?? undefined,
-        cropX: inputParams.cropX ?? undefined,
-        cropY: inputParams.cropY ?? undefined,
-        cropWidth: inputParams.cropWidth ?? undefined,
-        cropHeight: inputParams.cropHeight ?? undefined,
+        width: params.width ?? undefined,
+        height: params.height ?? undefined,
+        scale: params.scale ?? undefined,
+        cropX: params.cropX ?? undefined,
+        cropY: params.cropY ?? undefined,
+        cropWidth: params.cropWidth ?? undefined,
+        cropHeight: params.cropHeight ?? undefined,
         elementName: elementQuery ?? undefined,
         querySelector: elementQuery ?? undefined,
-        maxFileSize: inputParams.maxFileSize ?? undefined
+        maxFileSize: params.maxFileSize ?? undefined
       };
       
       // Session ID will be handled by FileWriteCommand through context
@@ -295,6 +385,40 @@ export class ScreenshotCommand extends BaseCommand {
         processor: 'server'
       };
     }
+  }
+  
+  /**
+   * Parse CLI arguments to extract typed parameters
+   */
+  private static parseCliArguments(params: Record<string, unknown>): Record<string, unknown> {
+    // Handle CLI-style arguments if present in args array
+    if (params.args && Array.isArray(params.args)) {
+      const result: Record<string, unknown> = { ...params };
+      const remainingArgs: string[] = [];
+      
+      // Parse CLI-style args: --selector=body --filename=test.png
+      for (const arg of params.args) {
+        if (typeof arg === 'string' && arg.startsWith('--')) {
+          const [key, value] = arg.split('=', 2);
+          const cleanKey = key.replace('--', '');
+          
+          // Convert known numeric parameters
+          if (['quality', 'width', 'height', 'scale', 'cropX', 'cropY', 'cropWidth', 'cropHeight', 'maxFileSize'].includes(cleanKey)) {
+            result[cleanKey] = value ? parseFloat(value) : true;
+          } else {
+            result[cleanKey] = value || true;
+          }
+        } else {
+          remainingArgs.push(arg);
+        }
+      }
+      
+      result.args = remainingArgs;
+      return result;
+    }
+    
+    // Return as-is if no CLI args to parse
+    return params;
   }
 }
 

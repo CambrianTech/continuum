@@ -16,6 +16,29 @@
 
 import { BaseCommand, CommandDefinition, ContinuumContext, CommandResult } from '../base-command/BaseCommand';
 
+// ✅ STRONGLY TYPED PARAMETERS - Eliminates 'any' types
+interface HelpParameters {
+  command?: string;
+}
+
+/**
+ * Type guard for HelpParameters
+ */
+function validateHelpParameters(params: unknown): params is HelpParameters {
+  if (typeof params !== 'object' || params === null) {
+    return false;
+  }
+  
+  const obj = params as Record<string, unknown>;
+  
+  // command is optional but must be string if present
+  if (obj.command !== undefined && typeof obj.command !== 'string') {
+    return false;
+  }
+  
+  return true;
+}
+
 export class HelpCommand extends BaseCommand {
   static getDefinition(): CommandDefinition {
     return {
@@ -38,8 +61,37 @@ export class HelpCommand extends BaseCommand {
     };
   }
 
-  static async execute(params: { command?: string }, context: ContinuumContext): Promise<CommandResult> {
-    // Parameters are automatically parsed by UniversalCommandRegistry
+  /**
+   * ✅ STRONGLY TYPED EXECUTION - Framework → Your Strong Type
+   * Eliminates 'any' types through inline validation pattern
+   */
+  static async execute(parameters: unknown, context: ContinuumContext): Promise<CommandResult> {
+    try {
+      // Parse CLI arguments: --command=screenshot → { command: "screenshot" }
+      if (typeof parameters !== 'object' || parameters === null) {
+        throw new Error('Parameters must be a non-null object');
+      }
+      const parsedParams = HelpCommand.parseCliArguments(parameters as Record<string, unknown>);
+      
+      // Validate with descriptive error messages
+      if (!validateHelpParameters(parsedParams)) {
+        throw new Error('Invalid help parameters. Expected: { command?: string }');
+      }
+      
+      // Type assertion safe after validation
+      const typedParams = parsedParams as HelpParameters;
+      
+      return await HelpCommand.executeTyped(typedParams, context);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return { success: false, error: errorMessage, timestamp: new Date().toISOString() };
+    }
+  }
+  
+  /**
+   * Strongly typed execution with preserved business logic
+   */
+  private static async executeTyped(params: HelpParameters, context: ContinuumContext): Promise<CommandResult> {
     const { command } = params;
     
     // 🔍 DEBUG: Log parameter parsing for help command
@@ -91,6 +143,15 @@ export class HelpCommand extends BaseCommand {
         error instanceof Error ? error.message : String(error)
       );
     }
+  }
+  
+  /**
+   * Parse CLI arguments to extract typed parameters
+   */
+  private static parseCliArguments(params: Record<string, unknown>): Record<string, unknown> {
+    // For HelpCommand, parameters are typically simple: { command?: string }
+    // Just return as-is since UniversalCommandRegistry handles CLI parsing
+    return params;
   }
   
   /**
