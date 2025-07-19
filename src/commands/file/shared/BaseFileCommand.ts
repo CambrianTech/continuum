@@ -279,7 +279,8 @@ export abstract class BaseFileCommand extends BaseCommand {
       throw new Error('File operations not available in browser environment');
     }
     
-    // Use eval to avoid bundling issues
+    // Use eval to avoid bundling Node.js fs module into browser
+    // eslint-disable-next-line no-eval
     const fs = await eval('import("fs/promises")');
     
     switch (operation) {
@@ -313,7 +314,8 @@ export abstract class BaseFileCommand extends BaseCommand {
       throw new Error('Directory operations not available in browser environment');
     }
     
-    // Use eval to avoid bundling issues
+    // Use eval to avoid bundling Node.js fs module into browser
+    // eslint-disable-next-line no-eval
     const fs = await eval('import("fs/promises")');
     
     switch (operation) {
