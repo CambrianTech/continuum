@@ -57,12 +57,95 @@ export abstract class BaseCommand {
 
   /**
    * Execute command - implement this in subclasses with typed parameters
-   * Parameters are automatically parsed by UniversalCommandRegistry before calling this method
+   * Parameters are automatically parsed and validated before calling this method
    * 
-   * Pattern: static async execute(params: MyTypedParams, context: ContinuumContext): Promise<MyResult>
+   * @param params - Raw parameters (will be validated and cast to TParams)
+   * @param context - Execution context
+   * @returns Promise resolving to command result
    */
-  static execute(_params: unknown, _context: ContinuumContext): Promise<CommandResult> {
+  static async execute(_params: unknown, _context: ContinuumContext): Promise<CommandResult> {
     throw new Error('execute() must be implemented by subclass with typed parameters');
+  }
+
+  // Note: validateParams method removed to avoid conflicts with existing file command implementations
+  // Commands should use the inline pattern demonstrated in ExecCommand instead
+
+  // Note: getTypedParams method removed due to static inheritance limitations
+  // Commands should use the inline pattern demonstrated in ExecCommand instead
+
+  /**
+   * Generic typed execution pattern - eliminates 'any' parameters
+   * Use this in your execute method for automatic type safety and error handling
+   * 
+   * @param rawParams - Raw parameters from command call
+   * @param context - Execution context
+   * @param validator - Type guard function that validates and throws descriptive errors
+   * @param executor - Your typed execution function
+   * @returns Promise resolving to command result with automatic error handling
+   */
+  public static async executeWithStrongTypes<T>(
+    rawParams: unknown,
+    context: ContinuumContext,
+    validator: (params: unknown) => params is T,
+    executor: (params: T, context: ContinuumContext) => Promise<CommandResult>
+  ): Promise<CommandResult> {
+    try {
+      // Step 1: Basic type checking
+      if (typeof rawParams !== 'object' || rawParams === null) {
+        throw new Error('Parameters must be a non-null object');
+      }
+      
+      // Step 2: Parse CLI arguments if present (for backward compatibility)
+      const parsedParams = BaseCommand.parseCliArgumentsIfPresent(rawParams);
+      
+      // Step 3: Validate with custom type guard
+      validator(parsedParams);
+      const typedParams = parsedParams as T;
+      
+      // Step 4: Execute with strongly typed parameters
+      return await executor(typedParams, context);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: errorMessage,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
+   * Parse CLI arguments to extract typed parameters (internal helper)
+   */
+  private static parseCliArgumentsIfPresent(params: any): any {
+    // If no args array, return as-is
+    if (!params.args || !Array.isArray(params.args)) {
+      return params;
+    }
+
+    const result: any = { ...params };
+    const remainingArgs: string[] = [];
+    
+    // Parse CLI-style args
+    for (const arg of params.args) {
+      if (typeof arg === 'string' && arg.startsWith('--')) {
+        const [key, value] = arg.split('=', 2);
+        const cleanKey = key.replace('--', '');
+        if (cleanKey === 'args' && value) {
+          // Handle --args as array
+          result[cleanKey] = value.split(',');
+        } else {
+          result[cleanKey] = value || true; // Support flags without values
+        }
+      } else {
+        // Keep non-CLI args (positional arguments)
+        remainingArgs.push(arg);
+      }
+    }
+    
+    // Replace args with only the non-CLI args
+    result.args = remainingArgs;
+    return result;
   }
 
   /**
