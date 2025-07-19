@@ -43,9 +43,14 @@ function validateExecParameters(params: any): params is ExecParameters {
     throw new Error('ExecParameters.command must be a string');
   }
   
-  // Validate args type if present
-  if (params.args && !Array.isArray(params.args)) {
-    throw new Error('ExecParameters.args must be an array');
+  // Handle args conversion: string → array (CLI parsing compatibility)
+  if (params.args) {
+    if (typeof params.args === 'string') {
+      // Convert string args to array - handle CLI format like "--filename=test.png"
+      params.args = [params.args];
+    } else if (!Array.isArray(params.args)) {
+      throw new Error('ExecParameters.args must be a string or array');
+    }
   }
   
   return true;
@@ -100,7 +105,7 @@ export class ExecCommand extends BaseCommand {
       }
       
       // Step 2: Parse CLI arguments if present (for backward compatibility)
-      const parsedParams = ExecCommand.parseCliArguments(parameters);
+      const parsedParams = this.preprocessParameters(parameters); // ✅ Automatic CLI parsing
       
       // Step 3: Validate with custom type guard
       validateExecParameters(parsedParams);
@@ -118,39 +123,6 @@ export class ExecCommand extends BaseCommand {
     }
   }
 
-  /**
-   * Parse CLI arguments to extract typed parameters (reusable pattern)
-   */
-  private static parseCliArguments(params: any): any {
-    // If no args array, return as-is
-    if (!params.args || !Array.isArray(params.args)) {
-      return params;
-    }
-
-    const result: any = { ...params };
-    const remainingArgs: string[] = [];
-    
-    // Parse CLI-style args
-    for (const arg of params.args) {
-      if (typeof arg === 'string' && arg.startsWith('--')) {
-        const [key, value] = arg.split('=', 2);
-        const cleanKey = key.replace('--', '');
-        if (cleanKey === 'args' && value) {
-          // Handle --args as array
-          result[cleanKey] = value.split(',');
-        } else {
-          result[cleanKey] = value || true; // Support flags without values
-        }
-      } else {
-        // Keep non-CLI args (positional arguments)
-        remainingArgs.push(arg);
-      }
-    }
-    
-    // Replace args with only the non-CLI args
-    result.args = remainingArgs;
-    return result;
-  }
 
   /**
    * Execute with strongly typed parameters

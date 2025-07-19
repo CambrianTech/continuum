@@ -8,8 +8,59 @@
 
 import { CommandDefinition, ContinuumContext, CommandResult } from '../../core/base-command/BaseCommand';
 import { BaseFileCommand, FileSystemOperation } from '../shared/BaseFileCommand';
-import { ArtifactType, FileOperationParams, FileOperationResult } from '../shared/FileTypes';
+import { ArtifactType, FileOperationResult } from '../shared/FileTypes';
 import * as path from 'path';
+import type { UUID } from 'crypto';
+
+// ✅ STRONGLY TYPED PARAMETERS - Eliminates 'any' types
+// Extends FileOperationParams with additional FileWriteCommand-specific options
+interface FileWriteParameters {
+  content: string | Buffer | Uint8Array;
+  filename: string;
+  artifactType?: ArtifactType;
+  encoding?: BufferEncoding;
+  sessionId?: UUID;
+  marshalId?: string;
+  directory?: string; // Directory override for file location
+}
+
+/**
+ * Type guard for FileWriteParameters
+ */
+function validateFileWriteParameters(params: unknown): params is FileWriteParameters {
+  if (typeof params !== 'object' || params === null) {
+    return false;
+  }
+  
+  const obj = params as Record<string, unknown>;
+  
+  // Required fields
+  if (!obj.content || (typeof obj.content !== 'string' && !Buffer.isBuffer(obj.content) && !(obj.content instanceof Uint8Array))) {
+    return false;
+  }
+  if (typeof obj.filename !== 'string') {
+    return false;
+  }
+  
+  // Optional fields - validate types if present
+  if (obj.artifactType !== undefined && !Object.values(ArtifactType).includes(obj.artifactType as ArtifactType)) {
+    return false;
+  }
+  if (obj.encoding !== undefined && typeof obj.encoding !== 'string') {
+    return false;
+  }
+  if (obj.sessionId !== undefined && typeof obj.sessionId !== 'string') {
+    return false;
+  }
+  if (obj.marshalId !== undefined && typeof obj.marshalId !== 'string') {
+    return false;
+  }
+  if (obj.directory !== undefined && typeof obj.directory !== 'string') {
+    return false;
+  }
+  
+  return true;
+}
 
 export class FileWriteCommand extends BaseFileCommand {
   static getDefinition(): CommandDefinition {
@@ -34,7 +85,22 @@ export class FileWriteCommand extends BaseFileCommand {
     };
   }
 
-  static async execute(params: FileOperationParams, context: ContinuumContext): Promise<CommandResult> {
+  /**
+   * ✅ JOEL'S CLEAN APPROACH - Single execute method with internal typing
+   * Validation at the top, then typed params for rest of method
+   */
+  static async execute(parameters: unknown, context: ContinuumContext): Promise<CommandResult> {
+    // === VALIDATION SECTION (top of method) ===
+    const parsedParams = this.preprocessParameters(parameters); // ✅ Automatic CLI parsing
+    
+    if (!validateFileWriteParameters(parsedParams)) {
+      return { success: false, error: 'Invalid file write parameters. content (string|Buffer|Uint8Array) and filename (string) are required.', timestamp: new Date().toISOString() };
+    }
+    
+    // === TYPED BUSINESS LOGIC SECTION (rest of method) ===
+    // Now params is strongly typed for the entire rest of the method
+    const params = parsedParams as FileWriteParameters;
+    
     try {
       // Use session ID from context if not provided in params
       const sessionId = params.sessionId || context.sessionId;
@@ -44,7 +110,7 @@ export class FileWriteCommand extends BaseFileCommand {
         filename: params.filename,
         sessionId: sessionId,
         artifactType: params.artifactType,
-        directory: (params as any).directory
+        directory: params.directory // ✅ No 'any' cast needed - strongly typed
       });
       
       // Ensure target directory exists
@@ -72,7 +138,7 @@ export class FileWriteCommand extends BaseFileCommand {
         filepath: targetPath,
         size: Buffer.isBuffer(params.content) ? params.content.length : Buffer.byteLength(params.content, encoding || 'utf8'),
         artifactType: params.artifactType || ArtifactType.FILE,
-        sessionId: sessionId as any,
+        sessionId: sessionId as UUID, // ✅ Proper type assertion - sessionId is UUID
         timestamp: new Date().toISOString(),
         success: true
       };

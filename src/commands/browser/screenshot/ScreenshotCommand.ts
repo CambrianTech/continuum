@@ -268,7 +268,7 @@ export class ScreenshotCommand extends BaseCommand {
       return { success: false, error: 'Parameters must be a non-null object', timestamp: new Date().toISOString() };
     }
     
-    const parsedParams = ScreenshotCommand.parseCliArguments(parameters as Record<string, unknown>);
+    const parsedParams = this.preprocessParameters(parameters); // ✅ Automatic CLI parsing
     
     if (!validateScreenshotParameters(parsedParams)) {
       return { success: false, error: 'Invalid screenshot parameters. Check format, quality (0-1), and parameter types.', timestamp: new Date().toISOString() };
@@ -385,40 +385,6 @@ export class ScreenshotCommand extends BaseCommand {
         processor: 'server'
       };
     }
-  }
-  
-  /**
-   * Parse CLI arguments to extract typed parameters
-   */
-  private static parseCliArguments(params: Record<string, unknown>): Record<string, unknown> {
-    // Handle CLI-style arguments if present in args array
-    if (params.args && Array.isArray(params.args)) {
-      const result: Record<string, unknown> = { ...params };
-      const remainingArgs: string[] = [];
-      
-      // Parse CLI-style args: --selector=body --filename=test.png
-      for (const arg of params.args) {
-        if (typeof arg === 'string' && arg.startsWith('--')) {
-          const [key, value] = arg.split('=', 2);
-          const cleanKey = key.replace('--', '');
-          
-          // Convert known numeric parameters
-          if (['quality', 'width', 'height', 'scale', 'cropX', 'cropY', 'cropWidth', 'cropHeight', 'maxFileSize'].includes(cleanKey)) {
-            result[cleanKey] = value ? parseFloat(value) : true;
-          } else {
-            result[cleanKey] = value || true;
-          }
-        } else {
-          remainingArgs.push(arg);
-        }
-      }
-      
-      result.args = remainingArgs;
-      return result;
-    }
-    
-    // Return as-is if no CLI args to parse
-    return params;
   }
 }
 

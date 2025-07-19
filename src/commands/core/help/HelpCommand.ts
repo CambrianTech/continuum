@@ -71,7 +71,7 @@ export class HelpCommand extends BaseCommand {
       if (typeof parameters !== 'object' || parameters === null) {
         throw new Error('Parameters must be a non-null object');
       }
-      const parsedParams = HelpCommand.parseCliArguments(parameters as Record<string, unknown>);
+      const parsedParams = this.preprocessParameters(parameters); // ✅ Automatic CLI parsing
       
       // Validate with descriptive error messages
       if (!validateHelpParameters(parsedParams)) {
@@ -145,14 +145,6 @@ export class HelpCommand extends BaseCommand {
     }
   }
   
-  /**
-   * Parse CLI arguments to extract typed parameters
-   */
-  private static parseCliArguments(params: Record<string, unknown>): Record<string, unknown> {
-    // For HelpCommand, parameters are typically simple: { command?: string }
-    // Just return as-is since UniversalCommandRegistry handles CLI parsing
-    return params;
-  }
   
   /**
    * Discover available commands dynamically - NO HARDCODED LISTS
