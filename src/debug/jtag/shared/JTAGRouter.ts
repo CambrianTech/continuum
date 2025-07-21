@@ -225,6 +225,28 @@ export class JTAGRouter {
     return results;
   }
 
+  // MISSING METHOD FIX: Add getActiveTransports method
+  getActiveTransports(): string[] {
+    return Array.from(this.transports.keys());
+  }
+
+  getTransportHealth(): { [name: string]: boolean } {
+    const health: { [name: string]: boolean } = {};
+    for (const [name, transport] of this.transports.entries()) {
+      health[name] = transport.isHealthy();
+    }
+    return health;
+  }
+
+  getRouteInfo(): { routeCount: number; transportCount: number; routes: string[] } {
+    const routes = Array.from(this.routeTable.routes.keys());
+    return {
+      routeCount: routes.length,
+      transportCount: this.transports.size,
+      routes
+    };
+  }
+
   private findMatchingRoutes(message: JTAGUniversalMessage): RouteDefinition[] {
     const matches: RouteDefinition[] = [];
 

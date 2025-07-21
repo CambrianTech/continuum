@@ -2,36 +2,41 @@
  * JTAG End-to-End Demo - Client-side TypeScript
  */
 
+import { createJTAGClient, JTAGBrowserClient } from '../browser-client/jtag-auto-init';
+
+// Get the JTAG client instance
+let jtag: JTAGBrowserClient | null = null;
+
 let browserUUID: any = null;
 let jtagConnected = false;
 let serverUUID: string | null = null;
 
 // Initialize the demo when page loads
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   console.log('🎪 JTAG Demo: Page loaded');
-  initializeDemo();
-});
-
-// Wait for JTAG to be ready
-window.addEventListener('jtag:ready', (event: any) => {
-  console.log('✅ JTAG Demo: JTAG ready event received', event.detail);
-  jtagConnected = true;
-  updateConnectionStatus();
   
-  if (window.jtag) {
-    browserUUID = window.jtag.getUUID();
-    updateBrowserUUID();
+  try {
+    // Create and connect JTAG client
+    jtag = await createJTAGClient();
+    jtagConnected = true;
     
-    // Test initial connection
-    testBrowserLogging();
+    // Get browser UUID
+    if (jtag) {
+      browserUUID = jtag.getUUID();
+    }
+    
+    console.log('✅ JTAG Demo: JTAG client connected');
+    
+    initializeDemo();
+    
+  } catch (error) {
+    console.error('❌ JTAG Demo: Failed to initialize JTAG client:', error);
+    jtagConnected = false;
+    initializeDemo();
   }
 });
 
-window.addEventListener('jtag:error', (event: any) => {
-  console.error('❌ JTAG Demo: JTAG error event', event.detail);
-  jtagConnected = false;
-  updateConnectionStatus();
-});
+// JTAG client initialization is now handled in DOMContentLoaded above
 
 function initializeDemo() {
   console.log('🔧 JTAG Demo: Initializing UI...');
@@ -96,8 +101,8 @@ function updateConnectionStatus() {
   console.log('🖥️ Testing server logging...');
   appendToLog('server-log', 'Server logging test initiated');
   
-  if (window.jtag) {
-    window.jtag.log('DEMO_SERVER_TEST', 'Server logging test from browser');
+  if (jtag) {
+    jtag.log('DEMO_SERVER_TEST', 'Server logging test from browser');
   }
 };
 
@@ -198,17 +203,23 @@ function appendToLog(logId: string, message: string) {
   }
 }
 
-// Global type declarations
+// Global function declarations for onclick handlers
 declare global {
   interface Window {
-    jtag: {
-      log: (component: string, message: string, data?: any) => void;
-      critical: (component: string, message: string, data?: any) => void;
-      exec: (code: string) => Promise<any>;
-      screenshot: (filename: string) => Promise<any>;
-      getUUID: () => { uuid: string; context: string; timestamp: string };
-    };
+    jtag: JTAGBrowserClient;
+    JTAGClient: any;
+    testServerLogging: () => void;
+    testServerExec: () => void;  
+    testServerScreenshot: () => void;
+    testBrowserLogging: () => void;
+    testBrowserExec: () => void;
+    testBrowserScreenshot: () => void;
+    testCrossContext: () => void;
+    clearAllLogs: () => void;
   }
 }
 
 console.log('📜 JTAG Demo: Script loaded and ready');
+
+// Export to make this file a module (required for global declarations)
+export {};
