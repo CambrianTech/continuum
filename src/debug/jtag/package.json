@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.14",
+  "version": "1.0.27",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "index.js",
   "types": "index.d.ts",
@@ -47,7 +47,7 @@
     "system:wait": "sleep 5 && curl -s http://localhost:9002 >/dev/null || (sleep 10 && curl -s http://localhost:9002 >/dev/null)",
     "build": "npm run build:ts && npm run build:browser",
     "build:ts": "tsc --project tsconfig.json",
-    "build:browser": "echo '📦 Browser build: Transpiling TS to JS for browser compatibility'",
+    "build:browser": "node scripts/build-browser.js",
     "version:bump": "npm version patch --no-git-tag-version",
     "prepublishOnly": "npm run build && npm test",
     "test:cleanup": "npm run system:stop",
