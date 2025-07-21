@@ -1,16 +1,21 @@
 #!/usr/bin/env npx tsx
 /**
- * Minimal Demo Server - Bypass JTAG init issues
+ * Real JTAG Demo Server - Connect to actual JTAG system
  */
 
 import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
+// Import real JTAG router for transport abstraction
+import { jtagRouter } from '../index';
+// Import WebSocket server to start REAL JTAG on port 9001
+import { JTAGWebSocketServer } from '../shared/JTAGWebSocket';
 
 const PORT = 9002;
 
 class MinimalServer {
   private server: http.Server;
+  private jtagServer: JTAGWebSocketServer | null = null;
 
   constructor() {
     this.server = http.createServer(this.handleRequest.bind(this));
@@ -53,26 +58,54 @@ class MinimalServer {
     }
   }
 
-  private handleAPIRoute(req: http.IncomingMessage, res: http.ServerResponse): void {
-    // Mock API route response for browser client
-    res.writeHead(200, { 
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type'
-    });
+  private async handleAPIRoute(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    // Real JTAG transport routing
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     
     if (req.method === 'OPTIONS') {
+      res.writeHead(200);
       res.end();
       return;
     }
 
-    // Mock successful response
-    res.end(JSON.stringify({ 
-      success: true, 
-      result: { message: 'Mock API response' }
-    }));
-    console.log(`🔄 Mock API route handled`);
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Method not allowed' }));
+      return;
+    }
+
+    // Read request body
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const message = JSON.parse(body);
+        console.log(`🔄 Real JTAG routing message:`, message.type);
+        
+        // Route through real JTAG router
+        const results = await jtagRouter.routeMessage(message);
+        
+        // Find successful result
+        const successResult = results.find(r => r.success);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        if (successResult?.result) {
+          res.end(JSON.stringify({ success: true, result: successResult.result }));
+          console.log(`✅ JTAG router success: ${message.type}`);
+        } else {
+          // Return error details from failed results
+          const errors = results.filter(r => !r.success).map(r => r.error);
+          res.end(JSON.stringify({ success: false, error: errors }));
+          console.log(`❌ JTAG router failed: ${message.type}`, errors);
+        }
+      } catch (error: any) {
+        console.error(`💥 JTAG route error:`, error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: error.message }));
+      }
+    });
   }
 
   private serve404(res: http.ServerResponse): void {
@@ -83,10 +116,30 @@ class MinimalServer {
   async start(): Promise<void> {
     console.log('🚀 Starting minimal demo server...');
     
+    // START THE REAL WEBSOCKET SERVER ON PORT 9001
+    console.log('🚀 Starting REAL JTAG WebSocket server on port 9001...');
+    this.jtagServer = new JTAGWebSocketServer({
+      port: 9001,
+      onLog: (entry) => {
+        console.log(`📝 JTAG Server received log:`, entry);
+      },
+      onScreenshot: async (payload) => {
+        console.log(`📷 JTAG Server received screenshot:`, payload.filename);
+        return { success: true, filename: payload.filename };
+      },
+      onExec: async (code, options) => {
+        console.log(`⚡ JTAG Server received exec:`, code);
+        return { success: true, result: 'Server exec result' };
+      }
+    });
+    
+    await this.jtagServer.start();
+    console.log('✅ JTAG WebSocket server listening on port 9001');
+    
     return new Promise((resolve, reject) => {
       this.server.on('error', reject);
       this.server.listen(PORT, () => {
-        console.log(`✅ Minimal server running at http://localhost:${PORT}`);
+        console.log(`✅ HTTP demo server running at http://localhost:${PORT}`);
         
         // Launch browser automatically
         setTimeout(() => {

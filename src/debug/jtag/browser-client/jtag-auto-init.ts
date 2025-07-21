@@ -59,8 +59,8 @@ function interceptConsole() {
       intercepting = true;
       try {
         const message = args.join(' ');
-        // Skip JTAG's own log messages to prevent loops
-        if (!message.includes('📝 JTAG:') && !message.includes('🌐 JTAG:')) {
+        // Skip ALL JTAG log messages to prevent loops
+        if (!message.includes('JTAG:') && !message.includes('📝') && !message.includes('🌐') && !message.includes('✅') && !message.includes('🔌') && !message.includes('📨')) {
           window.jtag.log('BROWSER_CONSOLE', message);
         }
       } finally {
@@ -104,6 +104,7 @@ function interceptConsole() {
 class JTAGBrowserClient {
   private config: any;
   private connected = false;
+  private websocket: WebSocket | null = null;
 
   constructor(config: any) {
     this.config = config;
@@ -112,44 +113,47 @@ class JTAGBrowserClient {
   async autoConnect(): Promise<void> {
     try {
       console.log('🔌 JTAG: Starting autoConnect - config:', this.config);
-      console.log('🔌 JTAG: Connecting to debugging server via transport router...');
-      console.log('🔌 JTAG: Will try endpoint:', `http://localhost:9002/api/route`);
+      console.log('🔌 JTAG: Connecting directly to WebSocket server...');
+      console.log('🔌 JTAG: Will try endpoint:', `ws://localhost:${this.config.jtagPort}`);
       
-      // Use transport abstraction instead of hardcoded WebSocket
-      const message = {
-        type: 'connect',
-        payload: {
-          endpoint: `ws://localhost:${this.config.jtagPort}`,
-          transport: 'websocket'
-        }
-      };
-      console.log('🔌 JTAG: Sending connect message:', message);
+      // Connect directly to WebSocket - NO HTTP routing bullshit
+      const wsEndpoint = `ws://localhost:${this.config.jtagPort}`;
+      this.websocket = new WebSocket(wsEndpoint);
       
-      const connectResult = await this.routeMessage(message);
+      const connectResult = await new Promise<any>((resolve, reject) => {
+        this.websocket!.onopen = () => {
+          console.log('✅ JTAG: WebSocket connected directly');
+          this.connected = true;
+          resolve({ success: true, transport: 'websocket' });
+        };
+        
+        this.websocket!.onerror = (error) => {
+          console.error('❌ JTAG: WebSocket connection failed:', error);
+          reject(error);
+        };
+        
+        this.websocket!.onmessage = (event) => {
+          console.log('📨 JTAG: WebSocket message received:', event.data);
+        };
+        
+        setTimeout(() => reject(new Error('WebSocket connection timeout')), 5000);
+      });
       console.log('🔌 JTAG: Connect result:', connectResult);
       
-      if (connectResult && connectResult.success) {
-        this.connected = true;
-        console.log('✅ JTAG: Connected via transport router');
-        
-        // Test logging immediately
-        console.log('🧪 JTAG: Testing log message...');
-        this.log('BROWSER_INIT', 'Browser client connected successfully');
-        
-        // Emit ready event for app integration
-        window.dispatchEvent(new CustomEvent('jtag:ready', {
-          detail: { 
-            endpoint: `ws://localhost:${this.config.jtagPort}`,
-            config: this.config 
-          }
-        }));
-      } else {
-        console.error('❌ JTAG: Connect result indicates failure:', connectResult);
-        throw new Error('Transport router connection failed: ' + JSON.stringify(connectResult));
-      }
+      // Test logging immediately over WebSocket
+      console.log('🧪 JTAG: Testing log message over WebSocket...');
+      this.log('BROWSER_INIT', 'Browser client connected successfully via WebSocket');
       
-    } catch (error) {
-      console.error('❌ JTAG: Auto-connect failed:', error);
+      // Emit ready event for app integration
+      window.dispatchEvent(new CustomEvent('jtag:ready', {
+        detail: {
+          endpoint: wsEndpoint,
+          config: this.config
+        }
+      }));
+      
+    } catch (error: any) {
+      console.error('❌ JTAG: WebSocket connection failed:', error);
       const errorDetails = error instanceof Error ? {
         name: error.name,
         message: error.message,
@@ -211,17 +215,14 @@ class JTAGBrowserClient {
       type: 'log'
     };
     
-    console.log('📝 JTAG: Sending log message:', entry);
+    console.log('📝 JTAG: Sending log over WebSocket:', entry);
     
-    // Use transport router instead of direct WebSocket
-    const routePromise = this.routeMessage({ type: 'log', payload: entry });
-    
-    // Handle the promise to see any errors
-    routePromise.then(result => {
-      console.log('📝 JTAG: Log message result:', result);
-    }).catch(error => {
-      console.error('📝 JTAG: Log message failed:', error);
-    });
+    if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+      this.websocket.send(JSON.stringify({ type: 'log', payload: entry }));
+      console.log('✅ JTAG: Log sent via WebSocket');
+    } else {
+      console.error('❌ JTAG: WebSocket not connected, cannot send log');
+    }
   }
 
   critical(component: string, message: string, data?: any): void {
@@ -234,8 +235,9 @@ class JTAGBrowserClient {
       type: 'critical'
     };
     
-    // Use transport router instead of direct WebSocket
-    this.routeMessage({ type: 'log', payload: entry });
+    if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+      this.websocket.send(JSON.stringify({ type: 'log', payload: entry }));
+    }
   }
 
   async exec(code: string): Promise<any> {
