@@ -41,7 +41,7 @@ export interface BaseCapabilities {
   serialize: boolean;
   
   // Extensible for subclasses
-  [key: string]: boolean;
+  [key: string]: boolean | undefined;
 }
 
 /**

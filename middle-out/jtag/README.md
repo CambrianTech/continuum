@@ -1,28 +1,29 @@
-# JTAG Debugging Framework
+# JTAG Universal Command Bus
 
-## 🎯 The JTAG Breakthrough: Real-Time System Visibility
+## 🎯 JTAG Evolution: From Debugging to Universal Infrastructure
 
-**CRITICAL DISCOVERY**: The combination of browser console forwarding and server daemon logs creates **complete system visibility** that enables truly autonomous debugging without human intervention.
+**BREAKTHROUGH**: JTAG has evolved from a debugging system into a **Universal Command Bus** that enables cross-system communication, promise chaining, and unified operations across browser/server boundaries.
 
-### 🔌 What is JTAG?
+### 🔌 What is JTAG Now?
 
-**JTAG** (Joint Test Action Group) in our context refers to a comprehensive debugging infrastructure that provides:
-- **Real-time visibility** into both client and server operations
-- **Autonomous problem-solving** through systematic log correlation
-- **Visual validation** with screenshot capture
-- **Self-healing capabilities** through automated error recovery
+**JTAG** (Joint Test Action Group) is now a **Universal Command Bus** that provides:
+- **Cross-system command chaining** - JTAG → Continuum → Widgets with promises
+- **Automatic endpoint validation** - Commands await their required endpoints
+- **Dynamic command registration** - Any system can plug in easily
+- **Transport-agnostic routing** - WebSocket, HTTP, MCP, File all supported
+- **Universal debugging utility** - Like Puppeteer but for any application
 
-### ✅ JTAG Implementation Success (2025-07-10)
+### ✅ JTAG Universal Bus Implementation (2025-07-21)
 
-**Complete Visibility Achieved:**
+**Universal Command Bus Achieved:**
 
-* **✅ Server logs**: All daemon activity logged to session `.continuum/sessions/*/logs/server.log`
-* **✅ Browser logs**: Console capture system forwarding ALL browser activity
-* **✅ Session-based**: Automatic logging for every session, no manual activation needed
-* **✅ Command discovery**: 24 commands discovered, implementations loading dynamically
-* **✅ Console probes**: Real-time JavaScript execution for AI debugging
-* **✅ Object serialization**: Proper JSON handling prevents [object Object] issues
-* **✅ Human-readable logs**: Both structured JSON and readable formats available
+* **✅ Dynamic Command Registration**: Any system can register commands via `bus.registerCommand()`
+* **✅ Promise Chaining**: Commands can chain across different systems with results
+* **✅ Endpoint Validation**: Commands await their required endpoints (`browser`, `server`) 
+* **✅ Transport Router**: Universal message routing through pluggable backends
+* **✅ Cross-System Integration**: JTAG + Continuum + Widgets all on same bus
+* **✅ Auto-Wiring**: Registered commands automatically create callable methods
+* **✅ Console Queueing**: Client messages queue until transport is ready
 
 **🛸 AI Probe System (New!):**
 

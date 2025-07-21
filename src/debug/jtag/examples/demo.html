@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JTAG End-to-End Demo</title>
+    <link rel="stylesheet" href="/demo.css">
+</head>
+<body>
+    <h1>🚨 JTAG End-to-End Demo</h1>
+    
+    <div class="container">
+        <div class="panel server-panel">
+            <h2>🖥️ Server-Side JTAG</h2>
+            <p><strong>Server UUID:</strong> <span class="uuid" id="server-uuid">Loading...</span></p>
+            <p><strong>JTAG Port:</strong> <span id="jtag-port">9001</span></p>
+            <p><strong>Status:</strong> <span class="status connected">Running</span></p>
+            
+            <button onclick="testServerLogging()">Test Server Logging</button>
+            <button onclick="testServerExec()">Test Server Exec</button>
+            <button onclick="testServerScreenshot()">Test Server Screenshot</button>
+            
+            <div id="server-log" class="log">Server logs will appear here...</div>
+        </div>
+        
+        <div class="panel browser-panel">
+            <h2>🌐 Browser-Side JTAG</h2>
+            <p><strong>Browser UUID:</strong> <span class="uuid" id="browser-uuid">Loading...</span></p>
+            <p><strong>Connection:</strong> <span id="connection-status" class="status disconnected">Connecting...</span></p>
+            
+            <button onclick="testBrowserLogging()">Test Browser Logging</button>
+            <button onclick="testBrowserExec()">Test Browser Exec</button>
+            <button onclick="testBrowserScreenshot()">Test Browser Screenshot</button>
+            
+            <div id="browser-log" class="log">Browser logs will appear here...</div>
+        </div>
+    </div>
+    
+    <div class="panel" style="margin-top: 20px;">
+        <h2>🔄 Cross-Context Communication</h2>
+        <button onclick="testCrossContext()">Test Browser ↔ Server Communication</button>
+        <button onclick="clearAllLogs()">Clear All Logs</button>
+        
+        <div id="cross-context-log" class="log">Cross-context test results will appear here...</div>
+    </div>
+
+    <!-- JTAG Universal Debug System - automatically handles transport -->
+    <script src="/jtag.js"></script>
+    <script src="/demo.js"></script>
+</body>
+</html>

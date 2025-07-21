@@ -50,8 +50,9 @@ This directory contains the complete architectural documentation for Continuum's
 #### 🧪 [Testing](testing/)
 - **[intelligent-modular-testing.md](testing/intelligent-modular-testing.md)** - AI-friendly module discovery, compliance, and graduation tracking
 
-#### 🔍 [JTAG Debugging](jtag/) **⭐ AI DEBUGGING BREAKTHROUGH**
-- **[README.md](jtag/README.md)** - Complete JTAG debugging framework overview
+#### 🔍 [JTAG Universal Bus](jtag/) **⭐ FOUNDATIONAL INFRASTRUCTURE**
+- **[README.md](jtag/README.md)** - Complete JTAG universal debugging bus overview
+- **[roadmap.md](jtag/roadmap.md)** - **🚀 STRATEGIC VISION** Universal bus architecture transforming ecosystem debugging
 - **[widget-debugging.md](jtag/widget-debugging.md)** - **🎨 Widget shadow DOM analysis and UI debugging workflow**
 - **[widget-screenshot-testing.md](jtag/widget-screenshot-testing.md)** - **📸 Visual widget validation with JTAG screenshots** - Get immediate visual feedback on UI changes
 - **[implementation.md](jtag/implementation.md)** - Technical implementation details and connection information
@@ -59,7 +60,6 @@ This directory contains the complete architectural documentation for Continuum's
 - **[ai-browser-debugging.md](jtag/ai-browser-debugging.md)** - **🛸 AI console probe debugging guide**
 - **[ai-script-execution.md](jtag/ai-script-execution.md)** - **🚀 JavaScript execution for autonomous development**
 - **[examples.md](jtag/examples.md)** - Real-world debugging scenarios (coming soon)
-- **[roadmap.md](jtag/roadmap.md)** - Implementation phases and future vision (coming soon)
 
 #### 🔥 [Development Workflow](development/)
 - **[hot-reload-workflow.md](development/hot-reload-workflow.md)** - **🚀 Autonomous AI development with session preservation**
