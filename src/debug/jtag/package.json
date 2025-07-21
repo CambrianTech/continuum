@@ -1,0 +1,118 @@
+{
+  "name": "@continuum/jtag",
+  "version": "1.0.14",
+  "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "author": "Continuum Development Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/continuum/jtag.git"
+  },
+  "bugs": {
+    "url": "https://github.com/continuum/jtag/issues"
+  },
+  "homepage": "https://github.com/continuum/jtag#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "config": {
+    "port": 9001,
+    "rootPath": ".continuum/jtag",
+    "logsPath": ".continuum/jtag/logs",
+    "screenshotsPath": ".continuum/jtag/screenshots",
+    "browser": {
+      "headless": false,
+      "devtools": true,
+      "width": 1200,
+      "height": 800
+    }
+  },
+  "scripts": {
+    "start": "npm run clean:dist && npm run build && npm run version:bump && npx tsx examples/end-to-end-demo.ts",
+    "build:mcp": "npx tsc mcp/jtag-mcp-server.ts --outDir mcp --target ES2020 --module commonjs --esModuleInterop",
+    "demo": "npm start",
+    "demo:server": "npx tsx examples/simple-app.ts",
+    "demo:browser": "npm start",
+    "pretest": "npm run system:start",
+    "test": "npm run clean:dist && npm run build && npm run test:all",
+    "posttest": "npm run system:stop",
+    "pretest:browser": "npm run system:start",
+    "posttest:browser": "npm run system:stop",
+    "pretest:e2e": "npm run system:start",
+    "posttest:e2e": "npm run system:stop",
+    "system:start": "npm start &",
+    "system:stop": "lsof -ti:9002 | xargs kill -9 2>/dev/null || true; lsof -ti:9001 | xargs kill -9 2>/dev/null || true",
+    "system:wait": "sleep 5 && curl -s http://localhost:9002 >/dev/null || (sleep 10 && curl -s http://localhost:9002 >/dev/null)",
+    "build": "npm run build:ts && npm run build:browser",
+    "build:ts": "tsc --project tsconfig.json",
+    "build:browser": "echo '📦 Browser build: Transpiling TS to JS for browser compatibility'",
+    "version:bump": "npm version patch --no-git-tag-version",
+    "prepublishOnly": "npm run build && npm test",
+    "test:cleanup": "npm run system:stop",
+    "test:verify": "echo '🎯 All JTAG tests passed!' && npm run test:show-logs",
+    "test:show-logs": "echo '📋 Log files created:' && ls -la ../../../.continuum/jtag/logs/ || true",
+    "test:layer-1": "echo '🧅 Layer 1: Foundation Tests' && npx tsx tests/layer-1-foundation/transport-abstraction.test.ts && npx tsx tests/layer-1-foundation/console-mapping.test.ts",
+    "test:layer-2": "echo '🧅 Layer 2: Daemon Processes' && npx tsx tests/layer-2-daemon-processes/console-routing-integration.test.ts",
+    "test:layer-4": "echo '🧅 Layer 4: System Integration' && npm run test:standalone && npm run test:module",
+    "test:layer-6": "echo '🧅 Layer 6: Browser Integration' && npm run system:wait && npx tsx tests/layer-6-browser-integration/browser-automation-test.ts",
+    "test:unit:transports": "echo '🔄 Unit: Transport Iterator Tests' && npx tsx tests/unit/transport-iterator.test.ts",
+    "test:integration:browser": "echo '🌐 Integration: Browser Transport Iterator' && npm run system:wait && npx tsx tests/integration/browser-transport-iterator.test.ts",
+    "test:standalone": "npx tsx tests/layer-4-system-integration/standalone-integration-test.ts",
+    "test:module": "npx tsx tests/layer-4-system-integration/module-integration-test.ts",
+    "test:browser": "npm run test:layer-6",
+    "test:e2e": "npm run test:layer-6",
+    "test:unit": "npm run test:layer-1",
+    "test:integration": "npm run test:layer-2",
+    "test:all": "npm run test:unit:transports && npm run test:layer-1 && npm run test:layer-2 && npm run test:layer-4 && npm run test:integration:browser && npm run test:verify",
+    "dev": "node examples/simple-usage.js && npm run build",
+    "serve": "cd examples && python3 -m http.server 8080",
+    "serve:examples": "echo 'Open http://localhost:8080/browser-simulation.html' && npm run serve",
+    "clean:logs": "find ../../../.continuum/jtag/logs -name '*.log' -type f -delete 2>/dev/null || true; mkdir -p ../../../.continuum/jtag/logs",
+    "clean:screenshots": "rm -rf ../../../.continuum/jtag/screenshots/* 2>/dev/null || true",
+    "clean:all": "npm run clean:logs && npm run clean:screenshots && rm -rf dist/ 2>/dev/null || true",
+    "clean:dist": "rm -rf dist/ 2>/dev/null || true"
+  },
+  "keywords": [
+    "debugging",
+    "logging",
+    "console",
+    "websocket",
+    "screenshot",
+    "typescript",
+    "universal",
+    "production",
+    "toolchain",
+    "automation"
+  ],
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "shared/",
+    "client/",
+    "server/",
+    "dist/",
+    "templates/",
+    "README.md",
+    "MINIMAL-USAGE.md",
+    "INTEGRATION-TEST-CHAIN.md"
+  ],
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.15.29",
+    "@types/node-fetch": "^2.6.12",
+    "@types/ws": "^8.18.1",
+    "jest": "^29.5.0",
+    "node-fetch": "^3.3.2",
+    "puppeteer": "^21.0.0",
+    "ts-jest": "^29.3.4",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "ws": "^8.18.3"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020", "DOM"],
+    "outDir": "./dist",
+    "rootDir": "./",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "noEmitOnError": false
+  },
+  "include": [
+    "index.ts",
+    "shared/JTAGTypes.ts",
+    "shared/JTAGBase.ts",
+    "shared/config.ts",
+    "shared/JTAGWebSocket.ts",
+    "shared/JTAGTransportFactory.ts",
+    "shared/transport-examples.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "examples/**/*",
+    "tests/**/*",
+    "client/**/*",
+    "server/**/*",
+    "mcp/**/*",
+    "shared/modules/**/*",
+    "shared/transports/**/*",
+    "**/*.test.js",
+    "**/*.test.ts"
+  ]
+}

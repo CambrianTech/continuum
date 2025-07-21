@@ -205,6 +205,176 @@ class UniversalDaemon extends ProcessBasedDaemon<T> {
 - P2P daemon communication
 - Fault tolerance through context redundancy
 
+## **🎯 CORE PRINCIPLE: DUMB ROUTER PATTERN**
+
+Each daemon is **completely isolated** and handles **one specific concern**. Daemons register themselves with routing patterns. The router is **dumb** - it just routes messages based on registered patterns, with zero business logic.
+
+### **Architecture Tests (Test-Driven Design)**
+
+```typescript
+// Test 1: Dumb Router - No Business Logic
+describe('CommandRouter', () => {
+  it('should route messages based on registered patterns only', async () => {
+    const router = new CommandRouter();
+    
+    // Router should have NO knowledge of HttpApiHandler, WebSocketHandler, etc.
+    // It only knows about registered patterns
+    router.registerHandler('http_request', 'http-api-handler');
+    router.registerHandler('websocket_message', 'websocket-handler');
+    router.registerHandler('execute_command', 'command-executor');
+    
+    const message = { type: 'http_request', data: {...} };
+    const result = await router.route(message);
+    
+    expect(result.routedTo).toBe('http-api-handler');
+    expect(router.hasBusinessLogic()).toBe(false); // Router is dumb!
+  });
+});
+
+// Test 2: HttpApiHandler Self-Registration
+describe('HttpApiHandler', () => {
+  it('should register itself and handle only HTTP concerns', async () => {
+    const handler = new HttpApiHandler();
+    const mockRouter = new MockRouter();
+    
+    // Handler registers itself - no external knowledge needed
+    await handler.registerWithRouter(mockRouter);
+    
+    expect(mockRouter.getRegisteredPatterns()).toContain('handle_api');
+    expect(handler.getConcern()).toBe('http-api-parsing'); // Single concern
+    expect(handler.knowsAbout('websocket')).toBe(false); // No cross-daemon knowledge
+  });
+  
+  it('should parse HTTP requests and forward to execution', async () => {
+    const handler = new HttpApiHandler();
+    const message = { type: 'handle_api', data: { path: '/api/commands/screenshot' } };
+    
+    const result = await handler.handleMessage(message);
+    
+    // Should extract command and forward, nothing more
+    expect(result.forwardTo).toBe('command-executor');
+    expect(result.extractedCommand).toBe('screenshot');
+    expect(result.concern).toBe('http-parsing-only');
+  });
+});
+
+// Test 3: WebSocketHandler Self-Registration  
+describe('WebSocketHandler', () => {
+  it('should register itself and handle only WebSocket concerns', async () => {
+    const handler = new WebSocketHandler();
+    const mockRouter = new MockRouter();
+    
+    await handler.registerWithRouter(mockRouter);
+    
+    expect(mockRouter.getRegisteredPatterns()).toContain('websocket_message');
+    expect(mockRouter.getRegisteredPatterns()).toContain('execute_command');
+    expect(handler.getConcern()).toBe('websocket-message-parsing');
+    expect(handler.knowsAbout('http')).toBe(false);
+  });
+});
+
+// Test 4: CommandExecutor Self-Registration
+describe('CommandExecutor', () => {
+  it('should register itself and handle only execution concerns', async () => {
+    const executor = new CommandExecutor();
+    const mockRouter = new MockRouter();
+    
+    await executor.registerWithRouter(mockRouter);
+    
+    expect(mockRouter.getRegisteredPatterns()).toContain('command.execute');
+    expect(executor.getConcern()).toBe('command-execution-only');
+    expect(executor.knowsAbout('http')).toBe(false);
+    expect(executor.knowsAbout('websocket')).toBe(false);
+  });
+  
+  it('should execute commands through registry without routing knowledge', async () => {
+    const executor = new CommandExecutor();
+    const message = { type: 'command.execute', data: { command: 'screenshot', parameters: {} } };
+    
+    const result = await executor.handleMessage(message);
+    
+    expect(result.executedThrough).toBe('UniversalCommandRegistry');
+    expect(result.concern).toBe('execution-only');
+    expect(executor.hasRoutingLogic()).toBe(false); // No routing knowledge
+  });
+});
+```
+
+### **🔧 DUMB ROUTER IMPLEMENTATION PRINCIPLES**
+
+1. **Router has ZERO business logic** - just pattern matching and delegation
+2. **Each daemon registers itself** - no external configuration
+3. **Single concern per daemon** - HTTP parsing, WebSocket parsing, command execution
+4. **No cross-daemon knowledge** - HttpApiHandler doesn't know WebSocketHandler exists
+5. **Forwards messages only** - no transformation, just routing
+
+### **Current Architecture Problems (Identified by Tests)**
+
+❌ **Router is too smart** - CommandRouter has business logic for command extraction
+❌ **Handlers know too much** - HttpApiHandler knows about CommandRouter
+❌ **No self-registration** - Manual wiring instead of daemon self-registration
+❌ **Mixed concerns** - Single daemons handling multiple concerns
+
+### **Fixed Architecture Pattern**
+
+```typescript
+// Dumb Router - Just routes based on registered patterns
+class CommandRouter {
+  private handlers = new Map<string, string>();
+  
+  registerHandler(pattern: string, handlerName: string) {
+    this.handlers.set(pattern, handlerName);
+  }
+  
+  async route(message: DaemonMessage): Promise<DaemonResponse> {
+    const handler = this.handlers.get(message.type);
+    if (!handler) {
+      return { success: false, error: `No handler for ${message.type}` };
+    }
+    
+    // Just forward - zero business logic
+    return await this.forwardToHandler(handler, message);
+  }
+}
+
+// Self-Registering Daemon Pattern
+class HttpApiHandler {
+  async registerWithRouter(router: CommandRouter) {
+    router.registerHandler('handle_api', this.name);
+  }
+  
+  async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
+    // Single concern: Parse HTTP request and forward
+    const command = this.extractCommandFromPath(message.data.path);
+    
+    return {
+      success: true,
+      forwardTo: 'command-executor',
+      forwardMessage: {
+        type: 'command.execute',
+        data: { command, parameters: message.data.body }
+      }
+    };
+  }
+}
+```
+
+### **🎯 SYMMETRIC DAEMON BENEFITS**
+
+- **Testable**: Each daemon has single responsibility
+- **Modular**: Add new daemons without changing existing ones  
+- **Debuggable**: Clear concern boundaries
+- **Scalable**: Daemons can run in separate processes
+- **Maintainable**: No complex interdependencies
+
+### **Next Steps**
+
+1. Write failing tests for dumb router pattern
+2. Refactor CommandRouter to be dumb (just routing)
+3. Implement self-registration in each daemon
+4. Remove business logic from router
+5. Verify all tests pass with new architecture
+
 ## 💡 Key Insight
 
 **The symmetric structure isn't just about code organization - it's about creating a unified mental model that makes the entire system more predictable, maintainable, and extensible.**

@@ -1,0 +1,10 @@
+{
+  "meta": {
+    "platform": "{PLATFORM}",
+    "level": "{LEVEL}",
+    "sessionId": "{SESSION_ID}",
+    "created": "{TIMESTAMP}",
+    "format": "JTAG structured log entries"
+  },
+  "entries": []
+}
