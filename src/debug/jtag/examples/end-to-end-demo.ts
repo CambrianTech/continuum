@@ -32,7 +32,7 @@ class JTAGDemoServer {
     });
 
     // Static Files - Route through JTAG router instead of serving directly
-    const staticFiles = ['/', '/demo.css', '/demo.js', '/jtag.js'];
+    const staticFiles = ['/', '/demo.css', '/dist/version.js', '/dist/shared/version.js', '/dist/demo.js', '/dist/jtag-auto-init.js'];
     if (staticFiles.includes(url)) {
       this.serveViaRouter(url, res);
       return;
@@ -204,9 +204,10 @@ class JTAGDemoServer {
     // Map URL to filename
     let filename = url === '/' ? 'demo.html' : url.substring(1);
     
-    // Special handling for jtag.js - it's in parent directory
-    if (filename === 'jtag.js') {
-      filename = '../jtag.js';
+    // Handle dist files - they're in the examples/dist directory  
+    if (filename.startsWith('dist/')) {
+      // dist/demo.js -> examples/dist/demo.js
+      // No path change needed, already relative to examples/
     }
 
     try {
