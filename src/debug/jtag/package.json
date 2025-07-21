@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.27",
+  "version": "1.0.66",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "index.js",
   "types": "index.d.ts",
@@ -30,7 +30,7 @@
     }
   },
   "scripts": {
-    "start": "npm run clean:dist && npm run build && npm run version:bump && npx tsx examples/end-to-end-demo.ts",
+    "start": "npm run clean:dist && npm run build && npm run version:bump && cd examples && npm run dev",
     "build:mcp": "npx tsc mcp/jtag-mcp-server.ts --outDir mcp --target ES2020 --module commonjs --esModuleInterop",
     "demo": "npm start",
     "demo:server": "npx tsx examples/simple-app.ts",
@@ -45,9 +45,8 @@
     "system:start": "npm start &",
     "system:stop": "lsof -ti:9002 | xargs kill -9 2>/dev/null || true; lsof -ti:9001 | xargs kill -9 2>/dev/null || true",
     "system:wait": "sleep 5 && curl -s http://localhost:9002 >/dev/null || (sleep 10 && curl -s http://localhost:9002 >/dev/null)",
-    "build": "npm run build:ts && npm run build:browser",
+    "build": "npm run build:ts",
     "build:ts": "tsc --project tsconfig.json",
-    "build:browser": "node scripts/build-browser.js",
     "version:bump": "npm version patch --no-git-tag-version",
     "prepublishOnly": "npm run build && npm test",
     "test:cleanup": "npm run system:stop",
@@ -106,7 +105,7 @@
     "@types/ws": "^8.18.1",
     "jest": "^29.5.0",
     "node-fetch": "^3.3.2",
-    "puppeteer": "^21.0.0",
+    "puppeteer": "^21.11.0",
     "ts-jest": "^29.3.4",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3",

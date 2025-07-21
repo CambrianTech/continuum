@@ -8,8 +8,8 @@ const path = require('path');
 
 console.log('📦 Building JTAG browser client...');
 
-// Ensure dist directory exists
-execSync('mkdir -p examples/dist', { cwd: __dirname + '/..' });
+// Clean and create dist directory
+execSync('rm -rf examples/dist && mkdir -p examples/dist', { cwd: __dirname + '/..' });
 
 // Compile browser client (UMD for compatibility)
 console.log('🔧 Compiling browser client...');

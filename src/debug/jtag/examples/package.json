@@ -1,0 +1,17 @@
+{
+  "name": "@continuum/jtag-examples",
+  "version": "1.0.0",
+  "description": "JTAG Examples and Demo",
+  "main": "dist/demo.js",
+  "scripts": {
+    "clean": "rm -rf dist/",
+    "build": "npm run clean && npm run build:demo && npm run build:auto-init",
+    "build:demo": "npx tsc demo.ts --outDir dist --target ES2020 --module ES2020 --moduleResolution node --skipLibCheck --lib ES2020,DOM --sourceMap",
+    "build:auto-init": "npx tsc ../browser-client/jtag-auto-init.ts --outDir dist --target ES2020 --module ES2020 --moduleResolution node --skipLibCheck --lib ES2020,DOM --sourceMap",
+    "dev": "npm run build && npx tsx minimal-server.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "tsx": "^4.20.3"
+  }
+}
