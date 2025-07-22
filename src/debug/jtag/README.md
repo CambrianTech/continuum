@@ -633,6 +633,142 @@ npm start                         # JTAG runs within continuum system
 
 4. **Steps 4-7**: Same file system logic as Example #1
 
+## 🏗️ **Symmetric Daemon Architecture (NEW)**
+
+JTAG now implements the **symmetric daemon architecture** from middle-out design patterns, enabling unified client/server daemon behavior with flexible transport layers.
+
+### **🎯 Transport vs Encoding Architecture**
+
+**Transport Layer - HOW messages are sent:**
+```typescript
+class JTAGRouter {
+  private transports = new Map([
+    ['/client/', new WebSocketTransport()],   // Real-time bidirectional
+    ['/server/', new AsyncQueueTransport()],  // Server internal routing
+    ['/remote/', new HTTPTransport()],        // Remote REST API
+    ['/http/', new HTTPTransport()],          // Explicit HTTP
+    ['/mcp/', new MCPTransport()],            // AI agent protocol
+  ]);
+}
+```
+
+**Encoding Layer - HOW payloads are serialized:**
+```typescript
+const router = new JTAGRouter({
+  encoder: new Base64Encoder()  // Prevents parse issues with special chars
+});
+
+// OR use different encoders
+router.setEncoder(new JSONEncoder());     // Simple JSON
+router.setEncoder(new EncryptedEncoder()); // Future: encrypted payloads
+```
+
+**Route-based transport selection:**
+- `/client/command` → `WebSocketTransport` (browser ↔ server)
+- `/server/command` → `AsyncQueueTransport` (server internal)
+- `/remote/command` → `HTTPTransport` (remote API calls)
+- `/http/command` → `HTTPTransport` (explicit REST)
+
+### **🚀 Event System with Path-Based Isolation**
+
+**Chat system example with perfect isolation:**
+```typescript
+// Each chat room gets isolated daemon path
+/client/chat/room-123        // Client sends to specific room
+/server/chat/room-123        // Server processes for specific room  
+/events/chat/room-123        // Event stream for room-123 only
+
+// Events use same routing system as commands
+interface EventMessage {
+  type: 'ChatHistoryUpdated' | 'UserJoined' | 'UserLeft';
+  channel: string;  // room-123 
+  payload: any;
+  timestamp: string;
+}
+
+// Widgets subscribe to specific room events
+router.subscribe('/events/chat/room-123', (event: EventMessage) => {
+  if (event.type === 'ChatHistoryUpdated') {
+    updateChatWidget(event.payload);
+  }
+});
+```
+
+**Complete chat flow:**
+```typescript
+// 1. User sends message
+const message = {
+  type: '/client/chat/room-123',
+  payload: { command: 'sendMessage', text: 'Hello!', user: 'alice' }
+};
+
+// 2. ChatroomDaemon processes and emits event  
+class ChatroomDaemon extends BaseDaemon {
+  async handleMessage(message: DaemonMessage) {
+    this.addToHistory(message.payload);
+    
+    // Emit to room subscribers only
+    await this.router.emit('/events/chat/room-123', {
+      type: 'ChatHistoryUpdated', 
+      channel: 'room-123',
+      payload: { newMessage: message.payload }
+    });
+  }
+}
+
+// 3. All widgets in room-123 auto-update
+router.subscribe('/events/chat/room-123', updateChatWidget);
+```
+
+### **🎯 Context-Agnostic Daemon Registration**
+
+**Daemons specify only base endpoint, router handles prefixes:**
+```typescript
+// Daemon registers once with base endpoint
+const commandProcessor = new CommandProcessorDaemon('server');
+await commandProcessor.registerWithRouter(router); 
+
+// Router automatically creates all routes:
+// → /client/command (WebSocket transport)
+// → /server/command (AsyncQueue transport)
+// → /remote/uuid (Mesh transport for future)
+// → /command (Direct base endpoint)
+```
+
+### **🌐 Symmetric API Across Contexts**
+
+**Same daemon code works in browser and server:**
+```typescript
+// Same CommandProcessorDaemon class
+const serverCommands = new CommandProcessorDaemon('server');
+const clientCommands = new CommandProcessorDaemon('client');
+
+// Both support same interface, different implementations
+serverCommands.handleMessage({ command: 'screenshot' }); // Puppeteer
+clientCommands.handleMessage({ command: 'screenshot' }); // html2canvas
+
+// Router handles context routing automatically
+router.routeMessage({
+  type: '/server/command', 
+  payload: { command: 'screenshot' }
+}); // → ServerCommandProcessor
+
+router.routeMessage({
+  type: '/client/command',
+  payload: { command: 'screenshot' }
+}); // → ClientCommandProcessor
+```
+
+### **Architecture Benefits:**
+- **Clean separation**: Transport (WebSocket/HTTP) separate from encoding (JSON/Base64)
+- **Path-based isolation**: Each chat room/context completely isolated  
+- **Transport flexibility**: Router selects transport by route prefix
+- **Encoding safety**: Base64 prevents parse issues with special characters
+- **Event system**: Same routing for commands and events
+- **Symmetric daemons**: Same API, different context implementations
+- **Future extensibility**: Easy to add `MCPTransport`, `EncryptedEncoder`, etc.
+- **Zero configuration**: Daemons register once, router handles everything
+
 ## 🔄 **Robust WebSocket Architecture**
 
 ### **🎯 Production-Ready Transport System**

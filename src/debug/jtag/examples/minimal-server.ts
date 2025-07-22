@@ -6,8 +6,8 @@
 import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
-// Import real JTAG router for transport abstraction
-import { jtagRouter } from '../index';
+// Import symmetric daemon system
+import { createJTAGDaemonSystem, JTAGRouter, DaemonMessage } from '../daemons/index';
 // Import WebSocket server to start REAL JTAG on port 9001
 import { JTAGWebSocketServer } from '../shared/JTAGWebSocket';
 
@@ -16,6 +16,7 @@ const PORT = 9002;
 class MinimalServer {
   private server: http.Server;
   private jtagServer: JTAGWebSocketServer | null = null;
+  private daemonSystem: any = null;
 
   constructor() {
     this.server = http.createServer(this.handleRequest.bind(this));
@@ -82,10 +83,16 @@ class MinimalServer {
     req.on('end', async () => {
       try {
         const message = JSON.parse(body);
-        console.log(`🔄 Real JTAG routing message:`, message.type);
+        console.log(`🔄 Symmetric daemon routing message:`, message.type);
         
-        // Route through real JTAG router
-        const results = await jtagRouter.routeMessage(message);
+        // Route through symmetric daemon system
+        const daemonMessage: DaemonMessage = {
+          type: message.type,
+          payload: message.payload || message,
+          target: message.target
+        };
+        
+        const results = await this.daemonSystem.sendMessage(daemonMessage);
         
         // Find successful result
         const successResult = results.find(r => r.success);
@@ -93,12 +100,12 @@ class MinimalServer {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         if (successResult?.result) {
           res.end(JSON.stringify({ success: true, result: successResult.result }));
-          console.log(`✅ JTAG router success: ${message.type}`);
+          console.log(`✅ Symmetric daemon success: ${message.type}`);
         } else {
           // Return error details from failed results
           const errors = results.filter(r => !r.success).map(r => r.error);
           res.end(JSON.stringify({ success: false, error: errors }));
-          console.log(`❌ JTAG router failed: ${message.type}`, errors);
+          console.log(`❌ Symmetric daemon failed: ${message.type}`, errors);
         }
       } catch (error: any) {
         console.error(`💥 JTAG route error:`, error.message);
@@ -115,6 +122,14 @@ class MinimalServer {
 
   async start(): Promise<void> {
     console.log('🚀 Starting minimal demo server...');
+    
+    // Initialize symmetric daemon system
+    console.log('🚀 Initializing symmetric daemon system...');
+    this.daemonSystem = createJTAGDaemonSystem('universal');
+    await this.daemonSystem.registerDaemons();
+    
+    console.log('✅ Symmetric daemon system ready:');
+    console.log(`   - Registered endpoints: ${this.daemonSystem.getRegisteredEndpoints().join(', ')}`);
     
     // START THE REAL WEBSOCKET SERVER ON PORT 9001
     console.log('🚀 Starting REAL JTAG WebSocket server on port 9001...');
