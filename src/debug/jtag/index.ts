@@ -80,6 +80,6 @@ export const debug = JTAGBase;
 // Type exports
 export * from './shared/JTAGTypes';
 
-// Export transport and router for advanced usage
-export { JTAGRouter, jtagRouter } from './shared/JTAGRouter';
-// Legacy command transport removed - use router directly
+// Export symmetric daemon system for advanced usage
+export { createJTAGDaemonSystem, JTAGRouter } from './daemons/index';
+export { jtagRouter } from './shared/JTAGRouter'; // Legacy router for compatibility
