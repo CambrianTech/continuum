@@ -57,6 +57,13 @@ class MinimalServer {
                            url.endsWith('.json') ? 'application/json' : 'application/octet-stream';
         console.log(`🔍 Serving dist file: ${url} -> ${filePath} (${contentType})`);
         this.serveFile(res, filePath, contentType);
+      } else if (url.startsWith('/logs/')) {
+        // Serve log files from .continuum/jtag/logs/
+        const logFileName = url.substring(6); // Remove '/logs/' prefix
+        const logFilePath = `.continuum/jtag/logs/${logFileName}`;
+        const contentType = url.endsWith('.json') ? 'application/json' : 'text/plain';
+        console.log(`📋 Serving log file: ${url} -> ${logFilePath} (${contentType})`);
+        this.serveFile(res, logFilePath, contentType);
       } else if (url.startsWith('/daemons/')) {
         // Daemon files no longer served - using static imports
         console.log(`📦 Daemon file request deprecated: ${url} (using static imports now)`);

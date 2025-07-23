@@ -6,12 +6,14 @@ import { JTAGTransport } from '../shared/JTAGRouter';
 import { JTAGEnvironment } from '../shared/JTAGTypes';
 import { WebSocketServerTransport, WebSocketClientTransport } from './WebSocketTransport';
 import { HTTPTransport } from './HTTPTransport';
+import { JTAGEventSystem } from '../shared/JTAGEventSystem';
 
 export interface TransportConfig {
   preferred?: 'websocket' | 'http';
   fallback?: boolean;
   serverPort?: number;
   serverUrl?: string;
+  eventSystem?: JTAGEventSystem;
 }
 
 export class TransportFactory {
@@ -24,13 +26,16 @@ export class TransportFactory {
     config: TransportConfig = {}
   ): Promise<JTAGTransport> {
     
-    const { preferred = 'websocket', fallback = true, serverPort = 9001, serverUrl = 'ws://localhost:9001' } = config;
+    const { preferred = 'websocket', fallback = true, serverPort = 9001, serverUrl = 'ws://localhost:9001', eventSystem } = config;
     
     console.log(`🏭 Transport Factory: Creating transport for ${environment} environment`);
     
     if (preferred === 'websocket') {
       if (environment === 'server') {
         const transport = new WebSocketServerTransport();
+        if (eventSystem) {
+          transport.setEventSystem(eventSystem);
+        }
         try {
           await transport.start(serverPort);
           console.log(`✅ Transport Factory: WebSocket server transport created`);
@@ -44,6 +49,9 @@ export class TransportFactory {
         }
       } else if (environment === 'browser') {
         const transport = new WebSocketClientTransport();
+        if (eventSystem) {
+          transport.setEventSystem(eventSystem);
+        }
         try {
           await transport.connect(serverUrl);
           console.log(`✅ Transport Factory: WebSocket client transport created`);

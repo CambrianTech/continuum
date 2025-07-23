@@ -3,6 +3,10 @@
  */
 
 export const SystemEvents = {
+  INITIALIZING: 'system.initializing',
+  DAEMONS_LOADING: 'system.daemons.loading',
+  DAEMONS_LOADED: 'system.daemons.loaded',
+  TRANSPORT_READY: 'system.transport.ready',
   READY: 'system.ready',
   SHUTDOWN: 'system.shutdown',
   ERROR: 'system.error',
@@ -10,6 +14,29 @@ export const SystemEvents = {
 } as const;
 
 export interface SystemEventData {
+  [SystemEvents.INITIALIZING]: {
+    environment: 'browser' | 'server';
+    timestamp: string;
+  };
+  
+  [SystemEvents.DAEMONS_LOADING]: {
+    environment: 'browser' | 'server';
+    timestamp: string;
+    expectedDaemons: string[];
+  };
+  
+  [SystemEvents.DAEMONS_LOADED]: {
+    environment: 'browser' | 'server';
+    timestamp: string;
+    loadedDaemons: string[];
+  };
+  
+  [SystemEvents.TRANSPORT_READY]: {
+    environment: 'browser' | 'server';
+    timestamp: string;
+    transportType: string;
+  };
+  
   [SystemEvents.READY]: {
     version: string;
     environment: 'browser' | 'server';

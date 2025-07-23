@@ -242,7 +242,8 @@ export class ConnectionHealthManager {
    */
   private updateHealthScore(): void {
     if (this.healthHistory.length === 0) {
-      this.health.score = this.health.state === ConnectionState.CONNECTED ? 50 : 0;
+      // Fresh connection should be considered healthy until proven otherwise
+      this.health.score = this.health.state === ConnectionState.CONNECTED ? 80 : 0;
       this.health.isHealthy = this.health.score > 70;
       return;
     }

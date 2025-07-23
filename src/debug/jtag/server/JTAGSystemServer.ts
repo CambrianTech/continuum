@@ -8,6 +8,7 @@ import { JTAGSystem } from '../shared/JTAGSystem';
 import { JTAGContext, JTAGEnvironment } from '../shared/JTAGTypes';
 import { JTAGRouter } from '../shared/JTAGRouter';
 import { JTAGServer } from './JTAGServer';
+import { SystemEvents } from '../shared/events/SystemEvents';
 
 export class JTAGSystemServer extends JTAGSystem {
   private static instance: JTAGSystemServer | null = null;
@@ -34,6 +35,14 @@ export class JTAGSystemServer extends JTAGSystem {
 
     // 2. Create universal router
     const router = new JTAGRouter(context);
+    
+    // Emit initializing event
+    router.eventSystem.emit(SystemEvents.INITIALIZING, {
+      environment: 'server' as const,
+      timestamp: new Date().toISOString()
+    });
+    console.log(`🎬 JTAG System: Initializing server environment`);
+    
     await router.initialize();
 
     // 3. Create server system instance
@@ -48,12 +57,29 @@ export class JTAGSystemServer extends JTAGSystem {
 
     // 5. Setup cross-context transport
     await system.setupTransports();
+    
+    // Emit transport ready event
+    router.eventSystem.emit(SystemEvents.TRANSPORT_READY, {
+      environment: 'server' as const,
+      timestamp: new Date().toISOString(),
+      transportType: 'websocket-server'
+    });
+    console.log(`🔗 JTAG System: Transport ready event emitted`);
 
     JTAGSystemServer.instance = system;
     
     console.log(`✅ JTAG System: Connected server successfully`);
     console.log(`   Context UUID: ${context.uuid}`);
     console.log(`   Daemons: ${Array.from(system.daemons.keys()).join(', ')}`);
+
+    // Emit system ready event after full initialization
+    router.eventSystem.emit(SystemEvents.READY, {
+      version: '1.0.0',
+      environment: 'server' as const,
+      timestamp: new Date().toISOString(),
+      components: Array.from(system.daemons.keys())
+    });
+    console.log(`🎉 JTAG System: System ready event emitted`);
 
     return system;
   }
