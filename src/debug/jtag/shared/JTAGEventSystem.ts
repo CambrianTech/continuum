@@ -5,14 +5,15 @@
  * async/await support, and cross-context event routing using JTAGMessage.
  */
 
-import { JTAGMessage, JTAGPayload, JTAGContext, JTAGMessageFactory } from './JTAGTypes';
+import type { JTAGMessage, JTAGContext } from './JTAGTypes';
+import { JTAGPayload, JTAGMessageFactory } from './JTAGTypes';
 
 // Import modular event categories - co-located with their modules
-import { SystemEvents, SystemEventData, SystemEventName } from './events/SystemEvents';
-import { RouterEvents, RouterEventData, RouterEventName } from './RouterEvents';
-import { TransportEvents, TransportEventData, TransportEventName } from '../transports/TransportEvents';
-import { ConsoleEvents, ConsoleEventData, ConsoleEventName } from '../daemons/console-daemon/ConsoleEvents';
-import { CommandEvents, CommandEventData, CommandEventName } from '../daemons/command-daemon/CommandEvents';
+import type { SystemEventData, SystemEventName } from './events/SystemEvents';
+import type { RouterEventData, RouterEventName } from './RouterEvents';
+import type { TransportEventData, TransportEventName } from '../transports/TransportEvents';
+import type { ConsoleEventData, ConsoleEventName } from '../daemons/console-daemon/ConsoleEvents';
+import type { CommandEventData, CommandEventName } from '../daemons/command-daemon/CommandEvents';
 
 // Combine all event types for the system
 export type JTAGEventName = 
@@ -29,6 +30,21 @@ export interface JTAGEventData extends
   TransportEventData, 
   ConsoleEventData,
   CommandEventData {}
+
+// Event stream interfaces for fluent API
+export interface EventStream<T extends JTAGEventName> {
+  take: (count: number) => Promise<JTAGMessage[]>;
+  filter: (predicate: (message: JTAGMessage) => boolean) => EventStream<T>;
+  close: () => void;
+}
+
+// Event system statistics interface
+export interface EventSystemStats {
+  subscriptions: number;
+  queuedEvents: number;
+  processing: boolean;
+  contexts: string[];
+}
 
 export class EventMessage<T extends JTAGEventName = JTAGEventName> extends JTAGPayload {
   eventName: T;
@@ -105,7 +121,7 @@ export class JTAGEventSystem {
    * Emit an event with promise-like power - Type-safe event names
    */
   async emit<T extends JTAGEventName>(eventName: T, data?: JTAGEventData[T], source?: string): Promise<unknown[]> {
-    const eventPayload = new EventMessage(eventName, data, source || 'event-system');
+    const eventPayload = new EventMessage(eventName, data, source ?? 'event-system');
 
     const message = JTAGMessageFactory.createEvent(
       this.context,
@@ -164,7 +180,7 @@ export class JTAGEventSystem {
   /**
    * Create event streams (Promise-like chaining)
    */
-  stream<T extends JTAGEventName>(filter: EventFilter<T> | T) {
+  stream<T extends JTAGEventName>(filter: EventFilter<T> | T): EventStream<T> {
     const events: JTAGMessage[] = [];
     let streamHandler: ((message: JTAGMessage) => void) | null = null;
 
@@ -196,7 +212,7 @@ export class JTAGEventSystem {
         });
       },
 
-      filter: (predicate: (message: JTAGMessage) => boolean) => {
+      filter: (predicate: (message: JTAGMessage) => boolean): EventStream<T> => {
         const filteredFilter: EventFilter<T> = typeof filter === 'string' 
           ? { eventName: filter as T, predicate }
           : { ...filter, predicate };
@@ -204,7 +220,7 @@ export class JTAGEventSystem {
         return this.stream(filteredFilter);
       },
 
-      close: () => {
+      close: (): void => {
         this.unsubscribe(subscriptionId);
         streamHandler = null;
       }
@@ -368,7 +384,7 @@ export class JTAGEventSystem {
   /**
    * Get system statistics
    */
-  getStats() {
+  getStats(): EventSystemStats {
     return {
       subscriptions: this.subscriptions.size,
       queuedEvents: this.eventQueue.length,

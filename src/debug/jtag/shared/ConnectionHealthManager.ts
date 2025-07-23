@@ -5,11 +5,12 @@
  * and coordinates with message queue for reliable delivery.
  */
 
-import { JTAGContext } from './JTAGTypes';
-import { JTAGEventSystem } from './JTAGEventSystem';
+import type { JTAGContext } from './JTAGTypes';
+import type { JTAGEventSystem } from './JTAGEventSystem';
 import { TransportEvents } from '../transports/TransportEvents';
 import { SystemEvents } from './events/SystemEvents';
 import { JTAG_ENDPOINTS } from './JTAGEndpoints';
+import type { TimerHandle } from './CrossPlatformTypes';
 
 export enum ConnectionState {
   DISCONNECTED = 'disconnected',
@@ -46,8 +47,8 @@ export class ConnectionHealthManager {
   private health: ConnectionHealth;
   private transport: any; // Transport interface
   
-  private pingTimer?: NodeJS.Timeout;
-  private reconnectTimer?: NodeJS.Timeout;
+  private pingTimer?: TimerHandle;
+  private reconnectTimer?: TimerHandle;
   private healthHistory: Array<{ timestamp: number; latency: number; success: boolean }> = [];
   private connectionStartTime = 0;
 

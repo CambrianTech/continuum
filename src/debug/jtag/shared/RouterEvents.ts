@@ -2,7 +2,7 @@
  * Router Event Definitions - Co-located with Router module
  */
 
-export const RouterEvents = {
+export const ROUTER_EVENTS = {
   INITIALIZED: 'router.initialized',
   MESSAGE_SENT: 'router.message-sent',
   MESSAGE_RECEIVED: 'router.message-received',
@@ -10,30 +10,30 @@ export const RouterEvents = {
 } as const;
 
 export interface RouterEventData {
-  [RouterEvents.INITIALIZED]: {
+  [ROUTER_EVENTS.INITIALIZED]: {
     environment: 'browser' | 'server';
     transportCount: number;
   };
   
-  [RouterEvents.MESSAGE_SENT]: {
+  [ROUTER_EVENTS.MESSAGE_SENT]: {
     messageId: string;
     origin: string;
     endpoint: string;
     payloadType: string;
   };
   
-  [RouterEvents.MESSAGE_RECEIVED]: {
+  [ROUTER_EVENTS.MESSAGE_RECEIVED]: {
     messageId: string;
     origin: string;
     endpoint: string;
     payloadType: string;
   };
   
-  [RouterEvents.ROUTE_FAILED]: {
+  [ROUTER_EVENTS.ROUTE_FAILED]: {
     messageId: string;
     endpoint: string;
     error: string;
   };
 }
 
-export type RouterEventName = typeof RouterEvents[keyof typeof RouterEvents];
+export type RouterEventName = typeof ROUTER_EVENTS[keyof typeof ROUTER_EVENTS];

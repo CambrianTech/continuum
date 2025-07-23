@@ -4,11 +4,18 @@
  * Transforms fire-and-forget message bus into request-response system
  */
 
+import type { TimerHandle } from './CrossPlatformTypes';
+
 export interface PendingRequest {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   timestamp: number;
-  timeout: NodeJS.Timeout;
+  timeout: TimerHandle;
+}
+
+export interface CorrelatorStatus {
+  pending: number;
+  oldest: number;
 }
 
 export class ResponseCorrelator {
@@ -85,7 +92,7 @@ export class ResponseCorrelator {
   /**
    * Get status of pending requests
    */
-  get status() {
+  get status(): CorrelatorStatus {
     const now = Date.now();
     return {
       pending: this.pendingRequests.size,

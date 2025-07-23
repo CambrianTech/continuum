@@ -13,7 +13,9 @@ import type { QueuedItem } from './queuing/PriorityQueue';
 import { ConnectionHealthManager } from './ConnectionHealthManager';
 import { ResponseCorrelator } from './ResponseCorrelator';
 
-import { JTAGResponsePayload } from './ResponseTypes';
+import type { JTAGResponsePayload } from './ResponseTypes';
+import type { ConsolePayload } from '../daemons/console-daemon/shared/ConsoleDaemon';
+import type { RouterResult, TransportSendResult, RequestResult, EventResult, LocalRoutingResult } from './RouterTypes';
 
 export interface MessageSubscriber {
   handleMessage(message: JTAGMessage): Promise<JTAGResponsePayload>;
@@ -23,9 +25,11 @@ export interface MessageSubscriber {
 
 export interface JTAGTransport {
   name: string;
-  send(message: JTAGMessage): Promise<any>;
+  send(message: JTAGMessage): Promise<TransportSendResult>;
   isConnected(): boolean;
   disconnect(): Promise<void>;
+  reconnect?(): Promise<void>;
+  setMessageHandler?(handler: (message: JTAGMessage) => void): void;
 }
 
 export interface RouterStatus {
@@ -97,7 +101,7 @@ export class JTAGRouter extends JTAGModule {
     console.log(`📋 ${this.toString()}: Registered subscriber at ${fullEndpoint}`);
   }
 
-  async postMessage(message: JTAGMessage): Promise<any> {
+  async postMessage(message: JTAGMessage): Promise<RouterResult> {
     console.log(`📨 ${this.toString()}: Routing message to ${message.endpoint}`);
     
     const targetEnvironment = this.extractEnvironment(message.endpoint);
@@ -112,7 +116,7 @@ export class JTAGRouter extends JTAGModule {
   /**
    * Route message remotely with proper type-based routing
    */
-  private async routeRemotelyWithQueue(message: JTAGMessage): Promise<any> {
+  private async routeRemotelyWithQueue(message: JTAGMessage): Promise<RouterResult> {
     if (!this.crossContextTransport) {
       throw new Error(`No cross-context transport available for ${message.endpoint}`);
     }
@@ -128,14 +132,14 @@ export class JTAGRouter extends JTAGModule {
       // RESPONSE PATTERN: Should not happen here, but handle gracefully
       throw new Error('Response messages should not be routed remotely');
     } else {
-      throw new Error(`Unknown message type: ${(message as any).messageType}`);
+      throw new Error(`Unknown message type: ${(message as any).messageType || 'undefined'}`);
     }
   }
 
   /**
    * Handle request messages that need responses (screenshot, etc.)
    */
-  private async handleRequestMessage(message: JTAGMessage): Promise<any> {
+  private async handleRequestMessage(message: JTAGMessage): Promise<RequestResult> {
     // Message already has correlationId from type system
     if (!JTAGMessageTypes.isRequest(message)) {
       throw new Error('Expected request message');
@@ -154,7 +158,7 @@ export class JTAGRouter extends JTAGModule {
       // Await the correlated response
       const response = await responsePromise;
       console.log(`✅ ${this.toString()}: Response received for ${message.correlationId}`);
-      return response;
+      return { success: true, resolved: true, response };
 
     } catch (error) {
       console.error(`❌ ${this.toString()}: Request failed:`, error);
@@ -165,7 +169,7 @@ export class JTAGRouter extends JTAGModule {
   /**
    * Handle event messages (fire-and-forget: console logs, notifications, etc.)
    */
-  private async handleEventMessage(message: JTAGMessage): Promise<any> {
+  private async handleEventMessage(message: JTAGMessage): Promise<EventResult> {
     // Determine priority based on message content
     const priority = this.determinePriority(message);
     
@@ -207,7 +211,7 @@ export class JTAGRouter extends JTAGModule {
     }
 
     // Console errors get high priority (but will be deduplicated)
-    if (message.origin.includes('console') && (message.payload as any)?.level === 'error') {
+    if (message.origin.includes('console') && (message.payload as ConsolePayload)?.level === 'error') {
       return MessagePriority.HIGH;
     }
 
@@ -243,7 +247,7 @@ export class JTAGRouter extends JTAGModule {
     return failedMessages;
   }
 
-  private async routeLocally(message: JTAGMessage): Promise<any> {
+  private async routeLocally(message: JTAGMessage): Promise<LocalRoutingResult> {
     // Handle response messages - resolve pending requests
     if (JTAGMessageTypes.isResponse(message)) {
       console.log(`📨 ${this.toString()}: Received response for ${message.correlationId}`);
@@ -283,7 +287,7 @@ export class JTAGRouter extends JTAGModule {
       });
     }
     
-    return result;
+    return { success: true };
   }
 
 
@@ -308,8 +312,8 @@ export class JTAGRouter extends JTAGModule {
     this.crossContextTransport = await TransportFactory.createTransport(this.context.environment, transportConfig);
     
     // Connect transport to router for incoming messages
-    if ('setMessageHandler' in this.crossContextTransport) {
-      (this.crossContextTransport as any).setMessageHandler((message: JTAGMessage) => {
+    if (this.crossContextTransport.setMessageHandler) {
+      this.crossContextTransport.setMessageHandler((message: JTAGMessage) => {
         this.postMessage(message).catch(console.error);
       });
     }

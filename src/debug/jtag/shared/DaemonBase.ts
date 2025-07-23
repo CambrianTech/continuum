@@ -6,8 +6,8 @@
  */
 
 import { JTAGModule } from './JTAGModule';
-import { JTAGContext, JTAGMessage } from './JTAGTypes';
-import { JTAGRouter, MessageSubscriber } from './JTAGRouter';
+import type { JTAGContext, JTAGMessage } from './JTAGTypes';
+import type { JTAGRouter, MessageSubscriber } from './JTAGRouter';
 
 export abstract class DaemonBase extends JTAGModule implements MessageSubscriber {
   public readonly router: JTAGRouter;

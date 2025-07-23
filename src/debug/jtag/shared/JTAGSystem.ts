@@ -7,10 +7,10 @@
  */
 
 import { JTAGModule } from './JTAGModule';
-import { JTAGContext, JTAGEnvironment, JTAG_ENVIRONMENTS } from './JTAGTypes';
-import { ScreenshotParams, ScreenshotResult } from '../daemons/command-daemon/commands/screenshot/shared/ScreenshotTypes';
-import { CommandDaemonBase } from '../daemons/command-daemon/shared/CommandDaemonBase';
-import { JTAGRouter } from './JTAGRouter';
+import type { JTAGContext } from './JTAGTypes';
+import type { ScreenshotParams, ScreenshotResult } from '../daemons/command-daemon/commands/screenshot/shared/ScreenshotTypes';
+import type { CommandDaemonBase } from '../daemons/command-daemon/shared/CommandDaemonBase';
+import type { JTAGRouter } from './JTAGRouter';
 
 // Dynamic version detection
 const getVersionString = (): string => {

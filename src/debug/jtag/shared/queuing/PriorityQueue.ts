@@ -2,6 +2,8 @@
  * Generic Priority Queue - Reusable for any message type
  */
 
+import type { TimerHandle } from '../CrossPlatformTypes';
+
 export enum Priority {
   CRITICAL = 0,
   HIGH = 1,
@@ -29,7 +31,7 @@ export class PriorityQueue<T> {
   private queue: QueuedItem<T>[] = [];
   private config: QueueConfig;
   private processing = false;
-  private flushTimer?: NodeJS.Timeout;
+  private flushTimer?: TimerHandle;
 
   constructor(config: Partial<QueueConfig> = {}) {
     this.config = {

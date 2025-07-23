@@ -7,7 +7,7 @@
  * - All command implementations
  */
 
-import { JTAGContext } from './JTAGTypes';
+import type { JTAGContext } from './JTAGTypes';
 
 export abstract class JTAGModule {
   readonly name: string;
