@@ -326,7 +326,7 @@ export class ConnectionHealthManager {
       console.log(`🔌 HealthManager[${this.context.environment}]: Attempting reconnection...`);
       
       // Attempt to reconnect transport
-      await this.transport.connect?.();
+      await this.transport.reconnect?.();
       
       // Connection will be confirmed via onConnected() callback
       
