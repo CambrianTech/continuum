@@ -11,6 +11,7 @@ import { JTAGRouter } from '../../../shared/JTAGRouter';
 import { SystemEvents } from '../../../shared/events/SystemEvents';
 import { TransportEvents } from '../../../transports/TransportEvents';
 import { ConsoleEvents } from '../ConsoleEvents';
+import { JTAG_ENDPOINTS } from '../../../shared/JTAGEndpoints';
 
 // Console-specific payload
 export class ConsolePayload extends JTAGPayload {
@@ -188,11 +189,11 @@ export abstract class ConsoleDaemon extends DaemonBase {
 
     for (const consolePayload of messagesToDrain) {
       try {
-        // Router guaranteed by constructor
+        // Router guaranteed by constructor - use type-safe endpoints
         const message = JTAGMessageFactory.createEvent(
           this.context,
-          `${this.context.environment}/${this.subpath}`,
-          `server/${this.subpath}`,
+          this.context.environment === 'browser' ? JTAG_ENDPOINTS.CONSOLE.BROWSER : JTAG_ENDPOINTS.CONSOLE.SERVER,
+          JTAG_ENDPOINTS.CONSOLE.SERVER,
           consolePayload
         );
         await this.router.postMessage(message);
@@ -310,6 +311,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
       // Message routing operations (critical for preventing loops)
       '📨 JTAGRouter', 'Routing message to server/console', 'Routing locally to server/console',
       '📥 JTAGMessageQueue', 'Queued message', 'Delivered queued message',
+      '⏸️ JTAGRouter', 'Skipping flush - connection unhealthy',
       '📤 WebSocket Client: Sending message to server',
       '📨 WebSocket Server: Received message from client',
       

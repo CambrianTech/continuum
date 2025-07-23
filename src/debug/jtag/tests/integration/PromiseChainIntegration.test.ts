@@ -15,6 +15,7 @@ import {
   ScreenshotResult,
   JTAGMessage
 } from '../../shared/JTAGTypes';
+import { JTAG_ENDPOINTS } from '../../shared/JTAGEndpoints';
 
 // Mock Transport for Integration Testing
 class MockIntegrationTransport {
@@ -152,7 +153,7 @@ describe('Promise Chain Integration Tests', () => {
       
       const requestMessage = JTAGMessageFactory.createRequest(
         browserContext,
-        'browser/commands',
+        JTAG_ENDPOINTS.COMMANDS.BROWSER,
         'server/commands/screenshot',
         screenshotParams,
         correlationId
@@ -188,7 +189,7 @@ describe('Promise Chain Integration Tests', () => {
         const correlationId = JTAGMessageFactory.generateCorrelationId();
         const requestMessage = JTAGMessageFactory.createRequest(
           browserContext,
-          'browser/commands',
+          JTAG_ENDPOINTS.COMMANDS.BROWSER,
           'server/commands/screenshot',
           params,
           correlationId
@@ -225,7 +226,7 @@ describe('Promise Chain Integration Tests', () => {
       const correlationId = JTAGMessageFactory.generateCorrelationId();
       const requestMessage = JTAGMessageFactory.createRequest(
         browserContext,
-        'browser/commands',
+        JTAG_ENDPOINTS.COMMANDS.BROWSER,
         'server/commands/screenshot',
         new ScreenshotParams('timeout-test.png'),
         correlationId
@@ -249,7 +250,7 @@ describe('Promise Chain Integration Tests', () => {
       const correlationId = JTAGMessageFactory.generateCorrelationId();
       const requestMessage = JTAGMessageFactory.createRequest(
         browserContext,
-        'browser/commands',
+        JTAG_ENDPOINTS.COMMANDS.BROWSER,
         'server/commands/screenshot',
         new ScreenshotParams('fail-test.png'),
         correlationId
@@ -272,8 +273,8 @@ describe('Promise Chain Integration Tests', () => {
 
       const eventMessage = JTAGMessageFactory.createEvent(
         browserContext,
-        'browser/console',
-        'server/console',
+        JTAG_ENDPOINTS.CONSOLE.BROWSER,
+        JTAG_ENDPOINTS.CONSOLE.SERVER,
         logPayload
       );
 
@@ -295,8 +296,8 @@ describe('Promise Chain Integration Tests', () => {
       // Send same event multiple times
       const eventMessage = JTAGMessageFactory.createEvent(
         browserContext,
-        'browser/console',
-        'server/console', 
+        JTAG_ENDPOINTS.CONSOLE.BROWSER,
+        JTAG_ENDPOINTS.CONSOLE.SERVER, 
         logPayload
       );
 
@@ -338,7 +339,7 @@ describe('Promise Chain Integration Tests', () => {
       const correlationId = JTAGMessageFactory.generateCorrelationId();
       const requestMessage = JTAGMessageFactory.createRequest(
         browserContext,
-        'browser/commands',
+        JTAG_ENDPOINTS.COMMANDS.BROWSER,
         'server/commands/screenshot',
         new ScreenshotParams('disconnect-test.png'),
         correlationId
@@ -359,7 +360,7 @@ describe('Promise Chain Integration Tests', () => {
       // Create mixed message types
       const requestMessage = JTAGMessageFactory.createRequest(
         browserContext,
-        'browser/commands',
+        JTAG_ENDPOINTS.COMMANDS.BROWSER,
         'server/commands/screenshot',
         new ScreenshotParams('mixed-test.png'),
         correlationId
@@ -367,8 +368,8 @@ describe('Promise Chain Integration Tests', () => {
 
       const eventMessage = JTAGMessageFactory.createEvent(
         browserContext,
-        'browser/console',
-        'server/console',
+        JTAG_ENDPOINTS.CONSOLE.BROWSER,
+        JTAG_ENDPOINTS.CONSOLE.SERVER,
         new (class extends require('../../shared/JTAGTypes').JTAGPayload {
           message = 'Starting screenshot';
         })()
@@ -390,7 +391,7 @@ describe('Promise Chain Integration Tests', () => {
       
       const requestMessage = JTAGMessageFactory.createRequest(
         browserContext,
-        'browser/commands',
+        JTAG_ENDPOINTS.COMMANDS.BROWSER,
         'server/commands/screenshot',
         params,
         correlationId

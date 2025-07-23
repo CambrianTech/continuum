@@ -9,6 +9,7 @@ import { JTAGContext } from './JTAGTypes';
 import { JTAGEventSystem } from './JTAGEventSystem';
 import { TransportEvents } from '../transports/TransportEvents';
 import { SystemEvents } from './events/SystemEvents';
+import { JTAG_ENDPOINTS } from './JTAGEndpoints';
 
 export enum ConnectionState {
   DISCONNECTED = 'disconnected',
@@ -181,12 +182,16 @@ export class ConnectionHealthManager {
     const pingId = `ping_${pingStart}_${Math.random().toString(36).substr(2, 6)}`;
 
     try {
-      // Create ping message
+      // Create ping message - route to health daemon  
       const pingMessage = {
         context: this.context,
         origin: `${this.context.environment}/health`,
-        endpoint: 'health/ping',
-        payload: { id: pingId, timestamp: pingStart }
+        endpoint: JTAG_ENDPOINTS.HEALTH.BASE,
+        payload: { 
+          type: 'ping',
+          id: pingId, 
+          timestamp: pingStart 
+        }
       };
 
       // Send ping with timeout

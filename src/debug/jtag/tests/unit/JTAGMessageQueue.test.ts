@@ -13,6 +13,7 @@ import {
   JTAGMessage,
   JTAGPayload
 } from '../../shared/JTAGTypes';
+import { JTAG_ENDPOINTS } from '../../shared/JTAGEndpoints';
 
 console.log('🧪 JTAGMessageQueue Test Suite');
 
@@ -43,7 +44,7 @@ function testBasicQueueOperations() {
   const message = JTAGMessageFactory.createEvent(
     testContext,
     'browser/test',
-    'server/console',
+    JTAG_ENDPOINTS.CONSOLE.SERVER,
     testPayload
   );
 

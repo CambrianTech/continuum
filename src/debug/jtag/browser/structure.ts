@@ -8,6 +8,7 @@
 // Browser Daemon Imports  
 import { CommandDaemonBrowser } from '../daemons/command-daemon/browser/CommandDaemonBrowser';
 import { ConsoleDaemonBrowser } from '../daemons/console-daemon/browser/ConsoleDaemonBrowser';
+import { HealthDaemonBrowser } from '../daemons/health-daemon/browser/HealthDaemonBrowser';
 
 // Browser Command Imports
 import { ScreenshotBrowserCommand } from '../daemons/command-daemon/commands/screenshot/browser/ScreenshotBrowserCommand';
@@ -41,6 +42,11 @@ export const BROWSER_DAEMONS: BrowserDaemonEntry[] = [
     name: 'ConsoleDaemon',
     className: 'ConsoleDaemonBrowser',
     daemonClass: ConsoleDaemonBrowser
+  },
+  {
+    name: 'HealthDaemon',
+    className: 'HealthDaemonBrowser',
+    daemonClass: HealthDaemonBrowser
   }
 ];
 
