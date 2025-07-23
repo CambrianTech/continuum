@@ -12,6 +12,22 @@ import { ScreenshotParams, ScreenshotResult } from '../daemons/command-daemon/co
 import { CommandDaemonBase } from '../daemons/command-daemon/shared/CommandDaemonBase';
 import { JTAGRouter } from './JTAGRouter';
 
+// Dynamic version detection
+const getVersionString = (): string => {
+  try {
+    if (typeof window !== 'undefined') {
+      // Browser environment - version embedded in build
+      return '1.0.156-browser';
+    } else {
+      // Server environment - can read package.json
+      const pkg = require('../package.json');
+      return `${pkg.version}-server`;
+    }
+  } catch (error) {
+    return 'unknown';
+  }
+};
+
 /**
  * Abstract JTAG System - Base class for environment-specific implementations
  */
@@ -22,6 +38,10 @@ export abstract class JTAGSystem extends JTAGModule {
   constructor(context: JTAGContext, router: JTAGRouter) {
     super('jtag-system', context);
     this.router = router;
+    
+    // Log JTAG version on initialization
+    const version = getVersionString();
+    console.log(`🎯 JTAG System v${version} initializing for ${context.environment} environment`);
   }
 
   /**
@@ -35,7 +55,8 @@ export abstract class JTAGSystem extends JTAGModule {
    */
   register(name: string, daemon: any): void {
     this.daemons.set(name, daemon);
-    console.log(`🎯 ${this.toString()}: Registered daemon '${name}'`);
+    const version = getVersionString();
+    console.log(`🎯 JTAG System v${version}: Registered daemon '${name}' (${daemon.constructor.name})`);
   }
 
 

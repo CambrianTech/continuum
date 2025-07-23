@@ -15,6 +15,7 @@ import {
 } from '../../shared/JTAGTypes';
 import { DaemonBase } from '../../shared/DaemonBase';
 import { JTAGRouter } from '../../shared/JTAGRouter';
+import { JTAG_ENDPOINTS } from '../../shared/JTAGEndpoints';
 
 /**
  * Test payload for console messages
@@ -95,8 +96,8 @@ async function runFoundationTests(): Promise<void> {
   try {
     const eventMessage = JTAGMessageFactory.createEvent(
       testContext,
-      'browser/console',
-      'server/console',
+      JTAG_ENDPOINTS.CONSOLE.BROWSER,
+      JTAG_ENDPOINTS.CONSOLE.SERVER,
       new TestConsolePayload('info', 'Event message test')
     );
     
@@ -116,7 +117,7 @@ async function runFoundationTests(): Promise<void> {
     const correlationId = JTAGMessageFactory.generateCorrelationId();
     const requestMessage = JTAGMessageFactory.createRequest(
       testContext,
-      'browser/commands',
+      JTAG_ENDPOINTS.COMMANDS.BROWSER,
       'server/commands/screenshot',
       new ScreenshotParams('test.png'),
       correlationId
@@ -125,7 +126,7 @@ async function runFoundationTests(): Promise<void> {
     const responseMessage = JTAGMessageFactory.createResponse(
       testContext,
       'server/commands/screenshot',
-      'browser/commands',
+      JTAG_ENDPOINTS.COMMANDS.BROWSER,
       { success: true, filename: 'test.png' },
       correlationId
     );

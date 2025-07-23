@@ -16,6 +16,7 @@ import {
   JTAGPayload,
   JTAGContext
 } from '../../shared/JTAGTypes';
+import { JTAG_ENDPOINTS } from '../../shared/JTAGEndpoints';
 
 console.log('🧪 JTAG Message Types Test Suite');
 
@@ -54,7 +55,7 @@ function testEventMessageCreation() {
   const eventMessage = JTAGMessageFactory.createEvent(
     testContext,
     'server/test',
-    'browser/console',
+    JTAG_ENDPOINTS.CONSOLE.BROWSER,
     testPayload
   );
 
@@ -67,7 +68,7 @@ function testEventMessageCreation() {
   if (eventMessage.origin !== 'server/test') {
     throw new Error('Event origin mismatch');
   }
-  if (eventMessage.endpoint !== 'browser/console') {
+  if (eventMessage.endpoint !== JTAG_ENDPOINTS.CONSOLE.BROWSER) {
     throw new Error('Event endpoint mismatch');
   }
   if (eventMessage.payload !== testPayload) {
@@ -87,7 +88,7 @@ function testRequestMessageCreation() {
   const correlationId = 'test-correlation-id';
   const requestMessage = JTAGMessageFactory.createRequest(
     testContext,
-    'server/commands',
+    JTAG_ENDPOINTS.COMMANDS.SERVER,
     'browser/commands/screenshot',
     testPayload,
     correlationId
@@ -114,7 +115,7 @@ function testResponseMessageCreation() {
   const responseMessage = JTAGMessageFactory.createResponse(
     testContext,
     'browser/commands/screenshot',
-    'server/commands',
+    JTAG_ENDPOINTS.COMMANDS.SERVER,
     testResult,
     correlationId
   );

@@ -8,6 +8,7 @@
 // Server Daemon Imports
 import { CommandDaemonServer } from '../daemons/command-daemon/server/CommandDaemonServer';
 import { ConsoleDaemonServer } from '../daemons/console-daemon/server/ConsoleDaemonServer';
+import { HealthDaemonServer } from '../daemons/health-daemon/server/HealthDaemonServer';
 
 // Server Command Imports
 import { ScreenshotServerCommand } from '../daemons/command-daemon/commands/screenshot/server/ScreenshotServerCommand';
@@ -41,6 +42,11 @@ export const SERVER_DAEMONS: ServerDaemonEntry[] = [
     name: 'ConsoleDaemon', 
     className: 'ConsoleDaemonServer',
     daemonClass: ConsoleDaemonServer
+  },
+  {
+    name: 'HealthDaemon',
+    className: 'HealthDaemonServer', 
+    daemonClass: HealthDaemonServer
   }
 ];
 
