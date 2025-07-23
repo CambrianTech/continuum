@@ -1,8 +1,31 @@
+// ISSUES: 0 open, last updated 2025-07-23 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+
 /**
  * JTAG Event System - Promise-Powered Event Architecture
  * 
- * Provides powerful event-driven messaging with promise integration,
- * async/await support, and cross-context event routing using JTAGMessage.
+ * Advanced event-driven messaging system with promise integration, fluent APIs,
+ * and cross-context event routing. Enables reactive programming patterns across
+ * the entire JTAG architecture with type-safe event handling.
+ * 
+ * CORE ARCHITECTURE:
+ * - Type-safe event name and data mapping across all system modules
+ * - Promise-based event listening with timeout support
+ * - Fluent API for event stream processing (filter, take, etc.)
+ * - Cross-context event routing via JTAGMessage transport
+ * - Subscription management with automatic cleanup
+ * 
+ * TESTING REQUIREMENTS:
+ * - Unit tests: Event emission, subscription, and cleanup logic
+ * - Integration tests: Cross-context event delivery reliability
+ * - Performance tests: High-frequency event handling
+ * - Concurrency tests: Multiple subscriber race conditions
+ * 
+ * ARCHITECTURAL INSIGHTS:
+ * - Modular event categories co-located with their source modules
+ * - Promise-based waitFor() enables synchronization patterns
+ * - Event stream API provides reactive programming capabilities
+ * - Cross-context routing uses existing JTAG message infrastructure
+ * - Subscription cleanup prevents memory leaks in long-running systems
  */
 
 import type { JTAGMessage, JTAGContext } from './JTAGTypes';

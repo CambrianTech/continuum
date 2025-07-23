@@ -1,5 +1,31 @@
+// ISSUES: 0 open, last updated 2025-07-23 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+
 /**
  * JTAG Universal Router - Context-Aware Message Routing with Bus-Level Queuing
+ * 
+ * The heart of the JTAG system - intelligent message routing with health monitoring,
+ * queuing, and cross-context transport management. Handles both local and remote
+ * message delivery with automatic fallback and retry mechanisms.
+ * 
+ * CORE ARCHITECTURE:
+ * - MessageSubscriber pattern for daemon registration
+ * - Cross-context transport abstraction (WebSocket/HTTP)
+ * - Priority-based message queuing with health-aware flushing
+ * - Request-response correlation with timeout handling
+ * - Event system integration for system-wide notifications
+ * 
+ * TESTING REQUIREMENTS:
+ * - Unit tests: Message routing logic and subscriber management
+ * - Integration tests: Cross-context transport reliability
+ * - Performance tests: Message throughput under load
+ * - Failure tests: Network partition and recovery scenarios
+ * 
+ * ARCHITECTURAL INSIGHTS:
+ * - Router extends JTAGModule for consistent context management
+ * - Health manager prevents message loss during connection issues
+ * - Queue system ensures message ordering and delivery guarantees
+ * - Response correlator transforms async bus into request-response pattern
+ * - Transport factory abstracts connection management complexity
  */
 
 import { JTAGModule } from './JTAGModule';
@@ -17,12 +43,24 @@ import type { JTAGResponsePayload } from './ResponseTypes';
 import type { ConsolePayload } from '../daemons/console-daemon/shared/ConsoleDaemon';
 import type { RouterResult, TransportSendResult, RequestResult, EventResult, LocalRoutingResult } from './RouterTypes';
 
+/**
+ * Message Subscriber Interface
+ * 
+ * Contract for all components that can receive and process JTAG messages.
+ * Daemons implement this interface to register for message delivery.
+ */
 export interface MessageSubscriber {
   handleMessage(message: JTAGMessage): Promise<JTAGResponsePayload>;
   get endpoint(): string;
   get uuid(): string;
 }
 
+/**
+ * JTAG Transport Interface
+ * 
+ * Abstraction for cross-context message delivery mechanisms.
+ * Implementations include WebSocket, HTTP, and in-memory transports.
+ */
 export interface JTAGTransport {
   name: string;
   send(message: JTAGMessage): Promise<TransportSendResult>;

@@ -28,13 +28,36 @@ Just like scouts picking up trash in parks, developers should continuously impro
 **STANDARD HEADER TEMPLATE:**
 
 ```typescript
-// ISSUES: 0 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// ISSUES: 0 open, last updated 2025-07-23 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+
+/**
+ * [Component Name] - [Brief Description]
+ * 
+ * [Detailed description of component purpose and key functionality]
+ * 
+ * CORE ARCHITECTURE:
+ * - [Key architectural pattern or design principle]
+ * - [Important component relationships]
+ * - [Critical data flows or processing patterns]
+ * 
+ * TESTING REQUIREMENTS:
+ * - Unit tests: [Core logic testing scenarios]
+ * - Integration tests: [Cross-component interaction scenarios]
+ * - Performance tests: [Load and scalability scenarios]
+ * - [Additional test categories as needed]
+ * 
+ * ARCHITECTURAL INSIGHTS:
+ * - [Key design decisions and rationale]
+ * - [Important debugging patterns or conventions]
+ * - [Cross-system dependencies or constraints]
+ * - [Performance considerations or optimizations]
+ */
 ```
 
-**OR if file has issues:**
+**IF FILE HAS ISSUES:**
 
 ```typescript
-// ISSUES: 2 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// ISSUES: 2 open, last updated 2025-07-23 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
  * 🚨 CRITICAL:
  * - [ ] Issue #1: WebSocket browser communication not implemented
@@ -42,19 +65,47 @@ Just like scouts picking up trash in parks, developers should continuously impro
  * 🔧 IMPROVEMENTS:
  * - [ ] Issue #2: Add JWT token validation
  */
+
+/**
+ * [Component Name] - [Brief Description]
+ * 
+ * [Same documentation template as above]
+ */
 ```
 
 ## 🎯 The First Line Rule
 
 **Every file starts with:**
 ```typescript
-// ISSUES: 0 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// ISSUES: 0 open, last updated 2025-07-23 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 ```
 
 **When you see issues:**
 1. **Fix litter immediately** (any types, missing imports, typos)
 2. **Document big problems** in the issue list 
 3. **Update the count and date**
+
+## 📖 Documentation Template Sections
+
+### CORE ARCHITECTURE
+Document the fundamental design patterns, component relationships, and data flow. Focus on:
+- Primary architectural patterns (inheritance, composition, event-driven, etc.)
+- Key component interactions and dependencies
+- Critical data structures and processing flows
+
+### TESTING REQUIREMENTS  
+Specify comprehensive testing scenarios for reliable development:
+- **Unit tests**: Core logic, edge cases, error handling
+- **Integration tests**: Cross-component communication, external dependencies
+- **Performance tests**: Load handling, scalability limits, resource usage
+- **Additional categories**: Security, accessibility, browser compatibility as needed
+
+### ARCHITECTURAL INSIGHTS
+Capture design decisions and debugging wisdom for future developers:
+- Key design decisions and their rationale
+- Important debugging patterns and conventions
+- Cross-system dependencies and constraints
+- Performance considerations and optimization strategies
 
 ## 🔄 Maintenance Rules
 
@@ -65,16 +116,96 @@ Just like scouts picking up trash in parks, developers should continuously impro
 4. **Document new issues** you discover
 
 ### When Fixing Issues:
-1. **Mark as completed** with date: `- [x] Issue #4: Fixed (2025-07-13)`
+1. **Mark as completed** with date: `- [x] Issue #4: Fixed (2025-07-23)`
 2. **Update the count** in the first line
 3. **Remove completed items** after 30 days
 4. **Remove the entire section** when no issues remain
 
 ### When Adding New Issues:
 1. **Increment the count** in the first line
-2. **Categorize properly** (CRITICAL, IMPROVEMENTS)
+2. **Categorize properly** (🚨 CRITICAL, 🔧 IMPROVEMENTS)
 3. **Be specific** about the problem and impact
 4. **Update the date**
+
+## 📝 Working Within Files - Keeping It Tidy
+
+### Issue Management Workflow:
+
+**Adding a New Issue:**
+```typescript
+// ISSUES: 2 open, last updated 2025-07-23 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+/**
+ * 🚨 CRITICAL:
+ * - [ ] Issue #1: Memory leak in event listener cleanup
+ * 
+ * 🔧 IMPROVEMENTS:
+ * - [ ] Issue #2: Add caching layer for API responses
+ * - [ ] Issue #3: Extract validation logic to shared utility  ← NEW ISSUE ADDED
+ */
+```
+
+**Checking Off Completed Issues:**
+```typescript
+// ISSUES: 1 open, last updated 2025-07-23 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking  
+/**
+ * 🚨 CRITICAL:
+ * - [x] Issue #1: Memory leak in event listener cleanup (Fixed 2025-07-23)
+ * 
+ * 🔧 IMPROVEMENTS:
+ * - [ ] Issue #2: Add caching layer for API responses
+ */
+```
+
+**Cleaning Up Old Completed Issues (after 30 days):**
+```typescript
+// ISSUES: 1 open, last updated 2025-07-23 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+/**
+ * 🔧 IMPROVEMENTS:
+ * - [ ] Issue #2: Add caching layer for API responses
+ */
+```
+
+**File With No Issues (clean slate):**
+```typescript
+// ISSUES: 0 open, last updated 2025-07-23 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+
+/**
+ * Component Name - Clean Implementation
+ * 
+ * [Full documentation template continues...]
+ */
+```
+
+### Personal Development Notes:
+
+**Adding Developer Opinions/Insights:**
+```typescript
+/**
+ * ARCHITECTURAL INSIGHTS:
+ * - Current async pattern works well but could benefit from Promise.allSettled()
+ * - Error boundary placement feels awkward - consider moving up one level
+ * - Performance is good but watch memory usage with large datasets
+ * - The setTimeout hack on line 47 is ugly but necessary for browser timing
+ */
+```
+
+**Tracking Technical Debt:**
+```typescript
+/**
+ * 🔧 IMPROVEMENTS:
+ * - [ ] Issue #1: Replace setTimeout hack with proper async coordination
+ * - [ ] Issue #2: Memory optimization for large dataset handling
+ * - [ ] Issue #3: Consider moving error boundary up component tree
+ */
+```
+
+### Tidy File Principles:
+1. **Keep issue lists current** - check them off as you work
+2. **Add context to issues** - explain why it matters
+3. **Use specific line numbers** when referencing problems
+4. **Update dates when touching files** - shows activity
+5. **Clean up completed items regularly** - prevents clutter
+6. **Remove entire issue section** when file is clean
 
 ## 🏆 Making It Competitive
 
@@ -106,10 +237,32 @@ Just like scouts picking up trash in parks, developers should continuously impro
 
 ### Good Scout Behavior:
 ```typescript
-// ISSUES: 1 open, last updated 2025-07-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// ISSUES: 1 open, last updated 2025-07-23 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 /**
  * 🔧 IMPROVEMENTS:
  * - [ ] Issue #1: Add input validation for user parameters
+ */
+
+/**
+ * User Creation Service
+ * 
+ * Handles user registration with type-safe parameter validation
+ * and async database integration.
+ * 
+ * CORE ARCHITECTURE:
+ * - Strong TypeScript interfaces for parameter validation
+ * - Promise-based async flow for database operations
+ * - Error handling with typed response patterns
+ * 
+ * TESTING REQUIREMENTS:
+ * - Unit tests: Parameter validation and error scenarios
+ * - Integration tests: Database connection and user creation flow
+ * - Performance tests: High-volume user creation scenarios
+ * 
+ * ARCHITECTURAL INSIGHTS:
+ * - UserParams interface ensures compile-time type safety
+ * - Promise return enables clean async/await usage patterns
+ * - Separation of validation logic from persistence logic
  */
 
 interface UserParams {
