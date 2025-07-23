@@ -19,9 +19,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   
   try {
     // Connect to JTAG system and get status
-    const connection = await jtag.connect({ healthCheck: true });
-    jtagConnected = connection.healthy;
-    browserUUID = { uuid: connection.session.uuid, context: 'browser' };
+    const jtagSystem = await jtag.connect();
+    jtagConnected = true;
+    browserUUID = { uuid: jtagSystem.context.uuid, context: 'browser' };
     
     console.log('✅ JTAG Demo: JTAG SDK connected successfully');
   } catch (error) {

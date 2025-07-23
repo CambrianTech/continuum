@@ -57,6 +57,14 @@ class MinimalServer {
                            url.endsWith('.json') ? 'application/json' : 'application/octet-stream';
         console.log(`🔍 Serving dist file: ${url} -> ${filePath} (${contentType})`);
         this.serveFile(res, filePath, contentType);
+      } else if (url.startsWith('/daemons/')) {
+        // Daemon files no longer served - using static imports
+        console.log(`📦 Daemon file request deprecated: ${url} (using static imports now)`);
+        res.writeHead(410, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          success: false, 
+          error: 'Daemon files no longer served - using static imports' 
+        }));
       } else if (url === '/favicon.ico') {
         // Ignore favicon requests
         this.serve404(res);
@@ -142,9 +150,10 @@ class MinimalServer {
   async start(): Promise<void> {
     console.log('🚀 Starting test-bench demo server...');
     
-    // Use the unified JTAG system
-    console.log('📊 JTAG Environment:', jtag.environment);
-    console.log('📊 JTAG Context:', jtag.context);
+    // Start the full JTAG system (this will start WebSocket server on port 9001)
+    console.log('🔄 Initializing full JTAG system...');
+    const jtagSystem = await jtag.connect();
+    console.log('✅ JTAG System started:', jtagSystem.getSystemInfo());
     
     // Test console logging to verify ConsoleDaemon works
     console.log('🧪 Testing console logging through ConsoleDaemon...');

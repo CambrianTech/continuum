@@ -7,7 +7,7 @@
 import { JTAGSystem } from '../JTAGSystem';
 import { JTAGContext } from '../JTAGTypes';
 import { JTAGRouter } from '../JTAGRouter';
-import { getDaemonManifest } from '../../manifests/daemon-manifest';
+import { BROWSER_DAEMONS, createBrowserDaemon } from '../../browser/structure';
 
 export class JTAGBrowser extends JTAGSystem {
   
@@ -16,29 +16,22 @@ export class JTAGBrowser extends JTAGSystem {
   }
   
   /**
-   * Setup browser-specific daemons using auto-discovery
+   * Setup browser-specific daemons using static structure
    */
   protected async setupDaemons(): Promise<void> {
-    const daemonManifest = getDaemonManifest('browser');
-    
-    for (const [daemonName, manifestEntry] of Object.entries(daemonManifest)) {
+    for (const daemonEntry of BROWSER_DAEMONS) {
       try {
-        // Dynamic import using manifest
-        const daemonModule = await import(manifestEntry.importPath);
-        const DaemonClass = daemonModule[manifestEntry.className];
+        const daemon = createBrowserDaemon(daemonEntry.name, this.context, this.router);
         
-        if (DaemonClass) {
-          const daemon = new DaemonClass(this.context, this.router);
-          this.register(daemonName, daemon);
-          console.log(`📦 Auto-discovered daemon: ${daemonName}`);
-        } else {
-          console.warn(`⚠️ Daemon class not found: ${manifestEntry.className} in ${manifestEntry.importPath}`);
+        if (daemon) {
+          this.register(daemonEntry.name, daemon);
+          console.log(`📦 Registered browser daemon: ${daemonEntry.name} (${daemonEntry.className})`);
         }
       } catch (error: any) {
-        console.error(`❌ Failed to load daemon ${daemonName}:`, error.message);
+        console.error(`❌ Failed to create browser daemon ${daemonEntry.name}:`, error.message);
       }
     }
 
-    console.log(`🔌 JTAG Browser System: Auto-registered ${this.daemons.size} daemons`);
+    console.log(`🔌 JTAG Browser System: Registered ${this.daemons.size} daemons statically`);
   }
 }

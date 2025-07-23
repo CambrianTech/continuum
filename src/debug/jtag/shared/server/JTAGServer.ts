@@ -7,7 +7,7 @@
 import { JTAGSystem } from '../JTAGSystem';
 import { JTAGContext } from '../JTAGTypes';
 import { JTAGRouter } from '../JTAGRouter';
-import { getDaemonManifest } from '../../manifests/daemon-manifest';
+import { SERVER_DAEMONS, createServerDaemon } from '../../server/structure';
 
 export class JTAGServer extends JTAGSystem {
   
@@ -16,29 +16,22 @@ export class JTAGServer extends JTAGSystem {
   }
   
   /**
-   * Setup server-specific daemons using auto-discovery
+   * Setup server-specific daemons using static structure
    */
   protected async setupDaemons(): Promise<void> {
-    const daemonManifest = getDaemonManifest('server');
-    
-    for (const [daemonName, manifestEntry] of Object.entries(daemonManifest)) {
+    for (const daemonEntry of SERVER_DAEMONS) {
       try {
-        // Dynamic import using manifest
-        const daemonModule = await import(manifestEntry.importPath);
-        const DaemonClass = daemonModule[manifestEntry.className];
+        const daemon = createServerDaemon(daemonEntry.name, this.context, this.router);
         
-        if (DaemonClass) {
-          const daemon = new DaemonClass(this.context, this.router);
-          this.register(daemonName, daemon);
-          console.log(`📦 Auto-discovered daemon: ${daemonName}`);
-        } else {
-          console.warn(`⚠️ Daemon class not found: ${manifestEntry.className} in ${manifestEntry.importPath}`);
+        if (daemon) {
+          this.register(daemonEntry.name, daemon);
+          console.log(`📦 Registered server daemon: ${daemonEntry.name} (${daemonEntry.className})`);
         }
       } catch (error: any) {
-        console.error(`❌ Failed to load daemon ${daemonName}:`, error.message);
+        console.error(`❌ Failed to create server daemon ${daemonEntry.name}:`, error.message);
       }
     }
 
-    console.log(`🔌 JTAG Server System: Auto-registered ${this.daemons.size} daemons`);
+    console.log(`🔌 JTAG Server System: Registered ${this.daemons.size} daemons statically`);
   }
 }

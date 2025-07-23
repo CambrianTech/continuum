@@ -14,35 +14,7 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
     super(context, router);
   }
 
-  /**
-   * Setup server-specific console interception
-   */
-  protected setupConsoleInterception(): void {
-    // Server console interception is simpler - just wrap the methods
-    this.originalConsole = {
-      log: console.log,
-      info: console.info,
-      warn: console.warn,
-      error: console.error,
-      debug: console.debug
-    };
-
-    ['log', 'info', 'warn', 'error', 'debug'].forEach(level => {
-      (console as any)[level] = (...args: any[]) => {
-        // Call original first
-        (this.originalConsole as any)[level](...args);
-        
-        // Process through daemon
-        if (!this.intercepting) {
-          this.intercepting = true;
-          this.processConsoleCall(level as any, args);
-          this.intercepting = false;
-        }
-      };
-    });
-
-    console.log('🎧 ConsoleDaemon[server]: Console interception enabled');
-  }
+  // setupConsoleInterception() is now handled by the base class
 
   /**
    * Process console payload - server implementation
@@ -87,7 +59,7 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
   }
 
   private async notifyErrorMonitoring(consolePayload: ConsolePayload): Promise<void> {
-    // Send errors to monitoring systems
-    console.log(`🚨 Error monitoring notification:`, consolePayload.message);
+    // Send errors to monitoring systems - use original console to avoid recursion
+    this.originalConsole.log(`🚨 Error monitoring notification:`, consolePayload.message);
   }
 }
