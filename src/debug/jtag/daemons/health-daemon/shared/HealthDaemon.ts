@@ -8,6 +8,7 @@ import { DaemonBase } from '../../../shared/DaemonBase';
 import { JTAGContext, JTAGMessage, JTAGPayload } from '../../../shared/JTAGTypes';
 import { JTAGRouter } from '../../../shared/JTAGRouter';
 import { JTAG_ENDPOINTS } from '../../../shared/JTAGEndpoints';
+import { HealthPingResponse, HealthErrorResponse, HealthResponse } from '../../../shared/ResponseTypes';
 
 // Health-specific payload
 export class HealthPayload extends JTAGPayload {
@@ -50,7 +51,7 @@ export abstract class HealthDaemon extends DaemonBase {
   /**
    * Handle incoming health messages
    */
-  async handleMessage(message: JTAGMessage): Promise<any> {
+  async handleMessage(message: JTAGMessage): Promise<HealthResponse> {
     try {
       const healthPayload = message.payload as HealthPayload;
       
@@ -63,59 +64,44 @@ export abstract class HealthDaemon extends DaemonBase {
           return await this.handleMetrics(healthPayload);
         default:
           console.warn(`⚠️ ${this.toString()}: Unknown health message type: ${healthPayload.type}`);
-          return { success: false, error: 'Unknown health message type' };
+          return new HealthErrorResponse('Unknown health message type');
       }
     } catch (error: any) {
       console.error(`❌ ${this.toString()}: Error processing health message:`, error.message);
-      return { success: false, error: error.message };
+      return new HealthErrorResponse(error.message);
     }
   }
 
   /**
    * Handle ping requests
    */
-  private async handlePing(payload: HealthPayload): Promise<any> {
-    const responseTime = Date.now() - new Date(payload.timestamp).getTime();
+  private async handlePing(payload: HealthPayload): Promise<HealthPingResponse> {
+    const pongId = `pong_${Date.now()}`;
+    const uptime = this.getUptime();
     
-    return {
-      success: true,
-      type: 'ping_response',
-      timestamp: new Date().toISOString(),
-      context: this.context.environment,
-      latency: responseTime,
-      uptime: this.getUptime()
-    };
+    return new HealthPingResponse(pongId, uptime);
   }
 
   /**
    * Handle status requests
    */
-  private async handleStatus(payload: HealthPayload): Promise<any> {
-    return {
-      success: true,
-      type: 'status_response',
-      timestamp: new Date().toISOString(),
-      context: this.context.environment,
-      status: 'healthy',
-      uptime: this.getUptime()
-    };
+  private async handleStatus(payload: HealthPayload): Promise<HealthPingResponse> {
+    const statusId = `status_${Date.now()}`;
+    const uptime = this.getUptime();
+    const memory = this.getMemoryUsage();
+    
+    return new HealthPingResponse(statusId, uptime, memory);
   }
 
   /**
    * Handle metrics requests
    */
-  private async handleMetrics(payload: HealthPayload): Promise<any> {
-    return {
-      success: true,
-      type: 'metrics_response',
-      timestamp: new Date().toISOString(),
-      context: this.context.environment,
-      metrics: {
-        uptime: this.getUptime(),
-        memory: this.getMemoryUsage(),
-        environment: this.context.environment
-      }
-    };
+  private async handleMetrics(payload: HealthPayload): Promise<HealthPingResponse> {
+    const metricsId = `metrics_${Date.now()}`;
+    const uptime = this.getUptime();
+    const memory = this.getMemoryUsage();
+    
+    return new HealthPingResponse(metricsId, uptime, memory);
   }
 
   /**

@@ -9,6 +9,7 @@ import { DaemonBase } from '../../../shared/DaemonBase';
 import { JTAGContext, JTAGMessage, CommandParams } from '../../../shared/JTAGTypes';
 import { JTAGRouter } from '../../../shared/JTAGRouter';
 import { CommandBase } from './CommandBase';
+import { CommandResponse, CommandErrorResponse, CommandSuccessResponse } from '../../../shared/ResponseTypes';
 
 export abstract class CommandDaemonBase extends DaemonBase {
   public readonly subpath: string = 'commands';
@@ -46,7 +47,7 @@ export abstract class CommandDaemonBase extends DaemonBase {
   /**
    * Handle incoming messages (from MessageSubscriber interface)
    */
-  async handleMessage(message: JTAGMessage): Promise<any> {
+  async handleMessage(message: JTAGMessage): Promise<CommandResponse> {
     console.log(`📨 ${this.toString()}: Handling message to ${message.endpoint}`);
     
     // Extract command name from endpoint
@@ -54,10 +55,16 @@ export abstract class CommandDaemonBase extends DaemonBase {
     const command = this.commands.get(commandName);
     
     if (!command) {
-      throw new Error(`Command '${commandName}' not found in ${this.context.environment} context`);
+      return new CommandErrorResponse(`Command '${commandName}' not found in ${this.context.environment} context`, commandName);
     }
 
-    return await command.execute(message.payload);
+    try {
+      const result = await command.execute(message.payload);
+      // Wrap raw command results in CommandResponse
+      return new CommandSuccessResponse(result);
+    } catch (error: any) {
+      return new CommandErrorResponse(error.message || 'Command execution failed', commandName);
+    }
   }
 
   /**

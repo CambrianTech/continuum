@@ -1,6 +1,6 @@
 /**
  * Auto-generated Daemon Manifest
- * Generated at: 2025-07-23T17:01:28.010Z
+ * Generated at: 2025-07-23T17:41:59.168Z
  * 
  * This file maps daemon names to their import paths for both browser and server environments.
  * Used for auto-discovery and dynamic loading of daemons.
@@ -25,6 +25,10 @@ export const DAEMON_MANIFEST: DaemonManifest = {
     "ConsoleDaemon": {
       "className": "ConsoleDaemonBrowser",
       "importPath": "../daemons/console-daemon/browser/ConsoleDaemonBrowser"
+    },
+    "HealthDaemon": {
+      "className": "HealthDaemonBrowser",
+      "importPath": "../daemons/health-daemon/browser/HealthDaemonBrowser"
     }
   },
   "server": {
