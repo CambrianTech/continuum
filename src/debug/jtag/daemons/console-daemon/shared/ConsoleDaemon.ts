@@ -6,16 +6,21 @@
  */
 
 import { DaemonBase } from '../../../shared/DaemonBase';
-import { JTAGContext, JTAGMessage, JTAGPayload, JTAGMessageFactory } from '../../../shared/JTAGTypes';
-import { JTAGRouter } from '../../../shared/JTAGRouter';
+import type { JTAGContext, JTAGMessage } from '../../../shared/JTAGTypes';
+import { JTAGPayload, JTAGMessageFactory } from '../../../shared/JTAGTypes';
+import type { JTAGRouter } from '../../../shared/JTAGRouter';
 import { SystemEvents } from '../../../shared/events/SystemEvents';
 import { TransportEvents } from '../../../transports/TransportEvents';
 import { ConsoleEvents } from '../ConsoleEvents';
 import { JTAG_ENDPOINTS } from '../../../shared/JTAGEndpoints';
+import { ConsoleSuccessResponse, ConsoleErrorResponse, ConsoleResponse } from '../../../shared/ResponseTypes';
+
+
+type Levels = 'log' | 'info' | 'warn' | 'error' | 'debug';
 
 // Console-specific payload
 export class ConsolePayload extends JTAGPayload {
-  level: 'log' | 'info' | 'warn' | 'error' | 'debug';
+  level: Levels;
   component: string;
   message: string;
   timestamp: string;
@@ -25,11 +30,11 @@ export class ConsolePayload extends JTAGPayload {
 
   constructor(data: Partial<ConsolePayload>) {
     super();
-    this.level = data.level || 'log';
-    this.component = data.component || 'UNKNOWN';
-    this.message = data.message || '';
-    this.timestamp = data.timestamp || new Date().toISOString();
-    this.context = data.context || 'server';
+    this.level = data.level ?? 'log';
+    this.component = data.component ?? 'UNKNOWN';
+    this.message = data.message ?? '';
+    this.timestamp = data.timestamp ?? new Date().toISOString();
+    this.context = data.context ?? 'server';
     this.data = data.data;
     this.stack = data.stack;
   }
@@ -38,7 +43,7 @@ export class ConsolePayload extends JTAGPayload {
 export interface ConsoleFilter {
   excludePatterns: string[];
   includeComponents?: string[];
-  minLevel?: 'log' | 'info' | 'warn' | 'error' | 'debug';
+  minLevel?: Levels;
 }
 
 /**
@@ -92,7 +97,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
     const eventSystem = this.router.eventSystem;
     
     // Listen for daemons loaded event - happens immediately after all daemon initialization
-    eventSystem.on(SystemEvents.DAEMONS_LOADED, (data: any) => {
+    eventSystem.on(SystemEvents.DAEMONS_LOADED, () => {
       if (!this.jtagSystemReady) {
         // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🔌 ${this.toString()}: Daemons loaded event received, starting queue drain`);
         this.jtagSystemReady = true;
@@ -109,13 +114,13 @@ export abstract class ConsoleDaemon extends DaemonBase {
           this.startQueueDrain();
         }
       })
-      .catch((error: Error) => {
+      .catch(() => {
         this.originalConsole.warn(`⚠️ ${this.toString()}: JTAG ready timeout, falling back to transport check`);
         this.fallbackToTransportCheck();
       });
 
     // Also listen for transport ready events - TYPE-SAFE & MODULAR!
-    eventSystem.on(TransportEvents.READY, (message: any) => {
+    eventSystem.on(TransportEvents.READY, () => {
       if (!this.jtagSystemReady) {
         // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🔗 ${this.toString()}: Transport ready event received, starting queue drain`);
         this.jtagSystemReady = true;
@@ -128,9 +133,9 @@ export abstract class ConsoleDaemon extends DaemonBase {
    * Fallback to transport checking (legacy approach)
    */
   private fallbackToTransportCheck(): void {
-    const checkReady = () => {
+    const checkReady = () : void => {
       // Router is guaranteed by constructor
-      const transport = (this.router as any).crossContextTransport;
+      const transport = this.router.crossContextTransport;
       if (transport?.isConnected()) {
         // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🔗 ${this.toString()}: Transport connected, starting queue drain`);
         this.jtagSystemReady = true;
@@ -197,7 +202,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
           consolePayload
         );
         await this.router.postMessage(message);
-      } catch (error) {
+      } catch  {
         // If drain fails, put message back in buffer
         this.logBuffer.unshift(consolePayload);
         // SILENCED: Internal logging causes infinite loops - this.originalConsole.warn(`⚠️ ${this.toString()}: Failed to drain message, re-queued`);
@@ -210,13 +215,13 @@ export abstract class ConsoleDaemon extends DaemonBase {
   /**
    * Handle incoming messages (from MessageSubscriber interface)
    */
-  async handleMessage(message: JTAGMessage): Promise<any> {
+  async handleMessage(message: JTAGMessage): Promise<ConsoleResponse> {
     try {
       const consolePayload = message.payload as ConsolePayload;
       
       // Apply filters
       if (this.shouldFilterMessage(consolePayload)) {
-        return { success: true, filtered: true };
+        return new ConsoleSuccessResponse({ filtered: true });
       }
 
       // Add to buffer
@@ -225,16 +230,16 @@ export abstract class ConsoleDaemon extends DaemonBase {
       // Process the console message (context-agnostic)
       await this.processConsolePayload(consolePayload);
 
-      return { 
-        success: true, 
+      return new ConsoleSuccessResponse({ 
         processed: true, 
         context: this.context.environment,
         level: consolePayload.level 
-      };
+      });
 
-    } catch (error: any) {
-      this.originalConsole.error(`❌ ${this.toString()}: Error processing message:`, error.message);
-      return { success: false, error: error.message };
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.originalConsole.error(`❌ ${this.toString()}: Error processing message:`, errorMessage);
+      return new ConsoleErrorResponse(errorMessage);
     }
   }
 
@@ -250,36 +255,40 @@ export abstract class ConsoleDaemon extends DaemonBase {
     const originalError = console.error.bind(console);
     const originalDebug = console.debug ? console.debug.bind(console) : originalLog;
 
-    // Update our stored references
+    // Update our stored references using Levels type for keys
     this.originalConsole = {
       log: originalLog,
       info: originalInfo,
       warn: originalWarn,
       error: originalError,
       debug: originalDebug
-    };
+    } as Record<Levels, typeof originalLog>;
 
     // Log initialization using stored original (no override active yet)
     originalLog(`🎧 ${this.toString()}: Console daemon initializing...`);
 
     // Create interception wrapper - clean and simple
-    const createInterceptor = (level: 'log' | 'info' | 'warn' | 'error' | 'debug', originalMethod: Function) => {
-      return (...args: any[]) => {
-        // Always call original first to maintain expected console behavior
-        originalMethod(...args);
-        
-        // Process through daemon (with recursion guard)
-        if (!this.intercepting) {
-          this.intercepting = true;
-          try {
-            this.processConsoleCall(level, args);
-          } catch (error) {
-            // Use original error method to avoid any recursion
-            originalError('ConsoleDaemon processing failed:', error);
-          } finally {
-            this.intercepting = false;
-          }
+    
+    const createInterceptor = (
+      level: Levels,
+      originalMethod: (...args: unknown[]) => void
+    ): (...args: unknown[]) => void => {
+      return (...args: unknown[]): void => {
+      // Always call original first to maintain expected console behavior
+      originalMethod(...args);
+
+      // Process through daemon (with recursion guard)
+      if (!this.intercepting) {
+        this.intercepting = true;
+        try {
+        this.processConsoleCall(level, args);
+        } catch (error) {
+        // Use original error method to avoid any recursion
+        originalError('ConsoleDaemon processing failed:', error);
+        } finally {
+        this.intercepting = false;
         }
+      }
       };
     };
 
@@ -298,7 +307,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
    * Process raw console call arguments into ConsolePayload
    * Shared logic for parsing and creating payload
    */
-  protected processConsoleCall(level: ConsolePayload['level'], args: any[]): void {
+  protected processConsoleCall(level: ConsolePayload['level'], args: unknown[]): void {
     const message = args.map(arg => 
       typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
     ).join(' ');
@@ -377,11 +386,6 @@ export abstract class ConsoleDaemon extends DaemonBase {
 
     return this.context.environment as 'browser' | 'server' === 'browser' ? 'BROWSER_CONSOLE' : 'SERVER_CONSOLE';
   }
-
-
-
-
-
 
 
   private shouldFilterMessage(consolePayload: ConsolePayload): boolean {

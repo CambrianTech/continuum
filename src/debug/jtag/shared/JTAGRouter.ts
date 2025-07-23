@@ -3,16 +3,20 @@
  */
 
 import { JTAGModule } from './JTAGModule';
-import { JTAGContext, JTAGMessage, JTAGPayload, JTAGMessageUtils, JTAGMessageTypes, JTAGMessageFactory } from './JTAGTypes';
-import { TransportFactory, TransportConfig } from '../transports/TransportFactory';
+import type { JTAGContext, JTAGMessage } from './JTAGTypes';
+import { JTAGMessageTypes, JTAGMessageFactory } from './JTAGTypes';
+import { TransportFactory } from '../transports/TransportFactory';
+import type { TransportConfig } from '../transports/TransportFactory';
 import { JTAGEventSystem } from './JTAGEventSystem';
 import { JTAGMessageQueue, MessagePriority } from './queuing/JTAGMessageQueue';
-import { QueuedItem } from './queuing/PriorityQueue';
-import { ConnectionHealthManager, ConnectionState } from './ConnectionHealthManager';
+import type { QueuedItem } from './queuing/PriorityQueue';
+import { ConnectionHealthManager } from './ConnectionHealthManager';
 import { ResponseCorrelator } from './ResponseCorrelator';
 
+import { JTAGResponsePayload } from './ResponseTypes';
+
 export interface MessageSubscriber {
-  handleMessage(message: JTAGMessage): Promise<any>;
+  handleMessage(message: JTAGMessage): Promise<JTAGResponsePayload>;
   get endpoint(): string;
   get uuid(): string;
 }
@@ -38,7 +42,7 @@ export interface RouterStatus {
 
 export class JTAGRouter extends JTAGModule {
   private subscribers = new Map<string, MessageSubscriber>();
-  private crossContextTransport: JTAGTransport | null = null;
+  public crossContextTransport: JTAGTransport | null = null;
   public eventSystem: JTAGEventSystem;
   
   // Bus-level enhancements
