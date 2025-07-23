@@ -14,6 +14,7 @@ import { TransportEvents } from '../../../transports/TransportEvents';
 import { ConsoleEvents } from '../ConsoleEvents';
 import { JTAG_ENDPOINTS } from '../../../shared/JTAGEndpoints';
 import { ConsoleSuccessResponse, ConsoleErrorResponse, ConsoleResponse } from '../../../shared/ResponseTypes';
+import type { TimerHandle } from '../../../shared/CrossPlatformTypes';
 
 
 type Levels = 'log' | 'info' | 'warn' | 'error' | 'debug';
@@ -69,7 +70,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
   private logBuffer: ConsolePayload[] = [];
   private maxBufferSize = 1000;
   private jtagSystemReady = false;
-  private drainInterval?: NodeJS.Timeout;
+  private drainInterval?: TimerHandle;
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super('console-daemon', context, router);
