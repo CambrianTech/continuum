@@ -4,8 +4,8 @@
 
 console.log('🚀 JTAG Demo script loading...');
 
-// Import JTAG like a real npm module
-import jtag from '@continuum/jtag';
+// Import JTAG browser-specific entry point
+import { jtag } from '@continuum/jtag/dist/browser-index';
 
 console.log('✅ JTAG Demo script loaded, jtag imported:', typeof jtag);
 

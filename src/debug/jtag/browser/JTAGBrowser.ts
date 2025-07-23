@@ -4,10 +4,10 @@
  * Browser-specific JTAG system that registers browser daemons.
  */
 
-import { JTAGSystem } from '../JTAGSystem';
-import { JTAGContext } from '../JTAGTypes';
-import { JTAGRouter } from '../JTAGRouter';
-import { BROWSER_DAEMONS, createBrowserDaemon } from '../../browser/structure';
+import { JTAGSystem } from '../shared/JTAGSystem';
+import { JTAGContext } from '../shared/JTAGTypes';
+import { JTAGRouter } from '../shared/JTAGRouter';
+import { BROWSER_DAEMONS, createBrowserDaemon } from './structure';
 
 export class JTAGBrowser extends JTAGSystem {
   
@@ -18,7 +18,7 @@ export class JTAGBrowser extends JTAGSystem {
   /**
    * Setup browser-specific daemons using static structure
    */
-  protected async setupDaemons(): Promise<void> {
+  async setupDaemons(): Promise<void> {
     for (const daemonEntry of BROWSER_DAEMONS) {
       try {
         const daemon = createBrowserDaemon(daemonEntry.name, this.context, this.router);
@@ -33,5 +33,13 @@ export class JTAGBrowser extends JTAGSystem {
     }
 
     console.log(`🔌 JTAG Browser System: Registered ${this.daemons.size} daemons statically`);
+  }
+
+  /**
+   * Setup browser-specific transports
+   */
+  async setupTransports(): Promise<void> {
+    await this.router.setupCrossContextTransport();
+    console.log(`🔗 JTAG Browser System: Cross-context transport configured`);
   }
 }

@@ -7,7 +7,7 @@
 import { JTAGContext } from '../../../shared/JTAGTypes';
 import { JTAGRouter } from '../../../shared/JTAGRouter';
 import { CommandDaemonBase } from '../shared/CommandDaemonBase';
-import { getCommandManifest } from '../../../manifests/command-manifest';
+import { BROWSER_COMMANDS, createBrowserCommand } from '../../../browser/structure';
 
 export class CommandDaemonBrowser extends CommandDaemonBase {
   
@@ -16,26 +16,18 @@ export class CommandDaemonBrowser extends CommandDaemonBase {
   }
 
   /**
-   * Initialize browser-specific commands using auto-discovery
+   * Initialize browser-specific commands using static imports
    */
   protected async initializeCommands(): Promise<void> {
-    const commandManifest = getCommandManifest('browser');
-    
-    for (const [commandName, manifestEntry] of Object.entries(commandManifest)) {
+    for (const commandEntry of BROWSER_COMMANDS) {
       try {
-        // Dynamic import using manifest
-        const commandModule = await import(manifestEntry.importPath);
-        const CommandClass = commandModule[manifestEntry.className];
-        
-        if (CommandClass) {
-          const command = new CommandClass(this.context, commandName, this);
-          this.register(commandName, command);
-          console.log(`📦 Auto-discovered command: ${commandName}`);
-        } else {
-          console.warn(`⚠️ Command class not found: ${manifestEntry.className} in ${manifestEntry.importPath}`);
+        const command = createBrowserCommand(commandEntry.name, this.context, commandEntry.name, this);
+        if (command) {
+          this.register(commandEntry.name, command);
+          console.log(`📦 Registered browser command: ${commandEntry.name} (${commandEntry.className})`);
         }
       } catch (error: any) {
-        console.error(`❌ Failed to load command ${commandName}:`, error.message);
+        console.error(`❌ Failed to create browser command ${commandEntry.name}:`, error.message);
       }
     }
     

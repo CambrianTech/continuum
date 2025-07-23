@@ -4,10 +4,10 @@
  * Server-specific JTAG system that registers server daemons.
  */
 
-import { JTAGSystem } from '../JTAGSystem';
-import { JTAGContext } from '../JTAGTypes';
-import { JTAGRouter } from '../JTAGRouter';
-import { SERVER_DAEMONS, createServerDaemon } from '../../server/structure';
+import { JTAGSystem } from '../shared/JTAGSystem';
+import { JTAGContext } from '../shared/JTAGTypes';
+import { JTAGRouter } from '../shared/JTAGRouter';
+import { SERVER_DAEMONS, createServerDaemon } from './structure';
 
 export class JTAGServer extends JTAGSystem {
   
@@ -18,7 +18,7 @@ export class JTAGServer extends JTAGSystem {
   /**
    * Setup server-specific daemons using static structure
    */
-  protected async setupDaemons(): Promise<void> {
+  async setupDaemons(): Promise<void> {
     for (const daemonEntry of SERVER_DAEMONS) {
       try {
         const daemon = createServerDaemon(daemonEntry.name, this.context, this.router);
@@ -33,5 +33,13 @@ export class JTAGServer extends JTAGSystem {
     }
 
     console.log(`🔌 JTAG Server System: Registered ${this.daemons.size} daemons statically`);
+  }
+
+  /**
+   * Setup server-specific transports
+   */
+  async setupTransports(): Promise<void> {
+    await this.router.setupCrossContextTransport();
+    console.log(`🔗 JTAG Server System: Cross-context transport configured`);
   }
 }
