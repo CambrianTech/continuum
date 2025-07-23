@@ -303,6 +303,13 @@ export class JTAGRouter extends JTAGModule {
     };
     this.crossContextTransport = await TransportFactory.createTransport(this.context.environment, transportConfig);
     
+    // Connect transport to router for incoming messages
+    if ('setMessageHandler' in this.crossContextTransport) {
+      (this.crossContextTransport as any).setMessageHandler((message: JTAGMessage) => {
+        this.postMessage(message).catch(console.error);
+      });
+    }
+    
     console.log(`✅ ${this.toString()}: Transport ready: ${this.crossContextTransport.name}`);
   }
 

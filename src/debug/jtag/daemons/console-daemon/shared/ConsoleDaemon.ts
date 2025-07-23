@@ -302,23 +302,25 @@ export abstract class ConsoleDaemon extends DaemonBase {
       typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
     ).join(' ');
 
-    // Skip our own daemon messages and JTAG system messages to prevent loops
+    // Skip only internal daemon messages that cause infinite loops - be surgical!
     const skipPatterns = [
-      'ConsoleDaemon', '🎧', '📝', '⚡', '✅', '❌', '📤', '📊',
-      'JTAG:', 'CommandDaemon', 'JTAGRouter', 'JTAGModule',
-      'registerWithRouter', 'handleMessage',
-      // CRITICAL: Add patterns that are causing infinite loops
-      'Routing message', 'Queued message', 'Delivered queued message',
-      'JTAGMessageQueue', 'WebSocket Client', 'Sending message to server',
-      'Transport Factory', 'HealthManager', '📨', '📥', '📡',
-      'JTAGEventSystem', 'Emitting', 'Processing',
-      // COMPREHENSIVE: Filter ALL JTAG internal operations
-      'JTAGSystem', 'Browser Structure', 'CommandDaemonBrowser',
-      'ConsoleDaemonBrowser', 'ScreenshotBrowserCommand', 'Registered',
-      'Auto-initialized', 'Event handlers', 'UI initialized',
-      'Connected browser successfully', 'Loading', 'Creating',
-      'Initializing', 'Started processing', '🏗️', '🔗', '🌊',
-      'JTAG Demo', 'Ping successful'
+      // Console daemon self-reference (critical for preventing loops)
+      'ConsoleDaemon', '🎧 ConsoleDaemon',
+      
+      // Message routing operations (critical for preventing loops)
+      '📨 JTAGRouter', 'Routing message to server/console', 'Routing locally to server/console',
+      '📥 JTAGMessageQueue', 'Queued message', 'Delivered queued message',
+      '📤 WebSocket Client: Sending message to server',
+      '📨 WebSocket Server: Received message from client',
+      
+      // Transport internal operations (prevent loops)
+      'Transport Factory', 'Message handler connected',
+      
+      // Health/ping operations (prevent noise)
+      'HealthManager', 'Ping successful', 'Connection established',
+      
+      // Event system internal operations (prevent loops)
+      '📡 JTAGEventSystem: Emitting', 'JTAGEventSystem: Processing'
     ];
     
     if (skipPatterns.some(pattern => message.includes(pattern))) {
