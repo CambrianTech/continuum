@@ -3,7 +3,8 @@
  */
 
 import { JTAGTransport } from '../shared/JTAGRouter';
-import { JTAGEnvironment } from '../shared/JTAGTypes';
+import type { JTAGContext } from '../shared/JTAGTypes';
+import { JTAG_ENVIRONMENTS } from '../shared/JTAGTypes';
 import { WebSocketServerTransport, WebSocketClientTransport } from './WebSocketTransport';
 import { HTTPTransport } from './HTTPTransport';
 import { JTAGEventSystem } from '../shared/JTAGEventSystem';
@@ -22,7 +23,7 @@ export class TransportFactory {
    * Create appropriate transport for the environment
    */
   static async createTransport(
-    environment: JTAGEnvironment, 
+    environment: JTAGContext['environment'], 
     config: TransportConfig = {}
   ): Promise<JTAGTransport> {
     
@@ -31,7 +32,7 @@ export class TransportFactory {
     console.log(`🏭 Transport Factory: Creating transport for ${environment} environment`);
     
     if (preferred === 'websocket') {
-      if (environment === 'server') {
+      if (environment === JTAG_ENVIRONMENTS.SERVER) {
         const transport = new WebSocketServerTransport();
         if (eventSystem) {
           transport.setEventSystem(eventSystem);
@@ -82,9 +83,9 @@ export class TransportFactory {
   /**
    * Auto-detect optimal transport configuration
    */
-  static detectOptimalConfig(environment: JTAGEnvironment): TransportConfig {
+  static detectOptimalConfig(environment: JTAGContext['environment']): TransportConfig {
     // In browser, prefer WebSocket client
-    if (environment === 'browser') {
+    if (environment === JTAG_ENVIRONMENTS.BROWSER) {
       return {
         preferred: 'websocket',
         fallback: true,
@@ -93,7 +94,7 @@ export class TransportFactory {
     }
     
     // On server, prefer WebSocket server
-    if (environment === 'server') {
+    if (environment === JTAG_ENVIRONMENTS.SERVER) {
       return {
         preferred: 'websocket',
         fallback: true,

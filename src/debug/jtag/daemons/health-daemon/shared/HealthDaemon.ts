@@ -5,7 +5,8 @@
  */
 
 import { DaemonBase } from '../../../shared/DaemonBase';
-import { JTAGContext, JTAGMessage, JTAGPayload } from '../../../shared/JTAGTypes';
+import type { JTAGContext, JTAGMessage } from '../../../shared/JTAGTypes';
+import { JTAGPayload } from '../../../shared/JTAGTypes';
 import { JTAGRouter } from '../../../shared/JTAGRouter';
 import { JTAG_ENDPOINTS } from '../../../shared/JTAGEndpoints';
 import { HealthPingResponse, HealthErrorResponse, HealthResponse } from '../../../shared/ResponseTypes';
@@ -14,7 +15,7 @@ import { HealthPingResponse, HealthErrorResponse, HealthResponse } from '../../.
 export class HealthPayload extends JTAGPayload {
   type: 'ping' | 'status' | 'metrics';
   timestamp: string;
-  context: 'browser' | 'server';
+  context: JTAGContext['environment'];
   data?: {
     latency?: number;
     uptime?: number;

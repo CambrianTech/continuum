@@ -4,7 +4,8 @@
  * Common types and interfaces used by both browser and server screenshot implementations.
  */
 
-import { CommandParams, JTAGPayload, JTAGEnvironment } from '../../../../../shared/JTAGTypes';
+import { CommandParams, JTAGPayload } from '../../../../../shared/JTAGTypes';
+import type { JTAGContext } from '../../../../../shared/JTAGTypes';
 
 /**
  * Screenshot Command Parameters - extends CommandParams
@@ -44,7 +45,7 @@ export class ScreenshotResult extends JTAGPayload {
   success: boolean;
   filepath: string;
   filename: string;
-  context: JTAGEnvironment;
+  context: JTAGContext['environment'];
   timestamp: string;
   options?: ScreenshotOptions;
   error?: string;

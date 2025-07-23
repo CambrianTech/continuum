@@ -2,6 +2,9 @@
  * Console Event Definitions - Modular event category
  */
 
+import type { LogLevel } from '../../shared/LogLevels';
+import type { JTAGContext } from '../../shared/JTAGTypes';
+
 export const ConsoleEvents = {
   ATTACHED: 'console.attached',
   QUEUE_DRAIN_START: 'console.queue-drain-start',
@@ -11,13 +14,13 @@ export const ConsoleEvents = {
 
 export interface ConsoleEventData {
   [ConsoleEvents.ATTACHED]: {
-    environment: 'browser' | 'server';
+    environment: JTAGContext['environment'];
     interceptedMethods: string[];
   };
   
   [ConsoleEvents.QUEUE_DRAIN_START]: {
     queueSize: number;
-    environment: 'browser' | 'server';
+    environment: JTAGContext['environment'];
   };
   
   [ConsoleEvents.QUEUE_DRAIN_COMPLETE]: {
@@ -27,7 +30,7 @@ export interface ConsoleEventData {
   };
   
   [ConsoleEvents.MESSAGE_PROCESSED]: {
-    level: 'log' | 'info' | 'warn' | 'error' | 'debug';
+    level: LogLevel;
     component: string;
     messageLength: number;
   };

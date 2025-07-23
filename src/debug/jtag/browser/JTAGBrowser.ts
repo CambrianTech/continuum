@@ -22,7 +22,7 @@ export class JTAGBrowser extends JTAGSystem {
   async setupDaemons(): Promise<void> {
     // Emit daemons loading event
     this.router.eventSystem.emit(SystemEvents.DAEMONS_LOADING, {
-      environment: 'browser' as const,
+      context: this.context,
       timestamp: new Date().toISOString(),
       expectedDaemons: BROWSER_DAEMONS.map(d => d.name)
     });
@@ -51,7 +51,7 @@ export class JTAGBrowser extends JTAGSystem {
     
     // Emit daemons loaded event
     this.router.eventSystem.emit(SystemEvents.DAEMONS_LOADED, {
-      environment: 'browser' as const,
+      context: this.context,
       timestamp: new Date().toISOString(),
       loadedDaemons: Array.from(this.daemons.keys())
     });

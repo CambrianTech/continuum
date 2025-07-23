@@ -33,8 +33,8 @@ export class ResponseCorrelator {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(correlationId);
-        reject(new Error(`Request timeout after ${timeoutMs || this.defaultTimeoutMs}ms`));
-      }, timeoutMs || this.defaultTimeoutMs);
+        reject(new Error(`Request timeout after ${timeoutMs ?? this.defaultTimeoutMs}ms`));
+      }, timeoutMs ?? this.defaultTimeoutMs);
 
       this.pendingRequests.set(correlationId, {
         resolve,

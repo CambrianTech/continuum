@@ -1,8 +1,29 @@
+// ISSUES: 0 open, last updated 2025-07-23 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+
 /**
  * Connection Health Manager
  * 
- * Monitors connection health, handles reconnection with exponential backoff,
- * and coordinates with message queue for reliable delivery.
+ * Intelligent connection monitoring with exponential backoff reconnection,
+ * health scoring, and event-driven coordination for reliable message delivery.
+ * 
+ * CORE ARCHITECTURE:
+ * - Real-time connection state management
+ * - Exponential backoff retry strategy
+ * - Health scoring with latency and packet loss metrics
+ * - Event-driven transport coordination
+ * - Configurable ping intervals and timeouts
+ * 
+ * TESTING REQUIREMENTS:
+ * - Unit tests: Health scoring algorithms and state transitions
+ * - Integration tests: Transport reconnection scenarios
+ * - Network tests: Partition recovery and failover behavior
+ * - Performance tests: High-frequency ping handling
+ * 
+ * ARCHITECTURAL INSIGHTS:
+ * - Health history tracking enables trend analysis
+ * - Event system integration provides system-wide health awareness
+ * - Configurable parameters support different network environments
+ * - State machine prevents race conditions during reconnection
  */
 
 import type { JTAGContext } from './JTAGTypes';

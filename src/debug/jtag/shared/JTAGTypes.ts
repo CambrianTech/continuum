@@ -1,11 +1,34 @@
+// ISSUES: 0 open, last updated 2025-07-23 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+
 /**
  * JTAG Universal Command Bus - Core Types
  * 
- * Clean type definitions for the Universal Command Bus architecture.
+ * Foundation type system for the entire JTAG architecture. Defines the core
+ * abstractions that enable cross-context, type-safe message routing.
+ * 
+ * CORE ARCHITECTURE:
+ * - JTAGContext: Environment identification and module correlation
+ * - JTAGPayload: Base class for all transportable data
+ * - JTAGMessage: Complete message envelope with routing metadata
+ * - Message Factory: Type-safe message construction patterns
+ * 
+ * TESTING REQUIREMENTS:
+ * - Unit tests: Type validation and serialization/deserialization
+ * - Integration tests: Cross-context message transport
+ * - Performance tests: Payload encoding/decoding efficiency
+ * 
+ * ARCHITECTURAL INSIGHTS:
+ * - Environment constants prevent string literal errors
+ * - Abstract payload base ensures consistent serialization
+ * - Message factory eliminates manual routing header construction
+ * - UUID correlation enables distributed debugging across contexts
  */
 
 /**
- * JTAG Environments
+ * JTAG Environment Constants
+ * 
+ * Centralized environment identifiers to prevent string literal errors.
+ * Used throughout the system for context-aware routing and module discovery.
  */
 export const JTAG_ENVIRONMENTS = {
   SERVER: 'server',
@@ -16,7 +39,13 @@ export const JTAG_ENVIRONMENTS = {
 export type JTAGEnvironment = typeof JTAG_ENVIRONMENTS[keyof typeof JTAG_ENVIRONMENTS];
 
 /**
- * JTAG Context - shared for all modules in same environment
+ * JTAG Context - Universal Module Identity
+ * 
+ * Shared context object that uniquely identifies execution environment.
+ * All modules within the same context share this identity for correlation.
+ * 
+ * @param uuid - Unique identifier for this context instance
+ * @param environment - Execution environment (server/browser/remote)
  */
 export interface JTAGContext {
   uuid: string;
@@ -24,11 +53,20 @@ export interface JTAGContext {
 }
 
 /**
- * Abstract base for all JTAG payloads
+ * JTAG Payload Base Class
+ * 
+ * Abstract foundation for all data transported through the JTAG system.
+ * Provides consistent serialization and cross-platform encoding capabilities.
+ * 
+ * DESIGN PATTERN:
+ * - All daemon responses extend this base
+ * - Ensures type safety in message routing
+ * - Cross-platform encoding (Node.js Buffer vs browser btoa)
  */
 export abstract class JTAGPayload {
   /**
-   * Encode payload for transport (base64 by default)
+   * Cross-platform payload encoding for transport
+   * Uses Node.js Buffer or browser btoa depending on environment
    */
   encode(): string {
     const jsonString = JSON.stringify(this);
@@ -41,7 +79,8 @@ export abstract class JTAGPayload {
   }
 
   /**
-   * Decode payload from transport
+   * Cross-platform payload decoding from transport
+   * Reverses encoding process with error handling for malformed data
    */
   static decode<T extends JTAGPayload>(this: new() => T, encoded: string): T {
     try {
