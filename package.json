@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.3143",
+  "version": "0.2.3146",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -14,10 +14,13 @@
     "compile": "npx tsc --noEmit --project .",
     "start": "npm run log:npm-start manual && npm run compile && npm run build:browser-ts && ./continuum",
     "jtag": "npm run log:npm-start jtag-command && npm start && echo '' && echo '🛸 JTAG System Ready' && echo '  continuum help jtag              # Show available JTAG methods' && echo '  continuum jtag                   # Default JTAG probe'",
+    "test:jtag": "cd src/debug/jtag && npm test",
+    "test:jtag:layer": "cd src/debug/jtag && npm run test:layer-",
     "install:global": "node scripts/install.js",
     "prepare": "husky",
     "postinstall": "lerna run prepare",
-    "build:browser-ts": "npm run clean:all && npm run version:bump && rm -f src/ui/continuum-browser.js* && node scripts/build-browser.cjs",
+    "build:browser-ts": "npm run clean:all && npm run version:bump && npm run build:jtag-manifests && rm -f src/ui/continuum-browser.js* && node scripts/build-browser.cjs",
+    "build:jtag-manifests": "node src/debug/jtag/build-manifests.js",
     "build:browser-hot": "npm run version:bump && rm -f src/ui/continuum-browser.js* && node scripts/build-browser.cjs",
     "build:ui-components": "tsc --project tsconfig.ui.json",
     "build:ui": "tsc --project tsconfig.ui.json",

@@ -1,8 +1,92 @@
-# JTAG Architecture - Pluggable Transport Abstraction
+# JTAG Architecture - Universal Command Bus with Auto-Discovery
+
+## 🚀 **ARCHITECTURAL BREAKTHROUGH: Auto-Discovery with Constructor Injection**
+
+**Revolutionary Shift**: JTAG has achieved a fundamental architectural breakthrough, moving from imperative registration patterns to **declarative auto-discovery with constructor injection**. This represents a paradigm shift in how distributed debugging systems can be built.
+
+### **🔧 Build-Time Manifest Generation**
+
+The foundation of this breakthrough is the `build-manifests.js` system that scans directories at build time and creates discovery manifests:
+
+```typescript
+// Generated daemon-manifest.ts
+export const DAEMON_MANIFEST: DaemonManifest = {
+  "browser": {
+    "CommandDaemon": {
+      "className": "CommandDaemonBrowser",
+      "importPath": "../daemons/command-daemon/browser/CommandDaemonBrowser"
+    }
+  },
+  "server": {
+    "CommandDaemon": {
+      "className": "CommandDaemonServer", 
+      "importPath": "../daemons/command-daemon/server/CommandDaemonServer"
+    }
+  }
+};
+```
+
+**Key Innovation**: Same discovery code works in both browser and server environments, but with different manifest data. The browser can discover components without filesystem access.
+
+### **🏗️ Constructor Dependency Injection**
+
+Clean dependency flow eliminates boilerplate registration:
+
+```typescript
+// OLD: Manual registration boilerplate
+class SomeCommand {
+  async registerWithSystem(system) { /* ... */ }
+  async registerWithDaemon(daemon) { /* ... */ }
+}
+
+// NEW: Clean constructor injection  
+class SomeCommand extends CommandBase {
+  constructor(context: JTAGContext, subpath: string, commander: CommandDaemonBase) {
+    super(name, context, subpath, commander); // All dependencies injected
+  }
+}
+```
+
+**Dependencies Flow Cleanly**:
+- **JTAGSystem** → **JTAGRouter** → **Daemons**
+- **CommandDaemon** → **Commands** (with commander reference)
+- **All components** receive `context` and required dependencies
+
+### **🌐 Universal Discovery Pattern**
+
+Same code, different manifest data:
+
+```typescript
+// Universal auto-discovery (works in browser AND server)
+const daemonManifest = getDaemonManifest(environment); // 'browser' | 'server'
+
+for (const [daemonName, manifestEntry] of Object.entries(daemonManifest)) {
+  const daemonModule = await import(manifestEntry.importPath);
+  const DaemonClass = daemonModule[manifestEntry.className];
+  const daemon = new DaemonClass(context, router); // Constructor injection!
+  system.register(daemonName, daemon);
+}
+```
+
+### **🎯 Zero Registration Boilerplate**
+
+**Before**: Every component needed registration methods:
+```typescript
+// Eliminated complexity
+await command.registerWithSystem(system);
+await command.registerWithDaemon(daemon);
+command.setupTransports(router);
+```
+
+**After**: Pure constructor injection:
+```typescript
+// All wiring happens via constructors
+let jtag = await JTAGSystem.connect(); // Everything auto-wired!
+```
 
 ## 🏗️ **Core Architecture Overview**
 
-JTAG is built around a **pluggable transport abstraction** that separates business logic from network concerns, enabling seamless integration with any messaging infrastructure while maintaining consistent debugging functionality.
+JTAG combines **auto-discovery architecture** with **pluggable transport abstraction**, creating a system that auto-wires itself while maintaining complete transport independence.
 
 ### **Architecture Principles**
 
@@ -62,34 +146,269 @@ Priority Chain:
 - Register new transport types at runtime
 - Integrate with any messaging system (Redis, gRPC, Kafka, etc.)
 
-## 🔄 **Message Flow Architecture**
+## 🔄 **Universal Forward Pattern**
 
-### **Console Routing Flow (Example #1: Client-Side)**
+### **Server-Side Screenshot Example**
+
+```typescript
+// Server side
+let jtag: JTAGSystem = await JTAGSystem.connect(); // Auto-wires all environments
+let screenshot: ScreenshotResult = await jtag.commands.screenshot({ filename: "screenshot.png" });
+```
+
+**What happens automatically:**
 
 ```
-console.log("message")
-    ↓
-originalConsole.log("message")    // Preserve normal console output
-    ↓
-jtag.log("CONSOLE", "message")    // Route to JTAG
-    ↓
-JTAGSmartTransport.send(message)  // Transport abstraction
-    ↓
-[Transport Selection Logic]
-    ├─ ContinuumTransport.send()     // If Continuum detected
-    ├─ WebSocketTransport.send()     // If WebSocket available
-    ├─ HTTPTransport.send()          // If HTTP available
-    └─ MessageQueue.enqueue()        // If all transports fail
-    ↓
-Server Reception & Processing
-    ↓
-Logger.processLogMessage()        // Business logic (transport-agnostic)
-    ↓
-File Creation (Steps 5-7)         // Template-based file creation
-    ├─ Check: server.log.txt exists
-    ├─ Create: from templates/ if needed
-    └─ Append: log entry to .txt and .json files
+1. jtag.commands.screenshot(params) 
+   → ServerCommandDaemon.commands['screenshot'].execute(params)
+
+2. ScreenshotCommandServer.execute(commander, params)
+   → commander.forward(this, params) // Delegates to browser automatically
+
+3. CommandDaemon.forward() creates message:
+   path: "browser/commands/screenshot"  // Same path, different context
+   context: server's JTAGContext
+
+4. JTAGRouter.postMessage(message)
+   → sees message.context != this.context
+   → routes via transport to browser
+
+5. Browser JTAGRouter receives message
+   → routes to BrowserCommandDaemon at /commands/screenshot
+   → ScreenshotCommandBrowser.execute() does html2canvas work
+
+6. Response flows back through transport chain
+   → Original jtag.screenshot() promise resolves with ScreenshotResult
 ```
+
+### **Key Insight: Same Path, Different Context**
+
+Commands don't need to know about each other! Both exist at `/commands/screenshot`:
+- `ScreenshotCommandServer` at `server/commands/screenshot`  
+- `ScreenshotCommandBrowser` at `browser/commands/screenshot`
+
+The **router handles the context switching** - commands just implement their environment-specific logic.
+
+### **Transport Auto-Detection During Daemon Wiring**
+
+When `jtag.connect()` initializes the system:
+
+```typescript
+// 1. Context Detection
+const context = typeof window === 'undefined' ? 'server' : 'browser';
+
+// 2. Router Setup with Transport Detection  
+const router = new JTAGRouter(context);
+await router.detectAndConfigureTransports({
+  preferred: 'websocket',
+  fallbacks: ['http', 'polling'],
+  healthCheck: true
+});
+
+// 3. Daemon Registration
+const commandDaemon = new CommandDaemon(context);
+await commandDaemon.registerWithRouter(router); // Registers on /commands endpoint
+
+// 4. Cross-Context Transport Setup
+if (context === 'server') {
+  await router.startWebSocketServer(9001);  // Listen for browser connections
+} else {
+  await router.connectToServer('ws://localhost:9001'); // Connect to server
+}
+```
+
+## 📋 **Build-Time Discovery Manifests**
+
+### **Manifest Generation Process**
+
+The `build-manifests.js` script runs at build time to scan directories and generate discovery manifests:
+
+```bash
+# Run manifest generation (integrated into build process)
+npm run build:jtag-manifests
+```
+
+**What it does:**
+
+1. **Scans `/daemons` directory** - Finds all daemon implementations
+2. **Scans `/commands` directory** - Finds all command implementations  
+3. **Generates TypeScript manifests** - Creates import maps for both browser and server
+4. **Enables browser discovery** - Browser can discover components without filesystem access
+
+### **Daemon Manifest Example**
+
+```typescript
+// Auto-generated daemon-manifest.ts
+export const DAEMON_MANIFEST: DaemonManifest = {
+  "browser": {
+    "CommandDaemon": {
+      "className": "CommandDaemonBrowser",
+      "importPath": "../daemons/command-daemon/browser/CommandDaemonBrowser"
+    },
+    "ConsoleDaemon": {
+      "className": "ConsoleDaemonBrowser", 
+      "importPath": "../daemons/console-daemon/browser/ConsoleDaemonBrowser"
+    }
+  },
+  "server": {
+    "CommandDaemon": {
+      "className": "CommandDaemonServer",
+      "importPath": "../daemons/command-daemon/server/CommandDaemonServer"
+    },
+    "ConsoleDaemon": {
+      "className": "ConsoleDaemonServer",
+      "importPath": "../daemons/console-daemon/server/ConsoleDaemonServer"
+    }
+  }
+};
+```
+
+### **Integration with Build Process** 
+
+The manifest generation integrates seamlessly with the build process:
+
+```typescript
+// Build process automatically:
+// 1. Scans directory structure
+// 2. Generates manifest files
+// 3. TypeScript compilation includes manifests
+// 4. Browser bundle contains discovery data
+
+// Runtime usage (same code, different manifest data):
+const manifest = getDaemonManifest(environment); // 'browser' | 'server'
+for (const [name, entry] of Object.entries(manifest)) {
+  const DaemonClass = await import(entry.importPath);
+  const daemon = new DaemonClass[entry.className](context, router);
+}
+```
+
+**Key Innovation**: The **same discovery code** works in both browser and server environments, but uses different manifest data. This enables universal auto-discovery patterns.
+
+## 🏗️ **JTAGModule Inheritance Hierarchy**
+
+All components inherit from `JTAGModule` for consistent context and routing:
+
+```typescript
+// Base for all JTAG components
+abstract class JTAGModule {
+  name: string;           // e.g., "command-daemon", "screenshot"
+  context: JTAGContext;   // Shared context (server/browser/remote)
+}
+
+export interface JTAGContext {
+  uuid: string;
+  environment: 'server' | 'browser' | 'remote';
+}
+
+// System-level coordination
+class JTAGSystem extends JTAGModule {
+  static async connect(): Promise<JTAGSystem> {
+    // Auto-wires all environments, transports, daemons
+  }
+}
+
+// Base for all daemons  
+abstract class BaseDaemon extends JTAGModule {
+  async forward(sender: JTAGModule, payload: JTAGPayload, path?: string) {
+    let pathPrefix = this.context.environment; // "browser"
+    let moduleName = this.name;                // "commands" 
+    let senderName = sender.name;              // "screenshot"
+    
+    let message: JTAGMessage = {
+      path: path ?? `${pathPrefix}/${moduleName}/${senderName}`,
+      context: this.context,
+      payload: payload
+    };
+    
+    return JTAGSystem.router.postMessage(message);
+  }
+}
+```
+
+## 🔄 **Universal Message & Payload System**
+
+```typescript
+// All payloads support encoding/decoding for transport
+abstract class JTAGPayload {
+  encode(): string;        // base64 default
+  decode(data: string): this;
+  equals(other: JTAGPayload): boolean;
+  hashCode(): string;      // used for equals
+}
+
+// Universal message format
+interface JTAGMessage {
+  context: JTAGContext;                    // Sender's context
+  origin: string;                          // "route/from/and/subpaths"  
+  endpoint: string;                        // "route/to/and/subpaths"
+  payload: T extends JTAGPayload;          // Typed payload
+}
+
+// Command-specific types
+class CommandParams extends JTAGPayload { }
+class CommandMessage extends JTAGMessage {
+  payload: CommandParams;
+}
+```
+
+## 🚦 **Context-Aware Router Logic**
+
+```typescript
+class JTAGRouter {
+  async postMessage(message: JTAGMessage) {
+    if (message.context == this.context) {
+      // Same environment - direct daemon dispatch
+      return await this.localDaemonDispatch(message.path, message.payload);
+    } else {
+      // Cross-environment - encode payload and use transport
+      message.payload = message.payload.encode(); // Transport handles encoding
+      return await this.transport.send(message);
+    }
+  }
+}
+```
+
+## 📁 **Command Structure with Auto-Discovery**
+
+### **📋 Build-Time Discovery Manifests**
+
+The manifest system enables browser discovery without filesystem access:
+
+```typescript
+// Generated command-manifest.ts (auto-discovery manifest)
+export const COMMAND_MANIFEST: CommandManifest = {
+  "browser": {
+    "screenshot": {
+      "className": "ScreenshotBrowserCommand",
+      "importPath": "../daemons/command-daemon/commands/screenshot/browser/ScreenshotBrowserCommand"
+    }
+  },
+  "server": {
+    "screenshot": {
+      "className": "ScreenshotServerCommand", 
+      "importPath": "../daemons/command-daemon/commands/screenshot/server/ScreenshotServerCommand"
+    }
+  }
+};
+```
+
+### **Directory Structure Supporting Auto-Discovery**
+
+Commands follow symmetric pattern with manifest-driven discovery:
+
+```
+jtag/daemons/command-daemon/commands/
+├── screenshot/
+│   ├── shared/ScreenshotTypes.ts           # ScreenshotParams extends CommandParams
+│   ├── server/ScreenshotServerCommand.ts   # Auto-discovered, constructor injection
+│   └── browser/ScreenshotBrowserCommand.ts # Auto-discovered, constructor injection
+└── console/
+    ├── shared/ConsoleTypes.ts              # ConsoleParams extends CommandParams  
+    ├── server/ConsoleServerCommand.ts      # Auto-discovered via manifest
+    └── browser/ConsoleBrowserCommand.ts    # Auto-discovered via manifest
+```
+
+**Breakthrough**: Commands are **discovered via manifests** and **instantiated with constructor injection**. No manual registration needed!
 
 ### **Server-Side Direct Flow (Example #2)**
 
@@ -215,47 +534,63 @@ class RedisPubSubTransport implements JTAGTransport {
 transportFactory.registerTransport('redis-pubsub', () => new RedisPubSubTransport());
 ```
 
-## 🧪 **Testing Architecture**
+## 🧪 **Testing Architecture with Constructor Injection**
 
-### **Mock Transport Strategy**
+### **Cleaner Testing via Constructor Injection**
 
-The transport abstraction enables **zero-dependency testing** through comprehensive mock implementations:
+Constructor injection makes testing dramatically cleaner:
 
-**1. Deterministic Testing**
+**1. Mock Dependencies Easily Injected**
 ```typescript
-const mockTransport = new MockSuccessTransport();
-jtag.useTransport(mockTransport);
+// Clean dependency mocking
+const mockRouter = new MockJTAGRouter();
+const mockCommander = new MockCommandDaemon(context, mockRouter);
+const command = new ScreenshotServerCommand(context, 'screenshot', mockCommander);
 
-console.log('test message');  // Predictable behavior
-assert(mockTransport.getMessages().length === 1);
+// Test command logic in isolation
+const result = await command.execute(screenshotParams);
+assert(result.success === true);
 ```
 
-**2. Failure Scenario Testing**  
+**2. No Registration Side Effects**
 ```typescript
-const failingTransport = new MockFailureTransport();
-jtag.useTransport(failingTransport);
+// OLD: Registration side effects made testing complex
+const command = new ScreenshotCommand();
+await command.registerWithSystem(mockSystem); // Side effect!
+await command.registerWithDaemon(mockDaemon); // Another side effect!
 
-console.log('test message');  // Should queue message locally
-// Verify business logic continues working despite transport failure
-assert(fs.existsSync('.continuum/jtag/logs/server.log.txt'));
+// NEW: Pure constructor injection - no side effects
+const command = new ScreenshotCommand(context, subpath, commander);
+// Ready to test immediately!
 ```
 
-**3. Network Condition Simulation**
+**3. Auto-Discovery Testing**
 ```typescript
-const networkTransport = new MockNetworkTransport(latency: 500, dropRate: 0.2);
-// Test behavior under realistic network conditions without real network
+// Test the manifest system itself
+const commandManifest = getCommandManifest('server');
+assert(commandManifest['screenshot'].className === 'ScreenshotServerCommand');
+
+// Test auto-discovery process
+const daemon = new CommandDaemonServer(context, mockRouter);
+// Daemon auto-discovers and instantiates all commands via manifests
+assert(daemon.getAvailableCommands().includes('screenshot'));
 ```
 
 ### **Layer-Based Testing Strategy**
 
-**Layer 1: Transport Interface Compliance**
-- Mock transports validate interface compliance
-- Test fallback logic without network dependencies
-- Validate message queuing mechanisms
+**Layer 1: Manifest Discovery Testing**
+- Test build-time manifest generation
+- Validate auto-discovery mechanisms
+- Test dynamic import and instantiation
 
-**Layer 2: Business Logic Isolation**  
-- Test console routing with mock transports
-- Validate file creation (steps 5-7) independently
+**Layer 2: Constructor Injection Testing**
+- Test dependency injection flows
+- Mock dependencies at constructor level
+- Validate clean separation of concerns
+
+**Layer 3: Business Logic Isolation**  
+- Test command logic with mocked dependencies
+- Validate cross-context delegation via remoteExecute
 - Ensure resilience to transport failures
 
 **Layer 4: Transport Integration**
@@ -263,10 +598,10 @@ const networkTransport = new MockNetworkTransport(latency: 500, dropRate: 0.2);
 - Validate end-to-end message flow
 - Integration with actual network infrastructure  
 
-**Layer 6: Full System Validation**
-- Browser automation with real WebSocket connections
-- Complete console routing through actual transport layers
-- Screenshot functionality with transport communication
+**Layer 5: Full System Auto-Discovery**
+- Test complete `JTAGSystem.connect()` flow
+- Validate auto-discovery of all components
+- End-to-end screenshot functionality
 
 ## 📊 **Configuration System**
 
@@ -361,30 +696,42 @@ class MessageQueue {
 
 ## 🎯 **Implementation Benefits**
 
+### **🚀 Auto-Discovery Breakthrough**
+- **Zero Registration Boilerplate**: No `registerWithSystem()` or `registerWithDaemon()` methods needed
+- **Universal Discovery Pattern**: Same discovery code works in browser and server
+- **Build-Time Manifest Generation**: Components discovered automatically via directory scanning
+- **Single Line Initialization**: `await JTAGSystem.connect()` auto-wires entire system
+
+### **🏗️ Constructor Injection Architecture**
+- **Clean Dependency Flow**: All dependencies flow through constructors (router → daemons → commands)
+- **No Side Effects**: Pure constructors make testing dramatically cleaner
+- **Explicit Dependencies**: Constructor parameters document all dependencies clearly
+- **Mock-Friendly**: Easy dependency injection for testing
+
 ### **Developer Experience**
-- **Zero Configuration**: Works out of the box with optimal transport selection
-- **Universal API**: Same `jtag.log()` works across all transport types
+- **Zero Configuration**: Complete system auto-wires with single `connect()` call
+- **Universal API**: Same `jtag.commands.screenshot()` works across all environments
 - **Failure Transparency**: Debugging continues working even when transport fails
 - **Visual Validation**: Screenshot functionality across all transport types
 
 ### **System Integration**
-- **Infrastructure Agnostic**: Adapts to any messaging system
-- **Host System Detection**: Automatically uses existing infrastructure
+- **Infrastructure Agnostic**: Adapts to any messaging system via transport abstraction
+- **Host System Detection**: Automatically uses existing infrastructure (Continuum integration)
 - **Custom Transport Support**: Easy integration with proprietary systems
-- **Backward Compatibility**: Existing JTAG code continues working unchanged
+- **Backward Compatibility**: Transport abstraction preserved for existing integrations
 
 ### **Testing & Reliability**
+- **Pure Constructor Testing**: Mock dependencies via constructor injection
+- **Manifest Testing**: Test auto-discovery mechanisms independently
 - **Mock Transport Testing**: Business logic testable without network
-- **Deterministic Behavior**: Predictable test outcomes
-- **Failure Scenario Validation**: Easy testing of edge cases
-- **Performance Testing**: Network condition simulation without real network
+- **Deterministic Behavior**: No registration side effects, predictable outcomes
 
 ### **Scalability & Maintenance**
-- **Modular Architecture**: Transport layer completely replaceable
-- **Clean Abstractions**: Business logic separated from transport concerns
-- **Extensible Design**: New transport types added without core changes
-- **Future-Proof**: Architecture supports unknown future transport requirements
+- **Modular Auto-Discovery**: Add new daemons/commands by creating files, manifests auto-update
+- **Clean Abstractions**: Business logic separated from discovery and transport concerns
+- **Extensible Design**: New components discovered automatically via manifest system
+- **Future-Proof**: Architecture supports unknown future component types
 
 ---
 
-**The transport abstraction transforms JTAG from a debugging tool into a universal debugging platform that adapts to any infrastructure while maintaining consistent, reliable functionality across all environments.**
+**The auto-discovery breakthrough transforms JTAG from a transport abstraction into a self-organizing universal debugging platform. Components discover themselves, dependencies inject cleanly, and the entire system auto-wires with elegant simplicity while maintaining complete transport independence.**

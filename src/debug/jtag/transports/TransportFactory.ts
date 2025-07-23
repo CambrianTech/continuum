@@ -1,0 +1,102 @@
+/**
+ * Transport Factory - Auto-detect and create appropriate transports
+ */
+
+import { JTAGTransport } from '../shared/JTAGRouter';
+import { JTAGEnvironment } from '../shared/JTAGTypes';
+import { WebSocketServerTransport, WebSocketClientTransport } from './WebSocketTransport';
+import { HTTPTransport } from './HTTPTransport';
+
+export interface TransportConfig {
+  preferred?: 'websocket' | 'http';
+  fallback?: boolean;
+  serverPort?: number;
+  serverUrl?: string;
+}
+
+export class TransportFactory {
+  
+  /**
+   * Create appropriate transport for the environment
+   */
+  static async createTransport(
+    environment: JTAGEnvironment, 
+    config: TransportConfig = {}
+  ): Promise<JTAGTransport> {
+    
+    const { preferred = 'websocket', fallback = true, serverPort = 9001, serverUrl = 'ws://localhost:9001' } = config;
+    
+    console.log(`🏭 Transport Factory: Creating transport for ${environment} environment`);
+    
+    if (preferred === 'websocket') {
+      if (environment === 'server') {
+        const transport = new WebSocketServerTransport();
+        try {
+          await transport.start(serverPort);
+          console.log(`✅ Transport Factory: WebSocket server transport created`);
+          return transport;
+        } catch (error) {
+          console.warn(`⚠️ Transport Factory: WebSocket server failed, trying fallback:`, error);
+          if (fallback) {
+            return await this.createHTTPTransport();
+          }
+          throw error;
+        }
+      } else if (environment === 'browser') {
+        const transport = new WebSocketClientTransport();
+        try {
+          await transport.connect(serverUrl);
+          console.log(`✅ Transport Factory: WebSocket client transport created`);
+          return transport;
+        } catch (error) {
+          console.warn(`⚠️ Transport Factory: WebSocket client failed, trying fallback:`, error);
+          if (fallback) {
+            return await this.createHTTPTransport();
+          }
+          throw error;
+        }
+      }
+    }
+    
+    // HTTP transport
+    return await this.createHTTPTransport();
+  }
+  
+  /**
+   * Create HTTP transport
+   */
+  private static async createHTTPTransport(): Promise<JTAGTransport> {
+    const transport = new HTTPTransport();
+    console.log(`✅ Transport Factory: HTTP transport created`);
+    return transport;
+  }
+  
+  /**
+   * Auto-detect optimal transport configuration
+   */
+  static detectOptimalConfig(environment: JTAGEnvironment): TransportConfig {
+    // In browser, prefer WebSocket client
+    if (environment === 'browser') {
+      return {
+        preferred: 'websocket',
+        fallback: true,
+        serverUrl: 'ws://localhost:9001'
+      };
+    }
+    
+    // On server, prefer WebSocket server
+    if (environment === 'server') {
+      return {
+        preferred: 'websocket',
+        fallback: true,
+        serverPort: 9001
+      };
+    }
+    
+    // Remote contexts use HTTP by default
+    return {
+      preferred: 'http',
+      fallback: false
+    };
+  }
+}

@@ -1,384 +1,348 @@
 /**
- * JTAG Universal Transport Router
- * 
- * JTAG owns the WebSocket and routes messages to different transport backends:
- * - HTTP endpoints for external integration
- * - File logging for persistent storage
- * - MCP for AI agent communication
- * - Event broadcasting for real-time updates
+ * JTAG Universal Router - Context-Aware Message Routing with Bus-Level Queuing
  */
 
-// Import the universal message format
-import { JTAGUniversalMessage, JTAGMessageType, JTAGContext } from './JTAGTypes';
-import { StaticFileTransport } from './StaticFileTransport';
+import { JTAGModule } from './JTAGModule';
+import { JTAGContext, JTAGMessage, JTAGPayload, JTAGMessageUtils, JTAGMessageTypes, JTAGMessageFactory } from './JTAGTypes';
+import { TransportFactory, TransportConfig } from '../transports/TransportFactory';
+import { JTAGEventSystem } from './JTAGEventSystem';
+import { JTAGMessageQueue, MessagePriority } from './queuing/JTAGMessageQueue';
+import { QueuedItem } from './queuing/PriorityQueue';
+import { ConnectionHealthManager, ConnectionState } from './ConnectionHealthManager';
+import { ResponseCorrelator } from './ResponseCorrelator';
 
-// Export for legacy compatibility
-export type { JTAGMessage, JTAGUniversalMessage } from './JTAGTypes';
-
-// Strongly typed route patterns
-export type RoutePattern = 
-  | { type: 'exact'; messageType: JTAGMessageType; source?: JTAGContext; target?: string }
-  | { type: 'wildcard'; pattern: string }
-  | { type: 'conditional'; condition: (message: JTAGUniversalMessage) => boolean }
-  | { type: 'priority'; patterns: RoutePattern[]; priority: number };
-
-export interface RouteDefinition {
-  pattern: RoutePattern;
-  transport: string;
-  enabled: boolean;
-  metadata?: Record<string, any>;
+export interface MessageSubscriber {
+  handleMessage(message: JTAGMessage): Promise<any>;
+  get endpoint(): string;
+  get uuid(): string;
 }
 
-export interface TypedRouteTable {
-  routes: Map<string, RouteDefinition[]>;
-  defaultRoute?: string;
-  fallbackRoute?: string;
-}
-
-export interface JTAGTransportBackend {
+export interface JTAGTransport {
   name: string;
-  canHandle(message: JTAGUniversalMessage): boolean;
-  process(message: JTAGUniversalMessage): Promise<any>;
-  isHealthy(): boolean;
+  send(message: JTAGMessage): Promise<any>;
+  isConnected(): boolean;
+  disconnect(): Promise<void>;
 }
 
-export class JTAGRouter {
-  private transports: Map<string, JTAGTransportBackend> = new Map();
-  private subscribers: Map<string, Set<(message: JTAGUniversalMessage) => void>> = new Map();
-  private routeTable: TypedRouteTable = { routes: new Map() };
+export interface RouterStatus {
+  environment: string;
+  initialized: boolean;
+  subscribers: number;
+  transport: {
+    name: string;
+    connected: boolean;
+  } | null;
+  queue: ReturnType<JTAGMessageQueue['getStatus']>;
+  health: ReturnType<ConnectionHealthManager['getHealth']>;
+}
 
-  constructor() {
-    this.setupDefaultTransports();
-    this.setupDefaultRoutes();
-  }
+export class JTAGRouter extends JTAGModule {
+  private subscribers = new Map<string, MessageSubscriber>();
+  private crossContextTransport: JTAGTransport | null = null;
+  public eventSystem: JTAGEventSystem;
+  
+  // Bus-level enhancements
+  private messageQueue: JTAGMessageQueue;
+  private healthManager: ConnectionHealthManager;
+  private responseCorrelator: ResponseCorrelator;
+  private isInitialized = false;
 
-  private setupDefaultTransports(): void {
-    // Only register fallback transports - JTAG will register its own
-    // HTTP Bridge Transport
-    this.registerTransport(new HTTPBridgeTransport());
+  constructor(context: JTAGContext, config: { enableQueuing?: boolean; enableHealthMonitoring?: boolean } = {}) {
+    super('universal-router', context);
+    this.eventSystem = new JTAGEventSystem(context, this);
     
-    // Event Broadcast Transport
-    this.registerTransport(new EventBroadcastTransport());
+    // Initialize modular bus-level features
+    this.messageQueue = new JTAGMessageQueue(context, {
+      enableDeduplication: true,
+      deduplicationWindow: 60000, // 1 minute for console error deduplication
+      maxSize: 1000,
+      maxRetries: 3,
+      flushInterval: 500
+    });
+    this.healthManager = new ConnectionHealthManager(context, this.eventSystem);
+    this.responseCorrelator = new ResponseCorrelator(30000); // 30 second timeout for commands
     
-    // Static File Transport
-    this.registerTransport(new StaticFileTransport());
+    console.log(`🚀 JTAGRouter[${context.environment}]: Initialized with request-response correlation and queuing`);
   }
 
-  private setupDefaultRoutes(): void {
-    // Define strongly typed routes - JTAG transports will be registered dynamically
-    this.addRoute('log-to-jtag', {
-      pattern: { type: 'exact', messageType: 'log' },
-      transport: 'jtag-server',  // Will be registered by JTAG system
-      enabled: true,
-      metadata: { priority: 1, description: 'Route all log messages to JTAG file storage' }
-    });
-
-    this.addRoute('external-to-http', {
-      pattern: { type: 'exact', messageType: 'log', source: 'external' },
-      transport: 'http-bridge',
-      enabled: true,
-      metadata: { priority: 2, description: 'Route external log messages to HTTP bridge' }
-    });
-
-    this.addRoute('broadcast-all', {
-      pattern: { type: 'wildcard', pattern: '*' },
-      transport: 'event-broadcast',
-      enabled: true,
-      metadata: { priority: 0, description: 'Broadcast all messages as events' }
-    });
-
-    this.addRoute('screenshot-conditional', {
-      pattern: { 
-        type: 'conditional', 
-        condition: (msg) => msg.type === 'screenshot' && (msg.payload as any)?.urgent === true 
-      },
-      transport: 'http-bridge',
-      enabled: true,
-      metadata: { priority: 3, description: 'Route urgent screenshots to HTTP bridge' }
-    });
-
-    this.addRoute('static-files', {
-      pattern: { type: 'exact', messageType: 'static-file' },
-      transport: 'static-files',
-      enabled: true,
-      metadata: { priority: 4, description: 'Route static file requests through router' }
-    });
-
-    // Set fallback route to JTAG server transport
-    this.routeTable.fallbackRoute = 'jtag-server';
-  }
-
-  registerTransport(transport: JTAGTransportBackend): void {
-    this.transports.set(transport.name, transport);
-    console.log(`🔌 JTAG Router: Registered transport '${transport.name}'`);
-  }
-
-  // Route table management
-  addRoute(routeId: string, route: RouteDefinition): void {
-    if (!this.routeTable.routes.has(routeId)) {
-      this.routeTable.routes.set(routeId, []);
+  async initialize(): Promise<void> {
+    if (this.isInitialized) return;
+    
+    console.log(`🔧 ${this.toString()}: Initializing with transport and health monitoring...`);
+    
+    // Initialize transport
+    await this.initializeTransport();
+    
+    // Start health monitoring
+    if (this.crossContextTransport) {
+      this.healthManager.setTransport(this.crossContextTransport);
+      this.healthManager.startMonitoring();
     }
-    this.routeTable.routes.get(routeId)!.push(route);
-    console.log(`🛣️ JTAG Router: Added route '${routeId}' → '${route.transport}'`);
+    
+    // Start message queue processing
+    this.messageQueue.startProcessing(this.flushQueuedMessages.bind(this));
+    
+    this.isInitialized = true;
+    console.log(`✅ ${this.toString()}: Initialization complete`);
   }
 
-  removeRoute(routeId: string): void {
-    this.routeTable.routes.delete(routeId);
-    console.log(`🗑️ JTAG Router: Removed route '${routeId}'`);
+  registerSubscriber(endpoint: string, subscriber: MessageSubscriber): void {
+    const fullEndpoint = `${this.context.environment}/${endpoint}`;
+    this.subscribers.set(fullEndpoint, subscriber);
+    this.subscribers.set(endpoint, subscriber);
+    console.log(`📋 ${this.toString()}: Registered subscriber at ${fullEndpoint}`);
   }
 
-  enableRoute(routeId: string): void {
-    const routes = this.routeTable.routes.get(routeId);
-    if (routes) {
-      routes.forEach(route => route.enabled = true);
-      console.log(`✅ JTAG Router: Enabled route '${routeId}'`);
+  async postMessage(message: JTAGMessage): Promise<any> {
+    console.log(`📨 ${this.toString()}: Routing message to ${message.endpoint}`);
+    
+    const targetEnvironment = this.extractEnvironment(message.endpoint);
+    
+    if (targetEnvironment === this.context.environment) {
+      return await this.routeLocally(message);
+    } else {
+      return await this.routeRemotelyWithQueue(message);
     }
   }
 
-  disableRoute(routeId: string): void {
-    const routes = this.routeTable.routes.get(routeId);
-    if (routes) {
-      routes.forEach(route => route.enabled = false);
-      console.log(`❌ JTAG Router: Disabled route '${routeId}'`);
+  /**
+   * Route message remotely with proper type-based routing
+   */
+  private async routeRemotelyWithQueue(message: JTAGMessage): Promise<any> {
+    if (!this.crossContextTransport) {
+      throw new Error(`No cross-context transport available for ${message.endpoint}`);
+    }
+
+    // Use type-safe message type checking instead of string searching
+    if (JTAGMessageTypes.isRequest(message)) {
+      // REQUEST PATTERN: Use correlation system and await response
+      return await this.handleRequestMessage(message);
+    } else if (JTAGMessageTypes.isEvent(message)) {
+      // EVENT PATTERN: Use queue system for fire-and-forget messages
+      return await this.handleEventMessage(message);
+    } else if (JTAGMessageTypes.isResponse(message)) {
+      // RESPONSE PATTERN: Should not happen here, but handle gracefully
+      throw new Error('Response messages should not be routed remotely');
+    } else {
+      throw new Error(`Unknown message type: ${(message as any).messageType}`);
     }
   }
 
-  getRouteTable(): TypedRouteTable {
-    return { ...this.routeTable };
-  }
+  /**
+   * Handle request messages that need responses (screenshot, etc.)
+   */
+  private async handleRequestMessage(message: JTAGMessage): Promise<any> {
+    // Message already has correlationId from type system
+    if (!JTAGMessageTypes.isRequest(message)) {
+      throw new Error('Expected request message');
+    }
 
-  async routeMessage(message: JTAGUniversalMessage): Promise<any[]> {
-    // Add routing info
-    message.route = message.route || [];
-    message.route.push('jtag-router');
+    console.log(`🎯 ${this.toString()}: Sending request ${message.correlationId} to ${message.endpoint}`);
 
-    const results: any[] = [];
-    const matchedTransports = new Set<string>();
+    // Create pending request that will resolve when response arrives
+    const responsePromise = this.responseCorrelator.createRequest(message.correlationId);
 
-    // Use typed route table for smart routing
-    const matchingRoutes = this.findMatchingRoutes(message);
-    
-    // Process routes in priority order
-    const sortedRoutes = matchingRoutes.sort((a, b) => 
-      (b.metadata?.priority ?? 0) - (a.metadata?.priority ?? 0)
-    );
-
-    for (const route of sortedRoutes) {
-      if (!route.enabled) continue;
+    try {
+      // Send message immediately (requests need immediate delivery)
+      await this.crossContextTransport!.send(message);
+      console.log(`📤 ${this.toString()}: Request sent, awaiting response...`);
       
-      const transport = this.transports.get(route.transport);
-      if (transport && transport.isHealthy() && !matchedTransports.has(route.transport)) {
-        matchedTransports.add(route.transport);
-        
-        try {
-          const result = await transport.process(message);
-          results.push({ 
-            transport: route.transport, 
-            routeId: route.metadata?.routeId,
-            success: true, 
-            result 
-          });
-        } catch (error) {
-          console.error(`❌ JTAG Router: Transport '${route.transport}' failed:`, error);
-          results.push({ 
-            transport: route.transport, 
-            routeId: route.metadata?.routeId,
-            success: false, 
-            error: error instanceof Error ? error.message : String(error) 
-          });
-        }
-      }
-    }
+      // Await the correlated response
+      const response = await responsePromise;
+      console.log(`✅ ${this.toString()}: Response received for ${message.correlationId}`);
+      return response;
 
-    // Fallback to legacy canHandle method if no routes matched
-    if (results.length === 0) {
-      for (const [name, transport] of Array.from(this.transports.entries())) {
-        if (transport.canHandle(message) && transport.isHealthy() && !matchedTransports.has(name)) {
-          try {
-            const result = await transport.process(message);
-            results.push({ transport: name, success: true, result, fallback: true });
-          } catch (error) {
-            console.error(`❌ JTAG Router: Fallback transport '${name}' failed:`, error);
-            results.push({ transport: name, success: false, error: error instanceof Error ? error.message : String(error), fallback: true });
-          }
-        }
-      }
-    }
-
-    // Final fallback route
-    if (results.length === 0 && this.routeTable.fallbackRoute) {
-      const fallbackTransport = this.transports.get(this.routeTable.fallbackRoute);
-      if (fallbackTransport && fallbackTransport.isHealthy()) {
-        try {
-          const result = await fallbackTransport.process(message);
-          results.push({ transport: this.routeTable.fallbackRoute, success: true, result, finalFallback: true });
-        } catch (error) {
-          console.error(`❌ JTAG Router: Final fallback transport failed:`, error);
-          results.push({ transport: this.routeTable.fallbackRoute, success: false, error: error instanceof Error ? error.message : String(error), finalFallback: true });
-        }
-      }
-    }
-
-    // Broadcast to subscribers
-    this.broadcast(message);
-
-    return results;
-  }
-
-  // MISSING METHOD FIX: Add getActiveTransports method
-  getActiveTransports(): string[] {
-    return Array.from(this.transports.keys());
-  }
-
-  getTransportHealth(): { [name: string]: boolean } {
-    const health: { [name: string]: boolean } = {};
-    for (const [name, transport] of this.transports.entries()) {
-      health[name] = transport.isHealthy();
-    }
-    return health;
-  }
-
-  getRouteInfo(): { routeCount: number; transportCount: number; routes: string[] } {
-    const routes = Array.from(this.routeTable.routes.keys());
-    return {
-      routeCount: routes.length,
-      transportCount: this.transports.size,
-      routes
-    };
-  }
-
-  private findMatchingRoutes(message: JTAGUniversalMessage): RouteDefinition[] {
-    const matches: RouteDefinition[] = [];
-
-    for (const [routeId, routes] of Array.from(this.routeTable.routes.entries())) {
-      for (const route of routes) {
-        if (this.matchesPattern(message, route.pattern)) {
-          matches.push({ ...route, metadata: { ...route.metadata, routeId } });
-        }
-      }
-    }
-
-    return matches;
-  }
-
-  private matchesPattern(message: JTAGUniversalMessage, pattern: RoutePattern): boolean {
-    switch (pattern.type) {
-      case 'exact':
-        return message.type === pattern.messageType &&
-               (!pattern.source || message.source === pattern.source) &&
-               (!pattern.target || message.target === pattern.target);
-               
-      case 'wildcard':
-        if (pattern.pattern === '*') return true;
-        // Simple wildcard matching - could be enhanced with regex
-        return this.wildcardMatch(pattern.pattern, `${message.type}:${message.source}`);
-        
-      case 'conditional':
-        try {
-          return pattern.condition(message);
-        } catch (error) {
-          console.error('❌ JTAG Router: Route condition failed:', error);
-          return false;
-        }
-        
-      case 'priority':
-        return pattern.patterns.some(p => this.matchesPattern(message, p));
-        
-      default:
-        return false;
+    } catch (error) {
+      console.error(`❌ ${this.toString()}: Request failed:`, error);
+      throw error;
     }
   }
 
-  private wildcardMatch(pattern: string, text: string): boolean {
-    const regexPattern = pattern
-      .replace(/\*/g, '.*')
-      .replace(/\?/g, '.');
-    return new RegExp(`^${regexPattern}$`).test(text);
-  }
-
-  subscribe(messageType: string, callback: (message: JTAGUniversalMessage) => void): void {
-    if (!this.subscribers.has(messageType)) {
-      this.subscribers.set(messageType, new Set());
+  /**
+   * Handle event messages (fire-and-forget: console logs, notifications, etc.)
+   */
+  private async handleEventMessage(message: JTAGMessage): Promise<any> {
+    // Determine priority based on message content
+    const priority = this.determinePriority(message);
+    
+    // Queue message with deduplication (prevents console error flooding)
+    const queued = this.messageQueue.enqueue(message, priority);
+    
+    if (!queued) {
+      console.log(`🚫 ${this.toString()}: Message deduplicated (prevents flooding)`);
+      return { success: true, deduplicated: true };
     }
-    this.subscribers.get(messageType)!.add(callback);
-  }
 
-  private broadcast(message: JTAGUniversalMessage): void {
-    const typeSubscribers = this.subscribers.get(message.type);
-    const allSubscribers = this.subscribers.get('*');
-
-    [typeSubscribers, allSubscribers].forEach(subscriberSet => {
-      subscriberSet?.forEach(callback => {
-        try {
-          callback(message);
-        } catch (error) {
-          console.error('❌ JTAG Router: Subscriber callback failed:', error);
-        }
-      });
-    });
-  }
-}
-
-
-// HTTP Bridge Transport  
-class HTTPBridgeTransport implements JTAGTransportBackend {
-  name = 'http-bridge';
-
-  canHandle(message: JTAGUniversalMessage): boolean {
-    return message.target === 'external' || message.source === 'external';
-  }
-
-  async process(message: JTAGUniversalMessage): Promise<any> {
-    // HTTP bridging logic - forward to external HTTP endpoints
-    console.log(`🌐 HTTP Bridge: Processing ${message.type} message`);
-    return { bridged: true, endpoint: 'external-api' };
-  }
-
-  isHealthy(): boolean {
-    return true; // HTTP always available
-  }
-}
-
-// Event Broadcast Transport
-class EventBroadcastTransport implements JTAGTransportBackend {
-  name = 'event-broadcast';
-  private eventListeners: Set<(event: any) => void> = new Set();
-
-  canHandle(message: JTAGUniversalMessage): boolean {
-    return true; // Broadcasts all messages as events
-  }
-
-  async process(message: JTAGUniversalMessage): Promise<any> {
-    const event = {
-      type: `jtag:${message.type}`,
-      detail: message,
-      timestamp: message.timestamp
-    };
-
-    // Broadcast to all event listeners
-    this.eventListeners.forEach(listener => {
+    // For critical messages, attempt immediate delivery if healthy
+    const health = this.healthManager.getHealth();
+    if (priority <= MessagePriority.HIGH && health.isHealthy) {
       try {
-        listener(event);
+        await this.crossContextTransport!.send(message);
+        return { success: true, delivered: true };
       } catch (error) {
-        console.error('❌ Event broadcast failed:', error);
+        console.warn(`⚠️ ${this.toString()}: Immediate delivery failed, queued for retry`);
+        return { success: false, queued: true, willRetry: true };
       }
-    });
+    }
 
-    return { broadcasted: true, listenerCount: this.eventListeners.size };
+    return { success: true, queued: true, priority: MessagePriority[priority] };
   }
 
-  isHealthy(): boolean {
-    return true;
+  /**
+   * Determine message priority for queue processing
+   */
+  private determinePriority(message: JTAGMessage): MessagePriority {
+    // System/health messages get critical priority
+    if (message.origin.includes('system') || message.origin.includes('health')) {
+      return MessagePriority.CRITICAL;
+    }
+
+    // Commands get high priority
+    if (message.endpoint.includes('commands')) {
+      return MessagePriority.HIGH;
+    }
+
+    // Console errors get high priority (but will be deduplicated)
+    if (message.origin.includes('console') && (message.payload as any)?.level === 'error') {
+      return MessagePriority.HIGH;
+    }
+
+    return MessagePriority.NORMAL;
   }
 
-  addListener(listener: (event: any) => void): void {
-    this.eventListeners.add(listener);
+  /**
+   * Flush queued messages (called by JTAGMessageQueue)
+   */
+  private async flushQueuedMessages(messages: QueuedItem<JTAGMessage>[]): Promise<QueuedItem<JTAGMessage>[]> {
+    if (!this.crossContextTransport || messages.length === 0) {
+      return messages; // All failed
+    }
+
+    const health = this.healthManager.getHealth();
+    if (!health.isHealthy) {
+      console.log(`⏸️ ${this.toString()}: Skipping flush - connection unhealthy (${health.state})`);
+      return messages; // All failed, will retry
+    }
+
+    const failedMessages: QueuedItem<JTAGMessage>[] = [];
+    
+    for (const queuedItem of messages) {
+      try {
+        await this.crossContextTransport.send(queuedItem.item);
+        console.log(`✅ ${this.toString()}: Delivered queued message ${queuedItem.id}`);
+      } catch (error) {
+        console.warn(`❌ ${this.toString()}: Failed to deliver ${queuedItem.id}`);
+        failedMessages.push(queuedItem);
+      }
+    }
+
+    return failedMessages;
   }
 
-  removeListener(listener: (event: any) => void): void {
-    this.eventListeners.delete(listener);
+  private async routeLocally(message: JTAGMessage): Promise<any> {
+    // Handle response messages - resolve pending requests
+    if (JTAGMessageTypes.isResponse(message)) {
+      console.log(`📨 ${this.toString()}: Received response for ${message.correlationId}`);
+      const resolved = this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
+      if (resolved) {
+        return { success: true, resolved: true };
+      } else {
+        console.warn(`⚠️ ${this.toString()}: No pending request found for ${message.correlationId}`);
+        return { success: false, error: 'No pending request found' };
+      }
+    }
+
+    // Regular message routing for events and requests
+    const subscriber = this.subscribers.get(message.endpoint);
+    if (!subscriber) {
+      throw new Error(`No subscriber found for endpoint: ${message.endpoint}`);
+    }
+
+    console.log(`🏠 ${this.toString()}: Routing locally to ${message.endpoint}`);
+    const result = await subscriber.handleMessage(message);
+    
+    // If this was a request, send response back
+    if (JTAGMessageTypes.isRequest(message)) {
+      console.log(`🔄 ${this.toString()}: Sending response for ${message.correlationId}`);
+      
+      const responseMessage = JTAGMessageFactory.createResponse(
+        this.context,
+        message.endpoint, // Response origin is the request's endpoint
+        message.origin,   // Response endpoint is the request's origin
+        result,          // The result from handling the request
+        message.correlationId
+      );
+      
+      // Send response back (don't await, this is a fire-and-forget response)
+      this.postMessage(responseMessage).catch(error => {
+        console.error(`❌ ${this.toString()}: Failed to send response:`, error);
+      });
+    }
+    
+    return result;
+  }
+
+
+  private extractEnvironment(endpoint: string): string {
+    if (endpoint.startsWith('browser/')) return 'browser';
+    if (endpoint.startsWith('server/')) return 'server';
+    if (endpoint.startsWith('remote/')) return 'remote';
+    return this.context.environment;
+  }
+
+  /**
+   * Initialize transport (called by initialize())
+   */
+  private async initializeTransport(): Promise<void> {
+    console.log(`🔗 ${this.toString()}: Initializing transport with base64 encoding`);
+    
+    const transportConfig: TransportConfig = { preferred: 'websocket', fallback: true };
+    this.crossContextTransport = await TransportFactory.createTransport(this.context.environment, transportConfig);
+    
+    console.log(`✅ ${this.toString()}: Transport ready: ${this.crossContextTransport.name}`);
+  }
+
+  /**
+   * Legacy method for compatibility
+   */
+  async setupCrossContextTransport(config?: TransportConfig): Promise<void> {
+    if (!this.isInitialized) {
+      await this.initialize();
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    console.log(`🔄 ${this.toString()}: Shutting down with cleanup...`);
+    
+    // Stop bus-level systems
+    this.healthManager.stopMonitoring();
+    this.messageQueue.stopProcessing();
+    
+    // Disconnect transport
+    if (this.crossContextTransport) {
+      await this.crossContextTransport.disconnect();
+      this.crossContextTransport = null;
+    }
+    
+    this.subscribers.clear();
+    
+    console.log(`✅ ${this.toString()}: Shutdown complete`);
+  }
+
+  /**
+   * Get enhanced router status
+   */
+  get status(): RouterStatus {
+    return {
+      environment: this.context.environment,
+      initialized: this.isInitialized,
+      subscribers: this.subscribers.size,
+      transport: this.crossContextTransport ? {
+        name: this.crossContextTransport.name,
+        connected: this.crossContextTransport.isConnected()
+      } : null,
+      queue: this.messageQueue.getStatus(),
+      health: this.healthManager.getHealth()
+    };
   }
 }
-
-// Singleton router instance
-export const jtagRouter = new JTAGRouter();

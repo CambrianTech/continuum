@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "commonjs",
+    "module": "ES2020",
     "lib": ["ES2020", "DOM"],
     "outDir": "./dist",
     "rootDir": "./",
@@ -18,23 +18,17 @@
   },
   "include": [
     "index.ts",
-    "shared/JTAGTypes.ts",
-    "shared/JTAGBase.ts",
-    "shared/config.ts",
-    "shared/JTAGWebSocket.ts",
-    "shared/JTAGTransportFactory.ts",
-    "shared/transport-examples.ts"
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "shared/**/*.ts",
+    "daemons/**/*.ts"
   ],
   "exclude": [
     "node_modules",
     "dist",
     "examples/**/*",
     "tests/**/*",
-    "client/**/*",
-    "server/**/*",
     "mcp/**/*",
-    "shared/modules/**/*",
-    "shared/transports/**/*",
     "**/*.test.js",
     "**/*.test.ts"
   ]

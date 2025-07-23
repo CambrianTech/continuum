@@ -1,0 +1,32 @@
+{
+  "name": "@continuum/jtag-test-bench",
+  "version": "1.0.28",
+  "description": "JTAG Test Bench - Standalone Example App",
+  "main": "dist/index.js",
+  "config": {
+    "port": 9002,
+    "logsPath": ".continuum/jtag/logs",
+    "screenshotsPath": ".continuum/jtag/screenshots"
+  },
+  "scripts": {
+    "start": "npm run clean:all && npm run build && npm run version:bump && npm run dev",
+    "clean:logs": "rm -rf .continuum/jtag/logs/* 2>/dev/null || true; mkdir -p .continuum/jtag/logs",
+    "clean:screenshots": "rm -rf .continuum/jtag/screenshots/* 2>/dev/null || true; mkdir -p .continuum/jtag/screenshots",
+    "clean:dist": "rm -rf dist/ 2>/dev/null || true",
+    "clean:ports": "lsof -ti:9002 | xargs kill -9 2>/dev/null || true",
+    "clean:all": "npm run clean:ports && npm run clean:logs && npm run clean:screenshots && npm run clean:dist",
+    "build": "npm run build:server && npm run build:browser",
+    "build:server": "npx tsc src/minimal-server.ts --outDir dist --rootDir src --target ES2020 --module ES2020 --moduleResolution node --skipLibCheck --esModuleInterop",
+    "build:browser": "npx esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --target=es2020 --platform=browser --external:fs --external:path --external:child_process --external:os --external:util --external:crypto --external:http --external:https --external:net --external:tls --external:url --external:querystring --external:stream --external:buffer --external:events --external:assert --define:global=window",
+    "version:bump": "npm version patch --no-git-tag-version",
+    "dev": "npx tsx src/minimal-server.ts"
+  },
+  "dependencies": {
+    "@continuum/jtag": "file:../../continuum-jtag-1.0.104.tgz"
+  },
+  "devDependencies": {
+    "esbuild": "^0.19.12",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}
