@@ -19,17 +19,14 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
     this.router = router;
     this.uuid = `${name}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
     
-    // Registration and initialization will be handled by subclass
-    // after subpath is defined
-    this.initializeDaemon().catch(error => {
-      console.error(`❌ ${this.toString()}: Initialization failed:`, error);
-    });
+    // Initialization will be called explicitly after construction completes
+    // to ensure all subclass properties are properly initialized
   }
 
   /**
-   * Initialize daemon - called after construction to allow subpath access
+   * Initialize daemon - called explicitly after construction to allow subpath access
    */
-  private async initializeDaemon(): Promise<void> {
+  async initializeDaemon(): Promise<void> {
     // Register with router using subpath
     this.router.registerSubscriber(this.subpath, this);
     

@@ -75,7 +75,7 @@ export function createServerDaemon(daemonName: string, ...args: any[]): DaemonBa
 /**
  * Create server command instance by name
  */
-export function createServerCommand(commandName: string, ...args: any[]): CommandBase | null {
+export function createServerCommand(commandName: string, context: any, subpath: string, commander: any): CommandBase | null {
   const entry = SERVER_COMMANDS.find(c => c.name === commandName);
   
   if (!entry) {
@@ -85,7 +85,7 @@ export function createServerCommand(commandName: string, ...args: any[]): Comman
   
   try {
     console.log(`🏗️ Server Structure: Creating ${entry.className}`);
-    return new entry.commandClass(...args);
+    return new entry.commandClass(context, subpath, commander);
   } catch (error) {
     console.error(`❌ Server Structure: Failed to create ${entry.className}:`, error);
     return null;
