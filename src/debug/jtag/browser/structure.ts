@@ -75,7 +75,7 @@ export function createBrowserDaemon(daemonName: string, ...args: any[]): DaemonB
 /**
  * Create browser command instance by name
  */
-export function createBrowserCommand(commandName: string, ...args: any[]): CommandBase | null {
+export function createBrowserCommand(commandName: string, context: any, subpath: string, commander: any): CommandBase | null {
   const entry = BROWSER_COMMANDS.find(c => c.name === commandName);
   
   if (!entry) {
@@ -85,7 +85,7 @@ export function createBrowserCommand(commandName: string, ...args: any[]): Comma
   
   try {
     console.log(`🏗️ Browser Structure: Creating ${entry.className}`);
-    return new entry.commandClass(...args);
+    return new entry.commandClass(context, subpath, commander);
   } catch (error) {
     console.error(`❌ Browser Structure: Failed to create ${entry.className}:`, error);
     return null;

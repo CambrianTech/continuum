@@ -19,19 +19,26 @@ export class JTAGServer extends JTAGSystem {
    * Setup server-specific daemons using static structure
    */
   async setupDaemons(): Promise<void> {
-    for (const daemonEntry of SERVER_DAEMONS) {
+    const daemonPromises = SERVER_DAEMONS.map(async (daemonEntry) => {
       try {
         const daemon = createServerDaemon(daemonEntry.name, this.context, this.router);
         
         if (daemon) {
+          // Initialize daemon after construction is complete
+          await daemon.initializeDaemon();
+          
           this.register(daemonEntry.name, daemon);
           console.log(`📦 Registered server daemon: ${daemonEntry.name} (${daemonEntry.className})`);
+          return daemon;
         }
+        return null;
       } catch (error: any) {
         console.error(`❌ Failed to create server daemon ${daemonEntry.name}:`, error.message);
+        return null;
       }
-    }
+    });
 
+    await Promise.all(daemonPromises);
     console.log(`🔌 JTAG Server System: Registered ${this.daemons.size} daemons statically`);
   }
 

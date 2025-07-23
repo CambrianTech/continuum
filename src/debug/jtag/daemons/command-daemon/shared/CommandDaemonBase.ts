@@ -12,7 +12,7 @@ import { CommandBase } from './CommandBase';
 
 export abstract class CommandDaemonBase extends DaemonBase {
   public readonly subpath: string = 'commands';
-  protected commands = new Map<string, CommandBase>();
+  protected commands: Map<string, CommandBase> = new Map<string, CommandBase>();
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super('command-daemon', context, router);

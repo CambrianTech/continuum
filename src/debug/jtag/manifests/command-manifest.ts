@@ -1,6 +1,6 @@
 /**
  * Auto-generated Command Manifest
- * Generated at: 2025-07-23T09:20:48.263Z
+ * Generated at: 2025-07-23T09:48:31.447Z
  * 
  * This file maps command names to their import paths for both browser and server environments.
  * Used for auto-discovery and dynamic loading of commands.

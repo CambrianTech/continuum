@@ -19,19 +19,26 @@ export class JTAGBrowser extends JTAGSystem {
    * Setup browser-specific daemons using static structure
    */
   async setupDaemons(): Promise<void> {
-    for (const daemonEntry of BROWSER_DAEMONS) {
+    const daemonPromises = BROWSER_DAEMONS.map(async (daemonEntry) => {
       try {
         const daemon = createBrowserDaemon(daemonEntry.name, this.context, this.router);
         
         if (daemon) {
+          // Initialize daemon after construction is complete
+          await daemon.initializeDaemon();
+          
           this.register(daemonEntry.name, daemon);
           console.log(`📦 Registered browser daemon: ${daemonEntry.name} (${daemonEntry.className})`);
+          return daemon;
         }
+        return null;
       } catch (error: any) {
         console.error(`❌ Failed to create browser daemon ${daemonEntry.name}:`, error.message);
+        return null;
       }
-    }
+    });
 
+    await Promise.all(daemonPromises);
     console.log(`🔌 JTAG Browser System: Registered ${this.daemons.size} daemons statically`);
   }
 
