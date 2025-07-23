@@ -324,6 +324,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
     ];
     
     if (skipPatterns.some(pattern => message.includes(pattern))) {
+      //this.originalConsole.log(message);
       return;
     }
 
