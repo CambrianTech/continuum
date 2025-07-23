@@ -7,7 +7,7 @@ import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
 // Import unified JTAG system from npm module
-import { jtagSystem } from '@continuum/jtag';
+import { jtag, JTAGSystem } from '@continuum/jtag';
 
 // Read port from package.json config
 const packageJson = require('../package.json');
@@ -142,8 +142,9 @@ class MinimalServer {
   async start(): Promise<void> {
     console.log('🚀 Starting test-bench demo server...');
     
-    // Use the unified JTAG system with daemon wiring
-    console.log('📊 JTAG System Info:', jtagSystem.getDaemonSystemInfo());
+    // Use the unified JTAG system
+    console.log('📊 JTAG Environment:', jtag.environment);
+    console.log('📊 JTAG Context:', jtag.context);
     
     // Test console logging to verify ConsoleDaemon works
     console.log('🧪 Testing console logging through ConsoleDaemon...');
