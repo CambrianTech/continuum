@@ -13,12 +13,11 @@ import { CommandDaemonBase } from '../daemons/command-daemon/shared/CommandDaemo
 import { JTAGRouter } from './JTAGRouter';
 
 /**
- * Main JTAG System - Universal Command Bus
+ * Abstract JTAG System - Base class for environment-specific implementations
  */
-export class JTAGSystem extends JTAGModule {
+export abstract class JTAGSystem extends JTAGModule {
   protected router: JTAGRouter;
-  protected daemons: Map<string, any> = new Map();
-  private static instance: JTAGSystem | null = null;
+  public daemons: Map<string, any> = new Map();
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super('jtag-system', context);
@@ -26,59 +25,10 @@ export class JTAGSystem extends JTAGModule {
   }
 
   /**
-   * Connect and auto-wire the complete JTAG system
-   * This is the main entry point: let jtag = await JTAGSystem.connect()
+   * Abstract setup methods - implemented by environment-specific subclasses
    */
-  static async connect(): Promise<JTAGSystem> {
-    if (JTAGSystem.instance) {
-      return JTAGSystem.instance;
-    }
-
-    // 1. Detect environment and create context
-    const environment: JTAGEnvironment = typeof window === 'undefined' ? 'server' : 'browser';
-    const context: JTAGContext = {
-      uuid: `jtag_${environment}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
-      environment
-    };
-
-    console.log(`🔄 JTAG System: Connecting ${environment} environment...`);
-
-    // 2. Create universal router
-    const router = new JTAGRouter(context);
-    await router.initialize();
-
-    // 3. Create environment-specific system instance
-    let system: JTAGSystem;
-    if (environment === 'server') {
-      const { JTAGServer } = await import('./server/JTAGServer');
-      system = new JTAGServer(context, router);
-    } else {
-      const { JTAGBrowser } = await import('./browser/JTAGBrowser');
-      system = new JTAGBrowser(context, router);
-    }
-
-    // 4. Auto-wire daemons
-    await system.setupDaemons();
-
-    // 5. Setup cross-context transport
-    await system.setupTransports();
-
-    JTAGSystem.instance = system;
-    
-    console.log(`✅ JTAG System: Connected ${environment} successfully`);
-    console.log(`   Context UUID: ${context.uuid}`);
-    console.log(`   Daemons: ${Array.from(system.daemons.keys()).join(', ')}`);
-
-    return system;
-  }
-
-  /**
-   * Setup daemons - implemented by subclasses
-   */
-  protected async setupDaemons(): Promise<void> {
-    // Base implementation - can be overridden by subclasses
-    console.log(`🔧 JTAG System: Base daemon setup complete`);
-  }
+  abstract setupDaemons(): Promise<void>;
+  abstract setupTransports(): Promise<void>;
 
   /**
    * Register a daemon with this system
@@ -88,13 +38,6 @@ export class JTAGSystem extends JTAGModule {
     console.log(`🎯 ${this.toString()}: Registered daemon '${name}'`);
   }
 
-  /**
-   * Setup cross-context transport connections
-   */
-  protected async setupTransports(): Promise<void> {
-    await this.router.setupCrossContextTransport();
-    console.log(`🔗 JTAG System: Cross-context transport configured`);
-  }
 
   /**
    * Command interface - provides jtag.commands.screenshot() etc.
@@ -147,8 +90,6 @@ export class JTAGSystem extends JTAGModule {
 
     // Cleanup router
     await this.router.shutdown();
-
-    JTAGSystem.instance = null;
     
     console.log(`✅ JTAG System: Shutdown complete`);
   }

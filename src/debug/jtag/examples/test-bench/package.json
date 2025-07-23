@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag-test-bench",
-  "version": "1.0.38",
+  "version": "1.0.42",
   "description": "JTAG Test Bench - Standalone Example App",
   "main": "dist/index.js",
   "config": {
@@ -17,12 +17,12 @@
     "clean:all": "npm run clean:ports && npm run clean:logs && npm run clean:screenshots && npm run clean:dist",
     "build": "npm run build:server && npm run build:browser",
     "build:server": "npx tsc src/minimal-server.ts --outDir dist --rootDir src --target ES2020 --module ES2020 --moduleResolution node --skipLibCheck --esModuleInterop",
-    "build:browser": "npx esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --target=es2020 --platform=browser --external:fs --external:fs/promises --external:path --external:child_process --external:os --external:util --external:crypto --external:http --external:https --external:net --external:tls --external:url --external:querystring --external:stream --external:buffer --external:events --external:assert --external:ws --external:@continuum/jtag/server/structure --external:@continuum/jtag/shared/server/* --external:@continuum/jtag/daemons/console-daemon/server/* --external:@continuum/jtag/daemons/command-daemon/server/* --external:@continuum/jtag/daemons/command-daemon/commands/screenshot/server/* --define:global=window",
+    "build:browser": "npx esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --target=es2020 --platform=browser --external:fs --external:fs/promises --external:path --external:child_process --external:os --external:util --external:crypto --external:http --external:https --external:net --external:tls --external:url --external:querystring --external:stream --external:buffer --external:events --external:assert --external:ws --external:../server/JTAGSystemServer --define:global=window",
     "version:bump": "npm version patch --no-git-tag-version",
     "dev": "npx tsx src/minimal-server.ts"
   },
   "dependencies": {
-    "@continuum/jtag": "file:../../continuum-jtag-1.0.117.tgz"
+    "@continuum/jtag": "file:../../continuum-jtag-1.0.122.tgz"
   },
   "devDependencies": {
     "esbuild": "^0.19.12",
