@@ -151,12 +151,14 @@ export class WebSocketClientTransport implements JTAGTransport {
   private socket?: WebSocket;
   private messageHandler?: (message: JTAGMessage) => void;
   private eventSystem?: JTAGEventSystem;
+  private lastConnectedUrl?: string;
 
   setEventSystem(eventSystem: JTAGEventSystem): void {
     this.eventSystem = eventSystem;
   }
 
   async connect(url: string): Promise<void> {
+    this.lastConnectedUrl = url; // Store for reconnection
     console.log(`🔗 WebSocket Client: Connecting to ${url}`);
     
     return new Promise((resolve, reject) => {
@@ -247,5 +249,17 @@ export class WebSocketClientTransport implements JTAGTransport {
       this.socket.close();
       this.socket = undefined;
     }
+  }
+
+  async reconnect(): Promise<void> {
+    if (!this.lastConnectedUrl) {
+      throw new Error('Cannot reconnect: No previous connection URL stored');
+    }
+    
+    // Disconnect first if still connected
+    await this.disconnect();
+    
+    // Reconnect using stored URL
+    await this.connect(this.lastConnectedUrl);
   }
 }
