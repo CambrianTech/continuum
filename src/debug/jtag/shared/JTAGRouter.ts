@@ -296,7 +296,11 @@ export class JTAGRouter extends JTAGModule {
   private async initializeTransport(): Promise<void> {
     console.log(`🔗 ${this.toString()}: Initializing transport with base64 encoding`);
     
-    const transportConfig: TransportConfig = { preferred: 'websocket', fallback: true };
+    const transportConfig: TransportConfig = { 
+      preferred: 'websocket', 
+      fallback: true,
+      eventSystem: this.eventSystem
+    };
     this.crossContextTransport = await TransportFactory.createTransport(this.context.environment, transportConfig);
     
     console.log(`✅ ${this.toString()}: Transport ready: ${this.crossContextTransport.name}`);

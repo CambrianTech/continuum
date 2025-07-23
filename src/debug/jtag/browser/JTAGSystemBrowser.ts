@@ -8,6 +8,7 @@ import { JTAGSystem } from '../shared/JTAGSystem';
 import { JTAGContext, JTAGEnvironment } from '../shared/JTAGTypes';
 import { JTAGRouter } from '../shared/JTAGRouter';
 import { JTAGBrowser } from './JTAGBrowser';
+import { SystemEvents } from '../shared/events/SystemEvents';
 
 export class JTAGSystemBrowser extends JTAGSystem {
   private static instance: JTAGSystemBrowser | null = null;
@@ -34,6 +35,14 @@ export class JTAGSystemBrowser extends JTAGSystem {
 
     // 2. Create universal router
     const router = new JTAGRouter(context);
+    
+    // Emit initializing event
+    router.eventSystem.emit(SystemEvents.INITIALIZING, {
+      environment: 'browser' as const,
+      timestamp: new Date().toISOString()
+    });
+    console.log(`🎬 JTAG System: Initializing browser environment`);
+    
     await router.initialize();
 
     // 3. Create browser system instance
@@ -48,12 +57,29 @@ export class JTAGSystemBrowser extends JTAGSystem {
 
     // 5. Setup cross-context transport
     await system.setupTransports();
+    
+    // Emit transport ready event
+    router.eventSystem.emit(SystemEvents.TRANSPORT_READY, {
+      environment: 'browser' as const,
+      timestamp: new Date().toISOString(),
+      transportType: 'websocket-client'
+    });
+    console.log(`🔗 JTAG System: Transport ready event emitted`);
 
     JTAGSystemBrowser.instance = system;
     
     console.log(`✅ JTAG System: Connected browser successfully`);
     console.log(`   Context UUID: ${context.uuid}`);
     console.log(`   Daemons: ${Array.from(system.daemons.keys()).join(', ')}`);
+
+    // Emit system ready event after full initialization
+    router.eventSystem.emit(SystemEvents.READY, {
+      version: '1.0.0',
+      environment: 'browser' as const,
+      timestamp: new Date().toISOString(),
+      components: Array.from(system.daemons.keys())
+    });
+    console.log(`🎉 JTAG System: System ready event emitted`);
 
     return system;
   }

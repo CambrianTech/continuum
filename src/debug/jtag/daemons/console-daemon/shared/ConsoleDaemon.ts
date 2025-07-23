@@ -90,12 +90,23 @@ export abstract class ConsoleDaemon extends DaemonBase {
     // Router is guaranteed by constructor - no need to check
     const eventSystem = this.router.eventSystem;
     
-    // Wait for JTAG system ready event - TYPE-SAFE & MODULAR!
-    eventSystem.waitFor(SystemEvents.READY, 30000)
-      .then(() => {
-        this.originalConsole.log(`🚀 ${this.toString()}: JTAG system ready event received, starting queue drain`);
+    // Listen for daemons loaded event - happens immediately after all daemon initialization
+    eventSystem.on(SystemEvents.DAEMONS_LOADED, (data: any) => {
+      if (!this.jtagSystemReady) {
+        // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🔌 ${this.toString()}: Daemons loaded event received, starting queue drain`);
         this.jtagSystemReady = true;
         this.startQueueDrain();
+      }
+    });
+    
+    // Also wait for JTAG system ready event as backup - TYPE-SAFE & MODULAR!
+    eventSystem.waitFor(SystemEvents.READY, 10000)
+      .then(() => {
+        if (!this.jtagSystemReady) {
+          // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🚀 ${this.toString()}: JTAG system ready event received, starting queue drain`);
+          this.jtagSystemReady = true;
+          this.startQueueDrain();
+        }
       })
       .catch((error: Error) => {
         this.originalConsole.warn(`⚠️ ${this.toString()}: JTAG ready timeout, falling back to transport check`);
@@ -105,7 +116,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
     // Also listen for transport ready events - TYPE-SAFE & MODULAR!
     eventSystem.on(TransportEvents.READY, (message: any) => {
       if (!this.jtagSystemReady) {
-        this.originalConsole.log(`🔗 ${this.toString()}: Transport ready event received, starting queue drain`);
+        // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🔗 ${this.toString()}: Transport ready event received, starting queue drain`);
         this.jtagSystemReady = true;
         this.startQueueDrain();
       }
@@ -120,7 +131,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
       // Router is guaranteed by constructor
       const transport = (this.router as any).crossContextTransport;
       if (transport?.isConnected()) {
-        this.originalConsole.log(`🔗 ${this.toString()}: Transport connected, starting queue drain`);
+        // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🔗 ${this.toString()}: Transport connected, starting queue drain`);
         this.jtagSystemReady = true;
         this.startQueueDrain();
         return;
@@ -140,11 +151,11 @@ export abstract class ConsoleDaemon extends DaemonBase {
   private startQueueDrain(): void {
     if (this.context.environment === 'server') {
       // Server daemon is already in the right place, no draining needed
-      this.originalConsole.log(`📍 ${this.toString()}: Server daemon - no queue draining needed`);
+      // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`📍 ${this.toString()}: Server daemon - no queue draining needed`);
       return;
     }
 
-    this.originalConsole.log(`🌊 ${this.toString()}: Starting queue drain - ${this.logBuffer.length} messages`);
+    // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🌊 ${this.toString()}: Starting queue drain - ${this.logBuffer.length} messages`);
     
     // Emit queue drain start event - TYPE-SAFE & MODULAR!
     // Router and eventSystem guaranteed by constructor
@@ -173,7 +184,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
     const messagesToDrain = [...this.logBuffer];
     this.logBuffer = []; // Clear buffer
 
-    this.originalConsole.log(`🌊 ${this.toString()}: Draining ${messagesToDrain.length} messages to server`);
+    // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🌊 ${this.toString()}: Draining ${messagesToDrain.length} messages to server`);
 
     for (const consolePayload of messagesToDrain) {
       try {
@@ -188,7 +199,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
       } catch (error) {
         // If drain fails, put message back in buffer
         this.logBuffer.unshift(consolePayload);
-        this.originalConsole.warn(`⚠️ ${this.toString()}: Failed to drain message, re-queued`);
+        // SILENCED: Internal logging causes infinite loops - this.originalConsole.warn(`⚠️ ${this.toString()}: Failed to drain message, re-queued`);
         break; // Stop draining on first failure
       }
     }
@@ -295,7 +306,19 @@ export abstract class ConsoleDaemon extends DaemonBase {
     const skipPatterns = [
       'ConsoleDaemon', '🎧', '📝', '⚡', '✅', '❌', '📤', '📊',
       'JTAG:', 'CommandDaemon', 'JTAGRouter', 'JTAGModule',
-      'registerWithRouter', 'handleMessage'
+      'registerWithRouter', 'handleMessage',
+      // CRITICAL: Add patterns that are causing infinite loops
+      'Routing message', 'Queued message', 'Delivered queued message',
+      'JTAGMessageQueue', 'WebSocket Client', 'Sending message to server',
+      'Transport Factory', 'HealthManager', '📨', '📥', '📡',
+      'JTAGEventSystem', 'Emitting', 'Processing',
+      // COMPREHENSIVE: Filter ALL JTAG internal operations
+      'JTAGSystem', 'Browser Structure', 'CommandDaemonBrowser',
+      'ConsoleDaemonBrowser', 'ScreenshotBrowserCommand', 'Registered',
+      'Auto-initialized', 'Event handlers', 'UI initialized',
+      'Connected browser successfully', 'Loading', 'Creating',
+      'Initializing', 'Started processing', '🏗️', '🔗', '🌊',
+      'JTAG Demo', 'Ping successful'
     ];
     
     if (skipPatterns.some(pattern => message.includes(pattern))) {

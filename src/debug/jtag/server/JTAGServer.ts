@@ -8,6 +8,7 @@ import { JTAGSystem } from '../shared/JTAGSystem';
 import { JTAGContext } from '../shared/JTAGTypes';
 import { JTAGRouter } from '../shared/JTAGRouter';
 import { SERVER_DAEMONS, createServerDaemon } from './structure';
+import { SystemEvents } from '../shared/events/SystemEvents';
 
 export class JTAGServer extends JTAGSystem {
   
@@ -19,6 +20,14 @@ export class JTAGServer extends JTAGSystem {
    * Setup server-specific daemons using static structure
    */
   async setupDaemons(): Promise<void> {
+    // Emit daemons loading event
+    this.router.eventSystem.emit(SystemEvents.DAEMONS_LOADING, {
+      environment: 'server' as const,
+      timestamp: new Date().toISOString(),
+      expectedDaemons: SERVER_DAEMONS.map(d => d.name)
+    });
+    console.log(`🏗️ JTAG Server: Loading ${SERVER_DAEMONS.length} daemons...`);
+    
     const daemonPromises = SERVER_DAEMONS.map(async (daemonEntry) => {
       try {
         const daemon = createServerDaemon(daemonEntry.name, this.context, this.router);
@@ -39,6 +48,13 @@ export class JTAGServer extends JTAGSystem {
     });
 
     await Promise.all(daemonPromises);
+    
+    // Emit daemons loaded event
+    this.router.eventSystem.emit(SystemEvents.DAEMONS_LOADED, {
+      environment: 'server' as const,
+      timestamp: new Date().toISOString(),
+      loadedDaemons: Array.from(this.daemons.keys())
+    });
     console.log(`🔌 JTAG Server System: Registered ${this.daemons.size} daemons statically`);
   }
 

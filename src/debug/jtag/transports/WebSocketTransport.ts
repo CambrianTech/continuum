@@ -7,6 +7,8 @@
 import { JTAGTransport } from '../shared/JTAGRouter';
 import { JTAGMessage } from '../shared/JTAGTypes';
 import { WebSocketServer, WebSocket as WSWebSocket } from 'ws';
+import { JTAGEventSystem } from '../shared/JTAGEventSystem';
+import { TransportEvents } from './TransportEvents';
 
 interface WebSocketSendResult {
   success: boolean;
@@ -19,6 +21,11 @@ export class WebSocketServerTransport implements JTAGTransport {
   private server?: WebSocketServer;
   private clients = new Set<WSWebSocket>();
   private messageHandlers = new Set<(message: JTAGMessage) => void>();
+  private eventSystem?: JTAGEventSystem;
+
+  setEventSystem(eventSystem: JTAGEventSystem): void {
+    this.eventSystem = eventSystem;
+  }
 
   async start(port: number): Promise<void> {
     console.log(`🔗 WebSocket Server: Starting on port ${port}`);
@@ -34,6 +41,15 @@ export class WebSocketServerTransport implements JTAGTransport {
         console.log(`🔗 WebSocket Server: New client connected`);
         
         this.clients.add(ws);
+        
+        // Emit CONNECTED event
+        if (this.eventSystem) {
+          this.eventSystem.emit(TransportEvents.CONNECTED, {
+            transportType: 'websocket' as const,
+            clientId: `ws_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+            remoteAddress: (ws as any)._socket?.remoteAddress
+          });
+        }
         
         ws.on('message', (data) => {
           try {
@@ -53,6 +69,15 @@ export class WebSocketServerTransport implements JTAGTransport {
         ws.on('close', () => {
           console.log(`🔌 WebSocket Server: Client disconnected`);
           this.clients.delete(ws);
+          
+          // Emit DISCONNECTED event
+          if (this.eventSystem) {
+            this.eventSystem.emit(TransportEvents.DISCONNECTED, {
+              transportType: 'websocket' as const,
+              clientId: `ws_${Date.now()}`,
+              reason: 'client_disconnect'
+            });
+          }
         });
         
         ws.on('error', (error: Error) => {
@@ -125,6 +150,11 @@ export class WebSocketClientTransport implements JTAGTransport {
   name = 'websocket-client';
   private socket?: WebSocket;
   private messageHandler?: (message: JTAGMessage) => void;
+  private eventSystem?: JTAGEventSystem;
+
+  setEventSystem(eventSystem: JTAGEventSystem): void {
+    this.eventSystem = eventSystem;
+  }
 
   async connect(url: string): Promise<void> {
     console.log(`🔗 WebSocket Client: Connecting to ${url}`);
@@ -139,6 +169,15 @@ export class WebSocketClientTransport implements JTAGTransport {
       
       this.socket.onopen = () => {
         console.log(`✅ WebSocket Client: Connected to ${url}`);
+        
+        // Emit CONNECTED event
+        if (this.eventSystem) {
+          this.eventSystem.emit(TransportEvents.CONNECTED, {
+            transportType: 'websocket' as const,
+            clientId: `ws_client_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+          });
+        }
+        
         resolve();
       };
       
@@ -160,6 +199,16 @@ export class WebSocketClientTransport implements JTAGTransport {
       
       this.socket.onclose = () => {
         console.log(`🔌 WebSocket Client: Connection closed`);
+        
+        // Emit DISCONNECTED event
+        if (this.eventSystem) {
+          this.eventSystem.emit(TransportEvents.DISCONNECTED, {
+            transportType: 'websocket' as const,
+            clientId: `ws_client_${Date.now()}`,
+            reason: 'connection_closed'
+          });
+        }
+        
         this.socket = undefined;
       };
     });

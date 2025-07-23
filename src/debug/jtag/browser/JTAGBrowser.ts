@@ -8,6 +8,7 @@ import { JTAGSystem } from '../shared/JTAGSystem';
 import { JTAGContext } from '../shared/JTAGTypes';
 import { JTAGRouter } from '../shared/JTAGRouter';
 import { BROWSER_DAEMONS, createBrowserDaemon } from './structure';
+import { SystemEvents } from '../shared/events/SystemEvents';
 
 export class JTAGBrowser extends JTAGSystem {
   
@@ -19,6 +20,14 @@ export class JTAGBrowser extends JTAGSystem {
    * Setup browser-specific daemons using static structure
    */
   async setupDaemons(): Promise<void> {
+    // Emit daemons loading event
+    this.router.eventSystem.emit(SystemEvents.DAEMONS_LOADING, {
+      environment: 'browser' as const,
+      timestamp: new Date().toISOString(),
+      expectedDaemons: BROWSER_DAEMONS.map(d => d.name)
+    });
+    console.log(`🏗️ JTAG Browser: Loading ${BROWSER_DAEMONS.length} daemons...`);
+    
     const daemonPromises = BROWSER_DAEMONS.map(async (daemonEntry) => {
       try {
         const daemon = createBrowserDaemon(daemonEntry.name, this.context, this.router);
@@ -39,6 +48,13 @@ export class JTAGBrowser extends JTAGSystem {
     });
 
     await Promise.all(daemonPromises);
+    
+    // Emit daemons loaded event
+    this.router.eventSystem.emit(SystemEvents.DAEMONS_LOADED, {
+      environment: 'browser' as const,
+      timestamp: new Date().toISOString(),
+      loadedDaemons: Array.from(this.daemons.keys())
+    });
     console.log(`🔌 JTAG Browser System: Registered ${this.daemons.size} daemons statically`);
   }
 
