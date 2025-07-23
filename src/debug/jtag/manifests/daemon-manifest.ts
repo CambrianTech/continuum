@@ -1,6 +1,6 @@
 /**
  * Auto-generated Daemon Manifest
- * Generated at: 2025-07-23T08:17:23.159Z
+ * Generated at: 2025-07-23T08:45:25.376Z
  * 
  * This file maps daemon names to their import paths for both browser and server environments.
  * Used for auto-discovery and dynamic loading of daemons.

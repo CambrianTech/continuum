@@ -26,7 +26,7 @@ export class WebSocketServerTransport implements JTAGTransport {
     try {
       // Dynamic import to handle WebSocket availability
       const WebSocketModule = await eval('import("ws")');
-      const { WebSocketServer: WSServer } = WebSocketModule.default || WebSocketModule;
+      const WSServer = WebSocketModule.WebSocketServer || WebSocketModule.default?.WebSocketServer;
       
       this.server = new WSServer({ port });
       

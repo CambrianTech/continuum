@@ -53,11 +53,11 @@ export abstract class ConsoleDaemon extends DaemonBase {
     error: typeof console.error;
     debug: typeof console.debug;
   } = {
-    log: console.log,
-    info: console.info,
-    warn: console.warn,
-    error: console.error,
-    debug: console.debug
+    log: console.log.bind(console),
+    info: console.info.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+    debug: console.debug ? console.debug.bind(console) : console.log.bind(console)
   };
   private filters: ConsoleFilter = { excludePatterns: [] };
   private logBuffer: ConsolePayload[] = [];
@@ -79,7 +79,8 @@ export abstract class ConsoleDaemon extends DaemonBase {
     // Listen for JTAG system ready event
     this.listenForJTAGReady();
     
-    console.log(`🎧 ${this.toString()}: Console daemon initialized`);
+    // Use original console to avoid recursion
+    this.originalConsole.log(`🎧 ${this.toString()}: Console daemon initialized`);
   }
 
   /**
@@ -92,19 +93,19 @@ export abstract class ConsoleDaemon extends DaemonBase {
     // Wait for JTAG system ready event - TYPE-SAFE & MODULAR!
     eventSystem.waitFor(SystemEvents.READY, 30000)
       .then(() => {
-        console.log(`🚀 ${this.toString()}: JTAG system ready event received, starting queue drain`);
+        this.originalConsole.log(`🚀 ${this.toString()}: JTAG system ready event received, starting queue drain`);
         this.jtagSystemReady = true;
         this.startQueueDrain();
       })
       .catch((error: Error) => {
-        console.warn(`⚠️ ${this.toString()}: JTAG ready timeout, falling back to transport check`);
+        this.originalConsole.warn(`⚠️ ${this.toString()}: JTAG ready timeout, falling back to transport check`);
         this.fallbackToTransportCheck();
       });
 
     // Also listen for transport ready events - TYPE-SAFE & MODULAR!
     eventSystem.on(TransportEvents.READY, (message: any) => {
       if (!this.jtagSystemReady) {
-        console.log(`🔗 ${this.toString()}: Transport ready event received, starting queue drain`);
+        this.originalConsole.log(`🔗 ${this.toString()}: Transport ready event received, starting queue drain`);
         this.jtagSystemReady = true;
         this.startQueueDrain();
       }
@@ -119,7 +120,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
       // Router is guaranteed by constructor
       const transport = (this.router as any).crossContextTransport;
       if (transport?.isConnected()) {
-        console.log(`🔗 ${this.toString()}: Transport connected, starting queue drain`);
+        this.originalConsole.log(`🔗 ${this.toString()}: Transport connected, starting queue drain`);
         this.jtagSystemReady = true;
         this.startQueueDrain();
         return;
@@ -139,11 +140,11 @@ export abstract class ConsoleDaemon extends DaemonBase {
   private startQueueDrain(): void {
     if (this.context.environment === 'server') {
       // Server daemon is already in the right place, no draining needed
-      console.log(`📍 ${this.toString()}: Server daemon - no queue draining needed`);
+      this.originalConsole.log(`📍 ${this.toString()}: Server daemon - no queue draining needed`);
       return;
     }
 
-    console.log(`🌊 ${this.toString()}: Starting queue drain - ${this.logBuffer.length} messages`);
+    this.originalConsole.log(`🌊 ${this.toString()}: Starting queue drain - ${this.logBuffer.length} messages`);
     
     // Emit queue drain start event - TYPE-SAFE & MODULAR!
     // Router and eventSystem guaranteed by constructor
@@ -172,7 +173,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
     const messagesToDrain = [...this.logBuffer];
     this.logBuffer = []; // Clear buffer
 
-    console.log(`🌊 ${this.toString()}: Draining ${messagesToDrain.length} messages to server`);
+    this.originalConsole.log(`🌊 ${this.toString()}: Draining ${messagesToDrain.length} messages to server`);
 
     for (const consolePayload of messagesToDrain) {
       try {
@@ -187,7 +188,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
       } catch (error) {
         // If drain fails, put message back in buffer
         this.logBuffer.unshift(consolePayload);
-        console.warn(`⚠️ ${this.toString()}: Failed to drain message, re-queued`);
+        this.originalConsole.warn(`⚠️ ${this.toString()}: Failed to drain message, re-queued`);
         break; // Stop draining on first failure
       }
     }
@@ -220,22 +221,66 @@ export abstract class ConsoleDaemon extends DaemonBase {
       };
 
     } catch (error: any) {
-      console.error(`❌ ${this.toString()}: Error processing message:`, error.message);
+      this.originalConsole.error(`❌ ${this.toString()}: Error processing message:`, error.message);
       return { success: false, error: error.message };
     }
   }
 
   /**
-   * Setup console interception to catch all console.* calls
-   * Environment-specific: browser intercepts global console, server intercepts process console
+   * Setup console interception using modern best practices
+   * Clean pattern that avoids recursion and maintains readability
    */
-  protected abstract setupConsoleInterception(): void;
+  protected setupConsoleInterception(): void {
+    // Store original methods before any override (critical for avoiding recursion)
+    const originalLog = console.log.bind(console);
+    const originalInfo = console.info.bind(console);
+    const originalWarn = console.warn.bind(console);
+    const originalError = console.error.bind(console);
+    const originalDebug = console.debug ? console.debug.bind(console) : originalLog;
 
-  /**
-   * Process console payload after creation
-   * Environment-specific: browser stores locally + sends to server, server writes to files
-   */
-  protected abstract processConsolePayload(consolePayload: ConsolePayload): Promise<void>;
+    // Update our stored references
+    this.originalConsole = {
+      log: originalLog,
+      info: originalInfo,
+      warn: originalWarn,
+      error: originalError,
+      debug: originalDebug
+    };
+
+    // Log initialization using stored original (no override active yet)
+    originalLog(`🎧 ${this.toString()}: Console daemon initializing...`);
+
+    // Create interception wrapper - clean and simple
+    const createInterceptor = (level: 'log' | 'info' | 'warn' | 'error' | 'debug', originalMethod: Function) => {
+      return (...args: any[]) => {
+        // Always call original first to maintain expected console behavior
+        originalMethod(...args);
+        
+        // Process through daemon (with recursion guard)
+        if (!this.intercepting) {
+          this.intercepting = true;
+          try {
+            this.processConsoleCall(level, args);
+          } catch (error) {
+            // Use original error method to avoid any recursion
+            originalError('ConsoleDaemon processing failed:', error);
+          } finally {
+            this.intercepting = false;
+          }
+        }
+      };
+    };
+
+    // Apply interceptors
+    console.log = createInterceptor('log', originalLog);
+    console.info = createInterceptor('info', originalInfo);
+    console.warn = createInterceptor('warn', originalWarn);
+    console.error = createInterceptor('error', originalError);  
+    console.debug = createInterceptor('debug', originalDebug);
+
+    // Confirm setup using stored original
+    originalLog(`✅ ${this.toString()}: Console interception enabled`);
+  }
 
   /**
    * Process raw console call arguments into ConsolePayload
@@ -266,14 +311,25 @@ export abstract class ConsoleDaemon extends DaemonBase {
       stack: level === 'error' ? new Error().stack : undefined
     });
 
-    // Always add to buffer
-    this.addToBuffer(consolePayload);
+    // Only add to buffer if logBuffer exists (daemon fully initialized)
+    if (this.logBuffer) {
+      this.addToBuffer(consolePayload);
+    }
     
     // Process the console message
-    this.processConsolePayload(consolePayload).catch(error => {
-      this.originalConsole.error('ConsoleDaemon: Error processing console call:', error);
-    });
+    if (this.logBuffer) {
+      this.processConsolePayload(consolePayload).catch(error => {
+        this.originalConsole.error('ConsoleDaemon: Error processing console call:', error);
+      });
+    }
   }
+
+  /**
+   * Process console payload after creation
+   * Environment-specific: browser stores locally + sends to server, server writes to files
+   */
+  protected abstract processConsolePayload(consolePayload: ConsolePayload): Promise<void>;
+
 
   protected extractComponent(message: string): string {
     // Try to extract component from message patterns
@@ -332,7 +388,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
    */
   setFilters(filters: Partial<ConsoleFilter>): void {
     this.filters = { ...this.filters, ...filters };
-    console.log(`🔧 ${this.toString()}: Filters updated`, this.filters);
+    this.originalConsole.log(`🔧 ${this.toString()}: Filters updated`, this.filters);
   }
 
   /**
@@ -347,7 +403,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
    */
   clearBuffer(): void {
     this.logBuffer = [];
-    console.log(`🧹 ${this.toString()}: Buffer cleared`);
+    this.originalConsole.log(`🧹 ${this.toString()}: Buffer cleared`);
   }
 
   /**
@@ -361,7 +417,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
       console.error = this.originalConsole.error;
       console.debug = this.originalConsole.debug;
       
-      console.log(`🔄 ${this.toString()}: Console restored`);
+      this.originalConsole.log(`🔄 ${this.toString()}: Console restored`);
     }
   }
 }
