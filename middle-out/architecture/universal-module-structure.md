@@ -1,6 +1,6 @@
 # Universal Module Structure
 
-## 🏗️ `/shared|client|server|remote` Pattern
+## 🏗️ `/shared|browser|server|remote` Pattern
 
 All Continuum modules should follow this universal structure pattern, regardless of module type (daemons, commands, widgets, continuum core, etc.).
 
@@ -9,7 +9,7 @@ All Continuum modules should follow this universal structure pattern, regardless
 ```
 module-name/
 ├── shared/     # Common code, types, utilities used across contexts
-├── client/     # Browser/frontend code
+├── browser/    # Browser/frontend code
 ├── server/     # Node.js server-side code
 ├── remote/     # AWS Lambda/serverless functions for distributed execution
 ├── tests/      # Test files organized by context
@@ -28,7 +28,7 @@ module-name/
   - Constants and enums
 - **Examples**: `MessageProtocol.ts`, `ValidationRules.ts`, `SharedTypes.ts`
 
-#### `/client` - Browser Context
+#### `/browser` - Browser Context
 - **Purpose**: Code that runs in the browser
 - **Contents**:
   - UI components and widgets
@@ -80,7 +80,7 @@ module-name/
 ```
 src/daemons/session-manager/
 ├── shared/     # Session types, protocols
-├── client/     # Browser session UI
+├── browser/    # Browser session UI
 ├── server/     # Session daemon logic
 ├── remote/     # Distributed session sync
 │   ├── shared/
@@ -95,7 +95,7 @@ src/daemons/session-manager/
 ```
 src/commands/screenshot/
 ├── shared/     # Screenshot types, validation
-├── client/     # Browser screenshot capture
+├── browser/    # Browser screenshot capture
 ├── server/     # Server screenshot coordination
 ├── remote/     # Cloud screenshot processing
 │   ├── shared/
@@ -110,7 +110,7 @@ src/commands/screenshot/
 ```
 src/ui/components/Chat/
 ├── shared/     # Chat message types, protocols
-├── client/     # ChatWidget UI component
+├── browser/    # ChatWidget UI component
 ├── server/     # Chat message processing
 ├── remote/     # Distributed chat routing
 │   ├── shared/
@@ -125,7 +125,7 @@ src/ui/components/Chat/
 ```
 src/
 ├── shared/     # Core types, protocols
-├── client/     # Browser integration
+├── browser/    # Browser integration
 ├── server/     # Daemon system
 ├── remote/     # Distributed compute
 │   ├── shared/
@@ -144,7 +144,7 @@ Tests should mirror the module structure:
 ```
 tests/
 ├── shared/     # Tests for shared code
-├── client/     # Browser/UI tests
+├── browser/    # Browser/UI tests
 ├── server/     # Server/daemon tests
 ├── remote/     # Distributed/P2P tests
 └── integration/ # Cross-context tests
@@ -154,7 +154,7 @@ tests/
 
 Modules communicate across contexts through:
 - **Shared protocols** defined in `/shared`
-- **WebSocket connections** between client/server
+- **WebSocket connections** between browser/server
 - **P2P networking** for remote contexts
 - **Event-driven messaging** for loose coupling
 
@@ -162,7 +162,7 @@ Modules communicate across contexts through:
 
 1. **Start with `/shared`** - Define types and protocols first
 2. **Build `/server`** - Implement core business logic
-3. **Create `/client`** - Build user interface components
+3. **Create `/browser`** - Build user interface components
 4. **Plan `/remote`** - Design distributed components
 5. **Test thoroughly** - Ensure all contexts work together
 
@@ -179,7 +179,7 @@ Modules communicate across contexts through:
 
 For existing modules:
 1. Identify current code by execution context
-2. Create `/shared|client|server|remote` structure
+2. Create `/shared|browser|server|remote` structure
 3. Move code to appropriate contexts
 4. Update imports and dependencies
 5. Verify tests still pass

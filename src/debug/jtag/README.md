@@ -4,7 +4,96 @@
 
 JTAG is a **production-grade universal debugging system** with **transport-agnostic architecture** that works with WebSocket, HTTP, REST, MCP, and any transport mechanism.
 
-## 🌍 **Transport-Agnostic Universal Client (NEW)**
+## 🎯 **BREAKTHROUGH: Build-Time Auto-Discovery Architecture**
+
+### **Revolutionary Constructor Dependency Injection**
+
+JTAG now solves the fundamental client-side limitation with **build-time manifest generation** that enables clean auto-discovery patterns in both browser and server environments:
+
+```typescript
+// Simple, clean API with zero registration boilerplate
+let jtag: JTAGSystem = await JTAGSystem.connect();
+let screenshot = await jtag.commands.screenshot({filename: "debug.png"});
+```
+
+### **Auto-Generated Discovery Manifests**
+
+**Problem Solved**: Browsers can't iterate filesystems, but build-time manifests enable the same clean auto-discovery pattern everywhere:
+
+```typescript
+// daemon-manifest.ts (auto-generated on build)
+export const DAEMON_MANIFEST = {
+  'CommandProcessorDaemon': () => import('./daemons/CommandProcessorDaemon'),
+  'ConsoleDaemon': () => import('./daemons/ConsoleDaemon'),
+  'SessionManagerDaemon': () => import('./daemons/SessionManagerDaemon')
+};
+
+// command-manifest.ts (auto-generated on build)
+export const COMMAND_MANIFEST = {
+  'screenshot': () => import('./commands/ScreenshotCommand'),
+  'fileRead': () => import('./commands/FileReadCommand'),
+  'evaluate': () => import('./commands/EvaluateCommand')
+};
+```
+
+### **Clean Dependency Injection Architecture**
+
+**Daemons receive router in constructor**:
+```typescript
+class CommandProcessorDaemon extends ProcessBasedDaemon {
+  constructor(private router: JTAGRouter) {
+    super('command-processor');
+    // Router injected, no self-registration needed
+  }
+}
+```
+
+**Commands receive commander in constructor**:
+```typescript
+class ScreenshotCommand {
+  constructor(private commander: CommandProcessor) {
+    // Commander injected, clean separation of concerns
+  }
+}
+```
+
+### **Universal Environment Detection**
+
+**Same discovery pattern, different contexts**:
+```typescript
+// JTAGSystem.connect() automatically:
+// 1. Detects environment (browser/server)
+// 2. Creates JTAGRouter with transport auto-detection
+// 3. Uses build-time manifests to discover and instantiate daemons
+// 4. Daemons use manifests to discover and instantiate commands
+// 5. All dependencies injected via constructors
+// 6. Cross-context routing happens automatically
+```
+
+### **Zero Registration Boilerplate**
+
+**Adding new daemons and commands**:
+1. Create files following `/shared/browser/server` convention
+2. Run `npm run build:jtag-manifests` (happens automatically in build)
+3. Everything auto-discovered and wired up
+4. No registration ceremonies, pure convention-based discovery
+
+### **Integrated Build Process**
+
+```bash
+# Manifests auto-generated on every build
+npm run build:jtag-manifests  # Manual generation
+npm start                     # Auto-generates as part of build
+```
+
+**Architecture Benefits**:
+- **Universal Discovery**: Same pattern works in browser and server
+- **Clean Dependencies**: Constructor injection eliminates registration complexity
+- **Convention-Based**: File structure determines auto-discovery
+- **Build-Time Safety**: Missing dependencies caught at build time
+- **Zero Boilerplate**: No self-registration code needed
+
+## 🌍 **Transport-Agnostic Universal Client**
 
 ### **Works with ANY Transport**
 ```typescript
@@ -34,84 +123,140 @@ const client = new JTAGUniversalClient({
 - **Automatic fallback** when primary transport fails
 - **Zero configuration** - just import and it works
 
-### **Simple Browser Integration**
-```javascript
-// Include JTAG Universal Client
-import '../browser-client/jtag-auto-init.js';
+### **Zero-Setup Usage with Auto-Discovery**
+```typescript
+// Server-side (Node.js) - Clean auto-discovery API
+import { JTAGSystem } from '@continuum/jtag';
 
-// Both APIs available after auto-init
-window.jtag;       // Legacy API (backward compatible)
-window.jtagClient; // Universal Client API (new)
+// Auto-discovers daemons and commands via build-time manifests
+const jtag = await JTAGSystem.connect();
 
-// Send messages through any transport
-await window.jtagClient.sendMessage('my_event', { data: 'hello' });
-await window.jtagClient.sendCommand('ping', { timestamp: Date.now() });
-
-// Simple logging
-window.jtagClient.log('COMPONENT', 'Message logged via Universal Transport');
+// Clean command API with constructor dependency injection
+jtag.log('SERVER', 'Application starting');
+const screenshot = await jtag.commands.screenshot({filename: 'debug-capture.png'});
+console.log(`Screenshot saved: ${screenshot.filepath}`);
 ```
 
-### **No Weird Wiring**
-- ✅ **Clean auto-initialization** - No complex setup or registration
-- ✅ **Transport abstraction** - No WebSocket-specific code
-- ✅ **Promise-based** - Async/await support for all operations
-- ✅ **Backward compatible** - Legacy API still works
-- ❌ **No hard-coded transports** - Works with WebSocket, HTTP, REST, MCP
-- ❌ **No brittle router wiring** - Simple, predictable message flow
+```typescript  
+// Browser-side - Same clean API, different context
+import { JTAGSystem } from '@continuum/jtag';
 
-## 🚀 **Strategic Vision: Universal Command Bus**
+// Same discovery pattern, browser context auto-detected
+const jtag = await JTAGSystem.connect();
+
+// Same command interface, different implementation (WebSocket transport)
+const screenshot = await jtag.commands.screenshot({filename: 'browser-state.png'}); 
+console.log(`Screenshot coordinated by server: ${screenshot.filepath}`);
+
+// Logging routes through auto-discovered ConsoleDaemon
+jtag.log('UI', 'Button click failed', { element: 'submit-btn' });
+```
+
+### **What Happens Under the Hood**
+
+With the new build-time auto-discovery architecture, here's the simplified flow:
+
+```typescript
+// Simple, clean API
+let jtag: JTAGSystem = await JTAGSystem.connect();
+let screenshot = await jtag.commands.screenshot({filename: "debug.png"});
+```
+
+**New Streamlined Flow**:
+```
+1. JTAGSystem.connect() → Auto-detects environment (browser/server)
+2. Creates JTAGRouter with transport auto-detection
+3. Uses build-time manifests to discover and instantiate daemons:
+   - DAEMON_MANIFEST['CommandProcessorDaemon'](router)
+   - DAEMON_MANIFEST['ConsoleDaemon'](router)
+4. Daemons use manifests to discover and instantiate commands:
+   - COMMAND_MANIFEST['screenshot'](commander)
+   - COMMAND_MANIFEST['fileRead'](commander)
+5. All dependencies injected via constructors (no registration ceremonies)
+6. Cross-context routing happens automatically via unified message system
+7. jtag.commands.screenshot() resolves with result
+```
+
+**Architecture Breakthrough**: Constructor dependency injection + build-time manifests eliminate all registration boilerplate while enabling the same clean auto-discovery pattern in both browser and server environments.
+
+### **Build-Time Auto-Discovery Architecture**
+- ✅ **Constructor Dependency Injection** - Clean separation, no self-registration
+- ✅ **Build-Time Manifests** - Auto-generated discovery maps for browser/server
+- ✅ **Universal Discovery Pattern** - Same clean API works everywhere
+- ✅ **Zero Registration Boilerplate** - Pure convention-based discovery
+- ✅ **Integrated Build Process** - Manifests auto-generated on every build
+- ✅ **Environment Auto-Detection** - Browser/server context handled automatically
+- ✅ **Transport abstraction** - WebSocket, HTTP, polling auto-detected  
+- ✅ **Cross-context routing** - Server↔Browser↔Remote seamlessly
+- ✅ **Promise-based** - Everything is properly awaitable
+- ✅ **Typed messages** - Full TypeScript support with message types
+- ✅ **Health monitoring** - Transport reconnection and status events
+
+## 🚀 **Strategic Vision: Universal Command Bus with Auto-Discovery**
 
 ### **JTAG → Universal Command Infrastructure**
 
-JTAG has evolved into a **Universal Command Bus** where any system can register commands and chain them together with promises:
+The build-time auto-discovery breakthrough transforms JTAG into a **Universal Command Bus** where systems auto-discover and chain commands with zero registration boilerplate:
 
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
 │   JTAG      │    │ Continuum   │    │   Widget    │
-│ .log()      │    │ .execute()  │    │ .create()   │
-│ .screenshot()│    │ .fileSave() │    │ .update()   │
+│.commands    │    │.commands    │    │.commands    │
+│.screenshot()│    │.fileSave()  │    │.create()    │
 └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
        │                  │                  │
        └──────────────────┼──────────────────┘
                           │
-                ┌─────────▼─────────┐
-                │ UNIVERSAL BUS     │
-                │ - Promise Chaining│
-                │ - Endpoint Checks │  
-                │ - Auto Registration│
-                └───────────────────┘
+        ┌─────────────────▼─────────────────┐
+        │ BUILD-TIME AUTO-DISCOVERY BUS     │
+        │ - Constructor Injection           │
+        │ - Manifest Generation            │  
+        │ - Convention-Based Discovery     │
+        │ - Zero Registration Boilerplate  │
+        └───────────────────────────────────┘
 ```
 
-### **Universal Command Bus Benefits**
-- **Cross-System Chaining**: `bus.jtag.screenshot() → bus.continuum.fileSave() → bus.widget.create()`
-- **Automatic Endpoint Validation**: Commands await their required endpoints before executing  
-- **Dynamic Registration**: Any system can add commands - `bus.registerCommand()`
-- **Transport Agnostic**: WebSocket, HTTP, MCP, File - router handles delivery
-- **Promise-Based**: All commands return chainable promises
+### **Auto-Discovery Command Bus Benefits**
+- **Zero-Boilerplate Integration**: Follow `/shared/browser/server` convention → auto-discovered
+- **Constructor Dependency Injection**: Clean separation, no self-registration complexity
+- **Build-Time Safety**: Missing dependencies caught at build time, not runtime
+- **Cross-System Chaining**: `jtag.commands.screenshot() → continuum.commands.fileSave() → widget.commands.create()`
+- **Universal Pattern**: Same discovery mechanism works for any command system
+- **Transport Agnostic**: WebSocket, HTTP, MCP, File - router handles delivery automatically
 
 ### **Easy Integration Pattern**
+
+With build-time auto-discovery, integration is even cleaner:
+
 ```typescript
-// Register your system as an endpoint handler
-class MySystemHandler implements JTAGMessageHandler {
-  readonly id = 'my-system-001';
-  readonly name = 'MySystem';
-  readonly type = 'service';
-  
-  handleEvent(message: JTAGUniversalMessage): void {
-    // Handle fire-and-forget events
+// Create your daemon following convention
+class MySystemDaemon extends ProcessBasedDaemon {
+  constructor(private router: JTAGRouter) {
+    super('my-system');
+    // Router injected automatically
   }
   
-  async handleRequest(message: JTAGUniversalMessage): Promise<any> {
+  async handleMessage(message: DaemonMessage): Promise<any> {
     // Handle request-response with promises
     return { result: 'processed' };
   }
-  
-  isHealthy(): boolean { return true; }
 }
 
-// Register and communicate
-router.registerHandler(new MySystemHandler());
-const result = await router.sendRequest('my-system-001', message);
+// Create your commands
+class MyCommand {
+  constructor(private commander: CommandProcessor) {
+    // Commander injected automatically
+  }
+  
+  async execute(params: any): Promise<any> {
+    return { success: true, data: params };
+  }
+}
+
+// That's it! Build process auto-discovers and wires everything:
+// npm run build:jtag-manifests
+// → Generates manifests
+// → Auto-discovery handles the rest
 ```
 
 ## 🏗️ **Interface-Based Architecture (2025-07-21)**
@@ -1457,47 +1602,64 @@ console.error('Something broke!');  // Automatically captured
 
 ---
 
-## 🎯 **Quick Start**
+## 🎯 **Quick Start with Auto-Discovery Architecture**
 
 ```bash
 cd src/debug/jtag
 
-# 🚀 Production build + demo (builds TS, increments version, launches browser)
-npm start                # → build + version:bump + demo server + browser
+# 🚀 Production build + auto-discovery manifest generation
+npm start                # → build:jtag-manifests + version:bump + demo server + browser
 
-# 🔄 Test ALL transport types automatically  
+# 🏗️ Generate discovery manifests (auto-runs in build)
+npm run build:jtag-manifests        # Generate daemon-manifest.ts + command-manifest.ts
+
+# 🔄 Test ALL transport types with auto-discovery
 npm run test:unit:transports        # WebSocket, REST, MCP, Polling, SSE, Continuum
 npm run test:integration:browser    # ALL transports + real browser automation
 
-# 📊 Complete test suite (iterator + legacy layers)
-npm test                 # → Transport tests + Layer 1-6 + verification
+# 📊 Complete test suite (auto-discovery + transport iterator + legacy layers)
+npm test                 # → Full validation including new architecture
 
-# 🛠️ Individual transport testing
+# 🛠️ Individual testing layers
 npm run test:layer-1     # Foundation: Console mapping, transport abstraction
-npm run test:layer-6     # Browser: Puppeteer automation
+npm run test:layer-6     # Browser: Puppeteer automation with auto-discovery
 
-# 5. Check results
+# 📁 Check results
 ls -la ../../../.continuum/jtag/logs/        # Generated log files
 ls -la ../../../.continuum/jtag/screenshots/ # Captured screenshots
+ls -la ./daemon-manifest.ts                  # Auto-generated daemon discovery
+ls -la ./command-manifest.ts                 # Auto-generated command discovery
 ```
 
-### **Basic Usage**
+### **Basic Usage with Auto-Discovery**
 ```typescript
-import { jtag } from './src/debug/jtag';
+import { JTAGSystem } from './src/debug/jtag';
 
-// Console routing (automatic)
+// Auto-discovery initialization
+const jtag = await JTAGSystem.connect();
+
+// Console routing (automatic with auto-discovered ConsoleDaemon)
 console.log('Debug message');      // → Normal console + JTAG files
 console.error('Error occurred');   // → Normal console + JTAG files
 
-// Direct JTAG usage  
-jtag.critical('SYSTEM', 'Critical failure', errorData);
-const screenshot = await jtag.screenshot("issue-capture");
+// Clean command API via auto-discovered commands
+jtag.log('SYSTEM', 'Critical failure', errorData);
+const screenshot = await jtag.commands.screenshot({filename: "issue-capture"});
+const fileData = await jtag.commands.fileRead({path: "/path/to/file"});
 
 // Configuration access
 jtag.log('CONFIG', 'JTAG settings', jtag.config);
 ```
 
 ## 🏆 **Production-Ready Features**
+
+### **🎯 Build-Time Auto-Discovery Architecture**
+- 🏗️ **Constructor Dependency Injection**: Clean separation of concerns, zero registration boilerplate
+- 📦 **Build-Time Manifests**: Auto-generated `daemon-manifest.ts` and `command-manifest.ts`
+- 🔄 **Universal Discovery Pattern**: Same clean API works in browser and server environments
+- 🎯 **Convention-Based**: File structure determines auto-discovery, no configuration needed
+- ⚡ **Build-Time Safety**: Missing dependencies caught at build time, not runtime
+- 🚀 **Integrated Build Process**: `npm run build:jtag-manifests` auto-runs in build pipeline
 
 ### **✨ Robust WebSocket Architecture**
 - 🔄 **Connection Lifecycle**: Automatic reconnection with exponential backoff
@@ -1519,21 +1681,25 @@ jtag.log('CONFIG', 'JTAG settings', jtag.config);
 - 🛠️ **API Testing**: Validates `jtag.screenshot()`, `jtag.exec()` across transports
 - 🔄 **Cross-Transport**: Same browser tests work for WebSocket → REST → MCP
 
-### **🎯 Zero-Configuration Usage**
+### **🎯 Zero-Configuration Usage with Auto-Discovery**
 ```typescript
-// Production-ready WebSocket-based debugging
-import { jtag } from './src/debug/jtag';
+// Production-ready auto-discovery debugging
+import { JTAGSystem } from './src/debug/jtag';
 
-// Robust connection with automatic lifecycle management
+// Clean auto-discovery initialization
+const jtag = await JTAGSystem.connect();
+
+// Event system still works with auto-discovered architecture
 window.addEventListener('jtag:ready', (event) => {
-  console.log('JTAG connected via robust WebSocket');
+  console.log('JTAG connected with auto-discovery via robust WebSocket');
   
-  // Production-ready API with strong typing
+  // Clean command API with constructor dependency injection
   jtag.log('COMPONENT', 'System ready', { version: '1.0.19' });
-  jtag.critical('ERROR', 'Something failed', errorData);
+  jtag.log('ERROR', 'Something failed', errorData);
   
-  // Browser code execution (implemented)
-  const result = await jtag.exec('Date.now()');
+  // Auto-discovered commands with clean interface
+  const result = await jtag.commands.evaluate({code: 'Date.now()'});
+  const screenshot = await jtag.commands.screenshot({filename: 'system-ready'});
   console.log('Execution result:', result);
 });
 
@@ -1546,4 +1712,5 @@ window.addEventListener('jtag:version_mismatch', (event) => {
 ```
 
 **JTAG: Universal debugging that works when everything else is broken.** 🚨  
-**Now with enterprise-grade WebSocket architecture and robust connection lifecycle.** 🔄
+**Now with build-time auto-discovery architecture and constructor dependency injection.** 🎯  
+**Plus enterprise-grade WebSocket architecture and robust connection lifecycle.** 🔄

@@ -1,85 +1,75 @@
 /**
- * JTAG - Universal Debugging System
+ * JTAG - Universal Command Bus Entry Point
  * 
- * Super simple API for debugging - works everywhere.
- * 
- * Usage:
- *   import { jtag } from './src/debug/jtag';
- *   
- *   // Dead simple calls
- *   jtag.log('Component', 'message');
- *   jtag.critical('WebSocket', 'connection failed', errorData);
- *   jtag.trace('Router', 'handleMessage', 'ENTER');
- *   jtag.probe('Registry', 'command_count', registry.size);
- *   jtag.screenshot('debug-screenshot.png');
+ * This provides a simplified interface to the complete JTAG system while
+ * preserving the full auto-discovery architecture underneath.
  */
 
-// import { JTAG as JTAGInstance } from './shared/JTAGInstance';
-import { JTAGBase } from './shared/JTAGBase';
-import { jtagConfig } from './shared/config';
+import { JTAGSystem } from './shared/JTAGSystem';
+import { JTAGContext, JTAGEnvironment } from './shared/JTAGTypes';
 
-// ROBUST AUTO-INITIALIZATION: Never fail on import
-try {
-  // Create default instance will auto-initialize
-  console.log('[JTAG] Creating instance-based JTAG system...');
-} catch (error: any) {
-  // GRACEFUL DEGRADATION: If JTAG fails, don't break the importing application
-  const fallbackConsole = typeof console !== 'undefined' ? console : { log: () => {}, error: () => {}, warn: () => {} };
-  fallbackConsole.warn('[JTAG] Initialization failed, running in fallback mode:', error.message);
-}
+// Auto-detect environment
+const isServer = typeof window === 'undefined';
+const environment: JTAGEnvironment = isServer ? 'server' : 'browser';
 
-/**
- * Production-grade JTAG API with graceful degradation
- * Never throws errors - always returns reasonable defaults
- */
-const createRobustJTAG = () => {
-  // Fallback functions for when JTAG fails
-  const fallback = {
-    log: () => { /* silent fallback */ },
-    warn: () => { /* silent fallback */ },
-    error: () => { /* silent fallback */ },
-    critical: () => { /* silent fallback */ },
-    trace: () => { /* silent fallback */ },
-    probe: () => { /* silent fallback */ },
-    test: () => { /* silent fallback */ },
-    screenshot: async () => ({ success: false, error: 'JTAG unavailable' }),
-    exec: async () => ({ success: false, error: 'JTAG unavailable' }),
-    connect: async () => ({ healthy: false, transport: { type: 'websocket' as const, state: 'error' as const, endpoint: '', latency: 0 }, session: { id: '', uuid: '', uptime: 0 } }),
-    getUUID: () => ({ uuid: 'fallback_' + Date.now(), sessionId: 'fallback_session' }),
-    config: { jtagPort: 9001, enableRemoteLogging: false, enableConsoleOutput: false }
-  };
-
-  try {
-    // Try to use real JTAG API
-    return {
-      log: JTAGBase.log.bind(JTAGBase),
-      warn: JTAGBase.warn.bind(JTAGBase),
-      error: JTAGBase.error.bind(JTAGBase),
-      critical: JTAGBase.critical.bind(JTAGBase),
-      trace: JTAGBase.trace.bind(JTAGBase),
-      probe: JTAGBase.probe.bind(JTAGBase),
-      test: JTAGBase.test.bind(JTAGBase),
-      screenshot: JTAGBase.screenshot.bind(JTAGBase),
-      exec: JTAGBase.exec.bind(JTAGBase),
-      connect: JTAGBase.connect.bind(JTAGBase),
-      getUUID: JTAGBase.getUUID.bind(JTAGBase),
-      config: jtagConfig
-    };
-  } catch (error) {
-    // Return fallback API if JTAGBase is broken
-    return fallback;
-  }
+// Create context for this environment
+const context: JTAGContext = {
+  uuid: `jtag-index-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+  environment
 };
 
-export const jtag = createRobustJTAG();
+/**
+ * Simplified JTAG API
+ * 
+ * For complex usage, use: await JTAGSystem.connect()
+ * For simple usage, use this direct interface
+ */
+const jtag = {
+  // Environment info
+  environment,
+  context,
 
-// Alias exports for different naming preferences
-export const JTAG = JTAGBase;
-export const debug = JTAGBase;
+  // Core logging methods - simplified interface
+  log: (component: string, message: string, data?: unknown) => {
+    console.log(`[JTAG:${component}] ${message}`, data || '');
+    // TODO: Route through actual system when needed
+  },
 
-// Type exports
+  warn: (component: string, message: string, data?: unknown) => {
+    console.warn(`[JTAG:${component}] ${message}`, data || '');
+    // TODO: Route through actual system when needed
+  },
+
+  error: (component: string, message: string, data?: unknown) => {
+    console.error(`[JTAG:${component}] ${message}`, data || '');
+    // TODO: Route through actual system when needed
+  },
+
+  critical: (component: string, message: string, data?: unknown) => {
+    console.error(`[JTAG:CRITICAL:${component}] ${message}`, data || '');
+    // TODO: Route through actual system when needed
+  },
+
+  info: (component: string, message: string, data?: unknown) => {
+    console.info(`[JTAG:${component}] ${message}`, data || '');
+    // TODO: Route through actual system when needed
+  },
+
+  debug: (component: string, message: string, data?: unknown) => {
+    console.debug(`[JTAG:${component}] ${message}`, data || '');
+    // TODO: Route through actual system when needed
+  },
+
+  // Full system access
+  async connect() {
+    return await JTAGSystem.connect();
+  },
+
+  // System class for advanced usage
+  System: JTAGSystem
+};
+
+// Export interfaces
+export { jtag, JTAGSystem };
 export * from './shared/JTAGTypes';
-
-// Export symmetric daemon system for advanced usage
-export { createJTAGDaemonSystem, JTAGRouter } from './daemons/index';
-export { jtagRouter } from './shared/JTAGRouter'; // Legacy router for compatibility
+export default jtag;

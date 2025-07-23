@@ -1,8 +1,8 @@
 # Symmetric Daemon Architecture
 
-## 🎯 Vision: Unified Client/Server Daemon Pattern
+## 🎯 Vision: Unified Browser/Server Daemon Pattern
 
-The universal module structure creates **perfect symmetry** between client and server daemons, enabling a unified mental model and consistent development patterns across all execution contexts.
+The universal module structure creates **perfect symmetry** between browser and server daemons, enabling a unified mental model and consistent development patterns across all execution contexts.
 
 ## 🏗️ Current State vs Future Vision
 
@@ -13,7 +13,7 @@ src/
 │   ├── logger/
 │   ├── session-manager/
 │   └── browser-manager/
-├── ui/                   # Client-only components
+├── ui/                   # Browser-only components
 │   ├── daemons/          # Browser-specific daemons
 │   └── components/
 └── integrations/         # Mixed implementations
@@ -26,17 +26,17 @@ src/
 │   ├── logger/
 │   │   ├── shared/       # Universal logging types
 │   │   ├── server/       # Node.js logger daemon
-│   │   ├── client/       # Browser logger daemon
+│   │   ├── browser/      # Browser logger daemon
 │   │   └── tests/        # Unified test suite
 │   ├── session-manager/
 │   │   ├── shared/       # Session protocols
 │   │   ├── server/       # Server session daemon
-│   │   ├── client/       # Browser session daemon
+│   │   ├── browser/      # Browser session daemon
 │   │   └── tests/        # Cross-context tests
 │   └── browser-manager/
 │       ├── shared/       # Browser control protocols
 │       ├── server/       # Server browser controller
-│       ├── client/       # In-browser automation
+│       ├── browser/      # In-browser automation
 │       └── tests/        # Browser integration tests
 ```
 
@@ -59,7 +59,7 @@ class ServerLoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
 }
 
 // Browser daemon (future)
-class ClientLoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
+class BrowserLoggerDaemon extends ProcessBasedDaemon<LoggerMessage> {
   async processMessage(message: LoggerMessage): Promise<DaemonResponse> {
     // Browser-specific localStorage/indexedDB
   }
@@ -103,7 +103,7 @@ class ServerDaemon extends ProcessBasedDaemon<T> {
   // Node.js specific: fs, child_process, etc.
 }
 
-class ClientDaemon extends ProcessBasedDaemon<T> {
+class BrowserDaemon extends ProcessBasedDaemon<T> {
   // Browser specific: DOM, Web Workers, etc.
 }
 ```
