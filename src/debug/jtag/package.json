@@ -31,12 +31,13 @@
     }
   },
   "scripts": {
-    "start": "npm run clean:all && npm run build && npm run version:bump && cd examples/test-bench && npm start",
+    "start": "npm run clean:all && npm run build && npm run version:bump && npm pack && node scripts/update-test-bench.js && cd examples/test-bench && npm install && npm start",
     "clean:logs": "rm -rf ../../../.continuum/jtag/logs/* 2>/dev/null || true; mkdir -p ../../../.continuum/jtag/logs",
     "clean:screenshots": "rm -rf ../../../.continuum/jtag/screenshots/* 2>/dev/null || true; mkdir -p ../../../.continuum/jtag/screenshots",
     "clean:all": "npm run clean:logs && npm run clean:screenshots && rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
     "build": "npm run build:ts",
+    "build:with-test-bench": "npm run build && npm pack && node scripts/update-test-bench.js && cd examples/test-bench && npm install",
     "build:ts": "tsc --project tsconfig.json",
     "build:mcp": "npx tsc mcp/jtag-mcp-server.ts --outDir mcp --target ES2020 --module commonjs --esModuleInterop",
     "version:bump": "npm version patch --no-git-tag-version",
