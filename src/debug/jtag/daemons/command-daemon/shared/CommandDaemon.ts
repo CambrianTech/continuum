@@ -6,26 +6,18 @@
  */
 
 import { DaemonBase } from '../../../shared/DaemonBase';
-import { JTAGContext, JTAGMessage, CommandParams } from '../../../shared/JTAGTypes';
-import { JTAGRouter } from '../../../shared/JTAGRouter';
-import { CommandBase } from './CommandBase';
-import { CommandResponse, CommandErrorResponse, CommandSuccessResponse } from '../../../shared/ResponseTypes';
+import type { JTAGContext, JTAGMessage, CommandParams } from '../../../shared/JTAGTypes';
+import type { JTAGRouter } from '../../../shared/JTAGRouter';
+import type{ CommandBase, CommandEntry } from './CommandBase';
+import type { CommandResponse } from '../../../shared/ResponseTypes';
+import { CommandErrorResponse, CommandSuccessResponse } from '../../../shared/ResponseTypes';
 
-export abstract class CommandDaemonBase extends DaemonBase {
+export abstract class CommandDaemon extends DaemonBase {
   public readonly subpath: string = 'commands';
   protected commands: Map<string, CommandBase> = new Map<string, CommandBase>();
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super('command-daemon', context, router);
-  }
-
-  /**
-   * Initialize daemon-specific functionality (from DaemonBase)
-   */
-  protected async initialize(): Promise<void> {
-    // Initialize commands for this environment
-    await this.initializeCommands();
-    console.log(`🎯 ${this.toString()}: Command daemon initialized with ${this.commands.size} commands`);
   }
 
   /**
@@ -41,7 +33,25 @@ export abstract class CommandDaemonBase extends DaemonBase {
    * Browser: Auto-discovers from manifest + browser-specific commands
    * Server: Auto-discovers from manifest + server-specific commands  
    */
-  protected abstract initializeCommands(): Promise<void>;
+  protected async initialize(): Promise<void> {
+    for (const commandEntry of this.commandEntries) {
+      try {
+        const command = this.createCommand(commandEntry, this.context, commandEntry.name);
+        if (command) {
+          this.register(commandEntry.name, command);
+          console.log(`📦 Registered browser command: ${commandEntry.name} (${commandEntry.className})`);
+        }
+      } catch (error: unknown) {
+        console.error(`❌ Failed to create browser command ${commandEntry.name}:`, error);
+      }
+    }
+    
+    console.log(`🎯 ${this.toString()}: Auto-initialized ${this.commands.size} browser commands`);
+  }
+
+  protected abstract get commandEntries(): CommandEntry[];
+
+  protected abstract createCommand(entry: CommandEntry, context: JTAGContext, subpath: string): CommandBase | null;
 
 
   /**

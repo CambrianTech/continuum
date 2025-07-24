@@ -6,8 +6,15 @@
  */
 
 import { JTAGModule } from '../../../shared/JTAGModule';
-import { JTAGContext, JTAGPayload, JTAGMessage, JTAG_ENVIRONMENTS, JTAGMessageFactory } from '../../../shared/JTAGTypes';
-import { JTAGRouter } from '../../../shared/JTAGRouter';
+import type { JTAGContext, JTAGPayload } from '../../../shared/JTAGTypes';
+import { JTAG_ENVIRONMENTS, JTAGMessageFactory } from '../../../shared/JTAGTypes';
+import type { JTAGRouter } from '../../../shared/JTAGRouter';
+
+export interface CommandEntry {
+  name: string;
+  className: string;
+  commandClass: new (...args: any[]) => CommandBase;
+}
 
 // Forward declare CommandDaemon interface to avoid circular imports
 export interface ICommandDaemon {

@@ -10,7 +10,7 @@
 
 import { JTAGWebSocketTransportImpl } from '../../shared/transports/WebSocketTransport';
 import { EmergencyJTAGClient } from '../../client/JTAGClient';
-import { EmergencyJTAGServer } from '../../server/JTAGServer';
+// EmergencyJTAGServer was junk - removed
 import { JTAG_STATUS, JTAGConfig, JTAGWebSocketMessage } from '../../shared/JTAGTypes';
 import { jtag } from '../../index';
 import * as http from 'http';
@@ -137,16 +137,8 @@ class ClientServerTransportOrchestrator {
       const logPayload = message.payload as any;
       
       // Server creates log entry using JTAG server-side logging
-      EmergencyJTAGServer.initializeServer();
-      EmergencyJTAGServer.log(
-        'CLIENT_ORCHESTRATED', 
-        `Orchestrated from client: ${logPayload.message}`,
-        { 
-          originalComponent: logPayload.component,
-          orchestrationId: message.messageId,
-          clientTimestamp: message.timestamp 
-        }
-      );
+      // EmergencyJTAGServer was junk - removed
+      console.log('CLIENT_ORCHESTRATED', `Orchestrated from client: ${logPayload.message}`);
 
       // Send confirmation back to client
       const response = {

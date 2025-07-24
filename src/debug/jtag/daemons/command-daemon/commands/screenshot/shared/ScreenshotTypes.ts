@@ -14,10 +14,17 @@ export class ScreenshotParams extends CommandParams {
   filename: string;
   selector?: string;
   options?: ScreenshotOptions;
+  
+  // Additional properties for parametric behavior
+  dataUrl?: string;
+  returnToSource?: boolean;
+  returnFormat?: 'file' | 'bytes' | 'download';
+  crop?: { x: number; y: number; width: number; height: number };
+  metadata?: any;
 
-  constructor(filename: string, selector?: string, options?: ScreenshotOptions) {
+  constructor(filename?: string, selector?: string, options?: ScreenshotOptions) {
     super();
-    this.filename = filename;
+    this.filename = filename || `screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
     this.selector = selector;
     this.options = options;
   }
@@ -45,7 +52,7 @@ export class ScreenshotResult extends JTAGPayload {
   success: boolean;
   filepath: string;
   filename: string;
-  context: JTAGContext['environment'];
+  environment: JTAGContext['environment'];
   timestamp: string;
   options?: ScreenshotOptions;
   error?: string;
@@ -57,7 +64,7 @@ export class ScreenshotResult extends JTAGPayload {
     this.success = data.success ?? false;
     this.filepath = data.filepath ?? '';
     this.filename = data.filename ?? '';
-    this.context = data.context ?? 'server';
+    this.environment = data.environment ?? 'server';
     this.timestamp = data.timestamp ?? new Date().toISOString();
     this.options = data.options;
     this.error = data.error;

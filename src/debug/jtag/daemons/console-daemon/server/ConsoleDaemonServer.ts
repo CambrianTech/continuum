@@ -4,16 +4,11 @@
  * Server-specific console daemon that handles server console logging and file writes.
  */
 
-import { JTAGContext } from '../../../shared/JTAGTypes';
-import { JTAGRouter } from '../../../shared/JTAGRouter';
-import { ConsoleDaemon, ConsolePayload } from '../shared/ConsoleDaemon';
+import { ConsoleDaemon } from '../shared/ConsoleDaemon';
+import type { ConsolePayload } from '../shared/ConsoleDaemon';
 
 export class ConsoleDaemonServer extends ConsoleDaemon {
   
-  constructor(context: JTAGContext, router: JTAGRouter) {
-    super(context, router);
-  }
-
   // setupConsoleInterception() is now handled by the base class
 
   /**

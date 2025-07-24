@@ -77,13 +77,30 @@ class PromiseEventTestRunner {
   private async checkPrerequisites(): Promise<void> {
     console.log('🔍 Checking prerequisites...');
     
-    // Check if npm start has been run (JTAG system should be running)
+    // Check if JTAG system is running by testing the API directly
     try {
-      const response = await fetch('http://localhost:9001/health');
-      if (!response.ok) {
-        throw new Error('JTAG system not responding');
+      const { jtag } = await import('../index');
+      const system = await jtag.connect();
+      console.log('✅ JTAG system connected successfully');
+      
+      // Test commands object and screenshot command
+      console.log('🔍 Debugging jtag object:', typeof jtag, Object.keys(jtag));
+      console.log('🔍 Debugging system object:', typeof system, Object.keys(system));
+      console.log('🔍 jtag.commands:', typeof jtag.commands);
+      console.log('🔍 system.commands:', typeof system.commands);
+      console.log('🔍 Are they the same?', jtag === system);
+      
+      try {
+        const result = await system.commands.screenshot({ filename: 'test-verification.png' });
+        console.log('📸 Screenshot result:', result);
+        if (result.success) {
+          console.log('✅ Screenshot command working - system fully operational');
+        } else {
+          console.log('⚠️ Screenshot command failed:', result.error);
+        }
+      } catch (error) {
+        console.log('❌ Screenshot command threw error:', error.message);
       }
-      console.log('✅ JTAG system running on port 9001');
     } catch (error) {
       console.error('❌ JTAG system not running. Please run `npm start` first.');
       console.error('   This is CRITICAL for cross-context testing.');

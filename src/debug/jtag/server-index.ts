@@ -8,7 +8,7 @@ import { JTAGSystemServer } from './server/JTAGSystemServer';
 
 export const jtag = {
   // Full system access
-  async connect() {
+  async connect(): Promise<JTAGSystemServer> {
     return JTAGSystemServer.connect();
   }
 };

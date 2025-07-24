@@ -1,81 +1,81 @@
 /**
- * Screenshot Command - Server Implementation
+ * Screenshot Command - Server Implementation (Simplified)
  * 
- * Server-side screenshot command that delegates to browser for actual screenshot
- * capture, then handles file saving.
+ * MINIMAL WORK PER COMMAND: Just implements what server does
  */
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CommandBase } from '../../../shared/CommandBase';
-import { JTAGContext, JTAGPayload } from '../../../../../shared/JTAGTypes';
-import { ScreenshotParams, ScreenshotResult } from '../shared/ScreenshotTypes';
+import type { JTAGContext, JTAGPayload } from '../../../../../shared/JTAGTypes';
+import type { ScreenshotParams } from '../shared/ScreenshotTypes';
+import { ScreenshotResult } from '../shared/ScreenshotTypes';
+import type { ICommandDaemon } from '../../../shared/CommandBase';
 
 export class ScreenshotServerCommand extends CommandBase {
   
-  constructor(context: JTAGContext, subpath: string, commander: any) {
-    super('screenshot-server', context, subpath, commander);
+  constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
+    super('screenshot', context, subpath, commander);
   }
 
   /**
-   * Execute screenshot command on server
-   * Delegates to browser for capture, then saves file
+   * Server does TWO things:
+   * 1. If no image data → delegate to browser for capture
+   * 2. If has image data → save to filesystem
    */
   async execute(params: JTAGPayload): Promise<ScreenshotResult> {
     const screenshotParams = params as ScreenshotParams;
     
-    console.log(`📸 ${this.toString()}: Starting screenshot capture for ${screenshotParams.filename}`);
+    console.log(`📸 SERVER: Starting screenshot`);
 
     try {
-      // Delegate to browser for actual screenshot capture using remoteExecute
-      console.log(`🔀 ${this.toString()}: Delegating to browser for screenshot capture`);
-      const browserResult = await this.remoteExecute(screenshotParams);
-      
-      // Browser should return screenshot data
-      if (!browserResult || !browserResult.success) {
-        throw new Error(`Browser screenshot failed: ${browserResult?.error || 'Unknown error'}`);
+      // Simple check: do we need browser capture?
+      if (!screenshotParams.dataUrl) {
+        console.log(`🔀 SERVER: Need image capture → delegating to browser`);
+        return await this.remoteExecute(screenshotParams);
       }
-
-      // Save screenshot to server filesystem
-      const baseArtifactoryPath = '.continuum/jtag/screenshots';
-      const savePath = path.join(baseArtifactoryPath, screenshotParams.filename);
+      
+      // We have image data → save it
+      console.log(`💾 SERVER: Saving image data (${screenshotParams.dataUrl.length} bytes)`);
+      
+      const globalPath = `.continuum/jtag/screenshots/${screenshotParams.filename}`;
       
       // Ensure directory exists
-      await fs.mkdir(path.dirname(savePath), { recursive: true });
+      await fs.mkdir(path.dirname(globalPath), { recursive: true });
       
-      // Save the actual image data if available
-      if (browserResult.dataUrl) {
-        // Convert base64 data URL to file
-        const base64Data = browserResult.dataUrl.replace(/^data:image\/\w+;base64,/, '');
+      if (screenshotParams.dataUrl) {
+        // Convert and save actual image
+        const base64Data = screenshotParams.dataUrl.replace(/^data:image\/\w+;base64,/, '');
         const buffer = Buffer.from(base64Data, 'base64');
-        await fs.writeFile(savePath, buffer);
+        await fs.writeFile(globalPath, buffer);
+        console.log(`📁 SERVER: Saved to: ${globalPath}`);
       } else {
-        // Fallback: create a placeholder file
-        const placeholder = `Screenshot captured at ${new Date().toISOString()}\nFilename: ${screenshotParams.filename}\nSelector: ${screenshotParams.selector || 'body'}\n`;
-        await fs.writeFile(savePath, placeholder);
+        // Fallback placeholder
+        const placeholder = `Screenshot captured at ${new Date().toISOString()}\nFilename: ${screenshotParams.filename}\n`;
+        await fs.writeFile(globalPath, placeholder);
+        console.log(`📝 SERVER: Created placeholder file`);
       }
-
-      const result = new ScreenshotResult({
+      
+      return new ScreenshotResult({
         success: true,
-        filepath: savePath,
+        filepath: globalPath,
         filename: screenshotParams.filename,
-        context: 'server',
+        environment: this.context.environment,
         timestamp: new Date().toISOString(),
         options: screenshotParams.options,
-        metadata: browserResult.metadata
+        metadata: {
+          ...screenshotParams.metadata,
+          globalPath: globalPath
+        }
       });
 
-      console.log(`✅ ${this.toString()}: Screenshot saved to ${savePath}`);
-      return result;
-
     } catch (error: any) {
-      console.error(`❌ ${this.toString()}: Screenshot failed:`, error.message);
-      
+      console.error(`❌ SERVER: Failed:`, error.message);
       return new ScreenshotResult({
         success: false,
         filepath: '',
         filename: screenshotParams.filename,
-        context: 'server',
+        environment: this.context.environment,
         timestamp: new Date().toISOString(),
         error: error.message
       });
