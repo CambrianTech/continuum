@@ -7,6 +7,7 @@
 import { DaemonBase } from '../../../shared/DaemonBase';
 import type { JTAGContext, JTAGMessage } from '../../../shared/JTAGTypes';
 import { JTAGPayload } from '../../../shared/JTAGTypes';
+import { getHighResolutionTime, getProcessInfo } from '../../../shared/CrossPlatformTypes';
 import { JTAGRouter } from '../../../shared/JTAGRouter';
 import { JTAG_ENDPOINTS } from '../../../shared/JTAGEndpoints';
 import { HealthPingResponse, HealthErrorResponse, HealthResponse } from '../../../shared/ResponseTypes';
@@ -108,12 +109,16 @@ export abstract class HealthDaemon extends DaemonBase {
   /**
    * Get uptime - cross-platform compatible
    */
+  /**
+   * Get system uptime using cross-platform detection
+   */
   private getUptime(): number {
-    if (typeof process !== 'undefined' && process.uptime) {
-      return process.uptime();
+    const processInfo = getProcessInfo();
+    if (processInfo.uptime) {
+      return processInfo.uptime();
     }
-    // Browser fallback - return time since page load
-    return performance.now() / 1000;
+    // Browser fallback - return time since page load in seconds
+    return getHighResolutionTime() / 1000;
   }
 
   /**
