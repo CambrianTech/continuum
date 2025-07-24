@@ -5,7 +5,7 @@
  * Follows the symmetric daemon architecture pattern established in CommandDaemon.
  */
 
-import { JTAGSystem } from '../shared/JTAGSystem';
+import { JTAGSystem, type JTAGSystemConfig } from '../shared/JTAGSystem';
 import type { JTAGContext } from '../shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '../shared/JTAGTypes';
 import { JTAGRouter } from '../shared/JTAGRouter';
@@ -20,16 +20,45 @@ export class JTAGSystemBrowser extends JTAGSystem {
     return new entry.daemonClass(context, router);
   }
 
+  protected override getVersionString(): string {
+    // Browser environment - version embedded in build
+    return '{VERSION_STRING}-browser';
+  }
+
   private static instance: JTAGSystemBrowser | null = null;
 
-  private constructor(context: JTAGContext, router: JTAGRouter) {
-    super(context, router);
+  private constructor(context: JTAGContext, router: JTAGRouter, config?: JTAGSystemConfig) {
+    super(context, router, {
+      version: {
+        fallback: '{VERSION_STRING}-browser',
+        enableLogging: true,
+        ...config?.version
+      },
+      daemons: {
+        enableParallelInit: true,
+        initTimeout: 5000, // Browser timeout shorter
+        ...config?.daemons
+      },
+      router: {
+        queue: {
+          flushInterval: 300, // Browser - faster flush for UI responsiveness
+          maxSize: 500, // Browser - smaller queue for memory efficiency
+          ...config?.router?.queue
+        },
+        health: {
+          healthCheckInterval: 20000, // Browser - more frequent health checks
+          connectionTimeout: 5000, // Browser - shorter timeout
+          ...config?.router?.health
+        },
+        ...config?.router
+      }
+    });
   }
 
   /**
    * Connect and auto-wire the browser JTAG system
    */
-  static async connect(): Promise<JTAGSystemBrowser> {
+  static async connect(config?: JTAGSystemConfig): Promise<JTAGSystemBrowser> {
     if (JTAGSystemBrowser.instance) {
       return JTAGSystemBrowser.instance;
     }
@@ -42,8 +71,9 @@ export class JTAGSystemBrowser extends JTAGSystem {
 
     console.log(`🔄 JTAG System: Connecting browser environment...`);
 
-    // 2. Create universal router
-    const router = new JTAGRouter(context);
+    // 2. Create universal router with config
+    const routerConfig = config?.router ?? {};
+    const router = new JTAGRouter(context, routerConfig);
     
     // Emit initializing event
     router.eventSystem.emit(SYSTEM_EVENTS.INITIALIZING, {
@@ -54,8 +84,8 @@ export class JTAGSystemBrowser extends JTAGSystem {
     
     await router.initialize();
 
-    // 3. Create browser system instance
-    const system = new JTAGSystemBrowser(context, router);
+    // 3. Create browser system instance with config
+    const system = new JTAGSystemBrowser(context, router, config);
     
     // 4. Setup daemons directly (no delegation needed)
     await system.setupDaemons();

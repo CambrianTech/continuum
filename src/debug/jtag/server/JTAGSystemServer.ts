@@ -5,7 +5,7 @@
  * Follows the symmetric daemon architecture pattern established in CommandDaemon.
  */
 
-import { JTAGSystem } from '../shared/JTAGSystem';
+import { JTAGSystem, type JTAGSystemConfig } from '../shared/JTAGSystem';
 import type { JTAGContext } from '../shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '../shared/JTAGTypes';
 import { JTAGRouter } from '../shared/JTAGRouter';
@@ -19,12 +19,55 @@ export class JTAGSystemServer extends JTAGSystem {
   protected override createDaemon(entry: DaemonEntry, context: JTAGContext, router: JTAGRouter): DaemonBase | null {
     return new entry.daemonClass(context, router);
   }
+
+  protected override getVersionString(): string {
+    // Server environment - try to read package.json dynamically
+    try {
+      const pkg = require('../package.json') as { version: string };
+      return `${pkg.version}-server`;
+    } catch (error) {
+      return this.config.version.fallback;
+    }
+  }
+
   private static instance: JTAGSystemServer | null = null;
+
+  private constructor(context: JTAGContext, router: JTAGRouter, config?: JTAGSystemConfig) {
+    super(context, router, {
+      version: {
+        fallback: 'unknown-server-version',
+        enableLogging: true,
+        ...config?.version
+      },
+      daemons: {
+        enableParallelInit: true,
+        initTimeout: 15000, // Server timeout longer
+        ...config?.daemons
+      },
+      router: {
+        queue: {
+          maxSize: 2000, // Server - larger queue for handling more traffic
+          flushInterval: 1000, // Server - less frequent flushing for efficiency
+          ...config?.router?.queue
+        },
+        health: {
+          healthCheckInterval: 45000, // Server - less frequent health checks
+          connectionTimeout: 15000, // Server - longer timeout
+          ...config?.router?.health
+        },
+        response: {
+          correlationTimeout: 60000, // Server - longer response timeout
+          ...config?.router?.response
+        },
+        ...config?.router
+      }
+    });
+  }
 
   /**
    * Connect and auto-wire the server JTAG system
    */
-  static async connect(): Promise<JTAGSystemServer> {
+  static async connect(config?: JTAGSystemConfig): Promise<JTAGSystemServer> {
     if (JTAGSystemServer.instance) {
       return JTAGSystemServer.instance;
     }
@@ -37,8 +80,9 @@ export class JTAGSystemServer extends JTAGSystem {
 
     console.log(`🔄 JTAG System: Connecting server environment...`);
 
-    // 2. Create universal router
-    const router = new JTAGRouter(context);
+    // 2. Create universal router with config
+    const routerConfig = config?.router ?? {};
+    const router = new JTAGRouter(context, routerConfig);
     
     // Emit initializing event
     router.eventSystem.emit(SYSTEM_EVENTS.INITIALIZING, {
@@ -49,8 +93,8 @@ export class JTAGSystemServer extends JTAGSystem {
     
     await router.initialize();
 
-    // 3. Create server system instance
-    const system = new JTAGSystemServer(context, router);
+    // 3. Create server system instance with config
+    const system = new JTAGSystemServer(context, router, config);
     
     // 4. Setup daemons directly (no delegation needed)
     await system.setupDaemons();

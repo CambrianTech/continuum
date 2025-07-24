@@ -13,44 +13,84 @@ import type { JTAGRouter } from './JTAGRouter';
 import type { DaemonBase } from './DaemonBase';
 import type { DaemonEntry } from './DaemonBase';
 import type { CommandDaemon } from '../daemons/command-daemon/shared/CommandDaemon';
+import type { JTAGRouterConfig } from './JTAGRouterTypes';
 
-// Import package.json statically for server environment
-import pkg from '../package.json';
 
-// Dynamic version detection
-const getVersionString = (): string => {
-  try {
-    if (typeof window !== 'undefined') {
-      // Browser environment - version embedded in build
-      return '1.0.156-browser';
-    } else {
-      // Server environment - can read package.json
-      return `${pkg.version}-server`;
-    }
-  } catch (error) {
-    return (error as Error)?.message || 'unknown-version';
-  }
-};
+/**
+ * Version configuration for JTAG System
+ */
+export interface JTAGVersionConfig {
+  readonly fallback: string;
+  readonly enableLogging: boolean;
+}
+
+/**
+ * Daemon configuration for JTAG System
+ */
+export interface JTAGDaemonConfig {
+  readonly enableParallelInit: boolean;
+  readonly initTimeout: number;
+}
+
+/**
+ * Complete configuration interface for JTAG System
+ */
+export interface JTAGSystemConfig {
+  readonly version?: Partial<JTAGVersionConfig>;
+  readonly daemons?: Partial<JTAGDaemonConfig>;
+  readonly router?: JTAGRouterConfig;
+}
+
+/**
+ * Resolved configuration with all required fields
+ */
+export interface ResolvedJTAGSystemConfig {
+  readonly version: JTAGVersionConfig;
+  readonly daemons: JTAGDaemonConfig;
+  readonly router: JTAGRouterConfig;
+}
 
 /**
  * Abstract JTAG System - Base class for environment-specific implementations
  */
 export abstract class JTAGSystem extends JTAGModule {
-  protected router: JTAGRouter;
-  public daemons: Map<string, DaemonBase> = new Map();
+  protected readonly router: JTAGRouter;
+  public readonly daemons: Map<string, DaemonBase> = new Map();
+  protected readonly config: ResolvedJTAGSystemConfig;
 
-  constructor(context: JTAGContext, router: JTAGRouter) {
+  constructor(context: JTAGContext, router: JTAGRouter, config: JTAGSystemConfig = {}) {
     super('jtag-system', context);
     this.router = router;
     
+    // Apply default configuration with strong typing
+    this.config = {
+      version: {
+        fallback: 'unknown-version',
+        enableLogging: true,
+        ...config.version
+      },
+      daemons: {
+        enableParallelInit: true,
+        initTimeout: 10000,
+        ...config.daemons
+      },
+      router: config.router ?? {}
+    } as const;
+    
     // Log JTAG version on initialization
-    const version = getVersionString();
-    console.log(`🎯 JTAG System v${version} initializing for ${context.environment} environment`);
+    if (this.config.version.enableLogging) {
+      const version = this.getVersionString();
+      console.log(`🎯 JTAG System v${version} initializing for ${context.environment} environment`);
+    }
   }
 
   protected abstract get daemonEntries(): DaemonEntry[];
 
   protected abstract createDaemon(entry: DaemonEntry, context: JTAGContext, router: JTAGRouter): DaemonBase | null;
+
+  protected getVersionString(): string {
+    return this.config.version.fallback;
+  }
 
   /**
    * Setup server-specific daemons using static structure
@@ -77,8 +117,8 @@ export abstract class JTAGSystem extends JTAGModule {
           return daemon;
         }
         return null;
-      } catch (error: any) {
-        console.error(`❌ Failed to create server daemon ${daemonEntry.name}:`, error.message);
+      } catch (error) {
+        console.error(`❌ Failed to create server daemon ${daemonEntry.name}:`, error);
         return null;
       }
     });
@@ -99,7 +139,7 @@ export abstract class JTAGSystem extends JTAGModule {
    */
   register(name: string, daemon: DaemonBase): void {
     this.daemons.set(name, daemon);
-    const version = getVersionString();
+    const version = this.getVersionString();
     console.log(`🎯 JTAG System v${version}: Registered daemon '${name}' (${daemon.constructor.name})`);
   }
 
@@ -122,7 +162,7 @@ export abstract class JTAGSystem extends JTAGModule {
     return {
       status: 'connected', 
       context: this.context,
-      version: getVersionString(),
+      version: this.getVersionString(),
       daemons: Array.from(this.daemons.keys())
     };
   }

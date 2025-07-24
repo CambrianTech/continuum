@@ -134,8 +134,8 @@ export abstract class ConsoleDaemon extends DaemonBase {
     });
     
     // Also wait for JTAG system ready event as backup - TYPE-SAFE & MODULAR!
-    eventSystem.waitFor(SYSTEM_EVENTS.READY, 10000)
-      .then(() => {
+    eventSystem.waitFor?.(SYSTEM_EVENTS.READY, 10000)
+      ?.then(() => {
         if (!this.jtagSystemReady) {
           // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🚀 ${this.toString()}: JTAG system ready event received, starting queue drain`);
           this.jtagSystemReady = true;

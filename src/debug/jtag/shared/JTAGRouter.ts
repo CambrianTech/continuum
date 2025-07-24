@@ -39,6 +39,17 @@ import { ConnectionHealthManager } from './ConnectionHealthManager';
 import { ResponseCorrelator } from './ResponseCorrelator';
 import { EndpointMatcher } from './routing/EndpointMatcher';
 
+// Import configuration types and utilities
+import type { 
+  JTAGRouterConfig, 
+  ResolvedJTAGRouterConfig 
+} from './JTAGRouterTypes';
+import { createJTAGRouterConfig } from './JTAGRouterTypes';
+
+// Re-export configuration types for convenience
+export type { JTAGRouterConfig, ResolvedJTAGRouterConfig } from './JTAGRouterTypes';
+export { DEFAULT_JTAG_ROUTER_CONFIG, createJTAGRouterConfig } from './JTAGRouterTypes';
+
 import type { JTAGResponsePayload } from './ResponseTypes';
 import type { ConsolePayload } from '../daemons/console-daemon/shared/ConsoleDaemon';
 import type { RouterResult, TransportSendResult, RequestResult, EventResult, LocalRoutingResult } from './RouterTypes';
@@ -89,33 +100,40 @@ export interface RouterStatus {
 }
 
 export class JTAGRouter extends JTAGModule {
-  private endpointMatcher = new EndpointMatcher<MessageSubscriber>();
+  private readonly endpointMatcher = new EndpointMatcher<MessageSubscriber>();
   public crossContextTransport: JTAGTransport | null = null;
   
   // Built-in event system - no circular dependencies
-  private eventListeners = new Map<string, Array<(data?: any) => void>>();
+  private readonly eventListeners = new Map<string, Array<(data?: any) => void>>();
   
   // Bus-level enhancements
-  private messageQueue: JTAGMessageQueue;
-  private healthManager: ConnectionHealthManager;
-  private responseCorrelator: ResponseCorrelator;
+  private readonly messageQueue: JTAGMessageQueue;
+  private readonly healthManager: ConnectionHealthManager;
+  private readonly responseCorrelator: ResponseCorrelator;
+  private readonly config: ResolvedJTAGRouterConfig;
   private isInitialized = false;
 
-  constructor(context: JTAGContext, config: { enableQueuing?: boolean; enableHealthMonitoring?: boolean } = {}) {
+  constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
     super('universal-router', context);
     
-    // Initialize modular bus-level features
-    this.messageQueue = new JTAGMessageQueue(context, {
-      enableDeduplication: true,
-      deduplicationWindow: 60000, // 1 minute for console error deduplication
-      maxSize: 1000,
-      maxRetries: 3,
-      flushInterval: 500
-    });
-    this.healthManager = new ConnectionHealthManager(context, this.events);
-    this.responseCorrelator = new ResponseCorrelator(30000); // 30 second timeout for commands
+    // Apply default configuration with strong typing using centralized utility
+    this.config = createJTAGRouterConfig(config);
     
-    console.log(`🚀 JTAGRouter[${context.environment}]: Initialized with request-response correlation and queuing`);
+    // Initialize modular bus-level features with resolved config
+    this.messageQueue = new JTAGMessageQueue(context, {
+      enableDeduplication: this.config.queue.enableDeduplication,
+      deduplicationWindow: this.config.queue.deduplicationWindow,
+      maxSize: this.config.queue.maxSize,
+      maxRetries: this.config.queue.maxRetries,
+      flushInterval: this.config.queue.flushInterval
+    });
+    
+    this.healthManager = new ConnectionHealthManager(context, this.events);
+    this.responseCorrelator = new ResponseCorrelator(this.config.response.correlationTimeout);
+    
+    if (this.config.enableLogging) {
+      console.log(`🚀 JTAGRouter[${context.environment}]: Initialized with request-response correlation and queuing`);
+    }
   }
 
   async initialize(): Promise<void> {
@@ -142,7 +160,7 @@ export class JTAGRouter extends JTAGModule {
   /**
    * Events interface - same pattern as commands
    */
-  get events() {
+  get events(): EventsInterface {
     return {
       emit: (eventName: string, data?: any): void => {
         const listeners = this.eventListeners.get(eventName) || [];
@@ -193,7 +211,7 @@ export class JTAGRouter extends JTAGModule {
   /**
    * Compatibility layer for existing eventSystem usage
    */
-  get eventSystem() {
+  get eventSystem(): EventsInterface {
     return this.events;
   }
 
@@ -291,7 +309,7 @@ export class JTAGRouter extends JTAGModule {
         await this.crossContextTransport!.send(message);
         return { success: true, delivered: true };
       } catch (error) {
-        console.warn(`⚠️ ${this.toString()}: Immediate delivery failed, queued for retry`);
+        console.warn(`⚠️ ${this.toString()}: Immediate delivery failed, queued for retry`, error);
         return { success: false, queued: true, willRetry: true };
       }
     }
@@ -363,7 +381,7 @@ export class JTAGRouter extends JTAGModule {
         await this.crossContextTransport.send(queuedItem.item);
         console.log(`✅ ${this.toString()}: Delivered queued message ${queuedItem.id}`);
       } catch (error) {
-        console.warn(`❌ ${this.toString()}: Failed to deliver ${queuedItem.id}`);
+        console.warn(`❌ ${this.toString()}: Failed to deliver ${queuedItem.id}`, error);
         failedMessages.push(queuedItem);
       }
     }
