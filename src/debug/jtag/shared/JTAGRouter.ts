@@ -33,7 +33,6 @@ import type { JTAGContext, JTAGMessage } from './JTAGTypes';
 import { JTAGMessageTypes, JTAGMessageFactory } from './JTAGTypes';
 import { TransportFactory } from '../transports/TransportFactory';
 import type { TransportConfig } from '../transports/TransportFactory';
-import { JTAGEventSystem } from './JTAGEventSystem';
 import { JTAGMessageQueue, MessagePriority } from './queuing/JTAGMessageQueue';
 import type { QueuedItem } from './queuing/PriorityQueue';
 import { ConnectionHealthManager } from './ConnectionHealthManager';
