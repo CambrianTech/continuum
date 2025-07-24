@@ -38,6 +38,7 @@ import { JTAGMessageQueue, MessagePriority } from './queuing/JTAGMessageQueue';
 import type { QueuedItem } from './queuing/PriorityQueue';
 import { ConnectionHealthManager } from './ConnectionHealthManager';
 import { ResponseCorrelator } from './ResponseCorrelator';
+import { EndpointMatcher } from './routing/EndpointMatcher';
 
 import type { JTAGResponsePayload } from './ResponseTypes';
 import type { ConsolePayload } from '../daemons/console-daemon/shared/ConsoleDaemon';
@@ -70,6 +71,12 @@ export interface JTAGTransport {
   setMessageHandler?(handler: (message: JTAGMessage) => void): void;
 }
 
+export interface EventsInterface {
+  emit(eventName: string, data?: any): void;
+  on(eventName: string, listener: (data?: any) => void): () => void;
+  waitFor?(eventName: string, timeout?: number): Promise<any>;
+}
+
 export interface RouterStatus {
   environment: string;
   initialized: boolean;
@@ -83,9 +90,11 @@ export interface RouterStatus {
 }
 
 export class JTAGRouter extends JTAGModule {
-  private subscribers = new Map<string, MessageSubscriber>();
+  private endpointMatcher = new EndpointMatcher<MessageSubscriber>();
   public crossContextTransport: JTAGTransport | null = null;
-  public eventSystem: JTAGEventSystem;
+  
+  // Built-in event system - no circular dependencies
+  private eventListeners = new Map<string, Array<(data?: any) => void>>();
   
   // Bus-level enhancements
   private messageQueue: JTAGMessageQueue;
@@ -95,7 +104,6 @@ export class JTAGRouter extends JTAGModule {
 
   constructor(context: JTAGContext, config: { enableQueuing?: boolean; enableHealthMonitoring?: boolean } = {}) {
     super('universal-router', context);
-    this.eventSystem = new JTAGEventSystem(context, this);
     
     // Initialize modular bus-level features
     this.messageQueue = new JTAGMessageQueue(context, {
@@ -105,7 +113,7 @@ export class JTAGRouter extends JTAGModule {
       maxRetries: 3,
       flushInterval: 500
     });
-    this.healthManager = new ConnectionHealthManager(context, this.eventSystem);
+    this.healthManager = new ConnectionHealthManager(context, this.events);
     this.responseCorrelator = new ResponseCorrelator(30000); // 30 second timeout for commands
     
     console.log(`🚀 JTAGRouter[${context.environment}]: Initialized with request-response correlation and queuing`);
@@ -132,10 +140,68 @@ export class JTAGRouter extends JTAGModule {
     console.log(`✅ ${this.toString()}: Initialization complete`);
   }
 
+  /**
+   * Events interface - same pattern as commands
+   */
+  get events() {
+    return {
+      emit: (eventName: string, data?: any): void => {
+        const listeners = this.eventListeners.get(eventName) || [];
+        listeners.forEach(listener => {
+          try {
+            listener(data);
+          } catch (error) {
+            console.error(`Event listener error for ${eventName}:`, error);
+          }
+        });
+      },
+
+      on: (eventName: string, listener: (data?: any) => void): (() => void) => {
+        if (!this.eventListeners.has(eventName)) {
+          this.eventListeners.set(eventName, []);
+        }
+        this.eventListeners.get(eventName)!.push(listener);
+        
+        // Return unsubscribe function
+        return () => {
+          const listeners = this.eventListeners.get(eventName);
+          if (listeners) {
+            const index = listeners.indexOf(listener);
+            if (index > -1) {
+              listeners.splice(index, 1);
+            }
+          }
+        };
+      },
+
+      waitFor: async (eventName: string, timeout: number = 10000): Promise<any> => {
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            unsubscribe();
+            reject(new Error(`Event ${eventName} timeout after ${timeout}ms`));
+          }, timeout);
+
+          const unsubscribe = this.events.on(eventName, (data) => {
+            clearTimeout(timer);
+            unsubscribe();
+            resolve(data);
+          });
+        });
+      }
+    };
+  }
+
+  /**
+   * Compatibility layer for existing eventSystem usage
+   */
+  get eventSystem() {
+    return this.events;
+  }
+
   registerSubscriber(endpoint: string, subscriber: MessageSubscriber): void {
     const fullEndpoint = `${this.context.environment}/${endpoint}`;
-    this.subscribers.set(fullEndpoint, subscriber);
-    this.subscribers.set(endpoint, subscriber);
+    this.endpointMatcher.register(fullEndpoint, subscriber);
+    this.endpointMatcher.register(endpoint, subscriber);
     console.log(`📋 ${this.toString()}: Registered subscriber at ${fullEndpoint}`);
   }
 
@@ -167,8 +233,8 @@ export class JTAGRouter extends JTAGModule {
       // EVENT PATTERN: Use queue system for fire-and-forget messages
       return await this.handleEventMessage(message);
     } else if (JTAGMessageTypes.isResponse(message)) {
-      // RESPONSE PATTERN: Should not happen here, but handle gracefully
-      throw new Error('Response messages should not be routed remotely');
+      // RESPONSE PATTERN: Send response back to requesting client
+      return await this.handleResponseMessage(message);
     } else {
       throw new Error(`Unknown message type: ${(message as any).messageType || 'undefined'}`);
     }
@@ -235,6 +301,27 @@ export class JTAGRouter extends JTAGModule {
   }
 
   /**
+   * Handle response messages (send back to requesting client)
+   */
+  private async handleResponseMessage(message: JTAGMessage): Promise<EventResult> {
+    if (!JTAGMessageTypes.isResponse(message)) {
+      throw new Error('Expected response message');
+    }
+
+    console.log(`📤 ${this.toString()}: Sending response ${message.correlationId} to ${message.endpoint}`);
+
+    try {
+      // Send response immediately (responses are critical)
+      await this.crossContextTransport!.send(message);
+      console.log(`✅ ${this.toString()}: Response sent for ${message.correlationId}`);
+      return { success: true, delivered: true };
+    } catch (error) {
+      console.error(`❌ ${this.toString()}: Failed to send response:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Determine message priority for queue processing
    */
   private determinePriority(message: JTAGMessage): MessagePriority {
@@ -298,10 +385,17 @@ export class JTAGRouter extends JTAGModule {
       }
     }
 
-    // Regular message routing for events and requests
-    const subscriber = this.subscribers.get(message.endpoint);
-    if (!subscriber) {
+    // Regular message routing for events and requests using EndpointMatcher
+    const matchResult = this.endpointMatcher.match(message.endpoint);
+    
+    if (!matchResult) {
       throw new Error(`No subscriber found for endpoint: ${message.endpoint}`);
+    }
+
+    const { subscriber, matchedEndpoint, matchType } = matchResult;
+    
+    if (matchType === 'hierarchical') {
+      console.log(`📋 ${this.toString()}: Using hierarchical routing: ${matchedEndpoint} handling ${message.endpoint}`);
     }
 
     console.log(`🏠 ${this.toString()}: Routing locally to ${message.endpoint}`);
@@ -345,7 +439,7 @@ export class JTAGRouter extends JTAGModule {
     const transportConfig: TransportConfig = { 
       preferred: 'websocket', 
       fallback: true,
-      eventSystem: this.eventSystem
+      eventSystem: this.events
     };
     this.crossContextTransport = await TransportFactory.createTransport(this.context.environment, transportConfig);
     
@@ -381,7 +475,7 @@ export class JTAGRouter extends JTAGModule {
       this.crossContextTransport = null;
     }
     
-    this.subscribers.clear();
+    this.endpointMatcher.clear();
     
     console.log(`✅ ${this.toString()}: Shutdown complete`);
   }
@@ -393,7 +487,7 @@ export class JTAGRouter extends JTAGModule {
     return {
       environment: this.context.environment,
       initialized: this.isInitialized,
-      subscribers: this.subscribers.size,
+      subscribers: this.endpointMatcher.size(),
       transport: this.crossContextTransport ? {
         name: this.crossContextTransport.name,
         connected: this.crossContextTransport.isConnected()

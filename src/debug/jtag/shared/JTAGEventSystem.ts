@@ -132,10 +132,10 @@ export class JTAGEventSystem {
   private subscriptions = new Map<string, EventSubscription>();
   private eventQueue: JTAGMessage[] = [];
   private processing = false;
-  private router: IJTAGRouter;
+  private router?: IJTAGRouter;
   private context: JTAGContext;
 
-  constructor(context: JTAGContext, router: IJTAGRouter) {
+  constructor(context: JTAGContext, router?: IJTAGRouter) {
     this.context = context;
     this.router = router;
   }

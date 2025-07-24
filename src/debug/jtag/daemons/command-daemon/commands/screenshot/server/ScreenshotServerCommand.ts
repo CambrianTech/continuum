@@ -12,7 +12,7 @@ import type { ScreenshotParams } from '../shared/ScreenshotTypes';
 import { ScreenshotResult } from '../shared/ScreenshotTypes';
 import type { ICommandDaemon } from '../../../shared/CommandBase';
 
-export class ScreenshotServerCommand extends CommandBase {
+export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
   
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('screenshot', context, subpath, commander);
@@ -38,7 +38,7 @@ export class ScreenshotServerCommand extends CommandBase {
       // We have image data → save it
       console.log(`💾 SERVER: Saving image data (${screenshotParams.dataUrl.length} bytes)`);
       
-      const globalPath = `.continuum/jtag/screenshots/${screenshotParams.filename}`;
+      const globalPath = path.resolve(process.cwd(), '.continuum/jtag/screenshots', screenshotParams.filename || 'screenshot.png');
       
       // Ensure directory exists
       await fs.mkdir(path.dirname(globalPath), { recursive: true });

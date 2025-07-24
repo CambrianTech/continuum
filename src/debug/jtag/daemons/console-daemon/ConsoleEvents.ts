@@ -5,7 +5,7 @@
 import type { LogLevel } from '../../shared/LogLevels';
 import type { JTAGContext } from '../../shared/JTAGTypes';
 
-export const ConsoleEvents = {
+export const CONSOLE_EVENTS = {
   ATTACHED: 'console.attached',
   QUEUE_DRAIN_START: 'console.queue-drain-start',
   QUEUE_DRAIN_COMPLETE: 'console.queue-drain-complete',
@@ -13,27 +13,27 @@ export const ConsoleEvents = {
 } as const;
 
 export interface ConsoleEventData {
-  [ConsoleEvents.ATTACHED]: {
+  [CONSOLE_EVENTS.ATTACHED]: {
     environment: JTAGContext['environment'];
     interceptedMethods: string[];
   };
   
-  [ConsoleEvents.QUEUE_DRAIN_START]: {
+  [CONSOLE_EVENTS.QUEUE_DRAIN_START]: {
     queueSize: number;
     environment: JTAGContext['environment'];
   };
   
-  [ConsoleEvents.QUEUE_DRAIN_COMPLETE]: {
+  [CONSOLE_EVENTS.QUEUE_DRAIN_COMPLETE]: {
     processedCount: number;
     failedCount: number;
     duration: number;
   };
   
-  [ConsoleEvents.MESSAGE_PROCESSED]: {
+  [CONSOLE_EVENTS.MESSAGE_PROCESSED]: {
     level: LogLevel;
     component: string;
     messageLength: number;
   };
 }
 
-export type ConsoleEventName = typeof ConsoleEvents[keyof typeof ConsoleEvents];
+export type ConsoleEventName = typeof CONSOLE_EVENTS[keyof typeof CONSOLE_EVENTS];

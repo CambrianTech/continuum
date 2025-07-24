@@ -6,15 +6,16 @@
  */
 
 import { DaemonBase } from '../../../shared/DaemonBase';
-import type { JTAGContext, JTAGMessage, CommandParams } from '../../../shared/JTAGTypes';
+import type { JTAGContext, JTAGMessage, CommandParams, CommandResult } from '../../../shared/JTAGTypes';
 import type { JTAGRouter } from '../../../shared/JTAGRouter';
 import type{ CommandBase, CommandEntry } from './CommandBase';
 import type { CommandResponse } from '../../../shared/ResponseTypes';
 import { CommandErrorResponse, CommandSuccessResponse } from '../../../shared/ResponseTypes';
 
+
 export abstract class CommandDaemon extends DaemonBase {
   public readonly subpath: string = 'commands';
-  protected commands: Map<string, CommandBase> = new Map<string, CommandBase>();
+  public commands: Map<string, CommandBase<CommandParams, CommandResult>> = new Map();
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super('command-daemon', context, router);
@@ -23,7 +24,7 @@ export abstract class CommandDaemon extends DaemonBase {
   /**
    * Register a command with this daemon
    */
-  register(name: string, command: CommandBase): void {
+  register(name: string, command: CommandBase<CommandParams, CommandResult>): void {
     this.commands.set(name, command);
     console.log(`🎯 ${this.toString()}: Registered command '${name}'`);
   }
@@ -51,8 +52,31 @@ export abstract class CommandDaemon extends DaemonBase {
 
   protected abstract get commandEntries(): CommandEntry[];
 
-  protected abstract createCommand(entry: CommandEntry, context: JTAGContext, subpath: string): CommandBase | null;
+  protected abstract createCommand(entry: CommandEntry, context: JTAGContext, subpath: string): CommandBase<CommandParams, CommandResult> | null;
 
+  /**
+   * Commands interface - elegant proxy with proper type extraction
+   */
+  get commandsInterface(): Record<string, (params?: CommandParams) => Promise<CommandResult>> {
+    return new Proxy({}, {
+      get: (target, commandName: string) => {
+        const command = this.commands.get(commandName);
+        if (!command) {
+          throw new Error(`Command '${commandName}' not found. Available: ${Array.from(this.commands.keys()).join(', ')}`);
+        }
+        
+        // Assert non-null command for TypeScript
+        const validCommand: CommandBase<CommandParams, CommandResult> = command;
+        
+        // Return elegantly typed async function
+        return async (params?: CommandParams) => {
+          // Use withDefaults for elegant parameter handling
+          const actualParams = params ? validCommand.withDefaults(params) : validCommand.getDefaultParams();
+          return await validCommand.execute(actualParams);
+        };
+      }
+    });
+  }
 
   /**
    * Handle incoming messages (from MessageSubscriber interface)
@@ -72,22 +96,27 @@ export abstract class CommandDaemon extends DaemonBase {
       const result = await command.execute(message.payload);
       // Wrap raw command results in CommandResponse
       return new CommandSuccessResponse(result);
-    } catch (error: any) {
-      return new CommandErrorResponse(error.message || 'Command execution failed', commandName);
+    } catch (e) {
+      const error = e as Error;
+      return new CommandErrorResponse(error?.message ?? 'Command execution failed', commandName);
     }
   }
 
   /**
    * Execute command directly (used by JTAGSystem.commands.screenshot())
    */
-  async execute(commandName: string, params: CommandParams): Promise<any> {
+  async execute(commandName: string, params?: CommandParams): Promise<CommandResult> {
     const command = this.commands.get(commandName);
     if (!command) {
       throw new Error(`Command '${commandName}' not available in ${this.context.environment} context`);
     }
 
     console.log(`⚡ ${this.toString()}: Executing ${commandName} directly`);
-    return await command.execute(params);
+    // Use withDefaults if command supports it, otherwise pass params as-is
+    const actualParams = 'withDefaults' in command 
+      ? command.withDefaults(params)
+      : params ?? (command as CommandBase<CommandParams, CommandResult>).getDefaultParams();
+    return await command.execute(actualParams);
   }
 
   /**

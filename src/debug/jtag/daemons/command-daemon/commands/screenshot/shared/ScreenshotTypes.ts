@@ -4,14 +4,14 @@
  * Common types and interfaces used by both browser and server screenshot implementations.
  */
 
-import { CommandParams, JTAGPayload } from '../../../../../shared/JTAGTypes';
+import { CommandParams, CommandResult } from '../../../../../shared/JTAGTypes';
 import type { JTAGContext } from '../../../../../shared/JTAGTypes';
 
 /**
  * Screenshot Command Parameters - extends CommandParams
  */
 export class ScreenshotParams extends CommandParams {
-  filename: string;
+  filename?: string;
   selector?: string;
   options?: ScreenshotOptions;
   
@@ -20,13 +20,11 @@ export class ScreenshotParams extends CommandParams {
   returnToSource?: boolean;
   returnFormat?: 'file' | 'bytes' | 'download';
   crop?: { x: number; y: number; width: number; height: number };
-  metadata?: any;
+  metadata?: ScreenshotMetadata;
 
-  constructor(filename?: string, selector?: string, options?: ScreenshotOptions) {
+  constructor(data: Partial<ScreenshotParams> = {}) {
     super();
-    this.filename = filename || `screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
-    this.selector = selector;
-    this.options = options;
+    Object.assign(this, data);
   }
 }
 
@@ -46,9 +44,9 @@ export interface ScreenshotOptions {
 }
 
 /**
- * Screenshot Result
+ * Screenshot Result - extends CommandResult
  */
-export class ScreenshotResult extends JTAGPayload {
+export class ScreenshotResult extends CommandResult {
   success: boolean;
   filepath: string;
   filename: string;
@@ -77,10 +75,11 @@ export class ScreenshotResult extends JTAGPayload {
  * Screenshot Metadata
  */
 export interface ScreenshotMetadata {
-  width: number;
-  height: number;
-  size: number;
+  width?: number;
+  height?: number;
+  size?: number;
   selector?: string;
   format?: string;
   captureTime?: number; // Time taken to capture in ms
+  globalPath?: string; // Server-side file path
 }

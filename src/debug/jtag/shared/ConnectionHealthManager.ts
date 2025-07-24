@@ -27,9 +27,9 @@
  */
 
 import type { JTAGContext } from './JTAGTypes';
-import type { JTAGEventSystem } from './JTAGEventSystem';
-import { TransportEvents } from '../transports/TransportEvents';
-import { SystemEvents } from './events/SystemEvents';
+import type { EventsInterface } from './JTAGRouter';
+import { TRANSPORT_EVENTS } from '../transports/TransportEvents';
+import { SYSTEM_EVENTS } from './events/SystemEvents';
 import { JTAG_ENDPOINTS } from './JTAGEndpoints';
 import type { TimerHandle } from './CrossPlatformTypes';
 
@@ -63,7 +63,7 @@ export interface ConnectionHealth {
 
 export class ConnectionHealthManager {
   private context: JTAGContext;
-  private eventSystem: JTAGEventSystem;
+  private eventSystem: EventsInterface;
   private config: HealthConfig;
   private health: ConnectionHealth;
   private transport: any; // Transport interface
@@ -75,7 +75,7 @@ export class ConnectionHealthManager {
 
   constructor(
     context: JTAGContext, 
-    eventSystem: JTAGEventSystem,
+    eventSystem: EventsInterface,
     config: Partial<HealthConfig> = {}
   ) {
     this.context = context;
@@ -362,15 +362,15 @@ export class ConnectionHealthManager {
    * Setup event listeners for transport events
    */
   private setupEventListeners(): void {
-    this.eventSystem.on(TransportEvents.CONNECTED, () => {
+    this.eventSystem.on(TRANSPORT_EVENTS.CONNECTED, () => {
       this.onConnected();
     });
 
-    this.eventSystem.on(TransportEvents.DISCONNECTED, () => {
+    this.eventSystem.on(TRANSPORT_EVENTS.DISCONNECTED, () => {
       this.onDisconnected();
     });
 
-    this.eventSystem.on(TransportEvents.ERROR, (error: any) => {
+    this.eventSystem.on(TRANSPORT_EVENTS.ERROR, (error: any) => {
       console.warn(`⚠️ HealthManager: Transport error:`, error);
       this.recordHealthCheck(this.config.pingTimeout, false);
     });
@@ -381,7 +381,7 @@ export class ConnectionHealthManager {
    */
   private emitHealthUpdate(): void {
     const health = this.getHealth();
-    this.eventSystem.emit(SystemEvents.HEALTH_UPDATE, {
+    this.eventSystem.emit(SYSTEM_EVENTS.HEALTH_UPDATE, {
       status: health.isHealthy ? 'healthy' : 'degraded',
       checks: {
         connection: health.isHealthy,

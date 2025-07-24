@@ -2,7 +2,7 @@
  * Transport Event Definitions - Modular event category
  */
 
-export const TransportEvents = {
+export const TRANSPORT_EVENTS = {
   READY: 'transport.ready',
   CONNECTED: 'transport.connected',
   DISCONNECTED: 'transport.disconnected',
@@ -10,30 +10,30 @@ export const TransportEvents = {
 } as const;
 
 export interface TransportEventData {
-  [TransportEvents.READY]: {
+  [TRANSPORT_EVENTS.READY]: {
     transportType: 'websocket' | 'http';
     port?: number;
     url?: string;
     clientCount?: number;
   };
   
-  [TransportEvents.CONNECTED]: {
+  [TRANSPORT_EVENTS.CONNECTED]: {
     transportType: 'websocket' | 'http';
     clientId: string;
     remoteAddress?: string;
   };
   
-  [TransportEvents.DISCONNECTED]: {
+  [TRANSPORT_EVENTS.DISCONNECTED]: {
     transportType: 'websocket' | 'http';
     clientId: string;
     reason: string;
   };
   
-  [TransportEvents.ERROR]: {
+  [TRANSPORT_EVENTS.ERROR]: {
     transportType: 'websocket' | 'http';
     error: string;
     clientId?: string;
   };
 }
 
-export type TransportEventName = typeof TransportEvents[keyof typeof TransportEvents];
+export type TransportEventName = typeof TRANSPORT_EVENTS[keyof typeof TRANSPORT_EVENTS];

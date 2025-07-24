@@ -5,7 +5,7 @@
  */
 
 
-import type { JTAGContext } from '../../../shared/JTAGTypes';
+import type { JTAGContext, CommandParams, CommandResult } from '../../../shared/JTAGTypes';
 import { CommandDaemon } from '../shared/CommandDaemon';
 import type { CommandEntry } from '../shared/CommandBase';
 import { SERVER_COMMANDS } from '../../../server/structure';
@@ -15,7 +15,7 @@ export class CommandDaemonServer extends CommandDaemon {
   
   protected override get commandEntries(): CommandEntry[] { return SERVER_COMMANDS; }
   
-  protected override createCommand(entry: CommandEntry, context: JTAGContext, subpath: string): CommandBase | null {
+  protected override createCommand(entry: CommandEntry, context: JTAGContext, subpath: string): CommandBase<CommandParams, CommandResult> | null {
       return new entry.commandClass(context, subpath, this);
   }
 }

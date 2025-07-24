@@ -9,7 +9,7 @@ import { JTAGSystem } from '../shared/JTAGSystem';
 import type { JTAGContext } from '../shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '../shared/JTAGTypes';
 import { JTAGRouter } from '../shared/JTAGRouter';
-import { SystemEvents } from '../shared/events/SystemEvents';
+import { SYSTEM_EVENTS } from '../shared/events/SystemEvents';
 import type { DaemonBase, DaemonEntry } from '../shared/DaemonBase';
 import { SERVER_DAEMONS } from './structure';
 
@@ -41,7 +41,7 @@ export class JTAGSystemServer extends JTAGSystem {
     const router = new JTAGRouter(context);
     
     // Emit initializing event
-    router.eventSystem.emit(SystemEvents.INITIALIZING, {
+    router.eventSystem.emit(SYSTEM_EVENTS.INITIALIZING, {
       context,
       timestamp: new Date().toISOString()
     });
@@ -59,7 +59,7 @@ export class JTAGSystemServer extends JTAGSystem {
     await system.setupTransports();
     
     // Emit transport ready event
-    router.eventSystem.emit(SystemEvents.TRANSPORT_READY, {
+    router.eventSystem.emit(SYSTEM_EVENTS.TRANSPORT_READY, {
       context,
       timestamp: new Date().toISOString(),
       transportType: 'websocket-server'
@@ -73,7 +73,7 @@ export class JTAGSystemServer extends JTAGSystem {
     console.log(`   Daemons: ${Array.from(system.daemons.keys()).join(', ')}`);
 
     // Emit system ready event after full initialization
-    router.eventSystem.emit(SystemEvents.READY, {
+    router.eventSystem.emit(SYSTEM_EVENTS.READY, {
       version: '1.0.0',
       context,
       timestamp: new Date().toISOString(),

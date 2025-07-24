@@ -7,14 +7,14 @@ import type { JTAGContext } from '../shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '../shared/JTAGTypes';
 import { WebSocketServerTransport, WebSocketClientTransport } from './WebSocketTransport';
 import { HTTPTransport } from './HTTPTransport';
-import { JTAGEventSystem } from '../shared/JTAGEventSystem';
+import type { EventsInterface } from '../shared/JTAGRouter';
 
 export interface TransportConfig {
   preferred?: 'websocket' | 'http';
   fallback?: boolean;
   serverPort?: number;
   serverUrl?: string;
-  eventSystem?: JTAGEventSystem;
+  eventSystem?: EventsInterface;
 }
 
 export class TransportFactory {
