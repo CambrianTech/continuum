@@ -29,6 +29,39 @@ export class ScreenshotParams extends CommandParams {
 }
 
 /**
+ * HTML2Canvas Configuration Options
+ */
+export interface Html2CanvasOptions {
+  width?: number;
+  height?: number;
+  scrollX?: number;
+  scrollY?: number;
+  useCORS?: boolean;
+  scale?: number;
+  backgroundColor?: string;
+  allowTaint?: boolean;
+  foreignObjectRendering?: boolean;
+  ignoreElements?: (element: Element) => boolean;
+  imageTimeout?: number;
+  logging?: boolean;
+  onclone?: (clonedDoc: Document, element: HTMLElement) => void;
+  proxy?: string;
+  removeContainer?: boolean;
+  windowWidth?: number;
+  windowHeight?: number;
+}
+
+/**
+ * HTML2Canvas Result Canvas Interface
+ */
+export interface Html2CanvasCanvas {
+  width: number;
+  height: number;
+  toDataURL(type?: string, quality?: number): string;
+}
+
+
+/**
  * Screenshot Options
  */
 export interface ScreenshotOptions {
@@ -40,7 +73,7 @@ export interface ScreenshotOptions {
   delay?: number;
   scale?: number;
   backgroundColor?: string;
-  html2canvasOptions?: any;
+  html2canvasOptions?: Html2CanvasOptions;
 }
 
 /**

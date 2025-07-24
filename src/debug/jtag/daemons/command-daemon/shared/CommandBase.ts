@@ -6,10 +6,9 @@
  */
 
 import { JTAGModule } from '../../../shared/JTAGModule';
-import type { JTAGContext, CommandParams, CommandResult, JTAGPayload } from '../../../shared/JTAGTypes';
+import type { JTAGContext, CommandParams, CommandResult } from '../../../shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS, JTAGMessageFactory } from '../../../shared/JTAGTypes';
 import type { JTAGRouter } from '../../../shared/JTAGRouter';
-import type { RouterResult, RequestResult } from '../../../shared/RouterTypes';
 import { isRequestResult } from '../../../shared/RouterTypes';
 
 export interface CommandEntry {
