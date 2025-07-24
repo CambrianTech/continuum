@@ -4,15 +4,13 @@
  * Browser-specific console daemon that handles browser console interception.
  */
 
-import { JTAGContext } from '../../../shared/JTAGTypes';
-import { JTAGRouter } from '../../../shared/JTAGRouter';
-import { ConsoleDaemon, ConsolePayload } from '../shared/ConsoleDaemon';
+import { ConsoleDaemon } from '../shared/ConsoleDaemon';
+import type { ConsolePayload } from '../shared/ConsoleDaemon';
+
+// Declare window for TypeScript if not already in the global scope
+declare const window: Window & typeof globalThis;
 
 export class ConsoleDaemonBrowser extends ConsoleDaemon {
-  
-  constructor(context: JTAGContext, router: JTAGRouter) {
-    super(context, router);
-  }
 
   // setupConsoleInterception() is now handled by the base class
 
@@ -31,17 +29,20 @@ export class ConsoleDaemonBrowser extends ConsoleDaemon {
   private storeInBrowser(consolePayload: ConsolePayload): void {
     // Store in browser localStorage
     try {
-      const logs = JSON.parse(localStorage.getItem('jtag-console-logs') || '[]');
-      logs.push(consolePayload);
-      
-      // Keep only last 100 entries
-      if (logs.length > 100) {
-        logs.splice(0, logs.length - 100);
+      if (window?.localStorage) {
+        const logs = JSON.parse(window.localStorage.getItem('jtag-console-logs') ?? '[]');
+        logs.push(consolePayload);
+
+        // Keep only last 100 entries
+        if (logs.length > 100) {
+          logs.splice(0, logs.length - 100);
+        }
+
+        window.localStorage.setItem('jtag-console-logs', JSON.stringify(logs));
       }
-      
-      localStorage.setItem('jtag-console-logs', JSON.stringify(logs));
     } catch (error) {
       // Ignore localStorage errors
+      console.error('ConsoleDaemon: Failed to store logs in localStorage:', error);
     }
   }
 }

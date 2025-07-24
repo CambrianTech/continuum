@@ -9,6 +9,12 @@ import { JTAGModule } from './JTAGModule';
 import type { JTAGContext, JTAGMessage } from './JTAGTypes';
 import type { JTAGRouter, MessageSubscriber } from './JTAGRouter';
 
+export interface DaemonEntry {
+  name: string;
+  className: string;
+  daemonClass: new (...args: any[]) => DaemonBase;
+}
+
 export abstract class DaemonBase extends JTAGModule implements MessageSubscriber {
   public readonly router: JTAGRouter;
   public abstract readonly subpath: string;

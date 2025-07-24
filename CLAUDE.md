@@ -13,6 +13,53 @@
 
 ## **📋 DEBUGGING RULE #1: CHECK LOGS IMMEDIATELY**
 
+**AUTONOMOUS BUG FIXING PROTOCOL:**
+1. **System auto-launches browser** - `npm run system:start` handles everything
+2. **Logs show all execution** - `.continuum/jtag/logs/browser-console-log.log` + `server-console-log.log`
+3. **Tests run programmatically** - No manual clicking required
+4. **Follow message flows** - Browser → WebSocket → Server routing
+5. **Fix root causes** - Target the actual failure point in logs
+6. **Redeploy and verify** - `npm run system:start` + check output files
+
+**CLAUDE CAN FIX BUGS INDEPENDENTLY:** System launches browser automatically. Logs show everything. No guidance needed.
+
+## **🧪 JTAG API TESTING ENVIRONMENT**
+
+**NEW API DEVELOPMENT & TESTING LOCATION:**
+```bash
+cd /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag
+npm run system:start  # Launches full JTAG system with browser
+```
+
+**This is where the new JTAG Universal Command Bus API is being developed and tested:**
+- **Strong-typed commands interface** - `jtagSystem.commands.screenshot()` 
+- **Cross-context messaging** - Browser ↔ Server communication
+- **Symmetric daemon architecture** - Same patterns for browser/server
+- **Middle-out testing** - Test individual components in isolation, then integration
+- **Symmetric modular design** - `/shared`, `/client`, `/server`, `/tests` pattern
+- **Real-time debugging** - All execution visible in `.continuum/jtag/logs/`
+- **Automated testing** - Programmatic test suite with browser automation
+
+**🏗️ ARCHITECTURAL BREAKTHROUGH:**
+```
+src/daemons/command-daemon/
+├── shared/CommandDaemonBase.ts    # Core logic (80-90% of complexity)
+├── browser/CommandDaemonBrowser.ts # Thin browser transport (5-10%)
+├── server/CommandDaemonServer.ts   # Thin server transport (5-10%)
+└── commands/screenshot/
+    ├── shared/ScreenshotTypes.ts   # Universal types & validation
+    ├── browser/ScreenshotBrowserCommand.ts # html2canvas capture
+    └── server/ScreenshotServerCommand.ts   # File system save
+```
+
+**Sparse Override Pattern**: Heavy logic in shared base, minimal environment-specific overrides.
+
+**Key Files:**
+- `examples/test-bench/` - Complete testing environment
+- `browser-index.ts` - Browser entry point
+- `shared/JTAGSystem.ts` - Core system with commands interface
+- `daemons/command-daemon/` - Command routing system
+
 **BEFORE THEORIZING OR SPINNING:**
 1. **Check session logs first**: `.continuum/sessions/user/shared/[SESSION_ID]/logs/server.log` 
 2. **Look for actual execution paths** - What's actually being called?
@@ -147,6 +194,53 @@ All screenshots are automatically saved to:
 - **`.app-container`** - Main application container
 
 **Claude can now develop with confidence using visual validation!**
+
+## 🔍 **SYSTEMATIC DEBUGGING METHODOLOGY**
+
+**CRITICAL SUCCESS PATTERN**: When debugging JTAG screenshot functionality (July 2025), this process led to breakthrough success:
+
+### **📋 The Debugging Protocol**
+1. **Start with logs** - Always check session logs first: `.continuum/sessions/user/shared/[SESSION_ID]/logs/`
+2. **Follow message flow** - Trace execution through browser → server → command routing
+3. **Add strategic debugging** - Insert console.log at key decision points
+4. **Rebuild and redeploy** - Use `npm run system:start` (tmux background launch)
+5. **Test programmatically** - Use automated tests, not manual clicking
+6. **Verify outputs** - Check for actual files created, not just success messages
+7. **Document patterns** - Write down what worked for future sessions
+
+### **🎯 Specific JTAG Screenshot Debug Pattern**
+**Problem**: `jtag.commands.screenshot()` hanging (never resolving)
+
+**Root Cause Discovery Process**:
+1. **Check browser console logs** - Found `jtag.commands` was `undefined`
+2. **Trace imports** - Discovered `jtag` was just `{connect()}`, not actual system
+3. **Fix reference** - Changed from `jtag.commands` to `jtagSystem.commands` (after `await jtag.connect()`)
+4. **Verify routing** - Added debug logs to trace message flow
+5. **Confirm execution** - Browser logs showed full capture flow working
+6. **Check file creation** - Server-side save still needs verification
+
+### **📊 Log Analysis Techniques**
+- **Browser Console**: `.continuum/jtag/logs/browser-console-log.log`
+- **Server Console**: `.continuum/jtag/logs/server-console-log.log`
+- **Key patterns to search**:
+  - `📨.*screenshot` - Message routing
+  - `📸.*BROWSER` - Browser command execution  
+  - `📸.*SERVER` - Server command execution
+  - `⚡.*Executing.*directly` - Direct command execution
+  - `✅.*Captured` - Successful screenshot capture
+
+### **🚀 Screenshot Success Indicators**
+```
+✅ WORKING FLOW (Browser Logs):
+📨 JTAG System: Routing screenshot command through messaging system
+⚡ CommandDaemonBrowser: Executing screenshot directly  
+📸 BROWSER: Capturing screenshot
+📷 BROWSER: Capturing body
+✅ BROWSER: Captured (800x600) in 112ms
+🔀 BROWSER: Sending to server for saving
+```
+
+**This methodology saves hours by following systematic log-driven debugging rather than guessing.**
 
 ### **Full Validation (Before Commit):**
 ```bash

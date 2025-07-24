@@ -1,52 +1,40 @@
 /**
- * Screenshot Command - Browser Implementation
+ * Screenshot Command - Browser Implementation (Simplified)
  * 
- * Browser-side screenshot command that uses html2canvas to capture screenshots
- * and returns the data to the requesting context.
+ * MINIMAL WORK PER COMMAND: Just implements what browser does
  */
 
-import { CommandBase, ICommandDaemon } from '../../../shared/CommandBase';
-import { JTAGContext, JTAGPayload } from '../../../../../shared/JTAGTypes';
-import { ScreenshotParams, ScreenshotResult, ScreenshotOptions } from '../shared/ScreenshotTypes';
+import type { ScreenshotParams } from '../shared/ScreenshotTypes';
+import { ScreenshotResult } from '../shared/ScreenshotTypes';
+import { ScreenshotCommand } from '../shared/ScreenshotCommand';
 
-export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
+export class ScreenshotBrowserCommand extends ScreenshotCommand {
   
-  constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super('screenshot-browser', context, subpath, commander);
-  }
-
   /**
-   * Execute screenshot command in browser
-   * Uses html2canvas to capture the page
+   * Browser does ONE thing: capture screenshot with html2canvas
+   * Then either returns data OR delegates to server for saving
    */
   async execute(params: ScreenshotParams): Promise<ScreenshotResult> {
-    console.log(`📸 ${this.toString()}: Capturing screenshot in browser`);
+    console.log(`📸 BROWSER: Capturing screenshot`);
 
     try {
-      const startTime = Date.now();
-
-      // Access global context safely (browser environment)
+      // Simple html2canvas capture
       const globalContext = (typeof window !== 'undefined' ? window : globalThis) as any;
       const html2canvas = globalContext.html2canvas;
       if (!html2canvas) {
-        throw new Error('html2canvas not available - include script in page');
+        throw new Error('html2canvas not available');
       }
 
-      // Determine target element
-      let targetElement = globalContext.document?.body;
+      const targetElement = params.selector 
+        ? globalContext.document.querySelector(params.selector)
+        : globalContext.document.body;
+        
       if (!targetElement) {
-        throw new Error('Document body not available');
-      }
-      
-      if (params.selector) {
-        const element = globalContext.document?.querySelector(params.selector);
-        if (!element) {
-          throw new Error(`Element not found: ${params.selector}`);
-        }
-        targetElement = element as HTMLElement;
+        throw new Error(`Element not found: ${params.selector || 'body'}`);
       }
 
-      // Build html2canvas options with safe viewport access  
+      // Build advanced html2canvas options
+      const startTime = Date.now();
       const captureOptions = {
         height: globalContext.innerHeight || 600,
         width: globalContext.innerWidth || 800,
@@ -64,12 +52,10 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         if (params.options.backgroundColor) captureOptions.backgroundColor = params.options.backgroundColor;
       }
 
-      // Capture screenshot
-      console.log(`📷 ${this.toString()}: Capturing element: ${params.selector || 'body'}`);
-      
+      console.log(`📷 BROWSER: Capturing ${params.selector || 'body'}`);
       const canvas = await html2canvas(targetElement, captureOptions);
-
-      // Convert to data URL with specified format and quality
+      
+      // Convert with specified format and quality
       const format = params.options?.format || 'png';
       const quality = params.options?.quality || 0.9;
       
@@ -81,14 +67,16 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
       } else {
         dataUrl = canvas.toDataURL('image/png');
       }
-
-      const captureTime = Date.now() - startTime;
       
+      const captureTime = Date.now() - startTime;
+      console.log(`✅ BROWSER: Captured (${canvas.width}x${canvas.height}) in ${captureTime}ms`);
+      
+      // Create result with comprehensive metadata
       const result = new ScreenshotResult({
         success: true,
-        filepath: '', // Browser doesn't save to file directly
+        filepath: '',
         filename: params.filename,
-        context: 'browser',
+        environment: this.context.environment,
         timestamp: new Date().toISOString(),
         options: params.options,
         dataUrl: dataUrl,
@@ -101,18 +89,24 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
           captureTime: captureTime
         }
       });
-
-      console.log(`✅ ${this.toString()}: Screenshot captured (${canvas.width}x${canvas.height}) in ${captureTime}ms`);
+      
+      // Simple decision: if browser-initiated, send to server for saving
+      if (!params.returnToSource) {
+        console.log(`🔀 BROWSER: Sending to server for saving`);
+        return await this.remoteExecute(result);
+      }
+      
+      // Otherwise return to calling server
+      console.log(`🔙 BROWSER: Returning data to server`);
       return result;
 
     } catch (error: any) {
-      console.error(`❌ ${this.toString()}: Screenshot capture failed:`, error.message);
-      
+      console.error(`❌ BROWSER: Failed:`, error.message);
       return new ScreenshotResult({
         success: false,
         filepath: '',
         filename: params.filename,
-        context: 'browser',
+        environment: this.context.environment,
         timestamp: new Date().toISOString(),
         error: error.message
       });

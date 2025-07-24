@@ -2,16 +2,24 @@
  * JTAG System - Browser Implementation
  * 
  * Browser-specific JTAG system implementation with browser daemons and transports.
+ * Follows the symmetric daemon architecture pattern established in CommandDaemon.
  */
 
 import { JTAGSystem } from '../shared/JTAGSystem';
 import type { JTAGContext } from '../shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '../shared/JTAGTypes';
 import { JTAGRouter } from '../shared/JTAGRouter';
-import { JTAGBrowser } from './JTAGBrowser';
 import { SystemEvents } from '../shared/events/SystemEvents';
+import type { DaemonBase, DaemonEntry } from '../shared/DaemonBase';
+import { BROWSER_DAEMONS } from './structure';
 
 export class JTAGSystemBrowser extends JTAGSystem {
+  protected override get daemonEntries(): DaemonEntry[] { return BROWSER_DAEMONS; }
+  
+  protected override createDaemon(entry: DaemonEntry, context: JTAGContext, router: JTAGRouter): DaemonBase | null {
+    return new entry.daemonClass(context, router);
+  }
+
   private static instance: JTAGSystemBrowser | null = null;
 
   private constructor(context: JTAGContext, router: JTAGRouter) {
@@ -49,12 +57,8 @@ export class JTAGSystemBrowser extends JTAGSystem {
     // 3. Create browser system instance
     const system = new JTAGSystemBrowser(context, router);
     
-    // 4. Use existing JTAGBrowser for daemon setup
-    const jtagBrowser = new JTAGBrowser(context, router);
-    await jtagBrowser.setupDaemons();
-    
-    // Copy daemons from JTAGBrowser
-    system.daemons = jtagBrowser.daemons;
+    // 4. Setup daemons directly (no delegation needed)
+    await system.setupDaemons();
 
     // 5. Setup cross-context transport
     await system.setupTransports();
@@ -83,20 +87,5 @@ export class JTAGSystemBrowser extends JTAGSystem {
     console.log(`🎉 JTAG System: System ready event emitted`);
 
     return system;
-  }
-
-  /**
-   * Setup browser-specific transports
-   */
-  async setupTransports(): Promise<void> {
-    await this.router.setupCrossContextTransport();
-    console.log(`🔗 JTAG System: Cross-context transport configured`);
-  }
-
-  /**
-   * Setup browser daemons - delegated to JTAGBrowser
-   */
-  async setupDaemons(): Promise<void> {
-    // Handled in connect() method via JTAGBrowser
   }
 }
