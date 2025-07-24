@@ -2,31 +2,31 @@
  * Command Event Definitions - Co-located with Command daemon
  */
 
-export const CommandEvents = {
+export const COMMAND_EVENTS = {
   REGISTERED: 'command.registered',
   EXECUTED: 'command.executed',
   FAILED: 'command.failed'
 } as const;
 
 export interface CommandEventData {
-  [CommandEvents.REGISTERED]: {
+  [COMMAND_EVENTS.REGISTERED]: {
     commandName: string;
     commandType: string;
     endpoint: string;
   };
   
-  [CommandEvents.EXECUTED]: {
+  [COMMAND_EVENTS.EXECUTED]: {
     commandName: string;
     duration: number;
     success: boolean;
     resultType: string;
   };
   
-  [CommandEvents.FAILED]: {
+  [COMMAND_EVENTS.FAILED]: {
     commandName: string;
     error: string;
     parameters?: unknown; // Keep optional but use unknown instead of any
   };
 }
 
-export type CommandEventName = typeof CommandEvents[keyof typeof CommandEvents];
+export type CommandEventName = typeof COMMAND_EVENTS[keyof typeof COMMAND_EVENTS];

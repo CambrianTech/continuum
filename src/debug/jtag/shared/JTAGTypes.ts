@@ -319,61 +319,11 @@ export abstract class CommandParams extends JTAGPayload {
   // Base command parameters - subclasses add specific fields
 }
 
+export abstract class CommandResult extends JTAGPayload {
+  // Base command results - subclasses add specific fields
+}
+
 /**
  * Command Message type
  */
 export type CommandMessage<T extends CommandParams = CommandParams> = JTAGMessage<T>;
-
-/**
- * Screenshot Command Parameters
- */
-export class ScreenshotParams extends CommandParams {
-  filename: string;
-  selector?: string;
-  options?: {
-    width?: number;
-    height?: number;
-    fullPage?: boolean;
-    quality?: number;
-    format?: 'png' | 'jpeg' | 'webp';
-    delay?: number;
-  };
-
-  constructor(filename: string, selector?: string, options?: ScreenshotParams['options']) {
-    super();
-    this.filename = filename;
-    this.selector = selector;
-    this.options = options;
-  }
-}
-
-/**
- * Screenshot Command Result
- */
-export class ScreenshotResult extends JTAGPayload {
-  success: boolean;
-  filepath: string;
-  filename: string;
-  environment: JTAGEnvironment;
-  timestamp: string;
-  options?: ScreenshotParams['options'];
-  error?: string;
-  metadata?: {
-    width: number;
-    height: number;
-    size: number;
-    selector?: string;
-  };
-
-  constructor(data: Partial<ScreenshotResult>) {
-    super();
-    this.success = data.success ?? false;
-    this.filepath = data.filepath ?? '';
-    this.filename = data.filename ?? '';
-    this.environment = data.environment ?? 'server';
-    this.timestamp = data.timestamp ?? new Date().toISOString();
-    this.options = data.options;
-    this.error = data.error;
-    this.metadata = data.metadata;
-  }
-}

@@ -175,12 +175,10 @@ async function testBrowserScreenshot() {
   appendToLog('browser-log', 'Browser screenshot test initiated');
   
   try {
-    console.log('🔍 JTAG System object:', typeof jtagSystem, jtagSystem);
-    console.log('🔍 JTAG.daemons:', jtagSystem?.getDaemons ? jtagSystem.getDaemons() : 'No getDaemons method');
+    console.log('🔍 JTAG System available:', !!jtagSystem);
     console.log('🔍 Available daemon keys:', jtagSystem?.getDaemons ? Array.from(jtagSystem.getDaemons().keys()) : 'No keys');
-    console.log('🔍 CommandDaemon:', jtagSystem?.getDaemons ? jtagSystem.getDaemons().get('CommandDaemon') : 'No CommandDaemon');
-    console.log('🔍 JTAG.commands object:', typeof jtagSystem?.commands, jtagSystem?.commands);
-    console.log('🔍 JTAG.commands.screenshot:', typeof jtagSystem?.commands?.screenshot);
+    console.log('🔍 CommandDaemon available:', !!jtagSystem?.getDaemons?.()?.get('CommandDaemon'));
+    console.log('🔍 Screenshot command available:', typeof jtagSystem?.commands?.screenshot);
     
     const result = await jtagSystem.commands.screenshot({ filename: 'browser-demo-test.png' });
     appendToLog('browser-log', `Screenshot result: ${JSON.stringify(result)}`);

@@ -22,9 +22,10 @@ async function testScreenshotWithExistingSystem() {
     
     // Test screenshot command
     console.log('📸 Testing screenshot command...');
-    const { ScreenshotParams } = await import('./daemons/command-daemon/commands/screenshot/shared/ScreenshotTypes');
-    const params = new ScreenshotParams(); // Will auto-generate timestamped filename
-    const result = await system.commands.screenshot(params);
+    const rawResult = await system.commands.screenshot(); // No params needed - will auto-generate timestamped filename
+    
+    // Cast to ScreenshotResult for type safety
+    const result = rawResult as any;  // Type assertion - we know this is a ScreenshotResult
     
     console.log('📸 Screenshot result:', result);
     

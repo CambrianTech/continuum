@@ -28,7 +28,7 @@
 
 import type { JTAGContext } from '../JTAGTypes';
 
-export const SystemEvents = {
+export const SYSTEM_EVENTS = {
   INITIALIZING: 'system.initializing',
   DAEMONS_LOADING: 'system.daemons.loading',
   DAEMONS_LOADED: 'system.daemons.loaded',
@@ -40,50 +40,50 @@ export const SystemEvents = {
 } as const;
 
 export interface SystemEventData {
-  [SystemEvents.INITIALIZING]: {
+  [SYSTEM_EVENTS.INITIALIZING]: {
     context: JTAGContext;
     timestamp: string;
   };
   
-  [SystemEvents.DAEMONS_LOADING]: {
+  [SYSTEM_EVENTS.DAEMONS_LOADING]: {
     context: JTAGContext;
     timestamp: string;
     expectedDaemons: string[];
   };
   
-  [SystemEvents.DAEMONS_LOADED]: {
+  [SYSTEM_EVENTS.DAEMONS_LOADED]: {
     context: JTAGContext;
     timestamp: string;
     loadedDaemons: string[];
   };
   
-  [SystemEvents.TRANSPORT_READY]: {
+  [SYSTEM_EVENTS.TRANSPORT_READY]: {
     context: JTAGContext;
     timestamp: string;
     transportType: string;
   };
   
-  [SystemEvents.READY]: {
+  [SYSTEM_EVENTS.READY]: {
     version: string;
     context: JTAGContext;
     timestamp: string;
     components: string[];
   };
   
-  [SystemEvents.SHUTDOWN]: {
+  [SYSTEM_EVENTS.SHUTDOWN]: {
     reason: string;
     graceful: boolean;
     uptime: number;
   };
   
-  [SystemEvents.ERROR]: {
+  [SYSTEM_EVENTS.ERROR]: {
     error: string;
     component: string;
     recoverable: boolean;
     stack?: string;
   };
   
-  [SystemEvents.HEALTH_UPDATE]: {
+  [SYSTEM_EVENTS.HEALTH_UPDATE]: {
     status: 'healthy' | 'degraded' | 'unhealthy';
     checks: Record<string, boolean>;
     timestamp: string;
@@ -91,4 +91,4 @@ export interface SystemEventData {
   };
 }
 
-export type SystemEventName = typeof SystemEvents[keyof typeof SystemEvents];
+export type SystemEventName = typeof SYSTEM_EVENTS[keyof typeof SYSTEM_EVENTS];

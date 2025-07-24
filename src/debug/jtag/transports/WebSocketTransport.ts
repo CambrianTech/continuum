@@ -7,8 +7,8 @@
 import { JTAGTransport } from '../shared/JTAGRouter';
 import { JTAGMessage } from '../shared/JTAGTypes';
 import { WebSocketServer, WebSocket as WSWebSocket } from 'ws';
-import { JTAGEventSystem } from '../shared/JTAGEventSystem';
-import { TransportEvents } from './TransportEvents';
+import type { EventsInterface } from '../shared/JTAGRouter';
+import { TRANSPORT_EVENTS } from './TransportEvents';
 
 interface WebSocketSendResult {
   success: boolean;
@@ -21,9 +21,9 @@ export class WebSocketServerTransport implements JTAGTransport {
   private server?: WebSocketServer;
   private clients = new Set<WSWebSocket>();
   private messageHandlers = new Set<(message: JTAGMessage) => void>();
-  private eventSystem?: JTAGEventSystem;
+  private eventSystem?: EventsInterface;
 
-  setEventSystem(eventSystem: JTAGEventSystem): void {
+  setEventSystem(eventSystem: EventsInterface): void {
     this.eventSystem = eventSystem;
   }
 
@@ -44,7 +44,7 @@ export class WebSocketServerTransport implements JTAGTransport {
         
         // Emit CONNECTED event
         if (this.eventSystem) {
-          this.eventSystem.emit(TransportEvents.CONNECTED, {
+          this.eventSystem.emit(TRANSPORT_EVENTS.CONNECTED, {
             transportType: 'websocket' as const,
             clientId: `ws_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
             remoteAddress: (ws as any)._socket?.remoteAddress
@@ -72,7 +72,7 @@ export class WebSocketServerTransport implements JTAGTransport {
           
           // Emit DISCONNECTED event
           if (this.eventSystem) {
-            this.eventSystem.emit(TransportEvents.DISCONNECTED, {
+            this.eventSystem.emit(TRANSPORT_EVENTS.DISCONNECTED, {
               transportType: 'websocket' as const,
               clientId: `ws_${Date.now()}`,
               reason: 'client_disconnect'
@@ -150,10 +150,10 @@ export class WebSocketClientTransport implements JTAGTransport {
   name = 'websocket-client';
   private socket?: WebSocket;
   private messageHandler?: (message: JTAGMessage) => void;
-  private eventSystem?: JTAGEventSystem;
+  private eventSystem?: EventsInterface;
   private lastConnectedUrl?: string;
 
-  setEventSystem(eventSystem: JTAGEventSystem): void {
+  setEventSystem(eventSystem: EventsInterface): void {
     this.eventSystem = eventSystem;
   }
 
@@ -174,7 +174,7 @@ export class WebSocketClientTransport implements JTAGTransport {
         
         // Emit CONNECTED event
         if (this.eventSystem) {
-          this.eventSystem.emit(TransportEvents.CONNECTED, {
+          this.eventSystem.emit(TRANSPORT_EVENTS.CONNECTED, {
             transportType: 'websocket' as const,
             clientId: `ws_client_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
           });
@@ -204,7 +204,7 @@ export class WebSocketClientTransport implements JTAGTransport {
         
         // Emit DISCONNECTED event
         if (this.eventSystem) {
-          this.eventSystem.emit(TransportEvents.DISCONNECTED, {
+          this.eventSystem.emit(TRANSPORT_EVENTS.DISCONNECTED, {
             transportType: 'websocket' as const,
             clientId: `ws_client_${Date.now()}`,
             reason: 'connection_closed'

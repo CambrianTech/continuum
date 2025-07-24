@@ -6,28 +6,28 @@
  */
 
 import { JTAGModule } from '../../../shared/JTAGModule';
-import type { JTAGContext, JTAGPayload } from '../../../shared/JTAGTypes';
+import type { JTAGContext, CommandParams, CommandResult, JTAGPayload } from '../../../shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS, JTAGMessageFactory } from '../../../shared/JTAGTypes';
 import type { JTAGRouter } from '../../../shared/JTAGRouter';
+import type { RouterResult, RequestResult } from '../../../shared/RouterTypes';
+import { isRequestResult } from '../../../shared/RouterTypes';
 
 export interface CommandEntry {
   name: string;
   className: string;
-  commandClass: new (...args: any[]) => CommandBase;
+  commandClass: new (context: JTAGContext, subpath: string, commander: ICommandDaemon) => CommandBase<CommandParams, CommandResult>;
 }
 
 // Forward declare CommandDaemon interface to avoid circular imports
 export interface ICommandDaemon {
   readonly subpath: string;  
   readonly router: JTAGRouter;
-  executeCommand(command: string, payload: any): Promise<any>;
-  registerCommand(name: string, command: CommandBase): void;
 }
 
 /**
  * Base class for all commands with type-safe parameters and results
  */
-export abstract class CommandBase<TParams extends JTAGPayload = JTAGPayload, TResult = unknown> extends JTAGModule {
+export abstract class CommandBase<TParams extends CommandParams = CommandParams, TResult extends CommandResult = CommandResult> extends JTAGModule {
   protected commander: ICommandDaemon;
   protected subpath: string; // Command subpath (e.g., "screenshot")
 
@@ -38,21 +38,35 @@ export abstract class CommandBase<TParams extends JTAGPayload = JTAGPayload, TRe
   }
 
   /**
-   * Execute this command with given parameters - now type-safe
+   * Execute this command with given parameters from message payload
    */
   abstract execute(params: TParams): Promise<TResult>;
+
+  /**
+   * Generate default parameters - override in subclasses for command-specific defaults
+   */
+  public getDefaultParams(): TParams {
+    return {} as TParams;
+  }
+
+  /**
+   * Merge user params with defaults - used by proxy interface
+   */
+  public withDefaults(params?: Partial<TParams>): TParams {
+    return { ...this.getDefaultParams(), ...params } as TParams;
+  }
 
   /**
    * Remote execution - delegates to another environment
    * This is the key method for cross-context communication
    */
   protected async remoteExecute(
-    params: JTAGPayload, 
+    params: TParams, 
     subpath: string = this.subpath,
     remote: string = this.context.environment === JTAG_ENVIRONMENTS.BROWSER 
       ? JTAG_ENVIRONMENTS.SERVER 
       : JTAG_ENVIRONMENTS.BROWSER
-  ): Promise<any> {
+  ): Promise<TResult> {
     
     console.log(`🔀 ${this.toString()}: Remote executing in ${remote} environment`);
     
@@ -64,7 +78,14 @@ export abstract class CommandBase<TParams extends JTAGPayload = JTAGPayload, TRe
       JTAGMessageFactory.generateCorrelationId()
     );
 
-    return await this.commander.router.postMessage(message);
+    const routerResult = await this.commander.router.postMessage(message);
+    
+    // Extract the actual command result from the router response
+    if (isRequestResult(routerResult) && routerResult.response) {
+      return routerResult.response as TResult;
+    }
+    
+    throw new Error(`Remote execution failed: ${JSON.stringify(routerResult)}`);
   }
 
   /**

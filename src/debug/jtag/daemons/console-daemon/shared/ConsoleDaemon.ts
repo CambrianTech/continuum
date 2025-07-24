@@ -37,9 +37,9 @@ import { DaemonBase } from '../../../shared/DaemonBase';
 import type { JTAGContext, JTAGMessage } from '../../../shared/JTAGTypes';
 import { JTAGPayload, JTAGMessageFactory } from '../../../shared/JTAGTypes';
 import type { JTAGRouter } from '../../../shared/JTAGRouter';
-import { SystemEvents } from '../../../shared/events/SystemEvents';
-import { TransportEvents } from '../../../transports/TransportEvents';
-import { ConsoleEvents } from '../ConsoleEvents';
+import { SYSTEM_EVENTS } from '../../../shared/events/SystemEvents';
+import { TRANSPORT_EVENTS } from '../../../transports/TransportEvents';
+import { CONSOLE_EVENTS } from '../ConsoleEvents';
 import { JTAG_ENDPOINTS } from '../../../shared/JTAGEndpoints';
 import { ConsoleSuccessResponse, ConsoleErrorResponse, ConsoleResponse } from '../../../shared/ResponseTypes';
 import type { TimerHandle } from '../../../shared/CrossPlatformTypes';
@@ -125,7 +125,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
     const eventSystem = this.router.eventSystem;
     
     // Listen for daemons loaded event - happens immediately after all daemon initialization
-    eventSystem.on(SystemEvents.DAEMONS_LOADED, () => {
+    eventSystem.on(SYSTEM_EVENTS.DAEMONS_LOADED, () => {
       if (!this.jtagSystemReady) {
         // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🔌 ${this.toString()}: Daemons loaded event received, starting queue drain`);
         this.jtagSystemReady = true;
@@ -134,7 +134,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
     });
     
     // Also wait for JTAG system ready event as backup - TYPE-SAFE & MODULAR!
-    eventSystem.waitFor(SystemEvents.READY, 10000)
+    eventSystem.waitFor(SYSTEM_EVENTS.READY, 10000)
       .then(() => {
         if (!this.jtagSystemReady) {
           // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🚀 ${this.toString()}: JTAG system ready event received, starting queue drain`);
@@ -148,7 +148,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
       });
 
     // Also listen for transport ready events - TYPE-SAFE & MODULAR!
-    eventSystem.on(TransportEvents.READY, () => {
+    eventSystem.on(TRANSPORT_EVENTS.READY, () => {
       if (!this.jtagSystemReady) {
         // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🔗 ${this.toString()}: Transport ready event received, starting queue drain`);
         this.jtagSystemReady = true;
@@ -193,7 +193,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
     
     // Emit queue drain start event - TYPE-SAFE & MODULAR!
     // Router and eventSystem guaranteed by constructor
-    this.router.eventSystem.emit(ConsoleEvents.QUEUE_DRAIN_START, {
+    this.router.eventSystem.emit(CONSOLE_EVENTS.QUEUE_DRAIN_START, {
       queueSize: this.logBuffer.length,
       environment: this.context.environment
     });

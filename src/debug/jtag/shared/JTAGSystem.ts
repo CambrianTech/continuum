@@ -7,15 +7,8 @@
  */
 
 import { JTAGModule } from './JTAGModule';
-import type { JTAGContext } from './JTAGTypes';
-import type { ScreenshotParams, ScreenshotResult } from '../daemons/command-daemon/commands/screenshot/shared/ScreenshotTypes';
-import { SystemEvents } from '../shared/events/SystemEvents';
-/**
- * Strong-typed commands interface
- */
-export interface JTAGCommands {
-  screenshot(params: ScreenshotParams): Promise<ScreenshotResult>;
-}
+import type { JTAGContext, CommandParams, CommandResult } from './JTAGTypes';
+import { SYSTEM_EVENTS } from '../shared/events/SystemEvents';
 import type { JTAGRouter } from './JTAGRouter';
 import type { DaemonBase } from './DaemonBase';
 import type { DaemonEntry } from './DaemonBase';
@@ -64,7 +57,7 @@ export abstract class JTAGSystem extends JTAGModule {
    */
   async setupDaemons(): Promise<void> {
     // Emit daemons loading event
-    this.router.eventSystem.emit(SystemEvents.DAEMONS_LOADING, {
+    this.router.eventSystem.emit(SYSTEM_EVENTS.DAEMONS_LOADING, {
       context: this.context,
       timestamp: new Date().toISOString(),
       expectedDaemons: this.daemonEntries.map(d => d.name)
@@ -93,7 +86,7 @@ export abstract class JTAGSystem extends JTAGModule {
     await Promise.all(daemonPromises);
     
     // Emit daemons loaded event
-    this.router.eventSystem.emit(SystemEvents.DAEMONS_LOADED, {
+    this.router.eventSystem.emit(SYSTEM_EVENTS.DAEMONS_LOADED, {
       context: this.context,
       timestamp: new Date().toISOString(),
       loadedDaemons: Array.from(this.daemons.keys())
@@ -110,29 +103,15 @@ export abstract class JTAGSystem extends JTAGModule {
     console.log(`🎯 JTAG System v${version}: Registered daemon '${name}' (${daemon.constructor.name})`);
   }
 
-
   /**
-   * Commands interface with strong typing
+   * Commands interface - delegate to CommandDaemon's elegantly typed interface
    */
-  get commands(): JTAGCommands {
+  get commands(): Record<string, (params?: CommandParams) => Promise<CommandResult>> {
     const commandDaemon = this.daemons.get('CommandDaemon') as CommandDaemon;
     if (!commandDaemon) {
       throw new Error('CommandDaemon not available');
     }
-
-    return {
-      screenshot: async (params: ScreenshotParams): Promise<ScreenshotResult> => {
-        console.log(`📨 JTAG System: Routing screenshot command through messaging system`);
-        return await commandDaemon.execute('screenshot', params) as ScreenshotResult;
-      }
-    };
-  }
-
-  /**
-   * Direct daemon access - provides jtag.getDaemons()['CommandDaemon']
-   */
-  getDaemons(): Map<string, DaemonBase> {
-    return this.daemons;
+    return commandDaemon.commandsInterface;
   }
 
   /**
