@@ -1,10 +1,40 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.227",
+  "version": "1.0.238",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/index.js",
   "browser": "dist/browser/index.js",
   "types": "dist/index.d.ts",
+  "imports": {
+    "@shared/*": "./dist/shared/*",
+    "@browser/*": "./dist/browser/*",
+    "@server/*": "./dist/server/*",
+    "@transports/*": "./dist/transports/*",
+    "@daemonsRoot/*": "./dist/daemons/*",
+    "@commandDaemon/*": "./dist/daemons/command-daemon/*",
+    "@consoleDaemon/*": "./dist/daemons/console-daemon/*",
+    "@healthDaemon/*": "./dist/daemons/health-daemon/*",
+    "@commandsRoot/*": "./dist/daemons/command-daemon/commands/*",
+    "@commandBase/*": "./dist/daemons/command-daemon/shared/CommandBase/*",
+    "@commandBase": "./dist/daemons/command-daemon/shared/CommandBase.js",
+    "@commandShared/*": "./dist/daemons/command-daemon/shared/*",
+    "@chatRoot/*": "./dist/daemons/command-daemon/commands/chat/*",
+    "@chatShared/*": "./dist/daemons/command-daemon/commands/chat/shared/*",
+    "@chatBrowser/*": "./dist/daemons/command-daemon/commands/chat/browser/*",
+    "@chatServer/*": "./dist/daemons/command-daemon/commands/chat/server/*",
+    "@fileRoot/*": "./dist/daemons/command-daemon/commands/file/*",
+    "@fileShared/*": "./dist/daemons/command-daemon/commands/file/shared/*",
+    "@fileBrowser/*": "./dist/daemons/command-daemon/commands/file/browser/*",
+    "@fileServer/*": "./dist/daemons/command-daemon/commands/file/server/*",
+    "@fileAppendShared/*": "./dist/daemons/command-daemon/commands/file/append/shared/*",
+    "@fileLoadShared/*": "./dist/daemons/command-daemon/commands/file/load/shared/*",
+    "@fileSaveShared/*": "./dist/daemons/command-daemon/commands/file/save/shared/*",
+    "@clickShared/*": "./dist/daemons/command-daemon/commands/click/shared/*",
+    "@screenshotShared/*": "./dist/daemons/command-daemon/commands/screenshot/shared/*",
+    "@navigateShared/*": "./dist/daemons/command-daemon/commands/navigate/shared/*",
+    "@consoleShared/*": "./dist/daemons/console-daemon/shared/*",
+    "@healthShared/*": "./dist/daemons/health-daemon/shared/*"
+  },
   "author": "Continuum Development Team",
   "license": "MIT",
   "repository": {
@@ -92,6 +122,8 @@
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
     "prebuild": "npx tsx scripts/generate-structure.ts",
     "build": "npm run prebuild && npm run build:ts",
+    "postbuild": "node scripts/create-import-map.js && node scripts/convert-imports-to-relative.js",
+    "prepack": "node scripts/create-import-map.js",
     "build:with-test-bench": "npm run build && npm pack && node scripts/update-test-bench.js && cd examples/test-bench && npm install",
     "build:ts": "tsc --project tsconfig.json",
     "build:mcp": "npx tsc mcp/jtag-mcp-server.ts --outDir mcp --target ES2020 --module commonjs --esModuleInterop",
@@ -143,7 +175,7 @@
     "dev": "node examples/simple-usage.js && npm run build",
     "serve": "cd examples && python3 -m http.server 8080",
     "serve:examples": "echo 'Open http://localhost:8080/browser-simulation.html' && npm run serve",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && node scripts/create-import-map.js"
   },
   "keywords": [
     "debugging",
@@ -160,6 +192,7 @@
   "files": [
     "dist/",
     "templates/",
+    "jtag-paths.json",
     "README.md",
     "MINIMAL-USAGE.md",
     "INTEGRATION-TEST-CHAIN.md"

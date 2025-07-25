@@ -6,7 +6,7 @@
  * FileResult → FileLoadResult (adds content, bytesRead)
  */
 
-import { FileParams, FileResult } from '../../shared/FileTypes';
+import { FileParams, FileResult } from '@fileShared/FileTypes';
 
 export class FileLoadParams extends FileParams {
   // Pure inheritance - no additional fields needed

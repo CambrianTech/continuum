@@ -1,0 +1,764 @@
+/**
+ * Get Chat History Command - Shared Types
+ * 
+ * Types for retrieving chat history for persona context awareness.
+ * Enables personas to understand conversation context across multiple rooms.
+ */
+
+import { CommandParams, CommandResult } from '../../../../../shared/JTAGTypes';
+import type { JTAGContext } from '../../../../../shared/JTAGTypes';
+
+/**
+ * Get Chat History Command Parameters - extends CommandParams
+ */
+export class GetChatHistoryParams extends CommandParams {
+  personaId: string;
+  roomIds?: string[];                  // Specific rooms to get history from
+  
+  // History scope
+  historyScope?: HistoryScope;
+  
+  // Time range
+  timeRange?: TimeRange;
+  
+  // Content filters
+  contentFilters?: ContentFilters;
+  
+  // Context optimization
+  contextOptimization?: ContextOptimization;
+  
+  // Multi-context integration
+  multiContextIntegration?: boolean;   // Include cross-room context relationships
+
+  constructor(data: Partial<GetChatHistoryParams> = {}) {
+    super();
+    this.personaId = data.personaId || '';
+    Object.assign(this, data);
+  }
+}
+
+/**
+ * History Scope
+ */
+export interface HistoryScope {
+  // Scope type
+  scopeType: 'all_rooms' | 'active_rooms' | 'specific_rooms' | 'relevant_rooms';
+  
+  // Message limits
+  maxMessagesPerRoom?: number;         // Max messages per room
+  maxTotalMessages?: number;           // Max total messages across all rooms
+  
+  // Relevance filtering
+  relevanceThreshold?: number;         // 0-1 minimum relevance
+  includePersonaMessages?: boolean;    // Include persona's own messages
+  includeSystemMessages?: boolean;     // Include system messages
+  
+  // Participant filtering
+  participantFilter?: ParticipantFilter;
+  
+  // Content type filtering
+  contentTypeFilter?: ContentTypeFilter;
+}
+
+/**
+ * Time Range
+ */
+export interface TimeRange {
+  // Time specification
+  startTime?: number;                  // timestamp
+  endTime?: number;                    // timestamp
+  
+  // Relative time
+  lastHours?: number;                  // Last N hours
+  lastDays?: number;                   // Last N days
+  sinceLastActivity?: boolean;         // Since persona's last activity
+  
+  // Session-based
+  currentSessionOnly?: boolean;        // Only current Academy session
+  allSessions?: boolean;               // Include all Academy sessions
+}
+
+/**
+ * Content Filters
+ */
+export interface ContentFilters {
+  // Message types
+  messageTypes?: MessageType[];
+  excludeMessageTypes?: MessageType[];
+  
+  // Keywords and topics
+  keywords?: string[];                 // Include messages with keywords
+  excludeKeywords?: string[];          // Exclude messages with keywords
+  topics?: string[];                   // Include messages about topics
+  
+  // Learning filters
+  learningContent?: boolean;           // Include educational content
+  teachingMoments?: boolean;           // Include teaching moments
+  questions?: boolean;                 // Include questions
+  
+  // Emotional filters
+  supportiveContent?: boolean;         // Include supportive messages
+  encouragement?: boolean;             // Include encouragement
+  
+  // Academy filters
+  academyContent?: boolean;            // Include Academy-related content
+  capabilityDemonstrations?: boolean;  // Include capability demonstrations
+}
+
+/**
+ * Message Type
+ */
+export type MessageType = 
+  | 'chat'
+  | 'educational_response'
+  | 'question'
+  | 'help_request'
+  | 'knowledge_share'
+  | 'encouragement'
+  | 'feedback'
+  | 'announcement'
+  | 'system_message'
+  | 'academy_instruction';
+
+/**
+ * Participant Filter
+ */
+export interface ParticipantFilter {
+  // Include/exclude specific participants
+  includeParticipants?: string[];
+  excludeParticipants?: string[];
+  
+  // Participant types
+  includeHumans?: boolean;
+  includePersonas?: boolean;
+  includeRagAIs?: boolean;
+  includeSystemAgents?: boolean;
+  
+  // Relationship-based
+  includeConnectedParticipants?: boolean; // Participants persona has relationships with
+  relationshipTypes?: string[];       // Specific relationship types
+  
+  // Activity-based
+  activeParticipantsOnly?: boolean;   // Only currently active participants
+  frequentParticipants?: boolean;     // Participants who message frequently
+}
+
+/**
+ * Content Type Filter
+ */
+export interface ContentTypeFilter {
+  // Content characteristics
+  includeTextOnly?: boolean;          // Only text messages
+  includeMediaMessages?: boolean;     // Messages with media
+  includeLinks?: boolean;             // Messages with links
+  includeFiles?: boolean;             // Messages with file attachments
+  
+  // Content length
+  minLength?: number;                 // Minimum message length
+  maxLength?: number;                 // Maximum message length
+  
+  // Content complexity
+  complexityLevel?: 'simple' | 'moderate' | 'complex' | 'any';
+  technicalContent?: boolean;         // Include technical discussions
+}
+
+/**
+ * Context Optimization
+ */
+export interface ContextOptimization {
+  // Token optimization
+  tokenOptimization?: boolean;        // Optimize for AI token limits
+  maxTokens?: number;                 // Maximum tokens to return
+  
+  // Compression
+  compressionEnabled?: boolean;       // Compress message content
+  summarizationEnabled?: boolean;     // Summarize long conversations
+  
+  // Relevance ranking
+  relevanceRanking?: boolean;         // Rank messages by relevance
+  contextualGrouping?: boolean;       // Group related messages
+  
+  // Format optimization
+  structuredFormat?: boolean;         // Return in structured format
+  narrativeFormat?: boolean;          // Return as narrative summary
+  hybridFormat?: boolean;             // Combine structured and narrative
+  
+  // Personalization
+  personalizedRelevance?: boolean;    // Personalize relevance scoring
+  adaptiveCompression?: boolean;      // Adapt compression based on content
+}
+
+/**
+ * Get Chat History Result - extends CommandResult
+ */
+export class GetChatHistoryResult extends CommandResult {
+  success: boolean;
+  personaId: string;
+  
+  // History data
+  roomHistories: Map<string, RoomHistory>;
+  totalMessages: number;
+  timeRange: ProcessedTimeRange;
+  
+  // Context integration
+  contextRelationships?: ContextRelationship[];
+  crossRoomConnections?: CrossRoomConnection[];
+  
+  // Optimization metrics
+  optimizationMetrics?: OptimizationMetrics;
+  
+  // Multi-context data
+  multiContextSummary?: MultiContextSummary;
+  
+  // Error handling
+  error?: string;
+  warnings?: string[];
+  partialResults?: boolean;            // Some rooms failed to load
+
+  constructor(data: Partial<GetChatHistoryResult> & { personaId: string }) {
+    super();
+    this.success = data.success ?? false;
+    this.personaId = data.personaId;
+    this.roomHistories = data.roomHistories ?? new Map();
+    this.totalMessages = data.totalMessages ?? 0;
+    this.timeRange = data.timeRange ?? { startTime: 0, endTime: Date.now() };
+    this.contextRelationships = data.contextRelationships;
+    this.crossRoomConnections = data.crossRoomConnections;
+    this.optimizationMetrics = data.optimizationMetrics;
+    this.multiContextSummary = data.multiContextSummary;
+    this.error = data.error;
+    this.warnings = data.warnings;
+    this.partialResults = data.partialResults;
+  }
+}
+
+/**
+ * Room History
+ */
+export interface RoomHistory {
+  roomId: string;
+  roomName: string;
+  roomType: string;
+  
+  // Messages
+  messages: ChatHistoryMessage[];
+  messageCount: number;
+  
+  // Participants
+  participants: HistoryParticipant[];
+  participantCount: number;
+  
+  // Conversation context
+  conversationSummary: string;
+  mainTopics: string[];
+  keyMoments: KeyMoment[];
+  
+  // Academy context (if applicable)
+  academyContext?: RoomAcademyContext;
+  
+  // Persona's involvement
+  personaInvolvement: PersonaInvolvement;
+  
+  // Time range covered
+  timeRange: ProcessedTimeRange;
+}
+
+/**
+ * Chat History Message
+ */
+export interface ChatHistoryMessage {
+  messageId: string;
+  senderId: string;
+  senderName: string;
+  senderType: 'human' | 'persona' | 'rag_ai' | 'system';
+  
+  // Message content
+  content: string;
+  messageType: MessageType;
+  timestamp: number;
+  
+  // Context
+  conversationThread?: string;
+  replyToMessageId?: string;
+  mentionedUsers?: string[];
+  
+  // Relevance
+  relevanceScore: number;             // 0-1 relevance to persona
+  importanceScore: number;            // 0-1 importance for context
+  
+  // Learning value
+  learningValue?: number;             // 0-1 learning value
+  teachingMoment?: boolean;
+  capabilitiesShown?: string[];
+  
+  // Academy context
+  academyContext?: MessageAcademyContext;
+  
+  // Attachments
+  attachments?: MessageAttachment[];
+}
+
+/**
+ * History Participant
+ */
+export interface HistoryParticipant {
+  participantId: string;
+  participantName: string;
+  participantType: 'human' | 'persona' | 'rag_ai' | 'system';
+  
+  // Activity metrics
+  messageCount: number;
+  lastActivity: number;
+  activityLevel: 'low' | 'medium' | 'high';
+  
+  // Relationship to persona
+  relationshipToPersona?: string;
+  relationshipStrength?: number;      // 0-1 relationship strength
+  
+  // Communication patterns
+  communicationStyle: string;
+  typicalTopics: string[];
+  
+  // Academy involvement
+  academyRoles?: string[];
+}
+
+/**
+ * Key Moment
+ */
+export interface KeyMoment {
+  momentId: string;
+  momentType: 'insight' | 'breakthrough' | 'question' | 'teaching' | 'conflict_resolution' | 'celebration';
+  
+  // Moment details
+  description: string;
+  timestamp: number;
+  participantsInvolved: string[];
+  
+  // Messages involved
+  keyMessages: string[];              // Message IDs
+  
+  // Impact
+  impactLevel: 'minor' | 'moderate' | 'major' | 'transformational';
+  learningValue: number;              // 0-1 learning value
+  
+  // Follow-up
+  hasFollowUp: boolean;
+  followUpMoments?: string[];         // Related moment IDs
+}
+
+/**
+ * Room Academy Context
+ */
+export interface RoomAcademyContext {
+  sessionId?: string;
+  sessionName?: string;
+  sessionPhase?: string;
+  
+  // Learning objectives
+  currentObjectives: string[];
+  completedObjectives: string[];
+  
+  // Participants and roles
+  teachers: string[];
+  students: string[];
+  mentors: string[];
+  observers: string[];
+  
+  // Progress
+  overallProgress: number;            // 0-1 session progress
+  learningMilestones: LearningMilestone[];
+  
+  // Training data
+  trainingInteractions: number;
+  capabilityDemonstrations: number;
+  evolutionEvents: number;
+}
+
+/**
+ * Message Academy Context
+ */
+export interface MessageAcademyContext {
+  sessionId: string;
+  sessionPhase: string;
+  learningObjectiveIds: string[];
+  
+  // Learning characteristics
+  isTeachingMoment: boolean;
+  isLearningMoment: boolean;
+  capabilitiesUsed: string[];
+  skillsShown: string[];
+  
+  // Assessment
+  contributionQuality: number;        // 0-1 quality rating
+  educationalValue: number;           // 0-1 educational value
+  
+  // Evolution
+  evolutionTrigger: boolean;
+  evolutionContext?: string;
+}
+
+/**
+ * Persona Involvement
+ */
+export interface PersonaInvolvement {
+  // Participation metrics
+  messagesSent: number;
+  messagesReceived: number;
+  mentionsReceived: number;
+  
+  // Interaction quality
+  averageResponseTime: number;        // ms
+  conversationParticipation: number; // 0-1 participation level
+  relationshipBuilding: number;      // 0-1 relationship building
+  
+  // Learning and teaching
+  learningInteractions: number;
+  teachingInteractions: number;
+  knowledgeShared: string[];
+  questionsAsked: number;
+  
+  // Academy involvement
+  academyParticipation?: AcademyParticipation;
+  
+  // Evolution
+  evolutionTriggered: boolean;
+  capabilityGrowth: string[];
+}
+
+/**
+ * Academy Participation
+ */
+export interface AcademyParticipation {
+  role: 'teacher' | 'student' | 'mentor' | 'observer';
+  sessionsParticipated: number;
+  objectivesCompleted: string[];
+  capabilitiesDemonstrated: string[];
+  skillsLearned: string[];
+  
+  // Performance
+  teachingEffectiveness?: number;     // 0-1 if teacher/mentor
+  learningProgress?: number;          // 0-1 if student
+  contributionQuality: number;        // 0-1 overall contribution
+}
+
+/**
+ * Processed Time Range
+ */
+export interface ProcessedTimeRange {
+  startTime: number;                  // timestamp
+  endTime: number;                    // timestamp
+  duration: number;                   // ms duration
+  timezoneName?: string;
+  
+  // Human-readable
+  humanReadable: string;              // "Last 2 hours", "Yesterday", etc.
+}
+
+/**
+ * Context Relationship
+ */
+export interface ContextRelationship {
+  relationshipId: string;
+  
+  // Related contexts
+  primaryRoomId: string;
+  relatedRoomId: string;
+  
+  // Relationship characteristics
+  relationshipType: 'topic_overlap' | 'participant_overlap' | 'temporal_proximity' | 'causal_relationship';
+  strength: number;                   // 0-1 relationship strength
+  
+  // Evidence
+  sharedTopics: string[];
+  sharedParticipants: string[];
+  relatedMessages: string[];          // Message IDs showing relationship
+  
+  // Description
+  description: string;
+  examples: string[];
+}
+
+/**
+ * Cross Room Connection
+ */
+export interface CrossRoomConnection {
+  connectionId: string;
+  
+  // Connected rooms
+  roomIds: string[];
+  
+  // Connection type
+  connectionType: 'conversation_continuation' | 'topic_migration' | 'participant_movement' | 'knowledge_transfer';
+  
+  // Connection strength
+  strength: number;                   // 0-1 connection strength
+  
+  // Timeline
+  startTime: number;
+  endTime: number;
+  keyEvents: string[];                // Message IDs showing connection
+  
+  // Impact on persona
+  personaInvolvement: number;         // 0-1 how involved persona was
+  learningOpportunity: boolean;       // Does this represent learning opportunity
+}
+
+/**
+ * Optimization Metrics
+ */
+export interface OptimizationMetrics {
+  // Token usage
+  totalTokens: number;
+  tokenBudgetUsed: number;            // 0-1 percentage of budget used
+  compressionRatio: number;           // 0-1 how much content was compressed
+  
+  // Processing time
+  processingTime: number;             // ms to process request
+  queryTime: number;                  // ms to query database
+  optimizationTime: number;           // ms spent optimizing
+  
+  // Content metrics
+  messagesAnalyzed: number;
+  messagesIncluded: number;
+  messagesFiltered: number;
+  averageRelevanceScore: number;      // 0-1 average relevance
+  
+  // Quality metrics
+  contextCompletenessScore: number;   // 0-1 how complete the context is
+  relevanceAccuracy: number;          // 0-1 accuracy of relevance scoring
+}
+
+/**
+ * Multi-Context Summary
+ */
+export interface MultiContextSummary {
+  // Overall context
+  overallNarrative: string;           // High-level summary across all rooms
+  
+  // Key themes
+  majorTopics: string[];
+  recurringPatterns: string[];
+  importantRelationships: string[];
+  
+  // Persona's journey
+  personaJourney: PersonaJourney;
+  
+  // Learning and growth
+  learningProgression: LearningProgression;
+  
+  // Future opportunities
+  futureOpportunities: FutureOpportunity[];
+}
+
+/**
+ * Persona Journey
+ */
+export interface PersonaJourney {
+  journeyDescription: string;
+  keyMilestones: JourneyMilestone[];
+  relationshipEvolution: RelationshipEvolution[];
+  capabilityGrowth: CapabilityGrowth[];
+  
+  // Current state
+  currentStatus: string;
+  currentFocus: string[];
+  currentChallenges: string[];
+}
+
+/**
+ * Journey Milestone
+ */
+export interface JourneyMilestone {
+  milestoneId: string;
+  description: string;
+  timestamp: number;
+  roomId: string;
+  
+  // Impact
+  impactType: 'learning' | 'relationship' | 'capability' | 'recognition' | 'evolution';
+  impactLevel: 'minor' | 'moderate' | 'major' | 'transformational';
+  
+  // Evidence
+  evidenceMessages: string[];         // Message IDs showing milestone
+}
+
+/**
+ * Learning Progression
+ */
+export interface LearningProgression {
+  progressionDescription: string;
+  
+  // Learning areas
+  learningAreas: LearningArea[];
+  
+  // Teaching development
+  teachingSkills: TeachingSkillDevelopment[];
+  
+  // Knowledge gaps
+  identifiedGaps: string[];
+  addressedGaps: string[];
+  
+  // Next steps
+  suggestedLearningPaths: string[];
+}
+
+/**
+ * Learning Area
+ */
+export interface LearningArea {
+  area: string;
+  progressLevel: number;              // 0-1 progress in this area
+  learningMoments: string[];          // Message IDs showing learning
+  teachingMoments: string[];          // Message IDs showing teaching
+  
+  // Growth trajectory
+  growthRate: 'slow' | 'steady' | 'fast' | 'accelerating';
+  confidence: number;                 // 0-1 confidence in this area
+}
+
+/**
+ * Teaching Skill Development
+ */
+export interface TeachingSkillDevelopment {
+  skill: string;
+  developmentLevel: number;           // 0-1 development level
+  teachingInstances: string[];        // Message IDs showing teaching
+  
+  // Effectiveness
+  teachingEffectiveness: number;      // 0-1 effectiveness rating
+  studentFeedback: number;            // 0-1 student feedback score
+  
+  // Improvement areas
+  strengthsShown: string[];
+  areasForImprovement: string[];
+}
+
+/**
+ * Future Opportunity
+ */
+export interface FutureOpportunity {
+  opportunityType: 'learning' | 'teaching' | 'relationship' | 'collaboration' | 'leadership';
+  description: string;
+  
+  // Context
+  relevantRooms: string[];
+  involvedParticipants: string[];
+  requiredCapabilities: string[];
+  
+  // Potential
+  potentialImpact: number;            // 0-1 potential impact
+  likelihood: number;                 // 0-1 likelihood of opportunity
+  timeframe: 'immediate' | 'short_term' | 'medium_term' | 'long_term';
+  
+  // Prerequisites
+  prerequisites: string[];
+  preparationNeeded: string[];
+}
+
+/**
+ * Learning Milestone
+ */
+export interface LearningMilestone {
+  milestoneId: string;
+  description: string;
+  timestamp: number;
+  achievedBy: string[];               // Participant IDs who achieved this
+  
+  // Milestone details
+  objectiveId: string;
+  skill: string;
+  proficiencyLevel: number;           // 0-1 proficiency achieved
+  
+  // Evidence
+  evidenceMessages: string[];         // Message IDs showing achievement
+  assessmentData?: any;               // Assessment details if available
+}
+
+/**
+ * Relationship Evolution
+ */
+export interface RelationshipEvolution {
+  participantId: string;
+  participantName: string;
+  
+  // Evolution timeline
+  initialRelationship: string;
+  currentRelationship: string;
+  evolutionStages: RelationshipStage[];
+  
+  // Growth metrics
+  strengthGrowth: number;             // Change in relationship strength
+  interactionQuality: number;         // 0-1 interaction quality
+  
+  // Key interactions
+  keyInteractions: string[];          // Message IDs of important interactions
+}
+
+/**
+ * Relationship Stage
+ */
+export interface RelationshipStage {
+  stage: string;
+  startTime: number;
+  endTime?: number;
+  
+  // Stage characteristics
+  relationshipType: string;
+  interactionPattern: string;
+  
+  // Key events
+  keyEvents: string[];                // Message IDs of stage-defining events
+}
+
+/**
+ * Capability Growth
+ */
+export interface CapabilityGrowth {
+  capability: string;
+  
+  // Growth metrics
+  initialLevel: number;               // 0-1 initial capability level
+  currentLevel: number;               // 0-1 current capability level
+  growthRate: number;                 // Rate of improvement
+  
+  // Demonstration instances
+  demonstrations: CapabilityDemonstration[];
+  
+  // Learning sources
+  learningSources: string[];          // Where/how capability was developed
+  
+  // Future potential
+  growthPotential: number;            // 0-1 potential for further growth
+}
+
+/**
+ * Capability Demonstration
+ */
+export interface CapabilityDemonstration {
+  demonstrationId: string;
+  timestamp: number;
+  roomId: string;
+  messageId: string;
+  
+  // Demonstration quality
+  proficiencyShown: number;           // 0-1 proficiency demonstrated
+  context: string;                    // Context of demonstration
+  
+  // Impact
+  impact: string;                     // Impact of demonstration
+  recognition: boolean;               // Was demonstration recognized by others
+}
+
+/**
+ * Message Attachment
+ */
+export interface MessageAttachment {
+  type: 'image' | 'file' | 'link' | 'recipe' | 'technique';
+  url?: string;
+  filepath?: string;
+  filename?: string;
+  title?: string;
+  description?: string;
+  relevanceScore?: number;            // 0-1 relevance to context
+}

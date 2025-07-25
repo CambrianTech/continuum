@@ -5,9 +5,9 @@
  * Inherits path from parent group: commands/file/load
  */
 
-import { CommandBase } from '../../../../shared/CommandBase';
-import type { ICommandDaemon } from '../../../../shared/CommandBase';
-import type { JTAGContext } from '../../../../../../shared/JTAGTypes';
+import { CommandBase } from '@commandBase';
+import type { ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '@shared/JTAGTypes';
 import { FileLoadParams } from './FileLoadTypes';
 import type { FileLoadResult } from './FileLoadTypes';
 

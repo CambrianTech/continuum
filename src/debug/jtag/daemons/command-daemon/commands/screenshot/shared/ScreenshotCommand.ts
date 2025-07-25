@@ -1,8 +1,6 @@
-import { CommandBase } from '../../../shared/CommandBase';
-import type { ICommandDaemon } from '../../../shared/CommandBase';
-import type { JTAGContext } from '../../../../../shared/JTAGTypes';
-import { ScreenshotParams } from './ScreenshotTypes';
-import type { ScreenshotResult } from './ScreenshotTypes';
+import { CommandBase, type ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '@shared/JTAGTypes';
+import { ScreenshotParams, type ScreenshotResult } from './ScreenshotTypes';
 
 export abstract class ScreenshotCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
 

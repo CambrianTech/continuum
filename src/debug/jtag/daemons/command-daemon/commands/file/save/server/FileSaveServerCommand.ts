@@ -5,11 +5,11 @@
  * ALL file operations must go through ArtifactsDaemon
  */
 
-import { CommandBase } from '../../../../shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../../../../shared/JTAGTypes';
-import type { FileSaveParams } from '../shared/FileSaveTypes';
-import { FileSaveResult } from '../shared/FileSaveTypes';
-import type { ICommandDaemon } from '../../../../shared/CommandBase';
+import { CommandBase } from '@commandBase';
+import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import type { FileSaveParams } from '@fileSaveShared/FileSaveTypes';
+import { FileSaveResult } from '@fileSaveShared/FileSaveTypes';
+import type { ICommandDaemon } from '@commandBase';
 
 export class FileSaveServerCommand extends CommandBase<FileSaveParams, FileSaveResult> {
   

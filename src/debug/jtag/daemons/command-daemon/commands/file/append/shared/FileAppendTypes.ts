@@ -6,7 +6,7 @@
  * FileResult → FileAppendResult (adds bytesAppended, wasCreated)
  */
 
-import { FileParams, FileResult } from '../../shared/FileTypes';
+import { FileParams, FileResult } from '@fileShared/FileTypes';
 
 export class FileAppendParams extends FileParams {
   content!: string;

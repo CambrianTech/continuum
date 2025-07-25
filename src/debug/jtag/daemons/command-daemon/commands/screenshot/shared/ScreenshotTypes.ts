@@ -4,8 +4,7 @@
  * Common types and interfaces used by both browser and server screenshot implementations.
  */
 
-import { CommandParams, CommandResult } from '../../../../../shared/JTAGTypes';
-import type { JTAGContext } from '../../../../../shared/JTAGTypes';
+import { CommandParams, CommandResult, type JTAGContext } from '@shared/JTAGTypes';
 
 /**
  * Screenshot Command Parameters - extends CommandParams

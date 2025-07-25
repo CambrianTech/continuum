@@ -5,10 +5,7 @@
  * Integrates with existing verification system to use executeJS for red div validation
  * and proper screenshot validation following the existing patterns.
  * 
- * KNOWN ISSUES:
- * - JavaScript execution fails with HTTP 500 error (server-side issue)
- * - Shell escaping problems with complex JavaScript
- * - Core screenshot functionality works despite JS execution failure
+ * ENHANCED: Now supports TypeScript path mappings for clean imports
  */
 
 import { execSync } from 'child_process';

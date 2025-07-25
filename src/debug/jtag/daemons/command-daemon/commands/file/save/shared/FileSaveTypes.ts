@@ -6,7 +6,7 @@
  * FileResult<{bytesWritten, created}> → FileSaveResult
  */
 
-import { FileParams, FileResult } from '../../shared/FileTypes';
+import { FileParams, FileResult } from '@fileShared/FileTypes';
 
 // Define the extension types for FileSave
 type FileSaveExtension = {

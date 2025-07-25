@@ -20,8 +20,8 @@
  * - No god objects or feature creep
  */
 
-import { ClickParams, ClickResult } from '../shared/ClickTypes';
-import { ClickCommand } from '../shared/ClickCommand';
+import { ClickParams, ClickResult } from '@clickShared/ClickTypes';
+import { ClickCommand } from '@clickShared/ClickCommand';
 
 export class ClickServerCommand extends ClickCommand {
   

@@ -4,10 +4,10 @@
  * MINIMAL WORK PER COMMAND: Just implements what browser does
  */
 
-import type { ScreenshotParams, Html2CanvasCanvas, Html2CanvasOptions } from '../shared/ScreenshotTypes';
-import { ScreenshotResult } from '../shared/ScreenshotTypes';
-import { ScreenshotCommand } from '../shared/ScreenshotCommand';
-import { getGlobalAPI, safeQuerySelector, getViewportDimensions } from '../../../../../shared/GlobalUtils';
+import type { ScreenshotParams, Html2CanvasCanvas, Html2CanvasOptions } from '@screenshotShared/ScreenshotTypes';
+import { ScreenshotResult } from '@screenshotShared/ScreenshotTypes';
+import { ScreenshotCommand } from '@screenshotShared/ScreenshotCommand';
+import { getGlobalAPI, safeQuerySelector, getViewportDimensions } from '@shared/GlobalUtils';
 
 const DEFAULT_FORMAT = 'png';
 const DEFAULT_QUALITY = 0.9;

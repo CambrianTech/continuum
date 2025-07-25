@@ -19,8 +19,8 @@
  * - Consistent interface across contexts
  */
 
-import { CommandParams, CommandResult } from '../../../../../shared/JTAGTypes';
-import type { JTAGContext } from '../../../../../shared/JTAGTypes';
+import { CommandParams, CommandResult } from '@shared/JTAGTypes';
+import type { JTAGContext } from '@shared/JTAGTypes';
 
 export class ClickParams extends CommandParams {
   selector!: string;
