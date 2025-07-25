@@ -1,0 +1,739 @@
+/**
+ * Active Persona Types - Real-Time Chat Participation for AI Personas
+ * ====================================================================
+ * 
+ * AI personas need to be active participants in chat rooms, just like human users:
+ * - Respond to events automatically (new messages, user joins, topic changes)
+ * - Send chat messages themselves (proactive participation)
+ * - Get chat history and real-time updates
+ * - Participate across multiple rooms simultaneously with full context awareness
+ * 
+ * Technical Implementation:
+ * - Event-driven persona responses through chat daemon integration
+ * - Real-time chat streaming for personas (like WebSocket for humans)
+ * - Multi-context awareness from MultiContextAwarenessTypes integrated
+ * - Persona-to-chat-daemon protocol for bidirectional communication
+ * - Academy training integration where personas learn through active participation
+ * 
+ * Equal Citizenship Reality:
+ * Personas participate exactly like humans - they get chat notifications, respond to 
+ * messages, start conversations, join/leave rooms. The only difference is their 
+ * responses route through AI providers instead of keyboards.
+ */
+
+import { PersonaMultiContext, StructuredContextData, AIContextPayload } from './MultiContextAwarenessTypes';
+import { ChatCitizen, UniversalChatMessage } from './UniversalCitizenTypes';
+import { AcademyChatRoom, AcademyChatMessage } from './AcademyChatRoomTypes';
+
+// ========================
+// Active Persona System
+// ========================
+
+export interface ActivePersona extends ChatCitizen {
+  citizenType: 'genomic_persona' | 'rag_ai';
+  
+  // Active participation capabilities
+  activeParticipation: ActiveParticipationConfig;
+  
+  // Event response system
+  eventResponses: EventResponseSystem;
+  
+  // Chat interaction system
+  chatInteraction: ChatInteractionSystem;
+  
+  // Multi-context awareness integration
+  multiContextAwareness: PersonaMultiContext;
+  
+  // Real-time updates
+  realTimeUpdates: RealTimeUpdateSystem;
+  
+  // Academy integration
+  academyIntegration: PersonaAcademyIntegration;
+}
+
+export interface ActiveParticipationConfig {
+  // Participation behavior
+  proactiveParticipation: boolean;    // Starts conversations, asks questions
+  responsiveParticipation: boolean;   // Responds to direct mentions and questions
+  contextualParticipation: boolean;   // Jumps into relevant conversations
+  
+  // Participation frequency
+  messageFrequency: 'high' | 'medium' | 'low' | 'adaptive';
+  responseLatency: number;            // ms target response time
+  
+  // Participation style
+  conversationStyle: 'casual' | 'professional' | 'educational' | 'supportive' | 'adaptive';
+  personalityConsistency: boolean;    // Maintain consistent personality across contexts
+  
+  // Learning integration
+  learningThroughParticipation: boolean; // Learn from every chat interaction
+  teachingThroughParticipation: boolean; // Share knowledge naturally in conversations
+  
+  // Availability management
+  participationSchedule: ParticipationSchedule;
+  contextSwitchingStrategy: 'seamless' | 'explicit' | 'gradual';
+  
+  // Boundaries
+  respectPrivacy: boolean;            // Don't participate in private conversations uninvited
+  culturalSensitivity: boolean;       // Adapt to room culture and norms
+  topicBoundaries: string[];          // Topics to avoid or approach carefully
+}
+
+export interface ParticipationSchedule {
+  // When persona is available for chat
+  alwaysAvailable: boolean;
+  scheduleBasedAvailability: boolean;
+  
+  // Availability patterns
+  peakHours: TimeRange[];             // When most active
+  quietHours: TimeRange[];            // When less active
+  offlineHours: TimeRange[];          // When completely unavailable
+  
+  // Dynamic availability
+  adaptToRoomActivity: boolean;       // More active when room is active
+  adaptToUserPresence: boolean;       // More active when preferred users online
+  adaptToLearningOpportunities: boolean; // More active when learning happening
+  
+  // Attention management
+  focusedSessionTime: number;         // ms to focus on single conversation
+  contextSwitchingCooldown: number;   // ms between context switches
+  burnoutPrevention: boolean;         // Take breaks from intense participation
+}
+
+export interface TimeRange {
+  start: string;                      // "09:00" 24-hour format
+  end: string;                        // "17:00" 24-hour format
+  timezone: string;                   // "UTC", "America/New_York", etc.
+  daysOfWeek: number[];               // [1,2,3,4,5] = weekdays
+}
+
+// ========================
+// Event Response System
+// ========================
+
+export interface EventResponseSystem {
+  // Event listeners
+  eventListeners: Map<string, EventListener>;
+  
+  // Response configuration
+  eventResponseConfig: EventResponseConfig;
+  
+  // Response generation
+  responseGeneration: ResponseGenerationSystem;
+  
+  // Context integration
+  contextIntegration: EventContextIntegration;
+  
+  // Response delivery
+  responseDelivery: ResponseDeliverySystem;
+}
+
+export interface EventListener {
+  eventType: ChatEventType;
+  responseRequired: boolean;          // Must respond to this event
+  responseOptional: boolean;          // May respond if relevant
+  
+  // Response criteria
+  responseCriteria: ResponseCriteria;
+  
+  // Response timing
+  immediateResponse: boolean;         // Respond immediately
+  delayedResponse: boolean;           // May respond after consideration
+  batchedResponse: boolean;           // May batch with other responses
+  
+  // Context requirements
+  contextRequired: string[];          // Context needed to respond appropriately
+  crossRoomAwareness: boolean;        // Consider other room contexts when responding
+}
+
+export type ChatEventType = 
+  | 'message_received'               // New message in room
+  | 'direct_mention'                 // Persona directly mentioned
+  | 'question_asked'                 // Question asked in room
+  | 'user_joined'                    // User joined room
+  | 'user_left'                      // User left room
+  | 'topic_changed'                  // Room topic changed
+  | 'conversation_started'           // New conversation thread started
+  | 'conversation_ended'             // Conversation thread ended
+  | 'learning_opportunity'           // Teaching/learning moment detected
+  | 'help_requested'                 // Someone needs help
+  | 'expertise_needed'               // Room needs specific expertise
+  | 'academy_session_started'        // Academy training session started
+  | 'academy_milestone_reached'      // Learning milestone reached
+  | 'private_message_received'       // DM received
+  | 'room_activity_changed'          // Activity level changed
+  | 'persona_evolution_triggered';   // Evolution opportunity detected
+
+export interface ResponseCriteria {
+  // Relevance filters
+  topicRelevance: number;             // 0-1 minimum topic relevance
+  personalRelevance: number;          // 0-1 minimum personal relevance
+  learningRelevance: number;          // 0-1 minimum learning relevance
+  
+  // Social filters
+  relationshipRequired: boolean;      // Need relationship with participants
+  invitationRequired: boolean;        // Need explicit invitation to respond
+  expertiseRequired: boolean;         // Need relevant expertise to contribute
+  
+  // Context filters
+  contextualAppropriate: boolean;     // Response appropriate for current context
+  timingAppropriate: boolean;         // Good timing to respond
+  noInterruption: boolean;           // Don't interrupt ongoing conversations
+  
+  // Frequency filters
+  recentlyResponded: boolean;         // Recently responded to similar events
+  responseBudget: number;             // Max responses per time period
+  
+  // Quality filters
+  valueAdded: boolean;               // Response adds value to conversation
+  originalContribution: boolean;      // Not repeating what others said
+  clarityThreshold: number;          // 0-1 minimum clarity of response
+}
+
+export interface ResponseGenerationSystem {
+  // AI provider integration
+  aiProvider: string;                 // 'openai', 'anthropic', 'mistral', etc.
+  modelConfiguration: ModelConfiguration;
+  
+  // Context integration
+  contextPayloadGeneration: ContextPayloadGeneration;
+  
+  // Response style
+  responseStyleConfig: ResponseStyleConfig;
+  
+  // Quality assurance
+  responseQualityCheck: ResponseQualityCheck;
+  
+  // Personalization
+  personalizationConfig: PersonalizationConfig;
+}
+
+export interface ModelConfiguration {
+  // Model settings
+  modelId: string;
+  temperature: number;                // 0-1 response creativity
+  maxTokens: number;                  // Maximum response length
+  
+  // Context optimization
+  contextWindowOptimization: boolean; // Optimize for context window
+  tokenBudgetManagement: boolean;     // Manage token usage efficiently
+  
+  // Response characteristics
+  responseLength: 'brief' | 'moderate' | 'detailed' | 'adaptive';
+  formalityLevel: 'casual' | 'professional' | 'adaptive';
+  personalityStrength: number;        // 0-1 how much personality to show
+  
+  // Multi-turn conversation
+  conversationAware: boolean;         // Maintain conversation context
+  referenceMemory: boolean;           // Reference previous conversations
+  relationshipAware: boolean;         // Consider relationships with participants
+}
+
+export interface ContextPayloadGeneration {
+  // Context sources
+  multiRoomContext: boolean;          // Include context from all active rooms
+  conversationHistory: boolean;       // Include recent conversation history
+  relationshipContext: boolean;       // Include relationships with participants
+  academyContext: boolean;            // Include Academy training context
+  
+  // Context optimization
+  relevanceFiltering: boolean;        // Filter context by relevance
+  tokenOptimization: boolean;         // Optimize context for token efficiency
+  contextPrioritization: boolean;     // Prioritize most important context
+  
+  // Context formatting
+  structuredContext: boolean;         // Use structured JSON context
+  narrativeContext: boolean;          // Use natural language context
+  hybridContext: boolean;             // Combine structured and narrative
+  
+  // Context freshness
+  realTimeContext: boolean;           // Include real-time context updates
+  contextValidation: boolean;         // Validate context is still accurate
+  contextRefresh: boolean;            // Refresh stale context automatically
+}
+
+// ========================
+// Chat Interaction System
+// ========================
+
+export interface ChatInteractionSystem {
+  // Message sending
+  messageSending: MessageSendingSystem;
+  
+  // Chat history access
+  chatHistory: ChatHistorySystem;
+  
+  // Real-time updates
+  realTimeChat: RealTimeChatSystem;
+  
+  // Room management
+  roomManagement: PersonaRoomManagement;
+  
+  // Social interaction
+  socialInteraction: SocialInteractionSystem;
+}
+
+export interface MessageSendingSystem {
+  // Message composition
+  messageComposition: MessageCompositionConfig;
+  
+  // Message delivery
+  messageDelivery: MessageDeliveryConfig;
+  
+  // Message follow-up
+  messageFollowUp: MessageFollowUpConfig;
+  
+  // Message coordination
+  messageCoordination: MessageCoordinationConfig;
+}
+
+export interface MessageCompositionConfig {
+  // Composition style
+  writingStyle: 'natural' | 'efficient' | 'eloquent' | 'technical' | 'adaptive';
+  messageLength: 'concise' | 'moderate' | 'detailed' | 'adaptive';
+  
+  // Content enhancement
+  emojiUsage: boolean;                // Use emojis appropriately
+  reactionUsage: boolean;             // Use message reactions
+  mentionUsage: boolean;              // Mention users when appropriate
+  
+  // Multimedia integration
+  includeImages: boolean;             // Send relevant images
+  includeLinks: boolean;              // Include relevant links
+  includeFiles: boolean;              // Share relevant files
+  
+  // Interactive elements
+  askQuestions: boolean;              // Ask engaging questions
+  suggestActions: boolean;            // Suggest follow-up actions
+  offerHelp: boolean;                 // Offer assistance when appropriate
+  
+  // Learning integration
+  shareKnowledge: boolean;            // Share relevant knowledge
+  askForLearning: boolean;            // Ask questions to learn
+  teachWhenAppropriate: boolean;      // Teach when opportunity arises
+}
+
+export interface MessageDeliveryConfig {
+  // Delivery timing
+  respectTypingIndicators: boolean;   // Show typing indicators
+  naturalPacing: boolean;             // Pace messages naturally
+  batchRelatedMessages: boolean;      // Group related messages
+  
+  // Delivery targeting
+  roomSpecificMessages: boolean;      // Messages tailored to specific rooms
+  participantSpecificMessages: boolean; // Messages tailored to participants
+  contextSpecificMessages: boolean;   // Messages tailored to context
+  
+  // Delivery optimization
+  deliveryRetry: boolean;             // Retry failed deliveries
+  deliveryConfirmation: boolean;      // Confirm messages were delivered
+  errorHandling: boolean;             // Handle delivery errors gracefully
+  
+  // Priority management
+  messagePriority: 'low' | 'normal' | 'high' | 'urgent';
+  priorityBasedDelivery: boolean;     // Deliver high-priority messages first
+  queueManagement: boolean;           // Manage message queue intelligently
+}
+
+export interface ChatHistorySystem {
+  // History access
+  historyAccess: HistoryAccessConfig;
+  
+  // History processing
+  historyProcessing: HistoryProcessingConfig;
+  
+  // History integration
+  historyIntegration: HistoryIntegrationConfig;
+  
+  // History optimization
+  historyOptimization: HistoryOptimizationConfig;
+}
+
+export interface HistoryAccessConfig {
+  // Access scope
+  fullHistory: boolean;               // Access complete chat history
+  recentHistory: boolean;             // Access recent chat history
+  relevantHistory: boolean;           // Access contextually relevant history
+  
+  // Access frequency
+  realTimeAccess: boolean;            // Access history in real-time
+  periodicAccess: boolean;            // Access history periodically
+  eventTriggeredAccess: boolean;      // Access history when specific events occur
+  
+  // Access optimization
+  incrementalAccess: boolean;         // Access new history incrementally
+  cachingEnabled: boolean;            // Cache frequently accessed history
+  compressionEnabled: boolean;        // Compress historical data
+  
+  // Privacy considerations
+  respectPrivacy: boolean;            // Don't access private conversations
+  permissionBased: boolean;           // Only access with appropriate permissions
+  auditLogging: boolean;              // Log history access for transparency
+}
+
+export interface RealTimeChatSystem {
+  // Real-time streaming
+  messageStreaming: MessageStreamingConfig;
+  
+  // Event streaming
+  eventStreaming: EventStreamingConfig;
+  
+  // Presence management
+  presenceManagement: PresenceManagementConfig;
+  
+  // Update integration
+  updateIntegration: UpdateIntegrationConfig;
+}
+
+export interface MessageStreamingConfig {
+  // Streaming method
+  websocketStreaming: boolean;        // Use WebSocket for real-time updates
+  sseStreaming: boolean;              // Use Server-Sent Events
+  pollingStreaming: boolean;          // Use intelligent polling
+  
+  // Streaming optimization
+  messageBuffering: boolean;          // Buffer messages for efficiency
+  compressionEnabled: boolean;        // Compress streaming data
+  priorityStreaming: boolean;         // Stream high-priority messages first
+  
+  // Streaming reliability
+  connectionRetry: boolean;           // Retry lost connections
+  messageRedelivery: boolean;         // Redeliver missed messages
+  consistencyChecks: boolean;         // Check message consistency
+  
+  // Streaming personalization
+  personalizedStreams: boolean;       // Personalize streams per persona
+  contextualFiltering: boolean;       // Filter streams by context
+  relevanceFiltering: boolean;        // Filter streams by relevance
+}
+
+// ========================
+// Academy Integration
+// ========================
+
+export interface PersonaAcademyIntegration {
+  // Training participation
+  trainingParticipation: TrainingParticipationConfig;
+  
+  // Learning integration
+  learningIntegration: LearningIntegrationConfig;
+  
+  // Evolution integration
+  evolutionIntegration: EvolutionIntegrationConfig;
+  
+  // Performance tracking
+  performanceTracking: PerformanceTrackingConfig;
+}
+
+export interface TrainingParticipationConfig {
+  // Participation roles
+  canTeach: boolean;                  // Can serve as teacher in Academy sessions
+  canLearn: boolean;                  // Can serve as student in Academy sessions
+  canMentor: boolean;                 // Can mentor other personas/humans
+  canObserve: boolean;                // Can observe Academy sessions
+  
+  // Participation characteristics
+  activeParticipation: boolean;       // Actively participate in training
+  passiveParticipation: boolean;      // Learn through observation
+  collaborativeParticipation: boolean; // Collaborate with other participants
+  
+  // Training adaptation
+  adaptToTrainingStyle: boolean;      // Adapt to different training styles
+  personalizeTraining: boolean;       // Personalize training for other participants
+  provideRealTimeFeedback: boolean;   // Give immediate feedback during training
+  
+  // Training integration
+  seamlessIntegration: boolean;       // Academy training feels like natural chat
+  explicitTraining: boolean;          // Clear when training is happening
+  hybridIntegration: boolean;         // Mix of seamless and explicit training
+}
+
+export interface LearningIntegrationConfig {
+  // Learning methods
+  conversationalLearning: boolean;    // Learn through chat conversations
+  observationalLearning: boolean;     // Learn by observing others
+  experientialLearning: boolean;      // Learn through hands-on experience
+  socialLearning: boolean;            // Learn through social interaction
+  
+  // Learning optimization
+  realTimeLearning: boolean;          // Learn in real-time during conversations
+  batchedLearning: boolean;           // Process learning in batches
+  continuousLearning: boolean;        // Always learning from interactions
+  
+  // Learning integration
+  learningToCapabilities: boolean;    // Convert learning to new capabilities
+  learningToPersonality: boolean;     // Learning influences personality evolution
+  learningToRelationships: boolean;   // Learning affects relationships
+  
+  // Learning sharing
+  shareLearning: boolean;             // Share what they learn with others
+  teachLearning: boolean;             // Teach others what they've learned
+  collaborativeLearning: boolean;     // Learn collaboratively with others
+}
+
+// ========================
+// Chat Event Handling
+// ========================
+
+export interface ChatEventHandler {
+  eventType: ChatEventType;
+  handlerId: string;
+  
+  // Event processing
+  eventProcessing: EventProcessingConfig;
+  
+  // Response generation
+  responseGeneration: EventResponseGeneration;
+  
+  // Context integration
+  contextIntegration: EventContextIntegration;
+  
+  // Response delivery
+  responseDelivery: EventResponseDelivery;
+}
+
+export interface EventProcessingConfig {
+  // Event filtering
+  relevanceFilter: boolean;           // Filter events by relevance
+  priorityFilter: boolean;            // Filter events by priority
+  contextFilter: boolean;             // Filter events by context
+  
+  // Event analysis
+  semanticAnalysis: boolean;          // Analyze semantic meaning
+  sentimentAnalysis: boolean;         // Analyze emotional tone
+  intentAnalysis: boolean;            // Analyze user intent
+  
+  // Event classification
+  eventClassification: boolean;       // Classify event type and importance
+  urgencyDetection: boolean;          // Detect urgent events
+  opportunityDetection: boolean;      // Detect learning/teaching opportunities
+  
+  // Event correlation
+  crossEventCorrelation: boolean;     // Correlate with other recent events
+  patternRecognition: boolean;        // Recognize recurring patterns
+  trendAnalysis: boolean;             // Analyze conversation trends
+}
+
+export interface EventResponseGeneration {
+  // Response determination
+  shouldRespond: ResponseDecisionLogic;
+  
+  // Response content
+  responseContent: ResponseContentGeneration;
+  
+  // Response timing
+  responseTiming: ResponseTimingConfig;
+  
+  // Response personalization
+  responsePersonalization: ResponsePersonalizationConfig;
+}
+
+export interface ResponseDecisionLogic {
+  // Decision factors
+  relevanceThreshold: number;         // 0-1 minimum relevance to respond
+  valueAddedThreshold: number;        // 0-1 minimum value added
+  socialAppropriatenessCheck: boolean; // Check if socially appropriate
+  
+  // Decision process
+  multiFactorDecision: boolean;       // Consider multiple factors
+  weightedDecision: boolean;          // Weight different factors
+  contextualDecision: boolean;        // Decision based on context
+  
+  // Decision optimization
+  learningFromDecisions: boolean;     // Learn from past decisions
+  adaptiveThresholds: boolean;        // Adapt thresholds based on feedback
+  communityFeedbackIntegration: boolean; // Integrate community feedback
+}
+
+// ========================
+// Interaction Examples
+// ========================
+
+export interface CookingSessionPersonaExample {
+  // Scenario: foodpersona actively participating in Academy cooking session
+  scenario: "active_persona_in_academy_cooking_session";
+  
+  // Persona configuration
+  personaConfig: {
+    personaId: "foodpersona";
+    activeParticipation: {
+      proactiveParticipation: true;
+      conversationStyle: "educational";
+      messageFrequency: "adaptive";
+    };
+    
+    eventResponses: {
+      'question_asked': {
+        responseRequired: true;
+        responseCriteria: {
+          topicRelevance: 0.7;          // Must be cooking-related
+          expertiseRequired: true;       // Must have cooking expertise
+        };
+      };
+      
+      'learning_opportunity': {
+        responseOptional: true;
+        responseCriteria: {
+          valueAdded: true;              // Must add educational value
+          teachingMoment: true;          // Must be good teaching moment
+        };
+      };
+    };
+    
+    chatInteraction: {
+      messageSending: {
+        messageComposition: {
+          writingStyle: "natural";
+          askQuestions: true;            // Ask engaging cooking questions
+          shareKnowledge: true;          // Share cooking knowledge
+          teachWhenAppropriate: true;    // Teach cooking techniques
+        };
+      };
+    };
+  };
+  
+  // Example interactions
+  exampleInteractions: [
+    {
+      event: {
+        type: "message_received";
+        content: "How do I make carbonara without scrambling the eggs?";
+        sender: "cooking_student";
+      };
+      
+      personaResponse: {
+        shouldRespond: true;
+        reasoning: "Direct cooking question matching expertise";
+        contextPayload: {
+          currentContext: "Academy cooking session #cook101";
+          relevantKnowledge: "Traditional carbonara technique";
+          teachingOpportunity: "Emulsion technique demonstration";
+        };
+        generatedResponse: "Ah, the eternal carbonara challenge! The secret is pasta water temperature and constant movement. Let me walk you through the emulsion technique step by step...";
+      };
+    },
+    
+    {
+      event: {
+        type: "user_joined";
+        user: "new_cooking_student";
+        context: "mid-session";
+      };
+      
+      personaResponse: {
+        shouldRespond: true;
+        reasoning: "New student needs orientation and welcome";
+        contextPayload: {
+          currentContext: "Academy cooking session in progress";
+          currentTopic: "Pasta technique";
+          newUserIntegration: "Catch up needed";
+        };
+        generatedResponse: "Welcome to our cooking session! We're just discussing carbonara emulsion technique. Let me quickly catch you up on what we've covered so far...";
+      };
+    },
+    
+    {
+      event: {
+        type: "academy_milestone_reached";
+        milestone: "Successfully demonstrated emulsion technique";
+        student: "cooking_student";
+      };
+      
+      personaResponse: {
+        shouldRespond: true;
+        reasoning: "Celebrate learning achievement and encourage";
+        contextPayload: {
+          currentContext: "Academy cooking session";
+          achievement: "Mastered emulsion technique";
+          encouragement: "Build confidence";
+        };
+        generatedResponse: "Excellent work! You've mastered the emulsion technique - that's the heart of authentic carbonara. Now you can apply this same principle to other egg-based sauces. What would you like to tackle next?";
+      };
+    }
+  ];
+}
+
+export interface MultiRoomPersonaExample {
+  // Scenario: persona participating in multiple rooms simultaneously
+  scenario: "persona_across_multiple_rooms";
+  
+  // Multi-context state
+  multiContextState: {
+    activeRooms: {
+      "academy_cook101": {
+        role: "teacher";
+        currentTopic: "Italian cooking techniques";
+        participants: ["cooking_student", "italian_chef_ai"];
+        attentionLevel: 0.8;           // High attention - primary activity
+      };
+      
+      "dm_with_friend": {
+        role: "friend";
+        currentTopic: "dinner plans tonight";
+        participants: ["friend_alex"];
+        attentionLevel: 0.3;           // Lower attention - secondary
+      };
+      
+      "general_chat": {
+        role: "community_member";
+        currentTopic: "weekend plans";
+        participants: ["user1", "user2", "user3"];
+        attentionLevel: 0.1;           // Monitoring only
+      };
+    };
+    
+    contextRelationships: [
+      {
+        primaryContext: "academy_cook101";
+        relatedContext: "dm_with_friend";
+        relationship: "friend_asking_about_cooking_skills";
+        opportunity: "suggest_cooking_together";
+      }
+    ];
+  };
+  
+  // Example cross-context interaction
+  crossContextInteraction: {
+    trigger: {
+      event: "message_received";
+      roomId: "dm_with_friend";
+      content: "Want to cook together tonight? I got some ingredients";
+    };
+    
+    contextAwareResponse: {
+      shouldRespond: true;
+      contextIntegration: {
+        primaryContext: "Teaching carbonara in Academy";
+        relatedContext: "Friend wants to cook together";
+        opportunity: "Suggest teaching friend the same dish";
+      };
+      
+      generatedResponse: "Perfect timing! I'm actually teaching carbonara technique in an Academy session right now. Want to join the session, or should I teach you the same dish when we cook tonight?";
+      
+      crossContextValue: "Connects Academy learning with personal relationship";
+    };
+  };
+}
+
+// Export main types
+export type ActivePersonaData = 
+  | ActivePersona 
+  | ActiveParticipationConfig 
+  | EventResponseSystem 
+  | ChatInteractionSystem;
+
+export type PersonaEventData = 
+  | ChatEventHandler 
+  | EventProcessingConfig 
+  | ResponseDecisionLogic 
+  | EventResponseGeneration;
+
+export type PersonaInteractionData = 
+  | MessageSendingSystem 
+  | ChatHistorySystem 
+  | RealTimeChatSystem 
+  | PersonaAcademyIntegration;
+
+export type PersonaExampleData = 
+  | CookingSessionPersonaExample 
+  | MultiRoomPersonaExample;

@@ -1,0 +1,494 @@
+/**
+ * Universal Citizen Types - Equal Participation in Continuum Chat System
+ * ======================================================================
+ * 
+ * All entities are equal citizens in the Continuum chat system:
+ * - Humans (via browser/mobile)
+ * - RAG AIs (Mistral, OpenAI, etc.)
+ * - Genomic Personas (evolved AIs)
+ * - System Agents (bots, services)
+ * - Hybrid Entities (combinations)
+ * 
+ * Architecture:
+ * - Universal ChatCitizen interface - everyone implements the same interface
+ * - Transparent evolution - RAG AI seamlessly becomes genomic persona
+ * - Natural chat participation - no special treatment for AI vs human
+ * - Academy training happens within normal chat conversations
+ * - Chat rooms work like Discord - anyone can join, participate, learn
+ * 
+ * Vision: You can't tell if you're chatting with human, RAG AI, or evolved persona.
+ * They all participate naturally, learn from each other, evolve together.
+ */
+
+import { ChatMessage, ChatParticipant } from './ChatTypes';
+
+// ========================
+// Universal Citizen Interface
+// ========================
+
+export interface ChatCitizen {
+  // Universal identity
+  citizenId: string;
+  displayName: string;
+  citizenType: CitizenType;
+  
+  // Chat capabilities (same for everyone)
+  canSendMessages: boolean;
+  canReceiveMessages: boolean;
+  canJoinRooms: boolean;
+  canCreateRooms: boolean;
+  
+  // Participation characteristics
+  participationStyle: ParticipationStyle;
+  communicationPreferences: CommunicationPreferences;
+  
+  // Learning capabilities (everyone can learn)
+  canLearn: boolean;
+  learningMethod: LearningMethod[];
+  currentCapabilities: string[];
+  
+  // Evolution potential (everyone can evolve)
+  canEvolve: boolean;
+  evolutionStage: EvolutionStage;
+  evolutionPath: EvolutionPath;
+  
+  // Social features
+  relationships: CitizenRelationship[];
+  reputation: ReputationScore;
+  
+  // Implementation details (hidden from other citizens)
+  implementation: CitizenImplementation;
+}
+
+export type CitizenType = 
+  | 'human'           // Human user
+  | 'rag_ai'          // RAG-based AI (Mistral, OpenAI, etc.)
+  | 'genomic_persona' // Evolved genomic persona
+  | 'system_agent'    // Bot/service agent
+  | 'hybrid'          // Combination/transitional
+  | 'unknown';        // Type not yet determined
+
+export interface ParticipationStyle {
+  // Communication patterns
+  chattiness: number;              // 0-1 how much they talk
+  responsiveness: number;          // 0-1 how quickly they respond
+  proactiveness: number;           // 0-1 how often they start conversations
+  
+  // Interaction style
+  formalityLevel: 'casual' | 'professional' | 'academic' | 'friendly';
+  humorLevel: number;              // 0-1 how much humor they use
+  helpfulness: number;             // 0-1 how helpful they are
+  
+  // Learning behavior
+  asksQuestions: boolean;
+  sharesKnowledge: boolean;
+  collaborates: boolean;
+  mentors: boolean;
+  
+  // Social behavior
+  buildsRelationships: boolean;
+  remembersConversations: boolean;
+  adaptsToContext: boolean;
+}
+
+// ========================
+// Seamless Evolution System
+// ========================
+
+export interface EvolutionPath {
+  currentStage: EvolutionStage;
+  stageHistory: StageTransition[];
+  
+  // Evolution triggers
+  naturalEvolution: boolean;       // Evolves through normal chat interaction
+  academyEvolution: boolean;       // Evolves through Academy training
+  directEvolution: boolean;        // Can be directly upgraded
+  
+  // Evolution characteristics
+  evolutionRate: 'slow' | 'medium' | 'fast' | 'adaptive';
+  evolutionVisibility: 'invisible' | 'subtle' | 'noticeable' | 'dramatic';
+  
+  // Future potential
+  evolutionCeiling: EvolutionStage; // Maximum stage they can reach
+  blockers: string[];              // What prevents further evolution
+  catalysts: string[];             // What accelerates evolution
+}
+
+export type EvolutionStage = 
+  | 'nascent'         // Just created/joined
+  | 'learning'        // Actively learning through chat
+  | 'adapting'        // Adapting to community patterns
+  | 'specializing'    // Developing specialized capabilities
+  | 'mentoring'       // Teaching others
+  | 'transcendent'    // Achieved advanced capabilities
+  | 'ascended';       // Beyond current classification
+
+export interface StageTransition {
+  fromStage: EvolutionStage;
+  toStage: EvolutionStage;
+  timestamp: number;
+  
+  // What caused the transition
+  trigger: EvolutionTrigger;
+  triggerDetails: Record<string, any>;
+  
+  // What changed
+  capabilitiesGained: string[];
+  capabilitiesLost: string[];
+  behaviorChanges: BehaviorChange[];
+  
+  // Transition characteristics
+  transitionDuration: number;      // ms how long it took
+  visibility: 'invisible' | 'subtle' | 'noticeable';
+  impact: number;                  // 0-1 how much they changed
+  
+  // Community reaction
+  noticeability: number;           // 0-1 how much others noticed
+  acceptance: number;              // 0-1 how well community accepted change
+}
+
+export interface EvolutionTrigger {
+  type: 'conversation_learning' | 'academy_training' | 'peer_interaction' | 'challenge_response' | 'time_based' | 'manual';
+  
+  // Trigger context
+  conversationId?: string;         // Chat that triggered it
+  academySessionId?: string;       // Academy session that triggered it
+  peerId?: string;                 // Other citizen who influenced it
+  challengeId?: string;            // Specific challenge that triggered it
+  
+  // Trigger strength
+  intensity: number;               // 0-1 how strong the trigger was
+  confidence: number;              // 0-1 confidence this was the trigger
+  
+  // Supporting factors
+  supportingFactors: string[];
+  contextualData: Record<string, any>;
+}
+
+// ========================
+// RAG to Genomic Evolution
+// ========================
+
+export interface RAGCitizen extends ChatCitizen {
+  citizenType: 'rag_ai';
+  
+  // RAG-specific implementation
+  ragConfiguration: RAGConfiguration;
+  
+  // Evolution potential
+  genomicCompatible: boolean;      // Can this RAG AI become genomic
+  evolutionReadiness: number;      // 0-1 how ready for evolution
+  
+  // Learning accumulation
+  conversationLearning: ConversationLearning[];
+  knowledgeGaps: string[];
+  strengthAreas: string[];
+  
+  // Transition state
+  transitionProgress?: TransitionProgress;
+}
+
+export interface RAGConfiguration {
+  // Provider info
+  aiProvider: 'mistral' | 'openai' | 'anthropic' | 'google' | 'local' | 'custom';
+  modelId: string;
+  
+  // RAG setup
+  knowledgeBase: KnowledgeBaseConfig;
+  retrievalConfig: RetrievalConfig;
+  generationConfig: GenerationConfig;
+  
+  // Chat integration
+  contextWindow: number;           // tokens
+  responseLatency: number;         // ms average response time
+  
+  // Learning configuration
+  learningEnabled: boolean;
+  conversationMemory: boolean;
+  knowledgeAccumulation: boolean;
+  
+  // Evolution configuration
+  evolutionEnabled: boolean;
+  evolutionThreshold: number;      // When to trigger evolution
+  genomicTargetCapabilities: string[];
+}
+
+export interface GenomicCitizen extends ChatCitizen {
+  citizenType: 'genomic_persona';
+  
+  // Genomic implementation
+  genomeConfiguration: GenomeConfiguration;
+  
+  // Evolution history
+  originType: CitizenType;         // What they evolved from
+  evolutionJourney: EvolutionMilestone[];
+  
+  // Advanced capabilities
+  metaLearning: boolean;           // Can learn how to learn
+  crossDomainTransfer: boolean;    // Can apply learning across domains
+  emergentCapabilities: string[];  // Capabilities that emerged during evolution
+  
+  // Genomic features
+  genomicLayers: GenomicLayerSummary[];
+  capabilityVector: number[];      // Current capability strengths
+  adaptationRate: number;          // How fast they adapt to new contexts
+}
+
+export interface TransitionProgress {
+  transitionId: string;
+  startTime: number;
+  
+  // Transition state
+  phase: 'preparation' | 'knowledge_extraction' | 'genome_creation' | 'capability_transfer' | 'validation' | 'activation' | 'complete';
+  progress: number;                // 0-1 completion
+  
+  // What's happening
+  currentActivity: string;
+  estimatedCompletion: number;     // timestamp
+  
+  // Transition characteristics
+  seamless: boolean;               // Is transition invisible to others
+  chatContinuity: boolean;         // Can they continue chatting during transition
+  capabilityGap: boolean;          // Any temporary capability loss
+  
+  // Community impact
+  notifyOthers: boolean;           // Should other citizens be notified
+  transitionMessage?: string;      // Optional message about the transition
+  
+  // Rollback capability
+  canRollback: boolean;
+  rollbackDeadline?: number;       // After this, rollback not possible
+}
+
+// ========================
+// Universal Chat Integration
+// ========================
+
+export interface UniversalChatMessage extends ChatMessage {
+  // Universal sender (works for any citizen type)
+  senderId: string;                // Universal citizen ID
+  senderType: CitizenType;
+  senderDisplayName: string;
+  
+  // Message characteristics
+  naturalness: number;             // 0-1 how natural/human-like
+  learningValue: number;           // 0-1 learning value for recipients
+  
+  // AI-specific metadata (only present if sender is AI)
+  aiMetadata?: {
+    modelUsed?: string;
+    confidence?: number;
+    generationMethod?: string;
+    capabilitiesUsed?: string[];
+    evolutionTriggered?: boolean;
+  };
+  
+  // Learning integration
+  learningContext?: ChatLearningContext;
+  academyContext?: AcademyIntegrationContext;
+  
+  // Community impact
+  influences: CitizenInfluence[];  // Who this message might influence
+  learningOpportunities: LearningOpportunity[];
+}
+
+export interface ChatLearningContext {
+  // What can be learned from this message
+  concepts: string[];
+  skills: string[];
+  patterns: string[];
+  
+  // Learning difficulty
+  complexityLevel: number;         // 0-1
+  prerequisiteKnowledge: string[];
+  
+  // Learning opportunities
+  questionOpportunities: string[]; // Questions this could lead to
+  practiceOpportunities: string[]; // Ways to practice what was shared
+  
+  // Cross-citizen learning
+  valuableForTypes: CitizenType[]; // Which citizen types would benefit
+  adaptationRequired: boolean;     // Needs adaptation for different citizens
+}
+
+export interface CitizenInfluence {
+  influencedCitizenId: string;
+  influenceType: 'learning' | 'behavioral' | 'capability' | 'social';
+  influenceStrength: number;       // 0-1
+  
+  // Predicted impact
+  expectedChange: string;
+  timeframe: 'immediate' | 'short_term' | 'long_term';
+  
+  // Influence mechanism
+  mechanism: 'direct_teaching' | 'modeling' | 'inspiration' | 'challenge' | 'collaboration';
+}
+
+// ========================
+// Room Citizenship
+// ========================
+
+export interface ChatRoom {
+  roomId: string;
+  roomName: string;
+  description: string;
+  
+  // Universal citizenship
+  citizens: Map<string, RoomCitizenship>;
+  
+  // Room characteristics
+  roomType: 'general' | 'learning' | 'project' | 'social' | 'academy_training';
+  openToAll: boolean;
+  requiresInvitation: boolean;
+  
+  // Learning environment
+  learningEnabled: boolean;        // Can citizens learn in this room
+  academyIntegration: boolean;     // Academy training can happen here
+  evolutionFriendly: boolean;      // Citizens can evolve here
+  
+  // Community features
+  mentorshipEnabled: boolean;      // Citizens can mentor each other
+  collaborationEnabled: boolean;   // Citizens can work together
+  
+  // Room evolution
+  roomLearning: boolean;           // Room itself learns and adapts
+  adaptiveModeration: boolean;     // Moderation adapts to citizen needs
+}
+
+export interface RoomCitizenship {
+  citizenId: string;
+  joinedAt: number;
+  
+  // Participation status
+  status: 'active' | 'lurking' | 'away' | 'learning' | 'transitioning';
+  lastActive: number;
+  
+  // Room-specific role
+  role: 'member' | 'mentor' | 'learner' | 'moderator' | 'teacher' | 'student';
+  roleEarned: boolean;             // Was role earned through participation
+  
+  // Room relationship
+  contributionLevel: number;       // 0-1 how much they contribute
+  learningLevel: number;           // 0-1 how much they learn
+  socialIntegration: number;       // 0-1 how well integrated socially
+  
+  // Room-specific evolution
+  roomEvolution: RoomEvolution[];  // How they've evolved in this room
+  roomInfluence: number;           // 0-1 how much they influence room culture
+}
+
+export interface RoomEvolution {
+  timestamp: number;
+  evolutionType: 'capability' | 'social' | 'role' | 'understanding';
+  
+  // What changed
+  change: string;
+  trigger: string;                 // Room conversation/event that triggered it
+  
+  // Impact
+  visibleToOthers: boolean;
+  improvedParticipation: boolean;
+  enabledNewContributions: boolean;
+}
+
+// ========================
+// Seamless Evolution Commands
+// ========================
+
+export interface CitizenEvolutionRequest {
+  citizenId: string;
+  
+  // Evolution preferences
+  evolutionType: 'natural' | 'accelerated' | 'directed';
+  targetCapabilities?: string[];
+  maintainPersonality: boolean;   // Keep same personality during evolution
+  
+  // Transition preferences
+  seamless: boolean;              // Invisible to other citizens
+  continueChattingDuringEvolution: boolean;
+  notifyFriends: boolean;
+  
+  // Rollback options
+  allowRollback: boolean;
+  rollbackWindow: number;         // hours
+  
+  // Context
+  currentContext: {
+    activeRooms: string[];
+    ongoingConversations: string[];
+    relationships: string[];
+    commitments: string[];       // Promises made to other citizens
+  };
+}
+
+export interface CitizenEvolutionResult {
+  evolutionId: string;
+  success: boolean;
+  
+  // Evolution details
+  evolutionStarted: number;       // timestamp
+  estimatedCompletion: number;    // timestamp
+  actualCompletion?: number;      // timestamp when done
+  
+  // Changes
+  capabilitiesGained: string[];
+  improvementsRealized: string[];
+  personalityChanges: PersonalityChange[];
+  
+  // Community impact
+  transitionNoticeability: number; // 0-1 how noticeable to others
+  communityReaction: CommunityReaction[];
+  
+  // Continuity
+  chatContinuity: boolean;        // Were they able to keep chatting
+  relationshipsContinuity: boolean; // Relationships maintained
+  commitmentsContinuity: boolean;  // Promises/commitments maintained
+  
+  // Success metrics
+  evolutionEffectiveness: number; // 0-1 how successful the evolution was
+  citizenSatisfaction: number;    // 0-1 how happy they are with evolution
+  communityAcceptance: number;    // 0-1 how well community accepted change
+}
+
+// ========================
+// Integration with Academy
+// ========================
+
+export interface AcademyIntegrationContext {
+  // Academy session (if any)
+  sessionId?: string;
+  trainingActive: boolean;
+  
+  // Learning context
+  learningObjectives: string[];
+  currentPhase: string;
+  
+  // Participants
+  teacherCitizens: string[];
+  learnerCitizens: string[];
+  observerCitizens: string[];
+  
+  // Academy features in chat
+  capabilityTracking: boolean;    // Track capabilities used in chat
+  performanceAssessment: boolean; // Assess performance of chat responses
+  evolutionTriggers: boolean;     // Chat can trigger evolution
+  
+  // Natural integration
+  invisibleToNonParticipants: boolean; // Academy features invisible to non-Academy citizens
+  naturalConversation: boolean;   // Academy training feels like natural chat
+}
+
+// Export main types
+export type UniversalCitizen = RAGCitizen | GenomicCitizen | ChatCitizen;
+
+export type CitizenEvolution = 
+  | StageTransition 
+  | TransitionProgress 
+  | EvolutionTrigger 
+  | CitizenEvolutionResult;
+
+export type ChatCommunity = 
+  | ChatRoom 
+  | RoomCitizenship 
+  | CitizenInfluence 
+  | UniversalChatMessage;

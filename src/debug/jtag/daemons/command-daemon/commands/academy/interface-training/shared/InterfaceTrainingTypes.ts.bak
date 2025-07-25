@@ -1,0 +1,591 @@
+/**
+ * Interface Training Types - Embodied Learning Through Real Interaction
+ * ====================================================================
+ * 
+ * Training personas learn by actually using interfaces - web pages, games, 
+ * software applications - while the training session happens live in chat.
+ * 
+ * "Show me how to debug TypeScript" -> Persona opens VS Code, creates a buggy file,
+ * debugs it live while explaining in chat, observers watch both the screen and chat.
+ * 
+ * "Learn to play chess" -> Persona plays chess.com while asking questions in chat,
+ * teacher persona guides strategy through conversation while actual moves happen.
+ * 
+ * Architecture:
+ * - Chat training session runs in parallel with interface interaction
+ * - Personas control browser/applications through existing JTAG commands
+ * - Screen capture and interaction logs become training data
+ * - Real-time feedback between interface actions and chat learning
+ * - Observers see both conversation AND what's happening on screen
+ */
+
+import { AcademyParams, AcademyResult } from '../../shared/AcademyTypes';
+import { TrainingMessage, AcademyTrainingSession, TrainingPersona } from '../chat-training/shared/ChatTrainingTypes';
+
+// ========================
+// Interface Training Session Types
+// ========================
+
+export interface InterfaceTrainingSession extends AcademyTrainingSession {
+  // Interface-specific configuration
+  interfaceTargets: InterfaceTarget[];    // What interfaces/apps to use
+  screenRecording: boolean;               // Record screen during training
+  interactionLogging: boolean;            // Log all interface interactions
+  
+  // Multi-modal training
+  chatLearning: boolean;                  // Learning through chat
+  embodiedLearning: boolean;              // Learning through doing
+  observationalLearning: boolean;         // Learning by watching others
+  
+  // Interface coordination
+  sharedScreen: boolean;                  // Do personas share a screen
+  parallelInterfaces: boolean;            // Can multiple personas use interfaces
+  interfaceHandoff: boolean;              // Can personas hand off control
+  
+  // Real-time integration
+  actionChatCorrelation: boolean;         // Correlate actions with chat messages
+  liveScreenSharing: boolean;             // Share screen with observers
+  interactionNarration: boolean;          // Personas narrate their actions
+  
+  // Training artifacts
+  screenCaptures: ScreenCapture[];
+  interactionLogs: InterfaceInteraction[];
+  performanceMetrics: InterfacePerformanceMetrics;
+  
+  // Observer experience
+  observerScreenAccess: boolean;          // Can observers see the screen
+  observerInteractionPermissions: ObserverInteractionPermissions;
+}
+
+export interface InterfaceTarget {
+  targetId: string;
+  name: string;
+  description: string;
+  
+  // Target type
+  type: 'web_page' | 'web_application' | 'game' | 'desktop_app' | 'mobile_app' | 'api' | 'command_line';
+  
+  // Access details
+  url?: string;                          // For web targets
+  appPath?: string;                      // For desktop apps
+  gameId?: string;                       // For games
+  apiEndpoint?: string;                  // For APIs
+  
+  // Training context
+  learningObjectives: string[];          // What to learn from this interface
+  skillsRequired: string[];              // Skills needed to use this interface
+  complexityLevel: number;               // 0-1 interface complexity
+  
+  // Interface capabilities
+  supportedActions: InterfaceAction[];   // What actions can be performed
+  observableElements: ObservableElement[]; // What can be observed
+  feedbackMechanisms: FeedbackMechanism[]; // How interface provides feedback
+  
+  // Training configuration
+  beginnerMode: boolean;                 // Use beginner-friendly settings
+  sandboxMode: boolean;                  // Use sandbox/safe environment
+  resetCapable: boolean;                 // Can reset to clean state
+  
+  // Integration
+  chatIntegration: ChatIntegrationConfig;
+  screenCaptureConfig: ScreenCaptureConfig;
+  interactionLogConfig: InteractionLogConfig;
+}
+
+export interface InterfaceAction {
+  actionType: string;                    // 'click', 'type', 'scroll', 'drag', etc.
+  description: string;
+  
+  // Action capabilities
+  targetElements: string[];              // CSS selectors or element types
+  parameters: ActionParameter[];         // Required/optional parameters
+  
+  // Learning context
+  skillLevel: 'beginner' | 'intermediate' | 'advanced'; // Skill level needed
+  cognitiveLoad: number;                 // 0-1 mental effort required
+  frequency: 'rare' | 'occasional' | 'common' | 'very_common';
+  
+  // Training value
+  learningValue: number;                 // 0-1 how valuable for learning
+  prerequisiteActions: string[];         // Actions that should be learned first
+  enablesActions: string[];              // Actions this enables
+  
+  // Feedback
+  immediateFeedback: boolean;            // Does action give immediate feedback
+  feedbackType: 'visual' | 'auditory' | 'haptic' | 'data';
+  successIndicators: string[];           // How to know action succeeded
+  failureIndicators: string[];           // How to know action failed
+}
+
+export interface ObservableElement {
+  elementType: string;                   // 'button', 'input', 'display', etc.
+  description: string;
+  
+  // Observability
+  visuallyObservable: boolean;           // Can be seen on screen
+  stateObservable: boolean;              // Can observe state changes
+  dataObservable: boolean;               // Provides data/metrics
+  
+  // Learning relevance
+  learningRelevance: number;             // 0-1 relevance to learning objectives
+  complexityIndicator: boolean;          // Does this indicate complexity
+  progressIndicator: boolean;            // Does this show progress
+  performanceIndicator: boolean;         // Does this show performance
+  
+  // Training context
+  attentionPriority: 'low' | 'medium' | 'high' | 'critical';
+  explanationNeeded: boolean;            // Should persona explain this element
+  beginnerFriendly: boolean;             // Easy for beginners to understand
+}
+
+// ========================
+// Multi-Modal Training Types
+// ========================
+
+export interface EmbodiedLearningAction {
+  actionId: string;
+  timestamp: number;
+  
+  // Action details
+  interfaceTarget: string;               // Which interface
+  actionType: string;                    // Type of action
+  actionData: ActionData;                // Specific action parameters
+  
+  // Learning context
+  personaId: string;                     // Who performed the action
+  learningObjective: string;             // What they were trying to learn
+  chatContext: ChatActionContext;        // Related chat messages
+  
+  // Action assessment
+  success: boolean;                      // Did action succeed
+  skillDemonstrated: string[];           // Skills shown in this action
+  mistakes: ActionMistake[];             // Mistakes made
+  improvements: ActionImprovement[];     // How it could be improved
+  
+  // Real-time correlation
+  correlatedChatMessages: string[];      // Chat messages related to this action
+  teachingMoments: TeachingMoment[];     // Teaching that happened around this
+  learningIndicators: LearningIndicator[]; // Signs of learning
+  
+  // Observer impact
+  observerReactions: ObserverActionReaction[];
+  questionsGenerated: string[];          // Questions this action generated
+  
+  // Performance metrics
+  executionTime: number;                 // How long action took
+  precisionScore: number;                // 0-1 how precisely executed
+  efficiencyScore: number;               // 0-1 how efficiently executed
+  confidenceLevel: number;               // 0-1 persona's confidence
+}
+
+export interface ActionData {
+  // Raw action data
+  coordinates?: {x: number, y: number};  // For clicks, etc.
+  text?: string;                         // For typing
+  keystrokes?: string[];                 // For keyboard actions
+  scrollAmount?: number;                 // For scrolling
+  duration?: number;                     // For time-based actions
+  
+  // Context data
+  targetElement?: ElementReference;      // What element was targeted
+  beforeState?: InterfaceState;          // State before action
+  afterState?: InterfaceState;           // State after action
+  
+  // Intent data
+  intendedOutcome: string;               // What persona intended
+  actualOutcome: string;                 // What actually happened
+  outcomeMatch: number;                  // 0-1 how well outcomes matched
+}
+
+export interface ChatActionContext {
+  // Related messages
+  triggeringMessage?: string;            // Chat message that led to this action
+  explanatoryMessage?: string;           // Message explaining the action
+  reflectionMessage?: string;            // Message reflecting on the action
+  
+  // Conversation context
+  conversationTopic: string;
+  teachingMoment: boolean;               // Was this part of teaching
+  studentQuestion: boolean;              // Was this answering a question
+  demonstration: boolean;                // Was this a demonstration
+  
+  // Learning context
+  learningPhase: 'introduction' | 'exploration' | 'practice' | 'mastery';
+  difficultyLevel: number;               // 0-1 current difficulty
+  supportLevel: 'independent' | 'guided' | 'assisted' | 'demonstrated';
+}
+
+export interface ActionMistake {
+  mistakeType: string;                   // Type of mistake made
+  description: string;
+  
+  // Mistake analysis
+  cause: 'knowledge_gap' | 'skill_gap' | 'attention_error' | 'interface_confusion' | 'coordination_error';
+  severity: 'minor' | 'moderate' | 'major' | 'critical';
+  
+  // Learning opportunity
+  teachingOpportunity: boolean;          // Can we teach from this mistake
+  commonMistake: boolean;                // Is this a common beginner mistake
+  preventable: boolean;                  // Could this have been prevented
+  
+  // Recovery
+  recoveryAction?: string;               // How mistake was recovered from
+  recoveryTime: number;                  // Time to recover
+  helpNeeded: boolean;                   // Did persona need help to recover
+  
+  // Learning impact
+  learningValue: number;                 // 0-1 learning value of this mistake
+  insightGenerated: boolean;             // Did this generate insight
+  behaviorChange: boolean;               // Did this change future behavior
+}
+
+// ========================
+// Screen Capture and Observation Types
+// ========================
+
+export interface ScreenCapture {
+  captureId: string;
+  timestamp: number;
+  
+  // Capture details
+  captureType: 'screenshot' | 'video_segment' | 'screen_recording';
+  filePath: string;                      // Stored via ArtifactsDaemon
+  duration?: number;                     // For videos
+  
+  // Context
+  interfaceTarget: string;               // What interface was captured
+  trainingContext: TrainingCaptureContext;
+  
+  // Content analysis
+  visibleElements: VisibleElement[];     // Elements visible in capture
+  actionsCaptured: string[];             // Actions shown in capture
+  significantChanges: InterfaceChange[]; // Important changes captured
+  
+  // Learning relevance
+  learningMoments: LearningMoment[];     // Key learning moments captured
+  teachingValue: number;                 // 0-1 value for teaching
+  exampleQuality: number;                // 0-1 quality as an example
+  
+  // Observer experience
+  observerNotes: string[];               // Notes from observers
+  observerQuestions: string[];           // Questions generated
+  discussionGenerated: boolean;          // Did this generate discussion
+  
+  // Annotations
+  annotations: ScreenAnnotation[];       // Explanatory annotations
+  highlights: ScreenHighlight[];         // Important areas highlighted
+  narration: string[];                   // Spoken explanations
+}
+
+export interface TrainingCaptureContext {
+  sessionPhase: string;
+  currentActivity: string;
+  learningObjective: string;
+  
+  // Capture reason
+  captureReason: 'demonstration' | 'mistake_analysis' | 'progress_check' | 'example_creation' | 'assessment';
+  
+  // Participants
+  activePersona: string;                 // Who was performing actions
+  observingPersonas: string[];           // Who was watching
+  humanObservers: string[];              // Humans who were watching
+  
+  // Context depth
+  complexity: number;                    // 0-1 complexity of what was captured
+  novelty: number;                       // 0-1 how novel the content was
+  
+  // Chat correlation
+  correlatedChatMessages: string[];      // Chat messages around this capture
+  chatSummary: string;                   // Summary of related chat
+}
+
+export interface VisibleElement {
+  elementId: string;
+  elementType: string;
+  description: string;
+  
+  // Visual properties
+  position: {x: number, y: number, width: number, height: number};
+  visible: boolean;
+  interactive: boolean;
+  
+  // Learning relevance
+  importance: 'low' | 'medium' | 'high' | 'critical';
+  explanation: string;                   // Why this element matters
+  
+  // State
+  state: Record<string, any>;           // Current state of element
+  stateChanges: StateChange[];          // Changes during capture
+  
+  // Interaction potential
+  possibleActions: string[];             // Actions that could be performed
+  recommendedActions: string[];          // Actions recommended for learning
+}
+
+// ========================
+// Real-Time Integration Types
+// ========================
+
+export interface InterfaceTrainingMessage extends TrainingMessage {
+  // Interface correlation
+  correlatedActions: string[];           // Interface actions related to this message
+  screenCaptures: string[];              // Screen captures related to this message
+  
+  // Multi-modal content
+  actionDemonstration: boolean;          // Does this message demonstrate an action
+  screenReference: boolean;              // Does this message reference the screen
+  interfaceExplanation: boolean;         // Does this explain interface elements
+  
+  // Real-time coordination
+  actionTiming: ActionTiming;            // When actions should happen relative to message
+  screenFocus: ScreenFocus;              // What screen elements to focus on
+  
+  // Embodied learning
+  physicalDemo: boolean;                 // Is this a physical demonstration
+  requiresAction: boolean;               // Does this require interface action
+  actionOutcome: ActionOutcomeExpectation;
+}
+
+export interface ActionTiming {
+  beforeMessage: InterfaceAction[];      // Actions to perform before message
+  duringMessage: InterfaceAction[];      // Actions to perform while speaking
+  afterMessage: InterfaceAction[];       // Actions to perform after message
+  
+  // Timing coordination
+  pauseForAction: boolean;               // Should message pause for actions
+  actionDelay: number;                   // Milliseconds to delay actions
+  synchronization: 'loose' | 'tight' | 'precise'; // How precisely timed
+}
+
+export interface ScreenFocus {
+  highlightElements: string[];           // Elements to highlight
+  zoomAreas: ScreenArea[];               // Areas to zoom in on
+  annotations: ScreenAnnotation[];       // Real-time annotations
+  
+  // Focus timing
+  focusDuration: number;                 // How long to maintain focus
+  fadeInOut: boolean;                    // Should focus fade in/out
+  
+  // Observer guidance
+  guidanceLevel: 'minimal' | 'moderate' | 'detailed';
+  explicitPointing: boolean;             // Use cursor/arrows to point
+}
+
+// ========================
+// Command Types
+// ========================
+
+export class StartInterfaceTrainingParams extends AcademyParams<{
+  // Base training session
+  baseSession: Partial<InterfaceTrainingSession>;
+  
+  // Interface targets
+  interfaceTargets: InterfaceTarget[];
+  primaryInterface: string;              // Main interface to focus on
+  
+  // Multi-modal configuration
+  enableScreenRecording: boolean;
+  enableInteractionLogging: boolean;
+  enableLiveScreenSharing: boolean;
+  
+  // Observer experience
+  allowObserverScreenAccess: boolean;
+  observerInteractionLevel: 'view_only' | 'limited_interaction' | 'full_interaction';
+  
+  // Training coordination
+  chatActionCorrelation: boolean;        // Correlate chat with actions
+  realTimeNarration: boolean;            // Persona narrates actions
+  actionPrediction: boolean;             // Predict next actions
+  
+  // Interface preparation
+  setupInstructions: SetupInstruction[]; // How to prepare interfaces
+  beginnerMode: boolean;                 // Use beginner-friendly settings
+  sandboxMode: boolean;                  // Use safe/sandbox environments
+}> {}
+
+export class StartInterfaceTrainingResult extends AcademyResult<{
+  // Training session
+  sessionId: string;
+  interfaceSessionId: string;            // Additional ID for interface tracking
+  
+  // Interface setup
+  interfacesInitialized: string[];       // Successfully initialized interfaces
+  interfaceUrls: Record<string, string>; // URLs for web interfaces
+  screenStreamUrl?: string;              // Live screen stream URL
+  
+  // Observer access
+  observerScreenUrl?: string;            // URL for observers to watch screen
+  observerChatUrl: string;               // URL for observers to join chat
+  
+  // Real-time feeds
+  actionFeedUrl: string;                 // Live action feed
+  screenCaptureFeedUrl: string;          // Live screen capture feed
+  correlationFeedUrl: string;            // Chat-action correlation feed
+  
+  // Training tools
+  annotationToolUrl?: string;            // Tool for creating annotations
+  replayToolUrl?: string;                // Tool for replaying sessions
+  
+  // Analytics
+  expectedLearningCurve: LearningCurve;
+  interfaceComplexityAssessment: ComplexityAssessment;
+}> {}
+
+export class PerformInterfaceActionParams extends AcademyParams<{
+  // Action details
+  interfaceTarget: string;
+  actionType: string;
+  actionData: ActionData;
+  
+  // Learning context
+  personaId: string;
+  learningObjective?: string;
+  chatContext?: ChatActionContext;
+  
+  // Execution options
+  captureScreen: boolean;                // Capture screen during action
+  logInteraction: boolean;               // Log detailed interaction data
+  narrateAction: boolean;                // Describe action in chat
+  
+  // Timing
+  executionDelay?: number;               // Milliseconds to wait before action
+  correlatedMessageId?: string;          // Chat message this relates to
+  
+  // Observer coordination
+  highlightAction: boolean;              // Highlight action for observers
+  explainAction: boolean;                // Provide explanation
+  predictOutcome: boolean;               // Predict what will happen
+}> {}
+
+export class PerformInterfaceActionResult extends AcademyResult<{
+  // Action results
+  actionExecuted: boolean;
+  actionId: string;
+  executionTime: number;
+  
+  // Outcome
+  success: boolean;
+  outcomeDescription: string;
+  actualOutcome: string;
+  expectedOutcome: string;
+  outcomeMatch: number;                  // 0-1 how well outcomes matched
+  
+  // Learning analysis
+  skillsDemonstrated: string[];
+  mistakesMade: ActionMistake[];
+  learningValue: number;                 // 0-1 learning value
+  
+  // Artifacts created
+  screenCaptureId?: string;              // Screen capture created
+  interactionLogId?: string;             // Interaction log entry
+  chatMessageId?: string;                // Explanatory chat message
+  
+  // Real-time updates
+  observerNotifications: ObserverNotification[];
+  performanceMetrics: ActionPerformanceMetrics;
+  
+  // Follow-up
+  suggestedNextActions: string[];
+  teachingOpportunities: string[];
+  questionsGenerated: string[];
+}> {}
+
+// ========================
+// Supporting Types
+// ========================
+
+export interface SetupInstruction {
+  instruction: string;
+  targetInterface: string;
+  automated: boolean;                    // Can this be automated
+  
+  // Execution
+  commands?: string[];                   // Commands to run
+  manualSteps?: string[];                // Manual steps required
+  verificationSteps?: string[];          // How to verify setup
+  
+  // Context
+  purpose: string;                       // Why this setup is needed
+  skillLevel: 'beginner' | 'intermediate' | 'advanced';
+  estimatedTime: number;                 // Milliseconds
+}
+
+export interface LearningMoment {
+  momentId: string;
+  timestamp: number;
+  description: string;
+  
+  // Moment characteristics
+  momentType: 'insight' | 'breakthrough' | 'mistake_recovery' | 'skill_demonstration' | 'knowledge_connection';
+  significance: 'minor' | 'moderate' | 'major' | 'breakthrough';
+  
+  // Learning context
+  learningObjective: string;
+  skillsInvolved: string[];
+  knowledgeTransferred: string;
+  
+  // Evidence
+  behavioralEvidence: string[];          // What behavior showed learning
+  verbalEvidence: string[];              // What was said that showed learning
+  performanceEvidence: string[];         // Performance changes that showed learning
+  
+  // Impact
+  immediateImpact: string;               // Immediate effect of learning
+  predictedLongTermImpact: string;       // Expected long-term effect
+  transferPotential: number;             // 0-1 likelihood of transfer to other contexts
+}
+
+export interface ObserverActionReaction {
+  observerId: string;
+  reactionType: 'surprise' | 'confusion' | 'understanding' | 'excitement' | 'concern';
+  
+  // Reaction content
+  comment?: string;
+  question?: string;
+  insight?: string;
+  
+  // Reaction context
+  whatTriggered: string;                 // What about the action triggered this
+  learningValue: number;                 // 0-1 learning value for observer
+  engagementLevel: number;               // 0-1 engagement level
+}
+
+export interface InterfacePerformanceMetrics {
+  // Overall performance
+  overallEfficiency: number;             // 0-1 overall efficiency
+  learningVelocity: number;              // Rate of skill acquisition
+  
+  // Action-specific metrics
+  actionAccuracy: number;                // 0-1 accuracy of actions
+  actionSpeed: number;                   // Actions per minute
+  errorRate: number;                     // 0-1 error frequency
+  
+  // Interface mastery
+  interfaceFamiliarity: number;          // 0-1 familiarity with interface
+  featureUtilization: number;            // 0-1 how many features used
+  workflowOptimization: number;          // 0-1 optimization of workflows
+  
+  // Learning indicators
+  improvementRate: number;               // Rate of improvement over time
+  transferEffectiveness: number;         // 0-1 transfer to similar interfaces
+  retentionScore: number;                // 0-1 retention of learned skills
+}
+
+// Export all types
+export type InterfaceTrainingData = 
+  | InterfaceTrainingSession 
+  | InterfaceTarget 
+  | InterfaceAction 
+  | EmbodiedLearningAction;
+
+export type MultiModalData = 
+  | ScreenCapture 
+  | ActionData 
+  | ChatActionContext 
+  | InterfaceTrainingMessage;
+
+export type ObservationData = 
+  | VisibleElement 
+  | LearningMoment 
+  | ObserverActionReaction 
+  | InterfacePerformanceMetrics;

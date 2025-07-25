@@ -1,0 +1,992 @@
+/**
+ * UDPMulticastTransport - P2P UDP multicast transport for JTAG router
+ * 
+ * Enables automatic discovery and communication between Continuum nodes on local networks.
+ * Uses UDP multicast for discovery and direct UDP for high-performance data transfer.
+ * 
+ * Features:
+ * - Automatic node discovery via multicast
+ * - Direct UDP communication for performance
+ * - Cryptographic node authentication
+ * - Mesh network topology with routing
+ * - Bandwidth optimization for large payloads
+ * - NAT traversal support
+ */
+
+import { JTAGTransport, JTAGPayload, JTAGContext } from '../../shared/JTAGTypes';
+import type { JTAGTransport as RouterJTAGTransport, JTAGMessage } from '../../shared/JTAGRouter';
+import type { TransportSendResult } from '../../shared/RouterTypes';
+import * as dgram from 'dgram';
+import * as crypto from 'crypto';
+
+// ==================== TRANSPORT CONFIGURATION ====================
+
+export interface UDPMulticastConfig {
+  // Node identity
+  nodeId: string;
+  nodeType: 'server' | 'browser' | 'mobile' | 'ai-agent';
+  capabilities: string[];
+  
+  // Network configuration
+  multicastAddress: string;
+  multicastPort: number;
+  unicastPort: number;
+  discoveryInterval: number;
+  
+  // Security
+  encryptionKey?: string;
+  allowedNodes?: string[];
+  requireAuth: boolean;
+  
+  // Performance
+  maxPacketSize: number;
+  fragmentationEnabled: boolean;
+  compressionEnabled: boolean;
+  
+  // NAT traversal
+  stunServers?: string[];
+  enableUPnP: boolean;
+}
+
+export interface P2PNode {
+  nodeId: string;
+  nodeType: string;
+  address: string;
+  port: number;
+  capabilities: string[];
+  lastSeen: number;
+  latency: number;
+  authenticated: boolean;
+  publicKey?: string;
+}
+
+export interface P2PMessage {
+  messageId: string;
+  fromNodeId: string;
+  toNodeId: string;
+  messageType: 'discovery' | 'heartbeat' | 'data' | 'ack' | 'route_request' | 'route_response';
+  timestamp: number;
+  ttl: number;
+  encrypted: boolean;
+  fragmented?: boolean;
+  fragmentIndex?: number;
+  fragmentTotal?: number;
+  payload: any;
+  signature?: string;
+}
+
+// ==================== UDP MULTICAST TRANSPORT ====================
+
+export class UDPMulticastTransport extends JTAGTransport implements RouterJTAGTransport {
+  public readonly name = 'udp-multicast';
+  public readonly version = '1.0.0';
+  
+  private config: UDPMulticastConfig;
+  private multicastSocket?: dgram.Socket;
+  private unicastSocket?: dgram.Socket;
+  
+  // P2P network state
+  private peers = new Map<string, P2PNode>();
+  private routingTable = new Map<string, string>(); // destination -> next hop
+  private messageCache = new Map<string, { timestamp: number; response?: any }>();
+  private fragmentBuffer = new Map<string, Map<number, Buffer>>();
+  
+  // Timers
+  private discoveryTimer?: NodeJS.Timer;
+  private heartbeatTimer?: NodeJS.Timer;
+  private cleanupTimer?: NodeJS.Timer;
+  
+  // Crypto
+  private keyPair?: { publicKey: string; privateKey: string };
+  private encryptionKey?: Buffer;
+  
+  constructor(config: Partial<UDPMulticastConfig>) {
+    super();
+    
+    this.config = {
+      nodeId: config.nodeId || this.generateNodeId(),
+      nodeType: config.nodeType || 'server',
+      capabilities: config.capabilities || ['chat', 'database', 'compiler', 'artifacts'],
+      multicastAddress: config.multicastAddress || '239.255.7.33',
+      multicastPort: config.multicastPort || 7331,
+      unicastPort: config.unicastPort || 7332,
+      discoveryInterval: config.discoveryInterval || 30000,
+      encryptionKey: config.encryptionKey,
+      allowedNodes: config.allowedNodes,
+      requireAuth: config.requireAuth ?? true,
+      maxPacketSize: config.maxPacketSize || 65507, // Max UDP packet size
+      fragmentationEnabled: config.fragmentationEnabled ?? true,
+      compressionEnabled: config.compressionEnabled ?? true,
+      stunServers: config.stunServers || ['stun:stun1.l.google.com:19302'],
+      enableUPnP: config.enableUPnP ?? false
+    };
+    
+    this.initializeCrypto();
+  }
+  
+  // ==================== TRANSPORT LIFECYCLE ====================
+  
+  public async initialize(context: JTAGContext): Promise<boolean> {
+    try {
+      this.log('🌐 Initializing UDP Multicast Transport...', 'info');
+      
+      // Create multicast socket for discovery
+      this.multicastSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+      
+      // Create unicast socket for direct communication
+      this.unicastSocket = dgram.createSocket('udp4');
+      
+      // Setup multicast socket
+      await this.setupMulticastSocket();
+      
+      // Setup unicast socket
+      await this.setupUnicastSocket();
+      
+      // Start discovery and maintenance
+      this.startDiscovery();
+      this.startHeartbeat();
+      this.startCleanup();
+      
+      // Announce our presence
+      await this.announcePresence();
+      
+      this.log(`🌐 UDP Multicast Transport initialized - Node: ${this.config.nodeId}`, 'info');
+      return true;
+      
+    } catch (error) {
+      this.log(`❌ Failed to initialize UDP Multicast Transport: ${error}`, 'error');
+      return false;
+    }
+  }
+  
+  public async cleanup(): Promise<void> {
+    try {
+      this.log('🌐 Cleaning up UDP Multicast Transport...', 'info');
+      
+      // Stop timers
+      if (this.discoveryTimer) clearInterval(this.discoveryTimer);
+      if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+      if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+      
+      // Send goodbye message
+      await this.sendGoodbye();
+      
+      // Close sockets
+      if (this.multicastSocket) {
+        this.multicastSocket.close();
+      }
+      
+      if (this.unicastSocket) {
+        this.unicastSocket.close();
+      }
+      
+      // Clear state
+      this.peers.clear();
+      this.routingTable.clear();
+      this.messageCache.clear();
+      this.fragmentBuffer.clear();
+      
+      this.log('🌐 UDP Multicast Transport cleaned up', 'info');
+      
+    } catch (error) {
+      this.log(`❌ Error cleaning up UDP Multicast Transport: ${error}`, 'error');
+    }
+  }
+  
+  // ==================== TRANSPORT INTERFACE ====================
+  
+  // ==================== JTAG ROUTER INTERFACE ====================
+
+  /**
+   * Send JTAG message (Router interface)
+   */
+  public async send(message: JTAGMessage): Promise<TransportSendResult> {
+    try {
+      const success = await this.sendJTAGPayload(message.endpoint, message.payload);
+      return { 
+        success, 
+        delivered: success,
+        timestamp: new Date().toISOString() 
+      };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString() 
+      };
+    }
+  }
+
+  /**
+   * Check if transport is connected
+   */
+  public isConnected(): boolean {
+    return !!(this.multicastSocket && this.unicastSocket);
+  }
+
+  /**
+   * Disconnect transport
+   */
+  public async disconnect(): Promise<void> {
+    await this.cleanup();
+  }
+
+  /**
+   * Reconnect transport
+   */
+  public async reconnect(): Promise<void> {
+    await this.cleanup();
+    const context: JTAGContext = { environment: 'server' }; // Default context
+    await this.initialize(context);
+  }
+
+  /**
+   * Set message handler for incoming messages
+   */
+  public setMessageHandler?(handler: (message: JTAGMessage) => void): void {
+    // Store the handler to call when P2P messages arrive
+    this.messageHandler = handler;
+  }
+
+  private messageHandler?: (message: JTAGMessage) => void;
+
+  // ==================== ORIGINAL JTAG TRANSPORT INTERFACE ====================
+
+  /**
+   * Send JTAG payload (Original interface)
+   */
+  public async sendJTAGPayload(route: string, payload: JTAGPayload): Promise<boolean> {
+    try {
+      // Parse route to extract target node
+      const routeParts = route.split('/');
+      let targetNodeId: string | undefined;
+      
+      // Check for remote routing: /remote/{nodeId}/...
+      if (routeParts[1] === 'remote' && routeParts[2]) {
+        targetNodeId = routeParts[2];
+      } else {
+        // Broadcast to all capable nodes
+        targetNodeId = this.findBestNode(route);
+      }
+      
+      if (!targetNodeId) {
+        // No suitable node found - try discovery
+        await this.requestRoute(route);
+        return false;
+      }
+      
+      const message: P2PMessage = {
+        messageId: this.generateMessageId(),
+        fromNodeId: this.config.nodeId,
+        toNodeId: targetNodeId,
+        messageType: 'data',
+        timestamp: Date.now(),
+        ttl: 5, // Max 5 hops
+        encrypted: this.config.requireAuth,
+        payload: {
+          route,
+          data: payload
+        }
+      };
+      
+      // Add signature if authentication required
+      if (this.config.requireAuth && this.keyPair) {
+        message.signature = this.signMessage(message);
+      }
+      
+      // Send message
+      return await this.sendMessage(message);
+      
+    } catch (error) {
+      this.log(`❌ Error sending P2P message: ${error}`, 'error');
+      return false;
+    }
+  }
+  
+  public async receive(): Promise<{ route: string; payload: JTAGPayload } | null> {
+    // Receiving is handled asynchronously via socket events
+    // This method is called by the router polling mechanism
+    return null;
+  }
+  
+  public getCapabilities(): string[] {
+    return [
+      'multicast_discovery',
+      'direct_communication',
+      'mesh_routing',
+      'fragmentation',
+      'compression',
+      'encryption',
+      'nat_traversal'
+    ];
+  }
+  
+  public getMetrics() {
+    return {
+      connectedPeers: this.peers.size,
+      averageLatency: this.calculateAverageLatency(),
+      messagesSent: this.messagesSent,
+      messagesReceived: this.messagesReceived,
+      routingTableSize: this.routingTable.size,
+      cacheSize: this.messageCache.size
+    };
+  }
+  
+  // ==================== SOCKET SETUP ====================
+  
+  private async setupMulticastSocket(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.multicastSocket) {
+        reject(new Error('Multicast socket not created'));
+        return;
+      }
+      
+      this.multicastSocket.on('message', (buffer, rinfo) => {
+        this.handleMulticastMessage(buffer, rinfo);
+      });
+      
+      this.multicastSocket.on('error', (error) => {
+        this.log(`❌ Multicast socket error: ${error}`, 'error');
+      });
+      
+      this.multicastSocket.bind(this.config.multicastPort, () => {
+        if (this.multicastSocket) {
+          this.multicastSocket.addMembership(this.config.multicastAddress);
+          this.multicastSocket.setMulticastTTL(1); // Local network only
+          resolve();
+        }
+      });
+    });
+  }
+  
+  private async setupUnicastSocket(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.unicastSocket) {
+        reject(new Error('Unicast socket not created'));
+        return;
+      }
+      
+      this.unicastSocket.on('message', (buffer, rinfo) => {
+        this.handleUnicastMessage(buffer, rinfo);
+      });
+      
+      this.unicastSocket.on('error', (error) => {
+        this.log(`❌ Unicast socket error: ${error}`, 'error');
+      });
+      
+      this.unicastSocket.bind(this.config.unicastPort, () => {
+        resolve();
+      });
+    });
+  }
+  
+  // ==================== MESSAGE HANDLING ====================
+  
+  private handleMulticastMessage(buffer: Buffer, rinfo: dgram.RemoteInfo): void {
+    try {
+      const message = this.parseMessage(buffer);
+      if (!message) return;
+      
+      // Handle discovery messages
+      if (message.messageType === 'discovery') {
+        this.handleDiscoveryMessage(message, rinfo);
+      } else if (message.messageType === 'heartbeat') {
+        this.handleHeartbeatMessage(message, rinfo);
+      }
+      
+    } catch (error) {
+      this.log(`❌ Error handling multicast message: ${error}`, 'debug');
+    }
+  }
+  
+  private handleUnicastMessage(buffer: Buffer, rinfo: dgram.RemoteInfo): void {
+    try {
+      const message = this.parseMessage(buffer);
+      if (!message) return;
+      
+      // Verify signature if required
+      if (this.config.requireAuth && !this.verifyMessage(message)) {
+        this.log(`⚠️ Message signature verification failed from ${rinfo.address}`, 'warn');
+        return;
+      }
+      
+      switch (message.messageType) {
+        case 'data':
+          this.handleDataMessage(message, rinfo);
+          break;
+        case 'ack':
+          this.handleAckMessage(message);
+          break;
+        case 'route_request':
+          this.handleRouteRequest(message, rinfo);
+          break;
+        case 'route_response':
+          this.handleRouteResponse(message);
+          break;
+      }
+      
+    } catch (error) {
+      this.log(`❌ Error handling unicast message: ${error}`, 'debug');
+    }
+  }
+  
+  private handleDiscoveryMessage(message: P2PMessage, rinfo: dgram.RemoteInfo): void {
+    if (message.fromNodeId === this.config.nodeId) return; // Ignore our own messages
+    
+    const nodeInfo = message.payload as {
+      nodeType: string;
+      capabilities: string[];
+      publicKey?: string;
+    };
+    
+    // Add or update peer
+    const peer: P2PNode = {
+      nodeId: message.fromNodeId,
+      nodeType: nodeInfo.nodeType,
+      address: rinfo.address,
+      port: this.config.unicastPort, // Assume same port
+      capabilities: nodeInfo.capabilities,
+      lastSeen: Date.now(),
+      latency: 0, // Will be measured
+      authenticated: false,
+      publicKey: nodeInfo.publicKey
+    };
+    
+    this.peers.set(message.fromNodeId, peer);
+    this.updateRoutingTable();
+    
+    this.log(`🔍 Discovered peer: ${message.fromNodeId} (${nodeInfo.nodeType}) at ${rinfo.address}`, 'debug');
+  }
+  
+  private handleHeartbeatMessage(message: P2PMessage, rinfo: dgram.RemoteInfo): void {
+    const peer = this.peers.get(message.fromNodeId);
+    if (peer) {
+      const latency = Date.now() - message.timestamp;
+      peer.lastSeen = Date.now();
+      peer.latency = latency;
+      peer.address = rinfo.address; // Update address in case of IP change
+    }
+  }
+  
+  private async handleDataMessage(message: P2PMessage, rinfo: dgram.RemoteInfo): Promise<void> {
+    // Check if message is for us or needs routing
+    if (message.toNodeId !== this.config.nodeId && message.toNodeId !== 'broadcast') {
+      await this.routeMessage(message);
+      return;
+    }
+    
+    // Handle fragmented messages
+    if (message.fragmented) {
+      const completePayload = await this.handleFragmentedMessage(message);
+      if (!completePayload) return; // Still waiting for more fragments
+      message.payload = completePayload;
+    }
+    
+    // Decompress if needed
+    if (this.config.compressionEnabled && message.payload.compressed) {
+      message.payload.data = this.decompress(message.payload.data);
+    }
+    
+    // Decrypt if needed
+    if (message.encrypted && this.encryptionKey) {
+      message.payload = this.decrypt(message.payload);
+    }
+    
+    // Send acknowledgment
+    await this.sendAck(message);
+    
+    // Convert P2P message back to JTAG message format and emit to router
+    if (this.messageHandler && message.payload.data) {
+      const jtagMessage: JTAGMessage = message.payload.data as JTAGMessage;
+      this.messageHandler(jtagMessage);
+    } else {
+      // Fallback: emit to router in legacy format
+      this.emit('message', {
+        route: message.payload.route,
+        payload: message.payload.data
+      });
+    }
+    
+    this.messagesReceived++;
+  }
+  
+  private handleAckMessage(message: P2PMessage): void {
+    // Remove from pending acknowledgments
+    const cacheKey = message.payload.originalMessageId;
+    const cached = this.messageCache.get(cacheKey);
+    if (cached) {
+      cached.response = { acknowledged: true, timestamp: Date.now() };
+    }
+  }
+  
+  private async handleRouteRequest(message: P2PMessage, rinfo: dgram.RemoteInfo): Promise<void> {
+    const route = message.payload.route;
+    const targetNode = this.findBestNode(route);
+    
+    if (targetNode) {
+      const response: P2PMessage = {
+        messageId: this.generateMessageId(),
+        fromNodeId: this.config.nodeId,
+        toNodeId: message.fromNodeId,
+        messageType: 'route_response',
+        timestamp: Date.now(),
+        ttl: 5,
+        encrypted: false,
+        payload: {
+          originalRoute: route,
+          targetNode,
+          available: true
+        }
+      };
+      
+      await this.sendMessageToPeer(response, rinfo.address);
+    }
+  }
+  
+  private handleRouteResponse(message: P2PMessage): void {
+    const payload = message.payload;
+    if (payload.available && payload.targetNode) {
+      this.routingTable.set(payload.originalRoute, payload.targetNode);
+    }
+  }
+  
+  // ==================== ROUTING AND DISCOVERY ====================
+  
+  private findBestNode(route: string): string | undefined {
+    // Analyze route to determine required capabilities
+    const routeParts = route.split('/');
+    const requiredCapability = routeParts[1]; // e.g., 'database', 'compiler', 'chat'
+    
+    // Find peers with required capability
+    const capablePeers = Array.from(this.peers.values()).filter(peer => 
+      peer.capabilities.includes(requiredCapability) && 
+      peer.authenticated || !this.config.requireAuth
+    );
+    
+    if (capablePeers.length === 0) return undefined;
+    
+    // Select peer with lowest latency
+    return capablePeers.reduce((best, current) => 
+      current.latency < best.latency ? current : best
+    ).nodeId;
+  }
+  
+  private async requestRoute(route: string): Promise<void> {
+    const message: P2PMessage = {
+      messageId: this.generateMessageId(),
+      fromNodeId: this.config.nodeId,
+      toNodeId: 'broadcast',
+      messageType: 'route_request',
+      timestamp: Date.now(),
+      ttl: 3,
+      encrypted: false,
+      payload: { route }
+    };
+    
+    await this.broadcastMessage(message);
+  }
+  
+  private async routeMessage(message: P2PMessage): Promise<void> {
+    if (message.ttl <= 0) {
+      this.log(`⚠️ Message TTL expired, dropping: ${message.messageId}`, 'warn');
+      return;
+    }
+    
+    message.ttl--;
+    
+    const nextHop = this.routingTable.get(message.toNodeId) || 
+                   this.findBestNode(`/${message.toNodeId}`);
+    
+    if (nextHop) {
+      const peer = this.peers.get(nextHop);
+      if (peer) {
+        await this.sendMessageToPeer(message, peer.address);
+      }
+    }
+  }
+  
+  private updateRoutingTable(): void {
+    // Simple routing: direct routes to all known peers
+    for (const [nodeId, peer] of this.peers.entries()) {
+      this.routingTable.set(nodeId, nodeId);
+    }
+  }
+  
+  // ==================== NETWORK OPERATIONS ====================
+  
+  private async announcePresence(): Promise<void> {
+    const message: P2PMessage = {
+      messageId: this.generateMessageId(),
+      fromNodeId: this.config.nodeId,
+      toNodeId: 'broadcast',
+      messageType: 'discovery',
+      timestamp: Date.now(),
+      ttl: 5,
+      encrypted: false,
+      payload: {
+        nodeType: this.config.nodeType,
+        capabilities: this.config.capabilities,
+        publicKey: this.keyPair?.publicKey
+      }
+    };
+    
+    await this.broadcastMessage(message);
+  }
+  
+  private async sendHeartbeat(): Promise<void> {
+    const message: P2PMessage = {
+      messageId: this.generateMessageId(),
+      fromNodeId: this.config.nodeId,
+      toNodeId: 'broadcast',
+      messageType: 'heartbeat',
+      timestamp: Date.now(),
+      ttl: 1,
+      encrypted: false,
+      payload: {}
+    };
+    
+    await this.broadcastMessage(message);
+  }
+  
+  private async sendGoodbye(): Promise<void> {
+    const message: P2PMessage = {
+      messageId: this.generateMessageId(),
+      fromNodeId: this.config.nodeId,
+      toNodeId: 'broadcast',
+      messageType: 'discovery',
+      timestamp: Date.now(),
+      ttl: 1,
+      encrypted: false,
+      payload: {
+        nodeType: this.config.nodeType,
+        capabilities: [],
+        leaving: true
+      }
+    };
+    
+    await this.broadcastMessage(message);
+  }
+  
+  private async sendMessage(message: P2PMessage): Promise<boolean> {
+    try {
+      const peer = this.peers.get(message.toNodeId);
+      if (!peer) {
+        this.log(`⚠️ Peer not found: ${message.toNodeId}`, 'warn');
+        return false;
+      }
+      
+      return await this.sendMessageToPeer(message, peer.address);
+      
+    } catch (error) {
+      this.log(`❌ Error sending message: ${error}`, 'error');
+      return false;
+    }
+  }
+  
+  private async sendMessageToPeer(message: P2PMessage, address: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (!this.unicastSocket) {
+        resolve(false);
+        return;
+      }
+      
+      // Handle fragmentation for large messages
+      const serialized = JSON.stringify(message);
+      const buffer = Buffer.from(serialized);
+      
+      if (buffer.length > this.config.maxPacketSize && this.config.fragmentationEnabled) {
+        this.sendFragmentedMessage(message, address, resolve);
+      } else {
+        this.unicastSocket.send(buffer, this.config.unicastPort, address, (error) => {
+          if (error) {
+            this.log(`❌ Error sending to ${address}: ${error}`, 'error');
+            resolve(false);
+          } else {
+            this.messagesSent++;
+            resolve(true);
+          }
+        });
+      }
+    });
+  }
+  
+  private async broadcastMessage(message: P2PMessage): Promise<void> {
+    if (!this.multicastSocket) return;
+    
+    const buffer = Buffer.from(JSON.stringify(message));
+    this.multicastSocket.send(
+      buffer, 
+      this.config.multicastPort, 
+      this.config.multicastAddress,
+      (error) => {
+        if (error) {
+          this.log(`❌ Error broadcasting: ${error}`, 'error');
+        } else {
+          this.messagesSent++;
+        }
+      }
+    );
+  }
+  
+  // ==================== FRAGMENTATION ====================
+  
+  private sendFragmentedMessage(message: P2PMessage, address: string, callback: (success: boolean) => void): void {
+    const serialized = JSON.stringify(message);
+    const buffer = Buffer.from(serialized);
+    const fragmentSize = this.config.maxPacketSize - 1000; // Leave room for headers
+    const fragmentCount = Math.ceil(buffer.length / fragmentSize);
+    
+    let sentFragments = 0;
+    let success = true;
+    
+    for (let i = 0; i < fragmentCount; i++) {
+      const start = i * fragmentSize;
+      const end = Math.min(start + fragmentSize, buffer.length);
+      const fragmentData = buffer.slice(start, end);
+      
+      const fragmentMessage: P2PMessage = {
+        ...message,
+        messageId: `${message.messageId}_frag_${i}`,
+        fragmented: true,
+        fragmentIndex: i,
+        fragmentTotal: fragmentCount,
+        payload: fragmentData.toString('base64')
+      };
+      
+      const fragmentBuffer = Buffer.from(JSON.stringify(fragmentMessage));
+      
+      if (this.unicastSocket) {
+        this.unicastSocket.send(fragmentBuffer, this.config.unicastPort, address, (error) => {
+          sentFragments++;
+          if (error) {
+            success = false;
+            this.log(`❌ Error sending fragment ${i}: ${error}`, 'error');
+          }
+          
+          if (sentFragments === fragmentCount) {
+            callback(success);
+            if (success) this.messagesSent++;
+          }
+        });
+      }
+    }
+  }
+  
+  private async handleFragmentedMessage(message: P2PMessage): Promise<any | null> {
+    if (!message.fragmented || message.fragmentIndex === undefined || message.fragmentTotal === undefined) {
+      return message.payload;
+    }
+    
+    const baseMessageId = message.messageId.split('_frag_')[0];
+    
+    if (!this.fragmentBuffer.has(baseMessageId)) {
+      this.fragmentBuffer.set(baseMessageId, new Map());
+    }
+    
+    const fragments = this.fragmentBuffer.get(baseMessageId)!;
+    fragments.set(message.fragmentIndex, Buffer.from(message.payload as string, 'base64'));
+    
+    // Check if we have all fragments
+    if (fragments.size === message.fragmentTotal) {
+      // Reassemble message
+      const completeBuffer = Buffer.concat(
+        Array.from({ length: message.fragmentTotal }, (_, i) => fragments.get(i)!)
+      );
+      
+      // Clean up
+      this.fragmentBuffer.delete(baseMessageId);
+      
+      // Parse complete message
+      const completeMessage = JSON.parse(completeBuffer.toString());
+      return completeMessage.payload;
+    }
+    
+    return null; // Still waiting for more fragments
+  }
+  
+  // ==================== PERIODIC TASKS ====================
+  
+  private startDiscovery(): void {
+    this.discoveryTimer = setInterval(async () => {
+      await this.announcePresence();
+    }, this.config.discoveryInterval);
+  }
+  
+  private startHeartbeat(): void {
+    this.heartbeatTimer = setInterval(async () => {
+      await this.sendHeartbeat();
+    }, this.config.discoveryInterval / 2);
+  }
+  
+  private startCleanup(): void {
+    this.cleanupTimer = setInterval(() => {
+      const now = Date.now();
+      const timeout = this.config.discoveryInterval * 3;
+      
+      // Remove stale peers
+      for (const [nodeId, peer] of this.peers.entries()) {
+        if (now - peer.lastSeen > timeout) {
+          this.peers.delete(nodeId);
+          this.routingTable.delete(nodeId);
+          this.log(`🗑️ Removed stale peer: ${nodeId}`, 'debug');
+        }
+      }
+      
+      // Clean message cache
+      for (const [messageId, cached] of this.messageCache.entries()) {
+        if (now - cached.timestamp > 300000) { // 5 minutes
+          this.messageCache.delete(messageId);
+        }
+      }
+      
+      // Clean fragment buffer
+      for (const [messageId, fragments] of this.fragmentBuffer.entries()) {
+        // Clean incomplete fragments older than 1 minute
+        this.fragmentBuffer.delete(messageId);
+      }
+      
+      this.updateRoutingTable();
+    }, 60000); // Every minute
+  }
+  
+  // ==================== UTILITY METHODS ====================
+  
+  private generateNodeId(): string {
+    return `node_${crypto.randomBytes(8).toString('hex')}`;
+  }
+  
+  private generateMessageId(): string {
+    return `msg_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  }
+  
+  private initializeCrypto(): void {
+    if (this.config.encryptionKey) {
+      this.encryptionKey = crypto.createHash('sha256').update(this.config.encryptionKey).digest();
+    }
+    
+    if (this.config.requireAuth) {
+      // Generate RSA key pair for signatures
+      const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+        modulusLength: 2048
+      });
+      
+      this.keyPair = {
+        publicKey: publicKey.export({ type: 'spki', format: 'pem' }) as string,
+        privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }) as string
+      };
+    }
+  }
+  
+  private signMessage(message: P2PMessage): string {
+    if (!this.keyPair) return '';
+    
+    const messageStr = JSON.stringify({
+      messageId: message.messageId,
+      fromNodeId: message.fromNodeId,
+      toNodeId: message.toNodeId,
+      timestamp: message.timestamp,
+      payload: message.payload
+    });
+    
+    const sign = crypto.createSign('RSA-SHA256');
+    sign.update(messageStr);
+    return sign.sign(this.keyPair.privateKey, 'base64');
+  }
+  
+  private verifyMessage(message: P2PMessage): boolean {
+    if (!message.signature) return !this.config.requireAuth;
+    
+    const peer = this.peers.get(message.fromNodeId);
+    if (!peer || !peer.publicKey) return false;
+    
+    const messageStr = JSON.stringify({
+      messageId: message.messageId,
+      fromNodeId: message.fromNodeId,
+      toNodeId: message.toNodeId,
+      timestamp: message.timestamp,
+      payload: message.payload
+    });
+    
+    const verify = crypto.createVerify('RSA-SHA256');
+    verify.update(messageStr);
+    
+    try {
+      return verify.verify(peer.publicKey, message.signature, 'base64');
+    } catch {
+      return false;
+    }
+  }
+  
+  private encrypt(payload: any): any {
+    if (!this.encryptionKey) return payload;
+    
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipher('aes-256-cbc', this.encryptionKey);
+    
+    let encrypted = cipher.update(JSON.stringify(payload), 'utf8', 'base64');
+    encrypted += cipher.final('base64');
+    
+    return {
+      encrypted: true,
+      iv: iv.toString('base64'),
+      data: encrypted
+    };
+  }
+  
+  private decrypt(payload: any): any {
+    if (!payload.encrypted || !this.encryptionKey) return payload;
+    
+    const decipher = crypto.createDecipher('aes-256-cbc', this.encryptionKey);
+    
+    let decrypted = decipher.update(payload.data, 'base64', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return JSON.parse(decrypted);
+  }
+  
+  private compress(data: any): string {
+    // Would use zlib compression
+    return JSON.stringify(data);
+  }
+  
+  private decompress(data: string): any {
+    // Would use zlib decompression
+    return JSON.parse(data);
+  }
+  
+  private parseMessage(buffer: Buffer): P2PMessage | null {
+    try {
+      return JSON.parse(buffer.toString()) as P2PMessage;
+    } catch {
+      return null;
+    }
+  }
+  
+  private async sendAck(originalMessage: P2PMessage): Promise<void> {
+    const ackMessage: P2PMessage = {
+      messageId: this.generateMessageId(),
+      fromNodeId: this.config.nodeId,
+      toNodeId: originalMessage.fromNodeId,
+      messageType: 'ack',
+      timestamp: Date.now(),
+      ttl: 5,
+      encrypted: false,
+      payload: {
+        originalMessageId: originalMessage.messageId
+      }
+    };
+    
+    await this.sendMessage(ackMessage);
+  }
+  
+  private calculateAverageLatency(): number {
+    const peers = Array.from(this.peers.values());
+    if (peers.length === 0) return 0;
+    
+    const totalLatency = peers.reduce((sum, peer) => sum + peer.latency, 0);
+    return totalLatency / peers.length;
+  }
+  
+  private messagesSent = 0;
+  private messagesReceived = 0;
+}

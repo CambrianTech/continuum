@@ -1,0 +1,657 @@
+/**
+ * Chat Training Types - Matrix-Style Live Academy Sessions
+ * ========================================================
+ * 
+ * "I know kung fu" - but happening live in chat rooms that users can witness!
+ * 
+ * Architecture:
+ * - Chat rooms are the training substrate
+ * - Teacher personas train student personas through conversation
+ * - Users can join and witness the training happening live
+ * - Students ask questions, teachers respond, knowledge flows in real-time
+ * - Each message is both conversation AND training data
+ * - Capabilities emerge through natural dialogue
+ * 
+ * Like watching Neo learn kung fu, but it's an AI learning TypeScript in a chat room.
+ */
+
+import { AcademyParams, AcademyResult, PerformanceMetrics } from '../../shared/AcademyTypes';
+import { ChatInteractionData, ChatMessage, ChatParticipant } from '../track-usage/shared/TrackUsageTypes';
+
+// ========================
+// Training Session Types
+// ========================
+
+export interface AcademyTrainingSession {
+  sessionId: string;
+  chatRoomId: string;
+  
+  // Session configuration
+  name: string;
+  description: string;
+  trainingObjective: string;    // "Learn TypeScript debugging", "Master React hooks", etc.
+  
+  // Participants
+  teacherPersonas: TrainingPersona[];    // Teacher AI personas
+  studentPersonas: TrainingPersona[];    // Student AI personas being trained
+  humanObservers: HumanObserver[];       // Humans watching the session
+  humanParticipants: HumanParticipant[]; // Humans actively participating
+  
+  // Session state
+  status: 'preparing' | 'active' | 'paused' | 'completed' | 'failed';
+  startTime: number;
+  expectedDuration: number;     // milliseconds
+  currentPhase: TrainingPhase;
+  
+  // Training configuration
+  trainingMode: 'collaborative' | 'competitive' | 'socratic' | 'demonstration' | 'exploration';
+  difficultyLevel: 'beginner' | 'intermediate' | 'advanced' | 'expert';
+  adaptiveTraining: boolean;    // Should training adapt based on performance
+  
+  // Progress tracking
+  learningObjectives: LearningObjective[];
+  currentProgress: number;      // 0-1 completion
+  skillsAcquired: string[];     // Skills learned so far
+  knowledgeGaps: string[];      // Areas still needing work
+  
+  // Real-time metrics
+  engagementLevel: number;      // 0-1 how engaged participants are
+  learningVelocity: number;     // Rate of learning
+  trainingEffectiveness: number; // 0-1 how effective the training is
+  
+  // Session artifacts
+  conversationLog: TrainingMessage[];
+  knowledgeCreated: KnowledgeArtifact[];
+  capabilityEvolutions: CapabilityEvolution[];
+  
+  // Observers/Analytics
+  humanWitnesses: string[];     // Humans who witnessed this session
+  recordingEnabled: boolean;    // Is session being recorded for later analysis
+  publicSession: boolean;       // Can anyone join to observe
+}
+
+export interface TrainingPersona {
+  personaId: string;
+  name: string;
+  role: 'teacher' | 'student' | 'peer' | 'challenger' | 'assistant';
+  
+  // Persona characteristics
+  specialization: string[];     // What they're expert in
+  teachingStyle?: TeachingStyle; // How they teach (if teacher)
+  learningStyle?: LearningStyle; // How they learn (if student)
+  personality: PersonalityTraits;
+  
+  // Training context
+  currentCapabilities: string[];
+  targetCapabilities: string[]; // What they're trying to learn (if student)
+  learningGoals: LearningGoal[];
+  
+  // Performance tracking
+  sessionPerformance: SessionPerformance;
+  learningProgress: LearningProgress;
+  interactionMetrics: InteractionMetrics;
+  
+  // Real-time state
+  currentFocus: string;         // What they're currently focused on
+  emotionalState: EmotionalState;
+  engagementLevel: number;      // 0-1 how engaged they are
+  confidenceLevel: number;      // 0-1 confidence in current topic
+  
+  // Adaptation
+  adaptationHistory: PersonaAdaptation[];
+  realTimeAdjustments: RealtimeAdjustment[];
+}
+
+export interface HumanObserver {
+  userId: string;
+  username: string;
+  joinTime: number;
+  
+  // Observer permissions
+  canComment: boolean;          // Can they comment on the training
+  canAskQuestions: boolean;     // Can they ask questions
+  canRatePerformance: boolean;  // Can they rate persona performance
+  
+  // Engagement
+  engagementLevel: number;      // 0-1 how engaged they are
+  comments: ObserverComment[];
+  questions: ObserverQuestion[];
+  ratings: PerformanceRating[];
+  
+  // Learning
+  thingsLearned: string[];      // What they learned by observing
+  favoriteInteractions: string[]; // Message IDs they found interesting
+  notes: string[];              // Personal notes they took
+}
+
+export interface HumanParticipant extends HumanObserver {
+  // Active participation
+  participantRole: 'mentor' | 'co_learner' | 'challenger' | 'evaluator';
+  contributions: ParticipantContribution[];
+  
+  // Interaction with personas
+  mentorshipActions: MentorshipAction[];
+  feedbackProvided: TrainingFeedback[];
+  collaborativeProjects: string[];
+  
+  // Learning journey
+  personalLearningGoals: string[];
+  knowledgeShared: string[];
+  skillsDemonstrated: string[];
+}
+
+// ========================
+// Training Flow Types
+// ========================
+
+export interface TrainingPhase {
+  phaseId: string;
+  name: string;
+  description: string;
+  
+  // Phase configuration
+  phaseType: 'introduction' | 'knowledge_transfer' | 'practice' | 'challenge' | 'reflection' | 'assessment';
+  estimatedDuration: number;    // milliseconds
+  prerequisites: string[];      // Required before this phase
+  
+  // Phase activities
+  activities: TrainingActivity[];
+  currentActivity: string;      // Current activity ID
+  
+  // Success criteria
+  completionCriteria: CompletionCriteria[];
+  minimumPerformance: number;   // 0-1 minimum performance to pass
+  
+  // Phase state
+  status: 'pending' | 'active' | 'completed' | 'skipped' | 'failed';
+  startTime?: number;
+  completionTime?: number;
+  actualDuration?: number;
+  
+  // Results
+  phaseResults: PhaseResults;
+  nextPhase?: string;           // Next phase ID
+  alternativePhases: string[];  // Alternative next phases based on performance
+}
+
+export interface TrainingActivity {
+  activityId: string;
+  name: string;
+  description: string;
+  
+  // Activity type
+  type: 'dialogue' | 'demonstration' | 'practice_exercise' | 'quiz' | 'collaborative_project' | 'challenge' | 'reflection';
+  
+  // Activity configuration
+  participants: string[];       // Who participates in this activity
+  duration: number;            // Expected duration
+  difficulty: number;          // 0-1 difficulty level
+  
+  // Content/Script
+  script?: ConversationScript;  // Pre-planned conversation flow
+  prompts: ActivityPrompt[];    // Prompts to guide the activity
+  examples: ActivityExample[];  // Examples to show/discuss
+  
+  // Success criteria
+  objectives: string[];
+  successMetrics: SuccessMetric[];
+  
+  // Adaptive behavior
+  adaptiveRules: AdaptiveRule[];
+  fallbackStrategies: FallbackStrategy[];
+}
+
+export interface ConversationScript {
+  scriptId: string;
+  title: string;
+  
+  // Script structure
+  turns: ScriptTurn[];          // Planned conversation turns
+  variables: ScriptVariable[];  // Variables that can be customized
+  branchingPoints: BranchingPoint[]; // Where conversation can branch
+  
+  // Flexibility
+  allowImprovisations: boolean; // Can personas go off-script
+  adaptationLevel: 'strict' | 'flexible' | 'loose';
+  
+  // Context
+  scenarioDescription: string;
+  roleInstructions: Record<string, string>; // Instructions for each role
+  expectedOutcomes: string[];
+}
+
+export interface ScriptTurn {
+  turnId: string;
+  speaker: string;              // Persona ID or role
+  
+  // Content options
+  messageCandidates: string[];  // Possible messages for this turn
+  messageTemplate?: string;     // Template with variables
+  
+  // Turn configuration
+  required: boolean;            // Must this turn happen
+  conditions: TurnCondition[];  // Conditions for this turn
+  
+  // Expected responses
+  expectedResponses: ExpectedResponse[];
+  responseHandling: ResponseHandling;
+  
+  // Learning objectives
+  learningObjectives: string[];
+  skillsDemonstrated: string[];
+  knowledgeTransferred: string[];
+}
+
+// ========================
+// Live Training Types
+// ========================
+
+export interface TrainingMessage extends ChatMessage {
+  // Training-specific metadata
+  trainingContext: TrainingMessageContext;
+  learningValue: number;        // 0-1 learning value of this message
+  teachingMoment: boolean;      // Is this a significant teaching moment
+  
+  // Knowledge transfer
+  knowledgeTransferred: KnowledgeTransfer[];
+  skillsDemonstrated: string[];
+  conceptsIntroduced: string[];
+  
+  // Real-time assessment
+  realTimeAssessment: RealTimeAssessment;
+  
+  // Student reactions
+  studentQuestions: StudentQuestion[];
+  comprehensionIndicators: ComprehensionIndicator[];
+  
+  // Audience engagement
+  observerReactions: ObserverReaction[];
+  humanFeedback: HumanTrainingFeedback[];
+}
+
+export interface TrainingMessageContext {
+  sessionPhase: string;
+  currentActivity: string;
+  learningObjective: string;
+  
+  // Context depth
+  conversationDepth: number;    // How deep into the topic
+  complexityLevel: number;      // 0-1 current complexity
+  
+  // Pedagogical context
+  teachingStrategy: string;     // What teaching strategy is being used
+  learningStage: 'introduction' | 'exploration' | 'practice' | 'mastery' | 'application';
+  
+  // Interaction context
+  turn: number;                 // Turn in conversation
+  expectedResponseType: string;
+  followUpExpected: boolean;
+}
+
+export interface KnowledgeTransfer {
+  knowledge: string;
+  from: string;                 // Who shared the knowledge
+  to: string[];                 // Who received it (can be multiple)
+  
+  // Transfer characteristics
+  transferType: 'factual' | 'procedural' | 'conceptual' | 'metacognitive';
+  transferMethod: 'explanation' | 'demonstration' | 'example' | 'analogy' | 'questioning';
+  
+  // Effectiveness
+  transferEffectiveness: number; // 0-1 how effective the transfer was
+  comprehensionLevel: number;   // 0-1 how well it was understood
+  retentionPrediction: number;  // 0-1 predicted retention
+  
+  // Context
+  prerequisiteKnowledge: string[];
+  buildingUpon: string[];       // Previous knowledge this builds on
+  enablesLearning: string[];    // What this knowledge enables
+  
+  // Evidence
+  comprehensionEvidence: string[]; // Evidence that it was understood
+  applicationEvidence: string[];   // Evidence it can be applied
+}
+
+export interface StudentQuestion {
+  questionId: string;
+  studentId: string;
+  question: string;
+  timestamp: number;
+  
+  // Question characteristics
+  questionType: 'clarification' | 'deeper_understanding' | 'application' | 'challenge' | 'connection';
+  cognitiveLevel: 'remember' | 'understand' | 'apply' | 'analyze' | 'evaluate' | 'create';
+  
+  // Question quality
+  relevance: number;            // 0-1 relevance to current topic
+  depth: number;               // 0-1 depth of thinking
+  originality: number;         // 0-1 originality of question
+  
+  // Learning indicators
+  indicatesConfusion: boolean;
+  indicatesEngagement: boolean;
+  indicatesDeepThinking: boolean;
+  
+  // Response handling
+  answered: boolean;
+  answeredBy: string[];         // Who answered
+  answerQuality: number;        // 0-1 quality of answers received
+  followUpQuestions: string[];  // Questions that followed from this
+}
+
+export interface RealTimeAssessment {
+  assessmentId: string;
+  timestamp: number;
+  
+  // Performance assessment
+  messageQuality: number;       // 0-1 quality of this message
+  learningProgress: number;     // 0-1 learning progress shown
+  teachingEffectiveness: number; // 0-1 teaching effectiveness (if teaching)
+  
+  // Engagement assessment
+  studentEngagement: Record<string, number>; // Engagement per student
+  observerEngagement: Record<string, number>; // Engagement per observer
+  
+  // Learning assessment
+  knowledgeGaps: string[];      // Gaps revealed by this message
+  misconceptions: string[];     // Misconceptions revealed
+  strengths: string[];          // Strengths demonstrated
+  
+  // Recommendations
+  realTimeRecommendations: RealTimeRecommendation[];
+  adaptationSuggestions: AdaptationSuggestion[];
+}
+
+// ========================
+// Command Types
+// ========================
+
+export class StartTrainingSessionParams extends AcademyParams<{
+  // Session configuration
+  sessionName: string;
+  chatRoomId: string;
+  trainingObjective: string;
+  
+  // Participants
+  teacherPersonaIds: string[];
+  studentPersonaIds: string[];
+  humanObservers?: string[];
+  humanParticipants?: string[];
+  
+  // Training configuration
+  trainingMode: AcademyTrainingSession['trainingMode'];
+  difficultyLevel: AcademyTrainingSession['difficultyLevel'];
+  estimatedDuration: number;
+  
+  // Session options
+  publicSession: boolean;
+  recordingEnabled: boolean;
+  adaptiveTraining: boolean;
+  
+  // Learning objectives
+  learningObjectives: LearningObjective[];
+  
+  // Script/Structure
+  conversationScript?: string;  // Pre-planned script ID
+  customActivities?: TrainingActivity[];
+}> {
+  constructor(data: Partial<StartTrainingSessionParams> = {}) {
+    super({
+      sessionName: 'Academy Training Session',
+      trainingObjective: 'General skill development',
+      teacherPersonaIds: [],
+      studentPersonaIds: [],
+      trainingMode: 'collaborative',
+      difficultyLevel: 'intermediate',
+      estimatedDuration: 1800000, // 30 minutes default
+      publicSession: false,
+      recordingEnabled: true,
+      adaptiveTraining: true,
+      learningObjectives: [],
+      ...data
+    });
+  }
+}
+
+export class StartTrainingSessionResult extends AcademyResult<{
+  // Session created
+  sessionId: string;
+  sessionStatus: AcademyTrainingSession['status'];
+  
+  // Participants
+  participantsAdded: string[];
+  participantRoles: Record<string, string>;
+  
+  // Chat room
+  chatRoomUrl: string;         // URL for users to join and observe
+  observerInstructions: string; // Instructions for observers
+  
+  // Session info
+  estimatedCompletion: number; // Timestamp
+  learningObjectives: LearningObjective[];
+  
+  // Real-time feeds
+  progressFeedUrl: string;     // Real-time progress updates
+  eventStreamUrl: string;      // Live event stream
+  
+  // Analytics
+  baselineAssessment: BaselineAssessment;
+  expectedOutcomes: ExpectedOutcome[];
+}> {}
+
+export class JoinTrainingSessionParams extends AcademyParams<{
+  sessionId: string;
+  participantType: 'observer' | 'participant';
+  
+  // Participant info
+  userId?: string;             // If human
+  personaId?: string;          // If persona
+  role?: string;               // Specific role they want to play
+  
+  // Permissions requested
+  canComment: boolean;
+  canAskQuestions: boolean;
+  canRatePerformance: boolean;
+  
+  // Observer preferences
+  notificationLevel: 'none' | 'key_moments' | 'all';
+  personalLearningGoals?: string[];
+}> {}
+
+export class JoinTrainingSessionResult extends AcademyResult<{
+  // Join status
+  joined: boolean;
+  participantId: string;
+  assignedRole: string;
+  
+  // Session context
+  sessionInfo: Partial<AcademyTrainingSession>;
+  currentPhase: string;
+  currentActivity: string;
+  
+  // Chat room access
+  chatRoomAccess: ChatRoomAccess;
+  
+  // Real-time feeds
+  liveUpdates: LiveUpdateFeed[];
+  
+  // Orientation
+  orientationInfo: OrientationInfo;
+  observerGuide: string[];     // How to be a good observer
+  participationGuidelines: string[];
+}> {}
+
+// ========================
+// Supporting Types
+// ========================
+
+export interface LearningObjective {
+  id: string;
+  description: string;
+  
+  // Objective details
+  skill: string;               // What skill is being learned
+  level: 'awareness' | 'basic' | 'proficient' | 'advanced' | 'expert';
+  measureable: boolean;        // Can progress be measured objectively
+  
+  // Success criteria
+  successCriteria: string[];
+  assessmentMethod: string;
+  
+  // Progress tracking
+  currentProgress: number;     // 0-1 completion
+  milestones: Milestone[];
+  
+  // Context
+  prerequisites: string[];
+  enablesLearning: string[];
+  relatedObjectives: string[];
+}
+
+export interface TeachingStyle {
+  primary: 'socratic' | 'demonstrative' | 'collaborative' | 'scaffolding' | 'inquiry_based';
+  characteristics: string[];
+  
+  // Teaching preferences
+  usesAnalogies: boolean;
+  providesExamples: boolean;
+  encouragesQuestions: boolean;
+  adaptsToLearner: boolean;
+  
+  // Communication style
+  formalityLevel: 'formal' | 'semi_formal' | 'casual';
+  encouragementLevel: 'high' | 'medium' | 'low';
+  patienceLevel: 'high' | 'medium' | 'low';
+}
+
+export interface LearningStyle {
+  primary: 'visual' | 'auditory' | 'kinesthetic' | 'reading_writing';
+  preferences: string[];
+  
+  // Learning characteristics
+  prefersExamples: boolean;
+  needsRepetition: boolean;
+  learnsFromMistakes: boolean;
+  asksQuestions: boolean;
+  
+  // Pace preferences
+  preferredPace: 'fast' | 'medium' | 'slow';
+  needsBreaks: boolean;
+  handlesComplexity: 'well' | 'moderately' | 'needs_simplification';
+}
+
+export interface EmotionalState {
+  primary: 'excited' | 'engaged' | 'neutral' | 'confused' | 'frustrated' | 'bored';
+  confidence: number;          // 0-1 confidence level
+  motivation: number;          // 0-1 motivation level
+  
+  // State indicators
+  askingQuestions: boolean;
+  participatingActively: boolean;
+  showingSigns: string[];      // Signs of current state
+  
+  // State history
+  stateChanges: StateChange[];
+  triggerEvents: TriggerEvent[];
+}
+
+export interface ComprehensionIndicator {
+  indicator: string;
+  confidence: number;          // 0-1 confidence in this indicator
+  indicatorType: 'positive' | 'negative' | 'neutral';
+  
+  // What it indicates
+  comprehensionLevel: number;  // 0-1 indicated comprehension
+  specificUnderstanding: string[];
+  specificConfusion: string[];
+  
+  // Evidence
+  evidenceText: string;        // Text that shows this indicator
+  contextualClues: string[];
+}
+
+export interface ObserverReaction {
+  observerId: string;
+  reactionType: 'interest' | 'confusion' | 'excitement' | 'concern' | 'insight';
+  
+  // Reaction details
+  reactionStrength: number;    // 0-1 strength of reaction
+  timestamp: number;
+  messageId: string;           // What message triggered this
+  
+  // Reaction content
+  comment?: string;
+  question?: string;
+  insight?: string;
+  
+  // Context
+  whatTriggered: string;
+  relevanceToObserver: number; // 0-1 how relevant to observer
+}
+
+export interface BaselineAssessment {
+  sessionId: string;
+  timestamp: number;
+  
+  // Participant baselines
+  studentBaselines: Record<string, StudentBaseline>;
+  teacherBaselines: Record<string, TeacherBaseline>;
+  
+  // Session baseline
+  overallComplexity: number;   // 0-1 expected complexity
+  expectedChallenges: string[];
+  estimatedLearningCurve: LearningCurve;
+}
+
+export interface StudentBaseline {
+  studentId: string;
+  
+  // Current capabilities
+  currentSkills: string[];
+  skillLevels: Record<string, number>; // 0-1 proficiency
+  knowledgeGaps: string[];
+  
+  // Learning characteristics
+  learningVelocity: number;    // Historical learning speed
+  preferredLearningStyle: LearningStyle;
+  motivationLevel: number;     // 0-1 motivation
+  
+  // Performance prediction
+  expectedProgress: number;    // 0-1 expected progress in session
+  expectedChallenges: string[];
+  adaptationNeeds: string[];
+}
+
+export interface LiveUpdateFeed {
+  feedType: 'progress' | 'events' | 'analytics' | 'chat';
+  feedUrl: string;
+  updateFrequency: number;     // milliseconds between updates
+  
+  // Feed configuration
+  filterOptions: FilterOption[];
+  subscriptionLevel: 'basic' | 'detailed' | 'comprehensive';
+  
+  // Content types
+  includeMetrics: boolean;
+  includeAnalytics: boolean;
+  includeParticipantStates: boolean;
+}
+
+// Export all types for use in commands
+export type TrainingSessionData = 
+  | AcademyTrainingSession 
+  | TrainingPersona 
+  | HumanObserver 
+  | HumanParticipant;
+
+export type TrainingFlowData = 
+  | TrainingPhase 
+  | TrainingActivity 
+  | ConversationScript 
+  | ScriptTurn;
+
+export type LiveTrainingData = 
+  | TrainingMessage 
+  | KnowledgeTransfer 
+  | StudentQuestion 
+  | RealTimeAssessment;

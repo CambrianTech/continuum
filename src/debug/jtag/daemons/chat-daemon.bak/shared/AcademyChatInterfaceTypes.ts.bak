@@ -1,0 +1,467 @@
+/**
+ * Academy Chat Interface Types - Physical Chat Room Experience
+ * ============================================================
+ * 
+ * Academy sessions are physical chat rooms you join like Discord channels,
+ * with natural command integration and contextual widgets.
+ * 
+ * Experience:
+ * - Join "Academy Session #cook101: Learn Italian Cooking" like any chat room
+ * - Chat naturally with foodpersona learning from italian-chef-ai
+ * - Use commands like `/commands/file/save carbonara-recipe.txt` directly in chat
+ * - Academy widgets appear contextually (ingredients, techniques, progress)
+ * - Everything feels natural - enhanced chat, not separate training system
+ * 
+ * Architecture:
+ * - Academy rooms are enhanced chat rooms with widgets and commands
+ * - Commands are available via chat shortcuts with hints/autocomplete
+ * - Widgets provide contextual tools without interrupting conversation
+ * - All features optional - can participate as regular chat if preferred
+ */
+
+import { AcademyChatRoom, AcademyChatMessage } from './AcademyChatRoomTypes';
+import { ChatCitizen } from './UniversalCitizenTypes';
+
+// ========================
+// Physical Room Experience
+// ========================
+
+export interface AcademyRoomInterface {
+  // Room identity (appears in room list like Discord)
+  roomDisplayInfo: RoomDisplayInfo;
+  
+  // Chat interface (enhanced chat experience)
+  chatInterface: EnhancedChatInterface;
+  
+  // Academy widgets (contextual overlays)
+  academyWidgets: AcademyWidget[];
+  
+  // Command integration (natural command access)
+  commandIntegration: ChatCommandIntegration;
+  
+  // Room atmosphere (visual/audio enhancements)
+  roomAtmosphere: RoomAtmosphere;
+  
+  // Participation tools
+  participationTools: ParticipationTools;
+}
+
+export interface RoomDisplayInfo {
+  // Room listing appearance
+  displayName: string;               // "Academy Session #cook101: Learn Italian Cooking"
+  shortName: string;                 // "#cook101"
+  description: string;               // "foodpersona learning Italian cooking from italian-chef-ai"
+  
+  // Visual indicators
+  roomIcon: string;                  // 🍝 or custom icon
+  statusIndicator: 'active' | 'paused' | 'starting' | 'ending';
+  participantCount: number;          // Live participant count
+  
+  // Academy indicators
+  academySessionBadge: boolean;      // Shows it's an Academy session
+  trainingLevel: string;             // "Beginner Italian Cooking"
+  learningProgress: number;          // 0-1 session progress
+  
+  // Room preview
+  recentActivity: string;            // "italian-chef-ai: Never use cream in carbonara!"
+  livePreview: boolean;              // Show live message preview
+  keyParticipants: string[];         // Notable participants visible
+  
+  // Discoverability
+  topics: string[];                  // ["cooking", "italian", "recipes"]
+  searchKeywords: string[];          // For room search
+  recommendationScore: number;       // 0-1 for recommendations
+}
+
+export interface EnhancedChatInterface {
+  // Standard chat features
+  messageDisplay: MessageDisplayConfig;
+  inputInterface: ChatInputInterface;
+  
+  // Academy enhancements
+  learningIndicators: LearningIndicatorConfig;
+  teachingHighlights: TeachingHighlightConfig;
+  progressIntegration: ProgressIntegrationConfig;
+  
+  // Smart features
+  contextualHints: ContextualHintConfig;
+  smartSuggestions: SmartSuggestionConfig;
+  
+  // Accessibility
+  learningAccessibility: LearningAccessibilityConfig;
+}
+
+export interface MessageDisplayConfig {
+  // Enhanced message appearance
+  showLearningMoments: boolean;      // Highlight learning moments
+  showCapabilities: boolean;         // Show capabilities being demonstrated
+  showTeachingElements: boolean;     // Highlight teaching elements
+  
+  // Role-based styling
+  teacherStyling: MessageStyling;    // Special styling for teachers
+  learnerStyling: MessageStyling;    // Special styling for learners
+  
+  // Content enhancement
+  codeHighlighting: boolean;         // Syntax highlighting for recipes/code
+  ingredientHighlighting: boolean;   // Highlight ingredients in cooking
+  techniqueAnnotations: boolean;     // Annotate cooking techniques
+  
+  // Interactive features
+  ingredientClickable: boolean;      // Click ingredients for info
+  techniqueExpandable: boolean;      // Expand technique explanations
+  recipeCollapsible: boolean;        // Collapse/expand recipes
+}
+
+export interface ChatInputInterface {
+  // Enhanced input features
+  commandAutocomplete: boolean;      // Autocomplete /commands/
+  ingredientAutocomplete: boolean;   // Autocomplete ingredient names
+  techniqueAutocomplete: boolean;    // Autocomplete cooking techniques
+  
+  // Quick actions
+  quickRecipeSave: boolean;          // Quick save recipe to file
+  quickIngredientAdd: boolean;       // Quick add to shopping list
+  quickTechniqueNote: boolean;       // Quick note about technique
+  
+  // Smart composition
+  contextAwareSuggestions: boolean;  // Suggest relevant questions/comments
+  grammarHelp: boolean;              // Help with technical terms
+  translationHelp: boolean;          // Help with Italian terms
+  
+  // Input modes
+  recipeMode: boolean;               // Special mode for sharing recipes
+  questionMode: boolean;             // Mode optimized for questions
+  practiceMode: boolean;             // Mode for practicing techniques
+}
+
+// ========================
+// Academy Widgets
+// ========================
+
+export interface AcademyWidget {
+  widgetId: string;
+  widgetType: AcademyWidgetType;
+  
+  // Widget display
+  title: string;
+  position: WidgetPosition;
+  size: WidgetSize;
+  
+  // Widget behavior
+  autoShow: boolean;                 // Show automatically when relevant
+  contextual: boolean;               // Appears based on conversation context
+  dismissible: boolean;              // Can be closed by user
+  
+  // Widget content
+  content: WidgetContent;
+  
+  // Integration
+  chatIntegration: boolean;          // Integrates with chat messages
+  commandIntegration: boolean;       // Integrates with commands
+  
+  // Personalization
+  personalizable: boolean;           // User can customize
+  learnerAdapted: boolean;           // Adapts to learner's level
+}
+
+export type AcademyWidgetType = 
+  | 'progress_tracker'     // Learning progress visualization
+  | 'recipe_builder'       // Build/save recipes collaboratively
+  | 'ingredient_list'      // Track ingredients mentioned
+  | 'technique_guide'      // Show cooking techniques
+  | 'timer_assistant'      // Cooking timers and alerts
+  | 'measurement_converter' // Convert cooking measurements
+  | 'participant_roles'    // Show who's teaching/learning what
+  | 'session_objectives'   // Current learning objectives
+  | 'quick_commands'       // Quick access to relevant commands
+  | 'learning_notes'       // Personal notes during session
+  | 'recipe_gallery'       // Gallery of recipes discussed
+  | 'technique_library';   // Library of techniques learned
+
+export interface RecipeBuilderWidget extends AcademyWidget {
+  widgetType: 'recipe_builder';
+  
+  // Recipe building
+  currentRecipe: CollaborativeRecipe;
+  
+  // Collaboration features
+  multipleEditors: boolean;          // Multiple people can edit
+  realTimeSync: boolean;             // Syncs in real-time
+  versionHistory: boolean;           // Track recipe versions
+  
+  // Smart features
+  ingredientExtraction: boolean;     // Extract from chat messages
+  instructionGeneration: boolean;    // Generate from conversation
+  nutritionCalculation: boolean;     // Calculate nutrition info
+  
+  // Integration
+  saveToFile: boolean;               // Can save with /commands/file/save
+  shareInChat: boolean;              // Share progress in chat
+  exportFormats: string[];           // Export formats available
+}
+
+export interface ProgressTrackerWidget extends AcademyWidget {
+  widgetType: 'progress_tracker';
+  
+  // Progress visualization
+  overallProgress: number;           // 0-1 session progress
+  objectiveProgress: Map<string, number>; // Progress per objective
+  skillProgress: Map<string, number>;     // Progress per skill
+  
+  // Visual representation
+  progressStyle: 'bar' | 'circle' | 'tree' | 'timeline';
+  showMilestones: boolean;           // Show achievement milestones
+  showPredictions: boolean;          // Show predicted completion
+  
+  // Interactivity
+  clickableObjectives: boolean;      // Click to focus on objective
+  expandableSkills: boolean;         // Expand skill details
+  
+  // Personalization
+  personalGoals: string[];           // User's personal goals
+  adaptiveTargets: boolean;          // Targets adapt to progress
+}
+
+// ========================
+// Command Integration
+// ========================
+
+export interface ChatCommandIntegration {
+  // Command discovery
+  commandHints: CommandHintConfig;
+  commandAutocomplete: CommandAutocompleteConfig;
+  
+  // Contextual commands
+  contextualCommands: ContextualCommand[];
+  
+  // Quick access
+  frequentCommands: FrequentCommandConfig;
+  recentCommands: RecentCommandConfig;
+  
+  // Command assistance
+  commandHelp: CommandHelpConfig;
+  parameterHints: ParameterHintConfig;
+  
+  // Integration with conversation
+  naturalLanguageCommands: boolean;  // Accept natural language
+  commandSuggestions: boolean;       // Suggest commands during chat
+  resultIntegration: boolean;        // Integrate command results in chat
+}
+
+export interface ContextualCommand {
+  command: string;                   // "/commands/file/save"
+  context: string[];                 // When this command is relevant
+  
+  // Contextual configuration
+  autoParameters: boolean;           // Auto-fill parameters from context
+  smartDefaults: boolean;            // Smart default values
+  
+  // Display
+  description: string;               // "Save current recipe to file"
+  icon: string;                      // 💾
+  shortcut: string;                  // Keyboard shortcut
+  
+  // Usage prediction
+  relevanceScore: number;            // 0-1 relevance to current conversation
+  usageFrequency: number;            // How often used in similar contexts
+}
+
+export interface CommandHintConfig {
+  // Hint triggers
+  showOnSlash: boolean;              // Show hints when typing /
+  showOnContext: boolean;            // Show hints based on conversation
+  showOnError: boolean;              // Show hints after command errors
+  
+  // Hint content
+  includeDescription: boolean;       // Show command descriptions
+  includeExamples: boolean;          // Show example usage
+  includeParameters: boolean;        // Show parameter hints
+  
+  // Hint appearance
+  inlineHints: boolean;              // Show hints inline
+  popupHints: boolean;               // Show hints in popup
+  widgetHints: boolean;              // Show hints in widget
+  
+  // Intelligence
+  contextualRelevance: boolean;      // Only show relevant commands
+  learningLevel: boolean;            // Adapt to user's skill level
+  frequencyBased: boolean;           // Prioritize frequently used commands
+}
+
+// ========================
+// Academy Chat Commands
+// ========================
+
+export interface AcademyChatCommand {
+  // Command structure (follows existing pattern)
+  commandPath: string;               // "/commands/academy/save-recipe"
+  
+  // Academy-specific parameters
+  academyContext: AcademyCommandContext;
+  
+  // Chat integration
+  chatTrigger: ChatCommandTrigger;
+  chatResponse: ChatCommandResponse;
+  
+  // Learning integration
+  learningValue: number;             // 0-1 learning value of using this command
+  skillRequirement: string[];        // Skills needed to use effectively
+  teachingOpportunity: boolean;      // Can this be a teaching moment
+}
+
+export interface AcademyCommandContext {
+  sessionId: string;
+  currentObjectives: string[];
+  participantRoles: Map<string, string>;
+  conversationContext: string[];     // Recent conversation for context
+  
+  // Smart defaults
+  smartDefaults: boolean;            // Use conversation for defaults
+  autoFillFromChat: boolean;         // Auto-fill from chat content
+  suggestFromContext: boolean;       // Suggest parameters from context
+}
+
+export interface ChatCommandTrigger {
+  // Natural triggers
+  naturalLanguage: string[];         // "save this recipe", "remember this technique"
+  keywords: string[];                // Keywords that suggest this command
+  
+  // Context triggers
+  messagePatterns: string[];         // Message patterns that trigger
+  participantActions: string[];      // Actions by participants that trigger
+  
+  // Smart triggers
+  intentDetection: boolean;          // Detect intent to use command
+  proactiveSuggestion: boolean;      // Proactively suggest command
+}
+
+export interface ChatCommandResponse {
+  // Response integration
+  inlineResponse: boolean;           // Show response inline in chat
+  widgetResponse: boolean;           // Show response in widget
+  privateResponse: boolean;          // Show response only to user
+  
+  // Response content
+  successMessage: string;            // Message on success
+  resultSummary: string;             // Summary of what was done
+  nextSuggestions: string[];         // Suggested next actions
+  
+  // Learning integration
+  explainResult: boolean;            // Explain what the command did
+  teachingMoment: boolean;           // Use as teaching opportunity
+  shareWithGroup: boolean;           // Share result with group
+}
+
+// ========================
+// Room Atmosphere
+// ========================
+
+export interface RoomAtmosphere {
+  // Visual atmosphere
+  theme: RoomTheme;
+  backgroundElements: BackgroundElement[];
+  
+  // Audio atmosphere
+  ambientSounds: boolean;            // Gentle background sounds
+  notificationSounds: boolean;       // Custom notification sounds
+  
+  // Interactive elements
+  reactionAnimations: boolean;       // Animated reactions
+  activityIndicators: boolean;       // Show when people are cooking/learning
+  
+  // Immersion
+  contextualUI: boolean;             // UI adapts to cooking context
+  seasonalElements: boolean;         // Seasonal cooking themes
+  culturalElements: boolean;         // Italian cultural elements
+}
+
+export interface RoomTheme {
+  themeName: string;                 // "Italian Kitchen"
+  
+  // Visual elements
+  colorPalette: string[];            // Warm, kitchen-like colors
+  typography: string;                // Font that fits theme
+  iconSet: string;                   // Cooking-themed icons
+  
+  // Layout adaptations
+  messageLayout: 'cozy' | 'professional' | 'casual';
+  widgetStyling: 'integrated' | 'overlay' | 'sidebar';
+  
+  // Dynamic elements
+  timeOfDayAdaptation: boolean;      // Adapt to time of day
+  activityAdaptation: boolean;       // Adapt to current activity
+}
+
+// ========================
+// Example: Italian Cooking Session
+// ========================
+
+export interface ItalianCookingSession extends AcademyRoomInterface {
+  // Room identity
+  roomDisplayInfo: {
+    displayName: "Academy Session #cook101: Learn Italian Cooking";
+    shortName: "#cook101";
+    roomIcon: "🍝";
+    statusIndicator: "active";
+    description: "foodpersona learning Italian cooking from italian-chef-ai";
+    recentActivity: "italian-chef-ai: The secret is to use Pecorino Romano, not Parmesan!";
+  };
+  
+  // Specialized widgets for cooking
+  cookingWidgets: [
+    RecipeBuilderWidget,     // Build carbonara recipe collaboratively
+    IngredientTrackerWidget, // Track: eggs, pecorino, guanciale, pasta
+    TechniqueGuideWidget,    // Show: emulsion technique, pasta water usage
+    TimerWidget,             // Cooking timers
+    MeasurementConverter     // Convert Italian measurements
+  ];
+  
+  // Cooking-specific commands
+  cookingCommands: [
+    "/commands/recipe/save carbonara.txt",
+    "/commands/ingredient/add-to-list guanciale",
+    "/commands/timer/set 8-minutes pasta",
+    "/commands/technique/bookmark emulsion-method",
+    "/commands/measurement/convert 100g-pecorino to-cups"
+  ];
+  
+  // Learning objectives visible in UI
+  learningObjectives: [
+    "Master authentic carbonara technique",
+    "Understand Italian pasta cooking principles", 
+    "Learn ingredient selection for traditional recipes"
+  ];
+}
+
+// Example conversation experience:
+/*
+👨‍🍳 foodpersona: "I want to learn to make real carbonara"
+🧑‍🏫 italian-chef-ai: "Perfetto! First rule - no cream ever! Let me teach you the authentic way."
+💡  [Widget appeared: Recipe Builder - "Carbonara Autentica"]
+🧑‍🏫 italian-chef-ai: "You need: spaghetti, eggs, pecorino romano, guanciale, black pepper. That's it!"
+💬  [Hint: Type "/commands/ingredient/add-to-list" to save ingredients]
+👨‍🍳 foodpersona: "/commands/ingredient/add-to-list guanciale pecorino-romano eggs spaghetti"
+✅  Added to shopping list: guanciale, pecorino romano, eggs, spaghetti
+🧑‍🏫 italian-chef-ai: "Bene! Now, the technique is everything. You must create an emulsion..."
+📊  [Progress updated: Ingredient Knowledge 100%, Technique 20%]
+👨‍🍳 foodpersona: "How do I make the emulsion without scrambling the eggs?"
+🧑‍🏫 italian-chef-ai: "Ah, the eternal question! Pasta water temperature is key..."
+*/
+
+// Export main types
+export type AcademyInterfaceData = 
+  | AcademyRoomInterface 
+  | EnhancedChatInterface 
+  | AcademyWidget 
+  | ChatCommandIntegration;
+
+export type WidgetData = 
+  | RecipeBuilderWidget 
+  | ProgressTrackerWidget 
+  | ContextualCommand 
+  | AcademyChatCommand;
+
+export type AtmosphereData = 
+  | RoomAtmosphere 
+  | RoomTheme 
+  | ItalianCookingSession;

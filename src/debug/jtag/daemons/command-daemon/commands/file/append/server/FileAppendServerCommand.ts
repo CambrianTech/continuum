@@ -44,10 +44,10 @@ export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileA
       }
       
       // Append content
-      await fs.appendFile(resolvedPath, appendParams.content, appendParams.encoding || 'utf8');
+      await fs.appendFile(resolvedPath, appendParams.content, { encoding: (appendParams.encoding || 'utf8') as BufferEncoding });
       
       const stats = await fs.stat(resolvedPath);
-      const bytesAppended = Buffer.byteLength(appendParams.content, appendParams.encoding || 'utf8');
+      const bytesAppended = Buffer.byteLength(appendParams.content, (appendParams.encoding || 'utf8') as BufferEncoding);
       
       console.log(`✅ SERVER: Appended ${bytesAppended} bytes to ${resolvedPath}`);
       

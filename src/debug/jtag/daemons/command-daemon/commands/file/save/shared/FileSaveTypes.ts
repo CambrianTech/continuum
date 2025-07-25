@@ -20,7 +20,7 @@ type FileSaveResultExtension = {
 };
 
 export class FileSaveParams extends FileParams<FileSaveExtension> {
-  content: string;
+  content!: string;
   createDirs?: boolean;
 
   constructor(data: Partial<FileSaveParams> = {}) {
@@ -34,8 +34,8 @@ export class FileSaveParams extends FileParams<FileSaveExtension> {
 }
 
 export class FileSaveResult extends FileResult<FileSaveResultExtension> {
-  bytesWritten: number;
-  created: boolean;
+  bytesWritten!: number;
+  created!: boolean;
 
   constructor(data: Partial<FileSaveResult>) {
     super(data); // Parent handles base fields with type safety

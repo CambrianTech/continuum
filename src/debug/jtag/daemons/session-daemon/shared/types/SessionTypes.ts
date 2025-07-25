@@ -342,7 +342,7 @@ export const SessionValidation = {
       errors.push('invalid session type');
     }
     
-    if (request.owner && SESSION_CONSTANTS.RESERVED_OWNERS.includes(request.owner)) {
+    if (request.owner && SESSION_CONSTANTS.RESERVED_OWNERS.includes(request.owner as any)) {
       errors.push(`'${request.owner}' is a reserved owner name`);
     }
     
