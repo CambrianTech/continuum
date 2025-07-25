@@ -7,7 +7,7 @@
 import type { JTAGContext } from '../../../shared/JTAGTypes';
 import { CommandDaemon } from '../shared/CommandDaemon';
 import type { CommandEntry } from '../shared/CommandBase';
-import { BROWSER_COMMANDS } from '../../../browser/structure';
+import { BROWSER_COMMANDS } from './structure';
 import type { CommandBase } from '../shared/CommandBase';
 
 export class CommandDaemonBrowser extends CommandDaemon {
