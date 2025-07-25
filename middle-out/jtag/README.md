@@ -10,8 +10,10 @@
 - **Cross-system command chaining** - JTAG → Continuum → Widgets with promises
 - **Automatic endpoint validation** - Commands await their required endpoints
 - **Dynamic command registration** - Any system can plug in easily
-- **Transport-agnostic routing** - WebSocket, HTTP, MCP, File all supported
-- **Universal debugging utility** - Like Puppeteer but for any application
+- **Transport-agnostic routing** - WebSocket, HTTP, UDP P2P, MCP, File all supported
+- **P2P networking** - Remote node communication via UDP multicast discovery
+- **Remote command execution** - Execute commands on any Continuum node using `/remote/{nodeId}/...` paths
+- **Universal debugging utility** - Like Puppeteer but for any application, anywhere
 
 ### ✅ JTAG Universal Bus Implementation (2025-07-21)
 
@@ -19,11 +21,14 @@
 
 * **✅ Dynamic Command Registration**: Any system can register commands via `bus.registerCommand()`
 * **✅ Promise Chaining**: Commands can chain across different systems with results
-* **✅ Endpoint Validation**: Commands await their required endpoints (`browser`, `server`) 
+* **✅ Endpoint Validation**: Commands await their required endpoints (`browser`, `server`, `remote`) 
 * **✅ Transport Router**: Universal message routing through pluggable backends
 * **✅ Cross-System Integration**: JTAG + Continuum + Widgets all on same bus
 * **✅ Auto-Wiring**: Registered commands automatically create callable methods
 * **✅ Console Queueing**: Client messages queue until transport is ready
+* **✅ P2P Networking**: UDP multicast transport for peer-to-peer node discovery
+* **✅ Remote Routing**: `/remote/{nodeId}/daemon/command` routing to any Continuum node
+* **✅ Distributed Commands**: Execute commands on remote nodes with full request-response correlation
 
 **🛸 AI Probe System (New!):**
 
@@ -42,6 +47,69 @@
 ```
 
 This visibility enables debugging complex distributed issues across the browser-server boundary.
+
+## 🌐 P2P Networking & Remote Routing (NEW!)
+
+### **Distributed Command Execution**
+JTAG now supports executing commands on any Continuum node in the network using remote routing:
+
+```typescript
+// Execute screenshot command on remote node
+await router.postMessage({
+  endpoint: 'remote/node_abc123/browser/commands/screenshot',
+  payload: { querySelector: 'body' }
+});
+
+// Chat with AI on different machine
+await router.postMessage({
+  endpoint: 'remote/ai-server-001/chat/commands/message',
+  payload: { message: 'What is the system status?' }
+});
+
+// Access database on remote node
+await router.postMessage({
+  endpoint: 'remote/db-node-456/database/commands/query',
+  payload: { sql: 'SELECT * FROM sessions LIMIT 10' }
+});
+```
+
+### **UDP Multicast Transport**
+- **Automatic Discovery**: Nodes find each other automatically on local networks
+- **Direct Communication**: High-performance UDP unicast for data transfer  
+- **Mesh Networking**: Multi-hop routing for complex topologies
+- **Encryption**: Optional cryptographic security for P2P messages
+- **Fragmentation**: Large messages split and reassembled automatically
+
+### **Node Capabilities**
+Each Continuum node advertises its capabilities:
+- **`chat`** - AI conversation and assistance
+- **`database`** - Data storage and querying  
+- **`compiler`** - Multi-language code compilation and execution
+- **`artifacts`** - File storage and management
+- **`browser`** - Browser automation and screenshot capture
+- **`widgets`** - UI component injection and management
+
+### **P2P Architecture Benefits**
+- **Location Independence**: Commands work the same locally or remotely
+- **Automatic Failover**: Route to different nodes if primary unavailable
+- **Load Distribution**: Commands can be load-balanced across nodes
+- **Development Flexibility**: Test on one machine, deploy to many
+- **Zero Configuration**: Nodes discover each other automatically
+
+### **Remote Debugging Scenarios**
+```bash
+# Debug browser on different machine
+./continuum screenshot --remote=laptop-node --querySelector=body
+
+# Check database on remote server  
+./continuum database --remote=db-server --query="SELECT COUNT(*) FROM logs"
+
+# Compile code on powerful machine
+./continuum compile --remote=build-server --language=rust --file=main.rs
+
+# Deploy widget to all nodes
+./continuum widget --remote=all --action=deploy --name=status-bar
+```
 
 ## 🏗️ Core Components
 
@@ -82,8 +150,12 @@ This visibility enables debugging complex distributed issues across the browser-
 5. **Manage sessions**: Use session management commands for lifecycle control
 6. **📸 Test UI components**: Use verified selectors for widget validation
 7. **🎯 Visual feedback**: Get immediate visual confirmation of changes
+8. **🌐 Control remote nodes**: Execute commands on any Continuum node in the network
+9. **🔍 Distributed debugging**: Debug issues across multiple machines simultaneously
+10. **⚡ Load balance work**: Route CPU-intensive tasks to powerful remote nodes
+11. **🔄 Automatic failover**: Switch to backup nodes when primary nodes fail
 
-**No more blind development – complete system visibility achieved.**
+**No more blind development – complete distributed system visibility achieved.**
 
 ## 📸 **Screenshot Testing Integration (New!)**
 

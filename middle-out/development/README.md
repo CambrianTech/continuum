@@ -20,14 +20,16 @@ This directory contains the complete development methodology documentation for b
 - **[hot-reload-workflow.md](hot-reload-workflow.md)** - **🚀 Autonomous AI development with session preservation**
 - **[lora-training-signals.md](lora-training-signals.md)** - Progressive curriculum and feedback patterns for Academy AI training
 
+### **🌐 Distributed Architecture**
+- **[p2p-mesh-implementation.md](p2p-mesh-implementation.md)** - **🌐 P2P Mesh Implementation Plan** - UDP transport and remote Continuum node communication for chat rooms and cross-machine coordination
+
 ### **🛠️ Implementation Guides**
 - **[code-quality-scouting.md](code-quality-scouting.md)** - **🏕️ Scout Rule for code quality** - Leave the codebase better than you found it
 - **[TECHNICAL_DEBT.md](TECHNICAL_DEBT.md)** - **🚨 Technical debt registry with "if you see something, say something" protocol**
 - **[DECLUTTERING_PROTOCOL.md](DECLUTTERING_PROTOCOL.md)** - **🧹 Root directory cleanup and "nothing goes in root" enforcement**
 - **[FEATURE_PRESERVATION_PROTOCOL.md](FEATURE_PRESERVATION_PROTOCOL.md)** - **🔒 IP preservation protocol: "rewrite, never discard" with zero IP loss**
 - **[LOST_AND_FOUND.md](LOST_AND_FOUND.md)** - **🏺 Archaeological IP recovery system with revolutionary discoveries**
-- **[error-fixing.md](error-fixing.md)** - Systematic error fixing methodology (coming soon)
-- **[widget-architecture.md](widget-architecture.md)** - Widget system breakthrough patterns (coming soon)
+- **[widget-architecture.md](widget-architecture.md)** - Widget system breakthrough patterns
 
 ### **📸 Visual Development Tools**
 - **[../jtag/widget-screenshot-testing.md](../jtag/widget-screenshot-testing.md)** - **🎯 Visual widget validation with JTAG screenshots** - Get immediate visual feedback on UI changes
@@ -58,6 +60,13 @@ This directory contains the complete development methodology documentation for b
 - **Git hook protection** - Broken commits are blocked
 - **Module graduation** - Systematic improvement tracking
 - **Type safety enforcement** - No regression to `any` types
+
+### **🌐 P2P Mesh Architecture**
+**Distributed Continuum node communication:**
+- **UDP transport** - Fire-and-forget events for chat rooms and presence
+- **TCP reliability** - Guaranteed delivery for critical remote commands
+- **Type-safe payloads** - Same event types work locally and across network
+- **Extensions not rewrites** - Building on existing JTAG/router foundation
 
 ## 🧪 **Testing Excellence**
 

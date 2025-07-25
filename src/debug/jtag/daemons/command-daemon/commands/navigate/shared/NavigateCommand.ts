@@ -1,0 +1,37 @@
+// ISSUES: 0 open, last updated 2025-07-25 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+
+/**
+ * Navigate Command - Abstract Base Class
+ * 
+ * Clean abstraction following CommandBase pattern. Minimal interface with
+ * proper generics usage - extends CommandBase<NavigateParams, NavigateResult>
+ * for type safety without complexity.
+ * 
+ * DESIGN ANALYSIS:
+ * ✅ Proper inheritance from CommandBase
+ * ✅ Clean constructor delegation 
+ * ✅ Sensible default parameters
+ * ✅ Single abstract method to implement
+ * ✅ No unnecessary complexity or interfaces
+ */
+
+import { CommandBase } from '../../../shared/CommandBase';
+import type { ICommandDaemon } from '../../../shared/CommandBase';
+import type { JTAGContext } from '../../../../../shared/JTAGTypes';
+import { NavigateParams } from './NavigateTypes';
+import type { NavigateResult } from './NavigateTypes';
+
+export abstract class NavigateCommand extends CommandBase<NavigateParams, NavigateResult> {
+
+  constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
+    super('navigate', context, subpath, commander);
+  }
+
+  public override getDefaultParams(): NavigateParams {
+    return new NavigateParams({
+      url: 'about:blank'
+    });
+  }
+
+  abstract execute(params: NavigateParams): Promise<NavigateResult>;
+}

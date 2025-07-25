@@ -1,4 +1,20 @@
 # Symmetric Daemon Architecture
+## ❌ **SUPERSEDED BY**: modular-command-architecture.md
+
+**Status**: ❌ OUTDATED - Contains architectural violations  
+**Replacement**: [modular-command-architecture.md](modular-command-architecture.md)  
+**Superseded**: 2025-07-25  
+**Reason**: Promoted massive daemon anti-patterns instead of modular commands
+
+---
+
+## 🚨 **ARCHITECTURAL VIOLATION WARNING**
+
+This document describes **massive daemon patterns** that led to 4,386 lines of violation code. The correct pattern is **small, independent command modules** as documented in `modular-command-architecture.md`.
+
+**Do not follow the patterns in this document.** They represent architectural debt that must be cleaned up.
+
+---
 
 ## 🎯 Vision: Unified Browser/Server Daemon Pattern
 
@@ -117,7 +133,8 @@ await logger.info(context, "Message works everywhere");
 // Routes to:
 // - ServerLoggerDaemon in Node.js
 // - ClientLoggerDaemon in browser
-// - RemoteLoggerDaemon in distributed mode
+// - RemoteLoggerDaemon via UDP P2P transport
+// - DistributedLoggerDaemon across multiple nodes
 ```
 
 ## 🚀 Migration Strategy
@@ -136,6 +153,12 @@ await logger.info(context, "Message works everywhere");
 - Single codebase for daemon logic
 - Context-specific adapters for execution differences
 - Unified testing and debugging tools
+
+### **Phase 4: P2P & Remote Routing (COMPLETED!)**
+- ✅ UDP multicast transport for automatic node discovery
+- ✅ Remote path routing `/remote/{nodeId}/daemon/command`
+- ✅ Distributed command execution across any Continuum node
+- ✅ Same daemon APIs work locally or remotely
 
 ## 🧪 Testing Symmetry
 
@@ -201,9 +224,66 @@ class UniversalDaemon extends ProcessBasedDaemon<T> {
 - Load balancing across execution environments
 
 ### **Distributed Coordination**
-- Server and browser daemons coordinate seamlessly
-- P2P daemon communication
-- Fault tolerance through context redundancy
+- ✅ Server and browser daemons coordinate seamlessly
+- ✅ P2P daemon communication via UDP multicast
+- ✅ Automatic node discovery and mesh networking
+- ✅ Fault tolerance through context redundancy
+- ✅ Location-independent command execution
+
+## 🌐 P2P & Distributed Architecture (NEW!)
+
+### **Remote Routing Implementation**
+The symmetric daemon architecture now supports distributed execution across any Continuum node:
+
+```typescript
+// Execute on remote node - same API as local
+await router.postMessage({
+  endpoint: 'remote/build-server/compiler/commands/compile',
+  payload: { language: 'rust', file: 'main.rs' }
+});
+
+// Works identically to local command
+await router.postMessage({
+  endpoint: 'compiler/commands/compile',
+  payload: { language: 'rust', file: 'main.rs' }
+});
+```
+
+### **UDP Multicast Transport Architecture**
+- **Automatic Discovery**: Nodes advertise capabilities via UDP multicast
+- **Direct Communication**: High-performance UDP unicast for data transfer
+- **Mesh Routing**: Multi-hop routing through intermediate nodes
+- **Encrypted Security**: Optional RSA signatures + AES encryption
+- **Fragmentation**: Large messages split and reassembled automatically
+
+### **Node Capability Advertisement**
+Each node advertises its daemon capabilities:
+```typescript
+const nodeCapabilities = [
+  'chat',      // AI conversation daemon
+  'database',  // Data storage daemon  
+  'compiler',  // Multi-language compilation
+  'artifacts', // File storage and management
+  'browser',   // Browser automation
+  'widgets'    // UI component injection
+];
+```
+
+### **Symmetric P2P Benefits**
+- **Location Independence**: Same daemon API works locally or remotely
+- **Automatic Load Balancing**: Route tasks to nodes with capacity
+- **Development Flexibility**: Test locally, deploy distributed
+- **Zero Configuration**: Nodes discover each other automatically
+- **Fault Tolerance**: Automatic failover to backup nodes
+
+### **P2P Message Flow**
+```
+Browser Command → JTAGRouter → Parse Remote Path → 
+UDP Transport → Target Node → Local Daemon → Response → 
+UDP Transport → Original Node → Browser
+```
+
+The entire P2P routing is transparent to daemons - they receive the same message format whether the command originated locally or remotely.
 
 ## **🎯 CORE PRINCIPLE: DUMB ROUTER PATTERN**
 
