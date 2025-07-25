@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.224",
+  "version": "1.0.227",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/index.js",
   "browser": "dist/browser/index.js",
@@ -30,13 +30,68 @@
       "height": 800
     }
   },
+  "structureGenerator": {
+    "directories": {
+      "browser": {
+        "outputFile": "browser/structure.ts",
+        "environment": "browser",
+        "daemonPaths": [
+          "daemons/*/browser/*Browser.ts"
+        ],
+        "excludePatterns": [
+          "**/*.bak",
+          "**/*.bak/**/*",
+          "**/node_modules/**/*"
+        ]
+      },
+      "server": {
+        "outputFile": "server/structure.ts",
+        "environment": "server",
+        "daemonPaths": [
+          "daemons/*/server/*Server.ts"
+        ],
+        "excludePatterns": [
+          "**/*.bak",
+          "**/*.bak/**/*",
+          "**/node_modules/**/*"
+        ]
+      },
+      "command-daemon-browser": {
+        "outputFile": "daemons/command-daemon/browser/structure.ts",
+        "environment": "browser",
+        "commandPaths": [
+          "daemons/command-daemon/commands/*/browser/*BrowserCommand.ts",
+          "daemons/command-daemon/commands/*/*/browser/*BrowserCommand.ts"
+        ],
+        "excludePatterns": [
+          "**/*.bak",
+          "**/*.bak/**/*",
+          "**/node_modules/**/*"
+        ]
+      },
+      "command-daemon-server": {
+        "outputFile": "daemons/command-daemon/server/structure.ts",
+        "environment": "server",
+        "commandPaths": [
+          "daemons/command-daemon/commands/*/server/*ServerCommand.ts",
+          "daemons/command-daemon/commands/*/*/server/*ServerCommand.ts"
+        ],
+        "excludePatterns": [
+          "**/*.bak",
+          "**/*.bak/**/*",
+          "**/node_modules/**/*"
+        ]
+      }
+    }
+  },
   "scripts": {
     "start": "npm run clean:all && npm run build && npm run version:bump && npm pack && node scripts/update-test-bench.js && cd examples/test-bench && npm install && npm start",
     "clean:logs": "rm -rf ../../../.continuum/jtag/logs/* 2>/dev/null || true; mkdir -p ../../../.continuum/jtag/logs",
     "clean:screenshots": "rm -rf ../../../.continuum/jtag/screenshots/* 2>/dev/null || true; mkdir -p ../../../.continuum/jtag/screenshots",
     "clean:all": "npm run clean:logs && npm run clean:screenshots && rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
-    "build": "npm run build:ts",
+    "prebuild": "npx tsx scripts/generate-structure.ts",
+    "build": "npm run prebuild && npm run build:ts",
     "build:with-test-bench": "npm run build && npm pack && node scripts/update-test-bench.js && cd examples/test-bench && npm install",
     "build:ts": "tsc --project tsconfig.json",
     "build:mcp": "npx tsc mcp/jtag-mcp-server.ts --outDir mcp --target ES2020 --module commonjs --esModuleInterop",
