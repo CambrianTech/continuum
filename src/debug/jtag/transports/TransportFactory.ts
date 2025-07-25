@@ -7,14 +7,25 @@ import type { JTAGContext } from '../shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '../shared/JTAGTypes';
 import { WebSocketServerTransport, WebSocketClientTransport } from './WebSocketTransport';
 import { HTTPTransport } from './HTTPTransport';
+import { UDPMulticastTransport } from './udp-multicast/UDPMulticastTransport';
 import type { EventsInterface } from '../shared/JTAGRouter';
 
 export interface TransportConfig {
-  preferred?: 'websocket' | 'http';
+  preferred?: 'websocket' | 'http' | 'udp-multicast';
   fallback?: boolean;
   serverPort?: number;
   serverUrl?: string;
   eventSystem?: EventsInterface;
+  // UDP multicast specific options
+  p2p?: {
+    nodeId?: string;
+    nodeType?: 'server' | 'browser' | 'mobile' | 'ai-agent';
+    capabilities?: string[];
+    multicastAddress?: string;
+    multicastPort?: number;
+    unicastPort?: number;
+    encryptionKey?: string;
+  };
 }
 
 export class TransportFactory {
@@ -30,6 +41,11 @@ export class TransportFactory {
     const { preferred = 'websocket', fallback = true, serverPort = 9001, serverUrl = 'ws://localhost:9001', eventSystem } = config;
     
     console.log(`🏭 Transport Factory: Creating transport for ${environment} environment`);
+    
+    // UDP multicast transport for P2P networking
+    if (preferred === 'udp-multicast') {
+      return await this.createUDPMulticastTransport(environment, config);
+    }
     
     if (preferred === 'websocket') {
       if (environment === JTAG_ENVIRONMENTS.SERVER) {
@@ -77,6 +93,51 @@ export class TransportFactory {
   private static async createHTTPTransport(): Promise<JTAGTransport> {
     const transport = new HTTPTransport();
     console.log(`✅ Transport Factory: HTTP transport created`);
+    return transport;
+  }
+
+  /**
+   * Create UDP multicast transport for P2P networking
+   */
+  private static async createUDPMulticastTransport(
+    environment: JTAGContext['environment'],
+    config: TransportConfig
+  ): Promise<JTAGTransport> {
+    const p2pConfig = config.p2p || {};
+    
+    // Generate node ID based on environment if not provided
+    const nodeId = p2pConfig.nodeId || `${environment}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+    
+    const udpConfig = {
+      nodeId,
+      nodeType: p2pConfig.nodeType || (environment === 'server' ? 'server' as const : 'browser' as const),
+      capabilities: p2pConfig.capabilities || ['chat', 'database', 'compiler', 'artifacts'],
+      multicastAddress: p2pConfig.multicastAddress || '239.255.7.33',
+      multicastPort: p2pConfig.multicastPort || 7331,
+      unicastPort: p2pConfig.unicastPort || 7332,
+      encryptionKey: p2pConfig.encryptionKey,
+      requireAuth: !!p2pConfig.encryptionKey,
+      discoveryInterval: 30000,
+      maxPacketSize: 65507,
+      fragmentationEnabled: true,
+      compressionEnabled: true,
+      stunServers: ['stun:stun1.l.google.com:19302'],
+      enableUPnP: false
+    };
+
+    console.log(`🌐 Transport Factory: Creating UDP multicast transport for node ${nodeId}`);
+    
+    const transport = new UDPMulticastTransport(udpConfig);
+    
+    // Initialize the transport (connect to network, start discovery)
+    const context: JTAGContext = { environment };
+    const initialized = await transport.initialize(context);
+    
+    if (!initialized) {
+      throw new Error('Failed to initialize UDP multicast transport');
+    }
+    
+    console.log(`✅ Transport Factory: UDP multicast transport created for P2P networking`);
     return transport;
   }
   

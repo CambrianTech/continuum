@@ -14,7 +14,7 @@ import { isRequestResult } from '../../../shared/RouterTypes';
 export interface CommandEntry {
   name: string;
   className: string;
-  commandClass: new (context: JTAGContext, subpath: string, commander: ICommandDaemon) => CommandBase<CommandParams, CommandResult>;
+  commandClass: new (context: JTAGContext, subpath: string, commander: ICommandDaemon) => any;
 }
 
 // Forward declare CommandDaemon interface to avoid circular imports

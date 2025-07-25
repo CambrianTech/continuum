@@ -1,0 +1,50 @@
+/**
+ * WaitForElement Command - Server Implementation
+ * 
+ * MINIMAL WORK PER COMMAND: Just implements what server does
+ */
+
+import { CommandBase } from '../../../shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../../../shared/JTAGTypes';
+import type { WaitForElementParams } from '../shared/WaitForElementTypes';
+import { WaitForElementResult } from '../shared/WaitForElementTypes';
+import type { ICommandDaemon } from '../../../shared/CommandBase';
+
+export class WaitForElementServerCommand extends CommandBase<WaitForElementParams, WaitForElementResult> {
+  
+  constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
+    super('wait-for-element', context, subpath, commander);
+  }
+
+  /**
+   * Server does ONE thing:
+   * Delegate to browser for DOM waiting (can't wait for elements on server)
+   */
+  async execute(params: JTAGPayload): Promise<WaitForElementResult> {
+    const waitParams = params as WaitForElementParams;
+    
+    console.log(`⏳ SERVER: Starting wait-for-element operation`);
+
+    try {
+      // Server always delegates to browser for DOM interaction
+      console.log(`🔀 SERVER: Need DOM access → delegating to browser`);
+      console.log(`👀 SERVER: Waiting for "${waitParams.selector}" (timeout: ${waitParams.timeout}ms)`);
+      
+      return await this.remoteExecute(waitParams);
+
+    } catch (error: any) {
+      console.error(`❌ SERVER: Failed:`, error.message);
+      return new WaitForElementResult({
+        success: false,
+        selector: waitParams.selector,
+        found: false,
+        visible: false,
+        timeout: waitParams.timeout || 30000,
+        waitTime: 0,
+        environment: this.context.environment,
+        timestamp: new Date().toISOString(),
+        error: error.message
+      });
+    }
+  }
+}

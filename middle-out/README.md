@@ -10,11 +10,13 @@ This directory contains the complete architectural documentation for Continuum's
 
 #### 🏗️ [Architecture](architecture/) **⭐ FOUNDATIONAL PATTERNS**
 - **[README.md](architecture/README.md)** - Architecture principles and evolution roadmap
+- **[modular-command-architecture.md](architecture/modular-command-architecture.md)** - **✅ ACTIVE** Small, independent, discoverable command modules (SUPERSEDES symmetric-daemon-architecture)
+- **[pattern-exploitation-strategy.md](architecture/pattern-exploitation-strategy.md)** - **🧬 BREAKTHROUGH** Meta-patterns for infinite scalability through classification → reduction → extension cycles
 - **[universal-module-structure.md](architecture/universal-module-structure.md)** - **✅ IMPLEMENTED** Universal `/shared|client|server|remote` pattern for all module types
 - **[universal-module-schema.md](architecture/universal-module-schema.md)** - **✅ IMPLEMENTED** NPM intelligence-driven module discovery system
 - **[lambda-fluent-api.md](architecture/lambda-fluent-api.md)** - **✅ IMPLEMENTED** Distributed command execution with P2P command marketplace
 - **[process-isolation-architecture.md](architecture/process-isolation-architecture.md)** - **📋 PLANNED** OS-level process isolation with environment-based sandboxing
-- **[symmetric-daemon-architecture.md](architecture/symmetric-daemon-architecture.md)** - **🔄 ACTIVE** Unified client/server daemon pattern for cognitive simplicity
+- **[symmetric-daemon-architecture.md](architecture/symmetric-daemon-architecture.md)** - **❌ SUPERSEDED** Unified client/server daemon pattern (replaced by modular commands)
 - **[symmetric-daemon-routing-architecture.md](architecture/symmetric-daemon-routing-architecture.md)** - **🚀 COMPREHENSIVE** Complete routing architecture for widgets, commands, and inter-daemon communication with zero-downtime migration strategy
 - **[command-processor-migration-strategy.md](architecture/command-processor-migration-strategy.md)** - **🛡️ ZERO-RISK** Battle-tested compatibility wrapper pattern for surgical architecture migration
 - **[token-based-elegance-metrics.md](architecture/token-based-elegance-metrics.md)** - **🧬 BREAKTHROUGH** Universal intelligence metrics: token efficiency + attention entropy + persona genome optimization for self-improving AI systems

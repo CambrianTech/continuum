@@ -39,6 +39,8 @@
     "dist",
     "**/*.test.ts",
     "**/*.spec.ts",
+    "**/*.bak",
+    "**/*.bak/**/*",
     "src/debug/jtag/examples/**/*",
     "src/debug/jtag/tests/**/*",
     "src/debug/jtag/mcp/**/*",

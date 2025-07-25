@@ -238,6 +238,13 @@ export class JTAGRouter extends JTAGModule {
    * Route message remotely with proper type-based routing
    */
   private async routeRemotelyWithQueue(message: JTAGMessage): Promise<RouterResult> {
+    // Check if this is a remote P2P route
+    const remoteInfo = this.parseRemoteEndpoint(message.endpoint);
+    if (remoteInfo) {
+      return await this.routeToRemoteNode(message, remoteInfo);
+    }
+
+    // Standard cross-context routing (browser <-> server)
     if (!this.crossContextTransport) {
       throw new Error(`No cross-context transport available for ${message.endpoint}`);
     }
@@ -255,6 +262,67 @@ export class JTAGRouter extends JTAGModule {
     } else {
       throw new Error(`Unknown message type: ${(message as any).messageType || 'undefined'}`);
     }
+  }
+
+  /**
+   * Route message to remote P2P node using UDP multicast transport
+   */
+  private async routeToRemoteNode(
+    message: JTAGMessage, 
+    remoteInfo: { nodeId: string; targetPath: string }
+  ): Promise<RouterResult> {
+    const { nodeId, targetPath } = remoteInfo;
+    
+    console.log(`🌐 ${this.toString()}: Routing to remote node ${nodeId} -> ${targetPath}`);
+
+    // Get P2P transport (UDP multicast)
+    const p2pTransport = this.getP2PTransport();
+    if (!p2pTransport) {
+      throw new Error(`No P2P transport available for remote routing to node ${nodeId}`);
+    }
+
+    // Create modified message with target path (strip remote/ prefix)
+    const remoteMessage: JTAGMessage = {
+      ...message,
+      endpoint: targetPath // Remove the /remote/{nodeId}/ prefix
+    };
+
+    // Use the P2P transport's send method which handles node discovery and routing
+    try {
+      if (JTAGMessageTypes.isRequest(remoteMessage)) {
+        // For requests, we need to wait for response through P2P network
+        console.log(`🎯 ${this.toString()}: Sending P2P request to ${nodeId}`);
+        const responsePromise = this.responseCorrelator.createRequest(remoteMessage.correlationId);
+        
+        await p2pTransport.send(remoteMessage);
+        const response = await responsePromise;
+        
+        console.log(`✅ ${this.toString()}: P2P response received from ${nodeId}`);
+        return { success: true, resolved: true, response };
+        
+      } else {
+        // For events, fire-and-forget through P2P network
+        console.log(`📢 ${this.toString()}: Sending P2P event to ${nodeId}`);
+        await p2pTransport.send(remoteMessage);
+        return { success: true, delivered: true };
+      }
+    } catch (error) {
+      console.error(`❌ ${this.toString()}: P2P routing failed to ${nodeId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get P2P transport for remote node communication
+   */
+  private getP2PTransport(): JTAGTransport | null {
+    // For now, check if the cross-context transport is a P2P transport
+    // In the future, we might have a separate P2P transport registry
+    if (this.crossContextTransport && this.crossContextTransport.name === 'udp-multicast') {
+      return this.crossContextTransport;
+    }
+    
+    return null;
   }
 
   /**
@@ -445,6 +513,26 @@ export class JTAGRouter extends JTAGModule {
     if (endpoint.startsWith('server/')) return 'server';
     if (endpoint.startsWith('remote/')) return 'remote';
     return this.context.environment;
+  }
+
+  /**
+   * Parse remote endpoint to extract node ID and target path
+   * Format: /remote/{nodeId}/daemon/command or /remote/{nodeId}/server/daemon/command
+   */
+  private parseRemoteEndpoint(endpoint: string): { nodeId: string; targetPath: string } | null {
+    if (!endpoint.startsWith('remote/')) {
+      return null;
+    }
+
+    const parts = endpoint.split('/');
+    if (parts.length < 3) {
+      return null;
+    }
+
+    const nodeId = parts[1]; // remote/{nodeId}/...
+    const targetPath = parts.slice(2).join('/'); // everything after nodeId
+
+    return { nodeId, targetPath };
   }
 
   /**

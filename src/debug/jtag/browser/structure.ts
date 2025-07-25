@@ -13,6 +13,13 @@ import { HealthDaemonBrowser } from '../daemons/health-daemon/browser/HealthDaem
 // Browser Command Imports
 import { ScreenshotBrowserCommand } from '../daemons/command-daemon/commands/screenshot/browser/ScreenshotBrowserCommand';
 
+// Chat Command Imports
+// Chat commands temporarily disabled - god objects violating modular pattern
+// import { SendMessageBrowserCommand } from '../daemons/command-daemon/commands/chat/send-message/browser/SendMessageBrowserCommand';
+// import { GetChatHistoryBrowserCommand } from '../daemons/command-daemon/commands/chat/get-chat-history/browser/GetChatHistoryBrowserCommand';
+// import { RoomEventBrowserCommand } from '../daemons/command-daemon/commands/chat/room-events/browser/RoomEventBrowserCommand';
+// import { SendRoomEventBrowserCommand } from '../daemons/command-daemon/commands/chat/send-room-event/browser/SendRoomEventBrowserCommand';
+
 // Types
 import type { DaemonEntry } from '../shared/DaemonBase';
 import type { CommandEntry } from '../daemons/command-daemon/shared/CommandBase';
@@ -43,7 +50,30 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     name: 'screenshot',
     className: 'ScreenshotBrowserCommand',
     commandClass: ScreenshotBrowserCommand
+  },
+  // Chat Commands - temporarily disabled (god objects violating modular pattern)
+  /*
+  {
+    name: 'chat/send-message',
+    className: 'SendMessageBrowserCommand',
+    commandClass: SendMessageBrowserCommand
+  },
+  {
+    name: 'chat/get-chat-history',
+    className: 'GetChatHistoryBrowserCommand',
+    commandClass: GetChatHistoryBrowserCommand
+  },
+  {
+    name: 'chat/room-events',
+    className: 'RoomEventBrowserCommand',
+    commandClass: RoomEventBrowserCommand
+  },
+  {
+    name: 'chat/send-room-event',
+    className: 'SendRoomEventBrowserCommand',
+    commandClass: SendRoomEventBrowserCommand
   }
+  */
 ];
 
 
