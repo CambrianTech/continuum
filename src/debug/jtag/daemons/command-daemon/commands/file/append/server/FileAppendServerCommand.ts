@@ -6,11 +6,11 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { CommandBase } from '../../../../shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../../../../shared/JTAGTypes';
-import type { FileAppendParams } from '../shared/FileAppendTypes';
-import { FileAppendResult } from '../shared/FileAppendTypes';
-import type { ICommandDaemon } from '../../../../shared/CommandBase';
+import { CommandBase } from '@commandBase';
+import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import type { FileAppendParams } from '@fileAppendShared/FileAppendTypes';
+import { FileAppendResult } from '@fileAppendShared/FileAppendTypes';
+import type { ICommandDaemon } from '@commandBase';
 
 export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileAppendResult> {
   

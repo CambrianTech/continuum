@@ -5,9 +5,9 @@
  * Inherits path from parent group: commands/file/append
  */
 
-import { CommandBase } from '../../../../shared/CommandBase';
-import type { ICommandDaemon } from '../../../../shared/CommandBase';
-import type { JTAGContext } from '../../../../../../shared/JTAGTypes';
+import { CommandBase } from '@commandBase';
+import type { ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '@shared/JTAGTypes';
 import { FileAppendParams } from './FileAppendTypes';
 import type { FileAppendResult } from './FileAppendTypes';
 

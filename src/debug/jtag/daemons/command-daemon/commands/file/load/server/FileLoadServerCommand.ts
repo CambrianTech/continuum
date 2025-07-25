@@ -6,11 +6,11 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { CommandBase } from '../../../../shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../../../../shared/JTAGTypes';
-import type { FileLoadParams } from '../shared/FileLoadTypes';
-import { FileLoadResult } from '../shared/FileLoadTypes';
-import type { ICommandDaemon } from '../../../../shared/CommandBase';
+import { CommandBase } from '@commandBase';
+import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import type { FileLoadParams } from '@fileLoadShared/FileLoadTypes';
+import { FileLoadResult } from '@fileLoadShared/FileLoadTypes';
+import type { ICommandDaemon } from '@commandBase';
 
 export class FileLoadServerCommand extends CommandBase<FileLoadParams, FileLoadResult> {
   

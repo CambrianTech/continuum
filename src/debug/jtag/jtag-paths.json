@@ -1,0 +1,39 @@
+{
+  "pathMappings": {
+    "@shared": "shared",
+    "@browser": "browser", 
+    "@server": "server",
+    "@transports": "transports",
+    
+    "@daemonsRoot": "daemons",
+    "@commandDaemon": "daemons/command-daemon",
+    "@consoleDaemon": "daemons/console-daemon", 
+    "@healthDaemon": "daemons/health-daemon",
+    
+    "@commandsRoot": "daemons/command-daemon/commands",
+    "@commandBase": "daemons/command-daemon/shared/CommandBase",
+    "@commandShared": "daemons/command-daemon/shared",
+    
+    "@chatRoot": "daemons/command-daemon/commands/chat",
+    "@chatShared": "daemons/command-daemon/commands/chat/shared",
+    "@chatBrowser": "daemons/command-daemon/commands/chat/browser",
+    "@chatServer": "daemons/command-daemon/commands/chat/server",
+    
+    "@fileRoot": "daemons/command-daemon/commands/file",
+    "@fileShared": "daemons/command-daemon/commands/file/shared",
+    "@fileBrowser": "daemons/command-daemon/commands/file/browser",
+    "@fileServer": "daemons/command-daemon/commands/file/server",
+    
+    "@fileAppendShared": "daemons/command-daemon/commands/file/append/shared",
+    "@fileLoadShared": "daemons/command-daemon/commands/file/load/shared",
+    "@fileSaveShared": "daemons/command-daemon/commands/file/save/shared",
+    
+    "@clickShared": "daemons/command-daemon/commands/click/shared",
+    "@screenshotShared": "daemons/command-daemon/commands/screenshot/shared",
+    "@navigateShared": "daemons/command-daemon/commands/navigate/shared",
+    
+    "@consoleShared": "daemons/console-daemon/shared",
+    "@healthShared": "daemons/health-daemon/shared"
+  },
+  "description": "JTAG TypeScript path mappings with hierarchical daemon and command structure"
+}

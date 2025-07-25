@@ -2,8 +2,8 @@
  * Console Event Definitions - Modular event category
  */
 
-import type { LogLevel } from '../../shared/LogLevels';
-import type { JTAGContext } from '../../shared/JTAGTypes';
+import type { LogLevel } from '@shared/LogLevels';
+import type { JTAGContext } from '@shared/JTAGTypes';
 
 export const CONSOLE_EVENTS = {
   ATTACHED: 'console.attached',

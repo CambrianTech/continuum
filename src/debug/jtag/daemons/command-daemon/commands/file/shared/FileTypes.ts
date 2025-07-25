@@ -25,10 +25,10 @@
  * - Shared types ensure consistency across file operations
  */
 
-import { CommandParams, CommandResult } from '../../../../../shared/JTAGTypes';
-import type { JTAGContext } from '../../../../../shared/JTAGTypes';
-import { CommandBase } from '../../../shared/CommandBase';
-import type { ICommandDaemon } from '../../../shared/CommandBase';
+import { CommandParams, CommandResult } from '@shared/JTAGTypes';
+import type { JTAGContext } from '@shared/JTAGTypes';
+import { CommandBase } from '@commandBase';
+import type { ICommandDaemon } from '@commandBase';
 
 /**
  * Generic base parameters for all file operations

@@ -10,7 +10,7 @@ This directory contains the complete architectural documentation for Continuum's
 
 #### 🏗️ [Architecture](architecture/) **⭐ FOUNDATIONAL PATTERNS**
 - **[README.md](architecture/README.md)** - Architecture principles and evolution roadmap
-- **[modular-command-architecture.md](architecture/modular-command-architecture.md)** - **✅ ACTIVE** Small, independent, discoverable command modules (SUPERSEDES symmetric-daemon-architecture)
+- **[modular-command-architecture.md](architecture/modular-command-architecture.md)** - **✅ ACTIVE** Small, independent, discoverable command modules + **🗺️ BREAKTHROUGH: COMPLETE CHAINABLE PATH MAPPING SYSTEM** - Eliminates "relative path hell" across TypeScript/ESBuild/Node.js (SUPERSEDES symmetric-daemon-architecture)
 - **[pattern-exploitation-strategy.md](architecture/pattern-exploitation-strategy.md)** - **🧬 BREAKTHROUGH** Meta-patterns for infinite scalability through classification → reduction → extension cycles
 - **[universal-module-structure.md](architecture/universal-module-structure.md)** - **✅ IMPLEMENTED** Universal `/shared|client|server|remote` pattern for all module types
 - **[universal-module-schema.md](architecture/universal-module-schema.md)** - **✅ IMPLEMENTED** NPM intelligence-driven module discovery system

@@ -5,9 +5,9 @@
  * Inherits path from parent group: commands/file/save
  */
 
-import type { ICommandDaemon } from '../../../../shared/CommandBase';
-import type { JTAGContext } from '../../../../../../shared/JTAGTypes';
-import { FileCommand } from '../../shared/FileTypes';
+import type { ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '@shared/JTAGTypes';
+import { FileCommand } from '@fileShared/FileTypes';
 import { FileSaveParams } from './FileSaveTypes';
 import type { FileSaveResult } from './FileSaveTypes';
 
