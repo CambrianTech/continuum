@@ -1,0 +1,582 @@
+/**
+ * ChatDaemon - Base chat daemon for JTAG system
+ * 
+ * Follows established JTAG daemon pattern:
+ * - Extends DaemonBase for core functionality
+ * - Uses JTAGPayload-based messaging for remote/P2P compatibility
+ * - Integrates with JTAG router and transport system
+ * - Supports distributed event architecture for Academy integration
+ * 
+ * Implements the middle-out modular pattern where shared logic is centralized
+ * and specific implementations (browser/server) extend this base.
+ */
+
+import { DaemonBase } from '../../../shared/DaemonBase';
+import type { JTAGContext, JTAGMessage } from '../../../shared/JTAGTypes';
+import type { JTAGRouter } from '../../../shared/JTAGRouter';
+
+// Import organized types and payloads
+import type { 
+  ChatMessage, 
+  ChatParticipant, 
+  ChatRoom, 
+  ChatConfig,
+  ChatStats 
+} from './types/ChatTypes';
+import { 
+  ChatMessagePayload, 
+  ChatRoomPayload, 
+  ChatHistoryPayload, 
+  AcademyChatPayload,
+  type ChatPayloadType 
+} from './payloads/ChatPayloads';
+
+// Response types (to be defined in shared/ResponseTypes.ts)
+// For now, using basic response structure
+interface ChatResponse {
+  success: boolean;
+  error?: string;
+  data?: any;
+}
+
+/**
+ * Base Chat Daemon - Abstract foundation for chat functionality
+ */
+export abstract class ChatDaemon extends DaemonBase {
+  public readonly subpath: string = 'chat';
+  
+  // Core chat state
+  protected chatRooms: Map<string, ChatRoom> = new Map();
+  protected activeParticipants: Map<string, ChatParticipant> = new Map();
+  protected messageHistory: Map<string, ChatMessage[]> = new Map();
+  protected chatConfig: ChatConfig;
+
+  constructor(context: JTAGContext, router: JTAGRouter, config?: Partial<ChatConfig>) {
+    super('chat-daemon', context, router);
+    
+    // Initialize with default configuration
+    this.chatConfig = {
+      maxConnections: 1000,
+      connectionTimeout: 30000,
+      maxMessageLength: 10000,
+      messageHistoryLimit: 1000,
+      maxAttachmentsPerMessage: 10,
+      maxAttachmentSize: 10 * 1024 * 1024,
+      maxRoomsPerParticipant: 50,
+      maxParticipantsPerRoom: 100,
+      defaultRoomType: 'general',
+      autoCreateRooms: true,
+      enableCommands: true,
+      enableAttachments: true,
+      enableReactions: true,
+      enablePrivateMessages: true,
+      enableMessageHistory: true,
+      enableParticipantTracking: true,
+      enableProfanityFilter: false,
+      enableRateLimiting: true,
+      enableSpamDetection: true,
+      maxMessagesPerMinute: 60,
+      enableAcademyIntegration: false,
+      enablePerformanceTracking: false,
+      enableEvolutionTriggers: false,
+      academyTrainingMode: false,
+      ...config
+    };
+  }
+
+  // ==================== ABSTRACT METHODS ====================
+  // Must be implemented by browser/server implementations
+
+  /**
+   * Initialize chat daemon-specific functionality
+   */
+  protected abstract initialize(): Promise<void>;
+
+  /**
+   * Process chat message (context-specific implementation)
+   */
+  protected abstract processChatMessage(payload: ChatMessagePayload): Promise<void>;
+
+  /**
+   * Process room management (context-specific implementation)
+   */
+  protected abstract processRoomManagement(payload: ChatRoomPayload): Promise<void>;
+
+  /**
+   * Process Academy chat message (context-specific implementation)
+   */
+  protected abstract processAcademyMessage(payload: AcademyChatPayload): Promise<void>;
+
+  // ==================== MESSAGE ROUTING ====================
+
+  /**
+   * Handle incoming messages (MessageSubscriber interface)
+   */
+  async handleMessage(message: JTAGMessage): Promise<ChatResponse> {
+    try {
+      const payload = message.payload;
+
+      // Route based on payload type
+      if (payload instanceof ChatMessagePayload) {
+        await this.handleChatMessagePayload(payload);
+      } else if (payload instanceof ChatRoomPayload) {
+        await this.handleChatRoomPayload(payload);
+      } else if (payload instanceof ChatHistoryPayload) {
+        return await this.handleChatHistoryPayload(payload);
+      } else if (payload instanceof AcademyChatPayload) {
+        await this.handleAcademyChatPayload(payload);
+      } else {
+        throw new Error(`Unknown payload type: ${payload.constructor.name}`);
+      }
+
+      return { success: true, data: { context: this.context.environment } };
+
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ ${this.toString()}: Error processing message:`, errorMessage);
+      return { success: false, error: errorMessage };
+    }
+  }
+
+  // ==================== PAYLOAD HANDLERS ====================
+
+  /**
+   * Handle chat message payload routing
+   */
+  protected async handleChatMessagePayload(payload: ChatMessagePayload): Promise<void> {
+    // Execute shared message logic
+    await this.processSharedMessageLogic(payload);
+    
+    // Delegate to context-specific implementation
+    await this.processChatMessage(payload);
+  }
+
+  /**
+   * Handle chat room payload routing
+   */
+  protected async handleChatRoomPayload(payload: ChatRoomPayload): Promise<void> {
+    // Execute shared room logic
+    await this.processSharedRoomLogic(payload);
+    
+    // Delegate to context-specific implementation
+    await this.processRoomManagement(payload);
+  }
+
+  /**
+   * Handle chat history payload routing
+   */
+  protected async handleChatHistoryPayload(payload: ChatHistoryPayload): Promise<ChatResponse> {
+    try {
+      const result = await this.processSharedHistoryLogic(payload);
+      return { success: true, data: result };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return { success: false, error: errorMessage };
+    }
+  }
+
+  /**
+   * Handle Academy chat payload routing
+   */
+  protected async handleAcademyChatPayload(payload: AcademyChatPayload): Promise<void> {
+    // First process the underlying chat message
+    await this.handleChatMessagePayload(payload.chatPayload);
+    
+    // Then process Academy-specific functionality
+    await this.processAcademyMessage(payload);
+  }
+
+  // ==================== SHARED BUSINESS LOGIC ====================
+
+  /**
+   * Process shared message logic (80-90% of complexity)
+   */
+  protected async processSharedMessageLogic(payload: ChatMessagePayload): Promise<void> {
+    const message: ChatMessage = {
+      id: payload.messageId,
+      content: payload.content,
+      senderId: payload.senderId,
+      senderName: payload.senderName,
+      senderType: payload.senderType,
+      roomId: payload.roomId,
+      conversationId: payload.conversationId,
+      messageType: payload.messageType,
+      timestamp: payload.timestamp,
+      responseToMessageId: payload.responseToMessageId,
+      mentions: payload.mentions,
+      attachments: payload.attachments,
+      reactions: payload.reactions,
+      isEdited: false,
+      isDeleted: false,
+      metadata: payload.metadata
+    };
+
+    // Handle different message actions
+    switch (payload.action) {
+      case 'send_message':
+        await this.storeChatMessage(message);
+        break;
+      case 'edit_message':
+        await this.editChatMessage(payload);
+        break;
+      case 'delete_message':
+        await this.deleteChatMessage(payload);
+        break;
+      case 'react_to_message':
+        await this.reactToChatMessage(payload);
+        break;
+    }
+
+    console.log(`💬 ${this.toString()}: ${payload.action} in room ${payload.roomId} by ${payload.senderName}`);
+  }
+
+  /**
+   * Process shared room logic
+   */
+  protected async processSharedRoomLogic(payload: ChatRoomPayload): Promise<void> {
+    switch (payload.action) {
+      case 'join_room':
+        await this.joinChatRoom(payload);
+        break;
+      case 'leave_room':
+        await this.leaveChatRoom(payload);
+        break;
+      case 'create_room':
+        await this.createChatRoom(payload);
+        break;
+      case 'get_room_info':
+        // Read-only operation, no state change needed
+        break;
+      case 'list_participants':
+        // Read-only operation, no state change needed
+        break;
+    }
+
+    console.log(`🏠 ${this.toString()}: ${payload.action} for room ${payload.roomId}`);
+  }
+
+  /**
+   * Process shared history logic
+   */
+  protected async processSharedHistoryLogic(payload: ChatHistoryPayload): Promise<any> {
+    const roomHistory = this.messageHistory.get(payload.roomId) || [];
+    
+    switch (payload.action) {
+      case 'get_history':
+        return this.getMessageHistory(payload, roomHistory);
+      case 'search_messages':
+        return this.searchMessages(payload, roomHistory);
+      case 'get_thread':
+        return this.getMessageThread(payload, roomHistory);
+      default:
+        throw new Error(`Unknown history action: ${payload.action}`);
+    }
+  }
+
+  // ==================== CORE OPERATIONS ====================
+
+  /**
+   * Store chat message in history
+   */
+  protected async storeChatMessage(message: ChatMessage): Promise<void> {
+    if (!this.messageHistory.has(message.roomId)) {
+      this.messageHistory.set(message.roomId, []);
+    }
+    
+    const roomHistory = this.messageHistory.get(message.roomId)!;
+    roomHistory.push(message);
+    
+    // Maintain history limit
+    if (roomHistory.length > this.chatConfig.messageHistoryLimit) {
+      roomHistory.shift();
+    }
+  }
+
+  /**
+   * Edit existing chat message
+   */
+  protected async editChatMessage(payload: ChatMessagePayload): Promise<void> {
+    const roomHistory = this.messageHistory.get(payload.roomId);
+    if (roomHistory) {
+      const messageIndex = roomHistory.findIndex(m => m.id === payload.messageId);
+      if (messageIndex !== -1) {
+        roomHistory[messageIndex].content = payload.content;
+        roomHistory[messageIndex].isEdited = true;
+        roomHistory[messageIndex].metadata.editedAt = Date.now();
+      }
+    }
+  }
+
+  /**
+   * Delete chat message
+   */
+  protected async deleteChatMessage(payload: ChatMessagePayload): Promise<void> {
+    const roomHistory = this.messageHistory.get(payload.roomId);
+    if (roomHistory) {
+      const messageIndex = roomHistory.findIndex(m => m.id === payload.messageId);
+      if (messageIndex !== -1) {
+        roomHistory[messageIndex].isDeleted = true;
+        roomHistory[messageIndex].metadata.deletedAt = Date.now();
+      }
+    }
+  }
+
+  /**
+   * React to chat message
+   */
+  protected async reactToChatMessage(payload: ChatMessagePayload): Promise<void> {
+    const roomHistory = this.messageHistory.get(payload.roomId);
+    if (roomHistory && payload.metadata.reaction) {
+      const messageIndex = roomHistory.findIndex(m => m.id === payload.messageId);
+      if (messageIndex !== -1) {
+        const message = roomHistory[messageIndex];
+        const { emoji, userId } = payload.metadata.reaction;
+        
+        // Find existing reaction or create new one
+        let reaction = message.reactions.find(r => r.emoji === emoji);
+        if (!reaction) {
+          reaction = { emoji, userIds: [], timestamp: Date.now() };
+          message.reactions.push(reaction);
+        }
+        
+        // Toggle user reaction
+        const userIndex = reaction.userIds.indexOf(userId);
+        if (userIndex === -1) {
+          reaction.userIds.push(userId);
+        } else {
+          reaction.userIds.splice(userIndex, 1);
+        }
+      }
+    }
+  }
+
+  /**
+   * Join chat room
+   */
+  protected async joinChatRoom(payload: ChatRoomPayload): Promise<void> {
+    if (!payload.participant) return;
+
+    // Create room if it doesn't exist
+    if (!this.chatRooms.has(payload.roomId)) {
+      const room: ChatRoom = {
+        id: payload.roomId,
+        name: payload.roomName || payload.roomId,
+        type: payload.roomType || 'general',
+        participants: [],
+        created: Date.now(),
+        isActive: true,
+        config: payload.roomConfig || {
+          isPrivate: false,
+          maxParticipants: 100,
+          allowGuests: true,
+          enableHistory: true,
+          enableCommands: true
+        },
+        state: {
+          messageCount: 0,
+          participantCount: 0,
+          healthStatus: 'healthy'
+        },
+        metadata: {
+          createdBy: payload.participant.id,
+          tags: [],
+          description: `Chat room: ${payload.roomName || payload.roomId}`
+        }
+      };
+      this.chatRooms.set(payload.roomId, room);
+    }
+
+    const room = this.chatRooms.get(payload.roomId)!;
+    
+    // Add participant if not already in room
+    if (!room.participants.find(p => p.id === payload.participant!.id)) {
+      room.participants.push(payload.participant);
+      room.state.participantCount = room.participants.length;
+    }
+
+    // Track active participant globally
+    this.activeParticipants.set(payload.participant.id, payload.participant);
+  }
+
+  /**
+   * Leave chat room
+   */
+  protected async leaveChatRoom(payload: ChatRoomPayload): Promise<void> {
+    const room = this.chatRooms.get(payload.roomId);
+    if (room && payload.participantId) {
+      room.participants = room.participants.filter(p => p.id !== payload.participantId);
+      room.state.participantCount = room.participants.length;
+      
+      // Remove from global participants if not in any other rooms
+      const inOtherRooms = Array.from(this.chatRooms.values())
+        .some(r => r.participants.some(p => p.id === payload.participantId));
+      
+      if (!inOtherRooms) {
+        this.activeParticipants.delete(payload.participantId);
+      }
+    }
+  }
+
+  /**
+   * Create new chat room
+   */
+  protected async createChatRoom(payload: ChatRoomPayload): Promise<void> {
+    if (this.chatRooms.has(payload.roomId)) {
+      throw new Error(`Room ${payload.roomId} already exists`);
+    }
+
+    const room: ChatRoom = {
+      id: payload.roomId,
+      name: payload.roomName || payload.roomId,
+      type: payload.roomType || 'general',
+      participants: [],
+      created: Date.now(),
+      isActive: true,
+      config: payload.roomConfig || {
+        isPrivate: false,
+        maxParticipants: 100,
+        allowGuests: true,
+        enableHistory: true,
+        enableCommands: true
+      },
+      state: {
+        messageCount: 0,
+        participantCount: 0,
+        healthStatus: 'healthy'
+      },
+      metadata: {
+        createdBy: payload.participantId || 'system',
+        tags: [],
+        description: payload.roomName || `Chat room: ${payload.roomId}`
+      }
+    };
+
+    this.chatRooms.set(payload.roomId, room);
+  }
+
+  // ==================== HISTORY OPERATIONS ====================
+
+  /**
+   * Get message history for room
+   */
+  protected getMessageHistory(payload: ChatHistoryPayload, roomHistory: ChatMessage[]): any {
+    let filteredMessages = roomHistory.filter(m => !m.isDeleted);
+    
+    // Apply pagination
+    if (payload.before) {
+      const beforeIndex = filteredMessages.findIndex(m => m.id === payload.before);
+      if (beforeIndex !== -1) {
+        filteredMessages = filteredMessages.slice(0, beforeIndex);
+      }
+    }
+    
+    if (payload.after) {
+      const afterIndex = filteredMessages.findIndex(m => m.id === payload.after);
+      if (afterIndex !== -1) {
+        filteredMessages = filteredMessages.slice(afterIndex + 1);
+      }
+    }
+    
+    // Apply limit
+    const limit = payload.limit || 50;
+    const limitedMessages = filteredMessages.slice(-limit);
+    
+    return {
+      messages: limitedMessages,
+      hasMore: filteredMessages.length > limit,
+      totalCount: roomHistory.length
+    };
+  }
+
+  /**
+   * Search messages in room
+   */
+  protected searchMessages(payload: ChatHistoryPayload, roomHistory: ChatMessage[]): any {
+    if (!payload.searchQuery) {
+      return { messages: [], totalCount: 0 };
+    }
+    
+    const searchResults = roomHistory.filter(m => 
+      !m.isDeleted && 
+      m.content.toLowerCase().includes(payload.searchQuery!.toLowerCase())
+    );
+    
+    const limit = payload.limit || 20;
+    return {
+      messages: searchResults.slice(0, limit),
+      hasMore: searchResults.length > limit,
+      totalCount: searchResults.length
+    };
+  }
+
+  /**
+   * Get message thread
+   */
+  protected getMessageThread(payload: ChatHistoryPayload, roomHistory: ChatMessage[]): any {
+    if (!payload.threadId) {
+      return { messages: [], totalCount: 0 };
+    }
+    
+    const threadMessages = roomHistory.filter(m => 
+      !m.isDeleted && 
+      (m.id === payload.threadId || m.responseToMessageId === payload.threadId)
+    );
+    
+    return {
+      messages: threadMessages,
+      totalCount: threadMessages.length
+    };
+  }
+
+  // ==================== UTILITY METHODS ====================
+
+  /**
+   * Get chat statistics
+   */
+  public getChatStats(): ChatStats {
+    const activeParticipants = Array.from(this.activeParticipants.values());
+    const activeRooms = Array.from(this.chatRooms.values()).filter(r => r.isActive);
+    const totalMessages = Array.from(this.messageHistory.values())
+      .reduce((sum, history) => sum + history.length, 0);
+
+    return {
+      totalMessages,
+      totalParticipants: activeParticipants.length,
+      totalRooms: this.chatRooms.size,
+      activeParticipants: activeParticipants.filter(p => p.status === 'online').length,
+      activeRooms: activeRooms.length,
+      messagesPerMinute: 0, // TODO: Calculate from recent activity
+      averageResponseTime: 0, // TODO: Calculate from message timestamps
+      topParticipants: [], // TODO: Calculate based on activity
+      topRooms: [] // TODO: Calculate based on activity
+    };
+  }
+
+  /**
+   * Get room by ID
+   */
+  public getRoom(roomId: string): ChatRoom | undefined {
+    return this.chatRooms.get(roomId);
+  }
+
+  /**
+   * Get participant by ID
+   */
+  public getParticipant(participantId: string): ChatParticipant | undefined {
+    return this.activeParticipants.get(participantId);
+  }
+
+  /**
+   * Get all active rooms
+   */
+  public getAllRooms(): ChatRoom[] {
+    return Array.from(this.chatRooms.values());
+  }
+
+  /**
+   * Get all active participants
+   */
+  public getAllParticipants(): ChatParticipant[] {
+    return Array.from(this.activeParticipants.values());
+  }
+}

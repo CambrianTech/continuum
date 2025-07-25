@@ -18,8 +18,8 @@ export class FileLoadParams extends FileParams {
 }
 
 export class FileLoadResult extends FileResult {
-  content: string;
-  bytesRead: number;
+  content!: string;
+  bytesRead!: number;
 
   constructor(data: Partial<FileLoadResult>) {
     super(data); // Parent handles success, filepath, exists, error, environment, timestamp

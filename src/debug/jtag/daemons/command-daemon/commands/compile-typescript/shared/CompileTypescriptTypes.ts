@@ -23,7 +23,7 @@ import { CommandParams, CommandResult } from '../../../../../shared/JTAGTypes';
 import type { JTAGContext } from '../../../../../shared/JTAGTypes';
 
 export class CompileTypescriptParams extends CommandParams {
-  source: string;
+  source!: string;
   filename?: string;
   outputPath?: string;
   strict?: boolean;
@@ -31,7 +31,14 @@ export class CompileTypescriptParams extends CommandParams {
 
   constructor(data: Partial<CompileTypescriptParams> = {}) {
     super();
-    Object.assign(this, data);
+    Object.assign(this, {
+      source: '',
+      filename: 'code.ts',
+      outputPath: './dist',
+      strict: true,
+      target: 'es2020',
+      ...data
+    });
   }
 }
 

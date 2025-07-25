@@ -7,7 +7,7 @@ import type { JTAGContext } from '../shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '../shared/JTAGTypes';
 import { WebSocketServerTransport, WebSocketClientTransport } from './WebSocketTransport';
 import { HTTPTransport } from './HTTPTransport';
-import { UDPMulticastTransport } from './udp-multicast/UDPMulticastTransport';
+// import { UDPMulticastTransport } from './udp-multicast/UDPMulticastTransport'; // Disabled - god object
 import type { EventsInterface } from '../shared/JTAGRouter';
 
 export interface TransportConfig {
@@ -44,7 +44,8 @@ export class TransportFactory {
     
     // UDP multicast transport for P2P networking
     if (preferred === 'udp-multicast') {
-      return await this.createUDPMulticastTransport(environment, config);
+      // return await this.createUDPMulticastTransport(environment, config); // Disabled - god object
+      throw new Error('UDP Multicast transport disabled - god object violation');
     }
     
     if (preferred === 'websocket') {
@@ -99,6 +100,7 @@ export class TransportFactory {
   /**
    * Create UDP multicast transport for P2P networking
    */
+  /* Disabled - god object violation
   private static async createUDPMulticastTransport(
     environment: JTAGContext['environment'],
     config: TransportConfig
@@ -127,19 +129,18 @@ export class TransportFactory {
 
     console.log(`🌐 Transport Factory: Creating UDP multicast transport for node ${nodeId}`);
     
-    const transport = new UDPMulticastTransport(udpConfig);
+    // const transport = new UDPMulticastTransport(udpConfig);
+    // const context: JTAGContext = { environment };
+    // const initialized = await transport.initialize(context);
     
-    // Initialize the transport (connect to network, start discovery)
-    const context: JTAGContext = { environment };
-    const initialized = await transport.initialize(context);
-    
-    if (!initialized) {
-      throw new Error('Failed to initialize UDP multicast transport');
-    }
-    
-    console.log(`✅ Transport Factory: UDP multicast transport created for P2P networking`);
-    return transport;
+    // if (!initialized) {
+    //   throw new Error('Failed to initialize UDP multicast transport');
+    // }
+    // console.log(`✅ Transport Factory: UDP multicast transport created for P2P networking`);
+    // return transport;
+    throw new Error('UDP Multicast transport disabled - god object violation');
   }
+  */
   
   /**
    * Auto-detect optimal transport configuration

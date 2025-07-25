@@ -1,0 +1,563 @@
+/**
+ * Track Usage Command Types - Chat-Driven Capability Learning
+ * ===========================================================
+ * 
+ * Tracks capability usage from chat interactions within JTAG fabric.
+ * Every chat message becomes training data for the co-evolutionary system.
+ * 
+ * Architecture Flow:
+ * 1. Chat message sent via ChatDaemon
+ * 2. TrackUsageCommand extracts capabilities from message + context
+ * 3. Updates capability network via DatabaseDaemon (MySQL)
+ * 4. Checkpoints manifold data via ArtifactsDaemon (files)
+ * 5. Emits capability evolution events for real-time updates
+ */
+
+import { AcademyParams, AcademyResult, CapabilityUsage, InteractionContext, PerformanceMetrics } from '../../shared/AcademyTypes';
+
+// ========================
+// Chat Integration Types
+// ========================
+
+export interface ChatInteractionData {
+  // Chat context
+  messageId: string;
+  roomId: string;
+  senderId: string;              // persona or human ID
+  senderType: 'human' | 'persona' | 'system';
+  timestamp: number;
+  
+  // Message content
+  message: string;
+  messageType: 'text' | 'code' | 'command' | 'multimedia';
+  language?: string;             // programming language if code
+  
+  // Conversation context
+  conversationHistory: ChatMessage[];  // Recent message history
+  threadContext?: string;        // If part of a thread
+  mentions: string[];            // @username mentions
+  replyTo?: string;             // Message ID if reply
+  
+  // Participants
+  activeParticipants: ChatParticipant[];
+  humanParticipants: string[];
+  personaParticipants: string[];
+  
+  // Chat room metadata
+  roomTopic?: string;
+  roomTags: string[];
+  roomComplexity: number;        // 0-1 conversation complexity
+}
+
+export interface ChatMessage {
+  id: string;
+  senderId: string;
+  senderType: 'human' | 'persona' | 'system';
+  content: string;
+  timestamp: number;
+  
+  // Message context
+  capabilities: string[];        // Capabilities demonstrated in message
+  technicalContent: TechnicalContent[];
+  sentiment: 'positive' | 'neutral' | 'negative';
+  urgency: 'low' | 'medium' | 'high';
+  
+  // Performance indicators
+  helpfulness: number;          // 0-1 how helpful this message was
+  accuracy: number;            // 0-1 technical accuracy
+  clarity: number;             // 0-1 how clear the message was
+  followUpNeeded: boolean;     // Did this message require clarification
+  
+  // Feedback
+  reactions: ChatReaction[];    // User reactions (👍, 👎, ❤️, etc.)
+  humanFeedback?: HumanFeedback;
+  
+  // System analysis
+  capabilityExtraction: CapabilityExtraction;
+  performanceAssessment: MessagePerformanceAssessment;
+}
+
+export interface ChatParticipant {
+  id: string;
+  name: string;
+  type: 'human' | 'persona' | 'system';
+  
+  // Persona-specific data
+  personaGenomeId?: string;
+  currentCapabilities?: string[];
+  specializations?: string[];
+  
+  // Participation metrics
+  messageCount: number;
+  averageHelpfulness: number;
+  dominantTopics: string[];
+  
+  // Collaboration data
+  collaborationScore: number;   // How well they work with others
+  mentorshipIndicator: number;  // How much they help others learn
+  knowledgeSharing: number;     // How much knowledge they contribute
+}
+
+export interface TechnicalContent {
+  type: 'code' | 'command' | 'concept' | 'reference' | 'example';
+  content: string;
+  language?: string;            // Programming language
+  domain: string[];             // Technical domains (typescript, react, etc.)
+  complexity: number;           // 0-1 complexity
+  correctness: number;          // 0-1 technical correctness
+  
+  // Context
+  purpose: 'answer' | 'question' | 'explanation' | 'example' | 'correction';
+  relevance: number;           // 0-1 relevance to conversation
+}
+
+export interface ChatReaction {
+  userId: string;
+  type: 'thumbs_up' | 'thumbs_down' | 'heart' | 'mind_blown' | 'eyes' | 'confused';
+  timestamp: number;
+  
+  // Semantic meaning
+  sentiment: 'positive' | 'negative' | 'neutral';
+  category: 'quality' | 'helpfulness' | 'accuracy' | 'clarity' | 'humor';
+}
+
+export interface HumanFeedback {
+  userId: string;
+  timestamp: number;
+  
+  // Structured feedback
+  rating: number;              // 1-5 star rating
+  categories: {
+    helpfulness: number;       // 1-5
+    accuracy: number;          // 1-5  
+    clarity: number;           // 1-5
+    completeness: number;      // 1-5
+  };
+  
+  // Freeform feedback
+  comment?: string;
+  tags: string[];              // Custom tags from user
+  
+  // Behavioral feedback
+  followUpAction: 'none' | 'clarification_requested' | 'built_upon' | 'corrected' | 'thanked';
+  satisfactionIndicator: 'satisfied' | 'partial' | 'unsatisfied';
+}
+
+// ========================
+// Capability Extraction Types
+// ========================
+
+export interface CapabilityExtraction {
+  extractedCapabilities: ExtractedCapability[];
+  confidence: number;           // 0-1 confidence in extraction
+  extractionMethod: 'rule_based' | 'ml_based' | 'hybrid' | 'manual';
+  
+  // Context analysis
+  domainClassification: string[];
+  topicClassification: string[];
+  skillLevelAssessment: 'beginner' | 'intermediate' | 'advanced' | 'expert';
+  
+  // Relationship analysis
+  capabilitySequence: string[]; // Order capabilities were used
+  capabilityDependencies: Record<string, string[]>; // Which capabilities depend on others
+  capabilitySynergies: Array<{capabilities: string[], synergy: number}>;
+}
+
+export interface ExtractedCapability {
+  capability: string;
+  confidence: number;           // 0-1 confidence this capability was used
+  evidence: string[];           // Text snippets that indicate this capability
+  manifestation: 'demonstrated' | 'referenced' | 'taught' | 'questioned';
+  
+  // Usage context
+  usageType: 'primary' | 'supporting' | 'tangential';
+  proficiencyLevel: number;     // 0-1 demonstrated proficiency
+  novelty: number;             // 0-1 how novel this usage was
+  
+  // Performance correlation
+  contributionToSuccess: number; // 0-1 how much this capability contributed
+  errorRate: number;           // 0-1 errors related to this capability
+  efficiencyScore: number;     // 0-1 efficiency of capability usage
+}
+
+export interface MessagePerformanceAssessment {
+  // Overall message performance
+  overallScore: number;         // 0-1 composite performance score
+  
+  // Detailed metrics
+  technicalAccuracy: number;    // 0-1 technical correctness
+  communicationEffectiveness: number; // 0-1 how well message communicated
+  problemSolvingContribution: number; // 0-1 contribution to solving problems
+  collaborationQuality: number; // 0-1 how well it facilitated collaboration
+  
+  // Context-aware metrics
+  contextRelevance: number;     // 0-1 relevance to conversation context
+  timingScore: number;         // 0-1 appropriateness of timing
+  audienceAppropriate: number; // 0-1 appropriate for audience level
+  
+  // Innovation metrics
+  creativityScore: number;      // 0-1 creative/novel aspects
+  insightfulness: number;       // 0-1 how insightful the message was
+  
+  // Predictive metrics
+  predictedHelpfulness: number; // 0-1 predicted future helpfulness
+  knowledgeValue: number;      // 0-1 lasting knowledge value
+  
+  // Assessment metadata
+  assessmentMethod: 'real_time' | 'delayed' | 'aggregated';
+  assessmentConfidence: number; // 0-1 confidence in assessment
+  humanValidation?: HumanValidation;
+}
+
+export interface HumanValidation {
+  validatedBy: string;          // Human validator ID
+  validationTimestamp: number;
+  
+  // Validation results
+  accuracyValidation: number;   // 0-1 how accurate the assessment was
+  biasAssessment: number;      // 0-1 potential bias in assessment
+  
+  // Corrections
+  correctedMetrics: Partial<MessagePerformanceAssessment>;
+  validationComments: string;
+  
+  // Meta-learning
+  assessmentImprovement: string[]; // How to improve future assessments
+}
+
+// ========================
+// Command Parameter Types
+// ========================
+
+export class TrackUsageParams extends AcademyParams<{
+  // Chat interaction data
+  chatInteraction: ChatInteractionData;
+  
+  // Performance assessment
+  performanceMetrics?: PerformanceMetrics;
+  manualPerformanceOverride?: Partial<PerformanceMetrics>;
+  
+  // Processing options
+  extractCapabilities: boolean;
+  updateNetwork: boolean;
+  triggerEvolution: boolean;
+  persistToDatabase: boolean;
+  createCheckpoint: boolean;
+  
+  // Context enrichment
+  additionalContext?: Record<string, any>;
+  expertAnnotations?: ExpertAnnotation[];
+  
+  // Real-time processing
+  enableRealTimeEvents: boolean;
+  eventTargets?: string[];      // Specific targets for events
+}> {
+  constructor(data: Partial<TrackUsageParams> = {}) {
+    super({
+      extractCapabilities: true,
+      updateNetwork: true,
+      triggerEvolution: false,  // Conservative default
+      persistToDatabase: true,
+      createCheckpoint: false,  // Only checkpoint on significant changes
+      enableRealTimeEvents: true,
+      ...data
+    });
+  }
+}
+
+export interface ExpertAnnotation {
+  annotatorId: string;
+  timestamp: number;
+  
+  // Capability annotations
+  capabilityCorrections: Array<{
+    extracted: string;
+    correct: string;
+    confidence: number;
+  }>;
+  
+  // Performance annotations
+  performanceCorrections: Partial<PerformanceMetrics>;
+  
+  // Context annotations
+  contextTags: string[];
+  domainCorrections: string[];
+  complexityCorrection?: number;
+  
+  // Learning annotations
+  learningValue: number;        // 0-1 how valuable for learning
+  teachingMoments: string[];    // Specific teaching opportunities
+  commonMistakes: string[];     // Common mistakes this addresses
+  
+  notes: string;
+}
+
+// ========================
+// Command Result Types
+// ========================
+
+export class TrackUsageResult extends AcademyResult<{
+  // Processing results
+  capabilitiesExtracted: ExtractedCapability[];
+  performanceAssessment: MessagePerformanceAssessment;
+  
+  // Network updates
+  capabilityNetworkUpdated: boolean;
+  newCapabilities: string[];    // Newly discovered capabilities
+  updatedCapabilities: string[]; // Existing capabilities that were updated
+  
+  // Storage results
+  databaseUpdated: boolean;
+  databaseRecordIds: string[];
+  checkpointCreated: boolean;
+  checkpointPath?: string;
+  
+  // Evolution results
+  evolutionTriggered: boolean;
+  evolutionCandidates: string[]; // Capabilities that might need evolution
+  recommendedEvolutions: EvolutionRecommendation[];
+  
+  // Event emission
+  eventsEmitted: EmittedEvent[];
+  
+  // Analytics
+  interactionAnalytics: InteractionAnalytics;
+  performanceTrends: PerformanceTrend[];
+  capabilityImpactChanges: CapabilityImpactChange[];
+  
+  // Warnings/Issues
+  warnings: string[];
+  issues: ProcessingIssue[];
+  recommendations: string[];
+}> {
+  constructor(data: Partial<TrackUsageResult> = {}) {
+    super({
+      capabilitiesExtracted: [],
+      newCapabilities: [],
+      updatedCapabilities: [],
+      databaseUpdated: false,
+      databaseRecordIds: [],
+      checkpointCreated: false,
+      evolutionTriggered: false,
+      evolutionCandidates: [],
+      recommendedEvolutions: [],
+      eventsEmitted: [],
+      performanceTrends: [],
+      capabilityImpactChanges: [],
+      warnings: [],
+      issues: [],
+      recommendations: [],
+      ...data
+    });
+  }
+}
+
+// ========================
+// Supporting Types
+// ========================
+
+export interface EvolutionRecommendation {
+  capabilityId: string;
+  recommendationType: 'enhance' | 'combine' | 'split' | 'deprecate' | 'create';
+  confidence: number;           // 0-1 confidence in recommendation
+  
+  // Recommendation details
+  rationale: string;
+  expectedImpact: number;       // 0-1 expected improvement
+  estimatedCost: number;        // Resource cost estimate
+  
+  // Supporting data
+  supportingEvidence: string[];
+  performanceGap: number;       // Current performance gap
+  usageFrequency: number;       // How often this gap appears
+  
+  // Implementation hints
+  suggestedApproach: string;
+  requiredResources: string[];
+  estimatedTimeframe: string;
+}
+
+export interface EmittedEvent {
+  eventType: string;
+  eventTarget: string;
+  eventData: Record<string, any>;
+  timestamp: number;
+  
+  // Event metadata
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  broadcast: boolean;           // Should this be broadcast to all listeners
+  persistent: boolean;          // Should this be persisted
+}
+
+export interface InteractionAnalytics {
+  // Interaction classification
+  interactionType: 'question' | 'answer' | 'collaboration' | 'teaching' | 'debugging' | 'creative';
+  complexityScore: number;      // 0-1 interaction complexity
+  
+  // Participation analysis
+  participantContributions: Record<string, ParticipantContribution>;
+  dominantParticipant: string;
+  collaborationQuality: number; // 0-1 quality of collaboration
+  
+  // Knowledge flow
+  knowledgeFlow: KnowledgeFlow[];
+  learningOpportunities: LearningOpportunity[];
+  teachingMoments: TeachingMoment[];
+  
+  // Outcome analysis
+  problemResolved: boolean;
+  resolutionQuality: number;    // 0-1 quality of resolution
+  knowledgeCreated: boolean;    // Was new knowledge created
+  
+  // Future predictions
+  followUpLikelihood: number;   // 0-1 likelihood of follow-up questions
+  topicContinuation: number;    // 0-1 likelihood topic will continue
+  learningValue: number;        // 0-1 long-term learning value
+}
+
+export interface ParticipantContribution {
+  participantId: string;
+  messageCount: number;
+  wordCount: number;
+  
+  // Contribution quality
+  helpfulness: number;          // 0-1 how helpful their contributions were
+  expertise: number;           // 0-1 demonstrated expertise
+  clarity: number;             // 0-1 clarity of communication
+  
+  // Behavior analysis
+  roleInConversation: 'leader' | 'contributor' | 'observer' | 'questioner' | 'teacher';
+  collaborationStyle: 'supportive' | 'directive' | 'questioning' | 'analytical';
+  
+  // Capability demonstration
+  capabilitiesShown: string[];
+  newCapabilitiesLearned: string[];
+  knowledgeGaps: string[];
+}
+
+export interface KnowledgeFlow {
+  from: string;                 // Participant who shared knowledge
+  to: string;                   // Participant who received knowledge
+  knowledge: string;            // What knowledge was shared
+  effectiveness: number;        // 0-1 how effectively it was transferred
+  
+  // Knowledge characteristics
+  knowledgeType: 'factual' | 'procedural' | 'conceptual' | 'metacognitive';
+  complexity: number;           // 0-1 complexity of knowledge
+  novelty: number;             // 0-1 how novel this knowledge was
+  
+  // Transfer quality
+  comprehension: number;        // 0-1 how well it was understood
+  retention: number;           // 0-1 predicted retention
+  application: number;         // 0-1 likelihood of application
+}
+
+export interface LearningOpportunity {
+  participantId: string;
+  opportunity: string;
+  capability: string;           // Capability that could be learned
+  
+  // Opportunity assessment
+  readiness: number;           // 0-1 participant readiness to learn
+  difficulty: number;          // 0-1 difficulty of learning opportunity
+  value: number;               // 0-1 value of learning this
+  
+  // Learning support
+  requiredPrerequisites: string[];
+  suggestedResources: string[];
+  bestLearningApproach: string;
+  
+  // Context
+  triggeredBy: string;         // What triggered this opportunity
+  contextRelevance: number;    // 0-1 relevance to current context
+}
+
+export interface TeachingMoment {
+  teacherId: string;
+  learnerId: string;
+  moment: string;              // Description of teaching moment
+  
+  // Teaching effectiveness
+  teachingQuality: number;     // 0-1 quality of teaching
+  learnerEngagement: number;   // 0-1 learner engagement
+  knowledgeTransfer: number;   // 0-1 successful knowledge transfer
+  
+  // Teaching approach
+  teachingStyle: 'explanatory' | 'socratic' | 'demonstrative' | 'collaborative';
+  adaptationLevel: number;     // 0-1 how well adapted to learner
+  
+  // Outcome
+  learningOutcome: 'understood' | 'partially_understood' | 'confused' | 'clarification_needed';
+  followUpNeeded: boolean;
+}
+
+export interface PerformanceTrend {
+  capability: string;
+  trend: 'improving' | 'stable' | 'declining';
+  trendStrength: number;       // 0-1 strength of trend
+  
+  // Trend data
+  historicalPerformance: Array<{timestamp: number, performance: number}>;
+  currentPerformance: number;
+  projectedPerformance: number;
+  
+  // Trend analysis
+  trendDuration: number;       // How long trend has been happening (ms)
+  trendConfidence: number;     // 0-1 confidence in trend analysis
+  significantChange: boolean;  // Is this a significant change
+  
+  // Context
+  affectingFactors: string[];  // What might be causing this trend
+  correlatedCapabilities: string[]; // Other capabilities with similar trends
+}
+
+export interface CapabilityImpactChange {
+  capability: string;
+  previousImpact: number;      // Previous impact score
+  currentImpact: number;       // New impact score
+  change: number;              // Change amount (-1 to 1)
+  
+  // Change analysis
+  changeType: 'improvement' | 'decline' | 'volatility' | 'stability';
+  significance: 'major' | 'moderate' | 'minor';
+  confidence: number;          // 0-1 confidence in change measurement
+  
+  // Context
+  causedBy: string[];          // What interactions caused this change
+  affectedCapabilities: string[]; // Other capabilities affected by this change
+  networkImpact: number;       // Impact on overall capability network
+}
+
+export interface ProcessingIssue {
+  severity: 'error' | 'warning' | 'info';
+  category: 'capability_extraction' | 'performance_assessment' | 'database_storage' | 'network_update';
+  message: string;
+  
+  // Issue details
+  affectedData: string[];      // What data was affected
+  possibleCauses: string[];
+  suggestedActions: string[];
+  
+  // Resolution
+  autoResolved: boolean;
+  resolutionDetails?: string;
+}
+
+// Export all types
+export type ChatTrainingData = 
+  | ChatInteractionData 
+  | ChatMessage 
+  | ChatParticipant 
+  | TechnicalContent;
+
+export type CapabilityAnalysisData = 
+  | CapabilityExtraction 
+  | ExtractedCapability 
+  | MessagePerformanceAssessment;
+
+export type TrainingAnalytics = 
+  | InteractionAnalytics 
+  | ParticipantContribution 
+  | KnowledgeFlow 
+  | LearningOpportunity 
+  | TeachingMoment;
