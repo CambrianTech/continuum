@@ -2,14 +2,13 @@
 npm run log:git-hook pre-commit >/dev/null 2>&1 || true
 printf "\rContinuum Middle-Out Validation (Layer 1/4) - Foundation...\n" >&2
 
-# 🧅 LAYER 1: Core Foundation (JTAG foundation tests only)
-echo "🧅 Layer 1: Core Foundation - TypeScript compilation & path mapping validation..."
-cd src/debug/jtag && npm run test:foundation || {
-    echo "❌ JTAG foundation tests FAILED! Fix TypeScript/path mapping issues before committing."
-    echo "💡 Run: cd src/debug/jtag && npm run test:foundation to see all errors"
+# 🧅 LAYER 1: Core Foundation (TypeScript compilation)
+echo "🧅 Layer 1: Core Foundation - TypeScript compilation..."
+npx tsc --noEmit --project . || {
+    echo "❌ TypeScript compilation FAILED! Fix errors before committing."
+    echo "💡 Run: npx tsc --noEmit --project . to see all errors"
     exit 1
 }
-cd "$(git rev-parse --show-toplevel)"
 
 printf "\rContinuum Middle-Out Validation (Layer 2/4) - Code Quality...\n" >&2
 
@@ -18,12 +17,7 @@ echo "🧅 Layer 2: Code Quality - ESLint checks on clean directories..."
 
 # 🎯 PER-MODULE QUALITY ENFORCEMENT (COMMIT MODE: Development-friendly)
 echo "🎯 Per-module quality enforcement - Development-friendly mode..."
-npm run test:quality:commit 2>/dev/null || {
-    # Fall back to JTAG foundation tests if system-wide quality tests aren't available
-    # We're already IN the JTAG directory, so just run the test directly
-    if [ -f "package.json" ] && grep -q "@continuum/jtag" package.json; then
-        npm run test:foundation >/dev/null 2>&1 || true
-    fi
+npm run test:quality:commit || {
     echo "⚠️ Quality issues found in some modules"
     echo "🎓 Graduated modules should maintain perfect quality"
     echo "💡 COMMIT ALLOWED for incremental development, but FIX before push!"
@@ -32,30 +26,30 @@ npm run test:quality:commit 2>/dev/null || {
 
 echo "✅ Quality checks completed for commit"
 
-# Ensure we're back at root for next layer
-cd "$(git rev-parse --show-toplevel)"
-
 printf "\rContinuum Middle-Out Validation (Layer 3/4) - Integration...\n" >&2
 
 # 🧅 LAYER 3: Integration Testing (Daemon coordination)
 echo "🧅 Layer 3: Integration - Daemon coordination and type safety..."
 
-# Run integration tests - try system first, fall back to JTAG foundation
-printf "\r  → Layer 3a: Testing system integration...\r" >&2
-npm run test:integration:eventbus 2>/dev/null || {
-    # Fall back to JTAG foundation tests for integration validation
-    # We're already IN the JTAG directory, so just run the test directly
-    if [ -f "package.json" ] && grep -q "@continuum/jtag" package.json; then
-        npm run test:foundation >/dev/null 2>&1 && {
-            echo "✅ JTAG foundation tests passed as integration fallback"
-        } || {
-            echo "❌ Integration tests failed! Fix failing tests before committing."
-            exit 1
-        }
-    else
-        echo "❌ Not in JTAG directory or package.json not found"
-        exit 1
-    fi
+# Run event bus test (critical for daemon communication)
+printf "\r  → Layer 3a: Testing daemon event bus...\r" >&2
+npm run test:integration:eventbus || {
+    echo "❌ Event bus tests failed! Fix failing tests before committing."
+    exit 1
+}
+
+# Run module structure test (ensures all daemons are properly configured)
+printf "\r  → Layer 3b: Testing module structure...\r" >&2
+npm run test:integration:modules || {
+    echo "❌ Module structure tests failed! Fix failing tests before committing."
+    exit 1
+}
+
+# Run type safety test (ensures no 'any' types)
+printf "\r  → Layer 3c: Testing type safety...\r" >&2
+npm run test:integration:types || {
+    echo "❌ Type safety tests failed! Fix failing tests before committing."
+    exit 1
 }
 
 printf "\rContinuum Middle-Out Validation (Layer 4/5) - System...\n" >&2
@@ -127,32 +121,19 @@ pkill -f "tsx main.ts" 2>/dev/null || true
 pkill -f "continuum" 2>/dev/null || true
 sleep 2
 
-# CRITICAL: Run JTAG foundation validation (critical path mapping tests)
-echo "🚀 Running JTAG foundation validation: npm run test:foundation"
-echo "   This validates: TypeScript compilation → Path mapping → Foundation tests"
-echo "   Note: Same tests as Layer 1 - ensuring system integrity"
-printf "\r  → Layer 6a: JTAG foundation validation...\r" >&2
+# CRITICAL: Run full npm jtag validation (includes npm start + JTAG tests)
+echo "🚀 Running full system validation: npm run jtag"
+echo "   This includes: npm start (compile + build + daemon startup) + JTAG health checks"
+echo "   Note: Version will increment during validation - this tests the build system!"
+printf "\r  → Layer 6a: Full npm jtag validation (clean startup required)...\r" >&2
 
-# Navigate to JTAG directory and run the full test suite
-# Find actual repo root (where .husky exists)
-REPO_ROOT=""
-if [ -d ".husky" ]; then
-    REPO_ROOT="$(pwd)"
-elif [ -d "../.husky" ]; then
-    REPO_ROOT="$(cd .. && pwd)"
-elif [ -d "../../.husky" ]; then
-    REPO_ROOT="$(cd ../.. && pwd)"
-elif [ -d "../../../.husky" ]; then
-    REPO_ROOT="$(cd ../../.. && pwd)"
-fi
-
-cd "$REPO_ROOT/src/debug/jtag" && npm run test:foundation >/dev/null 2>&1
+npm run jtag >/dev/null 2>&1
 JTAG_RESULT=$?
 
 if [ $JTAG_RESULT -ne 0 ]; then
-    echo "❌ CRITICAL: JTAG foundation tests FAILED! Path mapping system has issues!"
-    echo "💡 Debug with: cd src/debug/jtag && npm run test:foundation"
-    echo "💡 This validates: TypeScript compilation → Path mapping → Foundation tests"
+    echo "❌ CRITICAL: npm run jtag FAILED! System cannot start or JTAG validation failed!"
+    echo "💡 Debug with: npm run jtag"
+    echo "💡 This validates: TypeScript compilation → Browser build → Daemon startup → JTAG health"
     # Trap will handle restoration automatically
     exit 1
 fi
@@ -183,49 +164,27 @@ if [ -f ".git/COMMIT_EDITMSG" ]; then
     if echo "$COMMIT_MSG" | grep -q -i "verification.*commit\|screenshot.*commit\|ui-capture.*commit\|git hook.*commit"; then
         echo "📋 DETECTED: Verification commit - skipping validation to avoid infinite loops"
     else
-        # Run the git hook validation system from repo root
+        # Run the git hook validation system
         echo "🔍 Running git hook validation..."
         printf "\r  → Layer 7a: Taking validation screenshot...\r" >&2
-        # Find repo root and run from there
-        REPO_ROOT=""
-        if [ -d ".husky" ]; then
-            REPO_ROOT="$(pwd)"
-        elif [ -d "../.husky" ]; then
-            REPO_ROOT="$(cd .. && pwd)"
-        elif [ -d "../../.husky" ]; then
-            REPO_ROOT="$(cd ../.. && pwd)"
-        elif [ -d "../../../.husky" ]; then
-            REPO_ROOT="$(cd ../../.. && pwd)"
-        fi
-        
-        if ! (cd "$REPO_ROOT" && npx tsx src/testing/git-hook-validation.ts 2>/dev/null); then
-            echo "⚠️ Git hook validation failed (system not running) - allowing commit"
-            echo "💡 This validates: Screenshot capture → Validation file creation"
-            echo "💡 Manual validation: cd $REPO_ROOT && npx tsx src/testing/git-hook-validation.ts"
-            # Don't exit 1 - allow commit even if screenshot validation fails
+        if ! npx tsx src/testing/git-hook-validation.ts; then
+            echo ""
+            echo "❌ CRITICAL: Git hook validation failed!"
+            echo "💡 This validates: Screenshot capture → Validation file creation → Git staging"
+            echo "💡 Debug with: npx tsx src/testing/git-hook-validation.ts"
+            exit 1
         fi
         echo "✅ Git hook validation passed - screenshot and logs created"
     fi
 else
     echo "🔍 Running git hook validation..."
     printf "\r  → Layer 7a: Taking validation screenshot...\r" >&2
-    # Find repo root and run from there
-    REPO_ROOT=""
-    if [ -d ".husky" ]; then
-        REPO_ROOT="$(pwd)"
-    elif [ -d "../.husky" ]; then
-        REPO_ROOT="$(cd .. && pwd)"
-    elif [ -d "../../.husky" ]; then
-        REPO_ROOT="$(cd ../.. && pwd)"
-    elif [ -d "../../../.husky" ]; then
-        REPO_ROOT="$(cd ../../.. && pwd)"
-    fi
-    
-    if ! (cd "$REPO_ROOT" && npx tsx src/testing/git-hook-validation.ts 2>/dev/null); then
-        echo "⚠️ Git hook validation failed (system not running) - allowing commit"
-        echo "💡 This validates: Screenshot capture → Validation file creation"
-        echo "💡 Manual validation: cd $REPO_ROOT && npx tsx src/testing/git-hook-validation.ts"
-        # Don't exit 1 - allow commit even if screenshot validation fails
+    if ! npx tsx src/testing/git-hook-validation.ts; then
+        echo ""
+        echo "❌ CRITICAL: Git hook validation failed!"
+        echo "💡 This validates: Screenshot capture → Validation file creation → Git staging"
+        echo "💡 Debug with: npx tsx src/testing/git-hook-validation.ts"
+        exit 1
     fi
     echo "✅ Git hook validation passed - screenshot and logs created"
 fi
