@@ -8,7 +8,7 @@
  */
 
 import { RoomEventCommand } from '../shared/RoomEventCommand';
-import { RoomEventSubscriptionParams, RoomEventSubscriptionResult } from '../shared/RoomEventTypes';
+import { type RoomEventSubscriptionParams, RoomEventSubscriptionResult } from '../shared/RoomEventTypes';
 
 export class RoomEventServerCommand extends RoomEventCommand {
 

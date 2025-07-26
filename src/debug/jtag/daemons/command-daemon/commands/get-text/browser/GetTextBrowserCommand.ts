@@ -5,9 +5,9 @@
  * Perfect example of focused browser implementation - no over-engineering.
  */
 
-import { GetTextParams, GetTextResult } from '../shared/GetTextTypes';
+import { type GetTextParams, GetTextResult } from '../shared/GetTextTypes';
 import { GetTextCommand } from '../shared/GetTextCommand';
-import { safeQuerySelector } from '../../../../../shared/GlobalUtils';
+import { safeQuerySelector } from '@shared/GlobalUtils';
 
 export class GetTextBrowserCommand extends GetTextCommand {
   

@@ -6,11 +6,9 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { CommandBase } from '@commandBase';
+import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { ScreenshotParams } from '@screenshotShared/ScreenshotTypes';
-import { ScreenshotResult } from '@screenshotShared/ScreenshotTypes';
-import type { ICommandDaemon } from '@commandBase';
+import { type ScreenshotParams, ScreenshotResult } from '@screenshotShared/ScreenshotTypes';
 
 export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
   

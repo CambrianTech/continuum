@@ -20,7 +20,7 @@
  * - Clean, focused implementation
  */
 
-import { CompileTypescriptParams, CompileTypescriptResult } from '../shared/CompileTypescriptTypes';
+import { type CompileTypescriptParams, CompileTypescriptResult } from '../shared/CompileTypescriptTypes';
 import { CompileTypescriptCommand } from '../shared/CompileTypescriptCommand';
 
 export class CompileTypescriptServerCommand extends CompileTypescriptCommand {

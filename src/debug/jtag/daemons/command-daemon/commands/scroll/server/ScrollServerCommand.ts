@@ -4,11 +4,9 @@
  * MINIMAL WORK PER COMMAND: Just implements what server does
  */
 
-import { CommandBase } from '../../../shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../../../shared/JTAGTypes';
-import type { ScrollParams } from '../shared/ScrollTypes';
-import { ScrollResult } from '../shared/ScrollTypes';
-import type { ICommandDaemon } from '../../../shared/CommandBase';
+import { CommandBase, type ICommandDaemon } from '@commandBase';
+import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import { type ScrollParams, ScrollResult } from '../shared/ScrollTypes';
 
 export class ScrollServerCommand extends CommandBase<ScrollParams, ScrollResult> {
   

@@ -1,5 +1,4 @@
-import { CommandParams, CommandResult } from '../../../../../shared/JTAGTypes';
-import type { JTAGContext } from '../../../../../shared/JTAGTypes';
+import { CommandParams, CommandResult, type JTAGContext } from '@shared/JTAGTypes';
 
 export class TypeParams extends CommandParams {
   selector!: string;

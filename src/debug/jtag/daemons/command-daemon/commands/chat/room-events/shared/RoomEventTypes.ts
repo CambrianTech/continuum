@@ -19,8 +19,7 @@
  * - Widget-persona-human coordination through shared event streams
  */
 
-import { CommandParams, CommandResult } from '../../../../../../shared/JTAGTypes';
-import type { JTAGContext } from '../../../../../../shared/JTAGTypes';
+import { CommandParams, CommandResult } from '@shared/JTAGTypes';
 
 // ========================
 // Room Event Subscription
@@ -46,9 +45,9 @@ export class RoomEventSubscriptionParams extends CommandParams {
 
   constructor(data: Partial<RoomEventSubscriptionParams> = {}) {
     super();
-    this.participantId = data.participantId || '';
-    this.participantType = data.participantType || 'human';
-    this.roomId = data.roomId || '';
+    this.participantId = data.participantId ?? '';
+    this.participantType = data.participantType ?? 'human';
+    this.roomId = data.roomId ?? '';
     Object.assign(this, data);
   }
 }

@@ -5,11 +5,9 @@
  * generics and clean inheritance. Follows screenshot/navigate/click examples exactly.
  */
 
-import { CommandBase } from '../../../shared/CommandBase';
-import type { ICommandDaemon } from '../../../shared/CommandBase';
-import type { JTAGContext } from '../../../../../shared/JTAGTypes';
-import { TypeParams } from './TypeTypes';
-import type { TypeResult } from './TypeTypes';
+import { CommandBase, type ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '@shared/JTAGTypes';
+import { TypeParams, type TypeResult } from './TypeTypes';
 
 export abstract class TypeCommand extends CommandBase<TypeParams, TypeResult> {
 

@@ -9,9 +9,9 @@
  */
 
 import { SendMessageCommand } from '../shared/SendMessageCommand';
-import { SendMessageParams, SendMessageResult } from '../shared/SendMessageTypes';
-import type { ICommandDaemon } from '../../../../shared/CommandBase';
-import type { JTAGContext } from '../../../../../../shared/JTAGTypes';
+import { type SendMessageParams, SendMessageResult } from '../shared/SendMessageTypes';
+import type { ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '@shared/JTAGTypes';
 
 export class SendMessageBrowserCommand extends SendMessageCommand {
 

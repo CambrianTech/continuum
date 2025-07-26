@@ -1,6 +1,6 @@
-import { CommandBase } from '../../../../shared/CommandBase';
-import type { ICommandDaemon } from '../../../../shared/CommandBase';
-import type { JTAGContext } from '../../../../../../shared/JTAGTypes';
+import { CommandBase } from '@commandBase';
+import type { ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '@shared/JTAGTypes';
 import { RoomEventSubscriptionParams } from './RoomEventTypes';
 import type { RoomEventSubscriptionResult } from './RoomEventTypes';
 

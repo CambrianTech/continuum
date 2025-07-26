@@ -8,8 +8,7 @@
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { FileCommand } from '@fileShared/FileTypes';
-import { FileSaveParams } from './FileSaveTypes';
-import type { FileSaveResult } from './FileSaveTypes';
+import { FileSaveParams, type FileSaveResult } from './FileSaveTypes';
 
 export abstract class FileSaveCommand extends FileCommand<FileSaveParams, FileSaveResult> {
 

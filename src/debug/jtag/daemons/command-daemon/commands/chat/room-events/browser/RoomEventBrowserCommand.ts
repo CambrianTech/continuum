@@ -1,7 +1,7 @@
 import { RoomEventCommand } from '../shared/RoomEventCommand';
-import { RoomEventSubscriptionParams, RoomEventSubscriptionResult } from '../shared/RoomEventTypes';
-import type { ICommandDaemon } from '../../../../shared/CommandBase';
-import type { JTAGContext } from '../../../../../../shared/JTAGTypes';
+import { type RoomEventSubscriptionParams, RoomEventSubscriptionResult } from '../shared/RoomEventTypes';
+import type { ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '@shared/JTAGTypes';
 
 export class RoomEventBrowserCommand extends RoomEventCommand {
 

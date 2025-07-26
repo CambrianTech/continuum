@@ -37,7 +37,7 @@ export class FileLoadServerCommand extends CommandBase<FileLoadParams, FileLoadR
       }
       
       // Read file
-      const content = await fs.readFile(resolvedPath, { encoding: (loadParams.encoding || 'utf8') as BufferEncoding });
+      const content = await fs.readFile(resolvedPath, { encoding: (loadParams.encoding ?? 'utf8') as BufferEncoding });
       const stats = await fs.stat(resolvedPath);
       
       console.log(`✅ SERVER: Loaded ${stats.size} bytes from ${resolvedPath}`);

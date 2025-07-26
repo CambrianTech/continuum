@@ -20,7 +20,7 @@
  * - Elegant simplicity without feature creep
  */
 
-import { NavigateParams, NavigateResult } from '../shared/NavigateTypes';
+import { type NavigateParams, NavigateResult } from '../shared/NavigateTypes';
 import { NavigateCommand } from '../shared/NavigateCommand';
 
 export class NavigateServerCommand extends NavigateCommand {

@@ -9,7 +9,7 @@
  */
 
 import { SendMessageCommand } from '../shared/SendMessageCommand';
-import { SendMessageParams, SendMessageResult } from '../shared/SendMessageTypes';
+import { type SendMessageParams, SendMessageResult } from '../shared/SendMessageTypes';
 
 export class SendMessageServerCommand extends SendMessageCommand {
 

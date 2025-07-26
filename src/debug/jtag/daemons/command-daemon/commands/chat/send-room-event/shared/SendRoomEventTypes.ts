@@ -14,7 +14,7 @@
  * ✅ Focused scope - just basic room event coordination
  */
 
-import { ChatParams, ChatResult, type ChatParticipant } from '@chatShared/ChatTypes';
+import { ChatParams, ChatResult } from '@chatShared/ChatTypes';
 
 export class SendRoomEventParams extends ChatParams {
   sourceParticipantId!: string;

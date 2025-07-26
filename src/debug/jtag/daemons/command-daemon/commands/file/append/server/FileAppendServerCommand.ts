@@ -6,11 +6,9 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { CommandBase } from '@commandBase';
+import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { FileAppendParams } from '@fileAppendShared/FileAppendTypes';
-import { FileAppendResult } from '@fileAppendShared/FileAppendTypes';
-import type { ICommandDaemon } from '@commandBase';
+import  { type FileAppendParams, FileAppendResult } from '@fileAppendShared/FileAppendTypes';
 
 export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileAppendResult> {
   
@@ -44,10 +42,10 @@ export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileA
       }
       
       // Append content
-      await fs.appendFile(resolvedPath, appendParams.content, { encoding: (appendParams.encoding || 'utf8') as BufferEncoding });
-      
-      const stats = await fs.stat(resolvedPath);
-      const bytesAppended = Buffer.byteLength(appendParams.content, (appendParams.encoding || 'utf8') as BufferEncoding);
+      await fs.appendFile(resolvedPath, appendParams.content, { encoding: (appendParams.encoding ?? 'utf8') as BufferEncoding });
+
+      // const stats = await fs.stat(resolvedPath);
+      const bytesAppended = Buffer.byteLength(appendParams.content, (appendParams.encoding ?? 'utf8') as BufferEncoding);
       
       console.log(`✅ SERVER: Appended ${bytesAppended} bytes to ${resolvedPath}`);
       

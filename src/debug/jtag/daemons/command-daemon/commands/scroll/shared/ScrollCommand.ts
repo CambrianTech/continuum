@@ -5,11 +5,9 @@
  * generics and clean inheritance. Follows established pattern exactly.
  */
 
-import { CommandBase } from '../../../shared/CommandBase';
-import type { ICommandDaemon } from '../../../shared/CommandBase';
-import type { JTAGContext } from '../../../../../shared/JTAGTypes';
-import { ScrollParams } from './ScrollTypes';
-import type { ScrollResult } from './ScrollTypes';
+import { CommandBase, type ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '@shared/JTAGTypes';
+import { ScrollParams, type ScrollResult } from './ScrollTypes';
 
 export abstract class ScrollCommand extends CommandBase<ScrollParams, ScrollResult> {
 

@@ -1,8 +1,6 @@
-import { CommandBase } from '../../../../shared/CommandBase';
-import type { ICommandDaemon } from '../../../../shared/CommandBase';
-import type { JTAGContext } from '../../../../../../shared/JTAGTypes';
-import { SendRoomEventParams } from './SendRoomEventTypes';
-import type { SendRoomEventResult } from './SendRoomEventTypes';
+import {CommandBase, type ICommandDaemon} from '@commandBase';
+import type { JTAGContext } from '@shared/JTAGTypes';
+import { SendRoomEventParams, type SendRoomEventResult } from './SendRoomEventTypes';
 
 export abstract class SendRoomEventCommand extends CommandBase<SendRoomEventParams, SendRoomEventResult> {
 

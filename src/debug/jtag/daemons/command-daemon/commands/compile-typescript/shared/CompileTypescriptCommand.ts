@@ -14,9 +14,8 @@
  * ✅ No unnecessary complexity
  */
 
-import { CommandBase } from '../../../shared/CommandBase';
-import type { ICommandDaemon } from '../../../shared/CommandBase';
-import type { JTAGContext } from '../../../../../shared/JTAGTypes';
+import { CommandBase, type ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '@shared/JTAGTypes';
 import { CompileTypescriptParams } from './CompileTypescriptTypes';
 import type { CompileTypescriptResult } from './CompileTypescriptTypes';
 
