@@ -4,11 +4,10 @@
  * MINIMAL WORK PER COMMAND: Just implements what server does
  */
 
-import { CommandBase } from '../../../shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../../../shared/JTAGTypes';
+import { CommandBase, type ICommandDaemon } from '@commandBase';
+import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
 import type { WaitForElementParams } from '../shared/WaitForElementTypes';
 import { WaitForElementResult } from '../shared/WaitForElementTypes';
-import type { ICommandDaemon } from '../../../shared/CommandBase';
 
 export class WaitForElementServerCommand extends CommandBase<WaitForElementParams, WaitForElementResult> {
   

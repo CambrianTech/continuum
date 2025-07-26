@@ -27,8 +27,7 @@
 
 import { CommandParams, CommandResult } from '@shared/JTAGTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { CommandBase } from '@commandBase';
-import type { ICommandDaemon } from '@commandBase';
+import { CommandBase, type ICommandDaemon } from '@commandBase';
 
 /**
  * Generic base parameters for all file operations

@@ -1,5 +1,4 @@
-import { CommandBase } from '@commandBase';
-import type { ICommandDaemon } from '@commandBase';
+import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { GetChatHistoryParams, type GetChatHistoryResult } from './GetChatHistoryTypes';
 

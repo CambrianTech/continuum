@@ -21,7 +21,7 @@
  * - Clean, readable implementation
  */
 
-import { NavigateParams, NavigateResult } from '../shared/NavigateTypes';
+import { type NavigateParams, NavigateResult } from '../shared/NavigateTypes';
 import { NavigateCommand } from '../shared/NavigateCommand';
 
 export class NavigateBrowserCommand extends NavigateCommand {

@@ -20,7 +20,7 @@
  * - Smart context-specific behavior
  */
 
-import { CompileTypescriptParams, CompileTypescriptResult } from '../shared/CompileTypescriptTypes';
+import { type CompileTypescriptParams, CompileTypescriptResult } from '../shared/CompileTypescriptTypes';
 import { CompileTypescriptCommand } from '../shared/CompileTypescriptCommand';
 
 export class CompileTypescriptBrowserCommand extends CompileTypescriptCommand {
@@ -32,6 +32,7 @@ export class CompileTypescriptBrowserCommand extends CompileTypescriptCommand {
     console.log(`🌐 BROWSER: Attempting TypeScript compilation`);
 
     try {
+      //TODO : USE proper import for monaco/typescript
       // Check if monaco/typescript is available in browser
       const monaco = (window as any).monaco;
       

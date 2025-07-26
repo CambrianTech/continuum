@@ -1,5 +1,5 @@
 import { GetChatHistoryCommand } from '../shared/GetChatHistoryCommand';
-import { GetChatHistoryParams, GetChatHistoryResult, type ChatMessage } from '../shared/GetChatHistoryTypes';
+import { type GetChatHistoryParams, GetChatHistoryResult, type ChatMessage } from '../shared/GetChatHistoryTypes';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 

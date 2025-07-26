@@ -8,7 +8,7 @@
  */
 
 import { SendRoomEventCommand } from '../shared/SendRoomEventCommand';
-import { SendRoomEventParams, SendRoomEventResult } from '../shared/SendRoomEventTypes';
+import { type SendRoomEventParams, SendRoomEventResult } from '../shared/SendRoomEventTypes';
 
 export class SendRoomEventServerCommand extends SendRoomEventCommand {
 

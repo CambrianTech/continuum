@@ -4,11 +4,11 @@
  * Browser-side command daemon that handles browser-specific commands.
  */
 
-import type { JTAGContext } from '../../../shared/JTAGTypes';
+import type { JTAGContext } from '@shared/JTAGTypes';
 import { CommandDaemon } from '../shared/CommandDaemon';
-import type { CommandEntry } from '../shared/CommandBase';
+import type { CommandEntry } from '@commandBase';
 import { BROWSER_COMMANDS } from './structure';
-import type { CommandBase } from '../shared/CommandBase';
+import type { CommandBase } from '@commandBase';
 
 export class CommandDaemonBrowser extends CommandDaemon {
 

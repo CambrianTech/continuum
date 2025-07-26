@@ -31,9 +31,19 @@
     "@clickShared": "daemons/command-daemon/commands/click/shared",
     "@screenshotShared": "daemons/command-daemon/commands/screenshot/shared",
     "@navigateShared": "daemons/command-daemon/commands/navigate/shared",
+    "@scrollShared": "daemons/command-daemon/commands/scroll/shared",
+    "@getTextShared": "daemons/command-daemon/commands/get-text/shared",
+    "@waitForElementShared": "daemons/command-daemon/commands/wait-for-element/shared",
+    "@typeShared": "daemons/command-daemon/commands/type/shared",
+    "@compileTypescriptShared": "daemons/command-daemon/commands/compile-typescript/shared",
     
     "@consoleShared": "daemons/console-daemon/shared",
-    "@healthShared": "daemons/health-daemon/shared"
+    "@healthShared": "daemons/health-daemon/shared",
+    
+    "@sharedRouting": "shared/routing",
+    "@sharedQueuing": "shared/queuing", 
+    "@sharedEvents": "shared/events",
+    "@testsShared": "tests/shared"
   },
   "description": "JTAG TypeScript path mappings with hierarchical daemon and command structure"
 }

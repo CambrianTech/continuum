@@ -5,9 +5,9 @@
  * Perfect example of focused browser implementation - no over-engineering.
  */
 
-import { WaitForElementParams, WaitForElementResult } from '../shared/WaitForElementTypes';
+import { type WaitForElementParams, WaitForElementResult } from '../shared/WaitForElementTypes';
 import { WaitForElementCommand } from '../shared/WaitForElementCommand';
-import { safeQuerySelector } from '../../../../../shared/GlobalUtils';
+import { safeQuerySelector } from '@shared/GlobalUtils';
 
 export class WaitForElementBrowserCommand extends WaitForElementCommand {
   

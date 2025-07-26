@@ -4,11 +4,9 @@
  * MINIMAL WORK PER COMMAND: Just implements what server does
  */
 
-import { CommandBase } from '../../../shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../../../shared/JTAGTypes';
-import type { GetTextParams } from '../shared/GetTextTypes';
-import { GetTextResult } from '../shared/GetTextTypes';
-import type { ICommandDaemon } from '../../../shared/CommandBase';
+import { CommandBase, type ICommandDaemon } from '@commandBase';
+import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import { type GetTextParams, GetTextResult } from '../shared/GetTextTypes';
 
 export class GetTextServerCommand extends CommandBase<GetTextParams, GetTextResult> {
   

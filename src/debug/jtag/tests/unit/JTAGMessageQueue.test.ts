@@ -6,14 +6,14 @@
  * and DeduplicationService for JTAG-specific message handling.
  */
 
-import { JTAGMessageQueue, MessagePriority } from '../../shared/queuing/JTAGMessageQueue';
+import { JTAGMessageQueue, MessagePriority } from '@sharedQueuing/JTAGMessageQueue';
 import { 
   JTAGMessageFactory, 
   JTAGContext, 
   JTAGMessage,
   JTAGPayload
-} from '../../shared/JTAGTypes';
-import { JTAG_ENDPOINTS } from '../../shared/JTAGEndpoints';
+} from '@shared/JTAGTypes';
+import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
 
 console.log('🧪 JTAGMessageQueue Test Suite');
 

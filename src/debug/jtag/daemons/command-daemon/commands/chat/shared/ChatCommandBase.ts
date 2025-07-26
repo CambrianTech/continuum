@@ -16,7 +16,7 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { ChatParams, ChatResult } from '@chatShared/ChatTypes';
+import type{ ChatParams, ChatResult } from '@chatShared/ChatTypes';
 
 /**
  * Base class for all chat commands

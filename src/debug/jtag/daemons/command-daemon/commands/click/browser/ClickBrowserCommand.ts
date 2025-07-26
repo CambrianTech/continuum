@@ -21,7 +21,7 @@
  * - Clean, readable, maintainable
  */
 
-import { ClickParams, ClickResult } from '@clickShared/ClickTypes';
+import { type ClickParams, ClickResult } from '@clickShared/ClickTypes';
 import { ClickCommand } from '@clickShared/ClickCommand';
 import { safeQuerySelector } from '@shared/GlobalUtils';
 
