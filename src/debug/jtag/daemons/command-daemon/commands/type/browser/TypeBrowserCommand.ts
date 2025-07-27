@@ -5,7 +5,8 @@
  * Perfect example of focused browser implementation - no over-engineering.
  */
 
-import { type TypeParams, TypeResult } from '../shared/TypeTypes';
+import { type TypeParams, type TypeResult, createTypeResult } from '../shared/TypeTypes';
+import { ValidationError } from '@shared/ErrorTypes';
 import { TypeCommand } from '../shared/TypeCommand';
 import { safeQuerySelector } from '@shared/GlobalUtils';
 
@@ -46,24 +47,23 @@ export class TypeBrowserCommand extends TypeCommand {
       
       console.log(`✅ BROWSER: Typed into ${params.selector}`);
       
-      return new TypeResult({
+      return createTypeResult(params.context, params.sessionId, {
         success: true,
         selector: params.selector,
         typed: true,
-        text: params.text,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        text: params.text
+      });
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Type failed:`, error.message);
-      return new TypeResult({
+      const typeError = error instanceof Error ? new ValidationError('typing', error.message, { cause: error }) : new ValidationError('typing', String(error));
+      return createTypeResult(params.context, params.sessionId, {
         success: false,
         selector: params.selector,
         typed: false,
         text: params.text,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: typeError
+      });
     }
   }
 }

@@ -8,6 +8,7 @@
 
 import { type FileParams, type FileResult, createFileParams, createFileResult } from '@fileShared/FileTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import type { JTAGError } from '@shared/ErrorTypes';
 import { UUID } from 'crypto';
 
 export interface FileSaveParams extends FileParams {
@@ -44,7 +45,7 @@ export const createFileSaveResult = (
     bytesWritten?: number;
     created?: boolean;
     exists?: boolean;
-    error?: string;
+    error?: JTAGError;
   }
 ): FileSaveResult => createFileResult(context, sessionId, {
   bytesWritten: data.bytesWritten ?? 0,

@@ -145,9 +145,10 @@ export function isHealthResponse(payload: JTAGResponsePayload): payload is Healt
          (payload.success === false && 'error' in payload && !('filtered' in payload) && !('commandResult' in payload));
 }
 
-export function isCommandResponse(payload: JTAGResponsePayload): payload is CommandResponse {
-  return 'commandResult' in payload || 'commandName' in payload;
-}
+// TODO: Import CommandResponse from specific daemon modules
+// export function isCommandResponse(payload: JTAGResponsePayload): payload is CommandResponse {
+//   return 'commandResult' in payload || 'commandName' in payload;
+// }
 
 export function isSuccessResponse(payload: JTAGResponsePayload): payload is BaseResponsePayload {
   return payload.success === true;

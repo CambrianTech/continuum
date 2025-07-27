@@ -1,7 +1,7 @@
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { ScreenshotParams, type ScreenshotResult } from './ScreenshotTypes';
+import { type ScreenshotParams, type ScreenshotResult, createScreenshotParams } from './ScreenshotTypes';
 
 export abstract class ScreenshotCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
 
@@ -10,9 +10,9 @@ export abstract class ScreenshotCommand extends CommandBase<ScreenshotParams, Sc
   }
 
   public override getDefaultParams(sessionId: UUID): ScreenshotParams {
-    return new ScreenshotParams({
+    return createScreenshotParams(this.context, sessionId, {
       filename: `screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`
-    }, this.context, sessionId);
+    });
   }
 
   abstract execute(params: ScreenshotParams): Promise<ScreenshotResult>;

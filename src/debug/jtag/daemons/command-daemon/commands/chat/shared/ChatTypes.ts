@@ -19,6 +19,7 @@
  */
 
 import { CommandParams, CommandResult, type JTAGContext, createPayload } from '@shared/JTAGTypes';
+import type { JTAGError } from '@shared/ErrorTypes';
 import { UUID } from 'crypto';
 
 /**
@@ -47,7 +48,7 @@ export interface ChatResult<T extends Record<string, any> = {}> extends CommandR
   roomId: string;
   nodeId?: string;  // Which node actually processed this command
   timestamp: string;
-  error?: string;
+  error?: JTAGError;
 }
 
 export const createChatResult = <T extends Record<string, any> = {}>(

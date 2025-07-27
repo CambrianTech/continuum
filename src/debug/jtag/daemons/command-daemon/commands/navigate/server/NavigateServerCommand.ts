@@ -20,7 +20,8 @@
  * - Elegant simplicity without feature creep
  */
 
-import { type NavigateParams, NavigateResult } from '../shared/NavigateTypes';
+import { type NavigateParams, type NavigateResult, createNavigateResult } from '../shared/NavigateTypes';
+import { NetworkError } from '@shared/ErrorTypes';
 import { NavigateCommand } from '../shared/NavigateCommand';
 
 export class NavigateServerCommand extends NavigateCommand {
@@ -37,12 +38,12 @@ export class NavigateServerCommand extends NavigateCommand {
 
     } catch (error: any) {
       console.error(`❌ SERVER: Navigation delegation failed:`, error.message);
-      return new NavigateResult({
+      const navError = error instanceof Error ? new NetworkError('browser', error.message, { cause: error }) : new NetworkError('browser', String(error));
+      return createNavigateResult(params.context, params.sessionId, {
         success: false,
         url: params.url,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: navError
+      });
     }
   }
 }

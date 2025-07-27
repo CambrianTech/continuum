@@ -27,7 +27,7 @@ export class SendRoomEventBrowserCommand extends SendRoomEventCommand {
         await this.handleSuccessfulEventSend(result);
       } else {
         console.error(`❌ BROWSER: Room event send failed: ${result.error || 'Unknown error'}`);
-        await this.handleFailedEventSend(eventParams, result.error || 'Unknown error');
+        await this.handleFailedEventSend(eventParams, result.error?.message || 'Unknown error');
       }
 
       return result;

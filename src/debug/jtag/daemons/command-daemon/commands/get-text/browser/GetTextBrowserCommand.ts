@@ -5,7 +5,8 @@
  * Perfect example of focused browser implementation - no over-engineering.
  */
 
-import { type GetTextParams, GetTextResult } from '../shared/GetTextTypes';
+import { type GetTextParams, type GetTextResult, createGetTextResult } from '../shared/GetTextTypes';
+import { ValidationError } from '@shared/ErrorTypes';
 import { GetTextCommand } from '../shared/GetTextCommand';
 import { safeQuerySelector } from '@shared/GlobalUtils';
 
@@ -33,24 +34,23 @@ export class GetTextBrowserCommand extends GetTextCommand {
       
       console.log(`✅ BROWSER: Extracted ${text.length} characters from ${params.selector}`);
       
-      return new GetTextResult({
+      return createGetTextResult(params.context, params.sessionId, {
         success: true,
         selector: params.selector,
         text: text,
-        found: true,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        found: true
+      });
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Get text failed:`, error.message);
-      return new GetTextResult({
+      const textError = error instanceof Error ? new ValidationError('selector', error.message, { cause: error }) : new ValidationError('selector', String(error));
+      return createGetTextResult(params.context, params.sessionId, {
         success: false,
         selector: params.selector,
         text: '',
         found: false,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: textError
+      });
     }
   }
 }

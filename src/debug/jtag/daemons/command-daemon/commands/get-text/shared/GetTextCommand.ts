@@ -8,7 +8,7 @@
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { GetTextParams, type GetTextResult } from './GetTextTypes';
+import { type GetTextParams, createGetTextParams, type GetTextResult } from './GetTextTypes';
 
 export abstract class GetTextCommand extends CommandBase<GetTextParams, GetTextResult> {
 
@@ -17,11 +17,11 @@ export abstract class GetTextCommand extends CommandBase<GetTextParams, GetTextR
   }
 
   public override getDefaultParams(sessionId: UUID): GetTextParams {
-    return new GetTextParams({
+    return createGetTextParams(this.context, sessionId, {
       selector: 'body',
       trim: true,
       innerText: true
-    }, this.context, sessionId);
+    });
   }
 
   abstract execute(params: GetTextParams): Promise<GetTextResult>;

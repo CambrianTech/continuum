@@ -35,7 +35,7 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       await fs.mkdir(logDir, { recursive: true });
       
       // Write to both text and JSON files
-      const baseName = `${consolePayload.context}-console-${consolePayload.level}`;
+      const baseName = `${consolePayload.context.environment}-console-${consolePayload.level}`;
       const txtFile = path.join(logDir, `${baseName}.log`);
       const jsonFile = path.join(logDir, `${baseName}.json`);
       

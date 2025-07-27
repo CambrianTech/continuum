@@ -35,36 +35,47 @@
 
 import { DaemonBase } from '../../../shared/DaemonBase';
 import type { JTAGContext, JTAGMessage } from '../../../shared/JTAGTypes';
-import { JTAGPayload, JTAGMessageFactory } from '../../../shared/JTAGTypes';
+import { JTAGPayload, JTAGMessageFactory, createPayload } from '../../../shared/JTAGTypes';
+import { UUID } from 'crypto';
 import type { JTAGRouter } from '../../../shared/JTAGRouter';
 import { SYSTEM_EVENTS } from '../../../shared/events/SystemEvents';
 import { TRANSPORT_EVENTS } from '../../../transports/TransportEvents';
 import { CONSOLE_EVENTS } from '../ConsoleEvents';
 import { JTAG_ENDPOINTS } from '../../../shared/JTAGEndpoints';
-import { ConsoleSuccessResponse, ConsoleErrorResponse, ConsoleResponse } from '../../../shared/ResponseTypes';
+import { type ConsoleSuccessResponse, type ConsoleErrorResponse, type ConsoleResponse, createConsoleSuccessResponse, createConsoleErrorResponse } from '../../../shared/ResponseTypes';
 import type { TimerHandle } from '../../../shared/CrossPlatformTypes';
 import type { LogLevel } from '../../../shared/LogLevels';
 
 
 // Console-specific payload
-export class ConsolePayload extends JTAGPayload {
+export interface ConsolePayload extends JTAGPayload {
   level: LogLevel;
   component: string;
   message: string;
   timestamp: string;
   data?: unknown; // Keep optional but use unknown instead of any
   stack?: string;
-
-  constructor(data: Partial<ConsolePayload>, context: JTAGContext) {
-    super(context, 'system'); // Console daemon uses system-level session
-    this.level = data.level ?? 'log';
-    this.component = data.component ?? 'UNKNOWN';
-    this.message = data.message ?? '';
-    this.timestamp = data.timestamp ?? new Date().toISOString();
-    this.data = data.data;
-    this.stack = data.stack;
-  }
 }
+
+export const createConsolePayload = (
+  context: JTAGContext,
+  data: {
+    level?: LogLevel;
+    component?: string;
+    message?: string;
+    timestamp?: string;
+    data?: unknown;
+    stack?: string;
+  }
+): ConsolePayload => createPayload(context, '00000000-0000-0000-0000-000000000000' as UUID, {
+  level: data.level ?? 'log',
+  component: data.component ?? 'UNKNOWN',
+  message: data.message ?? '',
+  timestamp: data.timestamp ?? new Date().toISOString(),
+  data: data.data,
+  stack: data.stack,
+  ...data
+});
 
 export interface ConsoleFilter {
   excludePatterns: string[];
@@ -247,7 +258,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
       
       // Apply filters
       if (this.shouldFilterMessage(consolePayload)) {
-        return new ConsoleSuccessResponse({ filtered: true });
+        return createConsoleSuccessResponse({ filtered: true }, this.context, message.payload.sessionId);
       }
 
       // Add to buffer
@@ -256,16 +267,15 @@ export abstract class ConsoleDaemon extends DaemonBase {
       // Process the console message (context-agnostic)
       await this.processConsolePayload(consolePayload);
 
-      return new ConsoleSuccessResponse({ 
+      return createConsoleSuccessResponse({ 
         processed: true, 
-        context: this.context.environment,
         level: consolePayload.level 
-      });
+      }, this.context, message.payload.sessionId);
 
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.originalConsole.error(`❌ ${this.toString()}: Error processing message:`, errorMessage);
-      return new ConsoleErrorResponse(errorMessage);
+      return createConsoleErrorResponse(errorMessage, this.context, message.payload.sessionId);
     }
   }
 
@@ -365,12 +375,11 @@ export abstract class ConsoleDaemon extends DaemonBase {
       return;
     }
 
-    const consolePayload = new ConsolePayload({
+    const consolePayload = createConsolePayload(this.context, {
       level,
       component: this.extractComponent(message),
       message,
       timestamp: new Date().toISOString(),
-      context: this.context.environment,
       stack: level === 'error' ? new Error().stack : undefined
     });
 

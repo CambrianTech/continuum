@@ -7,6 +7,7 @@
 
 import { DaemonBase } from '../../../shared/DaemonBase';
 import type { JTAGContext, JTAGMessage, CommandParams, CommandResult } from '../../../shared/JTAGTypes';
+import { JTAGMessageFactory } from '../../../shared/JTAGTypes';
 import type { JTAGRouter } from '../../../shared/JTAGRouter';
 import type{ CommandBase, CommandEntry } from './CommandBase';
 import type { CommandResponse } from './CommandResponseTypes';
@@ -69,10 +70,16 @@ export abstract class CommandDaemon extends DaemonBase {
         // Assert non-null command for TypeScript
         const validCommand: CommandBase<CommandParams, CommandResult> = command;
         
-        // Return elegantly typed async function
+        // Return elegantly typed async function that executes command directly
         return async (params?: CommandParams) => {
-          // SECURITY: Direct command invocation requires explicit session context
-          throw new Error(`Direct command invocation requires session context. Use message-based routing instead for command: ${commandName}`);
+          console.log(`⚡ ${this.toString()}: Executing ${commandName} directly with session context`);
+          
+          // Only add session context if missing from params
+          const sessionId = this.context.uuid as UUID;
+          const fullParams = validCommand.withDefaults(params || {}, sessionId);
+          
+          // Execute the command directly - it will handle its own routing if needed
+          return await validCommand.execute(fullParams);
         };
       }
     });

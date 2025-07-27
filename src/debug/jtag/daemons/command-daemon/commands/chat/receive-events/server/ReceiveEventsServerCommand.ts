@@ -36,7 +36,7 @@ export class ReceiveEventsServerCommand extends ReceiveEventsCommand {
       });
 
     } catch (error: any) {
-      return this.createChatErrorResult(params.roomId, `Event receiving failed: ${error.message}`) as ReceiveEventsResult;
+      return this.createChatErrorResult(params.sessionId, params.roomId, `Event receiving failed: ${error.message}`) as ReceiveEventsResult;
     }
   }
 }

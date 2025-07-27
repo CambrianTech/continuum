@@ -5,6 +5,7 @@
  */
 
 import { CommandParams, CommandResult, type JTAGContext, createPayload, transformPayload } from '@shared/JTAGTypes';
+import type { JTAGError } from '@shared/ErrorTypes';
 import { UUID } from 'crypto';
 
 /**
@@ -89,7 +90,7 @@ export interface ScreenshotResult extends CommandResult {
   filename: string;
   timestamp: string;
   options?: ScreenshotOptions;
-  error?: string;
+  error?: JTAGError;
   metadata?: ScreenshotMetadata;
   dataUrl?: string; // Browser-captured image data
 }

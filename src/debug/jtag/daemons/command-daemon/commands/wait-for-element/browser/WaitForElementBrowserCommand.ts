@@ -5,7 +5,8 @@
  * Perfect example of focused browser implementation - no over-engineering.
  */
 
-import { type WaitForElementParams, WaitForElementResult } from '../shared/WaitForElementTypes';
+import { type WaitForElementParams, type WaitForElementResult, createWaitForElementResult } from '../shared/WaitForElementTypes';
+import { ValidationError } from '@shared/ErrorTypes';
 import { WaitForElementCommand } from '../shared/WaitForElementCommand';
 import { safeQuerySelector } from '@shared/GlobalUtils';
 
@@ -30,15 +31,14 @@ export class WaitForElementBrowserCommand extends WaitForElementCommand {
           if (!params.visible) {
             // Just existence check
             console.log(`✅ BROWSER: Element found: ${params.selector}`);
-            return new WaitForElementResult({
+            return createWaitForElementResult(params.context, params.sessionId, {
               success: true,
               selector: params.selector,
               found: true,
               visible: false, // Not checking visibility
               timeout: timeout,
               waitTime: Date.now() - startTime,
-              timestamp: new Date().toISOString()
-            }, params.context, params.sessionId);
+                  });
           }
           
           // Check if element is visible
@@ -49,15 +49,14 @@ export class WaitForElementBrowserCommand extends WaitForElementCommand {
           
           if (isVisible) {
             console.log(`✅ BROWSER: Element visible: ${params.selector}`);
-            return new WaitForElementResult({
+            return createWaitForElementResult(params.context, params.sessionId, {
               success: true,
               selector: params.selector,
               found: true,
               visible: true,
               timeout: timeout,
               waitTime: Date.now() - startTime,
-              timestamp: new Date().toISOString()
-            }, params.context, params.sessionId);
+                  });
           }
         }
         
@@ -70,16 +69,16 @@ export class WaitForElementBrowserCommand extends WaitForElementCommand {
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Wait failed:`, error.message);
-      return new WaitForElementResult({
+      const waitError = error instanceof Error ? new ValidationError('wait', error.message, { cause: error }) : new ValidationError('wait', String(error));
+      return createWaitForElementResult(params.context, params.sessionId, {
         success: false,
         selector: params.selector,
         found: false,
         visible: false,
         timeout: timeout,
         waitTime: Date.now() - startTime,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: waitError
+      });
     }
   }
 }

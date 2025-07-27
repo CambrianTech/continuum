@@ -29,7 +29,8 @@
  */
 
 import type { JTAGMessage, JTAGContext } from './JTAGTypes';
-import { JTAGPayload, JTAGMessageFactory } from './JTAGTypes';
+import { JTAGPayload, JTAGMessageFactory, createPayload } from './JTAGTypes';
+import { UUID } from 'crypto';
 
 // Import modular event categories - co-located with their modules
 import type { SystemEventData, SystemEventName } from './events/SystemEvents';
@@ -69,41 +70,52 @@ export interface EventSystemStats {
   contexts: string[];
 }
 
-export class EventMessage<T extends JTAGEventName = JTAGEventName> extends JTAGPayload {
+export interface EventMessage<T extends JTAGEventName = JTAGEventName> extends JTAGPayload {
   eventName: T;
   data?: JTAGEventData[T];
   timestamp: string;
   source: string;
-
-  constructor(eventName: T, data?: JTAGEventData[T], source?: string) {
-    super();
-    this.eventName = eventName;
-    this.data = data;
-    this.timestamp = new Date().toISOString();
-    this.source = source || 'event-system';
-  }
-
-  encode(): string {
-    return Buffer.from(JSON.stringify({
-      eventName: this.eventName,
-      data: this.data,
-      timestamp: this.timestamp,
-      source: this.source
-    })).toString('base64');
-  }
-
-
-  equals(other: JTAGPayload): boolean {
-    if (!(other instanceof EventMessage)) return false;
-    return this.eventName === other.eventName && 
-           this.timestamp === other.timestamp &&
-           this.source === other.source;
-  }
-
-  hashCode(): string {
-    return `${this.eventName}:${this.source}:${this.timestamp}`;
-  }
+  encode(): string;
+  equals(other: JTAGPayload): boolean;
+  hashCode(): string;
 }
+
+export const createEventMessage = <T extends JTAGEventName = JTAGEventName>(
+  context: JTAGContext,
+  sessionId: UUID,
+  eventName: T,
+  data?: JTAGEventData[T],
+  source?: string
+): EventMessage<T> => {
+  const timestamp = new Date().toISOString();
+  const eventSource = source || 'event-system';
+  
+  return {
+    ...createPayload(context, sessionId, {
+      eventName,
+      data,
+      timestamp,
+      source: eventSource
+    }),
+    encode(): string {
+      return Buffer.from(JSON.stringify({
+        eventName,
+        data,
+        timestamp,
+        source: eventSource
+      })).toString('base64');
+    },
+    equals(other: JTAGPayload): boolean {
+      return 'eventName' in other && 'timestamp' in other && 'source' in other &&
+             other.eventName === eventName && 
+             other.timestamp === timestamp &&
+             other.source === eventSource;
+    },
+    hashCode(): string {
+      return `${eventName}:${eventSource}:${timestamp}`;
+    }
+  };
+};
 
 export interface EventFilter<T extends JTAGEventName = JTAGEventName> {
   eventName?: T | RegExp;
@@ -144,7 +156,7 @@ export class JTAGEventSystem {
    * Emit an event with promise-like power - Type-safe event names
    */
   async emit<T extends JTAGEventName>(eventName: T, data?: JTAGEventData[T], source?: string): Promise<unknown[]> {
-    const eventPayload = new EventMessage(eventName, data, source ?? 'event-system');
+    const eventPayload = createEventMessage(this.context, '00000000-0000-0000-0000-000000000000' as UUID, eventName, data, source ?? 'event-system');
 
     const message = JTAGMessageFactory.createEvent(
       this.context,
@@ -393,7 +405,7 @@ export class JTAGEventSystem {
       throw new Error('Cross-context routing not enabled');
     }
 
-    const payload = new EventMessage(eventName, data, 'cross-context');
+    const payload = createEventMessage(this.context, '00000000-0000-0000-0000-000000000000' as UUID, eventName, data, 'cross-context');
     
     const message = JTAGMessageFactory.createEvent(
       this.context,

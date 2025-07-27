@@ -7,7 +7,8 @@
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
 import type { WaitForElementParams } from '../shared/WaitForElementTypes';
-import { WaitForElementResult } from '../shared/WaitForElementTypes';
+import { type WaitForElementResult, createWaitForElementResult } from '../shared/WaitForElementTypes';
+import { NetworkError } from '@shared/ErrorTypes';
 
 export class WaitForElementServerCommand extends CommandBase<WaitForElementParams, WaitForElementResult> {
   
@@ -33,17 +34,16 @@ export class WaitForElementServerCommand extends CommandBase<WaitForElementParam
 
     } catch (error: any) {
       console.error(`❌ SERVER: Failed:`, error.message);
-      return new WaitForElementResult({
+      const waitError = error instanceof Error ? new NetworkError('browser', error.message, { cause: error }) : new NetworkError('browser', String(error));
+      return createWaitForElementResult(waitParams.context, waitParams.sessionId, {
         success: false,
         selector: waitParams.selector,
         found: false,
         visible: false,
         timeout: waitParams.timeout || 30000,
         waitTime: 0,
-        environment: this.context.environment,
-        timestamp: new Date().toISOString(),
-        error: error.message
-      }, waitParams.context, waitParams.sessionId);
+        error: waitError
+      });
     }
   }
 }

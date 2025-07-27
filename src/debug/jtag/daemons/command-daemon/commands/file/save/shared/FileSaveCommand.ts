@@ -9,7 +9,7 @@ import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
 import { FileCommand } from '@fileShared/FileTypes';
-import { FileSaveParams, type FileSaveResult } from './FileSaveTypes';
+import { type FileSaveParams, type FileSaveResult, createFileSaveParams } from './FileSaveTypes';
 
 export abstract class FileSaveCommand extends FileCommand<FileSaveParams, FileSaveResult> {
 
@@ -19,12 +19,12 @@ export abstract class FileSaveCommand extends FileCommand<FileSaveParams, FileSa
   }
 
   public override getDefaultParams(sessionId: UUID): FileSaveParams {
-    return new FileSaveParams({
+    return createFileSaveParams(this.context, sessionId, {
       filepath: '',
       content: '',
       encoding: 'utf8',
       createDirs: true
-    }, this.context, sessionId);
+    });
   }
 
   abstract execute(params: FileSaveParams): Promise<FileSaveResult>;
