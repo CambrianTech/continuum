@@ -22,9 +22,17 @@ export class WebSocketServerTransport implements JTAGTransport {
   private clients = new Set<WSWebSocket>();
   private messageHandlers = new Set<(message: JTAGMessage) => void>();
   private eventSystem?: EventsInterface;
+  private sessionHandshakeHandler?: (sessionId: string) => void;
 
   setEventSystem(eventSystem: EventsInterface): void {
     this.eventSystem = eventSystem;
+  }
+
+  /**
+   * Set handler for session handshake messages
+   */
+  setSessionHandshakeHandler(handler: (sessionId: string) => void): void {
+    this.sessionHandshakeHandler = handler;
   }
 
   async start(port: number): Promise<void> {
@@ -55,6 +63,16 @@ export class WebSocketServerTransport implements JTAGTransport {
           try {
             const messageStr = data instanceof Buffer ? data.toString() : data.toString();
             const message = JSON.parse(messageStr);
+            
+            // Handle session handshake messages
+            if (message.type === 'session_handshake' && message.sessionId) {
+              console.log(`🤝 WebSocket Server: Received session handshake with sessionId: ${message.sessionId}`);
+              if (this.sessionHandshakeHandler) {
+                this.sessionHandshakeHandler(message.sessionId);
+              }
+              return; // Don't forward handshake messages to regular handlers
+            }
+            
             console.log(`📨 WebSocket Server: Received message from client`);
             
             // Forward to registered message handlers
@@ -152,9 +170,33 @@ export class WebSocketClientTransport implements JTAGTransport {
   private messageHandler?: (message: JTAGMessage) => void;
   private eventSystem?: EventsInterface;
   private lastConnectedUrl?: string;
+  private sessionId?: string;
 
   setEventSystem(eventSystem: EventsInterface): void {
     this.eventSystem = eventSystem;
+  }
+
+  /**
+   * Set the session ID that will be sent during handshake
+   */
+  setSessionId(sessionId: string): void {
+    this.sessionId = sessionId;
+  }
+
+  /**
+   * Send session handshake to server
+   */
+  private sendSessionHandshake(): void {
+    if (this.socket && this.sessionId) {
+      const handshake = {
+        type: 'session_handshake',
+        sessionId: this.sessionId,
+        timestamp: new Date().toISOString()
+      };
+      
+      this.socket.send(JSON.stringify(handshake));
+      console.log(`🤝 WebSocket Client: Sent session handshake with sessionId: ${this.sessionId}`);
+    }
   }
 
   async connect(url: string): Promise<void> {
@@ -171,6 +213,9 @@ export class WebSocketClientTransport implements JTAGTransport {
       
       this.socket.onopen = () => {
         console.log(`✅ WebSocket Client: Connected to ${url}`);
+        
+        // Send session handshake immediately after connection
+        this.sendSessionHandshake();
         
         // Emit CONNECTED event
         if (this.eventSystem) {

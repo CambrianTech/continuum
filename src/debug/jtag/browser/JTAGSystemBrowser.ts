@@ -12,6 +12,7 @@ import { JTAGRouter } from '../shared/JTAGRouter';
 import { SYSTEM_EVENTS } from '../shared/events/SystemEvents';
 import type { DaemonBase, DaemonEntry } from '../shared/DaemonBase';
 import { BROWSER_DAEMONS } from './structure';
+import { generateUUID } from '../shared/CrossPlatformUUID';
 
 export class JTAGSystemBrowser extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return BROWSER_DAEMONS; }
@@ -56,6 +57,32 @@ export class JTAGSystemBrowser extends JTAGSystem {
   }
 
   /**
+   * Get or create persistent session UUID for browser
+   */
+  private static getOrCreateSessionId(): string {
+    const STORAGE_KEY = 'jtag_session_id';
+    
+    if (typeof localStorage !== 'undefined') {
+      // Try to get existing session from localStorage
+      let sessionId = localStorage.getItem(STORAGE_KEY);
+      if (!sessionId) {
+        // Create new session UUID
+        sessionId = generateUUID();
+        localStorage.setItem(STORAGE_KEY, sessionId);
+        console.log(`🆔 JTAG Browser: Created new session UUID: ${sessionId}`);
+      } else {
+        console.log(`🆔 JTAG Browser: Retrieved existing session UUID: ${sessionId}`);
+      }
+      return sessionId;
+    } else {
+      // Fallback for environments without localStorage
+      const sessionId = generateUUID();
+      console.log(`🆔 JTAG Browser: Generated ephemeral session UUID: ${sessionId}`);
+      return sessionId;
+    }
+  }
+
+  /**
    * Connect and auto-wire the browser JTAG system
    */
   static async connect(config?: JTAGSystemConfig): Promise<JTAGSystemBrowser> {
@@ -63,16 +90,23 @@ export class JTAGSystemBrowser extends JTAGSystem {
       return JTAGSystemBrowser.instance;
     }
 
-    // 1. Create browser context
+    // 1. Get or create persistent session UUID
+    const sessionId = JTAGSystemBrowser.getOrCreateSessionId();
+
+    // 2. Create browser context with session UUID
     const context: JTAGContext = {
-      uuid: `jtag_browser_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+      uuid: sessionId,
       environment: JTAG_ENVIRONMENTS.BROWSER
     };
 
     console.log(`🔄 JTAG System: Connecting browser environment...`);
+    console.log(`🆔 JTAG System: Using session UUID: ${sessionId}`);
 
-    // 2. Create universal router with config
-    const routerConfig = config?.router ?? {};
+    // 2. Create universal router with config including sessionId
+    const routerConfig = {
+      ...config?.router,
+      sessionId: sessionId  // Pass sessionId for transport handshake
+    };
     const router = new JTAGRouter(context, routerConfig);
     
     // Emit initializing event

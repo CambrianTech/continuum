@@ -19,20 +19,16 @@ import { createPayload } from '@shared/JTAGTypes';
 import { JTAGRouter } from '@shared/JTAGRouter';
 import { createSessionSuccessResponse, createSessionErrorResponse, type SessionResponse } from '@shared/ResponseTypes';
 import { generateUUID, type UUID } from '@shared/CrossPlatformUUID';
-
-/**
- * Session Types
- */
-export type SessionType = 'development' | 'production' | 'test' | 'persona';
-export type SessionOwner = 'human-joel' | 'ai-claude' | 'shared';
+import { type SessionCategory } from '@shared/SystemScopes';
 
 /**
  * Session Metadata - Core identity information only
  */
 export interface SessionMetadata {
   id: UUID;
-  type: SessionType;
-  owner: SessionOwner;
+  category: SessionCategory; // user | persona | agent | system
+  userId: UUID; // Reference to actual user record (via UserDaemon)
+  displayName: string; // "Claude", "Joel", etc. - passed from connect()
   created: Date;
   lastActive: Date;
   isActive: boolean;
@@ -43,8 +39,9 @@ export interface SessionMetadata {
  */
 export interface CreateSessionPayload extends JTAGPayload {
   readonly type: 'create';
-  readonly sessionType: SessionType;
-  readonly owner: SessionOwner;
+  readonly category: SessionCategory;
+  readonly displayName: string;
+  readonly userId?: UUID; // Optional - will generate if not provided
 }
 
 export interface GetSessionPayload extends JTAGPayload {
@@ -55,8 +52,7 @@ export interface GetSessionPayload extends JTAGPayload {
 export interface ListSessionsPayload extends JTAGPayload {
   readonly type: 'list';
   readonly filter?: {
-    owner?: SessionOwner;
-    type?: SessionType;
+    category?: SessionCategory;
     isActive?: boolean;
   };
 }
@@ -85,11 +81,12 @@ export type SessionPayload = CreateSessionPayload | GetSessionPayload | ListSess
 export const createCreateSessionPayload = (
   context: JTAGContext,
   sessionId: UUID,
-  data: { sessionType: SessionType; owner: SessionOwner }
+  data: { category: SessionCategory; displayName: string; userId?: UUID }
 ): CreateSessionPayload => createPayload(context, sessionId, {
   type: 'create' as const,
-  sessionType: data.sessionType,
-  owner: data.owner
+  category: data.category,
+  displayName: data.displayName,
+  userId: data.userId
 });
 
 export const createGetSessionPayload = (
@@ -160,10 +157,13 @@ export abstract class SessionDaemon extends DaemonBase {
    */
   private async createSession(payload: CreateSessionPayload): Promise<SessionResponse> {
     const realSessionId = generateUUID();
+    const userId = payload.userId || generateUUID(); // Generate userId if not provided
+    
     const session: SessionMetadata = {
       id: realSessionId,
-      type: payload.sessionType,
-      owner: payload.owner,
+      category: payload.category,
+      userId: userId,
+      displayName: payload.displayName,
       created: new Date(),
       lastActive: new Date(),
       isActive: true
@@ -171,7 +171,7 @@ export abstract class SessionDaemon extends DaemonBase {
     
     this.sessions.set(session.id, session);
     
-    console.log(`🏷️ ${this.toString()}: Created session ${session.id} (${session.type}/${session.owner})`);
+    console.log(`🏷️ ${this.toString()}: Created session ${session.id} (${session.category}/${session.displayName})`);
     console.log(`🔄 ${this.toString()}: Bootstrap session ${payload.sessionId} → real session ${realSessionId}`);
     
     // Emit session_created event for other daemons to coordinate
@@ -205,11 +205,8 @@ export abstract class SessionDaemon extends DaemonBase {
     let sessionList = Array.from(this.sessions.values());
     
     if (payload.filter) {
-      if (payload.filter.owner) {
-        sessionList = sessionList.filter(s => s.owner === payload.filter?.owner);
-      }
-      if (payload.filter.type) {
-        sessionList = sessionList.filter(s => s.type === payload.filter?.type);
+      if (payload.filter.category) {
+        sessionList = sessionList.filter(s => s.category === payload.filter?.category);
       }
       if (payload.filter.isActive !== undefined) {
         sessionList = sessionList.filter(s => s.isActive === payload.filter?.isActive);

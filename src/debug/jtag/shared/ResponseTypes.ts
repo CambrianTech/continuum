@@ -132,16 +132,18 @@ export interface SessionSuccessResponse extends BaseResponsePayload {
   responseSessionId?: UUID;
   metadata?: {
     id: UUID;
-    type: string;
-    owner: string;
+    category: string; // 'user' | 'persona' | 'agent' | 'system'
+    userId: UUID;
+    displayName: string;
     created: Date;
     lastActive: Date;
     isActive: boolean;
   };
   sessions?: Array<{
     id: UUID;
-    type: string;
-    owner: string;
+    category: string; // 'user' | 'persona' | 'agent' | 'system'
+    userId: UUID;
+    displayName: string;
     created: Date;
     lastActive: Date;
     isActive: boolean;

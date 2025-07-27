@@ -41,6 +41,7 @@ export interface JTAGRouterConfig {
   readonly health?: Partial<JTAGRouterHealthConfig>;
   readonly response?: Partial<JTAGRouterResponseConfig>;
   readonly enableLogging?: boolean;
+  readonly sessionId?: string; // Session ID for transport handshake
 }
 
 /**
@@ -51,6 +52,7 @@ export interface ResolvedJTAGRouterConfig {
   readonly health: JTAGRouterHealthConfig;
   readonly response: JTAGRouterResponseConfig;
   readonly enableLogging: boolean;
+  readonly sessionId?: string; // Session ID for transport handshake
 }
 
 /**
@@ -94,6 +96,7 @@ export function createJTAGRouterConfig(config: JTAGRouterConfig = {}): ResolvedJ
       ...DEFAULT_JTAG_ROUTER_CONFIG.response,
       ...config.response
     },
-    enableLogging: config.enableLogging ?? DEFAULT_JTAG_ROUTER_CONFIG.enableLogging
+    enableLogging: config.enableLogging ?? DEFAULT_JTAG_ROUTER_CONFIG.enableLogging,
+    sessionId: config.sessionId
   } as const;
 }

@@ -16,6 +16,7 @@ export interface TransportConfig {
   serverPort?: number;
   serverUrl?: string;
   eventSystem?: EventsInterface;
+  sessionId?: string; // Session ID for client handshake
   // UDP multicast specific options
   p2p?: {
     nodeId?: string;
@@ -38,7 +39,7 @@ export class TransportFactory {
     config: TransportConfig = {}
   ): Promise<JTAGTransport> {
     
-    const { preferred = 'websocket', fallback = true, serverPort = 9001, serverUrl = 'ws://localhost:9001', eventSystem } = config;
+    const { preferred = 'websocket', fallback = true, serverPort = 9001, serverUrl = 'ws://localhost:9001', eventSystem, sessionId } = config;
     
     console.log(`🏭 Transport Factory: Creating transport for ${environment} environment`);
     
@@ -69,6 +70,9 @@ export class TransportFactory {
         const transport = new WebSocketClientTransport();
         if (eventSystem) {
           transport.setEventSystem(eventSystem);
+        }
+        if (sessionId) {
+          transport.setSessionId(sessionId);
         }
         try {
           await transport.connect(serverUrl);

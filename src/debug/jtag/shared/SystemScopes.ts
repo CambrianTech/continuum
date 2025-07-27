@@ -8,6 +8,19 @@
 import { type UUID } from './CrossPlatformUUID';
 
 /**
+ * Session directory categories - passed in from connect() or caller
+ */
+export type SessionCategory = 'user' | 'persona' | 'agent' | 'system';
+
+/**
+ * Default display names for bootstrapping
+ */
+export const DEFAULT_DISPLAY_NAMES = {
+  NEW_USER: 'New User',
+  SYSTEM: 'System'
+} as const;
+
+/**
  * System-level scope constants
  */
 export const SYSTEM_SCOPES = {

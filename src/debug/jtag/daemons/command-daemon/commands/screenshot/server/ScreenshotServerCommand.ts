@@ -4,10 +4,9 @@
  * MINIMAL WORK PER COMMAND: Just implements what server does
  */
 
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import { JTAGMessageFactory } from '@shared/JTAGTypes';
 import { type ScreenshotParams, type ScreenshotResult, createScreenshotResult } from '@screenshotShared/ScreenshotTypes';
 import { PersistenceError } from '@shared/ErrorTypes';
 
@@ -34,36 +33,49 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
         return await this.remoteExecute(screenshotParams);
       }
       
-      // We have image data → save it
+      // We have image data → delegate to file save command
       console.log(`💾 SERVER: Saving image data (${screenshotParams.dataUrl.length} bytes)`);
       
-      const globalPath = path.resolve(process.cwd(), '.continuum/jtag/screenshots', screenshotParams.filename || 'screenshot.png');
+      const filename = screenshotParams.filename || 'screenshot.png';
+      const filepath = `screenshots/${filename}`;
       
-      // Ensure directory exists
-      await fs.mkdir(path.dirname(globalPath), { recursive: true });
-      
+      // Convert image data to buffer for file save command
+      let content: Buffer | string;
       if (screenshotParams.dataUrl) {
-        // Convert and save actual image
         const base64Data = screenshotParams.dataUrl.replace(/^data:image\/\w+;base64,/, '');
-        const buffer = Buffer.from(base64Data, 'base64');
-        await fs.writeFile(globalPath, buffer);
-        console.log(`📁 SERVER: Saved to: ${globalPath}`);
+        content = Buffer.from(base64Data, 'base64');
+        console.log(`📁 SERVER: Delegating binary image save to file command`);
       } else {
-        // Fallback placeholder
-        const placeholder = `Screenshot captured at ${new Date().toISOString()}\nFilename: ${screenshotParams.filename}\n`;
-        await fs.writeFile(globalPath, placeholder);
-        console.log(`📝 SERVER: Created placeholder file`);
+        content = `Screenshot captured at ${new Date().toISOString()}\nFilename: ${filename}\n`;
+        console.log(`📝 SERVER: Delegating placeholder text save to file command`);
+      }
+      
+      // Delegate to file save command via router
+      const saveMessage = JTAGMessageFactory.createRequest(
+        screenshotParams.context,
+        `server/${this.commander.subpath}/screenshot`,
+        `server/${this.commander.subpath}/file/save`,
+        {
+          ...screenshotParams,
+          filepath: filepath,
+          content: content
+        },
+        JTAGMessageFactory.generateCorrelationId()
+      );
+      
+      const saveResult = await this.commander.router.postMessage(saveMessage);
+      
+      console.log(`🔍 SERVER: File save router result:`, JSON.stringify(saveResult, null, 2));
+      
+      if (!saveResult.success) {
+        throw new PersistenceError(filename, 'write', `File save command failed: ${JSON.stringify(saveResult)}`);
       }
       
       return createScreenshotResult(screenshotParams.context, screenshotParams.sessionId, {
         success: true,
-        filepath: globalPath,
-        filename: screenshotParams.filename,
-        options: screenshotParams.options,
-        metadata: {
-          ...screenshotParams.metadata,
-          globalPath: globalPath
-        }
+        filepath: filepath,
+        filename: filename,
+        options: screenshotParams.options
       });
 
     } catch (error: any) {
