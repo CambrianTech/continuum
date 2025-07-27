@@ -1,7 +1,7 @@
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { GetChatHistoryParams, type GetChatHistoryResult } from './GetChatHistoryTypes';
+import { type GetChatHistoryParams, type GetChatHistoryResult, createGetChatHistoryParams } from './GetChatHistoryTypes';
 
 export abstract class GetChatHistoryCommand extends CommandBase<GetChatHistoryParams, GetChatHistoryResult> {
 
@@ -10,13 +10,13 @@ export abstract class GetChatHistoryCommand extends CommandBase<GetChatHistoryPa
   }
 
   public override getDefaultParams(sessionId: UUID): GetChatHistoryParams {
-    return new GetChatHistoryParams({
+    return createGetChatHistoryParams(this.context, sessionId, {
       roomId: '',
       participantId: '',
       maxMessages: 50,
       hoursBack: 24,
       includeMetadata: false
-    }, this.context, sessionId);
+    });
   }
 
   abstract execute(params: GetChatHistoryParams): Promise<GetChatHistoryResult>;
