@@ -14,71 +14,103 @@
  * ✅ Focused scope - just basic room event coordination
  */
 
-import { ChatParams, ChatResult } from '@chatShared/ChatTypes';
+import { ChatParams, ChatResult, createChatParams, createChatResult } from '@chatShared/ChatTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 
-export class SendRoomEventParams extends ChatParams {
-  sourceParticipantId!: string;
-  sourceParticipantType!: 'human' | 'ai' | 'system';
-  eventType!: string;
-  eventData!: any;
-  priority?: 'low' | 'normal' | 'high';
-  deliveryOptions?: {
+export interface SendRoomEventParams extends ChatParams {
+  readonly sourceParticipantId: string;
+  readonly sourceParticipantType: 'human' | 'ai' | 'system';
+  readonly eventType: string;
+  readonly eventData: any;
+  readonly priority?: 'low' | 'normal' | 'high';
+  readonly deliveryOptions?: {
     guaranteedDelivery: boolean;
     deliverToAll: boolean;
     immediateDelivery: boolean;
     batchWithOthers: boolean;
   };
-  widgetEventOptions?: {
+  readonly widgetEventOptions?: {
     stateSnapshot?: any;
     stateDelta?: any;
   };
-
-  constructor(data: Partial<SendRoomEventParams> = {}, context: JTAGContext, sessionId: string) {
-    super(data, context, sessionId);
-    Object.assign(this, {
-      sourceParticipantId: '',
-      sourceParticipantType: 'human',
-      eventType: 'custom_event',
-      eventData: {},
-      priority: 'normal',
-      deliveryOptions: {
-        guaranteedDelivery: true,
-        deliverToAll: true,
-        immediateDelivery: true,
-        batchWithOthers: false
-      },
-      ...data
-    });
-  }
 }
 
-export class SendRoomEventResult extends ChatResult {
-  eventId: string;
-  participants?: string[];
-  recipientCount?: number;
-  deliveryTime?: number;
-  deliveryStatus?: {
+export const createSendRoomEventParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    roomId: string;
+    sourceParticipantId?: string;
+    sourceParticipantType?: 'human' | 'ai' | 'system';
+    eventType?: string;
+    eventData?: any;
+    priority?: 'low' | 'normal' | 'high';
+    deliveryOptions?: {
+      guaranteedDelivery: boolean;
+      deliverToAll: boolean;
+      immediateDelivery: boolean;
+      batchWithOthers: boolean;
+    };
+    widgetEventOptions?: {
+      stateSnapshot?: any;
+      stateDelta?: any;
+    };
+  }
+): SendRoomEventParams => createChatParams<SendRoomEventParams>(context, sessionId, {
+  sourceParticipantId: data.sourceParticipantId ?? '',
+  sourceParticipantType: data.sourceParticipantType ?? 'human',
+  eventType: data.eventType ?? 'custom_event',
+  eventData: data.eventData ?? {},
+  priority: data.priority ?? 'normal',
+  deliveryOptions: data.deliveryOptions ?? {
+    guaranteedDelivery: true,
+    deliverToAll: true,
+    immediateDelivery: true,
+    batchWithOthers: false
+  },
+  ...data
+});
+
+export interface SendRoomEventResult extends ChatResult {
+  readonly eventId: string;
+  readonly participants?: string[];
+  readonly recipientCount?: number;
+  readonly deliveryTime?: number;
+  readonly deliveryStatus?: {
     delivered: number;
     failed: number;
     pending: number;
   };
-  widgetCoordinationResults?: any;
-  academyIntegrationResults?: any;
-  eventImpact?: {
+  readonly widgetCoordinationResults?: any;
+  readonly academyIntegrationResults?: any;
+  readonly eventImpact?: {
     significanceLevel: 'minor' | 'moderate' | 'major';
     participantsReached: number;
   };
-
-  constructor(data: Partial<SendRoomEventResult> & { eventId: string; roomId: string }, context: JTAGContext, sessionId: string) {
-    super(data, context, sessionId);
-    this.eventId = data.eventId;
-    this.participants = data.participants;
-    this.recipientCount = data.recipientCount;
-    this.deliveryTime = data.deliveryTime;
-    this.deliveryStatus = data.deliveryStatus;
-    this.widgetCoordinationResults = data.widgetCoordinationResults;
-    this.academyIntegrationResults = data.academyIntegrationResults;
-    this.eventImpact = data.eventImpact;
-  }
 }
+
+export const createSendRoomEventResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    roomId: string;
+    success: boolean;
+    eventId: string;
+    participants?: string[];
+    recipientCount?: number;
+    deliveryTime?: number;
+    deliveryStatus?: {
+      delivered: number;
+      failed: number;
+      pending: number;
+    };
+    widgetCoordinationResults?: any;
+    academyIntegrationResults?: any;
+    eventImpact?: {
+      significanceLevel: 'minor' | 'moderate' | 'major';
+      participantsReached: number;
+    };
+    error?: string;
+  }
+): SendRoomEventResult => createChatResult<SendRoomEventResult>(context, sessionId, data);

@@ -1,7 +1,7 @@
 import { SendRoomEventCommand } from '../shared/SendRoomEventCommand';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { ICommandDaemon } from '@commandBase';
-import  { type SendRoomEventParams, SendRoomEventResult } from '../shared/SendRoomEventTypes';
+import  { type SendRoomEventParams, type SendRoomEventResult, createSendRoomEventResult } from '../shared/SendRoomEventTypes';
 
 export class SendRoomEventBrowserCommand extends SendRoomEventCommand {
 
@@ -36,12 +36,12 @@ export class SendRoomEventBrowserCommand extends SendRoomEventCommand {
       console.error(`❌ BROWSER: Send room event error:`, error.message);
       await this.handleFailedEventSend(eventParams, error.message);
       
-      return new SendRoomEventResult({
+      return createSendRoomEventResult(eventParams.context, eventParams.sessionId, {
         eventId: '',
         roomId: eventParams.roomId,
         success: false,
         error: error.message
-      }, eventParams.context, eventParams.sessionId);
+      });
     }
   }
 
