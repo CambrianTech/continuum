@@ -12,7 +12,7 @@ import type { JTAGRouter } from '../../../shared/JTAGRouter';
 import type{ CommandBase, CommandEntry } from './CommandBase';
 import type { CommandResponse } from './CommandResponseTypes';
 import { createCommandErrorResponse, createCommandSuccessResponse } from './CommandResponseTypes';
-import { UUID } from 'crypto';
+import { type UUID } from '../../../shared/CrossPlatformUUID';
 
 
 export abstract class CommandDaemon extends DaemonBase {

@@ -32,7 +32,7 @@
 
 import { type JTAGPayload, type JTAGContext, createPayload } from './JTAGTypes';
 import type { LogLevel } from './LogLevels';
-import { UUID } from 'crypto';
+import { type UUID } from './CrossPlatformUUID';
 
 // Base response structure - for system-level responses
 export interface BaseResponsePayload extends JTAGPayload {
@@ -127,22 +127,79 @@ export const createHealthErrorResponse = (
   error
 });
 
+// Session daemon response types
+export interface SessionSuccessResponse extends BaseResponsePayload {
+  responseSessionId?: UUID;
+  metadata?: {
+    id: UUID;
+    type: string;
+    owner: string;
+    created: Date;
+    lastActive: Date;
+    isActive: boolean;
+  };
+  sessions?: Array<{
+    id: UUID;
+    type: string;
+    owner: string;
+    created: Date;
+    lastActive: Date;
+    isActive: boolean;
+  }>;
+}
+
+export interface SessionErrorResponse extends BaseResponsePayload {
+  error: string;
+}
+
+export const createSessionSuccessResponse = (
+  data: { 
+    sessionId?: UUID;
+    metadata?: SessionSuccessResponse['metadata'];
+    sessions?: SessionSuccessResponse['sessions'];
+  }, 
+  context: JTAGContext, 
+  sessionId: UUID
+): SessionSuccessResponse => createPayload(context, sessionId, {
+  success: true,
+  timestamp: new Date().toISOString(),
+  responseSessionId: data.sessionId,
+  metadata: data.metadata,
+  sessions: data.sessions
+});
+
+export const createSessionErrorResponse = (
+  error: string,
+  context: JTAGContext,
+  sessionId: UUID
+): SessionErrorResponse => createPayload(context, sessionId, {
+  success: false,
+  timestamp: new Date().toISOString(),
+  error
+});
+
 // Union types for each daemon
 export type ConsoleResponse = ConsoleSuccessResponse | ConsoleErrorResponse;
 export type HealthResponse = HealthPingResponse | HealthErrorResponse;
+export type SessionResponse = SessionSuccessResponse | SessionErrorResponse;
 
 // All possible response types (import CommandResponse from specific daemon modules)
-export type JTAGResponsePayload = ConsoleResponse | HealthResponse;
+export type JTAGResponsePayload = ConsoleResponse | HealthResponse | SessionResponse;
 
 // Type guards for response identification - structural typing
 export function isConsoleResponse(payload: JTAGResponsePayload): payload is ConsoleResponse {
   return 'filtered' in payload || 'processed' in payload || 'level' in payload || 
-         (payload.success === false && 'error' in payload && !('pongId' in payload) && !('commandResult' in payload));
+         (payload.success === false && 'error' in payload && !('pongId' in payload) && !('commandResult' in payload) && !('metadata' in payload) && !('sessions' in payload));
 }
 
 export function isHealthResponse(payload: JTAGResponsePayload): payload is HealthResponse {
   return 'pongId' in payload || 'uptime' in payload || 
-         (payload.success === false && 'error' in payload && !('filtered' in payload) && !('commandResult' in payload));
+         (payload.success === false && 'error' in payload && !('filtered' in payload) && !('commandResult' in payload) && !('metadata' in payload) && !('sessions' in payload));
+}
+
+export function isSessionResponse(payload: JTAGResponsePayload): payload is SessionResponse {
+  return 'metadata' in payload || 'sessions' in payload || 'responseSessionId' in payload || 
+         (payload.success === false && 'error' in payload && !('filtered' in payload) && !('pongId' in payload) && !('commandResult' in payload));
 }
 
 // TODO: Import CommandResponse from specific daemon modules
