@@ -9,7 +9,7 @@ import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { FileAppendParams } from './FileAppendTypes';
+import { type FileAppendParams, createFileAppendParams } from './FileAppendTypes';
 import type { FileAppendResult } from './FileAppendTypes';
 
 export abstract class FileAppendCommand extends CommandBase<FileAppendParams, FileAppendResult> {
@@ -20,12 +20,12 @@ export abstract class FileAppendCommand extends CommandBase<FileAppendParams, Fi
   }
 
   public override getDefaultParams(sessionId: UUID): FileAppendParams {
-    return new FileAppendParams({
+    return createFileAppendParams(this.context, sessionId, {
       filepath: '',
       content: '',
       encoding: 'utf8',
       createIfMissing: true
-    }, this.context, sessionId);
+    });
   }
 
   abstract execute(params: FileAppendParams): Promise<FileAppendResult>;

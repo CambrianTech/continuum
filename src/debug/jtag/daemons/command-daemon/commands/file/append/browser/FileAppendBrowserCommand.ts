@@ -4,7 +4,7 @@
  * Browser delegates to server for file I/O (can't write to filesystem directly)
  */
 
-import { type FileAppendParams, FileAppendResult } from '@fileAppendShared/FileAppendTypes';
+import { type FileAppendParams, type FileAppendResult, createFileAppendResult } from '@fileAppendShared/FileAppendTypes';
 import { FileAppendCommand } from '@fileAppendShared/FileAppendCommand';
 
 export class FileAppendBrowserCommand extends FileAppendCommand {
@@ -24,15 +24,14 @@ export class FileAppendBrowserCommand extends FileAppendCommand {
 
     } catch (error: any) {
       console.error(`❌ BROWSER: File append delegation failed:`, error.message);
-      return new FileAppendResult({
+      return createFileAppendResult(params.context, params.sessionId, {
         success: false,
         filepath: params.filepath,
         exists: false,
         bytesAppended: 0,
         wasCreated: false,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: error.message
+      });
     }
   }
 }

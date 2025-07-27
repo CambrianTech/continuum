@@ -18,7 +18,7 @@ import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { ClickParams } from './ClickTypes';
+import { type ClickParams, createClickParams } from './ClickTypes';
 import type { ClickResult } from './ClickTypes';
 
 export abstract class ClickCommand extends CommandBase<ClickParams, ClickResult> {
@@ -28,10 +28,10 @@ export abstract class ClickCommand extends CommandBase<ClickParams, ClickResult>
   }
 
   public override getDefaultParams(sessionId: UUID): ClickParams {
-    return new ClickParams({
+    return createClickParams(this.context, sessionId, {
       selector: 'body',
       button: 'left'
-    }, this.context, sessionId);
+    });
   }
 
   abstract execute(params: ClickParams): Promise<ClickResult>;

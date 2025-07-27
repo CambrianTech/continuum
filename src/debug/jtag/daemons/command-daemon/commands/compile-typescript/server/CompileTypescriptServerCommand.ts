@@ -20,7 +20,7 @@
  * - Clean, focused implementation
  */
 
-import { type CompileTypescriptParams, CompileTypescriptResult } from '../shared/CompileTypescriptTypes';
+import { type CompileTypescriptParams, type CompileTypescriptResult, createCompileTypescriptResult } from '../shared/CompileTypescriptTypes';
 import { CompileTypescriptCommand } from '../shared/CompileTypescriptCommand';
 
 export class CompileTypescriptServerCommand extends CompileTypescriptCommand {
@@ -48,24 +48,22 @@ export class CompileTypescriptServerCommand extends CompileTypescriptCommand {
       
       console.log(`✅ SERVER: Compiled TypeScript in ${compilationTime}ms`);
       
-      return new CompileTypescriptResult({
+      return createCompileTypescriptResult(params.context, params.sessionId, {
         success: true,
         output,
         outputPath: params.outputPath,
         errors: [],
         warnings: [],
-        compilationTime,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        compilationTime
+      });
 
     } catch (error: any) {
       console.error(`❌ SERVER: TypeScript compilation failed:`, error.message);
-      return new CompileTypescriptResult({
+      return createCompileTypescriptResult(params.context, params.sessionId, {
         success: false,
         errors: [error.message],
-        warnings: [],
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        warnings: []
+      });
     }
   }
 }

@@ -6,33 +6,48 @@
  * FileResult → FileAppendResult (adds bytesAppended, wasCreated)
  */
 
-import { FileParams, FileResult } from '@fileShared/FileTypes';
+import { type FileParams, type FileResult, createFileParams, createFileResult } from '@fileShared/FileTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 
-export class FileAppendParams extends FileParams {
-  content!: string;
-  createIfMissing?: boolean;
-
-  constructor(data: Partial<FileAppendParams> = {}, context: JTAGContext, sessionId: string) {
-    super(data, context, sessionId); // Parent handles filepath, encoding
-    Object.assign(this, {
-      content: '',
-      createIfMissing: true,
-      ...data
-    });
-  }
+export interface FileAppendParams extends FileParams {
+  readonly content: string;
+  readonly createIfMissing?: boolean;
 }
 
-export class FileAppendResult extends FileResult {
-  bytesAppended!: number;
-  wasCreated!: boolean;
-
-  constructor(data: Partial<FileAppendResult>, context: JTAGContext, sessionId: string) {
-    super(data, context, sessionId); // Parent handles success, filepath, exists, error, timestamp
-    Object.assign(this, {
-      bytesAppended: 0,
-      wasCreated: false,
-      ...data
-    });
+export const createFileAppendParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    filepath?: string;
+    content?: string;
+    createIfMissing?: boolean;
+    encoding?: string;
   }
+): FileAppendParams => createFileParams(context, sessionId, {
+  content: data.content ?? '',
+  createIfMissing: data.createIfMissing ?? true,
+  ...data
+});
+
+export interface FileAppendResult extends FileResult {
+  readonly bytesAppended: number;
+  readonly wasCreated: boolean;
 }
+
+export const createFileAppendResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    success: boolean;
+    filepath: string;
+    bytesAppended?: number;
+    wasCreated?: boolean;
+    exists?: boolean;
+    error?: string;
+  }
+): FileAppendResult => createFileResult(context, sessionId, {
+  bytesAppended: data.bytesAppended ?? 0,
+  wasCreated: data.wasCreated ?? false,
+  ...data
+});

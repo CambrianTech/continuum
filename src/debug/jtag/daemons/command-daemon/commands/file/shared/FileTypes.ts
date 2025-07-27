@@ -25,58 +25,57 @@
  * - Shared types ensure consistency across file operations
  */
 
-import { CommandParams, CommandResult } from '@shared/JTAGTypes';
+import { CommandParams, CommandResult, createPayload } from '@shared/JTAGTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { CommandBase, type ICommandDaemon } from '@commandBase';
+import { UUID } from 'crypto';
 
 /**
  * Generic base parameters for all file operations
- * T extends Record<string, any> allows type-safe extension
  */
-export abstract class FileParams<T extends Record<string, any> = {}> extends CommandParams {
-  filepath!: string;
-  encoding?: string;
-
-  constructor(data: Partial<FileParams<T> & T> = {}, context: JTAGContext, sessionId: string) {
-    super(context, sessionId);
-    Object.assign(this, {
-      filepath: '',
-      encoding: 'utf8',
-      ...data
-    });
-  }
+export interface FileParams extends CommandParams {
+  readonly filepath: string;
+  readonly encoding?: string;
 }
+
+export const createFileParams = <T extends Record<string, any> = {}>(
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Partial<FileParams & T> & { filepath?: string }
+): FileParams & T => createPayload(context, sessionId, {
+  filepath: data.filepath ?? '',
+  encoding: data.encoding ?? 'utf8',
+  ...data
+} as FileParams & T);
 
 /**
  * Generic base result for all file operations
- * T extends Record<string, any> allows type-safe extension
  */
-export abstract class FileResult<T extends Record<string, any> = {}> extends CommandResult {
-  success!: boolean;
-  filepath!: string;
-  exists!: boolean;
-  error?: string;
-  timestamp!: string;
-
-  constructor(data: Partial<FileResult<T> & T>, context: JTAGContext, sessionId: string) {
-    super(context, sessionId);
-    Object.assign(this, {
-      success: false,
-      filepath: '',
-      exists: false,
-      timestamp: new Date().toISOString(),
-      ...data
-    });
-  }
+export interface FileResult extends CommandResult {
+  readonly success: boolean;
+  readonly filepath: string;
+  readonly exists: boolean;
+  readonly error?: string;
+  readonly timestamp: string;
 }
+
+export const createFileResult = <T extends Record<string, any> = {}>(
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Partial<FileResult & T> & { success: boolean; filepath: string }
+): FileResult & T => createPayload(context, sessionId, {
+  exists: data.exists ?? false,
+  timestamp: data.timestamp ?? new Date().toISOString(),
+  ...data
+} as FileResult & T);
 
 /**
  * Generic base command class for all file operations
  * Provides type-safe inheritance with proper generic constraints
  */
 export abstract class FileCommand<
-  TParams extends FileParams<any>,
-  TResult extends FileResult<any>
+  TParams extends FileParams,
+  TResult extends FileResult
 > extends CommandBase<TParams, TResult> {
 
   constructor(name: string, context: JTAGContext, subpath: string, commander: ICommandDaemon) {
