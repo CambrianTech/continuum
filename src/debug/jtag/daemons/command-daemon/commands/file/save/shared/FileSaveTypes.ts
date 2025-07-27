@@ -6,44 +6,48 @@
  * FileResult<{bytesWritten, created}> → FileSaveResult
  */
 
-import { FileParams, FileResult } from '@fileShared/FileTypes';
+import { type FileParams, type FileResult, createFileParams, createFileResult } from '@fileShared/FileTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 
-// Define the extension types for FileSave
-type FileSaveExtension = {
-  content: string;
-  createDirs?: boolean;
-};
-
-type FileSaveResultExtension = {
-  bytesWritten: number;
-  created: boolean;
-};
-
-export class FileSaveParams extends FileParams<FileSaveExtension> {
-  content!: string;
-  createDirs?: boolean;
-
-  constructor(data: Partial<FileSaveParams> = {}, context: JTAGContext, sessionId: string) {
-    super(data, context, sessionId); // Parent FileParams handles filepath, encoding with type safety
-    Object.assign(this, {
-      content: '',
-      createDirs: true,
-      ...data
-    });
-  }
+export interface FileSaveParams extends FileParams {
+  readonly content: string;
+  readonly createDirs?: boolean;
 }
 
-export class FileSaveResult extends FileResult<FileSaveResultExtension> {
-  bytesWritten!: number;
-  created!: boolean;
-
-  constructor(data: Partial<FileSaveResult>, context: JTAGContext, sessionId: string) {
-    super(data, context, sessionId); // Parent handles base fields with type safety
-    Object.assign(this, {
-      bytesWritten: 0,
-      created: false,
-      ...data
-    });
+export const createFileSaveParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    filepath?: string;
+    content?: string;
+    createDirs?: boolean;
+    encoding?: string;
   }
+): FileSaveParams => createFileParams(context, sessionId, {
+  content: data.content ?? '',
+  createDirs: data.createDirs ?? true,
+  ...data
+});
+
+export interface FileSaveResult extends FileResult {
+  readonly bytesWritten: number;
+  readonly created: boolean;
 }
+
+export const createFileSaveResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    success: boolean;
+    filepath: string;
+    bytesWritten?: number;
+    created?: boolean;
+    exists?: boolean;
+    error?: string;
+  }
+): FileSaveResult => createFileResult(context, sessionId, {
+  bytesWritten: data.bytesWritten ?? 0,
+  created: data.created ?? false,
+  ...data
+});
