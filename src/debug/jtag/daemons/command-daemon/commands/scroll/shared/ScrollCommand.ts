@@ -8,7 +8,7 @@
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { ScrollParams, type ScrollResult } from './ScrollTypes';
+import { type ScrollParams, type ScrollResult, createScrollParams } from './ScrollTypes';
 
 export abstract class ScrollCommand extends CommandBase<ScrollParams, ScrollResult> {
 
@@ -17,11 +17,11 @@ export abstract class ScrollCommand extends CommandBase<ScrollParams, ScrollResu
   }
 
   public override getDefaultParams(sessionId: UUID): ScrollParams {
-    return new ScrollParams({
+    return createScrollParams(this.context, sessionId, {
       x: 0,
       y: 0,
       behavior: 'smooth'
-    }, this.context, sessionId);
+    });
   }
 
   abstract execute(params: ScrollParams): Promise<ScrollResult>;

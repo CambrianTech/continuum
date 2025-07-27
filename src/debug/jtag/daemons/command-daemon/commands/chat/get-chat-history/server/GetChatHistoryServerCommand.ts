@@ -9,6 +9,7 @@
 
 import { GetChatHistoryCommand } from '../shared/GetChatHistoryCommand';
 import { type GetChatHistoryParams, type GetChatHistoryResult, createGetChatHistoryResult, type ChatMessage } from '../shared/GetChatHistoryTypes';
+import { NetworkError } from '@shared/ErrorTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { ICommandDaemon } from '@commandBase';
 
@@ -68,7 +69,7 @@ export class GetChatHistoryServerCommand extends GetChatHistoryCommand {
         messages: [],
         totalCount: 0,
         roomId: roomId ?? '',
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? new NetworkError('chat', error.message, { cause: error }) : new NetworkError('chat', String(error))
       });
     }
   }

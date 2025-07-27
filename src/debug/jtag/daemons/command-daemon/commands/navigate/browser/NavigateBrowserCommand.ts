@@ -21,7 +21,8 @@
  * - Clean, readable implementation
  */
 
-import { type NavigateParams, NavigateResult } from '../shared/NavigateTypes';
+import { type NavigateParams, type NavigateResult, createNavigateResult } from '../shared/NavigateTypes';
+import { ValidationError } from '@shared/ErrorTypes';
 import { NavigateCommand } from '../shared/NavigateCommand';
 
 export class NavigateBrowserCommand extends NavigateCommand {
@@ -46,22 +47,21 @@ export class NavigateBrowserCommand extends NavigateCommand {
       const loadTime = Date.now() - startTime;
       console.log(`✅ BROWSER: Navigated in ${loadTime}ms`);
       
-      return new NavigateResult({
+      return createNavigateResult(params.context, params.sessionId, {
         success: true,
         url: window.location.href,
         title: document.title,
-        loadTime,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        loadTime
+      });
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Navigation failed:`, error.message);
-      return new NavigateResult({
+      const navError = error instanceof Error ? new ValidationError('url', error.message, { cause: error }) : new ValidationError('url', String(error));
+      return createNavigateResult(params.context, params.sessionId, {
         success: false,
         url: params.url,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: navError
+      });
     }
   }
 

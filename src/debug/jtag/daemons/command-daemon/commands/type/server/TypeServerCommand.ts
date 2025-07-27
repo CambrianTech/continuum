@@ -6,7 +6,8 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import { type TypeParams, TypeResult } from '../shared/TypeTypes';
+import { type TypeParams, type TypeResult, createTypeResult } from '../shared/TypeTypes';
+import { NetworkError } from '@shared/ErrorTypes';
 
 export class TypeServerCommand extends CommandBase<TypeParams, TypeResult> {
   
@@ -32,14 +33,14 @@ export class TypeServerCommand extends CommandBase<TypeParams, TypeResult> {
 
     } catch (error: any) {
       console.error(`❌ SERVER: Failed:`, error.message);
-      return new TypeResult({
+      const typeError = error instanceof Error ? new NetworkError('browser', error.message, { cause: error }) : new NetworkError('browser', String(error));
+      return createTypeResult(typeParams.context, typeParams.sessionId, {
         success: false,
         selector: typeParams.selector,
         typed: false,
         text: typeParams.text,
-        timestamp: new Date().toISOString(),
-        error: error.message
-      }, typeParams.context, typeParams.sessionId);
+        error: typeError
+      });
     }
   }
 }

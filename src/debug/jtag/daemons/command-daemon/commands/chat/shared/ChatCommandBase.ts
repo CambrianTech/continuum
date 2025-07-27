@@ -17,6 +17,9 @@
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type{ ChatParams, ChatResult } from '@chatShared/ChatTypes';
+import { createChatResult } from '@chatShared/ChatTypes';
+import { ValidationError } from '@shared/ErrorTypes';
+import { UUID } from 'crypto';
 
 /**
  * Base class for all chat commands
@@ -42,14 +45,12 @@ export abstract class ChatCommandBase<
   /**
    * Create standardized chat error result
    */
-  protected createChatErrorResult(roomId: string, error: string): TResult {
-    return {
+  protected createChatErrorResult(sessionId: UUID, roomId: string, error: string): TResult {
+    return createChatResult(this.context, sessionId, {
       success: false,
       roomId,
-      environment: this.context.environment,
-      timestamp: new Date().toISOString(),
-      error
-    } as TResult;
+      error: new ValidationError('chat', error)
+    }) as TResult;
   }
 
   /**

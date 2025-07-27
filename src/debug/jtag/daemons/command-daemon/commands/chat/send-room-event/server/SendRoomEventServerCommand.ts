@@ -9,6 +9,7 @@
 
 import { SendRoomEventCommand } from '../shared/SendRoomEventCommand';
 import { type SendRoomEventParams, type SendRoomEventResult, createSendRoomEventResult } from '../shared/SendRoomEventTypes';
+import { NetworkError } from '@shared/ErrorTypes';
 
 export class SendRoomEventServerCommand extends SendRoomEventCommand {
 
@@ -48,7 +49,7 @@ export class SendRoomEventServerCommand extends SendRoomEventCommand {
         success: false,
         eventId: '',
         roomId: params.roomId,
-        error: error instanceof Error ? error.message : 'Unknown error occurred'
+        error: error instanceof Error ? new NetworkError('chat', error.message, { cause: error }) : new NetworkError('chat', 'Unknown error occurred')
       });
     }
   }

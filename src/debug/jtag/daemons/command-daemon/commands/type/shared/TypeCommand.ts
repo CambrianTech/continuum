@@ -8,7 +8,7 @@
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { TypeParams, type TypeResult } from './TypeTypes';
+import { type TypeParams, type TypeResult, createTypeParams } from './TypeTypes';
 
 export abstract class TypeCommand extends CommandBase<TypeParams, TypeResult> {
 
@@ -17,12 +17,12 @@ export abstract class TypeCommand extends CommandBase<TypeParams, TypeResult> {
   }
 
   public override getDefaultParams(sessionId: UUID): TypeParams {
-    return new TypeParams({
+    return createTypeParams(this.context, sessionId, {
       selector: 'input',
       text: '',
       clearFirst: false,
       delay: 0
-    }, this.context, sessionId);
+    });
   }
 
   abstract execute(params: TypeParams): Promise<TypeResult>;

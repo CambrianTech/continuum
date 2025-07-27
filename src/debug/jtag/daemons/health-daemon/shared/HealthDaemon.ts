@@ -79,7 +79,7 @@ export abstract class HealthDaemon extends DaemonBase {
   /**
    * Handle ping requests
    */
-  private async handlePing(payload: HealthPayload): Promise<HealthPingResponse> {
+  private async handlePing(payload: HealthPayload): Promise<HealthResponse> {
     const pongId = `pong_${Date.now()}`;
     const uptime = this.getUptime();
     
@@ -89,7 +89,7 @@ export abstract class HealthDaemon extends DaemonBase {
   /**
    * Handle status requests
    */
-  private async handleStatus(payload: HealthPayload): Promise<HealthPingResponse> {
+  private async handleStatus(payload: HealthPayload): Promise<HealthResponse> {
     const statusId = `status_${Date.now()}`;
     const uptime = this.getUptime();
     const memory = this.getMemoryUsage();
@@ -100,7 +100,7 @@ export abstract class HealthDaemon extends DaemonBase {
   /**
    * Handle metrics requests
    */
-  private async handleMetrics(payload: HealthPayload): Promise<HealthPingResponse> {
+  private async handleMetrics(payload: HealthPayload): Promise<HealthResponse> {
     const metricsId = `metrics_${Date.now()}`;
     const uptime = this.getUptime();
     const memory = this.getMemoryUsage();

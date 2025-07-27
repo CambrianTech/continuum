@@ -9,6 +9,7 @@
  */
 
 import { SendMessageCommand } from '../shared/SendMessageCommand';
+import { NetworkError } from '@shared/ErrorTypes';
 import { type SendMessageParams, type SendMessageResult, createSendMessageResult } from '../shared/SendMessageTypes';
 
 export class SendMessageServerCommand extends SendMessageCommand {
@@ -44,7 +45,7 @@ export class SendMessageServerCommand extends SendMessageCommand {
         success: false,
         messageId: '',
         roomId: params.roomId,
-        error: error instanceof Error ? error.message : 'Unknown error occurred'
+        error: error instanceof Error ? new NetworkError('chat', error.message, { cause: error }) : new NetworkError('chat', 'Unknown error occurred')
       });
     }
   }

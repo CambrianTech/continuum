@@ -1,42 +1,58 @@
-import { CommandParams, CommandResult, type JTAGContext } from '@shared/JTAGTypes';
+import { CommandParams, CommandResult, createPayload } from '@shared/JTAGTypes';
+import type { JTAGContext } from '@shared/JTAGTypes';
+import type { JTAGError } from '@shared/ErrorTypes';
+import { UUID } from 'crypto';
 
-export class ScrollParams extends CommandParams {
-  x?: number;
-  y?: number;
-  selector?: string; // Optional element to scroll to
-  behavior?: 'auto' | 'smooth' | 'instant';
-
-  constructor(data: Partial<ScrollParams> = {}, context: JTAGContext, sessionId: string) {
-    super(context, sessionId);
-    Object.assign(this, {
-      x: 0,
-      y: 0,
-      selector: undefined,
-      behavior: 'smooth',
-      ...data
-    });
-  }
+export interface ScrollParams extends CommandParams {
+  readonly x?: number;
+  readonly y?: number;
+  readonly selector?: string;
+  readonly behavior?: 'auto' | 'smooth' | 'instant';
 }
 
-export class ScrollResult extends CommandResult {
-  success!: boolean;
-  scrollX!: number;
-  scrollY!: number;
-  selector?: string;
-  scrolled!: boolean;
-  error?: string;
-  timestamp!: string;
-
-  constructor(data: Partial<ScrollResult>, context: JTAGContext, sessionId: string) {
-    super(context, sessionId);
-    Object.assign(this, {
-      success: false,
-      scrollX: 0,
-      scrollY: 0,
-      selector: undefined,
-      scrolled: false,
-      timestamp: new Date().toISOString(),
-      ...data
-    });
+export const createScrollParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    x?: number;
+    y?: number;
+    selector?: string;
+    behavior?: 'auto' | 'smooth' | 'instant';
   }
+): ScrollParams => createPayload(context, sessionId, {
+  x: data.x ?? 0,
+  y: data.y ?? 0,
+  selector: data.selector,
+  behavior: data.behavior ?? 'smooth',
+  ...data
+});
+
+export interface ScrollResult extends CommandResult {
+  readonly success: boolean;
+  readonly scrollX: number;
+  readonly scrollY: number;
+  readonly selector?: string;
+  readonly scrolled: boolean;
+  readonly error?: JTAGError;
+  readonly timestamp: string;
 }
+
+export const createScrollResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    success: boolean;
+    scrollX?: number;
+    scrollY?: number;
+    selector?: string;
+    scrolled?: boolean;
+    error?: JTAGError;
+  }
+): ScrollResult => createPayload(context, sessionId, {
+  scrollX: data.scrollX ?? 0,
+  scrollY: data.scrollY ?? 0,
+  selector: data.selector,
+  scrolled: data.scrolled ?? false,
+  timestamp: new Date().toISOString(),
+  ...data
+});

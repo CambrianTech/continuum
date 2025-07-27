@@ -4,7 +4,8 @@
  * Browser delegates to server for file I/O (can't write to filesystem directly)
  */
 
-import { type FileSaveParams, FileSaveResult } from '@fileSaveShared/FileSaveTypes';
+import { type FileSaveParams, type FileSaveResult, createFileSaveResult } from '@fileSaveShared/FileSaveTypes';
+import { NetworkError } from '@shared/ErrorTypes';
 import { FileSaveCommand } from '@fileSaveShared/FileSaveCommand';
 
 export class FileSaveBrowserCommand extends FileSaveCommand {
@@ -24,14 +25,14 @@ export class FileSaveBrowserCommand extends FileSaveCommand {
 
     } catch (error: any) {
       console.error(`❌ BROWSER: File save delegation failed:`, error.message);
-      return new FileSaveResult({
+      const saveError = error instanceof Error ? new NetworkError('server', error.message, { cause: error }) : new NetworkError('server', String(error));
+      return createFileSaveResult(params.context, params.sessionId, {
         success: false,
         filepath: params.filepath,
         bytesWritten: 0,
         created: false,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: saveError
+      });
     }
   }
 }

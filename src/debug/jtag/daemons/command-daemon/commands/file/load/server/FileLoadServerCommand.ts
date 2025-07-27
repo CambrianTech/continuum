@@ -8,6 +8,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CommandBase } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import { PersistenceError } from '@shared/ErrorTypes';
 import { type FileLoadParams, type FileLoadResult, createFileLoadResult } from '@fileLoadShared/FileLoadTypes';
 import type { ICommandDaemon } from '@commandBase';
 
@@ -51,13 +52,14 @@ export class FileLoadServerCommand extends CommandBase<FileLoadParams, FileLoadR
 
     } catch (error: any) {
       console.error(`❌ SERVER: File load failed:`, error.message);
+      const loadError = error instanceof Error ? new PersistenceError(loadParams.filepath, 'read', error.message, { cause: error }) : new PersistenceError(loadParams.filepath, 'read', String(error));
       return createFileLoadResult(params.context, params.sessionId, {
         success: false,
         filepath: loadParams.filepath,
         content: '',
         bytesRead: 0,
         exists: false,
-        error: error.message
+        error: loadError
       });
     }
   }

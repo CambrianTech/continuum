@@ -6,7 +6,8 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import { type GetTextParams, GetTextResult } from '../shared/GetTextTypes';
+import { type GetTextParams, type GetTextResult, createGetTextResult } from '../shared/GetTextTypes';
+import { NetworkError } from '@shared/ErrorTypes';
 
 export class GetTextServerCommand extends CommandBase<GetTextParams, GetTextResult> {
   
@@ -32,15 +33,14 @@ export class GetTextServerCommand extends CommandBase<GetTextParams, GetTextResu
 
     } catch (error: any) {
       console.error(`❌ SERVER: Failed:`, error.message);
-      return new GetTextResult({
+      const textError = error instanceof Error ? new NetworkError('browser', error.message, { cause: error }) : new NetworkError('browser', String(error));
+      return createGetTextResult(getTextParams.context, getTextParams.sessionId, {
         success: false,
         selector: getTextParams.selector,
         text: '',
         found: false,
-        environment: this.context.environment,
-        timestamp: new Date().toISOString(),
-        error: error.message
-      }, getTextParams.context, getTextParams.sessionId);
+        error: textError
+      });
     }
   }
 }

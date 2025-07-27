@@ -8,7 +8,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import { type ScreenshotParams, ScreenshotResult } from '@screenshotShared/ScreenshotTypes';
+import { type ScreenshotParams, type ScreenshotResult, createScreenshotResult } from '@screenshotShared/ScreenshotTypes';
+import { PersistenceError } from '@shared/ErrorTypes';
 
 export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
   
@@ -54,27 +55,26 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
         console.log(`📝 SERVER: Created placeholder file`);
       }
       
-      return new ScreenshotResult({
+      return createScreenshotResult(screenshotParams.context, screenshotParams.sessionId, {
         success: true,
         filepath: globalPath,
         filename: screenshotParams.filename,
-        timestamp: new Date().toISOString(),
         options: screenshotParams.options,
         metadata: {
           ...screenshotParams.metadata,
           globalPath: globalPath
         }
-      }, screenshotParams.context, screenshotParams.sessionId);
+      });
 
     } catch (error: any) {
       console.error(`❌ SERVER: Failed:`, error.message);
-      return new ScreenshotResult({
+      const screenshotError = error instanceof Error ? new PersistenceError(screenshotParams.filename || 'screenshot', 'write', error.message, { cause: error }) : new PersistenceError(screenshotParams.filename || 'screenshot', 'write', String(error));
+      return createScreenshotResult(screenshotParams.context, screenshotParams.sessionId, {
         success: false,
         filepath: '',
         filename: screenshotParams.filename,
-        timestamp: new Date().toISOString(),
-        error: error.message
-      }, screenshotParams.context, screenshotParams.sessionId);
+        error: screenshotError
+      });
     }
   }
 }

@@ -19,40 +19,55 @@
  * - Symmetric interface across both contexts
  */
 
-import { CommandParams, CommandResult } from '../../../../../shared/JTAGTypes';
+import { CommandParams, CommandResult, createPayload } from '../../../../../shared/JTAGTypes';
 import type { JTAGContext } from '../../../../../shared/JTAGTypes';
+import type { JTAGError } from '../../../../../shared/ErrorTypes';
+import { UUID } from 'crypto';
 
-export class NavigateParams extends CommandParams {
-  url!: string;
-  timeout?: number;
-  waitForSelector?: string;
-
-  constructor(data: Partial<NavigateParams> = {}, context: JTAGContext, sessionId: string) {
-    super(context, sessionId);
-    Object.assign(this, {
-      url: '',
-      timeout: 30000,
-      waitForSelector: undefined,
-      ...data
-    });
-  }
+export interface NavigateParams extends CommandParams {
+  readonly url: string;
+  readonly timeout?: number;
+  readonly waitForSelector?: string;
 }
 
-export class NavigateResult extends CommandResult {
-  success: boolean;
-  url: string;
-  title?: string;
-  loadTime?: number;
-  error?: string;
-  timestamp: string;
-
-  constructor(data: Partial<NavigateResult>, context: JTAGContext, sessionId: string) {
-    super(context, sessionId);
-    this.success = data.success ?? false;
-    this.url = data.url ?? '';
-    this.title = data.title;
-    this.loadTime = data.loadTime;
-    this.error = data.error;
-    this.timestamp = data.timestamp ?? new Date().toISOString();
+export const createNavigateParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    url?: string;
+    timeout?: number;
+    waitForSelector?: string;
   }
+): NavigateParams => createPayload(context, sessionId, {
+  url: data.url ?? '',
+  timeout: data.timeout ?? 30000,
+  waitForSelector: data.waitForSelector,
+  ...data
+});
+
+export interface NavigateResult extends CommandResult {
+  readonly success: boolean;
+  readonly url: string;
+  readonly title?: string;
+  readonly loadTime?: number;
+  readonly error?: JTAGError;
+  readonly timestamp: string;
 }
+
+export const createNavigateResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    success: boolean;
+    url?: string;
+    title?: string;
+    loadTime?: number;
+    error?: JTAGError;
+  }
+): NavigateResult => createPayload(context, sessionId, {
+  url: data.url ?? '',
+  title: data.title,
+  loadTime: data.loadTime,
+  timestamp: new Date().toISOString(),
+  ...data
+});

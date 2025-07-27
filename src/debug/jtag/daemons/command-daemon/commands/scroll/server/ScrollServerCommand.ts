@@ -6,7 +6,8 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import { type ScrollParams, ScrollResult } from '../shared/ScrollTypes';
+import { type ScrollParams, type ScrollResult, createScrollResult } from '../shared/ScrollTypes';
+import { NetworkError } from '@shared/ErrorTypes';
 
 export class ScrollServerCommand extends CommandBase<ScrollParams, ScrollResult> {
   
@@ -36,16 +37,15 @@ export class ScrollServerCommand extends CommandBase<ScrollParams, ScrollResult>
 
     } catch (error: any) {
       console.error(`❌ SERVER: Failed:`, error.message);
-      return new ScrollResult({
+      const scrollError = error instanceof Error ? new NetworkError('browser', error.message, { cause: error }) : new NetworkError('browser', String(error));
+      return createScrollResult(scrollParams.context, scrollParams.sessionId, {
         success: false,
         scrollX: 0,
         scrollY: 0,
         selector: scrollParams.selector,
         scrolled: false,
-        environment: this.context.environment,
-        timestamp: new Date().toISOString(),
-        error: error.message
-      }, scrollParams.context, scrollParams.sessionId);
+        error: scrollError
+      });
     }
   }
 }

@@ -45,7 +45,7 @@ export const createFileAppendResult = (
     bytesAppended?: number;
     wasCreated?: boolean;
     exists?: boolean;
-    error?: string;
+    error?: JTAGError;
   }
 ): FileAppendResult => createFileResult(context, sessionId, {
   bytesAppended: data.bytesAppended ?? 0,

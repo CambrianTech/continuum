@@ -16,6 +16,7 @@
 
 import { ChatParams, ChatResult, createChatParams, createChatResult } from '@chatShared/ChatTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import type { JTAGError } from '@shared/ErrorTypes';
 import { UUID } from 'crypto';
 
 export interface SendRoomEventParams extends ChatParams {
@@ -112,7 +113,7 @@ export const createSendRoomEventResult = (
       significanceLevel: 'minor' | 'moderate' | 'major';
       participantsReached: number;
     };
-    error?: string;
+    error?: JTAGError;
   }
 ): SendRoomEventResult => ({
   ...createChatResult(context, sessionId, data),

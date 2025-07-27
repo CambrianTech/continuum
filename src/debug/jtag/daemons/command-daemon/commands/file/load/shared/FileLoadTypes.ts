@@ -8,6 +8,7 @@
 
 import { type FileParams, type FileResult, createFileParams, createFileResult } from '@fileShared/FileTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import type { JTAGError } from '@shared/ErrorTypes';
 import { UUID } from 'crypto';
 
 export interface FileLoadParams extends FileParams {
@@ -38,7 +39,7 @@ export const createFileLoadResult = (
     content?: string;
     bytesRead?: number;
     exists?: boolean;
-    error?: string;
+    error?: JTAGError;
   }
 ): FileLoadResult => createFileResult(context, sessionId, {
   content: data.content ?? '',

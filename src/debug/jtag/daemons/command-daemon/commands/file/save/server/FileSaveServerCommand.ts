@@ -7,8 +7,9 @@
 
 import { CommandBase } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { FileSaveParams } from '@fileSaveShared/FileSaveTypes';
-import { FileSaveResult } from '@fileSaveShared/FileSaveTypes';
+import type { FileSaveParams, FileSaveResult } from '@fileSaveShared/FileSaveTypes';
+import { createFileSaveResult } from '@fileSaveShared/FileSaveTypes';
+import { PersistenceError } from '@shared/ErrorTypes';
 import type { ICommandDaemon } from '@commandBase';
 
 export class FileSaveServerCommand extends CommandBase<FileSaveParams, FileSaveResult> {
@@ -46,14 +47,14 @@ export class FileSaveServerCommand extends CommandBase<FileSaveParams, FileSaveR
 
     } catch (error: any) {
       console.error(`❌ SERVER: FileSave delegation failed:`, error.message);
-      return new FileSaveResult({
+      const saveError = error instanceof Error ? new PersistenceError(saveParams.filepath, 'write', error.message, { cause: error }) : new PersistenceError(saveParams.filepath, 'write', String(error));
+      return createFileSaveResult(saveParams.context, saveParams.sessionId, {
         success: false,
         filepath: saveParams.filepath,
         bytesWritten: 0,
         created: false,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }, saveParams.context, saveParams.sessionId);
+        error: saveError
+      });
     }
   }
 }

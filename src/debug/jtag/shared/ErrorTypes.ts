@@ -12,10 +12,12 @@
 export abstract class JTAGError extends Error {
   abstract readonly type: string;
   readonly timestamp: string = new Date().toISOString();
+  readonly cause?: unknown;
   
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message);
     this.name = this.constructor.name;
+    this.cause = options?.cause;
   }
   
   /**
@@ -42,7 +44,7 @@ export class ValidationError extends JTAGError {
   constructor(
     public readonly field: string,
     message: string,
-    options?: ErrorOptions
+    options?: { cause?: unknown }
   ) {
     super(`Validation failed for ${field}: ${message}`, options);
   }
@@ -58,7 +60,7 @@ export class PersistenceError extends JTAGError {
     public readonly path: string,
     public readonly operation: 'read' | 'write' | 'delete' | 'create',
     message: string,
-    options?: ErrorOptions
+    options?: { cause?: unknown }
   ) {
     super(`${operation} failed at ${path}: ${message}`, options);
   }
@@ -73,7 +75,7 @@ export class EnhancementError extends JTAGError {
   constructor(
     public readonly plugin: string,
     message: string,
-    options?: ErrorOptions
+    options?: { cause?: unknown }
   ) {
     super(`Plugin ${plugin} failed: ${message}`, options);
   }
@@ -88,7 +90,7 @@ export class NetworkError extends JTAGError {
   constructor(
     public readonly endpoint: string,
     message: string,
-    options?: ErrorOptions
+    options?: { cause?: unknown }
   ) {
     super(`Network error at ${endpoint}: ${message}`, options);
   }

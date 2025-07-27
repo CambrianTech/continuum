@@ -5,7 +5,8 @@
  * Perfect example of focused browser implementation - no over-engineering.
  */
 
-import { ScrollParams, ScrollResult } from '../shared/ScrollTypes';
+import { type ScrollParams, type ScrollResult, createScrollResult } from '../shared/ScrollTypes';
+import { ValidationError } from '@shared/ErrorTypes';
 import { ScrollCommand } from '../shared/ScrollCommand';
 import { safeQuerySelector } from '../../../../../shared/GlobalUtils';
 
@@ -59,26 +60,25 @@ export class ScrollBrowserCommand extends ScrollCommand {
       
       console.log(`✅ BROWSER: Scrolled to (${finalX}, ${finalY})`);
       
-      return new ScrollResult({
+      return createScrollResult(params.context, params.sessionId, {
         success: true,
         scrollX: finalX,
         scrollY: finalY,
         selector: params.selector,
-        scrolled: true,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        scrolled: true
+      });
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Scroll failed:`, error.message);
-      return new ScrollResult({
+      const scrollError = error instanceof Error ? new ValidationError('scroll', error.message, { cause: error }) : new ValidationError('scroll', String(error));
+      return createScrollResult(params.context, params.sessionId, {
         success: false,
         scrollX: window.scrollX || 0,
         scrollY: window.scrollY || 0,
         selector: params.selector,
         scrolled: false,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: scrollError
+      });
     }
   }
 }
