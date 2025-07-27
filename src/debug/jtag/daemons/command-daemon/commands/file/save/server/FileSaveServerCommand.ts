@@ -52,9 +52,8 @@ export class FileSaveServerCommand extends CommandBase<FileSaveParams, FileSaveR
         bytesWritten: 0,
         created: false,
         error: error.message,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, saveParams.context, saveParams.sessionId);
     }
   }
 }

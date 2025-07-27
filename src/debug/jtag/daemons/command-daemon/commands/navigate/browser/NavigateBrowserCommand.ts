@@ -51,9 +51,8 @@ export class NavigateBrowserCommand extends NavigateCommand {
         url: window.location.href,
         title: document.title,
         loadTime,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Navigation failed:`, error.message);
@@ -61,9 +60,8 @@ export class NavigateBrowserCommand extends NavigateCommand {
         success: false,
         url: params.url,
         error: error.message,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 

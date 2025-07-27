@@ -19,8 +19,7 @@
  * - Consistent interface across contexts
  */
 
-import { CommandParams, CommandResult } from '@shared/JTAGTypes';
-import type { JTAGContext } from '@shared/JTAGTypes';
+import { CommandParams, CommandResult, type JTAGContext } from '@shared/JTAGTypes';
 
 export class CompileTypescriptParams extends CommandParams {
   source!: string;
@@ -29,8 +28,8 @@ export class CompileTypescriptParams extends CommandParams {
   strict?: boolean;
   target?: 'es5' | 'es2015' | 'es2020' | 'esnext';
 
-  constructor(data: Partial<CompileTypescriptParams> = {}) {
-    super();
+  constructor(data: Partial<CompileTypescriptParams> = {}, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       source: '',
       filename: 'code.ts',
@@ -49,18 +48,16 @@ export class CompileTypescriptResult extends CommandResult {
   errors: string[];
   warnings: string[];
   compilationTime?: number;
-  environment: JTAGContext['environment'];
   timestamp: string;
 
-  constructor(data: Partial<CompileTypescriptResult>) {
-    super();
+  constructor(data: Partial<CompileTypescriptResult>, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     this.success = data.success ?? false;
     this.output = data.output;
     this.outputPath = data.outputPath;
     this.errors = data.errors ?? [];
     this.warnings = data.warnings ?? [];
     this.compilationTime = data.compilationTime;
-    this.environment = data.environment ?? 'server';
     this.timestamp = data.timestamp ?? new Date().toISOString();
   }
 }

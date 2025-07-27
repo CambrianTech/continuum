@@ -35,9 +35,8 @@ export class SendMessageServerCommand extends SendMessageCommand {
         messageId,
         roomId: params.roomId,
         deliveredAt: new Date().toISOString(),
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
 
     } catch (error) {
       console.error(`❌ SERVER: Failed to send message:`, error);
@@ -46,10 +45,9 @@ export class SendMessageServerCommand extends SendMessageCommand {
         success: false,
         messageId: '',
         roomId: params.roomId,
-        environment: this.context.environment,
         timestamp: new Date().toISOString(),
         error: error instanceof Error ? error.message : 'Unknown error occurred'
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

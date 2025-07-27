@@ -37,9 +37,8 @@ export class WaitForElementBrowserCommand extends WaitForElementCommand {
               visible: false, // Not checking visibility
               timeout: timeout,
               waitTime: Date.now() - startTime,
-              environment: this.context.environment,
               timestamp: new Date().toISOString()
-            });
+            }, params.context, params.sessionId);
           }
           
           // Check if element is visible
@@ -57,9 +56,8 @@ export class WaitForElementBrowserCommand extends WaitForElementCommand {
               visible: true,
               timeout: timeout,
               waitTime: Date.now() - startTime,
-              environment: this.context.environment,
               timestamp: new Date().toISOString()
-            });
+            }, params.context, params.sessionId);
           }
         }
         
@@ -80,9 +78,8 @@ export class WaitForElementBrowserCommand extends WaitForElementCommand {
         timeout: timeout,
         waitTime: Date.now() - startTime,
         error: error.message,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

@@ -4,8 +4,8 @@
  * MINIMAL WORK PER COMMAND: Just implements what browser does
  */
 
-import type { ScreenshotParams, Html2CanvasCanvas, Html2CanvasOptions } from '@screenshotShared/ScreenshotTypes';
-import { ScreenshotResult } from '@screenshotShared/ScreenshotTypes';
+import type { ScreenshotParams, Html2CanvasCanvas, Html2CanvasOptions, ScreenshotResult } from '@screenshotShared/ScreenshotTypes';
+import { createScreenshotResultFromParams, createScreenshotResult } from '@screenshotShared/ScreenshotTypes';
 import { ScreenshotCommand } from '@screenshotShared/ScreenshotCommand';
 import { getGlobalAPI, safeQuerySelector, getViewportDimensions } from '@shared/GlobalUtils';
 
@@ -88,25 +88,18 @@ export class ScreenshotBrowserCommand extends ScreenshotCommand {
       
       // Otherwise create result for calling server
       console.log(`🔙 BROWSER: Returning data to server`);
-      return new ScreenshotResult({
+      return createScreenshotResultFromParams(params, {
         success: true,
-        filepath: '',
-        filename: params.filename,
-        environment: this.context.environment,
-        timestamp: new Date().toISOString(),
-        options: params.options,
-        dataUrl: params.dataUrl,
-        metadata: params.metadata
+        filepath: ''
+        // filename, options, dataUrl, metadata auto-inherited from params!
       });
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Failed:`, error.message);
-      return new ScreenshotResult({
+      return createScreenshotResult(params.context, params.sessionId, {
         success: false,
         filepath: '',
-        filename: params.filename,
-        environment: this.context.environment,
-        timestamp: new Date().toISOString(),
+        filename: params.filename || `screenshot-error-${Date.now()}.png`,
         error: error.message
       });
     }

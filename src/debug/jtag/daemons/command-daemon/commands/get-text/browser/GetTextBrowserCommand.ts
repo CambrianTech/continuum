@@ -38,9 +38,8 @@ export class GetTextBrowserCommand extends GetTextCommand {
         selector: params.selector,
         text: text,
         found: true,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Get text failed:`, error.message);
@@ -50,9 +49,8 @@ export class GetTextBrowserCommand extends GetTextCommand {
         text: '',
         found: false,
         error: error.message,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

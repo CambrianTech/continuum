@@ -37,10 +37,9 @@ export class TypeServerCommand extends CommandBase<TypeParams, TypeResult> {
         selector: typeParams.selector,
         typed: false,
         text: typeParams.text,
-        environment: this.context.environment,
         timestamp: new Date().toISOString(),
         error: error.message
-      });
+      }, typeParams.context, typeParams.sessionId);
     }
   }
 }

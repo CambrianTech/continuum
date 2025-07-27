@@ -8,6 +8,7 @@
 import { JTAGModule } from '../../../shared/JTAGModule';
 import type { JTAGContext, CommandParams, CommandResult } from '../../../shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS, JTAGMessageFactory } from '../../../shared/JTAGTypes';
+import { UUID } from 'crypto';
 import type { JTAGRouter } from '../../../shared/JTAGRouter';
 import { isRequestResult } from '../../../shared/RouterTypes';
 
@@ -43,16 +44,17 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
 
   /**
    * Generate default parameters - override in subclasses for command-specific defaults
+   * @param sessionId - Current session ID from the active request
    */
-  public getDefaultParams(): TParams {
+  public getDefaultParams(sessionId: UUID): TParams {
     return {} as TParams;
   }
 
   /**
    * Merge user params with defaults - used by proxy interface
    */
-  public withDefaults(params?: Partial<TParams>): TParams {
-    return { ...this.getDefaultParams(), ...params } as TParams;
+  public withDefaults(params: Partial<TParams>, sessionId: UUID): TParams {
+    return { ...this.getDefaultParams(sessionId), ...params } as TParams;
   }
 
   /**

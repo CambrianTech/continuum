@@ -9,8 +9,9 @@ import { DaemonBase } from '../../../shared/DaemonBase';
 import type { JTAGContext, JTAGMessage, CommandParams, CommandResult } from '../../../shared/JTAGTypes';
 import type { JTAGRouter } from '../../../shared/JTAGRouter';
 import type{ CommandBase, CommandEntry } from './CommandBase';
-import type { CommandResponse } from '../../../shared/ResponseTypes';
-import { CommandErrorResponse, CommandSuccessResponse } from '../../../shared/ResponseTypes';
+import type { CommandResponse } from './CommandResponseTypes';
+import { createCommandErrorResponse, createCommandSuccessResponse } from './CommandResponseTypes';
+import { UUID } from 'crypto';
 
 
 export abstract class CommandDaemon extends DaemonBase {
@@ -70,9 +71,8 @@ export abstract class CommandDaemon extends DaemonBase {
         
         // Return elegantly typed async function
         return async (params?: CommandParams) => {
-          // Use withDefaults for elegant parameter handling
-          const actualParams = params ? validCommand.withDefaults(params) : validCommand.getDefaultParams();
-          return await validCommand.execute(actualParams);
+          // SECURITY: Direct command invocation requires explicit session context
+          throw new Error(`Direct command invocation requires session context. Use message-based routing instead for command: ${commandName}`);
         };
       }
     });
@@ -88,17 +88,26 @@ export abstract class CommandDaemon extends DaemonBase {
     const commandName = this.extractCommand(message.endpoint);
     const command = this.commands.get(commandName);
     
+    // Extract session context from incoming payload for response accountability
+    const requestPayload = message.payload as any; // Payload contains context + sessionId
+    const requestContext = requestPayload.context || this.context;
+    
+    if (!requestPayload.sessionId) {
+      throw new Error(`SECURITY: All commands require valid sessionId. Missing sessionId for command: ${commandName}`);
+    }
+    const requestSessionId = requestPayload.sessionId;
+    
     if (!command) {
-      return new CommandErrorResponse(`Command '${commandName}' not found in ${this.context.environment} context`, commandName);
+      return createCommandErrorResponse(`Command '${commandName}' not found in ${this.context.environment} context`, requestContext, commandName, requestSessionId);
     }
 
     try {
       const result = await command.execute(message.payload);
-      // Wrap raw command results in CommandResponse
-      return new CommandSuccessResponse(result);
+      // Wrap raw command results in CommandResponse - maintains session accountability
+      return createCommandSuccessResponse(result, requestContext, undefined, requestSessionId);
     } catch (e) {
       const error = e as Error;
-      return new CommandErrorResponse(error?.message ?? 'Command execution failed', commandName);
+      return createCommandErrorResponse(error?.message ?? 'Command execution failed', requestContext, commandName, requestSessionId);
     }
   }
 
@@ -112,11 +121,8 @@ export abstract class CommandDaemon extends DaemonBase {
     }
 
     console.log(`⚡ ${this.toString()}: Executing ${commandName} directly`);
-    // Use withDefaults if command supports it, otherwise pass params as-is
-    const actualParams = 'withDefaults' in command 
-      ? command.withDefaults(params)
-      : params ?? (command as CommandBase<CommandParams, CommandResult>).getDefaultParams();
-    return await command.execute(actualParams);
+    // SECURITY: Direct command execution requires explicit session context
+    throw new Error(`SECURITY: Direct command execution requires session context. Use message-based routing instead for command: ${commandName}`);
   }
 
   /**

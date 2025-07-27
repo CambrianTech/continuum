@@ -47,7 +47,7 @@ export class SendMessageBrowserCommand extends SendMessageCommand {
         roomId: params.roomId,
         success: false,
         error: error.message
-      });
+      }, params.context, params.sessionId);
     }
   }
 

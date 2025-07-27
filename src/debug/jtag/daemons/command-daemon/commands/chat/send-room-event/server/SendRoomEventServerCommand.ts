@@ -33,7 +33,6 @@ export class SendRoomEventServerCommand extends SendRoomEventCommand {
         success: true,
         eventId,
         roomId: params.roomId,
-        environment: this.context.environment,
         timestamp: new Date().toISOString(),
         participants: [params.sourceParticipantId], // Simplified - would be actual room participants
         deliveryStatus: {
@@ -41,7 +40,7 @@ export class SendRoomEventServerCommand extends SendRoomEventCommand {
           failed: 0,
           pending: 0
         }
-      });
+      }, params.context, params.sessionId);
 
     } catch (error) {
       console.error(`❌ SERVER: Failed to send room event:`, error);
@@ -50,10 +49,9 @@ export class SendRoomEventServerCommand extends SendRoomEventCommand {
         success: false,
         eventId: '',
         roomId: params.roomId,
-        environment: this.context.environment,
         timestamp: new Date().toISOString(),
         error: error instanceof Error ? error.message : 'Unknown error occurred'
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

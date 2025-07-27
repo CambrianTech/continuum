@@ -15,6 +15,7 @@
  */
 
 import { ChatParams, ChatResult } from '@chatShared/ChatTypes';
+import type { JTAGContext } from '@shared/JTAGTypes';
 
 export class SendRoomEventParams extends ChatParams {
   sourceParticipantId!: string;
@@ -33,8 +34,8 @@ export class SendRoomEventParams extends ChatParams {
     stateDelta?: any;
   };
 
-  constructor(data: Partial<SendRoomEventParams> = {}) {
-    super(data);
+  constructor(data: Partial<SendRoomEventParams> = {}, context: JTAGContext, sessionId: string) {
+    super(data, context, sessionId);
     Object.assign(this, {
       sourceParticipantId: '',
       sourceParticipantType: 'human',
@@ -69,8 +70,8 @@ export class SendRoomEventResult extends ChatResult {
     participantsReached: number;
   };
 
-  constructor(data: Partial<SendRoomEventResult> & { eventId: string; roomId: string }) {
-    super(data);
+  constructor(data: Partial<SendRoomEventResult> & { eventId: string; roomId: string }, context: JTAGContext, sessionId: string) {
+    super(data, context, sessionId);
     this.eventId = data.eventId;
     this.participants = data.participants;
     this.recipientCount = data.recipientCount;

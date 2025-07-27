@@ -18,43 +18,50 @@
  * ✅ Location-transparent command execution
  */
 
-import { CommandParams, CommandResult, type JTAGContext } from '@shared/JTAGTypes';
+import { CommandParams, CommandResult, type JTAGContext, createPayload } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 
 /**
  * Generic base parameters for distributed chat operations
  */
-export class ChatParams<T extends Record<string, any> = {}> extends CommandParams {
-  roomId!: string;
+export interface ChatParams<T extends Record<string, any> = {}> extends CommandParams {
+  roomId: string;
   nodeId?: string;  // Which Continuum node hosts this room (for remote operations)
-
-  constructor(data: Partial<ChatParams<T> & T> = {}) {
-    super();
-    this.roomId = data.roomId ?? '';
-    this.nodeId = data.nodeId;
-  }
 }
+
+export const createChatParams = <T extends Record<string, any> = {}>(
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<ChatParams<T> & T>, 'context' | 'sessionId'>
+): ChatParams<T> => createPayload(context, sessionId, {
+  roomId: data.roomId ?? '',
+  nodeId: data.nodeId,
+  ...data
+});
 
 /**
  * Generic base result for distributed chat operations  
  */
-export class ChatResult<T extends Record<string, any> = {}> extends CommandResult {
-  success!: boolean;
-  roomId!: string;
+export interface ChatResult<T extends Record<string, any> = {}> extends CommandResult {
+  success: boolean;
+  roomId: string;
   nodeId?: string;  // Which node actually processed this command
-  environment!: JTAGContext['environment'];
-  timestamp!: string;
+  timestamp: string;
   error?: string;
-
-  constructor(data: Partial<ChatResult<T> & T> & { roomId: string }) {
-    super();
-    this.success = data.success ?? false;
-    this.roomId = data.roomId;
-    this.nodeId = data.nodeId;
-    this.environment = data.environment ?? 'server';
-    this.timestamp = data.timestamp ?? new Date().toISOString();
-    this.error = data.error;
-  }
 }
+
+export const createChatResult = <T extends Record<string, any> = {}>(
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<ChatResult<T> & T>, 'context' | 'sessionId'> & { roomId: string }
+): ChatResult<T> => createPayload(context, sessionId, {
+  success: data.success ?? false,
+  roomId: data.roomId,
+  nodeId: data.nodeId,
+  timestamp: data.timestamp ?? new Date().toISOString(),
+  error: data.error,
+  ...data
+});
 
 /**
  * Distributed participant identification

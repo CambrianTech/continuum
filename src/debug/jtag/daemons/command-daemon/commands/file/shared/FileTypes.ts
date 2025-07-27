@@ -37,8 +37,8 @@ export abstract class FileParams<T extends Record<string, any> = {}> extends Com
   filepath!: string;
   encoding?: string;
 
-  constructor(data: Partial<FileParams<T> & T> = {}) {
-    super();
+  constructor(data: Partial<FileParams<T> & T> = {}, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       filepath: '',
       encoding: 'utf8',
@@ -56,16 +56,14 @@ export abstract class FileResult<T extends Record<string, any> = {}> extends Com
   filepath!: string;
   exists!: boolean;
   error?: string;
-  environment!: JTAGContext['environment'];
   timestamp!: string;
 
-  constructor(data: Partial<FileResult<T> & T>) {
-    super();
+  constructor(data: Partial<FileResult<T> & T>, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       success: false,
       filepath: '',
       exists: false,
-      environment: 'server',
       timestamp: new Date().toISOString(),
       ...data
     });

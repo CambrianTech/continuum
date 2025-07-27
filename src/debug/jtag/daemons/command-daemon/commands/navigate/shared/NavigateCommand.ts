@@ -18,6 +18,7 @@
 import { CommandBase } from '../../../shared/CommandBase';
 import type { ICommandDaemon } from '../../../shared/CommandBase';
 import type { JTAGContext } from '../../../../../shared/JTAGTypes';
+import { UUID } from 'crypto';
 import { NavigateParams } from './NavigateTypes';
 import type { NavigateResult } from './NavigateTypes';
 
@@ -27,10 +28,10 @@ export abstract class NavigateCommand extends CommandBase<NavigateParams, Naviga
     super('navigate', context, subpath, commander);
   }
 
-  public override getDefaultParams(): NavigateParams {
+  public override getDefaultParams(sessionId: UUID): NavigateParams {
     return new NavigateParams({
       url: 'about:blank'
-    });
+    }, this.context, sessionId);
   }
 
   abstract execute(params: NavigateParams): Promise<NavigateResult>;

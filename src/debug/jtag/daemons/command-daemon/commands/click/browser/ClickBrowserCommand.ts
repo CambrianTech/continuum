@@ -48,9 +48,8 @@ export class ClickBrowserCommand extends ClickCommand {
         success: true,
         selector: params.selector,
         clicked: true,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Click failed:`, error.message);
@@ -59,9 +58,8 @@ export class ClickBrowserCommand extends ClickCommand {
         selector: params.selector,
         clicked: false,
         error: error.message,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

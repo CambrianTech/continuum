@@ -27,8 +27,8 @@ export class ClickParams extends CommandParams {
   button?: 'left' | 'right' | 'middle';
   timeout?: number;
 
-  constructor(data: Partial<ClickParams> = {}) {
-    super();
+  constructor(data: Partial<ClickParams> = {}, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       selector: '',
       button: 'left',
@@ -43,16 +43,14 @@ export class ClickResult extends CommandResult {
   selector: string;
   clicked: boolean;
   error?: string;
-  environment: JTAGContext['environment'];
   timestamp: string;
 
-  constructor(data: Partial<ClickResult>) {
-    super();
+  constructor(data: Partial<ClickResult>, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     this.success = data.success ?? false;
     this.selector = data.selector ?? '';
     this.clicked = data.clicked ?? false;
     this.error = data.error;
-    this.environment = data.environment ?? 'server';
     this.timestamp = data.timestamp ?? new Date().toISOString();
   }
 }

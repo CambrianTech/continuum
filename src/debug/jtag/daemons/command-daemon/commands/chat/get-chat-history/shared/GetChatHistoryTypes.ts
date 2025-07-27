@@ -9,35 +9,43 @@
  */
 
 import { ChatParams, ChatResult } from '@chatShared/ChatTypes';
+import type { JTAGContext } from '@shared/JTAGTypes';
+import { createPayload } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 
-export class GetChatHistoryParams extends ChatParams {
+export interface GetChatHistoryParams extends ChatParams {
   readonly participantId?: string;
-  readonly maxMessages!: number;
-  readonly hoursBack!: number;
-  readonly includeMetadata!: boolean;
-
-  constructor(data: Partial<GetChatHistoryParams> = {}) {
-    super(data);
-    // Elegant spread with destructuring defaults
-    const { participantId, maxMessages = 50, hoursBack = 24, includeMetadata = false } = data;
-    Object.assign(this, { participantId, maxMessages, hoursBack, includeMetadata });
-  }
+  readonly maxMessages: number;
+  readonly hoursBack: number;
+  readonly includeMetadata: boolean;
 }
 
-export class GetChatHistoryResult extends ChatResult {
-  readonly messages!: readonly ChatMessage[];
-  readonly totalCount!: number;
+export const createGetChatHistoryParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<GetChatHistoryParams>, 'context' | 'sessionId'>
+): GetChatHistoryParams => createPayload(context, sessionId, {
+  participantId: data.participantId,
+  maxMessages: data.maxMessages ?? 50,
+  hoursBack: data.hoursBack ?? 24,
+  includeMetadata: data.includeMetadata ?? false,
+  ...data
+});
 
-  constructor(data: Partial<GetChatHistoryResult> & { roomId: string }) {
-    super(data);
-    // Elegant destructuring with frozen immutable arrays
-    const { messages = [], totalCount = 0 } = data;
-    Object.assign(this, { 
-      messages: Object.freeze([...messages]), 
-      totalCount 
-    });
-  }
+export interface GetChatHistoryResult extends ChatResult {
+  readonly messages: readonly ChatMessage[];
+  readonly totalCount: number;
 }
+
+export const createGetChatHistoryResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<GetChatHistoryResult>, 'context' | 'sessionId'> & { roomId: string }
+): GetChatHistoryResult => createPayload(context, sessionId, {
+  messages: Object.freeze([...(data.messages ?? [])]),
+  totalCount: data.totalCount ?? 0,
+  ...data
+});
 
 export interface ChatMessage {
   readonly id: string;

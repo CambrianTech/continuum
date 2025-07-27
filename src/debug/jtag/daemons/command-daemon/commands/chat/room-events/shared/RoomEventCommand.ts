@@ -1,6 +1,7 @@
 import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 import { RoomEventSubscriptionParams } from './RoomEventTypes';
 import type { RoomEventSubscriptionResult } from './RoomEventTypes';
 
@@ -10,7 +11,7 @@ export abstract class RoomEventCommand extends CommandBase<RoomEventSubscription
     super('room-events', context, subpath, commander);
   }
 
-  public override getDefaultParams(): RoomEventSubscriptionParams {
+  public override getDefaultParams(sessionId: UUID): RoomEventSubscriptionParams {
     return new RoomEventSubscriptionParams({
       participantId: '',
       participantType: 'human',
@@ -42,7 +43,7 @@ export abstract class RoomEventCommand extends CommandBase<RoomEventSubscription
         backfillOnSubscribe: true,
         backfillCount: 20
       }
-    });
+    }, this.context, sessionId);
   }
 
   abstract execute(params: RoomEventSubscriptionParams): Promise<RoomEventSubscriptionResult>;

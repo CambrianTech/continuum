@@ -12,6 +12,7 @@
  */
 
 import { ChatParams, ChatResult } from './ChatTypes';
+import type { JTAGContext } from '@shared/JTAGTypes';
 
 /**
  * Base for commands that involve a participant (sender/receiver)
@@ -20,8 +21,8 @@ export abstract class ChatParticipantParams extends ChatParams {
   participantId!: string;
   participantType?: 'human' | 'ai' | 'system';
 
-  constructor(data: Partial<ChatParticipantParams> = {}) {
-    super({ participantId: '', participantType: 'human', ...data });
+  constructor(data: Partial<ChatParticipantParams> = {}, context: JTAGContext, sessionId: string) {
+    super({ participantId: '', participantType: 'human', ...data }, context, sessionId);
   }
 }
 
@@ -32,8 +33,8 @@ export abstract class ChatEntityResult extends ChatResult {
   entityId!: string;
   entityType!: string;
 
-  constructor(data: Partial<ChatEntityResult> & { entityId: string; entityType: string; roomId: string }) {
-    super(data);
+  constructor(data: Partial<ChatEntityResult> & { entityId: string; entityType: string; roomId: string }, context: JTAGContext, sessionId: string) {
+    super(data, context, sessionId);
     this.entityId = data.entityId;
     this.entityType = data.entityType;
   }
@@ -46,8 +47,8 @@ export abstract class ChatDeliveryResult extends ChatEntityResult {
   deliveredAt?: string;
   deliveryStatus?: 'pending' | 'delivered' | 'failed';
 
-  constructor(data: Partial<ChatDeliveryResult> & { entityId: string; entityType: string; roomId: string }) {
-    super(data);
+  constructor(data: Partial<ChatDeliveryResult> & { entityId: string; entityType: string; roomId: string }, context: JTAGContext, sessionId: string) {
+    super(data, context, sessionId);
     Object.assign(this, {
       deliveredAt: data.deliveredAt,
       deliveryStatus: data.deliveryStatus || 'delivered',

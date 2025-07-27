@@ -29,12 +29,11 @@ export class ReceiveEventsServerCommand extends ReceiveEventsCommand {
       return new ReceiveEventsResult({
         roomId: params.roomId,
         success: true,
-        environment: this.context.environment,
         timestamp: new Date().toISOString(),
         events: mockEvents,
         eventCount: mockEvents.length,
         streamActive: true
-      });
+      }, params.context, params.sessionId);
 
     } catch (error: any) {
       return this.createChatErrorResult(params.roomId, `Event receiving failed: ${error.message}`) as ReceiveEventsResult;

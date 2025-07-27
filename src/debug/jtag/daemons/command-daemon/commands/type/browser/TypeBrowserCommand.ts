@@ -51,9 +51,8 @@ export class TypeBrowserCommand extends TypeCommand {
         selector: params.selector,
         typed: true,
         text: params.text,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Type failed:`, error.message);
@@ -63,9 +62,8 @@ export class TypeBrowserCommand extends TypeCommand {
         typed: false,
         text: params.text,
         error: error.message,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

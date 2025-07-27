@@ -10,13 +10,12 @@ import { JTAGPayload } from '../../../shared/JTAGTypes';
 import { getHighResolutionTime, getProcessInfo } from '../../../shared/CrossPlatformTypes';
 import { JTAGRouter } from '../../../shared/JTAGRouter';
 import { JTAG_ENDPOINTS } from '../../../shared/JTAGEndpoints';
-import { HealthPingResponse, HealthErrorResponse, HealthResponse } from '../../../shared/ResponseTypes';
+import { createHealthPingResponse, createHealthErrorResponse, type HealthResponse } from '../../../shared/ResponseTypes';
 
-// Health-specific payload
+// Health-specific payload - system-level, no session required
 export class HealthPayload extends JTAGPayload {
   type: 'ping' | 'status' | 'metrics';
   timestamp: string;
-  context: JTAGContext['environment'];
   data?: {
     latency?: number;
     uptime?: number;
@@ -24,11 +23,10 @@ export class HealthPayload extends JTAGPayload {
     [key: string]: any;
   };
 
-  constructor(data: Partial<HealthPayload>) {
-    super();
+  constructor(data: Partial<HealthPayload>, context: JTAGContext) {
+    super(context, 'system'); // Health daemon uses system-level session
     this.type = data.type || 'ping';
     this.timestamp = data.timestamp || new Date().toISOString();
-    this.context = data.context || 'server';
     this.data = data.data || {};
   }
 }
@@ -54,9 +52,9 @@ export abstract class HealthDaemon extends DaemonBase {
    * Handle incoming health messages
    */
   async handleMessage(message: JTAGMessage): Promise<HealthResponse> {
+    const healthPayload = message.payload as HealthPayload;
+    
     try {
-      const healthPayload = message.payload as HealthPayload;
-      
       switch (healthPayload.type) {
         case 'ping':
           return await this.handlePing(healthPayload);
@@ -66,11 +64,11 @@ export abstract class HealthDaemon extends DaemonBase {
           return await this.handleMetrics(healthPayload);
         default:
           console.warn(`⚠️ ${this.toString()}: Unknown health message type: ${healthPayload.type}`);
-          return new HealthErrorResponse('Unknown health message type');
+          return new HealthErrorResponse('Unknown health message type', healthPayload.context);
       }
     } catch (error: any) {
       console.error(`❌ ${this.toString()}: Error processing health message:`, error.message);
-      return new HealthErrorResponse(error.message);
+      return new HealthErrorResponse(error.message, healthPayload.context);
     }
   }
 
@@ -81,7 +79,7 @@ export abstract class HealthDaemon extends DaemonBase {
     const pongId = `pong_${Date.now()}`;
     const uptime = this.getUptime();
     
-    return new HealthPingResponse(pongId, uptime);
+    return new HealthPingResponse(pongId, uptime, healthPayload.context);
   }
 
   /**
@@ -92,7 +90,7 @@ export abstract class HealthDaemon extends DaemonBase {
     const uptime = this.getUptime();
     const memory = this.getMemoryUsage();
     
-    return new HealthPingResponse(statusId, uptime, memory);
+    return new HealthPingResponse(statusId, uptime, healthPayload.context, memory);
   }
 
   /**
@@ -103,7 +101,7 @@ export abstract class HealthDaemon extends DaemonBase {
     const uptime = this.getUptime();
     const memory = this.getMemoryUsage();
     
-    return new HealthPingResponse(metricsId, uptime, memory);
+    return new HealthPingResponse(metricsId, uptime, healthPayload.context, memory);
   }
 
   /**

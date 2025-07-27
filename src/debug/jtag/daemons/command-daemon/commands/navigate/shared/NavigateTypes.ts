@@ -27,8 +27,8 @@ export class NavigateParams extends CommandParams {
   timeout?: number;
   waitForSelector?: string;
 
-  constructor(data: Partial<NavigateParams> = {}) {
-    super();
+  constructor(data: Partial<NavigateParams> = {}, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       url: '',
       timeout: 30000,
@@ -44,17 +44,15 @@ export class NavigateResult extends CommandResult {
   title?: string;
   loadTime?: number;
   error?: string;
-  environment: JTAGContext['environment'];
   timestamp: string;
 
-  constructor(data: Partial<NavigateResult>) {
-    super();
+  constructor(data: Partial<NavigateResult>, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     this.success = data.success ?? false;
     this.url = data.url ?? '';
     this.title = data.title;
     this.loadTime = data.loadTime;
     this.error = data.error;
-    this.environment = data.environment ?? 'server';
     this.timestamp = data.timestamp ?? new Date().toISOString();
   }
 }

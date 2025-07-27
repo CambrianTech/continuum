@@ -31,9 +31,8 @@ export class FileAppendBrowserCommand extends FileAppendCommand {
         bytesAppended: 0,
         wasCreated: false,
         error: error.message,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 }
