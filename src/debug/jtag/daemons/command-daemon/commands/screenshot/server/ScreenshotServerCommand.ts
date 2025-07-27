@@ -58,14 +58,13 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
         success: true,
         filepath: globalPath,
         filename: screenshotParams.filename,
-        environment: this.context.environment,
         timestamp: new Date().toISOString(),
         options: screenshotParams.options,
         metadata: {
           ...screenshotParams.metadata,
           globalPath: globalPath
         }
-      });
+      }, screenshotParams.context, screenshotParams.sessionId);
 
     } catch (error: any) {
       console.error(`❌ SERVER: Failed:`, error.message);
@@ -73,10 +72,9 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
         success: false,
         filepath: '',
         filename: screenshotParams.filename,
-        environment: this.context.environment,
         timestamp: new Date().toISOString(),
         error: error.message
-      });
+      }, screenshotParams.context, screenshotParams.sessionId);
     }
   }
 }

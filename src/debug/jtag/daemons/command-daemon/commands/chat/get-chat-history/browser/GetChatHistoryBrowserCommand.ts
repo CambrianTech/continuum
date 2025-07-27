@@ -1,5 +1,5 @@
 import { GetChatHistoryCommand } from '../shared/GetChatHistoryCommand';
-import { type GetChatHistoryParams, GetChatHistoryResult, type ChatMessage } from '../shared/GetChatHistoryTypes';
+import { type GetChatHistoryParams, type GetChatHistoryResult, createGetChatHistoryResult, type ChatMessage } from '../shared/GetChatHistoryTypes';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 
@@ -28,7 +28,7 @@ export class GetChatHistoryBrowserCommand extends GetChatHistoryCommand {
       console.error(`❌ BROWSER: Failed to get chat history:`, error);
       
       // Elegant error result with spread operator
-      return new GetChatHistoryResult({
+      return createGetChatHistoryResult(params.context, params.sessionId, {
         ...this.createBaseResult(),
         success: false,
         roomId: roomId ?? '',
@@ -68,7 +68,6 @@ export class GetChatHistoryBrowserCommand extends GetChatHistoryCommand {
    */
   private createBaseResult() {
     return {
-      environment: this.context.environment,
       timestamp: new Date().toISOString()
     };
   }

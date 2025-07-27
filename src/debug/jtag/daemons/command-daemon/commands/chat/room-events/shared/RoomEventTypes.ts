@@ -19,7 +19,7 @@
  * - Widget-persona-human coordination through shared event streams
  */
 
-import { CommandParams, CommandResult } from '@shared/JTAGTypes';
+import { CommandParams, CommandResult, type JTAGContext } from '@shared/JTAGTypes';
 
 // ========================
 // Room Event Subscription
@@ -43,8 +43,8 @@ export class RoomEventSubscriptionParams extends CommandParams {
   // Widget-specific options
   widgetOptions?: WidgetSubscriptionOptions;
 
-  constructor(data: Partial<RoomEventSubscriptionParams> = {}) {
-    super();
+  constructor(data: Partial<RoomEventSubscriptionParams> = {}, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     this.participantId = data.participantId ?? '';
     this.participantType = data.participantType ?? 'human';
     this.roomId = data.roomId ?? '';
@@ -428,8 +428,8 @@ export class RoomEventSubscriptionResult extends CommandResult {
   constructor(data: Partial<RoomEventSubscriptionResult> & { 
     participantId: string; 
     roomId: string; 
-  }) {
-    super();
+  }, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     this.success = data.success ?? false;
     this.subscriptionId = data.subscriptionId || `sub_${Date.now()}`;
     this.participantId = data.participantId;
@@ -485,8 +485,8 @@ export class SendRoomEventParams extends CommandParams {
   // Target filtering
   targetFilters?: EventTargetFilters;
 
-  constructor(data: Partial<SendRoomEventParams> = {}) {
-    super();
+  constructor(data: Partial<SendRoomEventParams> = {}, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     this.roomId = data.roomId || '';
     this.sourceParticipantId = data.sourceParticipantId || '';
     this.sourceParticipantType = data.sourceParticipantType || 'human';
@@ -578,8 +578,8 @@ export class SendRoomEventResult extends CommandResult {
   error?: string;
   warnings?: string[];
 
-  constructor(data: Partial<SendRoomEventResult> & { roomId: string }) {
-    super();
+  constructor(data: Partial<SendRoomEventResult> & { roomId: string }, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     this.success = data.success ?? false;
     this.eventId = data.eventId || `evt_${Date.now()}`;
     this.roomId = data.roomId;

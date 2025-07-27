@@ -30,7 +30,7 @@ export class RoomEventBrowserCommand extends RoomEventCommand {
         roomId: params.roomId,
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'
-      });
+      }, params.context, params.sessionId);
     }
   }
 

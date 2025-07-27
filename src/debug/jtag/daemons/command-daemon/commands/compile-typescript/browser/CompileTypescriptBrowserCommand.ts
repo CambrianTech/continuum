@@ -51,9 +51,8 @@ export class CompileTypescriptBrowserCommand extends CompileTypescriptCommand {
           compilationTime,
           errors: [],
           warnings: [],
-          environment: this.context.environment,
           timestamp: new Date().toISOString()
-        });
+        }, params.context, params.sessionId);
       }
       
       // No browser compilation available, delegate to server
@@ -66,9 +65,8 @@ export class CompileTypescriptBrowserCommand extends CompileTypescriptCommand {
         success: false,
         errors: [error.message],
         warnings: [],
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

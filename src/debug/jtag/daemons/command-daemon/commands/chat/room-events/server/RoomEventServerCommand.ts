@@ -36,7 +36,7 @@ export class RoomEventServerCommand extends RoomEventCommand {
         eventStreamEndpoint: `/jtag/room-events/${params.roomId}/stream`,
         subscriptionStatus: 'active',
         subscribedEventTypes: params.eventTypes || ['message_sent', 'participant_joined']
-      });
+      }, params.context, params.sessionId);
 
     } catch (error) {
       console.error(`❌ SERVER: Failed to create room event subscription:`, error);
@@ -48,7 +48,7 @@ export class RoomEventServerCommand extends RoomEventCommand {
         roomId: params.roomId,
         subscriptionStatus: 'error',
         error: error instanceof Error ? error.message : 'Unknown error occurred'
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

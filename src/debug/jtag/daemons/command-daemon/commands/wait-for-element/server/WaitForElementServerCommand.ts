@@ -43,7 +43,7 @@ export class WaitForElementServerCommand extends CommandBase<WaitForElementParam
         environment: this.context.environment,
         timestamp: new Date().toISOString(),
         error: error.message
-      });
+      }, waitParams.context, waitParams.sessionId);
     }
   }
 }

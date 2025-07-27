@@ -52,17 +52,15 @@ export class ConsolePayload extends JTAGPayload {
   component: string;
   message: string;
   timestamp: string;
-  context: JTAGContext['environment'];
   data?: unknown; // Keep optional but use unknown instead of any
   stack?: string;
 
-  constructor(data: Partial<ConsolePayload>) {
-    super();
+  constructor(data: Partial<ConsolePayload>, context: JTAGContext) {
+    super(context, 'system'); // Console daemon uses system-level session
     this.level = data.level ?? 'log';
     this.component = data.component ?? 'UNKNOWN';
     this.message = data.message ?? '';
     this.timestamp = data.timestamp ?? new Date().toISOString();
-    this.context = data.context ?? 'server';
     this.data = data.data;
     this.stack = data.stack;
   }

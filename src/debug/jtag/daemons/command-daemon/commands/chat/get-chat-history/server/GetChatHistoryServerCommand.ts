@@ -56,7 +56,7 @@ export class GetChatHistoryServerCommand extends GetChatHistoryCommand {
         messages,
         totalCount: messages.length,
         roomId
-      });
+      }, params.context, params.sessionId);
 
     } catch (error) {
       console.error(`❌ SERVER: Failed to get chat history:`, error);
@@ -69,7 +69,7 @@ export class GetChatHistoryServerCommand extends GetChatHistoryCommand {
         totalCount: 0,
         roomId: roomId ?? '',
         error: error instanceof Error ? error.message : String(error)
-      });
+      }, params.context, params.sessionId);
     }
   }
 

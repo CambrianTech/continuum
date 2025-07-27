@@ -7,8 +7,8 @@ export class WaitForElementParams extends CommandParams {
   visible?: boolean;
   interval?: number;
 
-  constructor(data: Partial<WaitForElementParams> = {}) {
-    super();
+  constructor(data: Partial<WaitForElementParams> = {}, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       selector: 'body',
       timeout: 30000,
@@ -27,11 +27,10 @@ export class WaitForElementResult extends CommandResult {
   timeout!: number;
   waitTime!: number;
   error?: string;
-  environment!: JTAGContext['environment'];
   timestamp!: string;
 
-  constructor(data: Partial<WaitForElementResult>) {
-    super();
+  constructor(data: Partial<WaitForElementResult>, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       success: false,
       selector: '',
@@ -39,7 +38,6 @@ export class WaitForElementResult extends CommandResult {
       visible: false,
       timeout: 30000,
       waitTime: 0,
-      environment: 'server',
       timestamp: new Date().toISOString(),
       ...data
     });

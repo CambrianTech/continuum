@@ -4,12 +4,13 @@
  * Common types and interfaces used by both browser and server screenshot implementations.
  */
 
-import { CommandParams, CommandResult, type JTAGContext } from '@shared/JTAGTypes';
+import { CommandParams, CommandResult, type JTAGContext, createPayload, transformPayload } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 
 /**
- * Screenshot Command Parameters - extends CommandParams
+ * Screenshot Command Parameters - interface extending CommandParams
  */
-export class ScreenshotParams extends CommandParams {
+export interface ScreenshotParams extends CommandParams {
   filename?: string;
   selector?: string;
   options?: ScreenshotOptions;
@@ -20,12 +21,16 @@ export class ScreenshotParams extends CommandParams {
   returnFormat?: 'file' | 'bytes' | 'download';
   crop?: { x: number; y: number; width: number; height: number };
   metadata?: ScreenshotMetadata;
-
-  constructor(data: Partial<ScreenshotParams> = {}) {
-    super();
-    Object.assign(this, data);
-  }
 }
+
+/**
+ * Factory function for creating ScreenshotParams
+ */
+export const createScreenshotParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<ScreenshotParams>, 'context' | 'sessionId'>
+): ScreenshotParams => createPayload(context, sessionId, data);
 
 /**
  * HTML2Canvas Configuration Options
@@ -76,32 +81,86 @@ export interface ScreenshotOptions {
 }
 
 /**
- * Screenshot Result - extends CommandResult
+ * Screenshot Result - interface extending CommandResult
  */
-export class ScreenshotResult extends CommandResult {
+export interface ScreenshotResult extends CommandResult {
   success: boolean;
   filepath: string;
   filename: string;
-  environment: JTAGContext['environment'];
   timestamp: string;
   options?: ScreenshotOptions;
   error?: string;
   metadata?: ScreenshotMetadata;
   dataUrl?: string; // Browser-captured image data
-
-  constructor(data: Partial<ScreenshotResult>) {
-    super();
-    this.success = data.success ?? false;
-    this.filepath = data.filepath ?? '';
-    this.filename = data.filename ?? '';
-    this.environment = data.environment ?? 'server';
-    this.timestamp = data.timestamp ?? new Date().toISOString();
-    this.options = data.options;
-    this.error = data.error;
-    this.metadata = data.metadata;
-    this.dataUrl = data.dataUrl;
-  }
 }
+
+/**
+ * Factory function for creating ScreenshotResult with defaults
+ */
+export const createScreenshotResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<ScreenshotResult>, 'context' | 'sessionId'>
+): ScreenshotResult => createPayload(context, sessionId, {
+  success: false,
+  filepath: '',
+  filename: '',
+  timestamp: new Date().toISOString(),
+  ...data
+});
+
+/**
+ * Smart screenshot-specific inheritance from params
+ * Auto-inherits: filename, options, metadata, dataUrl from params
+ * Only specify what changed: success, filepath, error
+ */
+export const createScreenshotResultFromParams = (
+  params: ScreenshotParams, 
+  differences: Omit<Partial<ScreenshotResult>, 'context' | 'sessionId' | 'filename' | 'options' | 'metadata' | 'dataUrl'>
+): ScreenshotResult => transformPayload(params, {
+  success: false,
+  filepath: '',
+  filename: params.filename || `screenshot-${Date.now()}.png`,
+  timestamp: new Date().toISOString(),
+  options: params.options,
+  metadata: params.metadata,
+  dataUrl: params.dataUrl,
+  ...differences
+});
+
+/**
+ * Screenshot Command Response - specific to screenshot operations
+ */
+export interface ScreenshotResponse extends ScreenshotResult {
+  filename: string;
+  path: string;
+  size: number;
+}
+
+/**
+ * Factory for creating ScreenshotResponse
+ */
+export const createScreenshotResponse = (
+  filename: string,
+  path: string,
+  size: number,
+  context: JTAGContext,
+  executionTime: number | undefined,
+  sessionId: UUID
+): ScreenshotResponse => createPayload(context, sessionId, {
+  success: true,
+  timestamp: new Date().toISOString(),
+  filepath: path,
+  filename,
+  options: undefined,
+  metadata: {
+    size,
+    globalPath: path
+  },
+  // ScreenshotResponse specific fields
+  path,
+  size
+});
 
 /**
  * Screenshot Metadata

@@ -50,7 +50,7 @@ export class FileLoadServerCommand extends CommandBase<FileLoadParams, FileLoadR
         exists: true,
         environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
 
     } catch (error: any) {
       console.error(`❌ SERVER: File load failed:`, error.message);
@@ -63,7 +63,7 @@ export class FileLoadServerCommand extends CommandBase<FileLoadParams, FileLoadR
         error: error.message,
         environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

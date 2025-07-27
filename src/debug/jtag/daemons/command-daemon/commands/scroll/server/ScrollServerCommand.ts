@@ -45,7 +45,7 @@ export class ScrollServerCommand extends CommandBase<ScrollParams, ScrollResult>
         environment: this.context.environment,
         timestamp: new Date().toISOString(),
         error: error.message
-      });
+      }, scrollParams.context, scrollParams.sessionId);
     }
   }
 }

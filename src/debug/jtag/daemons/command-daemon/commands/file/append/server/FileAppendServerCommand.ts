@@ -57,7 +57,7 @@ export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileA
         wasCreated: wasCreated,
         environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
 
     } catch (error: any) {
       console.error(`❌ SERVER: File append failed:`, error.message);
@@ -70,7 +70,7 @@ export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileA
         error: error.message,
         environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

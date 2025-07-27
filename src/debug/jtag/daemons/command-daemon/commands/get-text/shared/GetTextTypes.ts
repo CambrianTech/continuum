@@ -6,8 +6,8 @@ export class GetTextParams extends CommandParams {
   trim?: boolean;
   innerText?: boolean; // vs textContent
 
-  constructor(data: Partial<GetTextParams> = {}) {
-    super();
+  constructor(data: Partial<GetTextParams> = {}, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       selector: 'body',
       trim: true,
@@ -23,17 +23,15 @@ export class GetTextResult extends CommandResult {
   text!: string;
   found!: boolean;
   error?: string;
-  environment!: JTAGContext['environment'];
   timestamp!: string;
 
-  constructor(data: Partial<GetTextResult>) {
-    super();
+  constructor(data: Partial<GetTextResult>, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       success: false,
       selector: '',
       text: '',
       found: false,
-      environment: 'server',
       timestamp: new Date().toISOString(),
       ...data
     });

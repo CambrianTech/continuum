@@ -8,6 +8,7 @@
 import { CommandBase } from '../../../shared/CommandBase';
 import type { ICommandDaemon } from '../../../shared/CommandBase';
 import type { JTAGContext } from '../../../../../shared/JTAGTypes';
+import { UUID } from 'crypto';
 import { WaitForElementParams } from './WaitForElementTypes';
 import type { WaitForElementResult } from './WaitForElementTypes';
 
@@ -17,13 +18,13 @@ export abstract class WaitForElementCommand extends CommandBase<WaitForElementPa
     super('wait-for-element', context, subpath, commander);
   }
 
-  public override getDefaultParams(): WaitForElementParams {
+  public override getDefaultParams(sessionId: UUID): WaitForElementParams {
     return new WaitForElementParams({
       selector: 'body',
       timeout: 30000,
       visible: true,
       interval: 100
-    });
+    }, this.context, sessionId);
   }
 
   abstract execute(params: WaitForElementParams): Promise<WaitForElementResult>;

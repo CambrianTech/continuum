@@ -6,8 +6,8 @@ export class TypeParams extends CommandParams {
   clearFirst?: boolean;
   delay?: number;
 
-  constructor(data: Partial<TypeParams> = {}) {
-    super();
+  constructor(data: Partial<TypeParams> = {}, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       selector: '',
       text: '',
@@ -24,17 +24,15 @@ export class TypeResult extends CommandResult {
   typed!: boolean;
   text!: string;
   error?: string;
-  environment!: JTAGContext['environment'];
   timestamp!: string;
 
-  constructor(data: Partial<TypeResult>) {
-    super();
+  constructor(data: Partial<TypeResult>, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       success: false,
       selector: '',
       typed: false,
       text: '',
-      environment: 'server',
       timestamp: new Date().toISOString(),
       ...data
     });

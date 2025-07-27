@@ -55,9 +55,8 @@ export class CompileTypescriptServerCommand extends CompileTypescriptCommand {
         errors: [],
         warnings: [],
         compilationTime,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
 
     } catch (error: any) {
       console.error(`❌ SERVER: TypeScript compilation failed:`, error.message);
@@ -65,9 +64,8 @@ export class CompileTypescriptServerCommand extends CompileTypescriptCommand {
         success: false,
         errors: [error.message],
         warnings: [],
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

@@ -65,9 +65,8 @@ export class ScrollBrowserCommand extends ScrollCommand {
         scrollY: finalY,
         selector: params.selector,
         scrolled: true,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Scroll failed:`, error.message);
@@ -78,9 +77,8 @@ export class ScrollBrowserCommand extends ScrollCommand {
         selector: params.selector,
         scrolled: false,
         error: error.message,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

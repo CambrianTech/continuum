@@ -30,135 +30,123 @@
  * - Specific response classes (ScreenshotResponse) extend base command pattern
  */
 
-import { JTAGPayload } from './JTAGTypes';
+import { type JTAGPayload, type JTAGContext, createPayload } from './JTAGTypes';
 import type { LogLevel } from './LogLevels';
+import { UUID } from 'crypto';
 
-// Base response structure
-export abstract class BaseResponsePayload extends JTAGPayload {
+// Base response structure - for system-level responses
+export interface BaseResponsePayload extends JTAGPayload {
   success: boolean;
   timestamp: string;
-
-  constructor(success: boolean) {
-    super();
-    this.success = success;
-    this.timestamp = new Date().toISOString();
-  }
 }
+
+/**
+ * Factory for creating base responses with defaults
+ */
+export const createBaseResponse = (
+  success: boolean,
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<BaseResponsePayload>, 'context' | 'sessionId' | 'success' | 'timestamp'>
+): BaseResponsePayload => createPayload(context, sessionId, {
+  success,
+  timestamp: new Date().toISOString(),
+  ...data
+});
 
 // Console daemon response types
-export class ConsoleSuccessResponse extends BaseResponsePayload {
+export interface ConsoleSuccessResponse extends BaseResponsePayload {
   filtered?: boolean;
   processed?: boolean;
-  context?: string;
   level?: LogLevel;
+}
 
-  constructor(data: { 
+export interface ConsoleErrorResponse extends BaseResponsePayload {
+  error: string;
+}
+
+export const createConsoleSuccessResponse = (
+  data: { 
     filtered?: boolean; 
     processed?: boolean; 
-    context?: string; 
     level?: LogLevel;
-  }) {
-    super(true);
-    this.filtered = data.filtered;
-    this.processed = data.processed;
-    this.context = data.context;
-    this.level = data.level;
-  }
-}
+  }, 
+  context: JTAGContext, 
+  sessionId: UUID
+): ConsoleSuccessResponse => createPayload(context, sessionId, {
+  success: true,
+  timestamp: new Date().toISOString(),
+  ...data
+});
 
-export class ConsoleErrorResponse extends BaseResponsePayload {
-  error: string;
-
-  constructor(error: string) {
-    super(false);
-    this.error = error;
-  }
-}
+export const createConsoleErrorResponse = (
+  error: string,
+  context: JTAGContext,
+  sessionId: UUID
+): ConsoleErrorResponse => createPayload(context, sessionId, {
+  success: false,
+  timestamp: new Date().toISOString(),
+  error
+});
 
 // Health daemon response types
-export class HealthPingResponse extends BaseResponsePayload {
+export interface HealthPingResponse extends BaseResponsePayload {
   pongId: string;
   uptime: number;
   memory?: {
     used: number;
     total: number;
   };
-
-  constructor(pongId: string, uptime: number, memory?: { used: number; total: number; }) {
-    super(true);
-    this.pongId = pongId;
-    this.uptime = uptime;
-    this.memory = memory;
-  }
 }
 
-export class HealthErrorResponse extends BaseResponsePayload {
+export interface HealthErrorResponse extends BaseResponsePayload {
   error: string;
-
-  constructor(error: string) {
-    super(false);
-    this.error = error;
-  }
 }
 
-// Command daemon response types
-export class CommandSuccessResponse extends BaseResponsePayload {
-  commandResult: unknown; // Specific command results can extend this
-  executionTime?: number;
+export const createHealthPingResponse = (
+  pongId: string,
+  uptime: number,
+  context: JTAGContext,
+  memory: { used: number; total: number; } | undefined,
+  sessionId: UUID
+): HealthPingResponse => createPayload(context, sessionId, {
+  success: true,
+  timestamp: new Date().toISOString(),
+  pongId,
+  uptime,
+  memory
+});
 
-  constructor(commandResult: unknown, executionTime?: number) {
-    super(true);
-    this.commandResult = commandResult;
-    this.executionTime = executionTime;
-  }
-}
-
-export class CommandErrorResponse extends BaseResponsePayload {
-  error: string;
-  commandName?: string;
-
-  constructor(error: string, commandName?: string) {
-    super(false);
-    this.error = error;
-    this.commandName = commandName;
-  }
-}
-
-// Screenshot command specific response
-export class ScreenshotResponse extends CommandSuccessResponse {
-  filename: string;
-  path: string;
-  size: number;
-
-  constructor(filename: string, path: string, size: number, executionTime?: number) {
-    super({ filename, path, size }, executionTime);
-    this.filename = filename;
-    this.path = path;
-    this.size = size;
-  }
-}
+export const createHealthErrorResponse = (
+  error: string,
+  context: JTAGContext,
+  sessionId: UUID
+): HealthErrorResponse => createPayload(context, sessionId, {
+  success: false,
+  timestamp: new Date().toISOString(),
+  error
+});
 
 // Union types for each daemon
 export type ConsoleResponse = ConsoleSuccessResponse | ConsoleErrorResponse;
-export type HealthResponse = HealthPingResponse | HealthErrorResponse;  
-export type CommandResponse = CommandSuccessResponse | CommandErrorResponse | ScreenshotResponse;
+export type HealthResponse = HealthPingResponse | HealthErrorResponse;
 
-// All possible response types
-export type JTAGResponsePayload = ConsoleResponse | HealthResponse | CommandResponse;
+// All possible response types (import CommandResponse from specific daemon modules)
+export type JTAGResponsePayload = ConsoleResponse | HealthResponse;
 
-// Type guards for response identification
+// Type guards for response identification - structural typing
 export function isConsoleResponse(payload: JTAGResponsePayload): payload is ConsoleResponse {
-  return payload instanceof ConsoleSuccessResponse || payload instanceof ConsoleErrorResponse;
+  return 'filtered' in payload || 'processed' in payload || 'level' in payload || 
+         (payload.success === false && 'error' in payload && !('pongId' in payload) && !('commandResult' in payload));
 }
 
 export function isHealthResponse(payload: JTAGResponsePayload): payload is HealthResponse {
-  return payload instanceof HealthPingResponse || payload instanceof HealthErrorResponse;
+  return 'pongId' in payload || 'uptime' in payload || 
+         (payload.success === false && 'error' in payload && !('filtered' in payload) && !('commandResult' in payload));
 }
 
 export function isCommandResponse(payload: JTAGResponsePayload): payload is CommandResponse {
-  return payload instanceof CommandSuccessResponse || 
-         payload instanceof CommandErrorResponse || 
-         payload instanceof ScreenshotResponse;
+  return 'commandResult' in payload || 'commandName' in payload;
 }
 
 export function isSuccessResponse(payload: JTAGResponsePayload): payload is BaseResponsePayload {

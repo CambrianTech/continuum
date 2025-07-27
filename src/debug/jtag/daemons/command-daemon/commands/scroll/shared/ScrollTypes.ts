@@ -6,8 +6,8 @@ export class ScrollParams extends CommandParams {
   selector?: string; // Optional element to scroll to
   behavior?: 'auto' | 'smooth' | 'instant';
 
-  constructor(data: Partial<ScrollParams> = {}) {
-    super();
+  constructor(data: Partial<ScrollParams> = {}, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       x: 0,
       y: 0,
@@ -25,18 +25,16 @@ export class ScrollResult extends CommandResult {
   selector?: string;
   scrolled!: boolean;
   error?: string;
-  environment!: JTAGContext['environment'];
   timestamp!: string;
 
-  constructor(data: Partial<ScrollResult>) {
-    super();
+  constructor(data: Partial<ScrollResult>, context: JTAGContext, sessionId: string) {
+    super(context, sessionId);
     Object.assign(this, {
       success: false,
       scrollX: 0,
       scrollY: 0,
       selector: undefined,
       scrolled: false,
-      environment: 'server',
       timestamp: new Date().toISOString(),
       ...data
     });

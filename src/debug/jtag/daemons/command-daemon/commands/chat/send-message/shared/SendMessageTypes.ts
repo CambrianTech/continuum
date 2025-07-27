@@ -9,14 +9,15 @@
  */
 
 import { ChatParams, ChatResult } from '@chatShared/ChatTypes';
+import type { JTAGContext } from '@shared/JTAGTypes';
 
 export class SendMessageParams extends ChatParams {
   content!: string;
   senderId?: string;
   messageType?: 'text' | 'system' | 'notification';
 
-  constructor(data: Partial<SendMessageParams> = {}) {
-    super(data);
+  constructor(data: Partial<SendMessageParams> = {}, context: JTAGContext, sessionId: string) {
+    super(data, context, sessionId);
     this.content = data.content ?? '';
     this.senderId = data.senderId;
     this.messageType = data.messageType ?? 'text';
@@ -27,8 +28,8 @@ export class SendMessageResult extends ChatResult {
   messageId!: string;
   deliveredAt?: string;
 
-  constructor(data: Partial<SendMessageResult> & { messageId: string; roomId: string }) {
-    super(data);
+  constructor(data: Partial<SendMessageResult> & { messageId: string; roomId: string }, context: JTAGContext, sessionId: string) {
+    super(data, context, sessionId);
     this.messageId = data.messageId;
     this.deliveredAt = data.deliveredAt;
   }

@@ -41,9 +41,8 @@ export class ClickServerCommand extends ClickCommand {
         selector: params.selector,
         clicked: false,
         error: error.message,
-        environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

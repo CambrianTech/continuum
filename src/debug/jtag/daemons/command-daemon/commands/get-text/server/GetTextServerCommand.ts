@@ -40,7 +40,7 @@ export class GetTextServerCommand extends CommandBase<GetTextParams, GetTextResu
         environment: this.context.environment,
         timestamp: new Date().toISOString(),
         error: error.message
-      });
+      }, getTextParams.context, getTextParams.sessionId);
     }
   }
 }

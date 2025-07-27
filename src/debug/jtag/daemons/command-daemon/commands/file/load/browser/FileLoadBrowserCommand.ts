@@ -33,7 +33,7 @@ export class FileLoadBrowserCommand extends FileLoadCommand {
         error: error.message,
         environment: this.context.environment,
         timestamp: new Date().toISOString()
-      });
+      }, params.context, params.sessionId);
     }
   }
 }

@@ -41,7 +41,7 @@ export class SendRoomEventBrowserCommand extends SendRoomEventCommand {
         roomId: eventParams.roomId,
         success: false,
         error: error.message
-      });
+      }, eventParams.context, eventParams.sessionId);
     }
   }
 

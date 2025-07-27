@@ -11,6 +11,7 @@
  * - JTAGPayload: Base class for all transportable data
  * - JTAGMessage: Complete message envelope with routing metadata
  * - Message Factory: Type-safe message construction patterns
+ * - SessionUUID: Type-safe UUID validation for session accountability
  * 
  * TESTING REQUIREMENTS:
  * - Unit tests: Type validation and serialization/deserialization
@@ -23,6 +24,8 @@
  * - Message factory eliminates manual routing header construction
  * - UUID correlation enables distributed debugging across contexts
  */
+
+import { UUID } from 'crypto';
 
 /**
  * JTAG Environment Constants
@@ -37,6 +40,7 @@ export const JTAG_ENVIRONMENTS = {
 } as const;
 
 export type JTAGEnvironment = typeof JTAG_ENVIRONMENTS[keyof typeof JTAG_ENVIRONMENTS];
+
 
 /**
  * JTAG Context - Universal Module Identity
@@ -58,69 +62,102 @@ export interface JTAGContext {
  * Abstract foundation for all data transported through the JTAG system.
  * Provides consistent serialization and cross-platform encoding capabilities.
  * 
+ * UNIVERSAL CONTEXT & SESSION:
+ * - Every payload carries routing context (environment identity)
+ * - Every payload carries session identity (cross-system accountability)
+ * - Enables distributed session management with automatic traceability
+ * 
  * DESIGN PATTERN:
  * - All daemon responses extend this base
  * - Ensures type safety in message routing
  * - Cross-platform encoding (Node.js Buffer vs browser btoa)
  */
-export abstract class JTAGPayload {
-  /**
-   * Cross-platform payload encoding for transport
-   * Uses Node.js Buffer or browser btoa depending on environment
-   */
-  encode(): string {
-    const jsonString = JSON.stringify(this);
+export interface JTAGPayload {
+  readonly context: JTAGContext;
+  readonly sessionId: UUID;
+}
+
+/**
+ * Functional factory for creating payloads - eliminates constructor complexity
+ * Rust-like inheritance: creates payload from source + differences
+ */
+export const createPayload = <T>(
+  context: JTAGContext,
+  sessionId: UUID,
+  data: T
+): T & JTAGPayload => ({
+  context,
+  sessionId,
+  ...data
+});
+
+/**
+ * Transform payload: inherit from source + apply differences
+ * Eliminates repetitive field copying - pure functional approach
+ */
+export const transformPayload = <TSource extends JTAGPayload, TTarget>(
+  source: TSource,
+  differences: TTarget
+): TTarget & JTAGPayload => ({
+  ...source,
+  ...differences,
+  context: source.context,
+  sessionId: source.sessionId
+});
+
+/**
+ * Cross-platform payload encoding for transport
+ * Uses Node.js Buffer or browser btoa depending on environment
+ */
+export const encodePayload = (payload: JTAGPayload): string => {
+  const jsonString = JSON.stringify(payload);
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(jsonString, 'utf-8').toString('base64');
+  } else {
+    // Browser fallback
+    return btoa(jsonString);
+  }
+};
+
+/**
+ * Cross-platform payload decoding from transport
+ * Reverses encoding process with error handling for malformed data
+ */
+export const decodePayload = <T extends JTAGPayload>(encoded: string): T => {
+  try {
+    let jsonString: string;
     if (typeof Buffer !== 'undefined') {
-      return Buffer.from(jsonString, 'utf-8').toString('base64');
+      jsonString = Buffer.from(encoded, 'base64').toString('utf-8');
     } else {
       // Browser fallback
-      return btoa(jsonString);
+      jsonString = atob(encoded);
     }
+    return JSON.parse(jsonString) as T;
+  } catch (error) {
+    throw new Error(`Failed to decode payload: ${error}`);
   }
+};
 
-  /**
-   * Cross-platform payload decoding from transport
-   * Reverses encoding process with error handling for malformed data
-   */
-  static decode<T extends JTAGPayload>(this: new() => T, encoded: string): T {
-    try {
-      let jsonString: string;
-      if (typeof Buffer !== 'undefined') {
-        jsonString = Buffer.from(encoded, 'base64').toString('utf-8');
-      } else {
-        // Browser fallback
-        jsonString = atob(encoded);
-      }
-      const data = JSON.parse(jsonString);
-      const instance = new this();
-      Object.assign(instance, data);
-      return instance;
-    } catch (error) {
-      throw new Error(`Failed to decode ${this.name}: ${error}`);
-    }
-  }
+/**
+ * Check equality between two payloads
+ */
+export const payloadEquals = (payload1: JTAGPayload, payload2: JTAGPayload): boolean => {
+  return payloadHashCode(payload1) === payloadHashCode(payload2);
+};
 
-  /**
-   * Check equality with another payload
-   */
-  equals(other: JTAGPayload): boolean {
-    return this.hashCode() === other.hashCode();
+/**
+ * Generate hash code for payload equality comparison
+ */
+export const payloadHashCode = (payload: JTAGPayload): string => {
+  const jsonString = JSON.stringify(payload);
+  let hash = 0;
+  for (let i = 0; i < jsonString.length; i++) {
+    const char = jsonString.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
   }
-
-  /**
-   * Generate hash code for equality comparison
-   */
-  hashCode(): string {
-    const jsonString = JSON.stringify(this);
-    let hash = 0;
-    for (let i = 0; i < jsonString.length; i++) {
-      const char = jsonString.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32-bit integer
-    }
-    return hash.toString(16);
-  }
-}
+  return hash.toString(16);
+};
 
 /**
  * Base JTAG Message interface
@@ -282,7 +319,7 @@ export class JTAGMessageUtils {
     const content = JSON.stringify({
       origin: message.origin,
       endpoint: message.endpoint,
-      payloadHash: message.payload.hashCode()
+      payloadHash: payloadHashCode(message.payload)
     });
     
     return JTAGMessageUtils.simpleHash(content);
@@ -313,17 +350,25 @@ export class JTAGMessageUtils {
 }
 
 /**
- * Command Parameters base class
+ * Command Parameters interface
  */
-export abstract class CommandParams extends JTAGPayload {
-  // Base command parameters - subclasses add specific fields
+export interface CommandParams extends JTAGPayload {
+  // Base command parameters - specific commands add specific fields
 }
 
-export abstract class CommandResult extends JTAGPayload {
-  // Base command results - subclasses add specific fields
+/**
+ * Command Result interface  
+ */
+export interface CommandResult extends JTAGPayload {
+  // Base command results - specific commands add specific fields
 }
 
 /**
  * Command Message type
  */
 export type CommandMessage<T extends CommandParams = CommandParams> = JTAGMessage<T>;
+
+/**
+ * Session and context propagation through explicit payload parameters
+ * No global state - everything flows through payload chain
+ */

@@ -8,6 +8,7 @@
 import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 import { FileLoadParams } from './FileLoadTypes';
 import type { FileLoadResult } from './FileLoadTypes';
 
@@ -18,11 +19,11 @@ export abstract class FileLoadCommand extends CommandBase<FileLoadParams, FileLo
     super('file-load', context, subpath, commander);
   }
 
-  public override getDefaultParams(): FileLoadParams {
+  public override getDefaultParams(sessionId: UUID): FileLoadParams {
     return new FileLoadParams({
       filepath: '',
       encoding: 'utf8'
-    });
+    }, this.context, sessionId);
   }
 
   abstract execute(params: FileLoadParams): Promise<FileLoadResult>;

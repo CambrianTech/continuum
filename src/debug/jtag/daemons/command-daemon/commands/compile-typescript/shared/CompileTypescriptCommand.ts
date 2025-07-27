@@ -16,6 +16,7 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 import { CompileTypescriptParams } from './CompileTypescriptTypes';
 import type { CompileTypescriptResult } from './CompileTypescriptTypes';
 
@@ -25,12 +26,12 @@ export abstract class CompileTypescriptCommand extends CommandBase<CompileTypesc
     super('compile-typescript', context, subpath, commander);
   }
 
-  public override getDefaultParams(): CompileTypescriptParams {
+  public override getDefaultParams(sessionId: UUID): CompileTypescriptParams {
     return new CompileTypescriptParams({
       source: '',
       target: 'es2020',
       strict: true
-    });
+    }, this.context, sessionId);
   }
 
   abstract execute(params: CompileTypescriptParams): Promise<CompileTypescriptResult>;
