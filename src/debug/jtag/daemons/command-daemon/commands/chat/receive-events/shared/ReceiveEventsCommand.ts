@@ -2,7 +2,7 @@ import { ChatCommandBase } from '@chatShared/ChatCommandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { ReceiveEventsParams, type ReceiveEventsResult } from './ReceiveEventsTypes';
+import { type ReceiveEventsParams, type ReceiveEventsResult, createReceiveEventsParams } from './ReceiveEventsTypes';
 
 export abstract class ReceiveEventsCommand extends ChatCommandBase<ReceiveEventsParams, ReceiveEventsResult> {
 
@@ -11,12 +11,12 @@ export abstract class ReceiveEventsCommand extends ChatCommandBase<ReceiveEvents
   }
 
   public override getDefaultParams(sessionId: UUID): ReceiveEventsParams {
-    return new ReceiveEventsParams({
+    return createReceiveEventsParams(this.context, sessionId, {
       roomId: '',
       eventTypes: ['message', 'room_event'],
       maxEvents: 100,
       timeoutMs: 30000
-    }, this.context, sessionId);
+    });
   }
 
   abstract execute(params: ReceiveEventsParams): Promise<ReceiveEventsResult>;

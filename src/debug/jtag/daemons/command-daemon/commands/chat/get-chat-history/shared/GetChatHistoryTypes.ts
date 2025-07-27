@@ -25,6 +25,8 @@ export const createGetChatHistoryParams = (
   sessionId: UUID,
   data: Omit<Partial<GetChatHistoryParams>, 'context' | 'sessionId'>
 ): GetChatHistoryParams => createPayload(context, sessionId, {
+  roomId: data.roomId ?? '',
+  nodeId: data.nodeId,
   participantId: data.participantId,
   maxMessages: data.maxMessages ?? 50,
   hoursBack: data.hoursBack ?? 24,
@@ -40,8 +42,12 @@ export interface GetChatHistoryResult extends ChatResult {
 export const createGetChatHistoryResult = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<Partial<GetChatHistoryResult>, 'context' | 'sessionId'> & { roomId: string }
+  data: Omit<Partial<GetChatHistoryResult>, 'context' | 'sessionId'> & { 
+    roomId: string;
+    success: boolean;
+  }
 ): GetChatHistoryResult => createPayload(context, sessionId, {
+  timestamp: new Date().toISOString(),
   messages: Object.freeze([...(data.messages ?? [])]),
   totalCount: data.totalCount ?? 0,
   ...data

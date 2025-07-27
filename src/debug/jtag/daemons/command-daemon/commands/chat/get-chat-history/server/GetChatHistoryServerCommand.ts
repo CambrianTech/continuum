@@ -8,7 +8,7 @@
  */
 
 import { GetChatHistoryCommand } from '../shared/GetChatHistoryCommand';
-import { type GetChatHistoryParams, GetChatHistoryResult, type ChatMessage } from '../shared/GetChatHistoryTypes';
+import { type GetChatHistoryParams, type GetChatHistoryResult, createGetChatHistoryResult, type ChatMessage } from '../shared/GetChatHistoryTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { ICommandDaemon } from '@commandBase';
 
@@ -50,26 +50,26 @@ export class GetChatHistoryServerCommand extends GetChatHistoryCommand {
       console.log(`📋 SERVER: Retrieved ${messages.length} messages for room ${roomId}`);
       
       // Elegant result creation with spread
-      return new GetChatHistoryResult({
+      return createGetChatHistoryResult(params.context, params.sessionId, {
         ...this.createBaseResult(),
         success: true,
         messages,
         totalCount: messages.length,
         roomId
-      }, params.context, params.sessionId);
+      });
 
     } catch (error) {
       console.error(`❌ SERVER: Failed to get chat history:`, error);
       
       // Elegant error result with spread operator
-      return new GetChatHistoryResult({
+      return createGetChatHistoryResult(params.context, params.sessionId, {
         ...this.createBaseResult(),
         success: false,
         messages: [],
         totalCount: 0,
         roomId: roomId ?? '',
         error: error instanceof Error ? error.message : String(error)
-      }, params.context, params.sessionId);
+      });
     }
   }
 

@@ -19,7 +19,8 @@
  * - Widget-persona-human coordination through shared event streams
  */
 
-import { CommandParams, CommandResult, type JTAGContext } from '@shared/JTAGTypes';
+import { CommandParams, CommandResult, type JTAGContext, createPayload } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 
 // ========================
 // Room Event Subscription
@@ -28,29 +29,36 @@ import { CommandParams, CommandResult, type JTAGContext } from '@shared/JTAGType
 /**
  * Room Event Subscription Parameters
  */
-export class RoomEventSubscriptionParams extends CommandParams {
-  participantId: string;               // Human, persona, or widget ID
-  participantType: ParticipantType;
-  roomId: string;
+export interface RoomEventSubscriptionParams extends CommandParams {
+  readonly participantId: string;               // Human, persona, or widget ID
+  readonly participantType: ParticipantType;
+  readonly roomId: string;
   
   // Subscription configuration
-  eventTypes?: RoomEventType[];        // Specific events to subscribe to
-  eventFilters?: RoomEventFilters;
+  readonly eventTypes?: RoomEventType[];        // Specific events to subscribe to
+  readonly eventFilters?: RoomEventFilters;
   
   // Subscription behavior
-  subscriptionOptions?: SubscriptionOptions;
+  readonly subscriptionOptions?: SubscriptionOptions;
   
   // Widget-specific options
-  widgetOptions?: WidgetSubscriptionOptions;
-
-  constructor(data: Partial<RoomEventSubscriptionParams> = {}, context: JTAGContext, sessionId: string) {
-    super(context, sessionId);
-    this.participantId = data.participantId ?? '';
-    this.participantType = data.participantType ?? 'human';
-    this.roomId = data.roomId ?? '';
-    Object.assign(this, data);
-  }
+  readonly widgetOptions?: WidgetSubscriptionOptions;
 }
+
+export const createRoomEventSubscriptionParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<RoomEventSubscriptionParams>, 'context' | 'sessionId'>
+): RoomEventSubscriptionParams => createPayload(context, sessionId, {
+  participantId: data.participantId ?? '',
+  participantType: data.participantType ?? 'human',
+  roomId: data.roomId ?? '',
+  eventTypes: data.eventTypes,
+  eventFilters: data.eventFilters,
+  subscriptionOptions: data.subscriptionOptions,
+  widgetOptions: data.widgetOptions,
+  ...data
+});
 
 /**
  * Participant Type
@@ -399,7 +407,7 @@ export interface SelectionInfo {
 /**
  * Room Event Subscription Result
  */
-export class RoomEventSubscriptionResult extends CommandResult {
+export interface RoomEventSubscriptionResult extends CommandResult {
   success: boolean;
   subscriptionId: string;
   participantId: string;
@@ -425,27 +433,22 @@ export class RoomEventSubscriptionResult extends CommandResult {
   error?: string;
   warnings?: string[];
 
-  constructor(data: Partial<RoomEventSubscriptionResult> & { 
-    participantId: string; 
-    roomId: string; 
-  }, context: JTAGContext, sessionId: string) {
-    super(context, sessionId);
-    this.success = data.success ?? false;
-    this.subscriptionId = data.subscriptionId || `sub_${Date.now()}`;
-    this.participantId = data.participantId;
-    this.roomId = data.roomId;
-    this.subscribedEventTypes = data.subscribedEventTypes || [];
-    this.subscriptionStatus = data.subscriptionStatus || 'pending';
-    this.eventStreamEndpoint = data.eventStreamEndpoint;
-    this.eventStreamToken = data.eventStreamToken;
-    this.backfilledEvents = data.backfilledEvents;
-    this.backfillCount = data.backfillCount;
-    this.subscriptionLatency = data.subscriptionLatency;
-    this.expectedEventRate = data.expectedEventRate;
-    this.error = data.error;
-    this.warnings = data.warnings;
-  }
 }
+
+export const createRoomEventSubscriptionResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<RoomEventSubscriptionResult>, 'context' | 'sessionId'> & {
+    success: boolean;
+    subscriptionId: string;
+    participantId: string;
+    roomId: string;
+  }
+): RoomEventSubscriptionResult => createPayload(context, sessionId, {
+  subscribedEventTypes: data.subscribedEventTypes ?? [],
+  subscriptionStatus: data.subscriptionStatus ?? 'pending',
+  ...data
+});
 
 /**
  * Subscription Status
@@ -465,7 +468,7 @@ export type SubscriptionStatus =
 /**
  * Send Room Event Parameters
  */
-export class SendRoomEventParams extends CommandParams {
+export interface SendRoomEventParams extends CommandParams {
   roomId: string;
   sourceParticipantId: string;
   sourceParticipantType: ParticipantType;
@@ -485,19 +488,6 @@ export class SendRoomEventParams extends CommandParams {
   // Target filtering
   targetFilters?: EventTargetFilters;
 
-  constructor(data: Partial<SendRoomEventParams> = {}, context: JTAGContext, sessionId: string) {
-    super(context, sessionId);
-    this.roomId = data.roomId || '';
-    this.sourceParticipantId = data.sourceParticipantId || '';
-    this.sourceParticipantType = data.sourceParticipantType || 'human';
-    this.eventType = data.eventType || 'custom_event';
-    this.eventData = data.eventData || {};
-    this.priority = data.priority || 'normal';
-    this.ttl = data.ttl;
-    this.correlationId = data.correlationId;
-    this.deliveryOptions = data.deliveryOptions;
-    this.targetFilters = data.targetFilters;
-  }
 }
 
 /**
@@ -556,7 +546,7 @@ export interface EventTargetFilters {
 /**
  * Send Room Event Result
  */
-export class SendRoomEventResult extends CommandResult {
+export interface SendRoomEventResult extends CommandResult {
   success: boolean;
   eventId: string;
   roomId: string;
@@ -578,21 +568,6 @@ export class SendRoomEventResult extends CommandResult {
   error?: string;
   warnings?: string[];
 
-  constructor(data: Partial<SendRoomEventResult> & { roomId: string }, context: JTAGContext, sessionId: string) {
-    super(context, sessionId);
-    this.success = data.success ?? false;
-    this.eventId = data.eventId || `evt_${Date.now()}`;
-    this.roomId = data.roomId;
-    this.recipientCount = data.recipientCount || 0;
-    this.deliveryTime = data.deliveryTime || 0;
-    this.acknowledgedBy = data.acknowledgedBy;
-    this.eventProcessingTime = data.eventProcessingTime;
-    this.routingTime = data.routingTime;
-    this.deliveryStatus = data.deliveryStatus || 'pending';
-    this.failedDeliveries = data.failedDeliveries;
-    this.error = data.error;
-    this.warnings = data.warnings;
-  }
 }
 
 /**

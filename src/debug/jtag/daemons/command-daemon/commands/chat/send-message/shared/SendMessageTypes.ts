@@ -10,27 +10,41 @@
 
 import { ChatParams, ChatResult } from '@chatShared/ChatTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import { createPayload } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 
-export class SendMessageParams extends ChatParams {
-  content!: string;
-  senderId?: string;
-  messageType?: 'text' | 'system' | 'notification';
-
-  constructor(data: Partial<SendMessageParams> = {}, context: JTAGContext, sessionId: string) {
-    super(data, context, sessionId);
-    this.content = data.content ?? '';
-    this.senderId = data.senderId;
-    this.messageType = data.messageType ?? 'text';
-  }
+export interface SendMessageParams extends ChatParams {
+  readonly content: string;
+  readonly senderId?: string;
+  readonly messageType?: 'text' | 'system' | 'notification';
 }
 
-export class SendMessageResult extends ChatResult {
-  messageId!: string;
-  deliveredAt?: string;
+export const createSendMessageParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<SendMessageParams>, 'context' | 'sessionId'>
+): SendMessageParams => createPayload(context, sessionId, {
+  roomId: data.roomId ?? '',
+  nodeId: data.nodeId,
+  content: data.content ?? '',
+  messageType: data.messageType ?? 'text',
+  ...data
+});
 
-  constructor(data: Partial<SendMessageResult> & { messageId: string; roomId: string }, context: JTAGContext, sessionId: string) {
-    super(data, context, sessionId);
-    this.messageId = data.messageId;
-    this.deliveredAt = data.deliveredAt;
-  }
+export interface SendMessageResult extends ChatResult {
+  readonly messageId: string;
+  readonly deliveredAt?: string;
 }
+
+export const createSendMessageResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<SendMessageResult>, 'context' | 'sessionId'> & {
+    success: boolean;
+    roomId: string;
+    messageId: string;
+  }
+): SendMessageResult => createPayload(context, sessionId, {
+  timestamp: new Date().toISOString(),
+  ...data
+});
