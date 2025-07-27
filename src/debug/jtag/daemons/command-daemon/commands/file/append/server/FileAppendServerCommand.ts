@@ -8,7 +8,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import  { type FileAppendParams, FileAppendResult } from '@fileAppendShared/FileAppendTypes';
+import  { type FileAppendParams, type FileAppendResult, createFileAppendResult } from '@fileAppendShared/FileAppendTypes';
 
 export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileAppendResult> {
   
@@ -49,28 +49,24 @@ export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileA
       
       console.log(`✅ SERVER: Appended ${bytesAppended} bytes to ${resolvedPath}`);
       
-      return new FileAppendResult({
+      return createFileAppendResult(params.context, params.sessionId, {
         success: true,
         filepath: resolvedPath,
         exists: true,
         bytesAppended: bytesAppended,
-        wasCreated: wasCreated,
-        environment: this.context.environment,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        wasCreated: wasCreated
+      });
 
     } catch (error: any) {
       console.error(`❌ SERVER: File append failed:`, error.message);
-      return new FileAppendResult({
+      return createFileAppendResult(params.context, params.sessionId, {
         success: false,
         filepath: appendParams.filepath,
         exists: false,
         bytesAppended: 0,
         wasCreated: false,
-        error: error.message,
-        environment: this.context.environment,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: error.message
+      });
     }
   }
 }

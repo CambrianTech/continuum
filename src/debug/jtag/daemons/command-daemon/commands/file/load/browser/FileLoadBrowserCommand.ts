@@ -4,7 +4,7 @@
  * Browser delegates to server for file I/O (can't read filesystem directly)
  */
 
-import { type FileLoadParams, FileLoadResult } from '@fileLoadShared/FileLoadTypes';
+import { type FileLoadParams, type FileLoadResult, createFileLoadResult } from '@fileLoadShared/FileLoadTypes';
 import { FileLoadCommand } from '@fileLoadShared/FileLoadCommand';
 
 export class FileLoadBrowserCommand extends FileLoadCommand {
@@ -24,16 +24,14 @@ export class FileLoadBrowserCommand extends FileLoadCommand {
 
     } catch (error: any) {
       console.error(`❌ BROWSER: File load delegation failed:`, error.message);
-      return new FileLoadResult({
+      return createFileLoadResult(params.context, params.sessionId, {
         success: false,
         filepath: params.filepath,
         content: '',
         bytesRead: 0,
         exists: false,
-        error: error.message,
-        environment: this.context.environment,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: error.message
+      });
     }
   }
 }

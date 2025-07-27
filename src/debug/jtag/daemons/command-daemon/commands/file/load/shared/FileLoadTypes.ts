@@ -6,28 +6,42 @@
  * FileResult → FileLoadResult (adds content, bytesRead)
  */
 
-import { FileParams, FileResult } from '@fileShared/FileTypes';
+import { type FileParams, type FileResult, createFileParams, createFileResult } from '@fileShared/FileTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 
-export class FileLoadParams extends FileParams {
+export interface FileLoadParams extends FileParams {
   // Pure inheritance - no additional fields needed
   // FileParams already provides filepath, encoding
-  
-  constructor(data: Partial<FileLoadParams> = {}, context: JTAGContext, sessionId: string) {
-    super(data, context, sessionId); // Parent handles filepath, encoding
-  }
 }
 
-export class FileLoadResult extends FileResult {
-  content!: string;
-  bytesRead!: number;
-
-  constructor(data: Partial<FileLoadResult>, context: JTAGContext, sessionId: string) {
-    super(data, context, sessionId); // Parent handles success, filepath, exists, error, timestamp
-    Object.assign(this, {
-      content: '',
-      bytesRead: 0,
-      ...data
-    });
+export const createFileLoadParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    filepath?: string;
+    encoding?: string;
   }
+): FileLoadParams => createFileParams(context, sessionId, data);
+
+export interface FileLoadResult extends FileResult {
+  readonly content: string;
+  readonly bytesRead: number;
 }
+
+export const createFileLoadResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    success: boolean;
+    filepath: string;
+    content?: string;
+    bytesRead?: number;
+    exists?: boolean;
+    error?: string;
+  }
+): FileLoadResult => createFileResult(context, sessionId, {
+  content: data.content ?? '',
+  bytesRead: data.bytesRead ?? 0,
+  ...data
+});
