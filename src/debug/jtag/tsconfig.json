@@ -16,6 +16,7 @@
       "@commandDaemon/*": ["daemons/command-daemon/*"],
       "@consoleDaemon/*": ["daemons/console-daemon/*"],
       "@healthDaemon/*": ["daemons/health-daemon/*"],
+      "@sessionDaemon/*": ["daemons/session-daemon/*"],
       
       "@commandsRoot/*": ["daemons/command-daemon/commands/*"],
       "@commandBase": ["daemons/command-daemon/shared/CommandBase"],
@@ -46,6 +47,7 @@
       
       "@consoleShared/*": ["daemons/console-daemon/shared/*"],
       "@healthShared/*": ["daemons/health-daemon/shared/*"],
+      "@sessionShared/*": ["daemons/session-daemon/shared/*"],
       
       "@sharedRouting/*": ["shared/routing/*"],
       "@sharedQueuing/*": ["shared/queuing/*"], 

@@ -13,12 +13,12 @@
  * - Message routing → RouterDaemon
  */
 
-import { DaemonBase } from '../../../shared/DaemonBase';
-import type { JTAGContext, JTAGMessage, JTAGPayload } from '../../../shared/JTAGTypes';
-import { createPayload } from '../../../shared/JTAGTypes';
-import { JTAGRouter } from '../../../shared/JTAGRouter';
-import { createSessionSuccessResponse, createSessionErrorResponse, type SessionResponse } from '../../../shared/ResponseTypes';
-import { generateUUID, type UUID } from '../../../shared/CrossPlatformUUID';
+import { DaemonBase } from '@shared/DaemonBase';
+import type { JTAGContext, JTAGMessage, JTAGPayload } from '@shared/JTAGTypes';
+import { createPayload } from '@shared/JTAGTypes';
+import { JTAGRouter } from '@shared/JTAGRouter';
+import { createSessionSuccessResponse, createSessionErrorResponse, type SessionResponse } from '@shared/ResponseTypes';
+import { generateUUID, type UUID } from '@shared/CrossPlatformUUID';
 
 /**
  * Session Types

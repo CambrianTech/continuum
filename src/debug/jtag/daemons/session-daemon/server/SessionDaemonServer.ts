@@ -5,9 +5,9 @@
  * Follows the sparse override pattern - minimal server-specific logic.
  */
 
-import { JTAGContext } from '../../../shared/JTAGTypes';
-import { JTAGRouter } from '../../../shared/JTAGRouter';
-import { SessionDaemon } from '../shared/SessionDaemon';
+import { JTAGContext } from '@shared/JTAGTypes';
+import { JTAGRouter } from '@shared/JTAGRouter';
+import { SessionDaemon } from '@sessionShared/SessionDaemon';
 
 export class SessionDaemonServer extends SessionDaemon {
   

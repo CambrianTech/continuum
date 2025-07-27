@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag-test-bench",
-  "version": "1.0.159",
+  "version": "1.0.160",
   "description": "JTAG Test Bench - Standalone Example App",
   "main": "dist/index.js",
   "config": {
@@ -22,7 +22,7 @@
     "dev": "npx tsx src/minimal-server.ts"
   },
   "dependencies": {
-    "@continuum/jtag": "file:../../continuum-jtag-1.0.250.tgz"
+    "@continuum/jtag": "file:../../continuum-jtag-1.0.251.tgz"
   },
   "devDependencies": {
     "esbuild": "^0.19.12",
