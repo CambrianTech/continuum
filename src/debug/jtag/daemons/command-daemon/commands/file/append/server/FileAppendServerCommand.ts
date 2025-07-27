@@ -18,7 +18,7 @@ export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileA
   }
 
   /**
-   * Server does file operations natively (no delegation needed)
+   * TEMPORARY: Session-based file append until ArtifactoryDaemon is implemented
    */
   async execute(params: JTAGPayload): Promise<FileAppendResult> {
     const appendParams = params as FileAppendParams;
@@ -26,33 +26,37 @@ export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileA
     console.log(`📝 SERVER: Appending to file: ${appendParams.filepath}`);
 
     try {
-      const resolvedPath = path.resolve(appendParams.filepath);
+      // TEMPORARY: Create session-based path manually
+      const sessionId = appendParams.sessionId;
+      const basePath = `.continuum/jtag/sessions/user/${sessionId}`;
+      const fullPath = path.resolve(basePath, appendParams.filepath);
       let wasCreated = false;
+      
+      console.log(`📝 SERVER: Appending to session path: ${fullPath}`);
       
       // Check if file exists
       try {
-        await fs.access(resolvedPath);
+        await fs.access(fullPath);
       } catch {
         if (appendParams.createIfMissing) {
           // Create parent directories if needed
-          await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+          await fs.mkdir(path.dirname(fullPath), { recursive: true });
           wasCreated = true;
         } else {
-          throw new Error(`File not found: ${resolvedPath}`);
+          throw new Error(`File not found: ${fullPath}`);
         }
       }
       
       // Append content
-      await fs.appendFile(resolvedPath, appendParams.content, { encoding: (appendParams.encoding ?? 'utf8') as BufferEncoding });
+      await fs.appendFile(fullPath, appendParams.content, { encoding: (appendParams.encoding ?? 'utf8') as BufferEncoding });
 
-      // const stats = await fs.stat(resolvedPath);
       const bytesAppended = Buffer.byteLength(appendParams.content, (appendParams.encoding ?? 'utf8') as BufferEncoding);
       
-      console.log(`✅ SERVER: Appended ${bytesAppended} bytes to ${resolvedPath}`);
+      console.log(`✅ SERVER: Appended ${bytesAppended} bytes to ${fullPath}`);
       
       return createFileAppendResult(params.context, params.sessionId, {
         success: true,
-        filepath: resolvedPath,
+        filepath: fullPath,
         exists: true,
         bytesAppended: bytesAppended,
         wasCreated: wasCreated

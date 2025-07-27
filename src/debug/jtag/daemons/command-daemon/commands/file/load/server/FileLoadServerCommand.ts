@@ -19,7 +19,7 @@ export class FileLoadServerCommand extends CommandBase<FileLoadParams, FileLoadR
   }
 
   /**
-   * Server does file operations natively (no delegation needed)
+   * TEMPORARY: Session-based file loading until ArtifactoryDaemon is implemented
    */
   async execute(params: JTAGPayload): Promise<FileLoadResult> {
     const loadParams = params as FileLoadParams;
@@ -27,24 +27,29 @@ export class FileLoadServerCommand extends CommandBase<FileLoadParams, FileLoadR
     console.log(`📖 SERVER: Loading file: ${loadParams.filepath}`);
 
     try {
-      const resolvedPath = path.resolve(loadParams.filepath);
+      // TEMPORARY: Create session-based path manually
+      const sessionId = loadParams.sessionId;
+      const basePath = `.continuum/jtag/sessions/user/${sessionId}`;
+      const fullPath = path.resolve(basePath, loadParams.filepath);
+      
+      console.log(`📝 SERVER: Loading from session path: ${fullPath}`);
       
       // Check if file exists
       try {
-        await fs.access(resolvedPath);
+        await fs.access(fullPath);
       } catch {
-        throw new Error(`File not found: ${resolvedPath}`);
+        throw new Error(`File not found: ${fullPath}`);
       }
       
       // Read file
-      const content = await fs.readFile(resolvedPath, { encoding: (loadParams.encoding ?? 'utf8') as BufferEncoding });
-      const stats = await fs.stat(resolvedPath);
+      const content = await fs.readFile(fullPath, { encoding: (loadParams.encoding ?? 'utf8') as BufferEncoding });
+      const stats = await fs.stat(fullPath);
       
-      console.log(`✅ SERVER: Loaded ${stats.size} bytes from ${resolvedPath}`);
+      console.log(`✅ SERVER: Loaded ${stats.size} bytes from ${fullPath}`);
       
       return createFileLoadResult(params.context, params.sessionId, {
         success: true,
-        filepath: resolvedPath,
+        filepath: fullPath,
         content: content,
         bytesRead: stats.size,
         exists: true

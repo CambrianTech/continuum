@@ -60,6 +60,7 @@ export interface ConsolePayload extends JTAGPayload {
 
 export const createConsolePayload = (
   context: JTAGContext,
+  sessionId: UUID,
   data: {
     level?: LogLevel;
     component?: string;
@@ -68,7 +69,7 @@ export const createConsolePayload = (
     data?: unknown;
     stack?: string;
   }
-): ConsolePayload => createPayload(context, SYSTEM_SCOPES.SYSTEM, {
+): ConsolePayload => createPayload(context, sessionId, {
   level: data.level ?? 'log',
   component: data.component ?? 'UNKNOWN',
   message: data.message ?? '',
@@ -90,6 +91,7 @@ export interface ConsoleFilter {
 export abstract class ConsoleDaemon extends DaemonBase {
   public readonly subpath: string = 'console';
   protected intercepting = false;
+  private currentSessionId: UUID = SYSTEM_SCOPES.SYSTEM;
   protected originalConsole: {
     log: typeof console.log;
     info: typeof console.info;
@@ -354,12 +356,19 @@ export abstract class ConsoleDaemon extends DaemonBase {
       // Console daemon self-reference (critical for preventing loops)
       'ConsoleDaemon', '🎧 ConsoleDaemon',
       
-      // Message routing operations (critical for preventing loops)
-      '📨 JTAGRouter', 'Routing message to server/console', 'Routing locally to server/console',
+      // Message routing operations (critical for preventing loops) - EXPANDED
+      '📨 JTAGRouter', '🏠 JTAGRouter', '📋 JTAGRouter', '🔄 JTAGRouter', '📤 JTAGRouter', '✅ JTAGRouter',
+      'Routing message to server/console', 'Routing locally to server/console',
+      'Routing locally to health', 'Using hierarchical routing', 'Sending response', 'Response sent',
       '📥 JTAGMessageQueue', 'Queued message', 'Delivered queued message',
       '⏸️ JTAGRouter', 'Skipping flush - connection unhealthy',
-      '📤 WebSocket Client: Sending message to server',
-      '📨 WebSocket Server: Received message from client',
+      
+      // WebSocket operations (prevent loops) - EXPANDED
+      '📤 WebSocket Server', '📨 WebSocket Server', '📤 WebSocket Client',
+      'Broadcasting message to', 'clients', 'Message sent to', 'Received message from client',
+      
+      // CommandDaemon operations (prevent noise)
+      '📨 CommandDaemonServer', 'Handling message to server/commands',
       
       // Transport internal operations (prevent loops)
       'Transport Factory', 'Message handler connected',
@@ -376,7 +385,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
       return;
     }
 
-    const consolePayload = createConsolePayload(this.context, {
+    const consolePayload = createConsolePayload(this.context, this.currentSessionId, {
       level,
       component: this.extractComponent(message),
       message,
@@ -450,6 +459,21 @@ export abstract class ConsoleDaemon extends DaemonBase {
     }
   }
 
+
+  /**
+   * Set the current session ID for console logging
+   */
+  setCurrentSessionId(sessionId: UUID): void {
+    this.currentSessionId = sessionId;
+    this.originalConsole.log(`🏷️ ${this.toString()}: Session updated to ${sessionId}`);
+  }
+
+  /**
+   * Get the current session ID
+   */
+  getCurrentSessionId(): UUID {
+    return this.currentSessionId;
+  }
 
   /**
    * Configure console filters

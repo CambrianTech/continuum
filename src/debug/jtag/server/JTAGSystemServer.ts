@@ -12,12 +12,48 @@ import { JTAGRouter } from '../shared/JTAGRouter';
 import { SYSTEM_EVENTS } from '../shared/events/SystemEvents';
 import type { DaemonBase, DaemonEntry } from '../shared/DaemonBase';
 import { SERVER_DAEMONS } from './structure';
+import { SYSTEM_SCOPES } from '../shared/SystemScopes';
+import { WebSocketServerTransport } from '../transports/WebSocketTransport';
 
 export class JTAGSystemServer extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return SERVER_DAEMONS; }
   
   protected override createDaemon(entry: DaemonEntry, context: JTAGContext, router: JTAGRouter): DaemonBase | null {
     return new entry.daemonClass(context, router);
+  }
+
+  /**
+   * Handle session handshake from browser - adopt browser's sessionId
+   */
+  private handleSessionHandshake(browserSessionId: string): void {
+    console.log(`🤝 JTAG Server: Adopting browser sessionId: ${browserSessionId}`);
+    
+    // Update our own sessionId to match browser's
+    this.sessionId = browserSessionId;
+    
+    // CRITICAL: Update the context UUID to match browser's sessionId
+    // This ensures all future operations use the shared sessionId
+    (this.context as any).uuid = browserSessionId;
+    
+    // Update console daemon with the shared sessionId
+    this.updateConsoleDaemonSessionId();
+    
+    console.log(`✅ JTAG Server: Session coordination complete - using shared sessionId: ${browserSessionId}`);
+  }
+
+  /**
+   * Setup session handshake handling with WebSocket transport
+   */
+  private setupSessionHandshake(): void {
+    const transport = this.router.crossContextTransport;
+    if (transport && transport instanceof WebSocketServerTransport) {
+      transport.setSessionHandshakeHandler((sessionId: string) => {
+        this.handleSessionHandshake(sessionId);
+      });
+      console.log(`🤝 JTAG Server: Session handshake handler configured`);
+    } else {
+      console.warn(`⚠️ JTAG Server: Transport is not WebSocketServerTransport, session handshake not available`);
+    }
   }
 
   protected override getVersionString(): string {
@@ -72,13 +108,14 @@ export class JTAGSystemServer extends JTAGSystem {
       return JTAGSystemServer.instance;
     }
 
-    // 1. Create server context
+    // 1. Create server context using SYSTEM scope initially (before browser handshake)
     const context: JTAGContext = {
-      uuid: `jtag_server_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+      uuid: SYSTEM_SCOPES.SYSTEM, // Use system scope until browser handshake
       environment: JTAG_ENVIRONMENTS.SERVER
     };
 
     console.log(`🔄 JTAG System: Connecting server environment...`);
+    console.log(`🆔 JTAG System: Server starting with system scope, awaiting browser sessionId...`);
 
     // 2. Create universal router with config
     const routerConfig = config?.router ?? {};
@@ -101,6 +138,9 @@ export class JTAGSystemServer extends JTAGSystem {
 
     // 5. Setup cross-context transport
     await system.setupTransports();
+    
+    // 6. Setup session handshake handling
+    system.setupSessionHandshake();
     
     // Emit transport ready event
     router.eventSystem.emit(SYSTEM_EVENTS.TRANSPORT_READY, {

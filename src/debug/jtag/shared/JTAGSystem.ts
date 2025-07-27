@@ -140,13 +140,14 @@ export abstract class JTAGSystem extends JTAGModule {
   }
 
   /**
-   * Connect to SessionDaemon to get real sessionId
+   * Connect to SessionDaemon to get real sessionId and update ConsoleDaemon
    */
   protected async connectSession(): Promise<void> {
     const sessionDaemon = this.daemons.get('SessionDaemon');
     if (!sessionDaemon) {
       console.warn(`⚠️ ${this.toString()}: No SessionDaemon available - using context.uuid as sessionId`);
       this.sessionId = this.context.uuid;
+      this.updateConsoleDaemonSessionId();
       return;
     }
 
@@ -157,11 +158,27 @@ export abstract class JTAGSystem extends JTAGModule {
       // For now, store context.uuid until SessionDaemon.connect() is implemented
       this.sessionId = this.context.uuid;
       
+      // Update ConsoleDaemon with the established sessionId
+      this.updateConsoleDaemonSessionId();
+      
       console.log(`✅ ${this.toString()}: Session connected - ${this.sessionId}`);
     } catch (error) {
       console.error(`❌ ${this.toString()}: Error connecting session:`, error);
       // Fallback to context.uuid
       this.sessionId = this.context.uuid;
+      this.updateConsoleDaemonSessionId();
+    }
+  }
+
+  /**
+   * Update ConsoleDaemon with current sessionId for proper dual-scope logging
+   */
+  protected updateConsoleDaemonSessionId(): void {
+    const consoleDaemon = this.daemons.get('ConsoleDaemon');
+    if (consoleDaemon && this.sessionId) {
+      // ConsoleDaemon has setCurrentSessionId method
+      (consoleDaemon as any).setCurrentSessionId(this.sessionId);
+      console.log(`🏷️ ${this.toString()}: Updated ConsoleDaemon sessionId to ${this.sessionId}`);
     }
   }
 

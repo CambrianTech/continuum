@@ -544,7 +544,8 @@ export class JTAGRouter extends JTAGModule {
     const transportConfig: TransportConfig = { 
       preferred: 'websocket', 
       fallback: true,
-      eventSystem: this.events
+      eventSystem: this.events,
+      sessionId: this.config.sessionId // Pass sessionId for client handshake
     };
     this.crossContextTransport = await TransportFactory.createTransport(this.context.environment, transportConfig);
     

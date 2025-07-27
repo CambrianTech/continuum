@@ -136,9 +136,18 @@ export abstract class CommandDaemon extends DaemonBase {
    * Extract command name from endpoint path
    */
   private extractCommand(endpoint: string): string {
-    // endpoint format: "browser/commands/screenshot" or "commands/screenshot"
+    // endpoint format: "browser/commands/screenshot" or "server/commands/file/save"
     const parts = endpoint.split('/');
-    return parts[parts.length - 1]; // Get last part (command name)
+    
+    // Find the 'commands' segment and extract everything after it
+    const commandsIndex = parts.findIndex(part => part === 'commands');
+    if (commandsIndex === -1 || commandsIndex === parts.length - 1) {
+      throw new Error(`Invalid command endpoint format: ${endpoint}`);
+    }
+    
+    // Return everything after 'commands' joined with '/'
+    // e.g., "server/commands/file/save" -> "file/save"
+    return parts.slice(commandsIndex + 1).join('/');
   }
 
 
