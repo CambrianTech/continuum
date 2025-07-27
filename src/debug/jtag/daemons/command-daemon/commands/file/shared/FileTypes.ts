@@ -27,6 +27,7 @@
 
 import { CommandParams, CommandResult, createPayload } from '@shared/JTAGTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import type { JTAGError } from '@shared/ErrorTypes';
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import { UUID } from 'crypto';
 
@@ -55,7 +56,7 @@ export interface FileResult extends CommandResult {
   readonly success: boolean;
   readonly filepath: string;
   readonly exists: boolean;
-  readonly error?: string;
+  readonly error?: JTAGError;
   readonly timestamp: string;
 }
 

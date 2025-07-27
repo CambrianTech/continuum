@@ -21,6 +21,7 @@
  */
 
 import { type ClickParams, type ClickResult, createClickResult } from '@clickShared/ClickTypes';
+import { NetworkError } from '@shared/ErrorTypes';
 import { ClickCommand } from '@clickShared/ClickCommand';
 
 export class ClickServerCommand extends ClickCommand {
@@ -36,11 +37,12 @@ export class ClickServerCommand extends ClickCommand {
 
     } catch (error: any) {
       console.error(`❌ SERVER: Click delegation failed:`, error.message);
+      const clickError = error instanceof Error ? new NetworkError('browser', error.message, { cause: error }) : new NetworkError('browser', String(error));
       return createClickResult(params.context, params.sessionId, {
         success: false,
         selector: params.selector,
         clicked: false,
-        error: error.message
+        error: clickError
       });
     }
   }

@@ -22,6 +22,7 @@
  */
 
 import { type ClickParams, type ClickResult, createClickResult } from '@clickShared/ClickTypes';
+import { ValidationError } from '@shared/ErrorTypes';
 import { ClickCommand } from '@clickShared/ClickCommand';
 import { safeQuerySelector } from '@shared/GlobalUtils';
 
@@ -52,11 +53,12 @@ export class ClickBrowserCommand extends ClickCommand {
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Click failed:`, error.message);
+      const clickError = error instanceof Error ? new ValidationError('selector', error.message, { cause: error }) : new ValidationError('selector', String(error));
       return createClickResult(params.context, params.sessionId, {
         success: false,
         selector: params.selector,
         clicked: false,
-        error: error.message
+        error: clickError
       });
     }
   }

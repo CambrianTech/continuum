@@ -21,6 +21,7 @@
 
 import { CommandParams, CommandResult, createPayload } from '@shared/JTAGTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import type { JTAGError } from '@shared/ErrorTypes';
 import { UUID } from 'crypto';
 
 export interface ClickParams extends CommandParams {
@@ -48,7 +49,7 @@ export interface ClickResult extends CommandResult {
   readonly success: boolean;
   readonly selector: string;
   readonly clicked: boolean;
-  readonly error?: string;
+  readonly error?: JTAGError;
   readonly timestamp: string;
 }
 
@@ -59,7 +60,7 @@ export const createClickResult = (
     success: boolean;
     selector?: string;
     clicked?: boolean;
-    error?: string;
+    error?: JTAGError;
   }
 ): ClickResult => createPayload(context, sessionId, {
   selector: data.selector ?? '',

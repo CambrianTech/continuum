@@ -20,6 +20,7 @@
  */
 
 import { CommandParams, CommandResult, createPayload, type JTAGContext } from '@shared/JTAGTypes';
+import type { JTAGError } from '@shared/ErrorTypes';
 import { UUID } from 'crypto';
 
 export interface CompileTypescriptParams extends CommandParams {
