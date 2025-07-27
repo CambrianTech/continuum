@@ -8,6 +8,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import { PersistenceError } from '@shared/ErrorTypes';
 import  { type FileAppendParams, type FileAppendResult, createFileAppendResult } from '@fileAppendShared/FileAppendTypes';
 
 export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileAppendResult> {
@@ -59,13 +60,14 @@ export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileA
 
     } catch (error: any) {
       console.error(`❌ SERVER: File append failed:`, error.message);
+      const appendError = error instanceof Error ? new PersistenceError(appendParams.filepath, 'write', error.message, { cause: error }) : new PersistenceError(appendParams.filepath, 'write', String(error));
       return createFileAppendResult(params.context, params.sessionId, {
         success: false,
         filepath: appendParams.filepath,
         exists: false,
         bytesAppended: 0,
         wasCreated: false,
-        error: error.message
+        error: appendError
       });
     }
   }
