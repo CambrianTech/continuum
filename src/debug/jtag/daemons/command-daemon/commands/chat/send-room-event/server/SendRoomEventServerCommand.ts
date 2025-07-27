@@ -8,7 +8,7 @@
  */
 
 import { SendRoomEventCommand } from '../shared/SendRoomEventCommand';
-import { type SendRoomEventParams, SendRoomEventResult } from '../shared/SendRoomEventTypes';
+import { type SendRoomEventParams, type SendRoomEventResult, createSendRoomEventResult } from '../shared/SendRoomEventTypes';
 
 export class SendRoomEventServerCommand extends SendRoomEventCommand {
 
@@ -29,29 +29,27 @@ export class SendRoomEventServerCommand extends SendRoomEventCommand {
       console.log(`📊 SERVER: Event data:`, params.eventData);
       
       // Return success result
-      return new SendRoomEventResult({
+      return createSendRoomEventResult(params.context, params.sessionId, {
         success: true,
         eventId,
         roomId: params.roomId,
-        timestamp: new Date().toISOString(),
         participants: [params.sourceParticipantId], // Simplified - would be actual room participants
         deliveryStatus: {
           delivered: 1,
           failed: 0,
           pending: 0
         }
-      }, params.context, params.sessionId);
+      });
 
     } catch (error) {
       console.error(`❌ SERVER: Failed to send room event:`, error);
       
-      return new SendRoomEventResult({
+      return createSendRoomEventResult(params.context, params.sessionId, {
         success: false,
         eventId: '',
         roomId: params.roomId,
-        timestamp: new Date().toISOString(),
         error: error instanceof Error ? error.message : 'Unknown error occurred'
-      }, params.context, params.sessionId);
+      });
     }
   }
 }

@@ -1,7 +1,7 @@
 import {CommandBase, type ICommandDaemon} from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { SendRoomEventParams, type SendRoomEventResult } from './SendRoomEventTypes';
+import { type SendRoomEventParams, type SendRoomEventResult, createSendRoomEventParams } from './SendRoomEventTypes';
 
 export abstract class SendRoomEventCommand extends CommandBase<SendRoomEventParams, SendRoomEventResult> {
 
@@ -10,7 +10,7 @@ export abstract class SendRoomEventCommand extends CommandBase<SendRoomEventPara
   }
 
   public override getDefaultParams(sessionId: UUID): SendRoomEventParams {
-    return new SendRoomEventParams({
+    return createSendRoomEventParams(this.context, sessionId, {
       roomId: '',
       sourceParticipantId: '',
       sourceParticipantType: 'human',
@@ -23,7 +23,7 @@ export abstract class SendRoomEventCommand extends CommandBase<SendRoomEventPara
         immediateDelivery: true,
         batchWithOthers: false
       }
-    }, this.context, sessionId);
+    });
   }
 
   abstract execute(params: SendRoomEventParams): Promise<SendRoomEventResult>;
