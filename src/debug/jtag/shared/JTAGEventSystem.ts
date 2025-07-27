@@ -30,7 +30,8 @@
 
 import type { JTAGMessage, JTAGContext } from './JTAGTypes';
 import { JTAGPayload, JTAGMessageFactory, createPayload } from './JTAGTypes';
-import { UUID } from 'crypto';
+import { type UUID } from './CrossPlatformUUID';
+import { SYSTEM_SCOPES } from './SystemScopes';
 
 // Import modular event categories - co-located with their modules
 import type { SystemEventData, SystemEventName } from './events/SystemEvents';
@@ -156,7 +157,7 @@ export class JTAGEventSystem {
    * Emit an event with promise-like power - Type-safe event names
    */
   async emit<T extends JTAGEventName>(eventName: T, data?: JTAGEventData[T], source?: string): Promise<unknown[]> {
-    const eventPayload = createEventMessage(this.context, '00000000-0000-0000-0000-000000000000' as UUID, eventName, data, source ?? 'event-system');
+    const eventPayload = createEventMessage(this.context, SYSTEM_SCOPES.SYSTEM, eventName, data, source ?? 'event-system');
 
     const message = JTAGMessageFactory.createEvent(
       this.context,
@@ -405,7 +406,7 @@ export class JTAGEventSystem {
       throw new Error('Cross-context routing not enabled');
     }
 
-    const payload = createEventMessage(this.context, '00000000-0000-0000-0000-000000000000' as UUID, eventName, data, 'cross-context');
+    const payload = createEventMessage(this.context, SYSTEM_SCOPES.SYSTEM, eventName, data, 'cross-context');
     
     const message = JTAGMessageFactory.createEvent(
       this.context,

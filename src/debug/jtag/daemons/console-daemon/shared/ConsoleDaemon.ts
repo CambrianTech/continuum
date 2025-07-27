@@ -33,17 +33,18 @@
  * - Event correlation enables distributed debugging
  */
 
-import { DaemonBase } from '../../../shared/DaemonBase';
-import type { JTAGContext, JTAGMessage } from '../../../shared/JTAGTypes';
-import { JTAGPayload, JTAGMessageFactory, createPayload } from '../../../shared/JTAGTypes';
-import { UUID } from 'crypto';
-import type { JTAGRouter } from '../../../shared/JTAGRouter';
-import { SYSTEM_EVENTS } from '../../../shared/events/SystemEvents';
-import { TRANSPORT_EVENTS } from '../../../transports/TransportEvents';
+import { DaemonBase } from '@shared/DaemonBase';
+import type { JTAGContext, JTAGMessage } from '@shared/JTAGTypes';
+import { JTAGPayload, JTAGMessageFactory, createPayload } from '@shared/JTAGTypes';
+import { type UUID } from '@shared/CrossPlatformUUID';
+import type { JTAGRouter } from '@shared/JTAGRouter';
+import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
+import { TRANSPORT_EVENTS } from '@transports/TransportEvents';
+import { SYSTEM_SCOPES, isSystemUUID, shouldDualScope } from '@shared/SystemScopes';
 import { CONSOLE_EVENTS } from '../ConsoleEvents';
-import { JTAG_ENDPOINTS } from '../../../shared/JTAGEndpoints';
-import { type ConsoleSuccessResponse, type ConsoleErrorResponse, type ConsoleResponse, createConsoleSuccessResponse, createConsoleErrorResponse } from '../../../shared/ResponseTypes';
-import type { TimerHandle } from '../../../shared/CrossPlatformTypes';
+import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
+import { type ConsoleSuccessResponse, type ConsoleErrorResponse, type ConsoleResponse, createConsoleSuccessResponse, createConsoleErrorResponse } from '@shared/ResponseTypes';
+import type { TimerHandle } from '@shared/CrossPlatformTypes';
 import type { LogLevel } from '../../../shared/LogLevels';
 
 
@@ -67,7 +68,7 @@ export const createConsolePayload = (
     data?: unknown;
     stack?: string;
   }
-): ConsolePayload => createPayload(context, '00000000-0000-0000-0000-000000000000' as UUID, {
+): ConsolePayload => createPayload(context, SYSTEM_SCOPES.SYSTEM, {
   level: data.level ?? 'log',
   component: data.component ?? 'UNKNOWN',
   message: data.message ?? '',
