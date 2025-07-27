@@ -57,7 +57,8 @@ export const createSendRoomEventParams = (
       stateDelta?: any;
     };
   }
-): SendRoomEventParams => createChatParams<SendRoomEventParams>(context, sessionId, {
+): SendRoomEventParams => ({
+  ...createChatParams(context, sessionId, data),
   sourceParticipantId: data.sourceParticipantId ?? '',
   sourceParticipantType: data.sourceParticipantType ?? 'human',
   eventType: data.eventType ?? 'custom_event',
@@ -69,7 +70,7 @@ export const createSendRoomEventParams = (
     immediateDelivery: true,
     batchWithOthers: false
   },
-  ...data
+  widgetEventOptions: data.widgetEventOptions
 });
 
 export interface SendRoomEventResult extends ChatResult {
@@ -113,4 +114,14 @@ export const createSendRoomEventResult = (
     };
     error?: string;
   }
-): SendRoomEventResult => createChatResult<SendRoomEventResult>(context, sessionId, data);
+): SendRoomEventResult => ({
+  ...createChatResult(context, sessionId, data),
+  eventId: data.eventId,
+  participants: data.participants,
+  recipientCount: data.recipientCount,
+  deliveryTime: data.deliveryTime,
+  deliveryStatus: data.deliveryStatus,
+  widgetCoordinationResults: data.widgetCoordinationResults,
+  academyIntegrationResults: data.academyIntegrationResults,
+  eventImpact: data.eventImpact
+});

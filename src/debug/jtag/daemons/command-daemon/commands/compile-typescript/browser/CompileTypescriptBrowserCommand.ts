@@ -20,7 +20,7 @@
  * - Smart context-specific behavior
  */
 
-import { type CompileTypescriptParams, CompileTypescriptResult } from '../shared/CompileTypescriptTypes';
+import { type CompileTypescriptParams, type CompileTypescriptResult, createCompileTypescriptResult } from '../shared/CompileTypescriptTypes';
 import { CompileTypescriptCommand } from '../shared/CompileTypescriptCommand';
 
 export class CompileTypescriptBrowserCommand extends CompileTypescriptCommand {
@@ -45,14 +45,13 @@ export class CompileTypescriptBrowserCommand extends CompileTypescriptCommand {
         const output = `// Browser-compiled TypeScript\n${params.source}`;
         const compilationTime = Date.now() - startTime;
         
-        return new CompileTypescriptResult({
+        return createCompileTypescriptResult(params.context, params.sessionId, {
           success: true,
           output,
           compilationTime,
           errors: [],
-          warnings: [],
-          timestamp: new Date().toISOString()
-        }, params.context, params.sessionId);
+          warnings: []
+        });
       }
       
       // No browser compilation available, delegate to server
@@ -61,12 +60,11 @@ export class CompileTypescriptBrowserCommand extends CompileTypescriptCommand {
 
     } catch (error: any) {
       console.error(`❌ BROWSER: TypeScript compilation failed:`, error.message);
-      return new CompileTypescriptResult({
+      return createCompileTypescriptResult(params.context, params.sessionId, {
         success: false,
         errors: [error.message],
-        warnings: [],
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        warnings: []
+      });
     }
   }
 }

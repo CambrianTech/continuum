@@ -19,45 +19,63 @@
  * - Consistent interface across contexts
  */
 
-import { CommandParams, CommandResult, type JTAGContext } from '@shared/JTAGTypes';
+import { CommandParams, CommandResult, createPayload, type JTAGContext } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 
-export class CompileTypescriptParams extends CommandParams {
-  source!: string;
-  filename?: string;
-  outputPath?: string;
-  strict?: boolean;
-  target?: 'es5' | 'es2015' | 'es2020' | 'esnext';
-
-  constructor(data: Partial<CompileTypescriptParams> = {}, context: JTAGContext, sessionId: string) {
-    super(context, sessionId);
-    Object.assign(this, {
-      source: '',
-      filename: 'code.ts',
-      outputPath: './dist',
-      strict: true,
-      target: 'es2020',
-      ...data
-    });
-  }
+export interface CompileTypescriptParams extends CommandParams {
+  readonly source: string;
+  readonly filename?: string;
+  readonly outputPath?: string;
+  readonly strict?: boolean;
+  readonly target?: 'es5' | 'es2015' | 'es2020' | 'esnext';
 }
 
-export class CompileTypescriptResult extends CommandResult {
-  success: boolean;
-  output?: string;
-  outputPath?: string;
-  errors: string[];
-  warnings: string[];
-  compilationTime?: number;
-  timestamp: string;
-
-  constructor(data: Partial<CompileTypescriptResult>, context: JTAGContext, sessionId: string) {
-    super(context, sessionId);
-    this.success = data.success ?? false;
-    this.output = data.output;
-    this.outputPath = data.outputPath;
-    this.errors = data.errors ?? [];
-    this.warnings = data.warnings ?? [];
-    this.compilationTime = data.compilationTime;
-    this.timestamp = data.timestamp ?? new Date().toISOString();
+export const createCompileTypescriptParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    source?: string;
+    filename?: string;
+    outputPath?: string;
+    strict?: boolean;
+    target?: 'es5' | 'es2015' | 'es2020' | 'esnext';
   }
+): CompileTypescriptParams => createPayload(context, sessionId, {
+  source: data.source ?? '',
+  filename: data.filename ?? 'code.ts',
+  outputPath: data.outputPath ?? './dist',
+  strict: data.strict ?? true,
+  target: data.target ?? 'es2020',
+  ...data
+});
+
+export interface CompileTypescriptResult extends CommandResult {
+  readonly success: boolean;
+  readonly output?: string;
+  readonly outputPath?: string;
+  readonly errors: string[];
+  readonly warnings: string[];
+  readonly compilationTime?: number;
+  readonly timestamp: string;
 }
+
+export const createCompileTypescriptResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    success: boolean;
+    output?: string;
+    outputPath?: string;
+    errors?: string[];
+    warnings?: string[];
+    compilationTime?: number;
+  }
+): CompileTypescriptResult => createPayload(context, sessionId, {
+  output: data.output,
+  outputPath: data.outputPath,
+  errors: data.errors ?? [],
+  warnings: data.warnings ?? [],
+  compilationTime: data.compilationTime,
+  timestamp: new Date().toISOString(),
+  ...data
+});

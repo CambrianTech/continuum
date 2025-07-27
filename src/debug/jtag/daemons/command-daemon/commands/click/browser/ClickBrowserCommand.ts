@@ -21,7 +21,7 @@
  * - Clean, readable, maintainable
  */
 
-import { type ClickParams, ClickResult } from '@clickShared/ClickTypes';
+import { type ClickParams, type ClickResult, createClickResult } from '@clickShared/ClickTypes';
 import { ClickCommand } from '@clickShared/ClickCommand';
 import { safeQuerySelector } from '@shared/GlobalUtils';
 
@@ -44,22 +44,20 @@ export class ClickBrowserCommand extends ClickCommand {
       
       console.log(`✅ BROWSER: Clicked ${params.selector}`);
       
-      return new ClickResult({
+      return createClickResult(params.context, params.sessionId, {
         success: true,
         selector: params.selector,
-        clicked: true,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        clicked: true
+      });
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Click failed:`, error.message);
-      return new ClickResult({
+      return createClickResult(params.context, params.sessionId, {
         success: false,
         selector: params.selector,
         clicked: false,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: error.message
+      });
     }
   }
 }

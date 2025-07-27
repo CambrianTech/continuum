@@ -20,7 +20,7 @@
  * - No god objects or feature creep
  */
 
-import { type ClickParams, ClickResult } from '@clickShared/ClickTypes';
+import { type ClickParams, type ClickResult, createClickResult } from '@clickShared/ClickTypes';
 import { ClickCommand } from '@clickShared/ClickCommand';
 
 export class ClickServerCommand extends ClickCommand {
@@ -36,13 +36,12 @@ export class ClickServerCommand extends ClickCommand {
 
     } catch (error: any) {
       console.error(`❌ SERVER: Click delegation failed:`, error.message);
-      return new ClickResult({
+      return createClickResult(params.context, params.sessionId, {
         success: false,
         selector: params.selector,
         clicked: false,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: error.message
+      });
     }
   }
 }

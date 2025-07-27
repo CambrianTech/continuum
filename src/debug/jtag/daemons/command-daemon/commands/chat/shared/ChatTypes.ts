@@ -56,7 +56,6 @@ export const createChatResult = <T extends Record<string, any> = {}>(
   data: Omit<Partial<ChatResult<T> & T>, 'context' | 'sessionId'> & { roomId: string }
 ): ChatResult<T> => createPayload(context, sessionId, {
   success: data.success ?? false,
-  roomId: data.roomId,
   nodeId: data.nodeId,
   timestamp: data.timestamp ?? new Date().toISOString(),
   error: data.error,
