@@ -25,7 +25,7 @@
  * - UUID correlation enables distributed debugging across contexts
  */
 
-import { UUID } from 'crypto';
+import { type UUID } from './CrossPlatformUUID';
 
 /**
  * JTAG Environment Constants

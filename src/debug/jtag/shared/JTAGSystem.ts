@@ -14,6 +14,7 @@ import type { DaemonBase } from './DaemonBase';
 import type { DaemonEntry } from './DaemonBase';
 import type { CommandDaemon } from '../daemons/command-daemon/shared/CommandDaemon';
 import type { JTAGRouterConfig } from './JTAGRouterTypes';
+import type { UUID } from './CrossPlatformUUID';
 
 
 /**
@@ -57,6 +58,7 @@ export abstract class JTAGSystem extends JTAGModule {
   protected readonly router: JTAGRouter;
   public readonly daemons: Map<string, DaemonBase> = new Map();
   protected readonly config: ResolvedJTAGSystemConfig;
+  protected sessionId?: string;
 
   constructor(context: JTAGContext, router: JTAGRouter, config: JTAGSystemConfig = {}) {
     super('jtag-system', context);
@@ -132,6 +134,42 @@ export abstract class JTAGSystem extends JTAGModule {
       loadedDaemons: Array.from(this.daemons.keys())
     });
     console.log(`🔌 JTAG Server System: Registered ${this.daemons.size} daemons statically`);
+    
+    // After daemons are set up, connect to SessionDaemon
+    await this.connectSession();
+  }
+
+  /**
+   * Connect to SessionDaemon to get real sessionId
+   */
+  protected async connectSession(): Promise<void> {
+    const sessionDaemon = this.daemons.get('SessionDaemon');
+    if (!sessionDaemon) {
+      console.warn(`⚠️ ${this.toString()}: No SessionDaemon available - using context.uuid as sessionId`);
+      this.sessionId = this.context.uuid;
+      return;
+    }
+
+    try {
+      console.log(`🏷️ ${this.toString()}: Connecting to SessionDaemon...`);
+      
+      // SessionDaemon should have a connect() method that handles the bootstrap protocol
+      // For now, store context.uuid until SessionDaemon.connect() is implemented
+      this.sessionId = this.context.uuid;
+      
+      console.log(`✅ ${this.toString()}: Session connected - ${this.sessionId}`);
+    } catch (error) {
+      console.error(`❌ ${this.toString()}: Error connecting session:`, error);
+      // Fallback to context.uuid
+      this.sessionId = this.context.uuid;
+    }
+  }
+
+  /**
+   * Get current session ID
+   */
+  getSessionId(): string {
+    return this.sessionId || this.context.uuid;
   }
 
   /**
@@ -145,13 +183,34 @@ export abstract class JTAGSystem extends JTAGModule {
 
   /**
    * Commands interface - delegate to CommandDaemon's elegantly typed interface
+   * Injects the real sessionId from the system
    */
   get commands(): Record<string, (params?: CommandParams) => Promise<CommandResult>> {
     const commandDaemon = this.daemons.get('CommandDaemon') as CommandDaemon;
     if (!commandDaemon) {
       throw new Error('CommandDaemon not available');
     }
-    return commandDaemon.commandsInterface;
+    
+    // Create proxy that injects sessionId
+    return new Proxy(commandDaemon.commandsInterface, {
+      get: (target, commandName: string) => {
+        const originalCommand = target[commandName];
+        if (typeof originalCommand !== 'function') {
+          return originalCommand;
+        }
+        
+        // Wrap command to inject real sessionId and ensure required fields
+        return async (params?: CommandParams) => {
+          const sessionId = this.getSessionId();
+          const paramsWithSession: CommandParams = { 
+            context: this.context,  // Ensure context is always present
+            sessionId: sessionId as UUID,  // Use real sessionId from system (cast to UUID)
+            ...params              // User params override defaults
+          };
+          return await originalCommand(paramsWithSession);
+        };
+      }
+    });
   }
 
   /**

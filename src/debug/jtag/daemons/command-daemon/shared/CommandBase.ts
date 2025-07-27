@@ -8,7 +8,7 @@
 import { JTAGModule } from '../../../shared/JTAGModule';
 import type { JTAGContext, CommandParams, CommandResult } from '../../../shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS, JTAGMessageFactory } from '../../../shared/JTAGTypes';
-import { UUID } from 'crypto';
+import { type UUID } from '../../../shared/CrossPlatformUUID';
 import type { JTAGRouter } from '../../../shared/JTAGRouter';
 import { isRequestResult } from '../../../shared/RouterTypes';
 
