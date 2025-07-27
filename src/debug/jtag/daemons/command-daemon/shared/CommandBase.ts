@@ -5,12 +5,12 @@
  * Provides remoteExecute() method for cross-context delegation.
  */
 
-import { JTAGModule } from '../../../shared/JTAGModule';
-import type { JTAGContext, CommandParams, CommandResult } from '../../../shared/JTAGTypes';
-import { JTAG_ENVIRONMENTS, JTAGMessageFactory } from '../../../shared/JTAGTypes';
-import { type UUID } from '../../../shared/CrossPlatformUUID';
-import type { JTAGRouter } from '../../../shared/JTAGRouter';
-import { isRequestResult } from '../../../shared/RouterTypes';
+import { JTAGModule } from '@shared/JTAGModule';
+import type { JTAGContext, CommandParams, CommandResult } from '@shared/JTAGTypes';
+import { JTAG_ENVIRONMENTS, JTAGMessageFactory } from '@shared/JTAGTypes';
+import { type UUID } from '@shared/CrossPlatformUUID';
+import type { JTAGRouter } from '@shared/JTAGRouter';
+import { isRequestResult } from '@shared/RouterTypes';
 
 export interface CommandEntry {
   name: string;

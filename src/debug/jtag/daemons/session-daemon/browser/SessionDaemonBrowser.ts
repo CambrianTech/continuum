@@ -7,7 +7,7 @@
 
 import { JTAGContext } from '@shared/JTAGTypes';
 import { JTAGRouter } from '@shared/JTAGRouter';
-import { SessionDaemon } from '../shared/SessionDaemon';
+import { SessionDaemon } from '@sessionShared/SessionDaemon';
 
 export class SessionDaemonBrowser extends SessionDaemon {
   

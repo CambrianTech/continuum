@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.250",
+  "version": "1.0.251",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/index.js",
   "browser": "dist/browser/index.js",
@@ -14,6 +14,7 @@
     "@commandDaemon/*": "./dist/daemons/command-daemon/*",
     "@consoleDaemon/*": "./dist/daemons/console-daemon/*",
     "@healthDaemon/*": "./dist/daemons/health-daemon/*",
+    "@sessionDaemon/*": "./dist/daemons/session-daemon/*",
     "@commandsRoot/*": "./dist/daemons/command-daemon/commands/*",
     "@commandBase/*": "./dist/daemons/command-daemon/shared/CommandBase/*",
     "@commandBase": "./dist/daemons/command-daemon/shared/CommandBase.js",
@@ -39,6 +40,7 @@
     "@compileTypescriptShared/*": "./dist/daemons/command-daemon/commands/compile-typescript/shared/*",
     "@consoleShared/*": "./dist/daemons/console-daemon/shared/*",
     "@healthShared/*": "./dist/daemons/health-daemon/shared/*",
+    "@sessionShared/*": "./dist/daemons/session-daemon/shared/*",
     "@sharedRouting/*": "./dist/shared/routing/*",
     "@sharedQueuing/*": "./dist/shared/queuing/*",
     "@sharedEvents/*": "./dist/shared/events/*",

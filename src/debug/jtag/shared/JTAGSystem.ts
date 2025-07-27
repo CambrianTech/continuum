@@ -8,11 +8,11 @@
 
 import { JTAGModule } from './JTAGModule';
 import type { JTAGContext, CommandParams, CommandResult } from './JTAGTypes';
-import { SYSTEM_EVENTS } from '../shared/events/SystemEvents';
+import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import type { JTAGRouter } from './JTAGRouter';
 import type { DaemonBase } from './DaemonBase';
 import type { DaemonEntry } from './DaemonBase';
-import type { CommandDaemon } from '../daemons/command-daemon/shared/CommandDaemon';
+import type { CommandDaemon } from '@commandShared/CommandDaemon';
 import type { JTAGRouterConfig } from './JTAGRouterTypes';
 import type { UUID } from './CrossPlatformUUID';
 
