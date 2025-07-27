@@ -8,8 +8,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CommandBase } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { FileLoadParams } from '@fileLoadShared/FileLoadTypes';
-import { FileLoadResult } from '@fileLoadShared/FileLoadTypes';
+import { type FileLoadParams, type FileLoadResult, createFileLoadResult } from '@fileLoadShared/FileLoadTypes';
 import type { ICommandDaemon } from '@commandBase';
 
 export class FileLoadServerCommand extends CommandBase<FileLoadParams, FileLoadResult> {
@@ -42,28 +41,24 @@ export class FileLoadServerCommand extends CommandBase<FileLoadParams, FileLoadR
       
       console.log(`✅ SERVER: Loaded ${stats.size} bytes from ${resolvedPath}`);
       
-      return new FileLoadResult({
+      return createFileLoadResult(params.context, params.sessionId, {
         success: true,
         filepath: resolvedPath,
         content: content,
         bytesRead: stats.size,
-        exists: true,
-        environment: this.context.environment,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        exists: true
+      });
 
     } catch (error: any) {
       console.error(`❌ SERVER: File load failed:`, error.message);
-      return new FileLoadResult({
+      return createFileLoadResult(params.context, params.sessionId, {
         success: false,
         filepath: loadParams.filepath,
         content: '',
         bytesRead: 0,
         exists: false,
-        error: error.message,
-        environment: this.context.environment,
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        error: error.message
+      });
     }
   }
 }
