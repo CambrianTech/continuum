@@ -11,7 +11,8 @@ import { getHighResolutionTime, getProcessInfo } from '../../../shared/CrossPlat
 import { JTAGRouter } from '../../../shared/JTAGRouter';
 import { JTAG_ENDPOINTS } from '../../../shared/JTAGEndpoints';
 import { createHealthPingResponse, createHealthErrorResponse, type HealthResponse } from '../../../shared/ResponseTypes';
-import { UUID } from 'crypto';
+import { type UUID } from '../../../shared/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../../../shared/SystemScopes';
 
 // Health-specific payload - system-level, no session required
 export interface HealthPayload extends JTAGPayload {
@@ -28,7 +29,7 @@ export interface HealthPayload extends JTAGPayload {
 export const createHealthPayload = (
   context: JTAGContext,
   data: Omit<Partial<HealthPayload>, 'context' | 'sessionId'>
-): HealthPayload => createPayload(context, 'system' as UUID, {
+): HealthPayload => createPayload(context, SYSTEM_SCOPES.SYSTEM, {
   type: data.type ?? 'ping',
   timestamp: data.timestamp ?? new Date().toISOString(),
   data: data.data ?? {},

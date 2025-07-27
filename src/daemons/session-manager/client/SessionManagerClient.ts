@@ -3,8 +3,8 @@
  * Follows the same pattern as LoggerClient for consistency
  */
 
-import { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
-import { SessionRequest, SessionResponse, SessionInfo } from '../shared/SessionManagerTypes';
+import type { ContinuumContext } from '../../../types/shared/core/ContinuumTypes';
+import type { SessionRequest, SessionResponse, SessionInfo } from '../shared/SessionManagerTypes';
 import { ClientSessionDaemon } from './ClientSessionDaemon';
 
 export class SessionManagerClient {
