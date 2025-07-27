@@ -10,32 +10,48 @@
 
 import { ChatParams, ChatResult } from '@chatShared/ChatTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
+import { createPayload } from '@shared/JTAGTypes';
+import { UUID } from 'crypto';
 
-export class ReceiveEventsParams extends ChatParams {
-  eventTypes?: string[];
-  maxEvents?: number;
-  timeoutMs?: number;
-
-  constructor(data: Partial<ReceiveEventsParams> = {}, context: JTAGContext, sessionId: string) {
-    super(data, context, sessionId);
-    this.eventTypes = data.eventTypes ?? ['message', 'room_event'];
-    this.maxEvents = data.maxEvents ?? 100;
-    this.timeoutMs = data.timeoutMs ?? 30000;
-  }
+export interface ReceiveEventsParams extends ChatParams {
+  readonly eventTypes?: string[];
+  readonly maxEvents?: number;
+  readonly timeoutMs?: number;
 }
 
-export class ReceiveEventsResult extends ChatResult {
-  events: ChatEvent[];
-  eventCount: number;
-  streamActive: boolean;
+export const createReceiveEventsParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<ReceiveEventsParams>, 'context' | 'sessionId'>
+): ReceiveEventsParams => createPayload(context, sessionId, {
+  roomId: data.roomId ?? '',
+  nodeId: data.nodeId,
+  eventTypes: data.eventTypes ?? ['message', 'room_event'],
+  maxEvents: data.maxEvents ?? 100,
+  timeoutMs: data.timeoutMs ?? 30000,
+  ...data
+});
 
-  constructor(data: Partial<ReceiveEventsResult> & { roomId: string }, context: JTAGContext, sessionId: string) {
-    super(data, context, sessionId);
-    this.events = data.events ?? [];
-    this.eventCount = data.eventCount ?? 0;
-    this.streamActive = data.streamActive ?? false;
-  }
+export interface ReceiveEventsResult extends ChatResult {
+  readonly events: readonly ChatEvent[];
+  readonly eventCount: number;
+  readonly streamActive: boolean;
 }
+
+export const createReceiveEventsResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<Partial<ReceiveEventsResult>, 'context' | 'sessionId'> & { 
+    roomId: string;
+    success: boolean;
+  }
+): ReceiveEventsResult => createPayload(context, sessionId, {
+  timestamp: new Date().toISOString(),
+  events: Object.freeze([...(data.events ?? [])]),
+  eventCount: data.eventCount ?? 0,
+  streamActive: data.streamActive ?? false,
+  ...data
+});
 
 export interface ChatEvent {
   id: string;

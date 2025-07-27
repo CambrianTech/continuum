@@ -5,31 +5,35 @@
  */
 
 import { DaemonBase } from '../../../shared/DaemonBase';
-import type { JTAGContext, JTAGMessage } from '../../../shared/JTAGTypes';
-import { JTAGPayload } from '../../../shared/JTAGTypes';
+import type { JTAGContext, JTAGMessage, JTAGPayload } from '../../../shared/JTAGTypes';
+import { createPayload } from '../../../shared/JTAGTypes';
 import { getHighResolutionTime, getProcessInfo } from '../../../shared/CrossPlatformTypes';
 import { JTAGRouter } from '../../../shared/JTAGRouter';
 import { JTAG_ENDPOINTS } from '../../../shared/JTAGEndpoints';
 import { createHealthPingResponse, createHealthErrorResponse, type HealthResponse } from '../../../shared/ResponseTypes';
+import { UUID } from 'crypto';
 
 // Health-specific payload - system-level, no session required
-export class HealthPayload extends JTAGPayload {
-  type: 'ping' | 'status' | 'metrics';
-  timestamp: string;
-  data?: {
+export interface HealthPayload extends JTAGPayload {
+  readonly type: 'ping' | 'status' | 'metrics';
+  readonly timestamp: string;
+  readonly data?: {
     latency?: number;
     uptime?: number;
     connectionCount?: number;
     [key: string]: any;
   };
-
-  constructor(data: Partial<HealthPayload>, context: JTAGContext) {
-    super(context, 'system'); // Health daemon uses system-level session
-    this.type = data.type || 'ping';
-    this.timestamp = data.timestamp || new Date().toISOString();
-    this.data = data.data || {};
-  }
 }
+
+export const createHealthPayload = (
+  context: JTAGContext,
+  data: Omit<Partial<HealthPayload>, 'context' | 'sessionId'>
+): HealthPayload => createPayload(context, 'system' as UUID, {
+  type: data.type ?? 'ping',
+  timestamp: data.timestamp ?? new Date().toISOString(),
+  data: data.data ?? {},
+  ...data
+});
 
 /**
  * Universal Health Handler - Symmetric daemon following router pattern
@@ -64,11 +68,11 @@ export abstract class HealthDaemon extends DaemonBase {
           return await this.handleMetrics(healthPayload);
         default:
           console.warn(`⚠️ ${this.toString()}: Unknown health message type: ${healthPayload.type}`);
-          return new HealthErrorResponse('Unknown health message type', healthPayload.context);
+          return createHealthErrorResponse('Unknown health message type', healthPayload.context, healthPayload.sessionId);
       }
     } catch (error: any) {
       console.error(`❌ ${this.toString()}: Error processing health message:`, error.message);
-      return new HealthErrorResponse(error.message, healthPayload.context);
+      return createHealthErrorResponse(error.message, healthPayload.context, healthPayload.sessionId);
     }
   }
 
@@ -79,7 +83,7 @@ export abstract class HealthDaemon extends DaemonBase {
     const pongId = `pong_${Date.now()}`;
     const uptime = this.getUptime();
     
-    return new HealthPingResponse(pongId, uptime, healthPayload.context);
+    return createHealthPingResponse(pongId, uptime, payload.context, undefined, payload.sessionId);
   }
 
   /**
@@ -90,7 +94,7 @@ export abstract class HealthDaemon extends DaemonBase {
     const uptime = this.getUptime();
     const memory = this.getMemoryUsage();
     
-    return new HealthPingResponse(statusId, uptime, healthPayload.context, memory);
+    return createHealthPingResponse(statusId, uptime, payload.context, memory, payload.sessionId);
   }
 
   /**
@@ -101,7 +105,7 @@ export abstract class HealthDaemon extends DaemonBase {
     const uptime = this.getUptime();
     const memory = this.getMemoryUsage();
     
-    return new HealthPingResponse(metricsId, uptime, healthPayload.context, memory);
+    return createHealthPingResponse(metricsId, uptime, payload.context, memory, payload.sessionId);
   }
 
   /**

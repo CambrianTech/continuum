@@ -1,7 +1,7 @@
 import { ReceiveEventsCommand } from '../shared/ReceiveEventsCommand';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { ICommandDaemon } from '@commandBase';
-import { ReceiveEventsParams, ReceiveEventsResult, type ChatEvent } from '../shared/ReceiveEventsTypes';
+import { type ReceiveEventsParams, type ReceiveEventsResult, createReceiveEventsResult, type ChatEvent } from '../shared/ReceiveEventsTypes';
 
 export class ReceiveEventsServerCommand extends ReceiveEventsCommand {
 
@@ -26,14 +26,14 @@ export class ReceiveEventsServerCommand extends ReceiveEventsCommand {
         }
       ];
 
-      return new ReceiveEventsResult({
+      return createReceiveEventsResult(params.context, params.sessionId, {
         roomId: params.roomId,
         success: true,
         timestamp: new Date().toISOString(),
         events: mockEvents,
         eventCount: mockEvents.length,
         streamActive: true
-      }, params.context, params.sessionId);
+      });
 
     } catch (error: any) {
       return this.createChatErrorResult(params.roomId, `Event receiving failed: ${error.message}`) as ReceiveEventsResult;

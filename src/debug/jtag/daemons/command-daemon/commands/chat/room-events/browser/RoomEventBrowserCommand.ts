@@ -1,5 +1,5 @@
 import { RoomEventCommand } from '../shared/RoomEventCommand';
-import { type RoomEventSubscriptionParams, RoomEventSubscriptionResult } from '../shared/RoomEventTypes';
+import { type RoomEventSubscriptionParams, type RoomEventSubscriptionResult, createRoomEventSubscriptionResult } from '../shared/RoomEventTypes';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 
@@ -25,12 +25,13 @@ export class RoomEventBrowserCommand extends RoomEventCommand {
 
     } catch (error) {
       console.error(`❌ BROWSER: Room event subscription error:`, error);
-      return new RoomEventSubscriptionResult({
+      return createRoomEventSubscriptionResult(params.context, params.sessionId, {
         participantId: params.participantId,
         roomId: params.roomId,
+        subscriptionId: '',
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'
-      }, params.context, params.sessionId);
+      });
     }
   }
 

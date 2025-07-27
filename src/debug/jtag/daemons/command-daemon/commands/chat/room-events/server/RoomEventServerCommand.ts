@@ -8,7 +8,7 @@
  */
 
 import { RoomEventCommand } from '../shared/RoomEventCommand';
-import { type RoomEventSubscriptionParams, RoomEventSubscriptionResult } from '../shared/RoomEventTypes';
+import { type RoomEventSubscriptionParams, type RoomEventSubscriptionResult, createRoomEventSubscriptionResult } from '../shared/RoomEventTypes';
 
 export class RoomEventServerCommand extends RoomEventCommand {
 
@@ -28,7 +28,7 @@ export class RoomEventServerCommand extends RoomEventCommand {
       console.log(`📋 SERVER: Subscription ${subscriptionId} created for room ${params.roomId}`);
       
       // Return success result
-      return new RoomEventSubscriptionResult({
+      return createRoomEventSubscriptionResult(params.context, params.sessionId, {
         success: true,
         subscriptionId,
         participantId: params.participantId,
@@ -36,19 +36,19 @@ export class RoomEventServerCommand extends RoomEventCommand {
         eventStreamEndpoint: `/jtag/room-events/${params.roomId}/stream`,
         subscriptionStatus: 'active',
         subscribedEventTypes: params.eventTypes || ['message_sent', 'participant_joined']
-      }, params.context, params.sessionId);
+      });
 
     } catch (error) {
       console.error(`❌ SERVER: Failed to create room event subscription:`, error);
       
-      return new RoomEventSubscriptionResult({
+      return createRoomEventSubscriptionResult(params.context, params.sessionId, {
         success: false,
         subscriptionId: '',
         participantId: params.participantId,
         roomId: params.roomId,
         subscriptionStatus: 'error',
         error: error instanceof Error ? error.message : 'Unknown error occurred'
-      }, params.context, params.sessionId);
+      });
     }
   }
 }

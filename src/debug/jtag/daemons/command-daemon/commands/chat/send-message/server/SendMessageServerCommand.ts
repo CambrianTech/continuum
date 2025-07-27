@@ -9,7 +9,7 @@
  */
 
 import { SendMessageCommand } from '../shared/SendMessageCommand';
-import { type SendMessageParams, SendMessageResult } from '../shared/SendMessageTypes';
+import { type SendMessageParams, type SendMessageResult, createSendMessageResult } from '../shared/SendMessageTypes';
 
 export class SendMessageServerCommand extends SendMessageCommand {
 
@@ -30,24 +30,22 @@ export class SendMessageServerCommand extends SendMessageCommand {
       console.log(`📝 SERVER: Content: ${params.content.substring(0, 100)}${params.content.length > 100 ? '...' : ''}`);
       
       // Return success result
-      return new SendMessageResult({
+      return createSendMessageResult(params.context, params.sessionId, {
         success: true,
         messageId,
         roomId: params.roomId,
-        deliveredAt: new Date().toISOString(),
-        timestamp: new Date().toISOString()
-      }, params.context, params.sessionId);
+        deliveredAt: new Date().toISOString()
+      });
 
     } catch (error) {
       console.error(`❌ SERVER: Failed to send message:`, error);
       
-      return new SendMessageResult({
+      return createSendMessageResult(params.context, params.sessionId, {
         success: false,
         messageId: '',
         roomId: params.roomId,
-        timestamp: new Date().toISOString(),
         error: error instanceof Error ? error.message : 'Unknown error occurred'
-      }, params.context, params.sessionId);
+      });
     }
   }
 }

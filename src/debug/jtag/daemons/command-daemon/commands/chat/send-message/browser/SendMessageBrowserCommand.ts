@@ -9,7 +9,7 @@
  */
 
 import { SendMessageCommand } from '../shared/SendMessageCommand';
-import { type SendMessageParams, SendMessageResult } from '../shared/SendMessageTypes';
+import { type SendMessageParams, type SendMessageResult, createSendMessageResult } from '../shared/SendMessageTypes';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 
@@ -42,12 +42,12 @@ export class SendMessageBrowserCommand extends SendMessageCommand {
     } catch (error: any) {
       console.error(`❌ BROWSER: Send message error:`, error.message);
       
-      return new SendMessageResult({
+      return createSendMessageResult(params.context, params.sessionId, {
         messageId: '',
         roomId: params.roomId,
         success: false,
         error: error.message
-      }, params.context, params.sessionId);
+      });
     }
   }
 

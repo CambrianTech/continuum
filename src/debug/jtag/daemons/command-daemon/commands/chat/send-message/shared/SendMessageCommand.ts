@@ -2,7 +2,7 @@ import { ChatCommandBase } from '@chatShared/ChatCommandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { SendMessageParams, type SendMessageResult } from './SendMessageTypes';
+import { type SendMessageParams, type SendMessageResult, createSendMessageParams } from './SendMessageTypes';
 
 export abstract class SendMessageCommand extends ChatCommandBase<SendMessageParams, SendMessageResult> {
 
@@ -11,12 +11,12 @@ export abstract class SendMessageCommand extends ChatCommandBase<SendMessagePara
   }
 
   public override getDefaultParams(sessionId: UUID): SendMessageParams {
-    return new SendMessageParams({
+    return createSendMessageParams(this.context, sessionId, {
       roomId: '',
       content: '',
       senderId: '',
       messageType: 'text'
-    }, this.context, sessionId);
+    });
   }
 
   abstract execute(params: SendMessageParams): Promise<SendMessageResult>;
