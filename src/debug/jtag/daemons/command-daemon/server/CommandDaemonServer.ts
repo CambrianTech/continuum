@@ -8,7 +8,7 @@
 import type { JTAGContext, CommandParams, CommandResult } from '@shared/JTAGTypes';
 import { CommandDaemon } from '@daemonsCommandDaemon/shared/CommandDaemon';
 import type { CommandEntry } from '@commandBase';
-import { SERVER_COMMANDS } from '@daemonsCommandDaemon/server/generated';
+import { SERVER_COMMANDS } from '@commands/server/generated';
 import type { CommandBase } from '@commandBase';
 
 export class CommandDaemonServer extends CommandDaemon {
