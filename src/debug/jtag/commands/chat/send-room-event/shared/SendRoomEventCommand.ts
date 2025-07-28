@@ -1,7 +1,7 @@
 import {CommandBase, type ICommandDaemon} from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { type SendRoomEventParams, type SendRoomEventResult, createSendRoomEventParams } from './SendRoomEventTypes';
+import { type SendRoomEventParams, type SendRoomEventResult, createSendRoomEventParams } from '@chatSendRoomEvent/shared/SendRoomEventTypes';
 
 export abstract class SendRoomEventCommand extends CommandBase<SendRoomEventParams, SendRoomEventResult> {
 

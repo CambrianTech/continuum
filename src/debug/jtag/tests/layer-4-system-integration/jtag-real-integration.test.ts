@@ -7,7 +7,7 @@
 
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { jtag, JTAG, JTAGLogEntry } from '../jtag';
+import { jtag, JTAG, JTAGLogEntry } from '@tests/jtag';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as net from 'net';

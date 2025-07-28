@@ -16,7 +16,7 @@
  */
 
 // Export the complete Universal Command Bus
-export { JTAGSystem } from './shared/JTAGSystem';
+export { JTAGSystem } from '@shared/JTAGSystem';
 
 // Export core types that users need
 export type { 
@@ -24,17 +24,17 @@ export type {
   JTAGEnvironment,
   JTAGPayload,
   CommandParams
-} from './shared/JTAGTypes';
+} from '@shared/JTAGTypes';
 
 // Export screenshot-specific types
 export type {
   ScreenshotParams,
   ScreenshotResult,
   ScreenshotOptions
-} from './daemons/command-daemon/commands/screenshot/shared/ScreenshotTypes';
+} from '@daemonsCommandDaemon/commands/screenshot/shared/ScreenshotTypes';
 
 // Export the base classes for extending
-export { JTAGModule } from './shared/JTAGModule';
-export { CommandBase } from './daemons/command-daemon/shared/CommandBase';
+export { JTAGModule } from '@shared/JTAGModule';
+export { CommandBase } from '@commandBase';
 
 console.log('🚀 JTAG Universal Command Bus loaded - Use await JTAGSystem.connect()');

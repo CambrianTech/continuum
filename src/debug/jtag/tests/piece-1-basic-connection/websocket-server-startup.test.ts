@@ -5,8 +5,8 @@
  * Tests that JTAG WebSocket server starts correctly and is accessible.
  */
 
-import { JTAGWebSocketServer } from '../../shared/JTAGWebSocket';
-import { jtagConfig } from '../../shared/config';
+import { JTAGWebSocketServer } from '@shared/JTAGWebSocket';
+import { jtagConfig } from '@shared/config';
 
 describe('Piece 1: WebSocket Server Startup', () => {
   let server: JTAGWebSocketServer;

@@ -8,7 +8,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { jtag } from '../index';
+import { jtag } from '@tests/index';
 
 interface ScreenshotTestResults {
   serverReady: boolean;

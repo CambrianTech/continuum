@@ -9,8 +9,8 @@ import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { type FileAppendParams, createFileAppendParams } from './FileAppendTypes';
-import type { FileAppendResult } from './FileAppendTypes';
+import { type FileAppendParams, createFileAppendParams } from '@fileAppend/shared/FileAppendTypes';
+import type { FileAppendResult } from '@fileAppend/shared/FileAppendTypes';
 
 export abstract class FileAppendCommand extends CommandBase<FileAppendParams, FileAppendResult> {
 

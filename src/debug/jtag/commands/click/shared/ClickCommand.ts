@@ -18,8 +18,8 @@ import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { type ClickParams, createClickParams } from './ClickTypes';
-import type { ClickResult } from './ClickTypes';
+import { type ClickParams, createClickParams } from '@commandsClick/shared/ClickTypes';
+import type { ClickResult } from '@commandsClick/shared/ClickTypes';
 
 export abstract class ClickCommand extends CommandBase<ClickParams, ClickResult> {
 

@@ -5,8 +5,8 @@
  * Co-located with command daemon to maintain proper module boundaries.
  */
 
-import { type JTAGContext, createPayload } from '../../../shared/JTAGTypes';
-import { type BaseResponsePayload } from '../../../shared/ResponseTypes';
+import { type JTAGContext, createPayload } from '@shared/JTAGTypes';
+import { type BaseResponsePayload } from '@shared/ResponseTypes';
 import { UUID } from 'crypto';
 
 // Command daemon response types

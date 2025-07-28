@@ -7,8 +7,8 @@
  * Follows screenshot/navigate pattern - minimal, focused, ~50 lines.
  */
 
-import { SendRoomEventCommand } from '../shared/SendRoomEventCommand';
-import { type SendRoomEventParams, type SendRoomEventResult, createSendRoomEventResult } from '../shared/SendRoomEventTypes';
+import { SendRoomEventCommand } from '@chatSendRoomEvent/shared/SendRoomEventCommand';
+import { type SendRoomEventParams, type SendRoomEventResult, createSendRoomEventResult } from '@chatSendRoomEvent/shared/SendRoomEventTypes';
 import { NetworkError } from '@shared/ErrorTypes';
 
 export class SendRoomEventServerCommand extends SendRoomEventCommand {

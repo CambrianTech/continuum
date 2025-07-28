@@ -5,9 +5,9 @@
  * All daemons inherit from this to ensure consistent architecture.
  */
 
-import { JTAGModule } from './JTAGModule';
-import type { JTAGContext, JTAGMessage } from './JTAGTypes';
-import type { JTAGRouter, MessageSubscriber } from './JTAGRouter';
+import { JTAGModule } from '@shared/JTAGModule';
+import type { JTAGContext, JTAGMessage } from '@shared/JTAGTypes';
+import type { JTAGRouter, MessageSubscriber } from '@shared/JTAGRouter';
 
 export interface DaemonEntry {
   name: string;

@@ -5,7 +5,7 @@
  * Handles URL rewriting, header forwarding, and content processing.
  */
 
-import { ProxyDaemon, type ProxyRequest, type ProxyResponse } from '../shared/ProxyDaemon';
+import { ProxyDaemon, type ProxyRequest, type ProxyResponse } from '@daemonsProxyDaemon/shared/ProxyDaemon';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGRouter } from '@shared/JTAGRouter';
 

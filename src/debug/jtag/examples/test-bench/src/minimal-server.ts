@@ -160,7 +160,7 @@ class MinimalServer {
     // Start the full JTAG system (this will start WebSocket server on port 9001)
     console.log('🔄 Initializing full JTAG system...');
     const jtagSystem = await jtag.connect();
-    console.log('✅ JTAG System started:', jtagSystem.getSystemInfo());
+    console.log('✅ JTAG System started successfully');
     
     // Test console logging to verify ConsoleDaemon works
     console.log('🧪 Testing console logging through ConsoleDaemon...');

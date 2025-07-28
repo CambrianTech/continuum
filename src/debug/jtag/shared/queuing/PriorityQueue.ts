@@ -2,7 +2,7 @@
  * Generic Priority Queue - Reusable for any message type
  */
 
-import type { TimerHandle } from '../CrossPlatformTypes';
+import type { TimerHandle } from '@shared/CrossPlatformTypes';
 
 export enum Priority {
   CRITICAL = 0,

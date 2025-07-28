@@ -7,8 +7,8 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
-import { JTAGWebSocketServer, JTAGWebSocketClient, JTAGWebSocketUtils } from '../shared/JTAGWebSocket';
-import { JTAGLogEntry } from '../shared/JTAGTypes';
+import { JTAGWebSocketServer, JTAGWebSocketClient, JTAGWebSocketUtils } from '@tests/shared/JTAGWebSocket';
+import { JTAGLogEntry } from '@tests/shared/JTAGTypes';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';

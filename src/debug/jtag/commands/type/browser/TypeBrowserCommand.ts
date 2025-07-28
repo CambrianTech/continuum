@@ -5,9 +5,9 @@
  * Perfect example of focused browser implementation - no over-engineering.
  */
 
-import { type TypeParams, type TypeResult, createTypeResult } from '../shared/TypeTypes';
+import { type TypeParams, type TypeResult, createTypeResult } from '@commandsType/shared/TypeTypes';
 import { ValidationError } from '@shared/ErrorTypes';
-import { TypeCommand } from '../shared/TypeCommand';
+import { TypeCommand } from '@commandsType/shared/TypeCommand';
 import { safeQuerySelector } from '@shared/GlobalUtils';
 
 export class TypeBrowserCommand extends TypeCommand {

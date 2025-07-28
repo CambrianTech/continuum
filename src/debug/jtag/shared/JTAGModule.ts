@@ -22,7 +22,7 @@
  * - Module path format: {environment}/{name} for routing clarity
  */
 
-import type { JTAGContext } from './JTAGTypes';
+import type { JTAGContext } from '@shared/JTAGTypes';
 
 export abstract class JTAGModule {
   readonly name: string;

@@ -1,5 +1,5 @@
-import { RoomEventCommand } from '../shared/RoomEventCommand';
-import { type RoomEventSubscriptionParams, type RoomEventSubscriptionResult, createRoomEventSubscriptionResult } from '../shared/RoomEventTypes';
+import { RoomEventCommand } from '@chatRoomEvents/shared/RoomEventCommand';
+import { type RoomEventSubscriptionParams, type RoomEventSubscriptionResult, createRoomEventSubscriptionResult } from '@chatRoomEvents/shared/RoomEventTypes';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 

@@ -26,12 +26,12 @@
  * - State machine prevents race conditions during reconnection
  */
 
-import type { JTAGContext } from './JTAGTypes';
-import type { EventsInterface } from './JTAGRouter';
-import { TRANSPORT_EVENTS } from '../transports/TransportEvents';
-import { SYSTEM_EVENTS } from './events/SystemEvents';
-import { JTAG_ENDPOINTS } from './JTAGEndpoints';
-import type { TimerHandle } from './CrossPlatformTypes';
+import type { JTAGContext } from '@shared/JTAGTypes';
+import type { EventsInterface } from '@shared/JTAGRouter';
+import { TRANSPORT_EVENTS } from '@transports/TransportEvents';
+import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
+import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
+import type { TimerHandle } from '@shared/CrossPlatformTypes';
 
 export enum ConnectionState {
   DISCONNECTED = 'disconnected',

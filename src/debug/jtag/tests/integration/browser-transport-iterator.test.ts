@@ -6,8 +6,8 @@
  */
 
 import * as puppeteer from 'puppeteer';
-import { JTAGTransportFactory } from '../../shared/transports/TransportFactory';
-import { JTAG_STATUS, JTAG_TRANSPORT, JTAGTransportType } from '../../shared/JTAGTypes';
+import { JTAGTransportFactory } from '@shared/transports/TransportFactory';
+import { JTAG_STATUS, JTAG_TRANSPORT, JTAGTransportType } from '@shared/JTAGTypes';
 
 interface BrowserTransportTestResults {
   totalTransports: number;

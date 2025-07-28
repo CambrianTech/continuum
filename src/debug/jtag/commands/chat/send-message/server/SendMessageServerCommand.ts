@@ -8,9 +8,9 @@
  * Uses shared chat patterns: roomId, senderId, standard result format.
  */
 
-import { SendMessageCommand } from '../shared/SendMessageCommand';
+import { SendMessageCommand } from '@chatSendMessage/shared/SendMessageCommand';
 import { NetworkError } from '@shared/ErrorTypes';
-import { type SendMessageParams, type SendMessageResult, createSendMessageResult } from '../shared/SendMessageTypes';
+import { type SendMessageParams, type SendMessageResult, createSendMessageResult } from '@chatSendMessage/shared/SendMessageTypes';
 
 export class SendMessageServerCommand extends SendMessageCommand {
 

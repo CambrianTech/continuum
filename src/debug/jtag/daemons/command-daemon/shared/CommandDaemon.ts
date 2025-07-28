@@ -9,9 +9,9 @@ import { DaemonBase } from '@shared/DaemonBase';
 import type { JTAGContext, JTAGMessage, CommandParams, CommandResult } from '@shared/JTAGTypes';
 import { JTAGMessageFactory } from '@shared/JTAGTypes';
 import type { JTAGRouter } from '@shared/JTAGRouter';
-import type{ CommandBase, CommandEntry } from './CommandBase';
-import type { CommandResponse } from './CommandResponseTypes';
-import { createCommandErrorResponse, createCommandSuccessResponse } from './CommandResponseTypes';
+import type{ CommandBase, CommandEntry } from '@commandBase';
+import type { CommandResponse } from '@daemonsCommandDaemon/shared/CommandResponseTypes';
+import { createCommandErrorResponse, createCommandSuccessResponse } from '@daemonsCommandDaemon/shared/CommandResponseTypes';
 import { type UUID } from '@shared/CrossPlatformUUID';
 import { globalSessionContext } from '@shared/SystemScopes';
 

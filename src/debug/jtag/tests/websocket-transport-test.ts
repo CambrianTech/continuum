@@ -9,8 +9,8 @@
  * 4. Client-server promise-based communication works
  */
 
-import { JTAGBase } from '../shared/JTAGBase';
-import { JTAGWebSocketClient } from '../shared/JTAGWebSocket';
+import { JTAGBase } from '@shared/JTAGBase';
+import { JTAGWebSocketClient } from '@shared/JTAGWebSocket';
 
 async function testWebSocketTransport() {
   console.log('🧪 Step 2: Testing WebSocket Transport Layer\n');

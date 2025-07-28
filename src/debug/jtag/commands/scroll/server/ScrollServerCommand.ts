@@ -6,7 +6,7 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import { type ScrollParams, type ScrollResult, createScrollResult } from '../shared/ScrollTypes';
+import { type ScrollParams, type ScrollResult, createScrollResult } from '@commandsScroll/shared/ScrollTypes';
 import { NetworkError } from '@shared/ErrorTypes';
 
 export class ScrollServerCommand extends CommandBase<ScrollParams, ScrollResult> {

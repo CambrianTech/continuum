@@ -10,9 +10,9 @@
  * 5. Appends log entry to both text and JSON files
  */
 
-import { JTAGBase } from '../shared/JTAGBase';
-import { JTAGWebSocketServer } from '../shared/JTAGWebSocket';
-import { jtagConfig } from '../shared/config';
+import { JTAGBase } from '@tests/shared/JTAGBase';
+import { JTAGWebSocketServer } from '@tests/shared/JTAGWebSocket';
+import { jtagConfig } from '@tests/shared/config';
 import * as fs from 'fs';
 import * as path from 'path';
 

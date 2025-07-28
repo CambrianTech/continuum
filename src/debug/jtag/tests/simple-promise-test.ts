@@ -8,7 +8,7 @@
  * - Clean, direct communication pattern
  */
 
-import { JTAGBase } from '../shared/JTAGBase';
+import { JTAGBase } from '@shared/JTAGBase';
 
 // Simple promise-based communication pattern
 class SimpleJTAGClient {

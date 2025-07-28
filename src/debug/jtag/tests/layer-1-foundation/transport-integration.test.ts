@@ -20,9 +20,9 @@ import {
   DefaultWebSocketTransport, 
   HTTPPollingTransport, 
   JTAGSmartTransport 
-} from '../../shared/JTAGTransportFactory';
-import { TransportTestUtils } from '../shared/MockTransports';
-import type { JTAGConfig, JTAGWebSocketMessage } from '../../shared/JTAGTypes';
+} from '@shared/JTAGTransportFactory';
+import { TransportTestUtils } from '@tests/shared/MockTransports';
+import type { JTAGConfig, JTAGWebSocketMessage } from '@shared/JTAGTypes';
 
 class TransportIntegrationTest {
   private testConfig: JTAGConfig = {

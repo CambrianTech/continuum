@@ -16,7 +16,7 @@
  * - "console/error" matches exact "console/error" registration
  */
 
-import type { MessageSubscriber } from '../JTAGRouter';
+import type { MessageSubscriber } from '@shared/JTAGRouter';
 
 export interface EndpointMatchResult<T = MessageSubscriber> {
   subscriber: T;

@@ -17,8 +17,8 @@
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { type CompileTypescriptParams, createCompileTypescriptParams } from './CompileTypescriptTypes';
-import type { CompileTypescriptResult } from './CompileTypescriptTypes';
+import { type CompileTypescriptParams, createCompileTypescriptParams } from '@commandsCompileTypescript/shared/CompileTypescriptTypes';
+import type { CompileTypescriptResult } from '@commandsCompileTypescript/shared/CompileTypescriptTypes';
 
 export abstract class CompileTypescriptCommand extends CommandBase<CompileTypescriptParams, CompileTypescriptResult> {
 

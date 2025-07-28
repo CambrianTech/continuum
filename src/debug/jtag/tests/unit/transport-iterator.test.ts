@@ -4,9 +4,9 @@
  * Abstract tests that work with ALL transport implementations via iterator pattern
  */
 
-import { JTAGTransportFactory } from '../../shared/transports/TransportFactory';
-import { BaseJTAGTransport } from '../../shared/transports/BaseTransport';
-import { JTAG_STATUS, JTAGConfig } from '../../shared/JTAGTypes';
+import { JTAGTransportFactory } from '@shared/transports/TransportFactory';
+import { BaseJTAGTransport } from '@shared/transports/BaseTransport';
+import { JTAG_STATUS, JTAGConfig } from '@shared/JTAGTypes';
 
 interface TestResults {
   totalTransports: number;

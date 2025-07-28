@@ -41,11 +41,11 @@ import type { JTAGRouter } from '@shared/JTAGRouter';
 import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import { TRANSPORT_EVENTS } from '@transports/TransportEvents';
 import { SYSTEM_SCOPES, isSystemUUID, shouldDualScope, globalSessionContext } from '@shared/SystemScopes';
-import { CONSOLE_EVENTS } from '../ConsoleEvents';
+import { CONSOLE_EVENTS } from '@daemonsConsoleDaemon/ConsoleEvents';
 import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
 import { type ConsoleSuccessResponse, type ConsoleErrorResponse, type ConsoleResponse, createConsoleSuccessResponse, createConsoleErrorResponse } from '@shared/ResponseTypes';
 import type { TimerHandle } from '@shared/CrossPlatformTypes';
-import type { LogLevel } from '../../../shared/LogLevels';
+import type { LogLevel } from '@shared/LogLevels';
 
 
 // Console-specific payload

@@ -1,7 +1,7 @@
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { type GetChatHistoryParams, type GetChatHistoryResult, createGetChatHistoryParams } from './GetChatHistoryTypes';
+import { type GetChatHistoryParams, type GetChatHistoryResult, createGetChatHistoryParams } from '@chatGetChatHistory/shared/GetChatHistoryTypes';
 
 export abstract class GetChatHistoryCommand extends CommandBase<GetChatHistoryParams, GetChatHistoryResult> {
 

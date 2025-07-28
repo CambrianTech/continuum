@@ -5,8 +5,8 @@
  * Tests both server and client components in isolation.
  */
 
-import { JTAGWebSocketServer, JTAGWebSocketClient, JTAGWebSocketUtils, JTAGWebSocketMessage, JTAGWebSocketResponse } from '../shared/JTAGWebSocket';
-import { JTAGLogEntry, JTAGExecOptions, JTAGExecResult } from '../shared/JTAGTypes';
+import { JTAGWebSocketServer, JTAGWebSocketClient, JTAGWebSocketUtils, JTAGWebSocketMessage, JTAGWebSocketResponse } from '@tests/shared/JTAGWebSocket';
+import { JTAGLogEntry, JTAGExecOptions, JTAGExecResult } from '@tests/shared/JTAGTypes';
 
 // Mock WebSocket for testing
 class MockWebSocket {

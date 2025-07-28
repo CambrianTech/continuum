@@ -6,8 +6,8 @@
  * Includes curl testing of HTTP endpoint and event emission checking
  */
 
-import { JTAGWebSocketTransportImpl } from '../../shared/transports/WebSocketTransport';
-import { JTAG_STATUS, JTAGConfig, JTAGWebSocketMessage } from '../../shared/JTAGTypes';
+import { JTAGWebSocketTransportImpl } from '@shared/transports/WebSocketTransport';
+import { JTAG_STATUS, JTAGConfig, JTAGWebSocketMessage } from '@shared/JTAGTypes';
 import { jtag } from '../../index';
 import fetch from 'node-fetch';
 

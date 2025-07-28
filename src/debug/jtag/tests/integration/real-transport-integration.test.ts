@@ -10,9 +10,9 @@
  */
 
 import * as puppeteer from 'puppeteer';
-import { JTAGTransportFactory } from '../../shared/transports/TransportFactory';
-import { JTAGWebSocketTransportImpl } from '../../shared/transports/WebSocketTransport';
-import { JTAG_STATUS, JTAGConfig } from '../../shared/JTAGTypes';
+import { JTAGTransportFactory } from '@shared/transports/TransportFactory';
+import { JTAGWebSocketTransportImpl } from '@shared/transports/WebSocketTransport';
+import { JTAG_STATUS, JTAGConfig } from '@shared/JTAGTypes';
 import { jtag } from '../../index';
 
 interface RealTransportTestResult {

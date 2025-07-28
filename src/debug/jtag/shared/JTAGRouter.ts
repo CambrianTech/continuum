@@ -28,31 +28,31 @@
  * - Transport factory abstracts connection management complexity
  */
 
-import { JTAGModule } from './JTAGModule';
-import type { JTAGContext, JTAGMessage } from './JTAGTypes';
-import { JTAGMessageTypes, JTAGMessageFactory } from './JTAGTypes';
-import { TransportFactory } from '../transports/TransportFactory';
-import type { TransportConfig } from '../transports/TransportFactory';
-import { JTAGMessageQueue, MessagePriority } from './queuing/JTAGMessageQueue';
-import type { QueuedItem } from './queuing/PriorityQueue';
-import { ConnectionHealthManager } from './ConnectionHealthManager';
-import { ResponseCorrelator } from './ResponseCorrelator';
-import { EndpointMatcher } from './routing/EndpointMatcher';
+import { JTAGModule } from '@shared/JTAGModule';
+import type { JTAGContext, JTAGMessage } from '@shared/JTAGTypes';
+import { JTAGMessageTypes, JTAGMessageFactory } from '@shared/JTAGTypes';
+import { TransportFactory } from '@transports/TransportFactory';
+import type { TransportConfig } from '@transports/TransportFactory';
+import { JTAGMessageQueue, MessagePriority } from '@sharedQueuing/JTAGMessageQueue';
+import type { QueuedItem } from '@sharedQueuing/PriorityQueue';
+import { ConnectionHealthManager } from '@shared/ConnectionHealthManager';
+import { ResponseCorrelator } from '@shared/ResponseCorrelator';
+import { EndpointMatcher } from '@sharedRouting/EndpointMatcher';
 
 // Import configuration types and utilities
 import type { 
   JTAGRouterConfig, 
   ResolvedJTAGRouterConfig 
-} from './JTAGRouterTypes';
-import { createJTAGRouterConfig } from './JTAGRouterTypes';
+} from '@shared/JTAGRouterTypes';
+import { createJTAGRouterConfig } from '@shared/JTAGRouterTypes';
 
 // Re-export configuration types for convenience
-export type { JTAGRouterConfig, ResolvedJTAGRouterConfig } from './JTAGRouterTypes';
-export { DEFAULT_JTAG_ROUTER_CONFIG, createJTAGRouterConfig } from './JTAGRouterTypes';
+export type { JTAGRouterConfig, ResolvedJTAGRouterConfig } from '@shared/JTAGRouterTypes';
+export { DEFAULT_JTAG_ROUTER_CONFIG, createJTAGRouterConfig } from '@shared/JTAGRouterTypes';
 
-import type { JTAGResponsePayload } from './ResponseTypes';
-import type { ConsolePayload } from '../daemons/console-daemon/shared/ConsoleDaemon';
-import type { RouterResult, TransportSendResult, RequestResult, EventResult, LocalRoutingResult } from './RouterTypes';
+import type { JTAGResponsePayload } from '@shared/ResponseTypes';
+import type { ConsolePayload } from '@daemonsConsoleDaemon/shared/ConsoleDaemon';
+import type { RouterResult, TransportSendResult, RequestResult, EventResult, LocalRoutingResult } from '@shared/RouterTypes';
 
 /**
  * Message Subscriber Interface

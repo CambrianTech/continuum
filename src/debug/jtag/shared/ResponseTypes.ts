@@ -30,9 +30,9 @@
  * - Specific response classes (ScreenshotResponse) extend base command pattern
  */
 
-import { type JTAGPayload, type JTAGContext, createPayload } from './JTAGTypes';
-import type { LogLevel } from './LogLevels';
-import { type UUID } from './CrossPlatformUUID';
+import { type JTAGPayload, type JTAGContext, createPayload } from '@shared/JTAGTypes';
+import type { LogLevel } from '@shared/LogLevels';
+import { type UUID } from '@shared/CrossPlatformUUID';
 
 // Base response structure - for system-level responses
 export interface BaseResponsePayload extends JTAGPayload {

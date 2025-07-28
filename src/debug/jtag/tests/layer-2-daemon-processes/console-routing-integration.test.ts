@@ -14,10 +14,10 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { JTAGBase } from '../../shared/JTAGBase';
-import { JTAGSmartTransport } from '../../shared/JTAGTransportFactory';
-import { MockSuccessTransport } from '../shared/MockTransports';
-import type { JTAGConfig } from '../../shared/JTAGTypes';
+import { JTAGBase } from '@shared/JTAGBase';
+import { JTAGSmartTransport } from '@shared/JTAGTransportFactory';
+import { MockSuccessTransport } from '@tests/shared/MockTransports';
+import type { JTAGConfig } from '@shared/JTAGTypes';
 
 class ConsoleRoutingIntegrationTest {
   private testLogDir: string;

@@ -15,7 +15,7 @@ import * as http from 'http';
 import { spawn, exec, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { jtag } from '../../index';
-import { ComprehensiveTestSuite } from '../shared/TestUtilities';
+import { ComprehensiveTestSuite } from '@tests/shared/TestUtilities';
 
 const execAsync = promisify(exec);
 

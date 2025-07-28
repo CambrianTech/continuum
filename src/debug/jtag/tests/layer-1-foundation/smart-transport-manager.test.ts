@@ -17,12 +17,12 @@ import {
   MockFailureTransport, 
   MockControllableTransport,
   TransportTestUtils
-} from '../shared/MockTransports';
+} from '@tests/shared/MockTransports';
 
-import type { JTAGConfig, JTAGWebSocketMessage } from '../../shared/JTAGTypes';
+import type { JTAGConfig, JTAGWebSocketMessage } from '@shared/JTAGTypes';
 
 // Import the class we're about to implement
-import { JTAGSmartTransport } from '../../shared/JTAGTransportFactory';
+import { JTAGSmartTransport } from '@shared/JTAGTransportFactory';
 
 class SmartTransportManagerTest {
   private defaultConfig: JTAGConfig = {

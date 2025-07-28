@@ -5,9 +5,9 @@
  * Works with ProxyDaemonServer to fetch and process external content.
  */
 
-import { type ProxyNavigateParams, type ProxyNavigateResult, createProxyNavigateResult } from '../shared/ProxyNavigateTypes';
+import { type ProxyNavigateParams, type ProxyNavigateResult, createProxyNavigateResult } from '@commandsProxyNavigate/shared/ProxyNavigateTypes';
 import { ValidationError } from '@shared/ErrorTypes';
-import { ProxyNavigateCommand } from '../shared/ProxyNavigateCommand';
+import { ProxyNavigateCommand } from '@commandsProxyNavigate/shared/ProxyNavigateCommand';
 
 export class ProxyNavigateServerCommand extends ProxyNavigateCommand {
   

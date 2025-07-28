@@ -6,7 +6,7 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import { type TypeParams, type TypeResult, createTypeResult } from '../shared/TypeTypes';
+import { type TypeParams, type TypeResult, createTypeResult } from '@commandsType/shared/TypeTypes';
 import { NetworkError } from '@shared/ErrorTypes';
 
 export class TypeServerCommand extends CommandBase<TypeParams, TypeResult> {

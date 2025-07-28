@@ -8,8 +8,8 @@
  * 3. What's actually happening with message routing?
  */
 
-import { JTAGBase } from '../shared/JTAGBase';
-import { jtagRouter } from '../shared/JTAGRouter';
+import { JTAGBase } from '@shared/JTAGBase';
+import { jtagRouter } from '@shared/JTAGRouter';
 import * as fs from 'fs';
 import * as path from 'path';
 
