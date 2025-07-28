@@ -11,8 +11,8 @@ import type { JTAGRouter } from '@shared/JTAGRouter';
 
 export class WidgetDaemonServer extends WidgetDaemon {
   
-  constructor(name: string, context: JTAGContext, router: JTAGRouter) {
-    super(name, context, router);
+  constructor(context: JTAGContext, router: JTAGRouter) {
+    super(context, router);
   }
 
   /**

@@ -19,6 +19,7 @@ export class JTAGSystemServer extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return SERVER_DAEMONS; }
   
   protected override createDaemon(entry: DaemonEntry, context: JTAGContext, router: JTAGRouter): DaemonBase | null {
+    // All daemon classes now use consistent (context, router) constructor pattern
     return new entry.daemonClass(context, router);
   }
 

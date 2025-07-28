@@ -31,8 +31,8 @@ export interface ProxyResponse {
 export abstract class ProxyDaemon extends DaemonBase {
   public readonly subpath = 'proxy';
 
-  constructor(name: string, context: JTAGContext, router: JTAGRouter) {
-    super(name, context, router);
+  constructor(context: JTAGContext, router: JTAGRouter) {
+    super('proxy-daemon', context, router);
   }
 
   /**
