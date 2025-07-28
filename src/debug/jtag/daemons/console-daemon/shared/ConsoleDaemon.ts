@@ -40,7 +40,7 @@ import { type UUID } from '@shared/CrossPlatformUUID';
 import type { JTAGRouter } from '@shared/JTAGRouter';
 import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import { TRANSPORT_EVENTS } from '@transports/TransportEvents';
-import { SYSTEM_SCOPES, isSystemUUID, shouldDualScope } from '@shared/SystemScopes';
+import { SYSTEM_SCOPES, isSystemUUID, shouldDualScope, globalSessionContext } from '@shared/SystemScopes';
 import { CONSOLE_EVENTS } from '../ConsoleEvents';
 import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
 import { type ConsoleSuccessResponse, type ConsoleErrorResponse, type ConsoleResponse, createConsoleSuccessResponse, createConsoleErrorResponse } from '@shared/ResponseTypes';
@@ -92,6 +92,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
   public readonly subpath: string = 'console';
   protected intercepting = false;
   private currentSessionId: UUID = SYSTEM_SCOPES.SYSTEM;
+  private temporarySessionId: UUID | null = null;
   protected originalConsole: {
     log: typeof console.log;
     info: typeof console.info;
@@ -385,7 +386,11 @@ export abstract class ConsoleDaemon extends DaemonBase {
       return;
     }
 
-    const consolePayload = createConsolePayload(this.context, this.currentSessionId, {
+    // Use session context: global session > temporary session > current session
+    const globalSessionId = globalSessionContext.getCurrentSessionId();
+    const effectiveSessionId = globalSessionId || this.temporarySessionId || this.currentSessionId;
+    
+    const consolePayload = createConsolePayload(this.context, effectiveSessionId, {
       level,
       component: this.extractComponent(message),
       message,
@@ -466,6 +471,27 @@ export abstract class ConsoleDaemon extends DaemonBase {
   setCurrentSessionId(sessionId: UUID): void {
     this.currentSessionId = sessionId;
     this.originalConsole.log(`🏷️ ${this.toString()}: Session updated to ${sessionId}`);
+  }
+
+  /**
+   * Temporarily set session ID for console logging during specific operations
+   * Used by server to log session-specific operations to correct directories
+   */
+  setTemporarySessionId(sessionId: UUID | null): void {
+    this.temporarySessionId = sessionId;
+  }
+
+  /**
+   * Execute function with temporary session context for dual logging
+   */
+  async withSessionContext<T>(sessionId: UUID, fn: () => Promise<T>): Promise<T> {
+    const previousSessionId = this.temporarySessionId;
+    this.temporarySessionId = sessionId;
+    try {
+      return await fn();
+    } finally {
+      this.temporarySessionId = previousSessionId;
+    }
   }
 
   /**

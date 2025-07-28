@@ -46,3 +46,31 @@ export function shouldDualScope(sessionId?: UUID): boolean {
   return !!sessionId && !isSystemUUID(sessionId);
 }
 
+/**
+ * Global session context for tracking current session during operations
+ * This is similar to thread-local storage for session context
+ */
+class SessionContext {
+  private currentSessionId: UUID | null = null;
+
+  setSessionId(sessionId: UUID | null): void {
+    this.currentSessionId = sessionId;
+  }
+
+  getCurrentSessionId(): UUID | null {
+    return this.currentSessionId;
+  }
+
+  async withSession<T>(sessionId: UUID, fn: () => Promise<T>): Promise<T> {
+    const previousSessionId = this.currentSessionId;
+    this.currentSessionId = sessionId;
+    try {
+      return await fn();
+    } finally {
+      this.currentSessionId = previousSessionId;
+    }
+  }
+}
+
+export const globalSessionContext = new SessionContext();
+

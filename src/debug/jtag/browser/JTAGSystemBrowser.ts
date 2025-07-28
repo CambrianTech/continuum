@@ -12,7 +12,8 @@ import { JTAGRouter } from '../shared/JTAGRouter';
 import { SYSTEM_EVENTS } from '../shared/events/SystemEvents';
 import type { DaemonBase, DaemonEntry } from '../shared/DaemonBase';
 import { BROWSER_DAEMONS } from './structure';
-import { generateUUID } from '../shared/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../shared/SystemScopes';
+import type { SessionDaemonBrowser } from '../daemons/session-daemon/browser/SessionDaemonBrowser';
 
 export class JTAGSystemBrowser extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return BROWSER_DAEMONS; }
@@ -24,6 +25,42 @@ export class JTAGSystemBrowser extends JTAGSystem {
   protected override getVersionString(): string {
     // Browser environment - version embedded in build
     return '{VERSION_STRING}-browser';
+  }
+
+  /**
+   * Initialize session from SessionDaemon and update context UUID
+   */
+  private async initializeSessionFromDaemon(): Promise<void> {
+    const sessionDaemon = this.daemons.get('SessionDaemon') as SessionDaemonBrowser;
+    if (!sessionDaemon) {
+      console.warn(`⚠️ ${this.toString()}: No SessionDaemon available - keeping system scope`);
+      return;
+    }
+
+    try {
+      console.log(`🏷️ ${this.toString()}: Getting session ID from SessionDaemon...`);
+      
+      // Set a shorter timeout for session creation to avoid blocking system initialization
+      const sessionPromise = sessionDaemon.getOrCreateSession();
+      const timeoutPromise = new Promise<never>((_, reject) => 
+        setTimeout(() => reject(new Error('Session creation timeout')), 3000)
+      );
+      
+      const sessionId = await Promise.race([sessionPromise, timeoutPromise]);
+      
+      // Update context UUID to use session ID from SessionDaemon
+      (this.context as any).uuid = sessionId;
+      this.sessionId = sessionId;
+      
+      // Update ConsoleDaemon with the session ID
+      this.updateConsoleDaemonSessionId();
+      
+      console.log(`✅ ${this.toString()}: Session initialized from daemon - ${sessionId}`);
+    } catch (error) {
+      console.error(`❌ ${this.toString()}: Error getting session from daemon:`, error);
+      // Keep system scope if session daemon fails
+      console.log(`🔄 ${this.toString()}: Falling back to system scope`);
+    }
   }
 
   private static instance: JTAGSystemBrowser | null = null;
@@ -56,31 +93,6 @@ export class JTAGSystemBrowser extends JTAGSystem {
     });
   }
 
-  /**
-   * Get or create persistent session UUID for browser
-   */
-  private static getOrCreateSessionId(): string {
-    const STORAGE_KEY = 'jtag_session_id';
-    
-    if (typeof localStorage !== 'undefined') {
-      // Try to get existing session from localStorage
-      let sessionId = localStorage.getItem(STORAGE_KEY);
-      if (!sessionId) {
-        // Create new session UUID
-        sessionId = generateUUID();
-        localStorage.setItem(STORAGE_KEY, sessionId);
-        console.log(`🆔 JTAG Browser: Created new session UUID: ${sessionId}`);
-      } else {
-        console.log(`🆔 JTAG Browser: Retrieved existing session UUID: ${sessionId}`);
-      }
-      return sessionId;
-    } else {
-      // Fallback for environments without localStorage
-      const sessionId = generateUUID();
-      console.log(`🆔 JTAG Browser: Generated ephemeral session UUID: ${sessionId}`);
-      return sessionId;
-    }
-  }
 
   /**
    * Connect and auto-wire the browser JTAG system
@@ -90,22 +102,18 @@ export class JTAGSystemBrowser extends JTAGSystem {
       return JTAGSystemBrowser.instance;
     }
 
-    // 1. Get or create persistent session UUID
-    const sessionId = JTAGSystemBrowser.getOrCreateSessionId();
-
-    // 2. Create browser context with session UUID
+    // 1. Start with system scope for initial daemon setup
     const context: JTAGContext = {
-      uuid: sessionId,
+      uuid: SYSTEM_SCOPES.SYSTEM, // Use system scope until SessionDaemon provides real session
       environment: JTAG_ENVIRONMENTS.BROWSER
     };
 
     console.log(`🔄 JTAG System: Connecting browser environment...`);
-    console.log(`🆔 JTAG System: Using session UUID: ${sessionId}`);
+    console.log(`🆔 JTAG System: Starting with system scope, will get session from SessionDaemon`);
 
-    // 2. Create universal router with config including sessionId
+    // 3. Create universal router with config (no sessionId - will receive from server)
     const routerConfig = {
-      ...config?.router,
-      sessionId: sessionId  // Pass sessionId for transport handshake
+      ...config?.router
     };
     const router = new JTAGRouter(context, routerConfig);
     
@@ -124,7 +132,10 @@ export class JTAGSystemBrowser extends JTAGSystem {
     // 4. Setup daemons directly (no delegation needed)
     await system.setupDaemons();
 
-    // 5. Setup cross-context transport
+    // 5. Get session ID from SessionDaemon and update context
+    await system.initializeSessionFromDaemon();
+
+    // 6. Setup cross-context transport
     await system.setupTransports();
     
     // Emit transport ready event

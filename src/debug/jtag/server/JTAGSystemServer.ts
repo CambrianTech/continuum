@@ -22,39 +22,6 @@ export class JTAGSystemServer extends JTAGSystem {
     return new entry.daemonClass(context, router);
   }
 
-  /**
-   * Handle session handshake from browser - adopt browser's sessionId
-   */
-  private handleSessionHandshake(browserSessionId: string): void {
-    console.log(`🤝 JTAG Server: Adopting browser sessionId: ${browserSessionId}`);
-    
-    // Update our own sessionId to match browser's
-    this.sessionId = browserSessionId;
-    
-    // CRITICAL: Update the context UUID to match browser's sessionId
-    // This ensures all future operations use the shared sessionId
-    (this.context as any).uuid = browserSessionId;
-    
-    // Update console daemon with the shared sessionId
-    this.updateConsoleDaemonSessionId();
-    
-    console.log(`✅ JTAG Server: Session coordination complete - using shared sessionId: ${browserSessionId}`);
-  }
-
-  /**
-   * Setup session handshake handling with WebSocket transport
-   */
-  private setupSessionHandshake(): void {
-    const transport = this.router.crossContextTransport;
-    if (transport && transport instanceof WebSocketServerTransport) {
-      transport.setSessionHandshakeHandler((sessionId: string) => {
-        this.handleSessionHandshake(sessionId);
-      });
-      console.log(`🤝 JTAG Server: Session handshake handler configured`);
-    } else {
-      console.warn(`⚠️ JTAG Server: Transport is not WebSocketServerTransport, session handshake not available`);
-    }
-  }
 
   protected override getVersionString(): string {
     // Server environment - try to read package.json dynamically
@@ -139,8 +106,7 @@ export class JTAGSystemServer extends JTAGSystem {
     // 5. Setup cross-context transport
     await system.setupTransports();
     
-    // 6. Setup session handshake handling
-    system.setupSessionHandshake();
+    // 6. Session handling is now done via SessionDaemon through router messages
     
     // Emit transport ready event
     router.eventSystem.emit(SYSTEM_EVENTS.TRANSPORT_READY, {

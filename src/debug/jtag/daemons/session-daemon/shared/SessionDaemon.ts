@@ -15,11 +15,12 @@
 
 import { DaemonBase } from '@shared/DaemonBase';
 import type { JTAGContext, JTAGMessage, JTAGPayload } from '@shared/JTAGTypes';
-import { createPayload } from '@shared/JTAGTypes';
+import { createPayload, JTAGMessageFactory } from '@shared/JTAGTypes';
 import { JTAGRouter } from '@shared/JTAGRouter';
 import { createSessionSuccessResponse, createSessionErrorResponse, type SessionResponse } from '@shared/ResponseTypes';
 import { generateUUID, type UUID } from '@shared/CrossPlatformUUID';
 import { type SessionCategory } from '@shared/SystemScopes';
+import { JTAG_DAEMON_ENDPOINTS, JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
 
 /**
  * Session Metadata - Core identity information only
@@ -76,6 +77,14 @@ export type SessionPayload = CreateSessionPayload | GetSessionPayload | ListSess
                             ActivateSessionPayload | DeactivateSessionPayload | EndSessionPayload;
 
 /**
+ * Session Creation Response - standardized response structure
+ */
+export interface SessionCreationResponse {
+  readonly sessionId: UUID;  // The new session ID created by server
+  readonly metadata: SessionMetadata;
+}
+
+/**
  * Factory functions for session payloads
  */
 export const createCreateSessionPayload = (
@@ -105,7 +114,7 @@ export const createGetSessionPayload = (
  * Does NOT handle directories, files, WebSockets, browsers, routing, etc.
  */
 export abstract class SessionDaemon extends DaemonBase {
-  public readonly subpath: string = 'session';
+  public readonly subpath: string = JTAG_DAEMON_ENDPOINTS.SESSION;
   private sessions = new Map<UUID, SessionMetadata>();
 
   constructor(context: JTAGContext, router: JTAGRouter) {
@@ -117,6 +126,138 @@ export abstract class SessionDaemon extends DaemonBase {
    */
   protected async initialize(): Promise<void> {
     console.log(`🏷️ ${this.toString()}: Session daemon initialized - identity service ready`);
+  }
+
+  /**
+   * Smart session creation with intelligent routing
+   * Works from any environment - routes to appropriate handlers
+   */
+  async getOrCreateSession(): Promise<UUID> {
+    console.log(`🏷️ ${this.toString()}: Getting or creating session with smart routing`);
+    
+    // 1. Check if session exists (delegate to browser if needed for sessionStorage)
+    const existingSession = await this.checkExistingSession();
+    if (existingSession) {
+      console.log(`🏷️ ${this.toString()}: Found existing session: ${existingSession}`);
+      return existingSession;
+    }
+
+    // 2. Generate new session (delegate to server if needed for security)
+    console.log(`🏷️ ${this.toString()}: No existing session, generating new one`);
+    const newSession = await this.generateNewSession();
+    
+    // 3. Store session (delegate to appropriate environment)
+    await this.storeSession(newSession);
+    
+    console.log(`✅ ${this.toString()}: Session ready: ${newSession}`);
+    return newSession;
+  }
+
+  /**
+   * Check for existing session - override in environment-specific classes
+   */
+  protected async checkExistingSession(): Promise<UUID | null> {
+    // Environment-specific implementation in browser/server classes
+    return null; // Default: no existing session
+  }
+
+  /**
+   * Generate new session - smart routing to server for secure generation
+   */
+  private async generateNewSession(): Promise<UUID> {
+    if (this.context.environment === 'server') {
+      // Server can generate directly
+      const newSessionId = generateUUID() as UUID;
+      console.log(`🛡️ ${this.toString()}: Generated secure session on server: ${newSessionId}`);
+      return newSessionId;
+    } else {
+      // Browser must request from server via router
+      return await this.requestSessionFromServer();
+    }
+  }
+
+  /**
+   * Store session - override in environment-specific classes
+   */
+  protected async storeSession(sessionId: UUID): Promise<void> {
+    // Environment-specific implementation in browser/server classes
+    console.log(`💾 ${this.toString()}: Storing session: ${sessionId}`);
+  }
+
+  /**
+   * Request session from server (browser environment only)
+   */
+  private async requestSessionFromServer(): Promise<UUID> {
+    console.log(`🛡️ ${this.toString()}: Requesting secure session from server`);
+    
+    const createSessionPayload = createCreateSessionPayload(
+      this.context,
+      this.context.uuid as UUID,
+      { category: 'user', displayName: 'Session User' }
+    );
+    
+    const createMessage = JTAGMessageFactory.createRequest(
+      this.context,
+      `${this.context.environment}/${this.subpath}`,
+      JTAG_ENDPOINTS.SESSION.SERVER,
+      createSessionPayload,
+      JTAGMessageFactory.generateCorrelationId()
+    );
+    
+    const result = await this.router.postMessage(createMessage);
+    console.log(`🛡️ ${this.toString()}: Server response:`, result);
+    
+    // Extract session ID from response using standardized type
+    if (result && typeof result === 'object' && 'response' in result) {
+      const response = (result as any).response;
+      
+      // Current server response format has responseSessionId at top level
+      if (response && response.responseSessionId) {
+        console.log(`✅ ${this.toString()}: Extracted session ID: ${response.responseSessionId}`);
+        return response.responseSessionId as UUID;
+      }
+      
+      // Try standardized SessionCreationResponse format
+      if (response && response.data && response.data.sessionId) {
+        const sessionData = response.data as SessionCreationResponse;
+        console.log(`✅ ${this.toString()}: Extracted session ID (standard): ${sessionData.sessionId}`);
+        return sessionData.sessionId;
+      }
+      
+      // Fallback to other possible formats for compatibility
+      if (response && response.sessionId) {
+        console.log(`✅ ${this.toString()}: Extracted session ID (fallback): ${response.sessionId}`);
+        return response.sessionId as UUID;
+      }
+    }
+    
+    throw new Error(`Failed to get session from server: ${JSON.stringify(result)}`);
+  }
+
+  /**
+   * Smart disconnect - retains session by default
+   */
+  async disconnect(clearSession = false): Promise<void> {
+    console.log(`🔌 ${this.toString()}: Disconnect (clearSession=${clearSession})`);
+    
+    if (clearSession) {
+      await this.clearSession();
+    } else {
+      // Smart retention based on environment
+      if (this.context.environment === 'browser') {
+        console.log(`🔌 Browser disconnect - session retained in sessionStorage`);
+      } else if (this.context.environment === 'server') {
+        console.log(`🔌 Server disconnect - session retained in memory`);
+      }
+    }
+  }
+
+  /**
+   * Explicit session clearing - override in environment-specific classes
+   */
+  protected async clearSession(): Promise<void> {
+    console.log(`🗑️ ${this.toString()}: Clearing session`);
+    // Environment-specific implementation in browser/server classes
   }
 
   /**
@@ -178,11 +319,13 @@ export abstract class SessionDaemon extends DaemonBase {
     // Note: Event emission would be handled by the router's event system
     // this.router.eventSystem.emit('session_created', { sessionId: session.id, ...session });
     
+    const sessionResponse: SessionCreationResponse = {
+      sessionId: realSessionId,  // The real session ID for client to use going forward
+      metadata: session 
+    };
+    
     return createSessionSuccessResponse(
-      { 
-        sessionId: realSessionId,  // The real session ID for client to use going forward
-        metadata: session 
-      },
+      sessionResponse,
       payload.context,
       payload.sessionId  // Route back using bootstrap sessionId (context.uuid)
     );

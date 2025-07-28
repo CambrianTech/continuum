@@ -13,6 +13,7 @@ import type{ CommandBase, CommandEntry } from './CommandBase';
 import type { CommandResponse } from './CommandResponseTypes';
 import { createCommandErrorResponse, createCommandSuccessResponse } from './CommandResponseTypes';
 import { type UUID } from '@shared/CrossPlatformUUID';
+import { globalSessionContext } from '@shared/SystemScopes';
 
 
 export abstract class CommandDaemon extends DaemonBase {
@@ -109,7 +110,10 @@ export abstract class CommandDaemon extends DaemonBase {
     }
 
     try {
-      const result = await command.execute(message.payload);
+      // Execute command with session context for dual logging
+      const result = await globalSessionContext.withSession(requestSessionId, async () => {
+        return await command.execute(message.payload);
+      });
       // Wrap raw command results in CommandResponse - maintains session accountability
       return createCommandSuccessResponse(result, requestContext, undefined, requestSessionId);
     } catch (e) {
