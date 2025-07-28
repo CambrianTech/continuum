@@ -10,6 +10,7 @@ import { SYSTEM_SCOPES, shouldDualScope } from '@shared/SystemScopes';
 
 export class ConsoleDaemonServer extends ConsoleDaemon {
   private symlinkWarningShown = false;
+  private currentUserSymlinkWarningShown = false;
   
   // setupConsoleInterception() is now handled by the base class
 
@@ -61,6 +62,9 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       const logDir = `.continuum/jtag/sessions/${category}/${consolePayload.sessionId}/logs`;
       await fs.mkdir(logDir, { recursive: true });
       
+      // Create/update currentUser symlink for easy access to current session
+      await this.ensureCurrentUserSymlink(fs, path, category, consolePayload.sessionId);
+      
       await this.writeLogFiles(fs, path, logDir, consolePayload);
       
     } catch (error) {
@@ -103,6 +107,45 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
         const errorMessage = error instanceof Error ? error.message : String(error);
         this.originalConsole.warn(`ConsoleDaemon: Symlink creation failed (non-critical):`, errorMessage);
         this.symlinkWarningShown = true;
+      }
+    }
+  }
+
+  private async ensureCurrentUserSymlink(fs: any, path: any, category: string, sessionId: string): Promise<void> {
+    try {
+      const symlinkPath = '.continuum/jtag/currentUser';
+      const targetPath = `sessions/${category}/${sessionId}`;
+      
+      // Check if symlink already exists and is correct
+      try {
+        const stats = await fs.lstat(symlinkPath);
+        if (stats.isSymbolicLink()) {
+          const linkTarget = await fs.readlink(symlinkPath);
+          if (linkTarget === targetPath) {
+            return; // Symlink already correct - do nothing
+          }
+          // Remove incorrect symlink (user changed sessions)
+          await fs.unlink(symlinkPath);
+        } else {
+          // Remove non-symlink file/directory
+          await fs.rm(symlinkPath, { recursive: true, force: true });
+        }
+      } catch {
+        // Symlink doesn't exist, proceed to create it
+      }
+      
+      // Create the symlink only if we get here (after cleanup or if it didn't exist)
+      // fs.symlink(target, path) - creates path pointing to target
+      await fs.symlink(targetPath, symlinkPath);
+      this.originalConsole.log(`🔗 ${this.toString()}: Updated currentUser symlink: ${symlinkPath} -> ${targetPath}`);
+      
+    } catch (error: unknown) {
+      // Don't fail the whole operation if symlink creation fails - this is non-critical
+      // Only warn once to avoid log spam
+      if (!this.currentUserSymlinkWarningShown) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.originalConsole.warn(`ConsoleDaemon: CurrentUser symlink creation failed (non-critical):`, errorMessage);
+        this.currentUserSymlinkWarningShown = true;
       }
     }
   }
