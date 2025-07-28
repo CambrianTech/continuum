@@ -7,7 +7,7 @@
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
 import { JTAGMessageFactory } from '@shared/JTAGTypes';
-import { type ScreenshotParams, type ScreenshotResult, createScreenshotResult } from '@commandsScreenshotShared/ScreenshotTypes';
+import { type ScreenshotParams, type ScreenshotResult, createScreenshotResult } from '@commandsScreenshot/shared/ScreenshotTypes';
 import { PersistenceError } from '@shared/ErrorTypes';
 
 export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {

@@ -20,9 +20,9 @@
  * - No god objects or feature creep
  */
 
-import { type ClickParams, type ClickResult, createClickResult } from '@commandsClickShared/ClickTypes';
+import { type ClickParams, type ClickResult, createClickResult } from '@commandsClick/shared/ClickTypes';
 import { NetworkError } from '@shared/ErrorTypes';
-import { ClickCommand } from '@commandsClickShared/ClickCommand';
+import { ClickCommand } from '@commandsClick/shared/ClickCommand';
 
 export class ClickServerCommand extends ClickCommand {
   

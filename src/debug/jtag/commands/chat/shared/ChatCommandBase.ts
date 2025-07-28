@@ -16,8 +16,8 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import type{ ChatParams, ChatResult } from '@commandsChatShared/ChatTypes';
-import { createChatResult } from '@commandsChatShared/ChatTypes';
+import type{ ChatParams, ChatResult } from '@commandsChat/shared/ChatTypes';
+import { createChatResult } from '@commandsChat/shared/ChatTypes';
 import { ValidationError } from '@shared/ErrorTypes';
 import { UUID } from 'crypto';
 

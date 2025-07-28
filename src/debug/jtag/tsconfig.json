@@ -10,12 +10,6 @@
     "rootDir": "./",
     "baseUrl": "./",
     "paths": {
-      "@browser": [
-        "browser"
-      ],
-      "@browser/*": [
-        "browser/*"
-      ],
       "@commands": [
         "commands"
       ],
@@ -28,71 +22,35 @@
       "@commandsAcademy/*": [
         "commands/academy/*"
       ],
-      "@commandsAcademyChatTraining": [
+      "@academyChatTraining": [
         "commands/academy/chat-training"
       ],
-      "@commandsAcademyChatTraining/*": [
+      "@academyChatTraining/*": [
         "commands/academy/chat-training/*"
       ],
-      "@commandsAcademyChatTrainingShared": [
-        "commands/academy/chat-training/shared"
-      ],
-      "@commandsAcademyChatTrainingShared/*": [
-        "commands/academy/chat-training/shared/*"
-      ],
-      "@commandsAcademyInterfaceAdapters": [
+      "@academyInterfaceAdapters": [
         "commands/academy/interface-adapters"
       ],
-      "@commandsAcademyInterfaceAdapters/*": [
+      "@academyInterfaceAdapters/*": [
         "commands/academy/interface-adapters/*"
       ],
-      "@commandsAcademyInterfaceAdaptersShared": [
-        "commands/academy/interface-adapters/shared"
-      ],
-      "@commandsAcademyInterfaceAdaptersShared/*": [
-        "commands/academy/interface-adapters/shared/*"
-      ],
-      "@commandsAcademyInterfaceTraining": [
+      "@academyInterfaceTraining": [
         "commands/academy/interface-training"
       ],
-      "@commandsAcademyInterfaceTraining/*": [
+      "@academyInterfaceTraining/*": [
         "commands/academy/interface-training/*"
       ],
-      "@commandsAcademyInterfaceTrainingShared": [
-        "commands/academy/interface-training/shared"
-      ],
-      "@commandsAcademyInterfaceTrainingShared/*": [
-        "commands/academy/interface-training/shared/*"
-      ],
-      "@commandsAcademyMultimodalTraining": [
+      "@academyMultimodalTraining": [
         "commands/academy/multimodal-training"
       ],
-      "@commandsAcademyMultimodalTraining/*": [
+      "@academyMultimodalTraining/*": [
         "commands/academy/multimodal-training/*"
       ],
-      "@commandsAcademyMultimodalTrainingShared": [
-        "commands/academy/multimodal-training/shared"
-      ],
-      "@commandsAcademyMultimodalTrainingShared/*": [
-        "commands/academy/multimodal-training/shared/*"
-      ],
-      "@commandsAcademyShared": [
-        "commands/academy/shared"
-      ],
-      "@commandsAcademyShared/*": [
-        "commands/academy/shared/*"
-      ],
-      "@commandsAcademyTrackUsage": [
+      "@academyTrackUsage": [
         "commands/academy/track-usage"
       ],
-      "@commandsAcademyTrackUsage/*": [
+      "@academyTrackUsage/*": [
         "commands/academy/track-usage/*"
-      ],
-      "@commandsAcademyTrackUsageShared": [
-        "commands/academy/track-usage/shared"
-      ],
-      "@commandsAcademyTrackUsageShared/*": [
-        "commands/academy/track-usage/shared/*"
       ],
       "@commandsChat": [
         "commands/chat"
@@ -100,125 +58,35 @@
       "@commandsChat/*": [
         "commands/chat/*"
       ],
-      "@commandsChatGetChatHistory": [
+      "@chatGetChatHistory": [
         "commands/chat/get-chat-history"
       ],
-      "@commandsChatGetChatHistory/*": [
+      "@chatGetChatHistory/*": [
         "commands/chat/get-chat-history/*"
       ],
-      "@commandsChatGetChatHistoryBrowser": [
-        "commands/chat/get-chat-history/browser"
-      ],
-      "@commandsChatGetChatHistoryBrowser/*": [
-        "commands/chat/get-chat-history/browser/*"
-      ],
-      "@commandsChatGetChatHistoryServer": [
-        "commands/chat/get-chat-history/server"
-      ],
-      "@commandsChatGetChatHistoryServer/*": [
-        "commands/chat/get-chat-history/server/*"
-      ],
-      "@commandsChatGetChatHistoryShared": [
-        "commands/chat/get-chat-history/shared"
-      ],
-      "@commandsChatGetChatHistoryShared/*": [
-        "commands/chat/get-chat-history/shared/*"
-      ],
-      "@commandsChatReceiveEvents": [
+      "@chatReceiveEvents": [
         "commands/chat/receive-events"
       ],
-      "@commandsChatReceiveEvents/*": [
+      "@chatReceiveEvents/*": [
         "commands/chat/receive-events/*"
       ],
-      "@commandsChatReceiveEventsServer": [
-        "commands/chat/receive-events/server"
-      ],
-      "@commandsChatReceiveEventsServer/*": [
-        "commands/chat/receive-events/server/*"
-      ],
-      "@commandsChatReceiveEventsShared": [
-        "commands/chat/receive-events/shared"
-      ],
-      "@commandsChatReceiveEventsShared/*": [
-        "commands/chat/receive-events/shared/*"
-      ],
-      "@commandsChatRoomEvents": [
+      "@chatRoomEvents": [
         "commands/chat/room-events"
       ],
-      "@commandsChatRoomEvents/*": [
+      "@chatRoomEvents/*": [
         "commands/chat/room-events/*"
       ],
-      "@commandsChatRoomEventsBrowser": [
-        "commands/chat/room-events/browser"
-      ],
-      "@commandsChatRoomEventsBrowser/*": [
-        "commands/chat/room-events/browser/*"
-      ],
-      "@commandsChatRoomEventsServer": [
-        "commands/chat/room-events/server"
-      ],
-      "@commandsChatRoomEventsServer/*": [
-        "commands/chat/room-events/server/*"
-      ],
-      "@commandsChatRoomEventsShared": [
-        "commands/chat/room-events/shared"
-      ],
-      "@commandsChatRoomEventsShared/*": [
-        "commands/chat/room-events/shared/*"
-      ],
-      "@commandsChatSendMessage": [
+      "@chatSendMessage": [
         "commands/chat/send-message"
       ],
-      "@commandsChatSendMessage/*": [
+      "@chatSendMessage/*": [
         "commands/chat/send-message/*"
       ],
-      "@commandsChatSendMessageBrowser": [
-        "commands/chat/send-message/browser"
-      ],
-      "@commandsChatSendMessageBrowser/*": [
-        "commands/chat/send-message/browser/*"
-      ],
-      "@commandsChatSendMessageServer": [
-        "commands/chat/send-message/server"
-      ],
-      "@commandsChatSendMessageServer/*": [
-        "commands/chat/send-message/server/*"
-      ],
-      "@commandsChatSendMessageShared": [
-        "commands/chat/send-message/shared"
-      ],
-      "@commandsChatSendMessageShared/*": [
-        "commands/chat/send-message/shared/*"
-      ],
-      "@commandsChatSendRoomEvent": [
+      "@chatSendRoomEvent": [
         "commands/chat/send-room-event"
       ],
-      "@commandsChatSendRoomEvent/*": [
+      "@chatSendRoomEvent/*": [
         "commands/chat/send-room-event/*"
-      ],
-      "@commandsChatSendRoomEventBrowser": [
-        "commands/chat/send-room-event/browser"
-      ],
-      "@commandsChatSendRoomEventBrowser/*": [
-        "commands/chat/send-room-event/browser/*"
-      ],
-      "@commandsChatSendRoomEventServer": [
-        "commands/chat/send-room-event/server"
-      ],
-      "@commandsChatSendRoomEventServer/*": [
-        "commands/chat/send-room-event/server/*"
-      ],
-      "@commandsChatSendRoomEventShared": [
-        "commands/chat/send-room-event/shared"
-      ],
-      "@commandsChatSendRoomEventShared/*": [
-        "commands/chat/send-room-event/shared/*"
-      ],
-      "@commandsChatShared": [
-        "commands/chat/shared"
-      ],
-      "@commandsChatShared/*": [
-        "commands/chat/shared/*"
       ],
       "@commandsClick": [
         "commands/click"
@@ -226,47 +94,11 @@
       "@commandsClick/*": [
         "commands/click/*"
       ],
-      "@commandsClickBrowser": [
-        "commands/click/browser"
-      ],
-      "@commandsClickBrowser/*": [
-        "commands/click/browser/*"
-      ],
-      "@commandsClickServer": [
-        "commands/click/server"
-      ],
-      "@commandsClickServer/*": [
-        "commands/click/server/*"
-      ],
-      "@commandsClickShared": [
-        "commands/click/shared"
-      ],
-      "@commandsClickShared/*": [
-        "commands/click/shared/*"
-      ],
       "@commandsCompileTypescript": [
         "commands/compile-typescript"
       ],
       "@commandsCompileTypescript/*": [
         "commands/compile-typescript/*"
-      ],
-      "@commandsCompileTypescriptBrowser": [
-        "commands/compile-typescript/browser"
-      ],
-      "@commandsCompileTypescriptBrowser/*": [
-        "commands/compile-typescript/browser/*"
-      ],
-      "@commandsCompileTypescriptServer": [
-        "commands/compile-typescript/server"
-      ],
-      "@commandsCompileTypescriptServer/*": [
-        "commands/compile-typescript/server/*"
-      ],
-      "@commandsCompileTypescriptShared": [
-        "commands/compile-typescript/shared"
-      ],
-      "@commandsCompileTypescriptShared/*": [
-        "commands/compile-typescript/shared/*"
       ],
       "@commandsFile": [
         "commands/file"
@@ -274,83 +106,23 @@
       "@commandsFile/*": [
         "commands/file/*"
       ],
-      "@commandsFileAppend": [
+      "@fileAppend": [
         "commands/file/append"
       ],
-      "@commandsFileAppend/*": [
+      "@fileAppend/*": [
         "commands/file/append/*"
       ],
-      "@commandsFileAppendBrowser": [
-        "commands/file/append/browser"
-      ],
-      "@commandsFileAppendBrowser/*": [
-        "commands/file/append/browser/*"
-      ],
-      "@commandsFileAppendServer": [
-        "commands/file/append/server"
-      ],
-      "@commandsFileAppendServer/*": [
-        "commands/file/append/server/*"
-      ],
-      "@commandsFileAppendShared": [
-        "commands/file/append/shared"
-      ],
-      "@commandsFileAppendShared/*": [
-        "commands/file/append/shared/*"
-      ],
-      "@commandsFileLoad": [
+      "@fileLoad": [
         "commands/file/load"
       ],
-      "@commandsFileLoad/*": [
+      "@fileLoad/*": [
         "commands/file/load/*"
       ],
-      "@commandsFileLoadBrowser": [
-        "commands/file/load/browser"
-      ],
-      "@commandsFileLoadBrowser/*": [
-        "commands/file/load/browser/*"
-      ],
-      "@commandsFileLoadServer": [
-        "commands/file/load/server"
-      ],
-      "@commandsFileLoadServer/*": [
-        "commands/file/load/server/*"
-      ],
-      "@commandsFileLoadShared": [
-        "commands/file/load/shared"
-      ],
-      "@commandsFileLoadShared/*": [
-        "commands/file/load/shared/*"
-      ],
-      "@commandsFileSave": [
+      "@fileSave": [
         "commands/file/save"
       ],
-      "@commandsFileSave/*": [
+      "@fileSave/*": [
         "commands/file/save/*"
-      ],
-      "@commandsFileSaveBrowser": [
-        "commands/file/save/browser"
-      ],
-      "@commandsFileSaveBrowser/*": [
-        "commands/file/save/browser/*"
-      ],
-      "@commandsFileSaveServer": [
-        "commands/file/save/server"
-      ],
-      "@commandsFileSaveServer/*": [
-        "commands/file/save/server/*"
-      ],
-      "@commandsFileSaveShared": [
-        "commands/file/save/shared"
-      ],
-      "@commandsFileSaveShared/*": [
-        "commands/file/save/shared/*"
-      ],
-      "@commandsFileShared": [
-        "commands/file/shared"
-      ],
-      "@commandsFileShared/*": [
-        "commands/file/shared/*"
       ],
       "@commandsGetText": [
         "commands/get-text"
@@ -358,47 +130,11 @@
       "@commandsGetText/*": [
         "commands/get-text/*"
       ],
-      "@commandsGetTextBrowser": [
-        "commands/get-text/browser"
-      ],
-      "@commandsGetTextBrowser/*": [
-        "commands/get-text/browser/*"
-      ],
-      "@commandsGetTextServer": [
-        "commands/get-text/server"
-      ],
-      "@commandsGetTextServer/*": [
-        "commands/get-text/server/*"
-      ],
-      "@commandsGetTextShared": [
-        "commands/get-text/shared"
-      ],
-      "@commandsGetTextShared/*": [
-        "commands/get-text/shared/*"
-      ],
       "@commandsNavigate": [
         "commands/navigate"
       ],
       "@commandsNavigate/*": [
         "commands/navigate/*"
-      ],
-      "@commandsNavigateBrowser": [
-        "commands/navigate/browser"
-      ],
-      "@commandsNavigateBrowser/*": [
-        "commands/navigate/browser/*"
-      ],
-      "@commandsNavigateServer": [
-        "commands/navigate/server"
-      ],
-      "@commandsNavigateServer/*": [
-        "commands/navigate/server/*"
-      ],
-      "@commandsNavigateShared": [
-        "commands/navigate/shared"
-      ],
-      "@commandsNavigateShared/*": [
-        "commands/navigate/shared/*"
       ],
       "@commandsProxyNavigate": [
         "commands/proxy-navigate"
@@ -406,47 +142,11 @@
       "@commandsProxyNavigate/*": [
         "commands/proxy-navigate/*"
       ],
-      "@commandsProxyNavigateBrowser": [
-        "commands/proxy-navigate/browser"
-      ],
-      "@commandsProxyNavigateBrowser/*": [
-        "commands/proxy-navigate/browser/*"
-      ],
-      "@commandsProxyNavigateServer": [
-        "commands/proxy-navigate/server"
-      ],
-      "@commandsProxyNavigateServer/*": [
-        "commands/proxy-navigate/server/*"
-      ],
-      "@commandsProxyNavigateShared": [
-        "commands/proxy-navigate/shared"
-      ],
-      "@commandsProxyNavigateShared/*": [
-        "commands/proxy-navigate/shared/*"
-      ],
       "@commandsScreenshot": [
         "commands/screenshot"
       ],
       "@commandsScreenshot/*": [
         "commands/screenshot/*"
-      ],
-      "@commandsScreenshotBrowser": [
-        "commands/screenshot/browser"
-      ],
-      "@commandsScreenshotBrowser/*": [
-        "commands/screenshot/browser/*"
-      ],
-      "@commandsScreenshotServer": [
-        "commands/screenshot/server"
-      ],
-      "@commandsScreenshotServer/*": [
-        "commands/screenshot/server/*"
-      ],
-      "@commandsScreenshotShared": [
-        "commands/screenshot/shared"
-      ],
-      "@commandsScreenshotShared/*": [
-        "commands/screenshot/shared/*"
       ],
       "@commandsScroll": [
         "commands/scroll"
@@ -454,71 +154,17 @@
       "@commandsScroll/*": [
         "commands/scroll/*"
       ],
-      "@commandsScrollBrowser": [
-        "commands/scroll/browser"
-      ],
-      "@commandsScrollBrowser/*": [
-        "commands/scroll/browser/*"
-      ],
-      "@commandsScrollServer": [
-        "commands/scroll/server"
-      ],
-      "@commandsScrollServer/*": [
-        "commands/scroll/server/*"
-      ],
-      "@commandsScrollShared": [
-        "commands/scroll/shared"
-      ],
-      "@commandsScrollShared/*": [
-        "commands/scroll/shared/*"
-      ],
       "@commandsType": [
         "commands/type"
       ],
       "@commandsType/*": [
         "commands/type/*"
       ],
-      "@commandsTypeBrowser": [
-        "commands/type/browser"
-      ],
-      "@commandsTypeBrowser/*": [
-        "commands/type/browser/*"
-      ],
-      "@commandsTypeServer": [
-        "commands/type/server"
-      ],
-      "@commandsTypeServer/*": [
-        "commands/type/server/*"
-      ],
-      "@commandsTypeShared": [
-        "commands/type/shared"
-      ],
-      "@commandsTypeShared/*": [
-        "commands/type/shared/*"
-      ],
       "@commandsWaitForElement": [
         "commands/wait-for-element"
       ],
       "@commandsWaitForElement/*": [
         "commands/wait-for-element/*"
-      ],
-      "@commandsWaitForElementBrowser": [
-        "commands/wait-for-element/browser"
-      ],
-      "@commandsWaitForElementBrowser/*": [
-        "commands/wait-for-element/browser/*"
-      ],
-      "@commandsWaitForElementServer": [
-        "commands/wait-for-element/server"
-      ],
-      "@commandsWaitForElementServer/*": [
-        "commands/wait-for-element/server/*"
-      ],
-      "@commandsWaitForElementShared": [
-        "commands/wait-for-element/shared"
-      ],
-      "@commandsWaitForElementShared/*": [
-        "commands/wait-for-element/shared/*"
       ],
       "@daemons": [
         "daemons"
@@ -532,35 +178,11 @@
       "@daemonsAiProviderDaemon/*": [
         "daemons/ai-provider-daemon/*"
       ],
-      "@daemonsAiProviderDaemonShared": [
-        "daemons/ai-provider-daemon/shared"
-      ],
-      "@daemonsAiProviderDaemonShared/*": [
-        "daemons/ai-provider-daemon/shared/*"
-      ],
       "@daemonsCommandDaemon": [
         "daemons/command-daemon"
       ],
       "@daemonsCommandDaemon/*": [
         "daemons/command-daemon/*"
-      ],
-      "@daemonsCommandDaemonBrowser": [
-        "daemons/command-daemon/browser"
-      ],
-      "@daemonsCommandDaemonBrowser/*": [
-        "daemons/command-daemon/browser/*"
-      ],
-      "@daemonsCommandDaemonServer": [
-        "daemons/command-daemon/server"
-      ],
-      "@daemonsCommandDaemonServer/*": [
-        "daemons/command-daemon/server/*"
-      ],
-      "@daemonsCommandDaemonShared": [
-        "daemons/command-daemon/shared"
-      ],
-      "@daemonsCommandDaemonShared/*": [
-        "daemons/command-daemon/shared/*"
       ],
       "@daemonsConsoleDaemon": [
         "daemons/console-daemon"
@@ -568,47 +190,11 @@
       "@daemonsConsoleDaemon/*": [
         "daemons/console-daemon/*"
       ],
-      "@daemonsConsoleDaemonBrowser": [
-        "daemons/console-daemon/browser"
-      ],
-      "@daemonsConsoleDaemonBrowser/*": [
-        "daemons/console-daemon/browser/*"
-      ],
-      "@daemonsConsoleDaemonServer": [
-        "daemons/console-daemon/server"
-      ],
-      "@daemonsConsoleDaemonServer/*": [
-        "daemons/console-daemon/server/*"
-      ],
-      "@daemonsConsoleDaemonShared": [
-        "daemons/console-daemon/shared"
-      ],
-      "@daemonsConsoleDaemonShared/*": [
-        "daemons/console-daemon/shared/*"
-      ],
       "@daemonsHealthDaemon": [
         "daemons/health-daemon"
       ],
       "@daemonsHealthDaemon/*": [
         "daemons/health-daemon/*"
-      ],
-      "@daemonsHealthDaemonBrowser": [
-        "daemons/health-daemon/browser"
-      ],
-      "@daemonsHealthDaemonBrowser/*": [
-        "daemons/health-daemon/browser/*"
-      ],
-      "@daemonsHealthDaemonServer": [
-        "daemons/health-daemon/server"
-      ],
-      "@daemonsHealthDaemonServer/*": [
-        "daemons/health-daemon/server/*"
-      ],
-      "@daemonsHealthDaemonShared": [
-        "daemons/health-daemon/shared"
-      ],
-      "@daemonsHealthDaemonShared/*": [
-        "daemons/health-daemon/shared/*"
       ],
       "@daemonsProxyDaemon": [
         "daemons/proxy-daemon"
@@ -616,41 +202,11 @@
       "@daemonsProxyDaemon/*": [
         "daemons/proxy-daemon/*"
       ],
-      "@daemonsProxyDaemonServer": [
-        "daemons/proxy-daemon/server"
-      ],
-      "@daemonsProxyDaemonServer/*": [
-        "daemons/proxy-daemon/server/*"
-      ],
-      "@daemonsProxyDaemonShared": [
-        "daemons/proxy-daemon/shared"
-      ],
-      "@daemonsProxyDaemonShared/*": [
-        "daemons/proxy-daemon/shared/*"
-      ],
       "@daemonsSessionDaemon": [
         "daemons/session-daemon"
       ],
       "@daemonsSessionDaemon/*": [
         "daemons/session-daemon/*"
-      ],
-      "@daemonsSessionDaemonBrowser": [
-        "daemons/session-daemon/browser"
-      ],
-      "@daemonsSessionDaemonBrowser/*": [
-        "daemons/session-daemon/browser/*"
-      ],
-      "@daemonsSessionDaemonServer": [
-        "daemons/session-daemon/server"
-      ],
-      "@daemonsSessionDaemonServer/*": [
-        "daemons/session-daemon/server/*"
-      ],
-      "@daemonsSessionDaemonShared": [
-        "daemons/session-daemon/shared"
-      ],
-      "@daemonsSessionDaemonShared/*": [
-        "daemons/session-daemon/shared/*"
       ],
       "@daemonsWidgetDaemon": [
         "daemons/widget-daemon"
@@ -658,41 +214,11 @@
       "@daemonsWidgetDaemon/*": [
         "daemons/widget-daemon/*"
       ],
-      "@daemonsWidgetDaemonBrowser": [
-        "daemons/widget-daemon/browser"
-      ],
-      "@daemonsWidgetDaemonBrowser/*": [
-        "daemons/widget-daemon/browser/*"
-      ],
-      "@daemonsWidgetDaemonServer": [
-        "daemons/widget-daemon/server"
-      ],
-      "@daemonsWidgetDaemonServer/*": [
-        "daemons/widget-daemon/server/*"
-      ],
-      "@daemonsWidgetDaemonShared": [
-        "daemons/widget-daemon/shared"
-      ],
-      "@daemonsWidgetDaemonShared/*": [
-        "daemons/widget-daemon/shared/*"
-      ],
       "@scripts": [
         "scripts"
       ],
       "@scripts/*": [
         "scripts/*"
-      ],
-      "@server": [
-        "server"
-      ],
-      "@server/*": [
-        "server/*"
-      ],
-      "@shared": [
-        "shared"
-      ],
-      "@shared/*": [
-        "shared/*"
       ],
       "@sharedEvents": [
         "shared/events"
@@ -760,12 +286,6 @@
       "@testsMiddleOut/*": [
         "tests/middle-out/*"
       ],
-      "@testsMiddleOutShared": [
-        "tests/middle-out/shared"
-      ],
-      "@testsMiddleOutShared/*": [
-        "tests/middle-out/shared/*"
-      ],
       "@testsPiece-1BasicConnection": [
         "tests/piece-1-basic-connection"
       ],
@@ -777,12 +297,6 @@
       ],
       "@testsPiece-2SimpleMessageTransport/*": [
         "tests/piece-2-simple-message-transport/*"
-      ],
-      "@testsShared": [
-        "tests/shared"
-      ],
-      "@testsShared/*": [
-        "tests/shared/*"
       ],
       "@testsUnit": [
         "tests/unit"
@@ -813,6 +327,12 @@
       ],
       "@commandBase/*": [
         "daemons/command-daemon/shared/CommandBase/*"
+      ],
+      "@shared": [
+        "shared"
+      ],
+      "@shared/*": [
+        "shared/*"
       ]
     },
     "strict": true,
@@ -846,8 +366,8 @@
     "**/*.bak/**/*"
   ],
   "_generated": {
-    "timestamp": "2025-07-28T20:56:59.909Z",
+    "timestamp": "2025-07-28T21:19:00.232Z",
     "source": "unified-config.json",
-    "pathCount": 268
+    "pathCount": 108
   }
 }

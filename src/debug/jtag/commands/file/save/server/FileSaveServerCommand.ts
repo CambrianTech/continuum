@@ -9,8 +9,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CommandBase } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { FileSaveParams, FileSaveResult } from '@commandsFileSaveShared/FileSaveTypes';
-import { createFileSaveResult } from '@commandsFileSaveShared/FileSaveTypes';
+import type { FileSaveParams, FileSaveResult } from '@fileSave/shared/FileSaveTypes';
+import { createFileSaveResult } from '@fileSave/shared/FileSaveTypes';
 import { PersistenceError } from '@shared/ErrorTypes';
 import type { ICommandDaemon } from '@commandBase';
 

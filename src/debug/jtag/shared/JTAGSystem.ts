@@ -12,7 +12,7 @@ import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import type { JTAGRouter } from './JTAGRouter';
 import type { DaemonBase } from './DaemonBase';
 import type { DaemonEntry } from './DaemonBase';
-import type { CommandDaemon } from '@daemonsCommandDaemonShared/CommandDaemon';
+import type { CommandDaemon } from '@daemonsCommandDaemon/shared/CommandDaemon';
 import type { JTAGRouterConfig } from './JTAGRouterTypes';
 import type { UUID } from './CrossPlatformUUID';
 
