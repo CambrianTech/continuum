@@ -10,7 +10,8 @@ export const JTAG_DAEMON_ENDPOINTS = {
   HEALTH: 'health',
   CONSOLE: 'console', 
   COMMANDS: 'commands',
-  EVENTS: 'events'
+  EVENTS: 'events',
+  SESSION: 'session-daemon'
 } as const;
 
 // Full endpoint paths (with context prefixes)
@@ -42,6 +43,13 @@ export const JTAG_ENDPOINTS = {
     BASE: 'events',
     SYSTEM: 'system/events',
     CUSTOM: 'custom/events'
+  },
+
+  // Session daemon endpoints
+  SESSION: {
+    BASE: 'session-daemon',
+    SERVER: 'server/session-daemon',
+    BROWSER: 'browser/session-daemon'
   },
 
   // HTTP API endpoints
