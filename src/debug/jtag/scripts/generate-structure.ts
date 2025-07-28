@@ -217,10 +217,10 @@ class StructureGenerator {
       
       // Generate proper import path relative to the output file
       let importPath: string;
-      if (baseDir && relativePath.startsWith('daemons/command-daemon/')) {
-        // For command daemon structure files, use relative path from daemon directory
-        const commandPath = relativePath.replace('daemons/command-daemon/', '');
-        importPath = `../${commandPath.replace('.ts', '')}`;
+      if (baseDir && relativePath.startsWith('commands/')) {
+        // For command daemon structure files, use relative path from daemon directory to commands
+        const commandPath = relativePath.replace('commands/', '');
+        importPath = `../../../commands/${commandPath.replace('.ts', '')}`;
       } else {
         // For root structure files, use full relative path
         const fullImportPath = relativePath.replace('.ts', '').replace(/\\/g, '/');

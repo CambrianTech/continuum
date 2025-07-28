@@ -29,7 +29,7 @@
  */
 
 import type { JTAGMessage, JTAGContext } from './JTAGTypes';
-import { JTAGPayload, JTAGMessageFactory, createPayload } from './JTAGTypes';
+import { type JTAGPayload, JTAGMessageFactory, createPayload } from './JTAGTypes';
 import { type UUID } from './CrossPlatformUUID';
 import { SYSTEM_SCOPES } from './SystemScopes';
 
