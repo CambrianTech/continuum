@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.306",
+  "version": "1.0.308",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/index.js",
   "browser": "dist/browser/index.js",
@@ -30,6 +30,7 @@
     "@commandsProxyNavigate/*": "./dist/commands/proxy-navigate/*",
     "@commandsScreenshot/*": "./dist/commands/screenshot/*",
     "@commandsScroll/*": "./dist/commands/scroll/*",
+    "@commandsTestError/*": "./dist/commands/test-error/*",
     "@commandsType/*": "./dist/commands/type/*",
     "@commandsWaitForElement/*": "./dist/commands/wait-for-element/*",
     "@daemons/*": "./dist/daemons/*",
@@ -240,8 +241,8 @@
     "node": ">=16.0.0"
   },
   "_importGeneration": {
-    "timestamp": "2025-07-28T21:41:36.719Z",
+    "timestamp": "2025-07-28T21:54:49.520Z",
     "source": "unified-config.json",
-    "importCount": 108
+    "importCount": 110
   }
 }

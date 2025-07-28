@@ -21,6 +21,7 @@ import { NavigateServerCommand } from '../../../commands/navigate/server/Navigat
 import { ProxyNavigateServerCommand } from '../../../commands/proxy-navigate/server/ProxyNavigateServerCommand';
 import { ScreenshotServerCommand } from '../../../commands/screenshot/server/ScreenshotServerCommand';
 import { ScrollServerCommand } from '../../../commands/scroll/server/ScrollServerCommand';
+import { TestErrorServerCommand } from '../../../commands/test-error/server/TestErrorServerCommand';
 import { TypeServerCommand } from '../../../commands/type/server/TypeServerCommand';
 import { WaitForElementServerCommand } from '../../../commands/wait-for-element/server/WaitForElementServerCommand';
 
@@ -105,6 +106,11 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'scroll',
     className: 'ScrollServerCommand',
     commandClass: ScrollServerCommand
+  },
+  {
+    name: 'test-error',
+    className: 'TestErrorServerCommand',
+    commandClass: TestErrorServerCommand
   },
   {
     name: 'type',

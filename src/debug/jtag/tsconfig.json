@@ -154,6 +154,12 @@
       "@commandsScroll/*": [
         "commands/scroll/*"
       ],
+      "@commandsTestError": [
+        "commands/test-error"
+      ],
+      "@commandsTestError/*": [
+        "commands/test-error/*"
+      ],
       "@commandsType": [
         "commands/type"
       ],
@@ -366,8 +372,8 @@
     "**/*.bak/**/*"
   ],
   "_generated": {
-    "timestamp": "2025-07-28T21:41:36.717Z",
+    "timestamp": "2025-07-28T21:54:49.518Z",
     "source": "unified-config.json",
-    "pathCount": 108
+    "pathCount": 110
   }
 }
