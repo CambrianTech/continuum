@@ -1,4 +1,4 @@
-import { ChatCommandBase } from '@commandsChatShared/ChatCommandBase';
+import { ChatCommandBase } from '@commandsChat/shared/ChatCommandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';

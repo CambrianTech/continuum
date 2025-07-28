@@ -8,7 +8,7 @@
  * ChatResult → GetChatHistoryResult (adds messages, totalCount)
  */
 
-import { ChatParams, ChatResult } from '@commandsChatShared/ChatTypes';
+import { ChatParams, ChatResult } from '@commandsChat/shared/ChatTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { createPayload } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';

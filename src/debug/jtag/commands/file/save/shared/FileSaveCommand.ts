@@ -8,7 +8,7 @@
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { FileCommand } from '@commandsFileShared/FileTypes';
+import { FileCommand } from '@commandsFile/shared/FileTypes';
 import { type FileSaveParams, type FileSaveResult, createFileSaveParams } from './FileSaveTypes';
 
 export abstract class FileSaveCommand extends FileCommand<FileSaveParams, FileSaveResult> {
