@@ -1,9 +1,9 @@
 // ISSUES: 0 open, last updated 2025-07-25 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 
 /**
- * Intelligent Structure Generator - Automated structure.ts file creation
+ * Intelligent Structure Generator - Automated generated.ts file creation
  * 
- * Recursively discovers daemons and commands, generates proper structure.ts files
+ * Recursively discovers daemons and commands, generates proper generated.ts files
  * with environment-specific imports and type-safe registries.
  * 
  * Configuration via package.json "structureGenerator" field allows easy expansion.
@@ -58,14 +58,14 @@ class StructureGenerator {
     const defaultConfig: StructureConfig = {
       directories: {
         browser: {
-          outputFile: 'browser/structure.ts',
+          outputFile: 'browser/generated.ts',
           environment: 'browser',
           daemonPaths: ['daemons/*/browser/*Browser.ts'],
           commandPaths: ['daemons/command-daemon/commands/*/browser/*BrowserCommand.ts'],
           excludePatterns: ['**/*.bak', '**/*.bak/**/*', '**/node_modules/**/*']
         },
         server: {
-          outputFile: 'server/structure.ts',
+          outputFile: 'server/generated.ts',
           environment: 'server', 
           daemonPaths: ['daemons/*/server/*Server.ts'],
           commandPaths: ['daemons/command-daemon/commands/*/server/*ServerCommand.ts'],

@@ -209,7 +209,7 @@ export abstract class SessionPluginBase implements SessionPlugin {
 
 ### **Baked Plugin Structure (Auto-Generated)**
 ```typescript
-// src/session/plugins/structure.ts (AUTO-GENERATED)
+// src/session/plugins/generated.ts (AUTO-GENERATED)
 import { DirectoryPlugin } from './DirectoryPlugin';
 import { MemoryPlugin } from './MemoryPlugin';
 import { ConsciousnessPlugin } from './ConsciousnessPlugin';
@@ -384,7 +384,7 @@ params.encode() // ✅ JTAGPayload methods available
 ```typescript
 // Sessions auto-discovered exactly like screenshot:
 // 1. Build system finds session command files
-// 2. Generates structure.ts with BROWSER_COMMANDS/SERVER_COMMANDS  
+// 2. Generates generated.ts with BROWSER_COMMANDS/SERVER_COMMANDS  
 // 3. Commands available via jtagSystem.commands.* automatically
 // 4. Full typing for all discovered commands
 

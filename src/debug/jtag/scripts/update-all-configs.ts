@@ -197,8 +197,8 @@ class UnifiedConfigGenerator {
     const packageJson = JSON.parse(fs.readFileSync(path.join(this.rootPath, 'package.json'), 'utf-8'));
     
     return {
-      projectName: packageJson.name || '@continuum/jtag',
-      version: packageJson.version || '1.0.0',
+      projectName: packageJson.name ?? '@continuum/jtag',
+      version: packageJson.version ?? '1.0.0',
       pathMappings,
       structureGeneration: {
         directories: {
