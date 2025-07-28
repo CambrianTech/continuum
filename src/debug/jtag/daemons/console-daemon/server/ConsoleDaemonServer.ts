@@ -77,26 +77,31 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       const symlinkPath = '.continuum/jtag/system';
       const targetPath = `sessions/system/${SYSTEM_SCOPES.SYSTEM}`;
       
-      // Check if symlink already exists and is correct
+      // Check if symlink already exists and points to the correct target
       try {
         const stats = await fs.lstat(symlinkPath);
         if (stats.isSymbolicLink()) {
           const linkTarget = await fs.readlink(symlinkPath);
           if (linkTarget === targetPath) {
-            return; // Symlink already correct - do nothing
+            // Symlink already exists and points to correct target - no action needed
+            return;
           }
-          // Remove incorrect symlink
+          // Symlink exists but points to wrong target - remove it
           await fs.unlink(symlinkPath);
+          this.originalConsole.log(`🔗 ${this.toString()}: Removed outdated system symlink (was: ${linkTarget})`);
         } else {
-          // Remove non-symlink file/directory
+          // Path exists but is not a symlink - remove it
           await fs.rm(symlinkPath, { recursive: true, force: true });
+          this.originalConsole.log(`🔗 ${this.toString()}: Removed non-symlink at system path`);
         }
-      } catch {
-        // Symlink doesn't exist, proceed to create it
+      } catch (checkError: any) {
+        // Path doesn't exist or other error - that's fine, we'll create it
+        if (checkError.code !== 'ENOENT') {
+          this.originalConsole.log(`🔗 ${this.toString()}: Symlink check warning (continuing): ${checkError.message}`);
+        }
       }
       
-      // Create the symlink only if we get here (after cleanup or if it didn't exist)
-      // fs.symlink(target, path) - creates path pointing to target
+      // Create the symlink (path should be clear now)
       await fs.symlink(targetPath, symlinkPath);
       this.originalConsole.log(`🔗 ${this.toString()}: Created system symlink: ${symlinkPath} -> ${targetPath}`);
       
@@ -116,26 +121,31 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       const symlinkPath = '.continuum/jtag/currentUser';
       const targetPath = `sessions/${category}/${sessionId}`;
       
-      // Check if symlink already exists and is correct
+      // Check if symlink already exists and points to the correct target
       try {
         const stats = await fs.lstat(symlinkPath);
         if (stats.isSymbolicLink()) {
           const linkTarget = await fs.readlink(symlinkPath);
           if (linkTarget === targetPath) {
-            return; // Symlink already correct - do nothing
+            // Symlink already exists and points to correct target - no action needed
+            return;
           }
-          // Remove incorrect symlink (user changed sessions)
+          // Symlink exists but points to wrong target - remove it
           await fs.unlink(symlinkPath);
+          this.originalConsole.log(`🔗 ${this.toString()}: Removed outdated currentUser symlink (was: ${linkTarget})`);
         } else {
-          // Remove non-symlink file/directory
+          // Path exists but is not a symlink - remove it
           await fs.rm(symlinkPath, { recursive: true, force: true });
+          this.originalConsole.log(`🔗 ${this.toString()}: Removed non-symlink at currentUser path`);
         }
-      } catch {
-        // Symlink doesn't exist, proceed to create it
+      } catch (checkError: any) {
+        // Path doesn't exist or other error - that's fine, we'll create it
+        if (checkError.code !== 'ENOENT') {
+          this.originalConsole.log(`🔗 ${this.toString()}: Symlink check warning (continuing): ${checkError.message}`);
+        }
       }
       
-      // Create the symlink only if we get here (after cleanup or if it didn't exist)
-      // fs.symlink(target, path) - creates path pointing to target
+      // Create the symlink (path should be clear now)
       await fs.symlink(targetPath, symlinkPath);
       this.originalConsole.log(`🔗 ${this.toString()}: Updated currentUser symlink: ${symlinkPath} -> ${targetPath}`);
       
