@@ -26,7 +26,8 @@ export const DEFAULT_DISPLAY_NAMES = {
 export const SYSTEM_SCOPES = {
   /**
    * System-wide operations that apply to all sessions
-   * Used for: .continuum/jtag/logs/, system health, daemon status, console logging, events
+   * Used for: system health, daemon status, console logging, events
+   * Logs stored in: .continuum/jtag/sessions/system/{SYSTEM_UUID}/logs/
    */
   SYSTEM: '00000000-0000-0000-0000-000000000000' as UUID
 } as const;

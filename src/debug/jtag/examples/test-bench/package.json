@@ -1,20 +1,16 @@
 {
   "name": "@continuum/jtag-test-bench",
-  "version": "1.0.187",
+  "version": "1.0.192",
   "description": "JTAG Test Bench - Standalone Example App",
   "main": "dist/index.js",
   "config": {
-    "port": 9002,
-    "logsPath": ".continuum/jtag/logs",
-    "screenshotsPath": ".continuum/jtag/screenshots"
+    "port": 9002
   },
   "scripts": {
     "start": "npm run clean:all && npm run build && npm run version:bump && npm run dev",
-    "clean:logs": "rm -rf .continuum/jtag/logs/* 2>/dev/null || true; mkdir -p .continuum/jtag/logs",
-    "clean:screenshots": "rm -rf .continuum/jtag/screenshots/* 2>/dev/null || true; mkdir -p .continuum/jtag/screenshots",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
     "clean:ports": "lsof -ti:9002 | xargs kill -9 2>/dev/null || true",
-    "clean:all": "npm run clean:ports && npm run clean:logs && npm run clean:screenshots && npm run clean:dist",
+    "clean:all": "npm run clean:ports && npm run clean:dist",
     "build": "npm run build:server && npm run build:browser",
     "build:server": "npx tsc src/minimal-server.ts --outDir dist --rootDir src --target ES2020 --module ES2020 --moduleResolution node --skipLibCheck --esModuleInterop",
     "build:browser": "node build-browser.js",
@@ -22,7 +18,7 @@
     "dev": "npx tsx src/minimal-server.ts"
   },
   "dependencies": {
-    "@continuum/jtag": "file:../../continuum-jtag-1.0.278.tgz"
+    "@continuum/jtag": "file:../../continuum-jtag-1.0.283.tgz"
   },
   "devDependencies": {
     "esbuild": "^0.19.12",
