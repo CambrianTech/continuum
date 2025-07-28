@@ -14,8 +14,8 @@ import { SYSTEM_SCOPES } from '@shared/SystemScopes';
 export abstract class WidgetDaemon extends DaemonBase {
   public readonly subpath = 'widget';
 
-  constructor(name: string, context: JTAGContext, router: JTAGRouter) {
-    super(name, context, router);
+  constructor(context: JTAGContext, router: JTAGRouter) {
+    super('widget-daemon', context, router);
   }
 
   /**
