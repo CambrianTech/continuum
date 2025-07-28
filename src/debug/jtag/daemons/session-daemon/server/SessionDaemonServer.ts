@@ -7,7 +7,7 @@
 
 import { JTAGContext } from '@shared/JTAGTypes';
 import { JTAGRouter } from '@shared/JTAGRouter';
-import { SessionDaemon } from '@sessionShared/SessionDaemon';
+import { SessionDaemon } from '@daemonsSessionDaemonShared/SessionDaemon';
 import { generateUUID, type UUID } from '@shared/CrossPlatformUUID';
 
 export class SessionDaemonServer extends SessionDaemon {

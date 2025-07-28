@@ -9,7 +9,7 @@ import * as path from 'path';
 import { CommandBase } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
 import { PersistenceError } from '@shared/ErrorTypes';
-import { type FileLoadParams, type FileLoadResult, createFileLoadResult } from '@fileLoadShared/FileLoadTypes';
+import { type FileLoadParams, type FileLoadResult, createFileLoadResult } from '@commandsFileLoadShared/FileLoadTypes';
 import type { ICommandDaemon } from '@commandBase';
 
 export class FileLoadServerCommand extends CommandBase<FileLoadParams, FileLoadResult> {

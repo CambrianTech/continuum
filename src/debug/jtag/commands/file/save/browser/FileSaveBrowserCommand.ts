@@ -4,9 +4,9 @@
  * Browser delegates to server for file I/O (can't write to filesystem directly)
  */
 
-import { type FileSaveParams, type FileSaveResult, createFileSaveResult } from '@fileSaveShared/FileSaveTypes';
+import { type FileSaveParams, type FileSaveResult, createFileSaveResult } from '@commandsFileSaveShared/FileSaveTypes';
 import { NetworkError } from '@shared/ErrorTypes';
-import { FileSaveCommand } from '@fileSaveShared/FileSaveCommand';
+import { FileSaveCommand } from '@commandsFileSaveShared/FileSaveCommand';
 
 export class FileSaveBrowserCommand extends FileSaveCommand {
   

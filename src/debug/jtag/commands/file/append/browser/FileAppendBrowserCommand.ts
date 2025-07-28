@@ -4,8 +4,8 @@
  * Browser delegates to server for file I/O (can't write to filesystem directly)
  */
 
-import { type FileAppendParams, type FileAppendResult, createFileAppendResult } from '@fileAppendShared/FileAppendTypes';
-import { FileAppendCommand } from '@fileAppendShared/FileAppendCommand';
+import { type FileAppendParams, type FileAppendResult, createFileAppendResult } from '@commandsFileAppendShared/FileAppendTypes';
+import { FileAppendCommand } from '@commandsFileAppendShared/FileAppendCommand';
 
 export class FileAppendBrowserCommand extends FileAppendCommand {
   

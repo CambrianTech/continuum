@@ -21,9 +21,9 @@
  * - Clean, readable, maintainable
  */
 
-import { type ClickParams, type ClickResult, createClickResult } from '@clickShared/ClickTypes';
+import { type ClickParams, type ClickResult, createClickResult } from '@commandsClickShared/ClickTypes';
 import { ValidationError } from '@shared/ErrorTypes';
-import { ClickCommand } from '@clickShared/ClickCommand';
+import { ClickCommand } from '@commandsClickShared/ClickCommand';
 import { safeQuerySelector } from '@shared/GlobalUtils';
 
 export class ClickBrowserCommand extends ClickCommand {
