@@ -28,6 +28,7 @@ export interface NavigateParams extends CommandParams {
   readonly url: string;
   readonly timeout?: number;
   readonly waitForSelector?: string;
+  readonly target?: '_blank' | '_self' | '_parent' | '_top' | string;
 }
 
 export const createNavigateParams = (

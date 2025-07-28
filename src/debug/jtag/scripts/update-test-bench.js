@@ -29,6 +29,30 @@ function updateTestBenchDependency() {
         
         console.log(`✅ Found tarball: ${tarballName}`);
         
+        // Clean test-bench node_modules to prevent ENOTEMPTY errors
+        const testBenchDir = path.join(__dirname, '..', 'examples', 'test-bench');
+        const nodeModulesPath = path.join(testBenchDir, 'node_modules');
+        
+        if (fs.existsSync(nodeModulesPath)) {
+            console.log(`🧹 Removing test-bench node_modules to prevent ENOTEMPTY errors...`);
+            try {
+                fs.rmSync(nodeModulesPath, { recursive: true, force: true });
+                console.log(`✅ Test-bench node_modules cleaned`);
+            } catch (error) {
+                console.warn(`⚠️ Could not remove node_modules: ${error.message}`);
+                // Try to remove just the @continuum directory
+                const continuumPath = path.join(nodeModulesPath, '@continuum');
+                if (fs.existsSync(continuumPath)) {
+                    try {
+                        fs.rmSync(continuumPath, { recursive: true, force: true });
+                        console.log(`✅ Removed @continuum directory specifically`);
+                    } catch (nestedError) {
+                        console.warn(`⚠️ Could not remove @continuum directory: ${nestedError.message}`);
+                    }
+                }
+            }
+        }
+        
         // Update test-bench package.json
         const testBenchPackagePath = path.join(__dirname, '..', 'examples', 'test-bench', 'package.json');
         

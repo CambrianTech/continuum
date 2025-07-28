@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.283",
+  "version": "1.0.287",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/index.js",
   "browser": "dist/browser/index.js",
@@ -126,7 +126,7 @@
     }
   },
   "scripts": {
-    "start": "npm run clean:all && npm run build && npm run version:bump && npm pack && node scripts/update-test-bench.js && cd examples/test-bench && npm install && npm start",
+    "start": "npm run system:stop && npm run clean:all && npm run build && npm run version:bump && npm pack && node scripts/update-test-bench.js && cd examples/test-bench && npm install && npm start",
     "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
     "prebuild": "npx tsx scripts/generate-structure.ts",

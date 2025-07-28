@@ -10,6 +10,7 @@ import { CommandDaemonBrowser } from '../daemons/command-daemon/browser/CommandD
 import { ConsoleDaemonBrowser } from '../daemons/console-daemon/browser/ConsoleDaemonBrowser';
 import { HealthDaemonBrowser } from '../daemons/health-daemon/browser/HealthDaemonBrowser';
 import { SessionDaemonBrowser } from '../daemons/session-daemon/browser/SessionDaemonBrowser';
+import { WidgetDaemonBrowser } from '../daemons/widget-daemon/browser/WidgetDaemonBrowser';
 
 // Types
 import type { DaemonEntry } from '../shared/DaemonBase';
@@ -37,5 +38,10 @@ export const BROWSER_DAEMONS: DaemonEntry[] = [
     name: 'SessionDaemon',
     className: 'SessionDaemonBrowser',
     daemonClass: SessionDaemonBrowser
+  },
+  {
+    name: 'WidgetDaemon',
+    className: 'WidgetDaemonBrowser',
+    daemonClass: WidgetDaemonBrowser
   }
 ];
