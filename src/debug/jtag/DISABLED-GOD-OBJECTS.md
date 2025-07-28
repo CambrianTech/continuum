@@ -86,7 +86,7 @@
    - Use abstract base classes for shared logic
    - Create thin browser/server overrides
 3. **Test each module individually** before moving to next
-4. **Update imports** in structure.ts files
+4. **Update imports** in generated.ts files
 
 ### Phase 3: Architecture Validation
 - Ensure no file exceeds 100 lines

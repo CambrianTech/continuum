@@ -11,7 +11,7 @@ import { JTAG_ENVIRONMENTS } from '@shared/JTAGTypes';
 import { JTAGRouter } from '@shared/JTAGRouter';
 import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import type { DaemonBase, DaemonEntry } from '@shared/DaemonBase';
-import { SERVER_DAEMONS } from './structure';
+import { SERVER_DAEMONS } from './generated';
 import { SYSTEM_SCOPES } from '@shared/SystemScopes';
 import { WebSocketServerTransport } from '@transports/WebSocketTransport';
 

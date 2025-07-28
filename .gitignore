@@ -10,7 +10,7 @@ dist/
 build/
 *.tsbuildinfo
 
-# Generated manifest files (use structure.ts instead)
+# Generated manifest files (use generated.ts instead)
 src/debug/jtag/manifests/
 
 # Generated test files

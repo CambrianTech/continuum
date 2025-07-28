@@ -98,7 +98,7 @@ export const ALL_COMMANDS = [...]; // ✅ 50+ commands auto-discovered
   "structureGenerator": {
     "directories": {
       "session-commands": {
-        "outputFile": "src/daemons/session/structure.ts",
+        "outputFile": "src/daemons/session/generated.ts",
         "commandPaths": ["src/daemons/session/commands/*Command.ts"]
       },
       "all-daemons-browser": {
@@ -114,7 +114,7 @@ export const ALL_COMMANDS = [...]; // ✅ 50+ commands auto-discovered
         "widgetPaths": ["src/ui/widgets/*/Widget.ts"]
       },
       "all-commands": {
-        "outputFile": "src/commands/structure.ts",
+        "outputFile": "src/commands/generated.ts",
         "commandPaths": ["src/commands/**/*Command.ts"]
       }
     }
