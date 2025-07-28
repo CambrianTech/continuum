@@ -4,9 +4,9 @@
  * Browser delegates to server for file I/O (can't read filesystem directly)
  */
 
-import { type FileLoadParams, type FileLoadResult, createFileLoadResult } from '@fileLoadShared/FileLoadTypes';
+import { type FileLoadParams, type FileLoadResult, createFileLoadResult } from '@commandsFileLoadShared/FileLoadTypes';
 import { NetworkError } from '@shared/ErrorTypes';
-import { FileLoadCommand } from '@fileLoadShared/FileLoadCommand';
+import { FileLoadCommand } from '@commandsFileLoadShared/FileLoadCommand';
 
 export class FileLoadBrowserCommand extends FileLoadCommand {
   

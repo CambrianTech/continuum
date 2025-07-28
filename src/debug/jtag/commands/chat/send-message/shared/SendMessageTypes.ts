@@ -8,7 +8,7 @@
  * ChatResult → SendMessageResult (adds messageId, deliveredAt)
  */
 
-import { ChatParams, ChatResult } from '@chatShared/ChatTypes';
+import { ChatParams, ChatResult } from '@commandsChatShared/ChatTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { createPayload } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';

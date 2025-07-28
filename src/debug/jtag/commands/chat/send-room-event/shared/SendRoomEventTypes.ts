@@ -14,7 +14,7 @@
  * ✅ Focused scope - just basic room event coordination
  */
 
-import { ChatParams, ChatResult, createChatParams, createChatResult } from '@chatShared/ChatTypes';
+import { ChatParams, ChatResult, createChatParams, createChatResult } from '@commandsChatShared/ChatTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGError } from '@shared/ErrorTypes';
 import { UUID } from 'crypto';

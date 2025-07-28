@@ -9,7 +9,7 @@ import * as path from 'path';
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
 import { PersistenceError } from '@shared/ErrorTypes';
-import  { type FileAppendParams, type FileAppendResult, createFileAppendResult } from '@fileAppendShared/FileAppendTypes';
+import  { type FileAppendParams, type FileAppendResult, createFileAppendResult } from '@commandsFileAppendShared/FileAppendTypes';
 
 export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileAppendResult> {
   

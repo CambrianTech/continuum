@@ -6,7 +6,7 @@
  * FileResult → FileLoadResult (adds content, bytesRead)
  */
 
-import { type FileParams, type FileResult, createFileParams, createFileResult } from '@fileShared/FileTypes';
+import { type FileParams, type FileResult, createFileParams, createFileResult } from '@commandsFileShared/FileTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGError } from '@shared/ErrorTypes';
 import { UUID } from 'crypto';
