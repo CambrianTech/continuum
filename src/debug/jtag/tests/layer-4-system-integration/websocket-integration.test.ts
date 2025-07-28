@@ -6,8 +6,8 @@
  * WebSocket protocol, not mocks.
  */
 
-import { JTAGWebSocketServer, JTAGWebSocketClient, JTAGWebSocketUtils } from '../shared/JTAGWebSocket';
-import { JTAGLogEntry, JTAGExecOptions, JTAGExecResult } from '../shared/JTAGTypes';
+import { JTAGWebSocketServer, JTAGWebSocketClient, JTAGWebSocketUtils } from '@tests/shared/JTAGWebSocket';
+import { JTAGLogEntry, JTAGExecOptions, JTAGExecResult } from '@tests/shared/JTAGTypes';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';

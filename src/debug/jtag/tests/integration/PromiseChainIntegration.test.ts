@@ -5,8 +5,8 @@
  * using the type-safe message system and ResponseCorrelator.
  */
 
-import { JTAGRouter, RouterStatus } from '../../shared/JTAGRouter';
-import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
+import { JTAGRouter, RouterStatus } from '@shared/JTAGRouter';
+import { ResponseCorrelator } from '@shared/ResponseCorrelator';
 import { 
   JTAGMessageFactory, 
   JTAGMessageTypes, 
@@ -14,8 +14,8 @@ import {
   ScreenshotParams,
   ScreenshotResult,
   JTAGMessage
-} from '../../shared/JTAGTypes';
-import { JTAG_ENDPOINTS } from '../../shared/JTAGEndpoints';
+} from '@shared/JTAGTypes';
+import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
 
 // Mock Transport for Integration Testing
 class MockIntegrationTransport {

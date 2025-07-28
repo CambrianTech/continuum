@@ -17,7 +17,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ChildProcess } from 'child_process';
 import { promisify } from 'util';
-import { JTAGExecResult, JTAGScreenshotResult, JTAGScreenshotOptions, JTAGUUIDInfo } from '../../shared/JTAGTypes';
+import { JTAGExecResult, JTAGScreenshotResult, JTAGScreenshotOptions, JTAGUUIDInfo } from '@shared/JTAGTypes';
 
 // Type declarations for browser window.jtag interface
 declare global {

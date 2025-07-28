@@ -9,9 +9,9 @@
  * 4. Transport health monitoring works
  */
 
-import { JTAGBase } from '../shared/JTAGBase';
-import { jtagRouter } from '../shared/JTAGRouter';
-import { JTAGMessageFactory, JTAG_MESSAGE_TYPES, JTAG_CONTEXTS } from '../shared/JTAGTypes';
+import { JTAGBase } from '@shared/JTAGBase';
+import { jtagRouter } from '@shared/JTAGRouter';
+import { JTAGMessageFactory, JTAG_MESSAGE_TYPES, JTAG_CONTEXTS } from '@shared/JTAGTypes';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 

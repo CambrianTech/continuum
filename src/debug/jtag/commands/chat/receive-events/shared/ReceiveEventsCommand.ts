@@ -2,7 +2,7 @@ import { ChatCommandBase } from '@commandsChat/shared/ChatCommandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { type ReceiveEventsParams, type ReceiveEventsResult, createReceiveEventsParams } from './ReceiveEventsTypes';
+import { type ReceiveEventsParams, type ReceiveEventsResult, createReceiveEventsParams } from '@chatReceiveEvents/shared/ReceiveEventsTypes';
 
 export abstract class ReceiveEventsCommand extends ChatCommandBase<ReceiveEventsParams, ReceiveEventsResult> {
 

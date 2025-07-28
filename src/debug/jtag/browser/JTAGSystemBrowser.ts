@@ -5,15 +5,15 @@
  * Follows the symmetric daemon architecture pattern established in CommandDaemon.
  */
 
-import { JTAGSystem, type JTAGSystemConfig } from '../shared/JTAGSystem';
-import type { JTAGContext } from '../shared/JTAGTypes';
-import { JTAG_ENVIRONMENTS } from '../shared/JTAGTypes';
-import { JTAGRouter } from '../shared/JTAGRouter';
-import { SYSTEM_EVENTS } from '../shared/events/SystemEvents';
-import type { DaemonBase, DaemonEntry } from '../shared/DaemonBase';
+import { JTAGSystem, type JTAGSystemConfig } from '@shared/JTAGSystem';
+import type { JTAGContext } from '@shared/JTAGTypes';
+import { JTAG_ENVIRONMENTS } from '@shared/JTAGTypes';
+import { JTAGRouter } from '@shared/JTAGRouter';
+import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
+import type { DaemonBase, DaemonEntry } from '@shared/DaemonBase';
 import { BROWSER_DAEMONS } from './structure';
-import { SYSTEM_SCOPES } from '../shared/SystemScopes';
-import type { SessionDaemonBrowser } from '../daemons/session-daemon/browser/SessionDaemonBrowser';
+import { SYSTEM_SCOPES } from '@shared/SystemScopes';
+import type { SessionDaemonBrowser } from '@daemonsSessionDaemon/browser/SessionDaemonBrowser';
 
 export class JTAGSystemBrowser extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return BROWSER_DAEMONS; }

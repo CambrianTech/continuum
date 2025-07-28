@@ -15,4 +15,4 @@ export const jtag = {
 
 // Direct export for advanced usage
 export { JTAGSystemServer };
-export * from './shared/JTAGTypes';
+export * from '@shared/JTAGTypes';

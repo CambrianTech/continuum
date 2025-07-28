@@ -4,11 +4,11 @@
  * Handles WebSocket communication between browser and server contexts.
  */
 
-import { JTAGTransport } from '../shared/JTAGRouter';
-import { JTAGMessage } from '../shared/JTAGTypes';
+import { JTAGTransport } from '@shared/JTAGRouter';
+import { JTAGMessage } from '@shared/JTAGTypes';
 import { WebSocketServer, WebSocket as WSWebSocket } from 'ws';
-import type { EventsInterface } from '../shared/JTAGRouter';
-import { TRANSPORT_EVENTS } from './TransportEvents';
+import type { EventsInterface } from '@shared/JTAGRouter';
+import { TRANSPORT_EVENTS } from '@transports/TransportEvents';
 
 interface WebSocketSendResult {
   success: boolean;

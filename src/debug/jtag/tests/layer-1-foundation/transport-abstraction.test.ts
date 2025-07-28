@@ -19,15 +19,15 @@ import {
   MockNetworkTransport,
   MockTransportFactory,
   TransportTestUtils
-} from '../shared/MockTransports';
+} from '@tests/shared/MockTransports';
 
 import { 
   JTAGSmartTransport,
   JTAGTransportFactoryImpl,
   DefaultMessageQueue
-} from '../../shared/JTAGTransportFactory';
+} from '@shared/JTAGTransportFactory';
 
-import type { JTAGConfig } from '../../shared/JTAGTypes';
+import type { JTAGConfig } from '@shared/JTAGTypes';
 
 class TransportAbstractionTest {
   private testConfig: JTAGConfig = {

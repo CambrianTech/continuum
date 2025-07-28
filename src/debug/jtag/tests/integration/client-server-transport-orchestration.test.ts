@@ -8,10 +8,10 @@
  * Flow: Browser Client → WebSocket Transport → JTAG Server → Response → Client
  */
 
-import { JTAGWebSocketTransportImpl } from '../../shared/transports/WebSocketTransport';
+import { JTAGWebSocketTransportImpl } from '@shared/transports/WebSocketTransport';
 import { EmergencyJTAGClient } from '../../client/JTAGClient';
 // EmergencyJTAGServer was junk - removed
-import { JTAG_STATUS, JTAGConfig, JTAGWebSocketMessage } from '../../shared/JTAGTypes';
+import { JTAG_STATUS, JTAGConfig, JTAGWebSocketMessage } from '@shared/JTAGTypes';
 import { jtag } from '../../index';
 import * as http from 'http';
 import * as WebSocket from 'ws';

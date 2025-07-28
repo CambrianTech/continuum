@@ -9,9 +9,9 @@
 import puppeteer from 'puppeteer';
 import * as fs from 'fs';
 import * as path from 'path';
-import { JTAGWebSocketServer } from '../../shared/JTAGWebSocket';
-import { jtagConfig } from '../../shared/config';
-import { jtagRouter } from '../../shared/JTAGRouter';
+import { JTAGWebSocketServer } from '@shared/JTAGWebSocket';
+import { jtagConfig } from '@shared/config';
+import { jtagRouter } from '@shared/JTAGRouter';
 
 describe('Piece 2: Console Log Flow', () => {
   let server: JTAGWebSocketServer;

@@ -9,8 +9,8 @@ import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { type FileLoadParams, createFileLoadParams } from './FileLoadTypes';
-import type { FileLoadResult } from './FileLoadTypes';
+import { type FileLoadParams, createFileLoadParams } from '@fileLoad/shared/FileLoadTypes';
+import type { FileLoadResult } from '@fileLoad/shared/FileLoadTypes';
 
 export abstract class FileLoadCommand extends CommandBase<FileLoadParams, FileLoadResult> {
 

@@ -15,8 +15,8 @@ import {
   JTAGMessage,
   JTAGPayload,
   JTAGContext
-} from '../../shared/JTAGTypes';
-import { JTAG_ENDPOINTS } from '../../shared/JTAGEndpoints';
+} from '@shared/JTAGTypes';
+import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
 
 console.log('🧪 JTAG Message Types Test Suite');
 

@@ -5,9 +5,9 @@
  * Perfect example of focused browser implementation - no over-engineering.
  */
 
-import { type ScrollParams, type ScrollResult, createScrollResult } from '../shared/ScrollTypes';
+import { type ScrollParams, type ScrollResult, createScrollResult } from '@commandsScroll/shared/ScrollTypes';
 import { ValidationError } from '@shared/ErrorTypes';
-import { ScrollCommand } from '../shared/ScrollCommand';
+import { ScrollCommand } from '@commandsScroll/shared/ScrollCommand';
 import { safeQuerySelector } from '@shared/GlobalUtils';
 
 export class ScrollBrowserCommand extends ScrollCommand {

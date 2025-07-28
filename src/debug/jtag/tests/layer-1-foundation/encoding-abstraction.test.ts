@@ -5,8 +5,8 @@
  * Tests the base64 encoding/decoding for transport abstraction
  */
 
-import { JTAGPayload } from '../../shared/JTAGTypes';
-import { EventMessage } from '../../shared/JTAGEventSystem';
+import { JTAGPayload } from '@shared/JTAGTypes';
+import { EventMessage } from '@shared/JTAGEventSystem';
 
 console.log('🧪 Encoding Abstraction Test Suite');
 

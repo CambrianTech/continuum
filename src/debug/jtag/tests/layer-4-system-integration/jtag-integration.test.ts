@@ -5,7 +5,7 @@
  * No mocks, no fake connections - real integration testing.
  */
 
-import { jtag, JTAG, JTAGLogEntry, JTAGStats } from '../jtag';
+import { jtag, JTAG, JTAGLogEntry, JTAGStats } from '@tests/jtag';
 import * as WebSocket from 'ws';
 import * as fs from 'fs';
 import * as path from 'path';

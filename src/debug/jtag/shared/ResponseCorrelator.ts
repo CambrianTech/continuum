@@ -4,7 +4,7 @@
  * Transforms fire-and-forget message bus into request-response system
  */
 
-import type { TimerHandle } from './CrossPlatformTypes';
+import type { TimerHandle } from '@shared/CrossPlatformTypes';
 
 export interface PendingRequest {
   resolve: (result: unknown) => void;

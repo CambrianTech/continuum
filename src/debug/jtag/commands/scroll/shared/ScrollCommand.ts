@@ -8,7 +8,7 @@
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { type ScrollParams, type ScrollResult, createScrollParams } from './ScrollTypes';
+import { type ScrollParams, type ScrollResult, createScrollParams } from '@commandsScroll/shared/ScrollTypes';
 
 export abstract class ScrollCommand extends CommandBase<ScrollParams, ScrollResult> {
 

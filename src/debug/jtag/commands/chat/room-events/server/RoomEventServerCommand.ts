@@ -7,8 +7,8 @@
  * Follows screenshot/navigate pattern - minimal, focused, ~50 lines.
  */
 
-import { RoomEventCommand } from '../shared/RoomEventCommand';
-import { type RoomEventSubscriptionParams, type RoomEventSubscriptionResult, createRoomEventSubscriptionResult } from '../shared/RoomEventTypes';
+import { RoomEventCommand } from '@chatRoomEvents/shared/RoomEventCommand';
+import { type RoomEventSubscriptionParams, type RoomEventSubscriptionResult, createRoomEventSubscriptionResult } from '@chatRoomEvents/shared/RoomEventTypes';
 
 export class RoomEventServerCommand extends RoomEventCommand {
 

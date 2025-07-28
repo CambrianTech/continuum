@@ -4,7 +4,7 @@
  * Browser-specific widget daemon that provides global access for widgets.
  */
 
-import { WidgetDaemon } from '../shared/WidgetDaemon';
+import { WidgetDaemon } from '@daemonsWidgetDaemon/shared/WidgetDaemon';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGRouter } from '@shared/JTAGRouter';
 

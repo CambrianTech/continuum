@@ -2,9 +2,9 @@
  * JTAG Message Queue - Composes generic components for JTAG-specific needs
  */
 
-import { JTAGMessage, JTAGContext } from '../JTAGTypes';
-import { PriorityQueue, Priority, QueuedItem } from './PriorityQueue';
-import { DeduplicationService } from './DeduplicationService';
+import { JTAGMessage, JTAGContext } from '@shared/JTAGTypes';
+import { PriorityQueue, Priority, QueuedItem } from '@sharedQueuing/PriorityQueue';
+import { DeduplicationService } from '@sharedQueuing/DeduplicationService';
 
 // Re-export for convenience
 export { Priority as MessagePriority };

@@ -7,8 +7,8 @@
  * Follows screenshot/navigate pattern - minimal, focused, ~50 lines.
  */
 
-import { GetChatHistoryCommand } from '../shared/GetChatHistoryCommand';
-import { type GetChatHistoryParams, type GetChatHistoryResult, createGetChatHistoryResult, type ChatMessage } from '../shared/GetChatHistoryTypes';
+import { GetChatHistoryCommand } from '@chatGetChatHistory/shared/GetChatHistoryCommand';
+import { type GetChatHistoryParams, type GetChatHistoryResult, createGetChatHistoryResult, type ChatMessage } from '@chatGetChatHistory/shared/GetChatHistoryTypes';
 import { NetworkError } from '@shared/ErrorTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { ICommandDaemon } from '@commandBase';

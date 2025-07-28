@@ -9,8 +9,8 @@
  * - jtag.critical → server.critical.txt (for truly critical events)
  */
 
-import { JTAGBase } from '../../shared/JTAGBase';
-import { JTAG_LOG_LEVELS } from '../../shared/JTAGTypes';
+import { JTAGBase } from '@shared/JTAGBase';
+import { JTAG_LOG_LEVELS } from '@shared/JTAGTypes';
 import * as fs from 'fs';
 import * as path from 'path';
 

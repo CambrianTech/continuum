@@ -10,10 +10,10 @@
  * that should appear in the browser Network panel.
  */
 
-import { JTAGWebSocketTransportImpl } from '../../shared/transports/WebSocketTransport';
-import { JTAGHTTPTransportImpl } from '../../shared/transports/HTTPTransport';
-import { JTAGRESTTransportImpl } from '../../shared/transports/RESTTransport';
-import { JTAG_STATUS, JTAGConfig, JTAGWebSocketMessage } from '../../shared/JTAGTypes';
+import { JTAGWebSocketTransportImpl } from '@shared/transports/WebSocketTransport';
+import { JTAGHTTPTransportImpl } from '@shared/transports/HTTPTransport';
+import { JTAGRESTTransportImpl } from '@shared/transports/RESTTransport';
+import { JTAG_STATUS, JTAGConfig, JTAGWebSocketMessage } from '@shared/JTAGTypes';
 import { jtag } from '../../index';
 
 class SimpleRealTransportTester {

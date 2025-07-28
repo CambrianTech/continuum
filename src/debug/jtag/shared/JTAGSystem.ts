@@ -6,15 +6,15 @@
  * routers, transports, and daemons automatically.
  */
 
-import { JTAGModule } from './JTAGModule';
-import type { JTAGContext, CommandParams, CommandResult } from './JTAGTypes';
+import { JTAGModule } from '@shared/JTAGModule';
+import type { JTAGContext, CommandParams, CommandResult } from '@shared/JTAGTypes';
 import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
-import type { JTAGRouter } from './JTAGRouter';
-import type { DaemonBase } from './DaemonBase';
-import type { DaemonEntry } from './DaemonBase';
+import type { JTAGRouter } from '@shared/JTAGRouter';
+import type { DaemonBase } from '@shared/DaemonBase';
+import type { DaemonEntry } from '@shared/DaemonBase';
 import type { CommandDaemon } from '@daemonsCommandDaemon/shared/CommandDaemon';
-import type { JTAGRouterConfig } from './JTAGRouterTypes';
-import type { UUID } from './CrossPlatformUUID';
+import type { JTAGRouterConfig } from '@shared/JTAGRouterTypes';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 
 /**

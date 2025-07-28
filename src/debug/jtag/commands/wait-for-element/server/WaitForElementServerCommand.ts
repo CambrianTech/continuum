@@ -6,8 +6,8 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { WaitForElementParams } from '../shared/WaitForElementTypes';
-import { type WaitForElementResult, createWaitForElementResult } from '../shared/WaitForElementTypes';
+import type { WaitForElementParams } from '@commandsWaitForElement/shared/WaitForElementTypes';
+import { type WaitForElementResult, createWaitForElementResult } from '@commandsWaitForElement/shared/WaitForElementTypes';
 import { NetworkError } from '@shared/ErrorTypes';
 
 export class WaitForElementServerCommand extends CommandBase<WaitForElementParams, WaitForElementResult> {

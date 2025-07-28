@@ -20,8 +20,8 @@
  * - Smart context-specific behavior
  */
 
-import { type CompileTypescriptParams, type CompileTypescriptResult, createCompileTypescriptResult } from '../shared/CompileTypescriptTypes';
-import { CompileTypescriptCommand } from '../shared/CompileTypescriptCommand';
+import { type CompileTypescriptParams, type CompileTypescriptResult, createCompileTypescriptResult } from '@commandsCompileTypescript/shared/CompileTypescriptTypes';
+import { CompileTypescriptCommand } from '@commandsCompileTypescript/shared/CompileTypescriptCommand';
 
 export class CompileTypescriptBrowserCommand extends CompileTypescriptCommand {
   

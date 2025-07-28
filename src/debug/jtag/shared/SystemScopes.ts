@@ -5,7 +5,7 @@
  * where some operations need to work at both system level and session level.
  */
 
-import { type UUID } from './CrossPlatformUUID';
+import { type UUID } from '@shared/CrossPlatformUUID';
 
 /**
  * Session directory categories - passed in from connect() or caller

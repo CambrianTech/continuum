@@ -16,9 +16,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { JTAGBase } from '../../shared/JTAGBase';
-import { MockSuccessTransport, MockFailureTransport, MockControllableTransport } from '../shared/MockTransports';
-import type { JTAGConfig } from '../../shared/JTAGTypes';
+import { JTAGBase } from '@shared/JTAGBase';
+import { MockSuccessTransport, MockFailureTransport, MockControllableTransport } from '@tests/shared/MockTransports';
+import type { JTAGConfig } from '@shared/JTAGTypes';
 
 class BusinessLogicIsolationTest {
   private testLogDir: string;

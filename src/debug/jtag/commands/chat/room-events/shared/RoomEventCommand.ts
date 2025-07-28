@@ -2,8 +2,8 @@ import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { type RoomEventSubscriptionParams, createRoomEventSubscriptionParams } from './RoomEventTypes';
-import type { RoomEventSubscriptionResult } from './RoomEventTypes';
+import { type RoomEventSubscriptionParams, createRoomEventSubscriptionParams } from '@chatRoomEvents/shared/RoomEventTypes';
+import type { RoomEventSubscriptionResult } from '@chatRoomEvents/shared/RoomEventTypes';
 
 export abstract class RoomEventCommand extends CommandBase<RoomEventSubscriptionParams, RoomEventSubscriptionResult> {
 

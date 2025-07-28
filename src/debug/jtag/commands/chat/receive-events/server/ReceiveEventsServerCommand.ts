@@ -1,7 +1,7 @@
-import { ReceiveEventsCommand } from '../shared/ReceiveEventsCommand';
+import { ReceiveEventsCommand } from '@chatReceiveEvents/shared/ReceiveEventsCommand';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { ICommandDaemon } from '@commandBase';
-import { type ReceiveEventsParams, type ReceiveEventsResult, createReceiveEventsResult, type ChatEvent } from '../shared/ReceiveEventsTypes';
+import { type ReceiveEventsParams, type ReceiveEventsResult, createReceiveEventsResult, type ChatEvent } from '@chatReceiveEvents/shared/ReceiveEventsTypes';
 
 export class ReceiveEventsServerCommand extends ReceiveEventsCommand {
 

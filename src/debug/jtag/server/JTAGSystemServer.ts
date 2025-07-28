@@ -5,15 +5,15 @@
  * Follows the symmetric daemon architecture pattern established in CommandDaemon.
  */
 
-import { JTAGSystem, type JTAGSystemConfig } from '../shared/JTAGSystem';
-import type { JTAGContext } from '../shared/JTAGTypes';
-import { JTAG_ENVIRONMENTS } from '../shared/JTAGTypes';
-import { JTAGRouter } from '../shared/JTAGRouter';
-import { SYSTEM_EVENTS } from '../shared/events/SystemEvents';
-import type { DaemonBase, DaemonEntry } from '../shared/DaemonBase';
+import { JTAGSystem, type JTAGSystemConfig } from '@shared/JTAGSystem';
+import type { JTAGContext } from '@shared/JTAGTypes';
+import { JTAG_ENVIRONMENTS } from '@shared/JTAGTypes';
+import { JTAGRouter } from '@shared/JTAGRouter';
+import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
+import type { DaemonBase, DaemonEntry } from '@shared/DaemonBase';
 import { SERVER_DAEMONS } from './structure';
-import { SYSTEM_SCOPES } from '../shared/SystemScopes';
-import { WebSocketServerTransport } from '../transports/WebSocketTransport';
+import { SYSTEM_SCOPES } from '@shared/SystemScopes';
+import { WebSocketServerTransport } from '@transports/WebSocketTransport';
 
 export class JTAGSystemServer extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return SERVER_DAEMONS; }

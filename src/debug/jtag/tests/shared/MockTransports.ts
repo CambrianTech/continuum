@@ -10,7 +10,7 @@ import type {
   JTAGWebSocketMessage, 
   JTAGTransportResponse,
   JTAGConfig 
-} from '../../shared/JTAGTypes';
+} from '@shared/JTAGTypes';
 
 /**
  * Mock Transport - Always Succeeds

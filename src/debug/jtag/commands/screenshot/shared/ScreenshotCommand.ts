@@ -1,7 +1,7 @@
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { UUID } from 'crypto';
-import { type ScreenshotParams, type ScreenshotResult, createScreenshotParams } from './ScreenshotTypes';
+import { type ScreenshotParams, type ScreenshotResult, createScreenshotParams } from '@commandsScreenshot/shared/ScreenshotTypes';
 
 export abstract class ScreenshotCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
 

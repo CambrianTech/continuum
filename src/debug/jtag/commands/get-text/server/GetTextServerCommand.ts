@@ -6,7 +6,7 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import { type GetTextParams, type GetTextResult, createGetTextResult } from '../shared/GetTextTypes';
+import { type GetTextParams, type GetTextResult, createGetTextResult } from '@commandsGetText/shared/GetTextTypes';
 import { NetworkError } from '@shared/ErrorTypes';
 
 export class GetTextServerCommand extends CommandBase<GetTextParams, GetTextResult> {

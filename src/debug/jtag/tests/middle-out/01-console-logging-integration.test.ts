@@ -10,7 +10,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { TestBenchClient } from './shared/TestBenchClient';
+import { TestBenchClient } from '@testsMiddleOut/shared/TestBenchClient';
 
 class ConsoleLoggingIntegrationTest {
   private client = new TestBenchClient();

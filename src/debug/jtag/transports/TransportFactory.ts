@@ -2,13 +2,13 @@
  * Transport Factory - Auto-detect and create appropriate transports
  */
 
-import { JTAGTransport } from '../shared/JTAGRouter';
-import type { JTAGContext } from '../shared/JTAGTypes';
-import { JTAG_ENVIRONMENTS } from '../shared/JTAGTypes';
-import { WebSocketServerTransport, WebSocketClientTransport } from './WebSocketTransport';
-import { HTTPTransport } from './HTTPTransport';
-// import { UDPMulticastTransport } from './udp-multicast/UDPMulticastTransport'; // Disabled - god object
-import type { EventsInterface } from '../shared/JTAGRouter';
+import { JTAGTransport } from '@shared/JTAGRouter';
+import type { JTAGContext } from '@shared/JTAGTypes';
+import { JTAG_ENVIRONMENTS } from '@shared/JTAGTypes';
+import { WebSocketServerTransport, WebSocketClientTransport } from '@transports/WebSocketTransport';
+import { HTTPTransport } from '@transports/HTTPTransport';
+// import { UDPMulticastTransport } from '@transportsUdpMulticast/UDPMulticastTransport'; // Disabled - god object
+import type { EventsInterface } from '@shared/JTAGRouter';
 
 export interface TransportConfig {
   preferred?: 'websocket' | 'http' | 'udp-multicast';
