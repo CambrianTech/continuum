@@ -203,27 +203,15 @@ class UnifiedConfigGenerator {
       structureGeneration: {
         directories: {
           browser: {
-            outputFile: 'browser/structure.ts',
+            outputFile: 'browser/generated.ts',
             environment: 'browser',
             daemonPaths: ['daemons/*/browser/*Browser.ts'],
             excludePatterns: ['**/*.bak', '**/*.bak/**/*', '**/node_modules/**/*']
           },
           server: {
-            outputFile: 'server/structure.ts',
+            outputFile: 'server/generated.ts',
             environment: 'server', 
             daemonPaths: ['daemons/*/server/*Server.ts'],
-            excludePatterns: ['**/*.bak', '**/*.bak/**/*', '**/node_modules/**/*']
-          },
-          'command-daemon-browser': {
-            outputFile: 'daemons/command-daemon/browser/structure.ts',
-            environment: 'browser',
-            commandPaths: ['commands/*/browser/*BrowserCommand.ts', 'commands/*/*/browser/*BrowserCommand.ts'],
-            excludePatterns: ['**/*.bak', '**/*.bak/**/*', '**/node_modules/**/*']
-          },
-          'command-daemon-server': {
-            outputFile: 'daemons/command-daemon/server/structure.ts',
-            environment: 'server',
-            commandPaths: ['commands/*/server/*ServerCommand.ts', 'commands/*/*/server/*ServerCommand.ts'],
             excludePatterns: ['**/*.bak', '**/*.bak/**/*', '**/node_modules/**/*']
           }
         }
