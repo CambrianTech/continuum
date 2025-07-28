@@ -1,6 +1,6 @@
 {
   "projectName": "@continuum/jtag",
-  "version": "1.0.309",
+  "version": "1.0.312",
   "pathMappings": {
     "@commands": {
       "alias": "@commands",
@@ -336,7 +336,7 @@
   "structureGeneration": {
     "directories": {
       "browser": {
-        "outputFile": "browser/structure.ts",
+        "outputFile": "browser/generated.ts",
         "environment": "browser",
         "daemonPaths": [
           "daemons/*/browser/*Browser.ts"
@@ -348,7 +348,7 @@
         ]
       },
       "server": {
-        "outputFile": "server/structure.ts",
+        "outputFile": "server/generated.ts",
         "environment": "server",
         "daemonPaths": [
           "daemons/*/server/*Server.ts"
@@ -358,35 +358,9 @@
           "**/*.bak/**/*",
           "**/node_modules/**/*"
         ]
-      },
-      "command-daemon-browser": {
-        "outputFile": "daemons/command-daemon/browser/structure.ts",
-        "environment": "browser",
-        "commandPaths": [
-          "commands/*/browser/*BrowserCommand.ts",
-          "commands/*/*/browser/*BrowserCommand.ts"
-        ],
-        "excludePatterns": [
-          "**/*.bak",
-          "**/*.bak/**/*",
-          "**/node_modules/**/*"
-        ]
-      },
-      "command-daemon-server": {
-        "outputFile": "daemons/command-daemon/server/structure.ts",
-        "environment": "server",
-        "commandPaths": [
-          "commands/*/server/*ServerCommand.ts",
-          "commands/*/*/server/*ServerCommand.ts"
-        ],
-        "excludePatterns": [
-          "**/*.bak",
-          "**/*.bak/**/*",
-          "**/node_modules/**/*"
-        ]
       }
     }
   },
-  "generatedAt": "2025-07-28T22:12:46.728Z",
+  "generatedAt": "2025-07-28T22:33:01.029Z",
   "description": "Auto-generated unified configuration for JTAG path mappings and structure generation"
 }

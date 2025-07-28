@@ -11,7 +11,7 @@
  */
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'fs';
-import { join, relative, dirname } from 'path';
+import { join, relative } from 'path';
 
 interface StructureConfig {
   directories: {
@@ -51,30 +51,26 @@ class StructureGenerator {
   }
 
   private loadConfig(): StructureConfig {
-    const packageJsonPath = join(this.rootPath, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
+    const unifiedConfigPath = join(this.rootPath, 'unified-config.json');
+    const unifiedConfig = JSON.parse(readFileSync(unifiedConfigPath, 'utf8'));
     
-    // Default configuration if not specified in package.json
-    const defaultConfig: StructureConfig = {
+    // Return the structureGeneration configuration from unified-config.json
+    return unifiedConfig.structureGeneration ?? {
       directories: {
         browser: {
           outputFile: 'browser/generated.ts',
           environment: 'browser',
           daemonPaths: ['daemons/*/browser/*Browser.ts'],
-          commandPaths: ['daemons/command-daemon/commands/*/browser/*BrowserCommand.ts'],
           excludePatterns: ['**/*.bak', '**/*.bak/**/*', '**/node_modules/**/*']
         },
         server: {
           outputFile: 'server/generated.ts',
           environment: 'server', 
           daemonPaths: ['daemons/*/server/*Server.ts'],
-          commandPaths: ['daemons/command-daemon/commands/*/server/*ServerCommand.ts'],
           excludePatterns: ['**/*.bak', '**/*.bak/**/*', '**/node_modules/**/*']
         }
       }
     };
-
-    return packageJson.structureGenerator || defaultConfig;
   }
 
   private isExcluded(filePath: string, excludePatterns: string[]): boolean {
@@ -181,6 +177,7 @@ class StructureGenerator {
         importPath: `../${importPath}`
       };
     } catch (e) {
+      console.warn(`Ignoring daemon info from ${filePath}:`, e);
       return null;
     }
   }

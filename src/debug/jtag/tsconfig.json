@@ -372,7 +372,7 @@
     "**/*.bak/**/*"
   ],
   "_generated": {
-    "timestamp": "2025-07-28T22:12:46.739Z",
+    "timestamp": "2025-07-28T22:33:01.033Z",
     "source": "unified-config.json",
     "pathCount": 110
   }
