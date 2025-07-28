@@ -18,6 +18,7 @@ import { FileLoadServerCommand } from '../commands/file/load/server/FileLoadServ
 import { FileSaveServerCommand } from '../commands/file/save/server/FileSaveServerCommand';
 import { GetTextServerCommand } from '../commands/get-text/server/GetTextServerCommand';
 import { NavigateServerCommand } from '../commands/navigate/server/NavigateServerCommand';
+import { ProxyNavigateServerCommand } from '../commands/proxy-navigate/server/ProxyNavigateServerCommand';
 import { ScreenshotServerCommand } from '../commands/screenshot/server/ScreenshotServerCommand';
 import { ScrollServerCommand } from '../commands/scroll/server/ScrollServerCommand';
 import { TypeServerCommand } from '../commands/type/server/TypeServerCommand';
@@ -89,6 +90,11 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'navigate',
     className: 'NavigateServerCommand',
     commandClass: NavigateServerCommand
+  },
+  {
+    name: 'proxy-navigate',
+    className: 'ProxyNavigateServerCommand',
+    commandClass: ProxyNavigateServerCommand
   },
   {
     name: 'screenshot',

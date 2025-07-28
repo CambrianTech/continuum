@@ -9,7 +9,9 @@
 import { CommandDaemonServer } from '../daemons/command-daemon/server/CommandDaemonServer';
 import { ConsoleDaemonServer } from '../daemons/console-daemon/server/ConsoleDaemonServer';
 import { HealthDaemonServer } from '../daemons/health-daemon/server/HealthDaemonServer';
+import { ProxyDaemonServer } from '../daemons/proxy-daemon/server/ProxyDaemonServer';
 import { SessionDaemonServer } from '../daemons/session-daemon/server/SessionDaemonServer';
+import { WidgetDaemonServer } from '../daemons/widget-daemon/server/WidgetDaemonServer';
 
 // Types
 import type { DaemonEntry } from '../shared/DaemonBase';
@@ -34,8 +36,18 @@ export const SERVER_DAEMONS: DaemonEntry[] = [
     daemonClass: HealthDaemonServer
   },
   {
+    name: 'ProxyDaemon',
+    className: 'ProxyDaemonServer',
+    daemonClass: ProxyDaemonServer
+  },
+  {
     name: 'SessionDaemon',
     className: 'SessionDaemonServer',
     daemonClass: SessionDaemonServer
+  },
+  {
+    name: 'WidgetDaemon',
+    className: 'WidgetDaemonServer',
+    daemonClass: WidgetDaemonServer
   }
 ];

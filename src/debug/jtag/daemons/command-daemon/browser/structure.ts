@@ -17,6 +17,7 @@ import { FileLoadBrowserCommand } from '../commands/file/load/browser/FileLoadBr
 import { FileSaveBrowserCommand } from '../commands/file/save/browser/FileSaveBrowserCommand';
 import { GetTextBrowserCommand } from '../commands/get-text/browser/GetTextBrowserCommand';
 import { NavigateBrowserCommand } from '../commands/navigate/browser/NavigateBrowserCommand';
+import { ProxyNavigateBrowserCommand } from '../commands/proxy-navigate/browser/ProxyNavigateBrowserCommand';
 import { ScreenshotBrowserCommand } from '../commands/screenshot/browser/ScreenshotBrowserCommand';
 import { ScrollBrowserCommand } from '../commands/scroll/browser/ScrollBrowserCommand';
 import { TypeBrowserCommand } from '../commands/type/browser/TypeBrowserCommand';
@@ -83,6 +84,11 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     name: 'navigate',
     className: 'NavigateBrowserCommand',
     commandClass: NavigateBrowserCommand
+  },
+  {
+    name: 'proxy-navigate',
+    className: 'ProxyNavigateBrowserCommand',
+    commandClass: ProxyNavigateBrowserCommand
   },
   {
     name: 'screenshot',
