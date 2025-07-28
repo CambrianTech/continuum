@@ -6,23 +6,23 @@
  */
 
 // Server Command Imports
-import { GetChatHistoryServerCommand } from '../commands/chat/get-chat-history/server/GetChatHistoryServerCommand';
-import { ReceiveEventsServerCommand } from '../commands/chat/receive-events/server/ReceiveEventsServerCommand';
-import { RoomEventServerCommand } from '../commands/chat/room-events/server/RoomEventServerCommand';
-import { SendMessageServerCommand } from '../commands/chat/send-message/server/SendMessageServerCommand';
-import { SendRoomEventServerCommand } from '../commands/chat/send-room-event/server/SendRoomEventServerCommand';
-import { ClickServerCommand } from '../commands/click/server/ClickServerCommand';
-import { CompileTypescriptServerCommand } from '../commands/compile-typescript/server/CompileTypescriptServerCommand';
-import { FileAppendServerCommand } from '../commands/file/append/server/FileAppendServerCommand';
-import { FileLoadServerCommand } from '../commands/file/load/server/FileLoadServerCommand';
-import { FileSaveServerCommand } from '../commands/file/save/server/FileSaveServerCommand';
-import { GetTextServerCommand } from '../commands/get-text/server/GetTextServerCommand';
-import { NavigateServerCommand } from '../commands/navigate/server/NavigateServerCommand';
-import { ProxyNavigateServerCommand } from '../commands/proxy-navigate/server/ProxyNavigateServerCommand';
-import { ScreenshotServerCommand } from '../commands/screenshot/server/ScreenshotServerCommand';
-import { ScrollServerCommand } from '../commands/scroll/server/ScrollServerCommand';
-import { TypeServerCommand } from '../commands/type/server/TypeServerCommand';
-import { WaitForElementServerCommand } from '../commands/wait-for-element/server/WaitForElementServerCommand';
+import { GetChatHistoryServerCommand } from '../../../commands/chat/get-chat-history/server/GetChatHistoryServerCommand';
+import { ReceiveEventsServerCommand } from '../../../commands/chat/receive-events/server/ReceiveEventsServerCommand';
+import { RoomEventServerCommand } from '../../../commands/chat/room-events/server/RoomEventServerCommand';
+import { SendMessageServerCommand } from '../../../commands/chat/send-message/server/SendMessageServerCommand';
+import { SendRoomEventServerCommand } from '../../../commands/chat/send-room-event/server/SendRoomEventServerCommand';
+import { ClickServerCommand } from '../../../commands/click/server/ClickServerCommand';
+import { CompileTypescriptServerCommand } from '../../../commands/compile-typescript/server/CompileTypescriptServerCommand';
+import { FileAppendServerCommand } from '../../../commands/file/append/server/FileAppendServerCommand';
+import { FileLoadServerCommand } from '../../../commands/file/load/server/FileLoadServerCommand';
+import { FileSaveServerCommand } from '../../../commands/file/save/server/FileSaveServerCommand';
+import { GetTextServerCommand } from '../../../commands/get-text/server/GetTextServerCommand';
+import { NavigateServerCommand } from '../../../commands/navigate/server/NavigateServerCommand';
+import { ProxyNavigateServerCommand } from '../../../commands/proxy-navigate/server/ProxyNavigateServerCommand';
+import { ScreenshotServerCommand } from '../../../commands/screenshot/server/ScreenshotServerCommand';
+import { ScrollServerCommand } from '../../../commands/scroll/server/ScrollServerCommand';
+import { TypeServerCommand } from '../../../commands/type/server/TypeServerCommand';
+import { WaitForElementServerCommand } from '../../../commands/wait-for-element/server/WaitForElementServerCommand';
 
 // Types
 import type { CommandEntry } from '../../../daemons/command-daemon/shared/CommandBase';

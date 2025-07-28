@@ -35,11 +35,11 @@ function createJTAGPathTransformer() {
         pathMappings = {
           '@shared': 'shared',
           '@commandBase': 'daemons/command-daemon/shared/CommandBase',
-          '@chatShared': 'daemons/command-daemon/commands/chat/shared',
+          '@chatShared': 'commands/chat/shared',
           '@daemons': 'daemons',
           '@browser': 'browser',
           '@server': 'server',
-          '@commandRoot': 'daemons/command-daemon/commands'
+          '@commandRoot': 'commands'
         };
       }
       

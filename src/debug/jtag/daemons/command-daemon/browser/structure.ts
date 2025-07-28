@@ -6,22 +6,22 @@
  */
 
 // Browser Command Imports
-import { GetChatHistoryBrowserCommand } from '../commands/chat/get-chat-history/browser/GetChatHistoryBrowserCommand';
-import { RoomEventBrowserCommand } from '../commands/chat/room-events/browser/RoomEventBrowserCommand';
-import { SendMessageBrowserCommand } from '../commands/chat/send-message/browser/SendMessageBrowserCommand';
-import { SendRoomEventBrowserCommand } from '../commands/chat/send-room-event/browser/SendRoomEventBrowserCommand';
-import { ClickBrowserCommand } from '../commands/click/browser/ClickBrowserCommand';
-import { CompileTypescriptBrowserCommand } from '../commands/compile-typescript/browser/CompileTypescriptBrowserCommand';
-import { FileAppendBrowserCommand } from '../commands/file/append/browser/FileAppendBrowserCommand';
-import { FileLoadBrowserCommand } from '../commands/file/load/browser/FileLoadBrowserCommand';
-import { FileSaveBrowserCommand } from '../commands/file/save/browser/FileSaveBrowserCommand';
-import { GetTextBrowserCommand } from '../commands/get-text/browser/GetTextBrowserCommand';
-import { NavigateBrowserCommand } from '../commands/navigate/browser/NavigateBrowserCommand';
-import { ProxyNavigateBrowserCommand } from '../commands/proxy-navigate/browser/ProxyNavigateBrowserCommand';
-import { ScreenshotBrowserCommand } from '../commands/screenshot/browser/ScreenshotBrowserCommand';
-import { ScrollBrowserCommand } from '../commands/scroll/browser/ScrollBrowserCommand';
-import { TypeBrowserCommand } from '../commands/type/browser/TypeBrowserCommand';
-import { WaitForElementBrowserCommand } from '../commands/wait-for-element/browser/WaitForElementBrowserCommand';
+import { GetChatHistoryBrowserCommand } from '../../../commands/chat/get-chat-history/browser/GetChatHistoryBrowserCommand';
+import { RoomEventBrowserCommand } from '../../../commands/chat/room-events/browser/RoomEventBrowserCommand';
+import { SendMessageBrowserCommand } from '../../../commands/chat/send-message/browser/SendMessageBrowserCommand';
+import { SendRoomEventBrowserCommand } from '../../../commands/chat/send-room-event/browser/SendRoomEventBrowserCommand';
+import { ClickBrowserCommand } from '../../../commands/click/browser/ClickBrowserCommand';
+import { CompileTypescriptBrowserCommand } from '../../../commands/compile-typescript/browser/CompileTypescriptBrowserCommand';
+import { FileAppendBrowserCommand } from '../../../commands/file/append/browser/FileAppendBrowserCommand';
+import { FileLoadBrowserCommand } from '../../../commands/file/load/browser/FileLoadBrowserCommand';
+import { FileSaveBrowserCommand } from '../../../commands/file/save/browser/FileSaveBrowserCommand';
+import { GetTextBrowserCommand } from '../../../commands/get-text/browser/GetTextBrowserCommand';
+import { NavigateBrowserCommand } from '../../../commands/navigate/browser/NavigateBrowserCommand';
+import { ProxyNavigateBrowserCommand } from '../../../commands/proxy-navigate/browser/ProxyNavigateBrowserCommand';
+import { ScreenshotBrowserCommand } from '../../../commands/screenshot/browser/ScreenshotBrowserCommand';
+import { ScrollBrowserCommand } from '../../../commands/scroll/browser/ScrollBrowserCommand';
+import { TypeBrowserCommand } from '../../../commands/type/browser/TypeBrowserCommand';
+import { WaitForElementBrowserCommand } from '../../../commands/wait-for-element/browser/WaitForElementBrowserCommand';
 
 // Types
 import type { CommandEntry } from '../../../daemons/command-daemon/shared/CommandBase';

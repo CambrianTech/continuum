@@ -1,0 +1,123 @@
+{
+  "baseDirectories": {
+    "commands": "commands",
+    "daemons": "daemons", 
+    "shared": "shared",
+    "browser": "browser",
+    "server": "server",
+    "widgets": "daemons/widget-daemon/widgets"
+  },
+  "pathMappings": {
+    "@shared/*": "shared/*",
+    "@browser/*": "browser/*", 
+    "@server/*": "server/*",
+    "@transports/*": "transports/*",
+    "@commands/*": "commands/*",
+    "@commandsRoot/*": "commands/*",
+    "@commandBase": "daemons/command-daemon/shared/CommandBase",
+    "@commandShared/*": "daemons/command-daemon/shared/*",
+    "@daemonsRoot/*": "daemons/*",
+    "@commandDaemon/*": "daemons/command-daemon/*",
+    "@consoleDaemon/*": "daemons/console-daemon/*",
+    "@healthDaemon/*": "daemons/health-daemon/*",
+    "@sessionDaemon/*": "daemons/session-daemon/*",
+    "@widgetDaemon/*": "daemons/widget-daemon/*",
+    "@widgets/*": "daemons/widget-daemon/widgets/*",
+    "@chatRoot/*": "commands/chat/*",
+    "@chatShared/*": "commands/chat/shared/*",
+    "@chatBrowser/*": "commands/chat/browser/*",
+    "@chatServer/*": "commands/chat/server/*",
+    "@fileRoot/*": "commands/file/*",
+    "@fileShared/*": "commands/file/shared/*",
+    "@fileBrowser/*": "commands/file/browser/*",
+    "@fileServer/*": "commands/file/server/*",
+    "@fileAppendShared/*": "commands/file/append/shared/*",
+    "@fileLoadShared/*": "commands/file/load/shared/*",
+    "@fileSaveShared/*": "commands/file/save/shared/*",
+    "@clickShared/*": "commands/click/shared/*",
+    "@screenshotShared/*": "commands/screenshot/shared/*",
+    "@navigateShared/*": "commands/navigate/shared/*",
+    "@scrollShared/*": "commands/scroll/shared/*",
+    "@getTextShared/*": "commands/get-text/shared/*",
+    "@waitForElementShared/*": "commands/wait-for-element/shared/*",
+    "@typeShared/*": "commands/type/shared/*",
+    "@compileTypescriptShared/*": "commands/compile-typescript/shared/*",
+    "@consoleShared/*": "daemons/console-daemon/shared/*",
+    "@healthShared/*": "daemons/health-daemon/shared/*",
+    "@sessionShared/*": "daemons/session-daemon/shared/*",
+    "@sharedRouting/*": "shared/routing/*",
+    "@sharedQueuing/*": "shared/queuing/*",
+    "@sharedEvents/*": "shared/events/*",
+    "@testsShared/*": "tests/shared/*"
+  },
+  "structureGeneration": {
+    "outputFiles": {
+      "browser": {
+        "file": "browser/structure.ts",
+        "environment": "browser",
+        "searchPatterns": {
+          "daemons": ["daemons/*/browser/*Browser.ts"]
+        }
+      },
+      "server": {
+        "file": "server/structure.ts", 
+        "environment": "server",
+        "searchPatterns": {
+          "daemons": ["daemons/*/server/*Server.ts"]
+        }
+      },
+      "command-daemon-browser": {
+        "file": "daemons/command-daemon/browser/structure.ts",
+        "environment": "browser",
+        "searchPatterns": {
+          "commands": [
+            "commands/*/browser/*BrowserCommand.ts",
+            "commands/*/*/browser/*BrowserCommand.ts"
+          ]
+        }
+      },
+      "command-daemon-server": {
+        "file": "daemons/command-daemon/server/structure.ts",
+        "environment": "server", 
+        "searchPatterns": {
+          "commands": [
+            "commands/*/server/*ServerCommand.ts",
+            "commands/*/*/server/*ServerCommand.ts"
+          ]
+        }
+      }
+    }
+  },
+  "buildConfiguration": {
+    "typescript": {
+      "include": [
+        "index.ts",
+        "browser/**/*.ts",
+        "server/**/*.ts", 
+        "shared/**/*.ts",
+        "daemons/**/*.ts",
+        "commands/**/*.ts"
+      ],
+      "exclude": [
+        "node_modules",
+        "dist",
+        "examples/**/*",
+        "tests/**/*",
+        "mcp/**/*",
+        "**/*.test.js",
+        "**/*.test.ts",
+        "**/*.bak",
+        "**/*.bak/**/*"
+      ]
+    },
+    "esbuildMappings": {
+      "@shared": "shared",
+      "@commandBase": "daemons/command-daemon/shared/CommandBase",
+      "@chatShared": "commands/chat/shared",
+      "@daemons": "daemons",
+      "@browser": "browser",
+      "@server": "server",
+      "@commandRoot": "commands"
+    }
+  }
+}
