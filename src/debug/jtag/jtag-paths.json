@@ -24,6 +24,7 @@
     "@commandsProxyNavigate": "commands/proxy-navigate",
     "@commandsScreenshot": "commands/screenshot",
     "@commandsScroll": "commands/scroll",
+    "@commandsTestError": "commands/test-error",
     "@commandsType": "commands/type",
     "@commandsWaitForElement": "commands/wait-for-element",
     "@daemons": "daemons",
@@ -57,8 +58,8 @@
   },
   "description": "Auto-generated JTAG TypeScript path mappings from unified-config.json",
   "_generated": {
-    "timestamp": "2025-07-28T21:41:36.720Z",
+    "timestamp": "2025-07-28T21:54:49.521Z",
     "source": "unified-config.json",
-    "mappingCount": 54
+    "mappingCount": 55
   }
 }

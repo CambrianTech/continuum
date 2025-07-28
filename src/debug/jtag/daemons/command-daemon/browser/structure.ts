@@ -20,6 +20,7 @@ import { NavigateBrowserCommand } from '../../../commands/navigate/browser/Navig
 import { ProxyNavigateBrowserCommand } from '../../../commands/proxy-navigate/browser/ProxyNavigateBrowserCommand';
 import { ScreenshotBrowserCommand } from '../../../commands/screenshot/browser/ScreenshotBrowserCommand';
 import { ScrollBrowserCommand } from '../../../commands/scroll/browser/ScrollBrowserCommand';
+import { TestErrorBrowserCommand } from '../../../commands/test-error/browser/TestErrorBrowserCommand';
 import { TypeBrowserCommand } from '../../../commands/type/browser/TypeBrowserCommand';
 import { WaitForElementBrowserCommand } from '../../../commands/wait-for-element/browser/WaitForElementBrowserCommand';
 
@@ -99,6 +100,11 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     name: 'scroll',
     className: 'ScrollBrowserCommand',
     commandClass: ScrollBrowserCommand
+  },
+  {
+    name: 'test-error',
+    className: 'TestErrorBrowserCommand',
+    commandClass: TestErrorBrowserCommand
   },
   {
     name: 'type',
