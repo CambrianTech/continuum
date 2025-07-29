@@ -211,35 +211,15 @@ export abstract class JTAGSystem extends JTAGBase {
   }
 
   /**
-   * Commands interface - delegate to CommandDaemon's elegantly typed interface
-   * Injects the real sessionId from the system
+   * Implementation of abstract method from JTAGBase
+   * Provides command source from CommandDaemon
    */
-  get commands(): Record<string, (params?: CommandParams) => Promise<CommandResult>> {
+  protected getCommandsInterface(): Record<string, Function> {
     const commandDaemon = this.daemons.get('CommandDaemon') as CommandDaemon;
     if (!commandDaemon) {
       throw new Error('CommandDaemon not available');
     }
-    
-    // Create proxy that injects sessionId
-    return new Proxy(commandDaemon.commandsInterface, {
-      get: (target, commandName: string) => {
-        const originalCommand = target[commandName];
-        if (typeof originalCommand !== 'function') {
-          return originalCommand;
-        }
-        
-        // Wrap command to inject real sessionId and ensure required fields
-        return async (params?: CommandParams) => {
-          const sessionId = this.getSessionId();
-          const paramsWithSession: CommandParams = { 
-            context: this.context,  // Ensure context is always present
-            sessionId: sessionId as UUID,  // Use real sessionId from system (cast to UUID)
-            ...params              // User params override defaults
-          };
-          return await originalCommand(paramsWithSession);
-        };
-      }
-    });
+    return commandDaemon.commandsInterface;
   }
 
   /**
