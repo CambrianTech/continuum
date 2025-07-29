@@ -358,10 +358,17 @@ export class ConnectionHealthManager {
   private async attemptReconnection(): Promise<void> {
     if (!this.transport) return;
 
+    // Server transports should not attempt reconnection - only clients reconnect to servers
+    if (this.context.environment === 'server') {
+      console.log(`🚫 HealthManager[${this.context.environment}]: Servers do not reconnect - clients should reconnect to server`);
+      this.health.state = ConnectionState.FAILED;
+      return;
+    }
+
     try {
       console.log(`🔌 HealthManager[${this.context.environment}]: Attempting reconnection...`);
       
-      // Attempt to reconnect transport
+      // Attempt to reconnect transport (only for client environments)
       await this.transport.reconnect?.();
       
       // Connection will be confirmed via onConnected() callback

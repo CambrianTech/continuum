@@ -42,21 +42,34 @@ export class JTAGClient extends JTAGBase {
 
 
   protected override async initialize(): Promise<void> {
-
     const transportConfig: TransportConfig = { 
-          preferred: 'websocket', 
-          fallback: true,
-          eventSystem: this.eventManager.events,
-          sessionId: this.sessionId // Pass sessionId for client handshake
-        };
+      preferred: 'websocket', 
+      fallback: true,
+      eventSystem: this.eventManager.events,
+      sessionId: this.sessionId // Pass sessionId for client handshake
+    };
 
     this.systemTransport = await TransportFactory.createTransport(this.context.environment, transportConfig);
 
-    // Connect to the JTAGRouter using the transport to get the commands interface?
-    //const connection = await this.systemTransport.connect(this.context);
+    // Create remote commands interface that routes through transport
+    await this.setupRemoteCommandsInterface();
+  }
 
-    //Get the comands interface from the transport
+  /**
+   * Set up commands interface that routes commands through transport to remote JTAGSystem
+   */
+  private async setupRemoteCommandsInterface(): Promise<void> {
+    if (!this.systemTransport) {
+      throw new Error('Transport not available for remote commands setup');
+    }
 
+    // Create a commands interface that proxies commands through the transport
+    this.commandsInterface = new Map();
+    
+    // For now, create placeholder commands that will be populated when we discover
+    // available commands from the remote system
+    // TODO: Implement command discovery from remote JTAGSystem
+    console.log(`📡 JTAGClient: Remote commands interface setup completed`);
   }
   
   protected getCommandsInterface(): CommandsInterface {
@@ -73,6 +86,7 @@ export class JTAGClient extends JTAGBase {
     };
     
     const client = new JTAGClient(context);
+    await client.initialize(); // Actually initialize the client
     
     return client;
   }

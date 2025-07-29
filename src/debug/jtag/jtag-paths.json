@@ -63,7 +63,7 @@
   },
   "description": "Auto-generated JTAG TypeScript path mappings from unified-config.json",
   "_generated": {
-    "timestamp": "2025-07-29T22:29:36.081Z",
+    "timestamp": "2025-07-29T22:44:46.853Z",
     "source": "unified-config.json",
     "mappingCount": 60
   }
