@@ -7,7 +7,7 @@
  */
 
 import { JTAGBase } from '@shared/JTAGBase';
-import type { JTAGContext, CommandParams, CommandResult } from '@shared/JTAGTypes';
+import type { JTAGContext } from '@shared/JTAGTypes';
 import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import type { JTAGRouter } from '@shared/JTAGRouter';
 import type { DaemonBase } from '@shared/DaemonBase';
