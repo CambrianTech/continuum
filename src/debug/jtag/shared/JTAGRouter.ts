@@ -7,6 +7,11 @@
  * queuing, and cross-context transport management. Handles both local and remote
  * message delivery with automatic fallback and retry mechanisms.
  * 
+ * ISSUES: (look for TODOs)
+ * - Move the event system out to a shared module to avoid circular dependencies and improve maintainability
+ * - Move the transport factory to a shared module for better abstraction and reusability. We will use this in the JTAGClient to connect to this very router.
+ * - Eliminate non typed things like `any` and `unknown` in this file. Think of promise return types and eliminate void where possible. Think of how this routes these payloads as commands and events
+ * 
  * CORE ARCHITECTURE:
  * - MessageSubscriber pattern for daemon registration
  * - Cross-context transport abstraction (WebSocket/HTTP)
@@ -29,7 +34,7 @@
  */
 
 import { JTAGModule } from '@shared/JTAGModule';
-import type { JTAGContext, JTAGMessage } from '@shared/JTAGTypes';
+import type { JTAGContext, JTAGEnvironment, JTAGMessage } from '@shared/JTAGTypes';
 import { JTAGMessageTypes, JTAGMessageFactory } from '@shared/JTAGTypes';
 import { TransportFactory } from '@transports/TransportFactory';
 import type { TransportConfig } from '@transports/TransportFactory';
@@ -72,6 +77,7 @@ export interface MessageSubscriber {
  * Abstraction for cross-context message delivery mechanisms.
  * Implementations include WebSocket, HTTP, and in-memory transports.
  */
+// TODO: PULL TRANSPORT FACTORY OUT TO A SHARED MODULE (factory will handle transport creation)
 export interface JTAGTransport {
   name: string;
   send(message: JTAGMessage): Promise<TransportSendResult>;
@@ -101,11 +107,10 @@ export interface RouterStatus {
 
 export class JTAGRouter extends JTAGModule {
   private readonly endpointMatcher = new EndpointMatcher<MessageSubscriber>();
-  public crossContextTransport: JTAGTransport | null = null;
+  public crossContextTransport: JTAGTransport | null = null; //TODO: PULL TRANSPORT FACTORY OUT TO A SHARED MODULE (factory will handle transport creation)
   
   // Built-in event system - no circular dependencies
-  private readonly eventListeners = new Map<string, Array<(data?: any) => void>>();
-  
+  private readonly eventListeners = new Map<string, Array<(data?: any) => void>>(); //TODO: probably move to the event module class
   // Bus-level enhancements
   private readonly messageQueue: JTAGMessageQueue;
   private readonly healthManager: ConnectionHealthManager;
@@ -160,10 +165,11 @@ export class JTAGRouter extends JTAGModule {
   /**
    * Events interface - same pattern as commands
    */
+  // TODO: PULL EVENTS SYSTEM OUT TO A SHARED MODULE
   get events(): EventsInterface {
     return {
-      emit: (eventName: string, data?: any): void => {
-        const listeners = this.eventListeners.get(eventName) || [];
+      emit: (eventName: string, data?: any): void => { // TODO: any is bad
+        const listeners = this.eventListeners.get(eventName) ?? [];
         listeners.forEach(listener => {
           try {
             listener(data);
@@ -173,7 +179,7 @@ export class JTAGRouter extends JTAGModule {
         });
       },
 
-      on: (eventName: string, listener: (data?: any) => void): (() => void) => {
+      on: (eventName: string, listener: (data?: any) => void): (() => void) => { // TODO: any is bad
         if (!this.eventListeners.has(eventName)) {
           this.eventListeners.set(eventName, []);
         }
@@ -191,7 +197,7 @@ export class JTAGRouter extends JTAGModule {
         };
       },
 
-      waitFor: async (eventName: string, timeout: number = 10000): Promise<any> => {
+      waitFor: async (eventName: string, timeout: number = 10000): Promise<any> => { // TODO: any is bad
         return new Promise((resolve, reject) => {
           const timer = setTimeout(() => {
             unsubscribe();
@@ -211,6 +217,7 @@ export class JTAGRouter extends JTAGModule {
   /**
    * Compatibility layer for existing eventSystem usage
    */
+  // TODO: PULL EVENTS SYSTEM OUT TO A SHARED MODULE (its possible this method here just exposes the event systems's own interface)
   get eventSystem(): EventsInterface {
     return this.events;
   }
@@ -315,6 +322,7 @@ export class JTAGRouter extends JTAGModule {
   /**
    * Get P2P transport for remote node communication
    */
+  // TODO: PULL TRANSPORT FACTORY OUT TO A SHARED MODULE
   private getP2PTransport(): JTAGTransport | null {
     // For now, check if the cross-context transport is a P2P transport
     // In the future, we might have a separate P2P transport registry
@@ -358,6 +366,7 @@ export class JTAGRouter extends JTAGModule {
   /**
    * Handle event messages (fire-and-forget: console logs, notifications, etc.)
    */
+  // TODO: PULL EVENT LOGIC OUT TO A SHARED MODULE 
   private async handleEventMessage(message: JTAGMessage): Promise<EventResult> {
     // Determine priority based on message content
     const priority = this.determinePriority(message);
@@ -388,6 +397,7 @@ export class JTAGRouter extends JTAGModule {
   /**
    * Handle response messages (send back to requesting client)
    */
+  // TODO: PULL EVENT LOGIC OUT TO A SHARED MODULE 
   private async handleResponseMessage(message: JTAGMessage): Promise<EventResult> {
     if (!JTAGMessageTypes.isResponse(message)) {
       throw new Error('Expected response message');
@@ -508,7 +518,7 @@ export class JTAGRouter extends JTAGModule {
   }
 
 
-  private extractEnvironment(endpoint: string): string {
+  private extractEnvironment(endpoint: string): JTAGEnvironment {
     if (endpoint.startsWith('browser/')) return 'browser';
     if (endpoint.startsWith('server/')) return 'server';
     if (endpoint.startsWith('remote/')) return 'remote';
@@ -538,6 +548,7 @@ export class JTAGRouter extends JTAGModule {
   /**
    * Initialize transport (called by initialize())
    */
+  // TODO: PULL TRANSPORT FACTORY OUT TO A SHARED MODULE
   private async initializeTransport(): Promise<void> {
     console.log(`🔗 ${this.toString()}: Initializing transport with base64 encoding`);
     
@@ -562,6 +573,7 @@ export class JTAGRouter extends JTAGModule {
   /**
    * Legacy method for compatibility
    */
+  // TODO: PULL TRANSPORT FACTORY OUT TO A SHARED MODULE
   async setupCrossContextTransport(config?: TransportConfig): Promise<void> {
     if (!this.isInitialized) {
       await this.initialize();
