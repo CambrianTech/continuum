@@ -8,6 +8,7 @@ import { JTAGModule } from './JTAGModule';
 import type { CommandParams, CommandResult } from './JTAGTypes';
 import type { UUID } from './CrossPlatformUUID';
 import type { CommandBase } from '@commandBase';
+import { EventManager } from './JTAGEventSystem';
 
 /**
  * Strongly-typed command function signature
@@ -24,8 +25,14 @@ export abstract class JTAGBase extends JTAGModule {
   // Abstract methods that both JTAGSystem and JTAGClient need
   public abstract get sessionId(): UUID;
 
+  public readonly eventManager = new EventManager();
+
+
   // Abstract method for subclasses to provide their command source
   protected abstract getCommandsInterface(): CommandsInterface;
+
+
+  protected abstract initialize(): Promise<void>;
   
   /**
    * Commands interface - migrated from JTAGSystem
@@ -53,4 +60,5 @@ export abstract class JTAGBase extends JTAGModule {
       }
     }) as Record<string, CommandFunction>;
   }
+
 }

@@ -1,15 +1,36 @@
+// ISSUES: 1 open, last updated 2025-07-29 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+
 /**
- * Transport Factory - Auto-detect and create appropriate transports
+ * JTAG TransportFactory - Context-Aware Message Routing with Bus-Level Queuing
+ * 
+ * The heart of the JTAG system - intelligent message routing with health monitoring,
+ * queuing, and cross-context transport management. Handles both local and remote
+ * message delivery with automatic fallback and retry mechanisms.
+ * 
+ * ISSUES: (look for TODOs)
+ * - Move types elsewhere, such as with JTAGTransport
+ * 
+ * CORE ARCHITECTURE:
+
+ * 
+ * TESTING REQUIREMENTS:
+ * - Unit tests: Message routing logic and subscriber management
+ * - Integration tests: Cross-context transport reliability
+ * - Performance tests: Message throughput under load
+ * - Failure tests: Network partition and recovery scenarios
+ * 
+ * ARCHITECTURAL INSIGHTS:
+  * - Provides a unified interface for message routing across different environments
  */
 
-import { JTAGTransport } from '@shared/JTAGRouter';
-import type { JTAGContext } from '@shared/JTAGTypes';
+
+import type { JTAGContext, JTAGMessage } from '@shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '@shared/JTAGTypes';
 import { WebSocketServerTransport, WebSocketClientTransport } from '@transports/WebSocketTransport';
 import { HTTPTransport } from '@transports/HTTPTransport';
-// import { UDPMulticastTransport } from '@transportsUdpMulticast/UDPMulticastTransport'; // Disabled - god object
-import type { EventsInterface } from '@shared/JTAGRouter';
+import type { EventsInterface } from '@shared/JTAGEventSystem';
 
+//TODO: Move types elsewhere, such as with JTAGTransport
 export interface TransportConfig {
   preferred?: 'websocket' | 'http' | 'udp-multicast';
   fallback?: boolean;
@@ -27,6 +48,29 @@ export interface TransportConfig {
     unicastPort?: number;
     encryptionKey?: string;
   };
+}
+
+// Transport send result
+export interface TransportSendResult {
+  success: boolean;
+  timestamp: string;
+  sentCount?: number;
+}
+
+/**
+ * JTAG Transport Interface
+ * 
+ * Abstraction for cross-context message delivery mechanisms.
+ * Implementations include WebSocket, HTTP, and in-memory transports.
+ */
+// TODO: Move to tranpsport module class or file
+export interface JTAGTransport {
+  name: string;
+  send(message: JTAGMessage): Promise<TransportSendResult>;
+  isConnected(): boolean;
+  disconnect(): Promise<void>;
+  reconnect?(): Promise<void>;
+  setMessageHandler?(handler: (message: JTAGMessage) => void): void;
 }
 
 export class TransportFactory {
@@ -100,51 +144,6 @@ export class TransportFactory {
     console.log(`✅ Transport Factory: HTTP transport created`);
     return transport;
   }
-
-  /**
-   * Create UDP multicast transport for P2P networking
-   */
-  /* Disabled - god object violation
-  private static async createUDPMulticastTransport(
-    environment: JTAGContext['environment'],
-    config: TransportConfig
-  ): Promise<JTAGTransport> {
-    const p2pConfig = config.p2p || {};
-    
-    // Generate node ID based on environment if not provided
-    const nodeId = p2pConfig.nodeId || `${environment}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
-    
-    const udpConfig = {
-      nodeId,
-      nodeType: p2pConfig.nodeType || (environment === 'server' ? 'server' as const : 'browser' as const),
-      capabilities: p2pConfig.capabilities || ['chat', 'database', 'compiler', 'artifacts'],
-      multicastAddress: p2pConfig.multicastAddress || '239.255.7.33',
-      multicastPort: p2pConfig.multicastPort || 7331,
-      unicastPort: p2pConfig.unicastPort || 7332,
-      encryptionKey: p2pConfig.encryptionKey,
-      requireAuth: !!p2pConfig.encryptionKey,
-      discoveryInterval: 30000,
-      maxPacketSize: 65507,
-      fragmentationEnabled: true,
-      compressionEnabled: true,
-      stunServers: ['stun:stun1.l.google.com:19302'],
-      enableUPnP: false
-    };
-
-    console.log(`🌐 Transport Factory: Creating UDP multicast transport for node ${nodeId}`);
-    
-    // const transport = new UDPMulticastTransport(udpConfig);
-    // const context: JTAGContext = { environment };
-    // const initialized = await transport.initialize(context);
-    
-    // if (!initialized) {
-    //   throw new Error('Failed to initialize UDP multicast transport');
-    // }
-    // console.log(`✅ Transport Factory: UDP multicast transport created for P2P networking`);
-    // return transport;
-    throw new Error('UDP Multicast transport disabled - god object violation');
-  }
-  */
   
   /**
    * Auto-detect optimal transport configuration

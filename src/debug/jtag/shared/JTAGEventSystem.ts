@@ -63,6 +63,65 @@ export interface EventStream<T extends JTAGEventName> {
   close: () => void;
 }
 
+export interface EventsInterface {
+  emit(eventName: string, data?: any): void;
+  on(eventName: string, listener: (data?: any) => void): () => void;
+  waitFor?(eventName: string, timeout?: number): Promise<any>;
+}
+
+export class EventManager {
+
+  public listeners = new Map<string, Array<(data?: any) => void>>();
+
+  get events(): EventsInterface {
+      return {
+        emit: (eventName: string, data?: any): void => { // TODO: any is bad
+          const listeners = this.listeners.get(eventName) ?? [];
+          listeners.forEach(listener => {
+            try {
+              listener(data);
+            } catch (error) {
+              console.error(`Event listener error for ${eventName}:`, error);
+            }
+          });
+        },
+
+        on: (eventName: string, listener: (data?: any) => void): (() => void) => { // TODO: any is bad
+          if (!this.listeners.has(eventName)) {
+            this.listeners.set(eventName, []);
+          }
+          this.listeners.get(eventName)!.push(listener);
+          
+          // Return unsubscribe function
+          return () => {
+            const listeners = this.listeners.get(eventName);
+            if (listeners) {
+              const index = listeners.indexOf(listener);
+              if (index > -1) {
+                listeners.splice(index, 1);
+              }
+            }
+          };
+        },
+
+        waitFor: async (eventName: string, timeout: number = 10000): Promise<any> => { // TODO: any is bad
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              unsubscribe();
+              reject(new Error(`Event ${eventName} timeout after ${timeout}ms`));
+            }, timeout);
+
+            const unsubscribe = this.events.on(eventName, (data) => {
+              clearTimeout(timer);
+              unsubscribe();
+              resolve(data);
+            });
+          });
+        }
+      };
+    }
+}
+
 // Event system statistics interface
 export interface EventSystemStats {
   subscriptions: number;

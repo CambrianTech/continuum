@@ -26,12 +26,14 @@
  * - State machine prevents race conditions during reconnection
  */
 
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { EventsInterface } from '@shared/JTAGRouter';
+import type { JTAGContext, JTAGMessage } from '@shared/JTAGTypes';
+import type { EventsInterface } from '@shared/JTAGEventSystem';
 import { TRANSPORT_EVENTS } from '@transports/TransportEvents';
 import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
 import type { TimerHandle } from '@shared/CrossPlatformTypes';
+import type { JTAGTransport } from '@transports/TransportFactory';
+import { UUID } from 'crypto';
 
 export enum ConnectionState {
   DISCONNECTED = 'disconnected',
@@ -66,7 +68,7 @@ export class ConnectionHealthManager {
   private eventSystem: EventsInterface;
   private config: HealthConfig;
   private health: ConnectionHealth;
-  private transport: any; // Transport interface
+  private transport?: JTAGTransport; 
   
   private pingTimer?: TimerHandle;
   private reconnectTimer?: TimerHandle;
@@ -103,11 +105,12 @@ export class ConnectionHealthManager {
 
     this.setupEventListeners();
   }
+  
 
   /**
    * Set transport for health monitoring
    */
-  setTransport(transport: any): void {
+  setTransport(transport: JTAGTransport): void {
     this.transport = transport;
     console.log(`🔗 HealthManager[${this.context.environment}]: Transport set`);
   }
@@ -204,17 +207,28 @@ export class ConnectionHealthManager {
     const pingId = `ping_${pingStart}_${Math.random().toString(36).substr(2, 6)}`;
 
     try {
-      // Create ping message - route to health daemon  
+
+      type PingPayload = {
+        context: JTAGContext;
+        sessionId: UUID;
+        type: 'ping';
+        id: string;
+        timestamp: number;
+      };
+
+      // Create ping message - route to health daemon
       const pingMessage = {
         context: this.context,
         origin: `${this.context.environment}/health`,
         endpoint: JTAG_ENDPOINTS.HEALTH.BASE,
         payload: { 
+          context: this.context,
+          sessionId: this.context.uuid,
           type: 'ping',
           id: pingId, 
           timestamp: pingStart 
         }
-      };
+      } as JTAGMessage<PingPayload>;
 
       // Send ping with timeout
       const timeoutPromise = new Promise((_, reject) => {

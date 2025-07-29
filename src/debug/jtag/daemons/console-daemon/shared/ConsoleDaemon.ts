@@ -35,15 +35,15 @@
 
 import { DaemonBase } from '@shared/DaemonBase';
 import type { JTAGContext, JTAGMessage } from '@shared/JTAGTypes';
-import { JTAGPayload, JTAGMessageFactory, createPayload } from '@shared/JTAGTypes';
+import { type JTAGPayload, JTAGMessageFactory, createPayload } from '@shared/JTAGTypes';
 import { type UUID } from '@shared/CrossPlatformUUID';
 import type { JTAGRouter } from '@shared/JTAGRouter';
 import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import { TRANSPORT_EVENTS } from '@transports/TransportEvents';
-import { SYSTEM_SCOPES, isSystemUUID, shouldDualScope, globalSessionContext } from '@shared/SystemScopes';
+import { SYSTEM_SCOPES, globalSessionContext } from '@shared/SystemScopes';
 import { CONSOLE_EVENTS } from '@daemonsConsoleDaemon/ConsoleEvents';
 import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
-import { type ConsoleSuccessResponse, type ConsoleErrorResponse, type ConsoleResponse, createConsoleSuccessResponse, createConsoleErrorResponse } from '@shared/ResponseTypes';
+import { type ConsoleResponse, createConsoleSuccessResponse, createConsoleErrorResponse } from '@shared/ResponseTypes';
 import type { TimerHandle } from '@shared/CrossPlatformTypes';
 import type { LogLevel } from '@shared/LogLevels';
 
@@ -135,7 +135,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
    */
   private listenForJTAGReady(): void {
     // Router is guaranteed by constructor - no need to check
-    const eventSystem = this.router.eventSystem;
+    const eventSystem = this.router.eventManager.events;
     
     // Listen for daemons loaded event - happens immediately after all daemon initialization
     eventSystem.on(SYSTEM_EVENTS.DAEMONS_LOADED, () => {
@@ -156,8 +156,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
         }
       })
       .catch(() => {
-        this.originalConsole.warn(`⚠️ ${this.toString()}: JTAG ready timeout, falling back to transport check`);
-        this.fallbackToTransportCheck();
+        this.originalConsole.warn(`⚠️ ${this.toString()}: JTAG ready timeout`);
       });
 
     // Also listen for transport ready events - TYPE-SAFE & MODULAR!
@@ -168,28 +167,6 @@ export abstract class ConsoleDaemon extends DaemonBase {
         this.startQueueDrain();
       }
     });
-  }
-
-  /**
-   * Fallback to transport checking (legacy approach)
-   */
-  private fallbackToTransportCheck(): void {
-    const checkReady = () : void => {
-      // Router is guaranteed by constructor
-      const transport = this.router.crossContextTransport;
-      if (transport?.isConnected()) {
-        // SILENCED: Internal logging causes infinite loops - this.originalConsole.log(`🔗 ${this.toString()}: Transport connected, starting queue drain`);
-        this.jtagSystemReady = true;
-        this.startQueueDrain();
-        return;
-      }
-      
-      // Check again in 1 second
-      setTimeout(checkReady, 1000);
-    };
-    
-    // Start checking after 2 seconds (allow system initialization)
-    setTimeout(checkReady, 2000);
   }
 
   /**
@@ -206,7 +183,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
     
     // Emit queue drain start event - TYPE-SAFE & MODULAR!
     // Router and eventSystem guaranteed by constructor
-    this.router.eventSystem.emit(CONSOLE_EVENTS.QUEUE_DRAIN_START, {
+    this.router.eventManager.events.emit(CONSOLE_EVENTS.QUEUE_DRAIN_START, {
       queueSize: this.logBuffer.length,
       environment: this.context.environment
     });
@@ -388,7 +365,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
 
     // Use session context: global session > temporary session > current session
     const globalSessionId = globalSessionContext.getCurrentSessionId();
-    const effectiveSessionId = globalSessionId || this.temporarySessionId || this.currentSessionId;
+    const effectiveSessionId = globalSessionId ?? this.temporarySessionId ?? this.currentSessionId;
     
     const consolePayload = createConsolePayload(this.context, effectiveSessionId, {
       level,
