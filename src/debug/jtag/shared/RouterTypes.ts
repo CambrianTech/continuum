@@ -2,8 +2,7 @@
  * Router Response Types - Strong typing for JTAGRouter operations
  */
 
-import type { TransportSendResult } from '../system/transports/TransportFactory';
-
+import type { TransportSendResult } from '../system/transports';
 
 // Request handling result
 export interface RequestResult {

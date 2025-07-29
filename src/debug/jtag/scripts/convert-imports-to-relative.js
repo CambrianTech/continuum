@@ -76,10 +76,19 @@ jsFiles.forEach(file => {
       return `from "${finalImport}"`;
     });
 
-    // Handle imports without subpaths (like @commandBase)
-    if (alias === '@commandBase') {
+    // Handle imports without subpaths - intelligently detect target type
+    const basePath = path.join(distPath, relativePath);
+    const indexPath = path.join(basePath, 'index.js');
+    const filePath = basePath + '.js';
+    
+    // Check if this is a direct import (no subpath)
+    const hasDirectImport = content.includes(`from '${alias}'`) || content.includes(`from "${alias}"`);
+    
+    if (hasDirectImport) {
+      // Smart detection: prefer index.js if it exists, otherwise use .js file
+      const targetPath = fs.existsSync(indexPath) ? indexPath : filePath;
+      
       content = content.replace(regex3, () => {
-        const targetPath = path.join(distPath, relativePath + '.js');
         const relativeImport = path.relative(fileDir, targetPath).replace(/\\/g, '/');
         const finalImport = relativeImport.startsWith('.') ? relativeImport : `./${relativeImport}`;
         fileChanged = true;
@@ -90,7 +99,6 @@ jsFiles.forEach(file => {
       });
 
       content = content.replace(regex4, () => {
-        const targetPath = path.join(distPath, relativePath + '.js');
         const relativeImport = path.relative(fileDir, targetPath).replace(/\\/g, '/');
         const finalImport = relativeImport.startsWith('.') ? relativeImport : `./${relativeImport}`;
         fileChanged = true;

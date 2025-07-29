@@ -37,8 +37,8 @@
 import { JTAGModule } from '@shared/JTAGModule';
 import type { JTAGContext, JTAGEnvironment, JTAGMessage } from '@shared/JTAGTypes';
 import { JTAGMessageTypes, JTAGMessageFactory } from '@shared/JTAGTypes';
-import { TransportFactory } from '@system/transports/shared/TransportFactory';
-import type { TransportConfig, JTAGTransport } from '@system/transports/shared/TransportTypes';
+import { TransportFactory } from '@systemTransports';
+import type { TransportConfig, JTAGTransport } from '@systemTransports';
 import { JTAGMessageQueue, MessagePriority } from '@sharedQueuing/JTAGMessageQueue';
 import type { QueuedItem } from '@sharedQueuing/PriorityQueue';
 import { ConnectionHealthManager } from '@shared/ConnectionHealthManager';
