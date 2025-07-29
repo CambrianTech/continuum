@@ -1,2 +1,29 @@
-#!/usr/bin/env node
-require('./src/debug/cli');
+#!/bin/bash
+# JTAG Terminal Portal - Ensures system is running and connects CLI
+
+JTAG_SESSION="jtag-system"
+LOG_DIR="examples/test-bench/.continuum/jtag/logs"
+
+# Ensure log directory exists
+mkdir -p "$LOG_DIR"
+
+# Check if tmux session is running
+if ! tmux has-session -t "$JTAG_SESSION" 2>/dev/null; then
+    echo "🚀 Starting JTAG system in background..."
+    
+    # Start tmux session with npm start, logging to system logs
+    tmux new-session -d -s "$JTAG_SESSION" \
+        "npm start 2>&1 | tee $LOG_DIR/system.log"
+    
+    echo "✅ JTAG system started in tmux session '$JTAG_SESSION'"
+    echo "📋 Logs: $LOG_DIR/system.log"
+    
+    # Give system time to start up
+    echo "⏳ Waiting for system to initialize..."
+    sleep 5
+else
+    echo "✅ JTAG system already running in tmux session '$JTAG_SESSION'"
+fi
+
+# Now run the CLI command
+exec node src/debug/cli/index.js "$@"
