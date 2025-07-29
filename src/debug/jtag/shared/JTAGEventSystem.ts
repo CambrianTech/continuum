@@ -36,7 +36,7 @@ import { SYSTEM_SCOPES } from '@shared/SystemScopes';
 // Import modular event categories - co-located with their modules
 import type { SystemEventData, SystemEventName } from '@sharedEvents/SystemEvents';
 import type { RouterEventData, RouterEventName } from '@shared/RouterEvents';
-import type { TransportEventData, TransportEventName } from '@transports/TransportEvents';
+import type { TransportEventData, TransportEventName } from '@systemTransports/TransportEvents';
 import type { ConsoleEventData, ConsoleEventName } from '@daemonsConsoleDaemon/ConsoleEvents';
 import type { CommandEventData, CommandEventName } from '@daemonsCommandDaemon/CommandEvents';
 

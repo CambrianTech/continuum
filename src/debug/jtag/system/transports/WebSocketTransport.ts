@@ -3,11 +3,11 @@
  * 
  * Handles WebSocket communication between browser and server contexts.
  */
-import type { JTAGTransport } from '@transports/TransportFactory';
+import type { JTAGTransport } from './TransportFactory';
 import type { JTAGMessage } from '@shared/JTAGTypes';
 import type { WebSocketServer, WebSocket as WSWebSocket } from 'ws';
 import type { EventsInterface } from '@shared/JTAGEventSystem';
-import { TRANSPORT_EVENTS } from '@transports/TransportEvents';
+import { TRANSPORT_EVENTS } from './TransportEvents';
 
 interface WebSocketSendResult {
   success: boolean;

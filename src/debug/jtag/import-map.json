@@ -39,11 +39,9 @@
     "@sharedEvents": "./shared/events",
     "@sharedQueuing": "./shared/queuing",
     "@sharedRouting": "./shared/routing",
-    "@src": "./src",
-    "@srcDebug": "./src/debug",
-    "@debugCli": "./src/debug/cli",
-    "@debugJtag": "./src/debug/jtag",
-    "@jtagCli": "./src/debug/jtag/cli",
+    "@system": "./system",
+    "@systemEvents": "./system/events",
+    "@systemTransports": "./system/transports",
     "@templates": "./templates",
     "@tests": "./tests",
     "@testsIntegration": "./tests/integration",
@@ -55,16 +53,14 @@
     "@testsPiece-1BasicConnection": "./tests/piece-1-basic-connection",
     "@testsPiece-2SimpleMessageTransport": "./tests/piece-2-simple-message-transport",
     "@testsUnit": "./tests/unit",
-    "@transports": "./transports",
-    "@transportsUdpMulticast": "./transports/udp-multicast",
     "@widgets": "./widgets",
     "@commandBase": "./daemons/command-daemon/shared/CommandBase",
     "@shared": "./shared"
   },
   "description": "Auto-generated import map for browser builds from unified-config.json",
   "_generated": {
-    "timestamp": "2025-07-29T21:44:15.908Z",
+    "timestamp": "2025-07-29T22:04:24.559Z",
     "source": "unified-config.json",
-    "importCount": 60
+    "importCount": 56
   }
 }

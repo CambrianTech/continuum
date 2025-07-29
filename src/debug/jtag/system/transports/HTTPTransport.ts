@@ -3,7 +3,7 @@
  * 
  * REST API transport for cross-context communication when WebSocket isn't available.
  */
-import type { JTAGTransport } from '@transports/TransportFactory';
+import type { JTAGTransport } from './TransportFactory';
 import type { JTAGMessage } from '@shared/JTAGTypes';
 
 export class HTTPTransport implements JTAGTransport {
