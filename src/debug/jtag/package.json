@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.341",
+  "version": "1.0.349",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/index.js",
   "browser": "dist/browser/index.js",
@@ -48,6 +48,10 @@
     "@system/*": "./dist/system/*",
     "@systemEvents/*": "./dist/system/events/*",
     "@systemTransports/*": "./dist/system/transports/*",
+    "@transportsHttp/*": "./dist/system/transports/http/*",
+    "@httpClient/*": "./dist/system/transports/http/client/*",
+    "@transportsWebsocket/*": "./dist/system/transports/websocket/*",
+    "@websocketClient/*": "./dist/system/transports/websocket/client/*",
     "@templates/*": "./dist/templates/*",
     "@tests/*": "./dist/tests/*",
     "@testsIntegration/*": "./dist/tests/integration/*",
@@ -243,8 +247,8 @@
     "node": ">=16.0.0"
   },
   "_importGeneration": {
-    "timestamp": "2025-07-29T22:04:24.556Z",
+    "timestamp": "2025-07-29T22:29:36.080Z",
     "source": "unified-config.json",
-    "importCount": 112
+    "importCount": 120
   }
 }

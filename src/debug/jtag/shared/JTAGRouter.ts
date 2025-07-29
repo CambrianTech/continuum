@@ -37,8 +37,8 @@
 import { JTAGModule } from '@shared/JTAGModule';
 import type { JTAGContext, JTAGEnvironment, JTAGMessage } from '@shared/JTAGTypes';
 import { JTAGMessageTypes, JTAGMessageFactory } from '@shared/JTAGTypes';
-import { TransportFactory } from '@systemTransports/TransportFactory';
-import type { TransportConfig, JTAGTransport } from '@systemTransports/TransportFactory';
+import { TransportFactory } from '@system/transports/shared/TransportFactory';
+import type { TransportConfig, JTAGTransport } from '@system/transports/shared/TransportTypes';
 import { JTAGMessageQueue, MessagePriority } from '@sharedQueuing/JTAGMessageQueue';
 import type { QueuedItem } from '@sharedQueuing/PriorityQueue';
 import { ConnectionHealthManager } from '@shared/ConnectionHealthManager';
@@ -296,7 +296,7 @@ export class JTAGRouter extends JTAGModule {
     const queued = this.messageQueue.enqueue(message, priority);
     
     if (!queued) {
-      console.log(`🚫 ${this.toString()}: Message deduplicated (prevents flooding)`);
+      // Message was deduplicated - silently handle this case
       return { success: true, deduplicated: true };
     }
 

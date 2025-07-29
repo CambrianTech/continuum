@@ -39,7 +39,7 @@ import { type JTAGPayload, JTAGMessageFactory, createPayload } from '@shared/JTA
 import { type UUID } from '@shared/CrossPlatformUUID';
 import type { JTAGRouter } from '@shared/JTAGRouter';
 import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
-import { TRANSPORT_EVENTS } from '@systemTransports/TransportEvents';
+import { TRANSPORT_EVENTS } from '@system/transports/shared/TransportEvents';
 import { SYSTEM_SCOPES, globalSessionContext } from '@shared/SystemScopes';
 import { CONSOLE_EVENTS } from '@daemonsConsoleDaemon/ConsoleEvents';
 import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
@@ -334,12 +334,10 @@ export abstract class ConsoleDaemon extends DaemonBase {
       // Console daemon self-reference (critical for preventing loops)
       'ConsoleDaemon', '🎧 ConsoleDaemon',
       
-      // Message routing operations (critical for preventing loops) - EXPANDED
-      '📨 JTAGRouter', '🏠 JTAGRouter', '📋 JTAGRouter', '🔄 JTAGRouter', '📤 JTAGRouter', '✅ JTAGRouter',
-      'Routing message to server/console', 'Routing locally to server/console',
-      'Routing locally to health', 'Using hierarchical routing', 'Sending response', 'Response sent',
-      '📥 JTAGMessageQueue', 'Queued message', 'Delivered queued message',
-      '⏸️ JTAGRouter', 'Skipping flush - connection unhealthy',
+      // Message routing operations (critical for preventing loops) - COMPREHENSIVE
+      'JTAGRouter[', 'JTAGMessageQueue[', 'Routing message', 'Routing locally',
+      'Queued message', 'Delivered queued message', 'Using hierarchical routing',
+      'Sending response', 'Response sent', 'Skipping flush - connection unhealthy',
       
       // WebSocket operations (prevent loops) - EXPANDED
       '📤 WebSocket Server', '📨 WebSocket Server', '📤 WebSocket Client',
@@ -348,8 +346,10 @@ export abstract class ConsoleDaemon extends DaemonBase {
       // CommandDaemon operations (prevent noise)
       '📨 CommandDaemonServer', 'Handling message to server/commands',
       
-      // Transport internal operations (prevent loops)
+      // Transport internal operations (prevent loops) - COMPREHENSIVE
       'Transport Factory', 'Message handler connected',
+      'websocket-client:', 'websocket-server:', 'Sending message to server',
+      'Received message from client', 'WebSocket transport', 'HTTP transport',
       
       // Health/ping operations (prevent noise)
       'HealthManager', 'Ping successful', 'Connection established',

@@ -28,11 +28,11 @@
 
 import type { JTAGContext, JTAGMessage } from '@shared/JTAGTypes';
 import type { EventsInterface } from '@shared/JTAGEventSystem';
-import { TRANSPORT_EVENTS } from '@systemTransports/TransportEvents';
+import { TRANSPORT_EVENTS } from '@system/transports/shared/TransportEvents';
 import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
 import type { TimerHandle } from '@shared/CrossPlatformTypes';
-import type { JTAGTransport } from '@systemTransports/TransportFactory';
+import type { JTAGTransport } from '@system/transports/shared/TransportTypes';
 import { UUID } from 'crypto';
 
 export enum ConnectionState {
