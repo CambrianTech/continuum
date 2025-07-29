@@ -244,6 +244,36 @@
       "@sharedRouting/*": [
         "shared/routing/*"
       ],
+      "@src": [
+        "src"
+      ],
+      "@src/*": [
+        "src/*"
+      ],
+      "@srcDebug": [
+        "src/debug"
+      ],
+      "@srcDebug/*": [
+        "src/debug/*"
+      ],
+      "@debugCli": [
+        "src/debug/cli"
+      ],
+      "@debugCli/*": [
+        "src/debug/cli/*"
+      ],
+      "@debugJtag": [
+        "src/debug/jtag"
+      ],
+      "@debugJtag/*": [
+        "src/debug/jtag/*"
+      ],
+      "@jtagCli": [
+        "src/debug/jtag/cli"
+      ],
+      "@jtagCli/*": [
+        "src/debug/jtag/cli/*"
+      ],
       "@templates": [
         "templates"
       ],
@@ -358,7 +388,8 @@
     "server/**/*.ts",
     "shared/**/*.ts",
     "daemons/**/*.ts",
-    "commands/**/*.ts"
+    "commands/**/*.ts",
+    "widgets/**/*.ts"
   ],
   "exclude": [
     "node_modules",
@@ -372,8 +403,8 @@
     "**/*.bak/**/*"
   ],
   "_generated": {
-    "timestamp": "2025-07-28T22:33:01.033Z",
+    "timestamp": "2025-07-29T01:05:33.899Z",
     "source": "unified-config.json",
-    "pathCount": 110
+    "pathCount": 120
   }
 }

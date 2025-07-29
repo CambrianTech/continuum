@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.313",
+  "version": "1.0.320",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/index.js",
   "browser": "dist/browser/index.js",
@@ -45,6 +45,11 @@
     "@sharedEvents/*": "./dist/shared/events/*",
     "@sharedQueuing/*": "./dist/shared/queuing/*",
     "@sharedRouting/*": "./dist/shared/routing/*",
+    "@src/*": "./dist/src/*",
+    "@srcDebug/*": "./dist/src/debug/*",
+    "@debugCli/*": "./dist/src/debug/cli/*",
+    "@debugJtag/*": "./dist/src/debug/jtag/*",
+    "@jtagCli/*": "./dist/src/debug/jtag/cli/*",
     "@templates/*": "./dist/templates/*",
     "@tests/*": "./dist/tests/*",
     "@testsIntegration/*": "./dist/tests/integration/*",
@@ -143,6 +148,7 @@
     }
   },
   "scripts": {
+    "screenshot": "npx tsx scripts/screenshot.ts",
     "start": "npm run system:stop && npm run clean:all && npm run build && npm run version:bump && npm pack && node scripts/update-test-bench.js && cd examples/test-bench && npm install && npm start",
     "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
@@ -241,8 +247,8 @@
     "node": ">=16.0.0"
   },
   "_importGeneration": {
-    "timestamp": "2025-07-28T22:33:01.034Z",
+    "timestamp": "2025-07-29T01:05:33.901Z",
     "source": "unified-config.json",
-    "importCount": 110
+    "importCount": 120
   }
 }
