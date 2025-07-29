@@ -13,7 +13,7 @@ import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import type { DaemonBase, DaemonEntry } from '@shared/DaemonBase';
 import { BROWSER_DAEMONS } from './generated';
 import { SYSTEM_SCOPES } from '@shared/SystemScopes';
-import type { SessionDaemonBrowser } from '@daemonsSessionDaemon/browser/SessionDaemonBrowser';
+import { SessionDaemonBrowser } from '@daemonsSessionDaemon/browser/SessionDaemonBrowser';
 
 export class JTAGSystemBrowser extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return BROWSER_DAEMONS; }
@@ -31,7 +31,7 @@ export class JTAGSystemBrowser extends JTAGSystem {
    * Initialize session from SessionDaemon and update context UUID
    */
   private async initializeSessionFromDaemon(): Promise<void> {
-    const sessionDaemon = this.daemons.get('SessionDaemon') as SessionDaemonBrowser;
+    const sessionDaemon = this.daemons.find(d => d instanceof SessionDaemonBrowser);
     if (!sessionDaemon) {
       console.warn(`⚠️ ${this.toString()}: No SessionDaemon available - keeping system scope`);
       return;
@@ -150,7 +150,7 @@ export class JTAGSystemBrowser extends JTAGSystem {
     
     console.log(`✅ JTAG System: Connected browser successfully`);
     console.log(`   Context UUID: ${context.uuid}`);
-    console.log(`   Daemons: ${Array.from(system.daemons.keys()).join(', ')}`);
+    console.log(`   Daemons: ${system.daemons.map(d => d.name).join(', ')}`);
 
     // Emit system ready event after full initialization
     router.eventSystem.emit(SYSTEM_EVENTS.READY, {

@@ -6,13 +6,15 @@
  * routers, transports, and daemons automatically.
  */
 
-import { JTAGBase } from '@shared/JTAGBase';
+import { JTAGBase, type CommandsInterface } from '@shared/JTAGBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import type { JTAGRouter } from '@shared/JTAGRouter';
 import type { DaemonBase } from '@shared/DaemonBase';
 import type { DaemonEntry } from '@shared/DaemonBase';
-import type { CommandDaemon } from '@daemonsCommandDaemon/shared/CommandDaemon';
+import { CommandDaemon } from '@daemonsCommandDaemon/shared/CommandDaemon';
+import { ConsoleDaemon } from '@daemonsConsoleDaemon/shared/ConsoleDaemon';
+import { SessionDaemon } from '@daemonsSessionDaemon/shared/SessionDaemon';
 import type { JTAGRouterConfig } from '@shared/JTAGRouterTypes';
 import type { UUID } from '@shared/CrossPlatformUUID';
 import type { SessionCategory } from '@shared/SystemScopes';
@@ -68,9 +70,9 @@ export interface ResolvedJTAGSystemConfig {
  */
 export abstract class JTAGSystem extends JTAGBase {
   protected readonly router: JTAGRouter;
-  public readonly daemons: Map<string, DaemonBase> = new Map();
+  protected readonly daemons: DaemonBase[] = [];
   protected readonly config: ResolvedJTAGSystemConfig;
-  protected sessionId?: string;
+  public sessionId = this.context.uuid;
 
   constructor(context: JTAGContext, router: JTAGRouter, config: JTAGSystemConfig = {}) {
     super('jtag-system', context);
@@ -126,8 +128,8 @@ export abstract class JTAGSystem extends JTAGBase {
           // Initialize daemon after construction is complete
           await daemon.initializeDaemon();
           
-          this.register(daemonEntry.name, daemon);
-          console.log(`📦 Registered server daemon: ${daemonEntry.name} (${daemonEntry.className})`);
+          this.register(daemon);
+          console.log(`📦 Registered server daemon: ${daemon.constructor.name}`);
           return daemon;
         }
         return null;
@@ -143,9 +145,9 @@ export abstract class JTAGSystem extends JTAGBase {
     this.router.eventSystem.emit(SYSTEM_EVENTS.DAEMONS_LOADED, {
       context: this.context,
       timestamp: new Date().toISOString(),
-      loadedDaemons: Array.from(this.daemons.keys())
+      loadedDaemons: this.daemons.map(d => d.name)
     });
-    console.log(`🔌 JTAG Server System: Registered ${this.daemons.size} daemons statically`);
+    console.log(`🔌 JTAG Server System: Registered ${this.daemons.length} daemons statically`);
     
     // After daemons are set up, connect to SessionDaemon
     await this.connectSession();
@@ -155,30 +157,18 @@ export abstract class JTAGSystem extends JTAGBase {
    * Connect to SessionDaemon to get real sessionId and update ConsoleDaemon
    */
   protected async connectSession(): Promise<void> {
-    const sessionDaemon = this.daemons.get('SessionDaemon');
-    if (!sessionDaemon) {
-      console.warn(`⚠️ ${this.toString()}: No SessionDaemon available - using context.uuid as sessionId`);
-      this.sessionId = this.context.uuid;
-      this.updateConsoleDaemonSessionId();
-      return;
-    }
+    this.sessionId = this.context.uuid;
 
-    try {
-      console.log(`🏷️ ${this.toString()}: Connecting to SessionDaemon...`);
-      
-      // SessionDaemon should have a connect() method that handles the bootstrap protocol
-      // For now, store context.uuid until SessionDaemon.connect() is implemented
-      this.sessionId = this.context.uuid;
-      
-      // Update ConsoleDaemon with the established sessionId
+    try {      
       this.updateConsoleDaemonSessionId();
-      
       console.log(`✅ ${this.toString()}: Session connected - ${this.sessionId}`);
     } catch (error) {
       console.error(`❌ ${this.toString()}: Error connecting session:`, error);
       // Fallback to context.uuid
-      this.sessionId = this.context.uuid;
-      this.updateConsoleDaemonSessionId();
+      if (this.sessionId !== this.context.uuid) {
+        this.sessionId = this.context.uuid;
+        this.updateConsoleDaemonSessionId();
+      }
     }
   }
 
@@ -186,40 +176,32 @@ export abstract class JTAGSystem extends JTAGBase {
    * Update ConsoleDaemon with current sessionId for proper dual-scope logging
    */
   protected updateConsoleDaemonSessionId(): void {
-    const consoleDaemon = this.daemons.get('ConsoleDaemon');
+    const consoleDaemon = this.daemons.find(d => d instanceof ConsoleDaemon);
     if (consoleDaemon && this.sessionId) {
-      // ConsoleDaemon has setCurrentSessionId method
-      (consoleDaemon as any).setCurrentSessionId(this.sessionId);
+      consoleDaemon.setCurrentSessionId(this.sessionId);
       console.log(`🏷️ ${this.toString()}: Updated ConsoleDaemon sessionId to ${this.sessionId}`);
     }
   }
 
   /**
-   * Get current session ID
-   */
-  getSessionId(): string {
-    return this.sessionId || this.context.uuid;
-  }
-
-  /**
    * Register a daemon with this system
    */
-  register(name: string, daemon: DaemonBase): void {
-    this.daemons.set(name, daemon);
+  register(daemon: DaemonBase): void {
+    this.daemons.push(daemon);
     const version = this.getVersionString();
-    console.log(`🎯 JTAG System v${version}: Registered daemon '${name}' (${daemon.constructor.name})`);
+    console.log(`🎯 JTAG System v${version}: Registered daemon '${daemon.constructor.name}'`);
   }
 
   /**
    * Implementation of abstract method from JTAGBase
    * Provides command source from CommandDaemon
    */
-  protected getCommandsInterface(): Record<string, Function> {
-    const commandDaemon = this.daemons.get('CommandDaemon') as CommandDaemon;
+  protected getCommandsInterface(): CommandsInterface {
+    const commandDaemon = this.daemons.find(d => d instanceof CommandDaemon);
     if (!commandDaemon) {
       throw new Error('CommandDaemon not available');
     }
-    return commandDaemon.commandsInterface;
+    return commandDaemon.commands;
   }
 
   /**
@@ -231,7 +213,7 @@ export abstract class JTAGSystem extends JTAGBase {
       status: 'connected', 
       context: this.context,
       version: this.getVersionString(),
-      daemons: Array.from(this.daemons.keys())
+      daemons: this.daemons.map(d => d.name)
     };
   }
 
