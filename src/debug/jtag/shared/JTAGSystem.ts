@@ -14,7 +14,6 @@ import type { DaemonBase } from '@shared/DaemonBase';
 import type { DaemonEntry } from '@shared/DaemonBase';
 import { CommandDaemon } from '@daemonsCommandDaemon/shared/CommandDaemon';
 import { ConsoleDaemon } from '@daemonsConsoleDaemon/shared/ConsoleDaemon';
-import { SessionDaemon } from '@daemonsSessionDaemon/shared/SessionDaemon';
 import type { JTAGRouterConfig } from '@shared/JTAGRouterTypes';
 import type { UUID } from '@shared/CrossPlatformUUID';
 import type { SessionCategory } from '@shared/SystemScopes';
