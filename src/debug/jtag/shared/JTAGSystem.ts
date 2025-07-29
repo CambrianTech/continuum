@@ -6,7 +6,7 @@
  * routers, transports, and daemons automatically.
  */
 
-import { JTAGModule } from '@shared/JTAGModule';
+import { JTAGBase } from '@shared/JTAGBase';
 import type { JTAGContext, CommandParams, CommandResult } from '@shared/JTAGTypes';
 import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import type { JTAGRouter } from '@shared/JTAGRouter';
@@ -66,7 +66,7 @@ export interface ResolvedJTAGSystemConfig {
 /**
  * Abstract JTAG System - Base class for environment-specific implementations
  */
-export abstract class JTAGSystem extends JTAGModule {
+export abstract class JTAGSystem extends JTAGBase {
   protected readonly router: JTAGRouter;
   public readonly daemons: Map<string, DaemonBase> = new Map();
   protected readonly config: ResolvedJTAGSystemConfig;

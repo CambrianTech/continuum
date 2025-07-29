@@ -49,7 +49,7 @@ export class JTAGSystemBrowser extends JTAGSystem {
       const sessionId = await Promise.race([sessionPromise, timeoutPromise]);
       
       // Update context UUID to use session ID from SessionDaemon
-      (this.context as any).uuid = sessionId;
+      this.context.uuid = sessionId;
       this.sessionId = sessionId;
       
       // Update ConsoleDaemon with the session ID
