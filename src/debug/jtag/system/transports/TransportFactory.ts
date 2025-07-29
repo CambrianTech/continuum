@@ -26,8 +26,8 @@
 
 import type { JTAGContext, JTAGMessage } from '@shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '@shared/JTAGTypes';
-import { WebSocketServerTransport, WebSocketClientTransport } from '@transports/WebSocketTransport';
-import { HTTPTransport } from '@transports/HTTPTransport';
+import { WebSocketServerTransport, WebSocketClientTransport } from './WebSocketTransport';
+import { HTTPTransport } from './HTTPTransport';
 import type { EventsInterface } from '@shared/JTAGEventSystem';
 
 //TODO: Move types elsewhere, such as with JTAGTransport
