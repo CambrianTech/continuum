@@ -15,6 +15,7 @@ import type { DaemonEntry } from '@shared/DaemonBase';
 import type { CommandDaemon } from '@daemonsCommandDaemon/shared/CommandDaemon';
 import type { JTAGRouterConfig } from '@shared/JTAGRouterTypes';
 import type { UUID } from '@shared/CrossPlatformUUID';
+import type { SessionCategory } from '@shared/SystemScopes';
 
 
 /**
@@ -34,12 +35,23 @@ export interface JTAGDaemonConfig {
 }
 
 /**
+ * Connection parameters for joining specific sessions
+ */
+export interface ConnectionParams {
+  readonly sessionId?: UUID;
+  readonly sessionCategory?: SessionCategory;
+  readonly displayName?: string;
+  readonly createIfNotExists?: boolean;
+}
+
+/**
  * Complete configuration interface for JTAG System
  */
 export interface JTAGSystemConfig {
   readonly version?: Partial<JTAGVersionConfig>;
   readonly daemons?: Partial<JTAGDaemonConfig>;
   readonly router?: JTAGRouterConfig;
+  readonly connection?: ConnectionParams;
 }
 
 /**

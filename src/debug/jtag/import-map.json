@@ -39,6 +39,11 @@
     "@sharedEvents": "./shared/events",
     "@sharedQueuing": "./shared/queuing",
     "@sharedRouting": "./shared/routing",
+    "@src": "./src",
+    "@srcDebug": "./src/debug",
+    "@debugCli": "./src/debug/cli",
+    "@debugJtag": "./src/debug/jtag",
+    "@jtagCli": "./src/debug/jtag/cli",
     "@templates": "./templates",
     "@tests": "./tests",
     "@testsIntegration": "./tests/integration",
@@ -58,8 +63,8 @@
   },
   "description": "Auto-generated import map for browser builds from unified-config.json",
   "_generated": {
-    "timestamp": "2025-07-28T22:33:01.037Z",
+    "timestamp": "2025-07-29T01:05:33.904Z",
     "source": "unified-config.json",
-    "importCount": 55
+    "importCount": 60
   }
 }

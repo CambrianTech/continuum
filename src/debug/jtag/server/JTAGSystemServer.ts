@@ -76,17 +76,25 @@ export class JTAGSystemServer extends JTAGSystem {
       return JTAGSystemServer.instance;
     }
 
-    // 1. Create server context using SYSTEM scope initially (before browser handshake)
+    // 1. Create server context - use specific session if provided
+    const sessionId = config?.connection?.sessionId || SYSTEM_SCOPES.SYSTEM;
     const context: JTAGContext = {
-      uuid: SYSTEM_SCOPES.SYSTEM, // Use system scope until browser handshake
+      uuid: sessionId,
       environment: JTAG_ENVIRONMENTS.SERVER
     };
 
     console.log(`🔄 JTAG System: Connecting server environment...`);
-    console.log(`🆔 JTAG System: Server starting with system scope, awaiting browser sessionId...`);
+    if (config?.connection?.sessionId) {
+      console.log(`🆔 JTAG System: Connecting to specific session: ${sessionId}`);
+    } else {
+      console.log(`🆔 JTAG System: Server starting with system scope, awaiting browser sessionId...`);
+    }
 
-    // 2. Create universal router with config
-    const routerConfig = config?.router ?? {};
+    // 2. Create universal router with config and session
+    const routerConfig = {
+      sessionId: sessionId as string,
+      ...config?.router
+    };
     const router = new JTAGRouter(context, routerConfig);
     
     // Emit initializing event
