@@ -93,7 +93,6 @@ export class JTAGSystemBrowser extends JTAGSystem {
     });
   }
 
-
   /**
    * Connect and auto-wire the browser JTAG system
    */
@@ -118,7 +117,7 @@ export class JTAGSystemBrowser extends JTAGSystem {
     const router = new JTAGRouter(context, routerConfig);
     
     // Emit initializing event
-    router.eventSystem.emit(SYSTEM_EVENTS.INITIALIZING, {
+    router.eventManager.events.emit(SYSTEM_EVENTS.INITIALIZING, {
       context,
       timestamp: new Date().toISOString()
     });
@@ -139,7 +138,7 @@ export class JTAGSystemBrowser extends JTAGSystem {
     await system.setupTransports();
     
     // Emit transport ready event
-    router.eventSystem.emit(SYSTEM_EVENTS.TRANSPORT_READY, {
+    router.eventManager.events.emit(SYSTEM_EVENTS.TRANSPORT_READY, {
       context,
       timestamp: new Date().toISOString(),
       transportType: 'websocket-client'
@@ -153,7 +152,7 @@ export class JTAGSystemBrowser extends JTAGSystem {
     console.log(`   Daemons: ${system.daemons.map(d => d.name).join(', ')}`);
 
     // Emit system ready event after full initialization
-    router.eventSystem.emit(SYSTEM_EVENTS.READY, {
+    router.eventManager.events.emit(SYSTEM_EVENTS.READY, {
       version: '1.0.0',
       context,
       timestamp: new Date().toISOString(),

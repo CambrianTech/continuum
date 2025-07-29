@@ -2,12 +2,8 @@
  * Router Response Types - Strong typing for JTAGRouter operations
  */
 
-// Transport send result
-export interface TransportSendResult {
-  success: boolean;
-  timestamp: string;
-  sentCount?: number;
-}
+import type { TransportSendResult } from '../transports/TransportFactory';
+
 
 // Request handling result
 export interface RequestResult {

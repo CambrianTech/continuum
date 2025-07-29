@@ -107,12 +107,28 @@ export abstract class JTAGSystem extends JTAGBase {
     return this.config.version.fallback;
   }
 
+  //This SHOULD BE the only initialize/setup method in ANY JTAGBase class, make the others protected and call from here
+  protected override async initialize(): Promise<void> {
+    // // Initialize router with provided configuration
+    // await this.router.initialize(this.context, this.config.router);
+
+    // // Setup transports for cross-context communication
+    // await this.setupTransports();
+
+    // // Setup daemons based on the static structure
+    // await this.setupDaemons();
+
+    // // Initialize session from SessionDaemon if available
+    // await this.initializeSessionFromDaemon();
+      
+  }
+
   /**
    * Setup server-specific daemons using static structure
    */
   async setupDaemons(): Promise<void> {
     // Emit daemons loading event
-    this.router.eventSystem.emit(SYSTEM_EVENTS.DAEMONS_LOADING, {
+    this.router.eventManager.events.emit(SYSTEM_EVENTS.DAEMONS_LOADING, {
       context: this.context,
       timestamp: new Date().toISOString(),
       expectedDaemons: this.daemonEntries.map(d => d.name)
@@ -141,7 +157,7 @@ export abstract class JTAGSystem extends JTAGBase {
     await Promise.all(daemonPromises);
     
     // Emit daemons loaded event
-    this.router.eventSystem.emit(SYSTEM_EVENTS.DAEMONS_LOADED, {
+    this.router.eventManager.events.emit(SYSTEM_EVENTS.DAEMONS_LOADED, {
       context: this.context,
       timestamp: new Date().toISOString(),
       loadedDaemons: this.daemons.map(d => d.name)

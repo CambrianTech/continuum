@@ -1,34 +1,66 @@
+// ISSUES: 0 open, last updated 2025-07-29 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+
 /**
- * JTAG Client - Remote connection to JTAG System
+ * JTAGClient - Client for interacting with the JTAG system
  * 
- * Minimal client implementation that extends JTAGBase.
- * Will connect to remote JTAG System via transport in next step.
+  * Provides methods to connect to the JTAG system, send commands, and receive responses.
+ * 
+ * ISSUES: (look for TODOs)
+ * - Implemment the initalize method to set up the transport and commands interface.
+
+ * CORE ARCHITECTURE:
+
+ * 
+ * TESTING REQUIREMENTS:
+ * - Unit tests: Message routing logic and subscriber management
+ * - Integration tests: Cross-context transport reliability
+ * - Performance tests: Message throughput under load
+ * - Failure tests: Network partition and recovery scenarios
+ * 
+ * ARCHITECTURAL INSIGHTS:
+  * - Provides a unified client for calling the JTAGSystem via a transport (such as WebSocket)
  */
+
 
 import { generateUUID, type UUID} from './CrossPlatformUUID';
 import { JTAGBase, type CommandsInterface } from './JTAGBase';
 import type { JTAGContext } from './JTAGTypes';
+import { TransportFactory } from '@transports/TransportFactory';
+import type { TransportConfig, JTAGTransport } from '@transports/TransportFactory';
 
 export class JTAGClient extends JTAGBase {
+  protected systemTransport?: JTAGTransport;
+  protected commandsInterface?: CommandsInterface;
 
+  public readonly sessionId: UUID;
+
+  // Initialize sessionId in constructor
   constructor(context: JTAGContext) {
     super('jtag-client', context);
+    this.sessionId = context.uuid;
   }
 
-  /**
-   * Get current session ID
-   */
-  get sessionId(): UUID {
-    return this.context.uuid;
-  }
 
-  /**
-   * Implementation of abstract method from JTAGBase
-   * For now, returns empty interface - will add transport in next step
-   */
+  protected override async initialize(): Promise<void> {
+
+    const transportConfig: TransportConfig = { 
+          preferred: 'websocket', 
+          fallback: true,
+          eventSystem: this.eventManager.events,
+          sessionId: this.sessionId // Pass sessionId for client handshake
+        };
+
+    this.systemTransport = await TransportFactory.createTransport(this.context.environment, transportConfig);
+
+    // Connect to the JTAGRouter using the transport to get the commands interface?
+    //const connection = await this.systemTransport.connect(this.context);
+
+    //Get the comands interface from the transport
+
+  }
+  
   protected getCommandsInterface(): CommandsInterface {
-    // Minimal implementation - will add transport forwarding in step 5
-    return new Map();
+    return this.commandsInterface ?? new Map();
   }
 
   /**

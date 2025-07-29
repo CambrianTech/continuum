@@ -3,11 +3,10 @@
  * 
  * Handles WebSocket communication between browser and server contexts.
  */
-
-import { JTAGTransport } from '@shared/JTAGRouter';
-import { JTAGMessage } from '@shared/JTAGTypes';
-import { WebSocketServer, WebSocket as WSWebSocket } from 'ws';
-import type { EventsInterface } from '@shared/JTAGRouter';
+import type { JTAGTransport } from '@transports/TransportFactory';
+import type { JTAGMessage } from '@shared/JTAGTypes';
+import type { WebSocketServer, WebSocket as WSWebSocket } from 'ws';
+import type { EventsInterface } from '@shared/JTAGEventSystem';
 import { TRANSPORT_EVENTS } from '@transports/TransportEvents';
 
 interface WebSocketSendResult {
@@ -41,7 +40,7 @@ export class WebSocketServerTransport implements JTAGTransport {
     try {
       // Dynamic import to handle WebSocket availability
       const WebSocketModule = await eval('import("ws")');
-      const WSServer = WebSocketModule.WebSocketServer || WebSocketModule.default?.WebSocketServer;
+      const WSServer = WebSocketModule.WebSocketServer ?? WebSocketModule.default?.WebSocketServer;
       
       this.server = new WSServer({ port });
       
@@ -227,13 +226,13 @@ export class WebSocketClientTransport implements JTAGTransport {
         
         resolve();
       };
-      
-      this.socket.onerror = (error) => {
+
+      this.socket.onerror = (error): void => {
         console.error(`❌ WebSocket Client: Connection error:`, error);
         reject(error);
       };
       
-      this.socket.onmessage = (event) => {
+      this.socket.onmessage = (event) : void => {
         try {
           const message = JSON.parse(event.data);
           if (this.messageHandler) {
@@ -244,7 +243,7 @@ export class WebSocketClientTransport implements JTAGTransport {
         }
       };
       
-      this.socket.onclose = () => {
+      this.socket.onclose = () : void => {
         console.log(`🔌 WebSocket Client: Connection closed`);
         
         // Emit DISCONNECTED event

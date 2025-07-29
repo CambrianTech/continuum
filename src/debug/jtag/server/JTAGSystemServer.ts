@@ -13,7 +13,6 @@ import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import type { DaemonBase, DaemonEntry } from '@shared/DaemonBase';
 import { SERVER_DAEMONS } from './generated';
 import { SYSTEM_SCOPES } from '@shared/SystemScopes';
-import { WebSocketServerTransport } from '@transports/WebSocketTransport';
 
 export class JTAGSystemServer extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return SERVER_DAEMONS; }
@@ -77,7 +76,7 @@ export class JTAGSystemServer extends JTAGSystem {
     }
 
     // 1. Create server context - use specific session if provided
-    const sessionId = config?.connection?.sessionId || SYSTEM_SCOPES.SYSTEM;
+    const sessionId = config?.connection?.sessionId ?? SYSTEM_SCOPES.SYSTEM;
     const context: JTAGContext = {
       uuid: sessionId,
       environment: JTAG_ENVIRONMENTS.SERVER
@@ -98,7 +97,7 @@ export class JTAGSystemServer extends JTAGSystem {
     const router = new JTAGRouter(context, routerConfig);
     
     // Emit initializing event
-    router.eventSystem.emit(SYSTEM_EVENTS.INITIALIZING, {
+    router.eventManager.events.emit(SYSTEM_EVENTS.INITIALIZING, {
       context,
       timestamp: new Date().toISOString()
     });
@@ -118,7 +117,7 @@ export class JTAGSystemServer extends JTAGSystem {
     // 6. Session handling is now done via SessionDaemon through router messages
     
     // Emit transport ready event
-    router.eventSystem.emit(SYSTEM_EVENTS.TRANSPORT_READY, {
+    router.eventManager.events.emit(SYSTEM_EVENTS.TRANSPORT_READY, {
       context,
       timestamp: new Date().toISOString(),
       transportType: 'websocket-server'
@@ -132,7 +131,7 @@ export class JTAGSystemServer extends JTAGSystem {
     console.log(`   Daemons: ${Array.from(system.daemons.keys()).join(', ')}`);
 
     // Emit system ready event after full initialization
-    router.eventSystem.emit(SYSTEM_EVENTS.READY, {
+    router.eventManager.events.emit(SYSTEM_EVENTS.READY, {
       version: '1.0.0',
       context,
       timestamp: new Date().toISOString(),
