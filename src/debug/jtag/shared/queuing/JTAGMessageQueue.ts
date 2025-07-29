@@ -50,7 +50,7 @@ export class JTAGMessageQueue {
   enqueue(message: JTAGMessage, priority: Priority = Priority.NORMAL): boolean {
     // Check for duplicates first
     if (!this.deduplicationService.shouldProcess(message)) {
-      console.log(`🚫 JTAGMessageQueue[${this.context.environment}]: Prevented duplicate message`);
+      // Silently prevent duplicate - no need to log every prevention
       return false; // Message was deduplicated
     }
 

@@ -42,6 +42,10 @@
     "@system": "system",
     "@systemEvents": "system/events",
     "@systemTransports": "system/transports",
+    "@transportsHttp": "system/transports/http",
+    "@httpClient": "system/transports/http/client",
+    "@transportsWebsocket": "system/transports/websocket",
+    "@websocketClient": "system/transports/websocket/client",
     "@templates": "templates",
     "@tests": "tests",
     "@testsIntegration": "tests/integration",
@@ -59,8 +63,8 @@
   },
   "description": "Auto-generated JTAG TypeScript path mappings from unified-config.json",
   "_generated": {
-    "timestamp": "2025-07-29T22:04:24.557Z",
+    "timestamp": "2025-07-29T22:29:36.081Z",
     "source": "unified-config.json",
-    "mappingCount": 56
+    "mappingCount": 60
   }
 }

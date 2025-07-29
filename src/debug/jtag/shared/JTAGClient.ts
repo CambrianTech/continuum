@@ -25,8 +25,8 @@
 import { generateUUID, type UUID} from './CrossPlatformUUID';
 import { JTAGBase, type CommandsInterface } from './JTAGBase';
 import type { JTAGContext } from './JTAGTypes';
-import { TransportFactory } from '@systemTransports/TransportFactory';
-import type { TransportConfig, JTAGTransport } from '@systemTransports/TransportFactory';
+import { TransportFactory } from '@system/transports/shared/TransportFactory';
+import type { TransportConfig, JTAGTransport } from '@system/transports/shared/TransportTypes';
 
 export class JTAGClient extends JTAGBase {
   protected systemTransport?: JTAGTransport;

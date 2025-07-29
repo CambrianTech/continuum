@@ -1,20 +1,26 @@
 /**
- * HTTP Transport Implementation
+ * HTTP Transport - REST API transport implementation
  * 
- * REST API transport for cross-context communication when WebSocket isn't available.
+ * Extracted from root HTTPTransport.ts into proper modular structure.
+ * Provides stateless HTTP-based message transport for cross-context communication.
  */
-import type { JTAGTransport } from './TransportFactory';
-import type { JTAGMessage } from '@shared/JTAGTypes';
 
-export class HTTPTransport implements JTAGTransport {
-  name = 'http-transport';
+import { TransportBase } from '../../shared/TransportBase';
+import type { JTAGMessage } from '@shared/JTAGTypes';
+import type { TransportSendResult } from '../../shared/TransportTypes';
+
+export class HTTPTransport extends TransportBase {
+  public readonly name = 'http-transport';
+  
   private baseUrl: string;
 
   constructor(baseUrl: string = 'http://localhost:9002') {
+    super();
     this.baseUrl = baseUrl;
+    this.connected = true; // HTTP is stateless, so always "connected" if fetch is available
   }
 
-  async send(message: JTAGMessage): Promise<{ success: boolean; timestamp: string; data?: unknown }> {
+  async send(message: JTAGMessage): Promise<TransportSendResult> {
     const endpoint = `${this.baseUrl}/api/jtag/message`;
     
     console.log(`📤 HTTP Transport: Sending message to ${endpoint}`);
@@ -35,7 +41,7 @@ export class HTTPTransport implements JTAGTransport {
       const result = await response.json();
       console.log(`✅ HTTP Transport: Message sent successfully`);
       
-      return { success: true, timestamp: new Date().toISOString(), data: result };
+      return this.createResult(true);
     } catch (error) {
       console.error(`❌ HTTP Transport: Send failed:`, error);
       throw error;
@@ -49,6 +55,12 @@ export class HTTPTransport implements JTAGTransport {
 
   async disconnect(): Promise<void> {
     console.log(`🔌 HTTP Transport: No persistent connection to disconnect`);
+    this.connected = false;
+  }
+
+  async reconnect(): Promise<void> {
+    console.log(`🔄 HTTP Transport: No reconnection needed for stateless HTTP`);
+    this.connected = true;
   }
 
   /**
