@@ -47,7 +47,7 @@ async function takeScreenshot() {
       jtag = await JTAGSystemServer.connect();
     }
     
-    console.log(`🆔 Connected with session: ${jtag.getSessionId()}`);
+    console.log(`🆔 Connected with session: ${jtag.sessionId}`);
     console.log('📸 Taking screenshot...');
     
     const result = await jtag.commands.screenshot({

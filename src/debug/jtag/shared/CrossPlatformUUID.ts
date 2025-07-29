@@ -20,7 +20,7 @@ export function generateUUID(): UUID {
       // Dynamic import to avoid bundling issues
       const crypto = eval('require')('crypto');
       return crypto.randomUUID();
-    } catch (error) {
+    } catch  {
       console.warn('Failed to load Node.js crypto, falling back to browser implementation');
     }
   }

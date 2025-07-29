@@ -7,40 +7,50 @@
 import { JTAGModule } from './JTAGModule';
 import type { CommandParams, CommandResult } from './JTAGTypes';
 import type { UUID } from './CrossPlatformUUID';
+import type { CommandBase } from '@commandBase';
+
+/**
+ * Strongly-typed command function signature
+ */
+export type CommandFunction<TParams extends CommandParams = CommandParams, TResult extends CommandResult = CommandResult> = 
+  (params?: TParams) => Promise<TResult>;
+
+/**
+ * Strongly-typed commands interface
+ */
+export type CommandsInterface = Map<string, CommandBase<CommandParams, CommandResult>>;
 
 export abstract class JTAGBase extends JTAGModule {
   // Abstract methods that both JTAGSystem and JTAGClient need
-  abstract getSessionId(): string;
-  
+  public abstract get sessionId(): UUID;
+
   // Abstract method for subclasses to provide their command source
-  protected abstract getCommandsInterface(): Record<string, Function>;
+  protected abstract getCommandsInterface(): CommandsInterface;
   
   /**
    * Commands interface - migrated from JTAGSystem
    * Creates proxy that injects sessionId and context into all commands
    */
-  get commands(): Record<string, (params?: CommandParams) => Promise<CommandResult>> {
-    const commandsInterface = this.getCommandsInterface();
+  get commands(): Record<string, CommandFunction> {
+    const commandsMap = this.getCommandsInterface();
     
-    // Create proxy that injects sessionId (same logic as JTAGSystem)
-    return new Proxy(commandsInterface, {
+    // Create proxy that injects sessionId from the Map structure
+    return new Proxy({}, {
       get: (target, commandName: string) => {
-        const originalCommand = target[commandName];
-        if (typeof originalCommand !== 'function') {
-          return originalCommand;
+        const command = commandsMap.get(commandName);
+        if (!command) {
+          throw new Error(`Command '${commandName}' not found. Available: ${Array.from(commandsMap.keys()).join(', ')}`);
         }
         
         // Wrap command to inject real sessionId and ensure required fields
         return async (params?: CommandParams) => {
-          const sessionId = this.getSessionId();
-          const paramsWithSession: CommandParams = { 
-            context: this.context,  // Ensure context is always present
-            sessionId: sessionId as UUID,  // Use real sessionId from system
-            ...params              // User params override defaults
-          };
-          return await originalCommand(paramsWithSession);
+
+          const fullParams = command.withDefaults(params ?? {}, this.sessionId);
+          
+          // Execute the command directly with proper typing
+          return await command.execute(fullParams);
         };
       }
-    }) as Record<string, (params?: CommandParams) => Promise<CommandResult>>;
+    }) as Record<string, CommandFunction>;
   }
 }

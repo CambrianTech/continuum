@@ -52,7 +52,7 @@ export type JTAGEnvironment = typeof JTAG_ENVIRONMENTS[keyof typeof JTAG_ENVIRON
  * @param environment - Execution environment (server/browser/remote)
  */
 export interface JTAGContext {
-  uuid: string;
+  uuid: UUID;
   environment: JTAGEnvironment;
 }
 
