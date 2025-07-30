@@ -206,12 +206,18 @@ class UnifiedConfigGenerator {
             outputFile: 'browser/generated.ts',
             environment: 'browser',
             daemonPaths: ['daemons/*/browser/*Browser.ts'],
+            commandPaths: [
+              'commands/**/browser/*Command.ts',
+            ],
             excludePatterns: ['**/*.bak', '**/*.bak/**/*', '**/node_modules/**/*']
           },
           server: {
             outputFile: 'server/generated.ts',
             environment: 'server', 
             daemonPaths: ['daemons/*/server/*Server.ts'],
+            commandPaths: [
+              'commands/**/server/*Command.ts',
+            ],
             excludePatterns: ['**/*.bak', '**/*.bak/**/*', '**/node_modules/**/*']
           }
         }
