@@ -44,7 +44,7 @@ import type { QueuedItem } from '@sharedQueuing/PriorityQueue';
 import { ConnectionHealthManager } from '@shared/ConnectionHealthManager';
 import { ResponseCorrelator } from '@shared/ResponseCorrelator';
 import { EndpointMatcher } from '@sharedRouting/EndpointMatcher';
-import { EventManager } from './JTAGEventSystem';
+import { EventManager } from '@systemEvents';
 
 // Import configuration types and utilities
 import type { 

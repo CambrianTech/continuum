@@ -226,12 +226,6 @@
       "@scripts/*": [
         "scripts/*"
       ],
-      "@sharedEvents": [
-        "shared/events"
-      ],
-      "@sharedEvents/*": [
-        "shared/events/*"
-      ],
       "@sharedQueuing": [
         "shared/queuing"
       ],
@@ -255,6 +249,12 @@
       ],
       "@systemEvents/*": [
         "system/events/*"
+      ],
+      "@eventsRouter": [
+        "system/events/router"
+      ],
+      "@eventsRouter/*": [
+        "system/events/router/*"
       ],
       "@systemTransports": [
         "system/transports"
@@ -403,7 +403,7 @@
     "**/*.bak/**/*"
   ],
   "_generated": {
-    "timestamp": "2025-07-30T00:01:32.369Z",
+    "timestamp": "2025-07-30T00:13:31.064Z",
     "source": "unified-config.json",
     "pathCount": 120
   }

@@ -6,7 +6,7 @@
  */
 
 import { JTAGPayload } from '@shared/JTAGTypes';
-import { EventMessage } from '@shared/JTAGEventSystem';
+import { EventMessage } from '@systemEvents';
 
 console.log('🧪 Encoding Abstraction Test Suite');
 

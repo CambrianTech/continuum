@@ -9,7 +9,7 @@ import { JTAGSystem, type JTAGSystemConfig } from '@shared/JTAGSystem';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '@shared/JTAGTypes';
 import { JTAGRouter } from '@shared/JTAGRouter';
-import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
+import { SYSTEM_EVENTS } from '@systemEvents';
 import type { DaemonBase, DaemonEntry } from '@shared/DaemonBase';
 import { SERVER_DAEMONS } from './generated';
 import { SYSTEM_SCOPES } from '@shared/SystemScopes';
