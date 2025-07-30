@@ -1,29 +1,27 @@
 /**
- * List Command - Shared Implementation
+ * List Command - Browser Implementation
  * 
- * Universal command that discovers and returns available commands from the CommandDaemon system.
- * This is the SINGLE DEPENDENCY command that enables all dynamic command discovery.
- * Works in both browser and server environments.
+ * Discovers and returns available commands from the browser-side CommandDaemon system.
+ * Essential command for client command discovery - works locally in browser.
  */
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import { type ListParams, type ListResult, type CommandSignature, createListResultFromParams } from './ListTypes';
+import { type ListParams, type ListResult, type CommandSignature, createListResultFromParams } from '../shared/ListTypes';
 
-export class ListCommand extends CommandBase<ListParams, ListResult> {
+export class ListBrowserCommand extends CommandBase<ListParams, ListResult> {
   
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('list', context, subpath, commander);
   }
 
   /**
-   * Universal command discovery - works in both browser and server environments
+   * Browser discovers available commands from the local CommandDaemon
    */
   async execute(params: JTAGPayload): Promise<ListResult> {
     const listParams = params as ListParams;
-    const env = this.context.environment;
     
-    console.log(`📋 ${env.toUpperCase()}: Listing available commands (category: ${listParams.category ?? 'all'})`);
+    console.log(`📋 BROWSER: Listing available commands (category: ${listParams.category ?? 'all'})`);
 
     try {
       // Get commands from CommandDaemon
@@ -33,13 +31,9 @@ export class ListCommand extends CommandBase<ListParams, ListResult> {
       // Convert CommandDaemon commands to CommandSignature format
       for (const [commandName, command] of availableCommands.entries()) {
         // Determine category based on command name or implementation
-        let category: 'browser' | 'server' | 'system' = env === 'browser' ? 'browser' : 'server';
-        
-        // Override category based on command characteristics
+        let category: 'browser' | 'server' | 'system' = 'browser';
         if (commandName.includes('file/') || commandName.includes('compile-')) {
           category = 'server';
-        } else if (commandName.includes('screenshot') || commandName.includes('click') || commandName.includes('navigate')) {
-          category = 'browser';
         } else if (commandName.includes('list') || commandName.includes('health')) {
           category = 'system';
         }
@@ -69,7 +63,7 @@ export class ListCommand extends CommandBase<ListParams, ListResult> {
         commandSignatures.push(signature);
       }
 
-      console.log(`✅ ${env.toUpperCase()}: Found ${commandSignatures.length} available commands`);
+      console.log(`✅ BROWSER: Found ${commandSignatures.length} available commands`);
 
       return createListResultFromParams(listParams, {
         success: true,
@@ -78,7 +72,7 @@ export class ListCommand extends CommandBase<ListParams, ListResult> {
       });
 
     } catch (error) {
-      console.error(`❌ ${env.toUpperCase()}: Failed to list commands:`, error);
+      console.error(`❌ BROWSER: Failed to list commands:`, error);
       
       return createListResultFromParams(listParams, {
         success: false,
