@@ -7,7 +7,7 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { UUID } from 'crypto';
+import { UUID } from '@shared/CrossPlatformUUID';
 import { type GetTextParams, createGetTextParams, type GetTextResult } from '@commandsGetText/shared/GetTextTypes';
 
 export abstract class GetTextCommand extends CommandBase<GetTextParams, GetTextResult> {

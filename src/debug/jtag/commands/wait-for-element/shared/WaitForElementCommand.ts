@@ -8,7 +8,7 @@
 import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { UUID } from 'crypto';
+import { UUID } from '@shared/CrossPlatformUUID';
 import { type WaitForElementParams, type WaitForElementResult, createWaitForElementParams } from '@commandsWaitForElement/shared/WaitForElementTypes';
 
 export abstract class WaitForElementCommand extends CommandBase<WaitForElementParams, WaitForElementResult> {

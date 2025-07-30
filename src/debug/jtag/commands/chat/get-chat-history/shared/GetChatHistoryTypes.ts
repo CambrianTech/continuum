@@ -11,7 +11,7 @@
 import { ChatParams, ChatResult } from '@commandsChat/shared/ChatTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { createPayload } from '@shared/JTAGTypes';
-import { UUID } from 'crypto';
+import { UUID } from '@shared/CrossPlatformUUID';
 
 export interface GetChatHistoryParams extends ChatParams {
   readonly participantId?: string;

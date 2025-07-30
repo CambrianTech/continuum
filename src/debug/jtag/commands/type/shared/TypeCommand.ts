@@ -7,7 +7,7 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { UUID } from 'crypto';
+import { UUID } from '@shared/CrossPlatformUUID';
 import { type TypeParams, type TypeResult, createTypeParams } from '@commandsType/shared/TypeTypes';
 
 export abstract class TypeCommand extends CommandBase<TypeParams, TypeResult> {

@@ -9,7 +9,7 @@
 import { type FileParams, type FileResult, createFileParams, createFileResult } from '@commandsFile/shared/FileTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGError } from '@shared/ErrorTypes';
-import { UUID } from 'crypto';
+import { UUID } from '@shared/CrossPlatformUUID';
 
 export interface FileLoadParams extends FileParams {
   // Pure inheritance - no additional fields needed

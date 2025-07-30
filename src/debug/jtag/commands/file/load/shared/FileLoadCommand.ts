@@ -8,7 +8,7 @@
 import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { UUID } from 'crypto';
+import { UUID } from '@shared/CrossPlatformUUID';
 import { type FileLoadParams, createFileLoadParams } from '@fileLoad/shared/FileLoadTypes';
 import type { FileLoadResult } from '@fileLoad/shared/FileLoadTypes';
 

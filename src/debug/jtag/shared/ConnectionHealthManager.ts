@@ -33,7 +33,7 @@ import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
 import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
 import type { TimerHandle } from '@shared/CrossPlatformTypes';
 import type { JTAGTransport } from '@system/transports/shared/TransportTypes';
-import { UUID } from 'crypto';
+import { UUID } from '@shared/CrossPlatformUUID';
 
 export enum ConnectionState {
   DISCONNECTED = 'disconnected',
