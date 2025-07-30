@@ -22,6 +22,7 @@ export interface CommandEntry {
 export interface ICommandDaemon {
   readonly subpath: string;  
   readonly router: JTAGRouter;
+  readonly commands: Map<string, CommandBase<CommandParams, CommandResult>>;
 }
 
 /**
