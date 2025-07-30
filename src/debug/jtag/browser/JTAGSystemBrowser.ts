@@ -112,7 +112,11 @@ export class JTAGSystemBrowser extends JTAGSystem {
 
     // 3. Create universal router with config (no sessionId - will receive from server)
     const routerConfig = {
-      ...config?.router
+      ...config?.router,
+      transport: {
+        ...config?.router?.transport,
+        role: 'client' as const // Browser router always connects as client to server
+      }
     };
     const router = new JTAGRouter(context, routerConfig);
     

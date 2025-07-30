@@ -12,25 +12,35 @@ import { WebSocketClientTransport } from '../client/WebSocketClientTransport';
 
 export class WebSocketTransportFactory {
   /**
-   * Create WebSocket transport for the specified environment
+   * Create WebSocket transport based on role (client/server) and environment
    */
   static async createTransport(
     environment: JTAGContext['environment'],
     config: TransportConfig
   ): Promise<JTAGTransport> {
-    const { serverPort = 9001, serverUrl = 'ws://localhost:9001', eventSystem, sessionId } = config;
+    const { 
+      role = 'server', // Default to server for backward compatibility
+      serverPort = 9001, 
+      serverUrl = 'ws://localhost:9001', 
+      eventSystem, 
+      sessionId 
+    } = config;
 
-    if (environment === JTAG_ENVIRONMENTS.SERVER) {
+    console.log(`🔗 WebSocket Factory: Creating ${role} transport in ${environment} environment`);
+
+    // Server role: Create listener (regardless of environment)
+    if (role === 'server') {
       const transport = new WebSocketServerTransport({ port: serverPort });
       if (eventSystem) {
         transport.setEventSystem(eventSystem);
       }
       await transport.start(serverPort);
-      console.log(`✅ WebSocket Factory: Server transport created on port ${serverPort}`);
+      console.log(`✅ WebSocket Factory: Server transport listening on port ${serverPort}`);
       return transport;
     } 
     
-    if (environment === JTAG_ENVIRONMENTS.BROWSER) {
+    // Client role: Create connector (regardless of environment)
+    if (role === 'client') {
       const transport = new WebSocketClientTransport({ url: serverUrl });
       if (eventSystem) {
         transport.setEventSystem(eventSystem);
@@ -39,10 +49,10 @@ export class WebSocketTransportFactory {
         transport.setSessionId(sessionId);
       }
       await transport.connect(serverUrl);
-      console.log(`✅ WebSocket Factory: Client transport created to ${serverUrl}`);
+      console.log(`✅ WebSocket Factory: Client transport connected to ${serverUrl}`);
       return transport;
     }
 
-    throw new Error(`WebSocket transport not supported for environment: ${environment}`);
+    throw new Error(`WebSocket transport role '${role}' not supported`);
   }
 }

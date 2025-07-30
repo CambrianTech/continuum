@@ -9,11 +9,55 @@ import type { JTAGMessage } from '@shared/JTAGTypes';
 import type { EventsInterface } from '@systemEvents';
 
 /**
+ * Transport roles - defines the connection behavior and capabilities
+ * 
+ * ROLE BEHAVIORS:
+ * 
+ * CLIENT: 
+ * - Initiates outbound connections to servers
+ * - Used by: CLI, browser JTAGRouter connecting to server
+ * - Connection: One-to-one (client → server)
+ * 
+ * SERVER:
+ * - Listens for inbound connections from clients  
+ * - Used by: Server JTAGRouter, main system listener
+ * - Connection: One-to-many (server ← multiple clients)
+ * 
+ * PEER:
+ * - Bidirectional communication in mesh network
+ * - Can both connect to and accept connections from other peers
+ * - Used by: P2P mesh nodes, distributed systems
+ * - Connection: Many-to-many (peer ↔ peer ↔ peer)
+ * 
+ * RELAY:
+ * - Routes/forwards messages between other transports
+ * - Acts as intermediary for network bridging
+ * - Used by: Gateway nodes, network bridges
+ * - Connection: Hub pattern (multiple ← relay → multiple)
+ * 
+ * HYBRID:
+ * - Combines client + server capabilities
+ * - Can simultaneously connect outbound and accept inbound
+ * - Used by: Advanced distributed architectures
+ * - Connection: Full mesh capabilities
+ */
+export const TRANSPORT_ROLES = {
+  CLIENT: 'client',
+  SERVER: 'server', 
+  PEER: 'peer',
+  RELAY: 'relay',
+  HYBRID: 'hybrid'
+} as const;
+
+export type TransportRole = typeof TRANSPORT_ROLES[keyof typeof TRANSPORT_ROLES];
+
+/**
  * Transport configuration interface
  */
 export interface TransportConfig {
   preferred?: 'websocket' | 'http' | 'udp-multicast';
   fallback?: boolean;
+  role?: TransportRole; // Explicitly specify client (connector) vs server (listener)
   serverPort?: number;
   serverUrl?: string;
   eventSystem?: EventsInterface;
