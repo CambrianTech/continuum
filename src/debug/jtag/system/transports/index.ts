@@ -6,7 +6,7 @@
  */
 
 // Core transport system
-export { TransportFactory, TransportBase, TRANSPORT_EVENTS } from './shared';
+export { TransportFactory, TransportBase, TRANSPORT_EVENTS, TRANSPORT_TYPES } from './shared';
 export type { JTAGTransport, TransportConfig, TransportSendResult } from './shared';
 
 // Transport endpoint management

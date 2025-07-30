@@ -34,12 +34,23 @@ export interface JTAGRouterResponseConfig {
 }
 
 /**
+ * Transport configuration for JTAGRouter
+ */
+export interface JTAGRouterTransportConfig {
+  readonly preferred: 'websocket' | 'http' | 'udp-multicast';
+  readonly fallback: boolean;
+  readonly serverPort?: number;
+  readonly serverUrl?: string;
+}
+
+/**
  * Complete configuration interface for JTAGRouter
  */
 export interface JTAGRouterConfig {
   readonly queue?: Partial<JTAGRouterQueueConfig>;
   readonly health?: Partial<JTAGRouterHealthConfig>;
   readonly response?: Partial<JTAGRouterResponseConfig>;
+  readonly transport?: Partial<JTAGRouterTransportConfig>;
   readonly enableLogging?: boolean;
   readonly sessionId?: string; // Session ID for transport handshake
 }
@@ -51,6 +62,7 @@ export interface ResolvedJTAGRouterConfig {
   readonly queue: JTAGRouterQueueConfig;
   readonly health: JTAGRouterHealthConfig;
   readonly response: JTAGRouterResponseConfig;
+  readonly transport: JTAGRouterTransportConfig;
   readonly enableLogging: boolean;
   readonly sessionId?: string; // Session ID for transport handshake
 }
@@ -76,6 +88,12 @@ export const DEFAULT_JTAG_ROUTER_CONFIG: ResolvedJTAGRouterConfig = {
     correlationTimeout: 30000, // 30 second timeout for commands
     enableCorrelation: true
   },
+  transport: {
+    preferred: 'websocket',
+    fallback: true,
+    serverPort: 9001, // WebSocket default port
+    serverUrl: undefined // Will be auto-derived from port
+  },
   enableLogging: true
 } as const;
 
@@ -95,6 +113,10 @@ export function createJTAGRouterConfig(config: JTAGRouterConfig = {}): ResolvedJ
     response: {
       ...DEFAULT_JTAG_ROUTER_CONFIG.response,
       ...config.response
+    },
+    transport: {
+      ...DEFAULT_JTAG_ROUTER_CONFIG.transport,
+      ...config.transport
     },
     enableLogging: config.enableLogging ?? DEFAULT_JTAG_ROUTER_CONFIG.enableLogging,
     sessionId: config.sessionId

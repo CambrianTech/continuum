@@ -1,4 +1,4 @@
-// ISSUES: 1 open, last updated 2025-07-30 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// ISSUES: 2 open, last updated 2025-07-30 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 
 /**
  * JTAG Universal Router - Context-Aware Message Routing with Bus-Level Queuing
@@ -11,7 +11,10 @@
  * - ✅ RESOLVED: Move the event system out to a shared module to avoid circular dependencies and improve maintainability
  * - ✅ RESOLVED: Implement a TransportEndpoint interface in the transports module to standardize transport initialization and management
  * - ✅ RESOLVED: Eliminate non typed things like `any` and `unknown` in this file. Think of promise return types and eliminate void where possible. Think of how this routes these payloads as commands and events
- * - Move the transport factory to a shared module for better abstraction and reusability. We will use this in the JTAGClient to connect to this very router.
+ * - ✅ RESOLVED: Move the transport factory to a shared module for better abstraction and reusability. We will use this in the JTAGClient to connect to this very router.
+ * - ✅ RESOLVED: Use router configuration for transport initialization instead of hardcoded values - transport type, ports, and fallback now configurable
+ * - ENHANCEMENT: Implement dedicated P2P transport for networking (UDP multicast) - current WebSocket not optimal for peer-to-peer discovery
+ * - ENHANCEMENT: Add port availability tracking to router - automatically detect and assign free ports for multi-instance deployments
  * 
  * CORE ARCHITECTURE:
  * - MessageSubscriber pattern for daemon registration
@@ -37,7 +40,7 @@
 import { JTAGModule } from '@shared/JTAGModule';
 import type { JTAGContext, JTAGEnvironment, JTAGMessage } from '@shared/JTAGTypes';
 import { JTAGMessageTypes, JTAGMessageFactory } from '@shared/JTAGTypes';
-import { TransportFactory } from '@systemTransports';
+import { TransportFactory, TRANSPORT_TYPES } from '@systemTransports';
 import type { TransportConfig, JTAGTransport, TransportEndpoint } from '@systemTransports';
 import { JTAGMessageQueue, MessagePriority } from '@sharedQueuing/JTAGMessageQueue';
 import type { QueuedItem } from '@sharedQueuing/PriorityQueue';
@@ -94,10 +97,6 @@ export interface RouterStatus {
   };
 }
 
-enum TRANSPORT_TYPES {
-  CROSS_CONTEXT = 'cross-context',
-  P2P = 'p2p',  
-}
 
 export class JTAGRouter extends JTAGModule implements TransportEndpoint {
   private readonly endpointMatcher = new EndpointMatcher<MessageSubscriber>();
@@ -211,8 +210,7 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint {
     } else {
       // This should never happen as all valid JTAGMessage types are handled above
       // Type assertion is safe here since we know message is a JTAGMessage
-      const unknownMessage = message as JTAGMessage;
-      throw new Error(`Unknown message type: ${unknownMessage.messageType ?? 'undefined'}`);
+      throw new Error('Unknown message type: ' + JSON.stringify(message));
     }
   }
 
@@ -302,7 +300,6 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint {
   /**
    * Handle event messages (fire-and-forget: console logs, notifications, etc.)
    */
-  // TODO: PULL EVENT LOGIC OUT TO A SHARED MODULE 
   private async handleEventMessage(message: JTAGMessage): Promise<EventResult> {
     // Determine priority based on message content
     const priority = this.determinePriority(message);
@@ -338,7 +335,6 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint {
   /**
    * Handle response messages (send back to requesting client)
    */
-  // TODO: PULL EVENT LOGIC OUT TO A SHARED MODULE 
   private async handleResponseMessage(message: JTAGMessage): Promise<EventResult> {
     if (!JTAGMessageTypes.isResponse(message)) {
       throw new Error('Expected response message');
@@ -505,10 +501,12 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint {
   async initializeTransport(config?: TransportConfig): Promise<void> {
     console.log(`🔗 ${this.toString()}: Initializing transport with base64 encoding`);
     
-    // Create cross-context transport
+    // Create cross-context transport using router configuration
     const ctxTransportConfig: TransportConfig = { 
-      preferred: 'websocket', 
-      fallback: true,
+      preferred: this.config.transport.preferred,
+      fallback: this.config.transport.fallback,
+      serverPort: this.config.transport.serverPort,
+      serverUrl: this.config.transport.serverUrl,
       eventSystem: this.eventManager.events,
       sessionId: this.config.sessionId,
       ...config // Allow override from parameter
@@ -517,7 +515,8 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint {
     const crossContextTransport = await TransportFactory.createTransport(this.context.environment, ctxTransportConfig);
     this.transports.set(TRANSPORT_TYPES.CROSS_CONTEXT, crossContextTransport);
 
-    //TODO: p2p Needs some other transport for P2P networking and definitely a different port. WS isnt keeping track of available ports
+    // P2P transport disabled - needs UDP multicast implementation, not WebSocket
+    // See ENHANCEMENT issue above for dedicated P2P transport requirements
     // const p2pTransportConfig: TransportConfig = { 
     //   preferred: 'websocket', 
     //   fallback: true,
@@ -575,9 +574,8 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint {
   }
 
   /**
-   * Legacy method for compatibility
+   * Legacy method for compatibility - transport factory is now in shared module
    */
-  // TODO: PULL TRANSPORT FACTORY OUT TO A SHARED MODULE
   async setupCrossContextTransport(config?: TransportConfig): Promise<void> {
     if (!this.isInitialized) {
       await this.initialize();

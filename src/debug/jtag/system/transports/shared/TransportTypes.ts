@@ -53,3 +53,11 @@ export interface JTAGTransport {
   reconnect?(): Promise<void>;
   setMessageHandler?(handler: (message: JTAGMessage) => void): void;
 }
+
+/**
+ * Standard transport type categories for router management
+ */
+export enum TRANSPORT_TYPES {
+  CROSS_CONTEXT = 'cross-context',
+  P2P = 'p2p',  
+}

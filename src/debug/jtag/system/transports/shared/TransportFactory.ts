@@ -1,8 +1,19 @@
+// ISSUES: 1 open, last updated 2025-07-30 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+
 /**
  * Transport Factory - Modular transport creation system
  * 
  * Refactored from megafile into proper modular structure.
  * Delegates transport creation to specialized factory modules.
+ * 
+ * ISSUES: (look for TODOs)
+ * - ENHANCEMENT: Implement shared configuration-based port management system
+ *   - Create @shared/TransportConfig.ts with port ranges and defaults per transport type
+ *   - Transport layer manages port availability scanning within configured ranges  
+ *   - JTAGClient uses same config for service discovery and connection
+ *   - Each transport type owns its port range (WebSocket: 9001-9010, HTTP: 9002-9012)
+ *   - Transport instances track their own port usage and can self-cleanup
+ *   - Eliminates need for code generation while maintaining client-server coordination
  */
 
 import type { JTAGContext } from '@shared/JTAGTypes';
