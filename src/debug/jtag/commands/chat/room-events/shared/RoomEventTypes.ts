@@ -20,7 +20,7 @@
  */
 
 import { CommandParams, CommandResult, type JTAGContext, createPayload } from '@shared/JTAGTypes';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 // ========================
 // Room Event Subscription

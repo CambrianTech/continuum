@@ -8,7 +8,7 @@
 import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 import { type FileAppendParams, createFileAppendParams } from '@fileAppend/shared/FileAppendTypes';
 import type { FileAppendResult } from '@fileAppend/shared/FileAppendTypes';
 

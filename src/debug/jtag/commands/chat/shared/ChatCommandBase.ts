@@ -19,7 +19,7 @@ import type { JTAGContext } from '@shared/JTAGTypes';
 import type{ ChatParams, ChatResult } from '@commandsChat/shared/ChatTypes';
 import { createChatResult } from '@commandsChat/shared/ChatTypes';
 import { ValidationError } from '@shared/ErrorTypes';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 /**
  * Base class for all chat commands

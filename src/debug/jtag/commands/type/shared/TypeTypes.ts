@@ -1,7 +1,7 @@
 import { CommandParams, CommandResult, createPayload } from '@shared/JTAGTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGError } from '@shared/ErrorTypes';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 export interface TypeParams extends CommandParams {
   readonly selector: string;
