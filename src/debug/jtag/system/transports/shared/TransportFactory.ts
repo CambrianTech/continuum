@@ -19,8 +19,8 @@
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGTransport, TransportConfig } from './TransportTypes';
 import { TransportConfigHelper } from './TransportConfig';
-import { WebSocketTransportFactory } from '../websocket/server/WebSocketTransportFactory';
-import { HTTPTransport } from '../http/shared/HTTPTransport';
+import { WebSocketTransportFactory } from '../websocket-transport/server/WebSocketTransportFactory';
+import { HTTPTransport } from '../http-transport/shared/HTTPTransport';
 
 export class TransportFactory {
   

@@ -262,29 +262,23 @@
       "@systemTransports/*": [
         "system/transports/*"
       ],
-      "@transportsHttp": [
-        "system/transports/http"
+      "@transportsHttpTransport": [
+        "system/transports/http-transport"
       ],
-      "@transportsHttp/*": [
-        "system/transports/http/*"
+      "@transportsHttpTransport/*": [
+        "system/transports/http-transport/*"
       ],
-      "@httpClient": [
-        "system/transports/http/client"
+      "@transportsWebsocketTransport": [
+        "system/transports/websocket-transport"
       ],
-      "@httpClient/*": [
-        "system/transports/http/client/*"
+      "@transportsWebsocketTransport/*": [
+        "system/transports/websocket-transport/*"
       ],
-      "@transportsWebsocket": [
-        "system/transports/websocket"
+      "@websocket-transportClient": [
+        "system/transports/websocket-transport/client"
       ],
-      "@transportsWebsocket/*": [
-        "system/transports/websocket/*"
-      ],
-      "@websocketClient": [
-        "system/transports/websocket/client"
-      ],
-      "@websocketClient/*": [
-        "system/transports/websocket/client/*"
+      "@websocket-transportClient/*": [
+        "system/transports/websocket-transport/client/*"
       ],
       "@templates": [
         "templates"
@@ -403,8 +397,8 @@
     "**/*.bak/**/*"
   ],
   "_generated": {
-    "timestamp": "2025-07-30T04:11:26.981Z",
+    "timestamp": "2025-07-30T17:25:27.556Z",
     "source": "unified-config.json",
-    "pathCount": 120
+    "pathCount": 118
   }
 }

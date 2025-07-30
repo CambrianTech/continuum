@@ -14,7 +14,7 @@ export { TransportEndpointBase } from './shared/TransportEndpoint';
 export type { TransportEndpoint, TransportEndpointStatus, TransportEndpointConfig } from './shared/TransportEndpoint';
 
 // WebSocket transport module
-export * from './websocket';
+export * from './websocket-transport';
 
 // HTTP transport module  
-export * from './http';
+export * from './http-transport';
