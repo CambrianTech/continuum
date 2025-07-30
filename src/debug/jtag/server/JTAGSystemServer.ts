@@ -91,7 +91,7 @@ export class JTAGSystemServer extends JTAGSystem {
 
     // 2. Create universal router with config and session
     const routerConfig = {
-      sessionId: sessionId as string,
+      sessionId: sessionId,
       ...config?.router
     };
     const router = new JTAGRouter(context, routerConfig);

@@ -7,6 +7,7 @@
 
 import type { JTAGMessage } from '@shared/JTAGTypes';
 import type { EventsInterface } from '@systemEvents';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 /**
  * Transport roles - defines the connection behavior and capabilities
@@ -51,17 +52,19 @@ export const TRANSPORT_ROLES = {
 
 export type TransportRole = typeof TRANSPORT_ROLES[keyof typeof TRANSPORT_ROLES];
 
+export type TransportProtocol = 'websocket' | 'http' | 'udp-multicast';
+
 /**
  * Transport configuration interface
  */
 export interface TransportConfig {
-  preferred?: 'websocket' | 'http' | 'udp-multicast';
-  fallback?: boolean;
-  role?: TransportRole; // Explicitly specify client (connector) vs server (listener)
-  serverPort?: number;
-  serverUrl?: string;
-  eventSystem?: EventsInterface;
-  sessionId?: string; // Session ID for client handshake
+  protocol: TransportProtocol;                         // REQUIRED - which transport to use
+  role: TransportRole;                                 // REQUIRED - client or server behavior
+  eventSystem: EventsInterface;                        // REQUIRED - event handling
+  sessionId: UUID;                                     // REQUIRED - session identification
+  serverPort?: number;                                 // OPTIONAL - required for server role
+  serverUrl?: string;                                  // OPTIONAL - required for client role  
+  fallback?: boolean;                                  // OPTIONAL - enable fallback transport
   // UDP multicast specific options
   p2p?: {
     nodeId?: string;

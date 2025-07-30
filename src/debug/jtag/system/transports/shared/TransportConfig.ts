@@ -12,11 +12,12 @@ export class TransportConfigHelper {
   /**
    * Auto-detect optimal transport configuration for environment
    */
-  static detectOptimalConfig(environment: JTAGContext['environment']): TransportConfig {
+  static detectOptimalConfig(environment: JTAGContext['environment']): Partial<TransportConfig> {
     // In browser, prefer WebSocket client
     if (environment === JTAG_ENVIRONMENTS.BROWSER) {
       return {
-        preferred: 'websocket',
+        protocol: 'websocket',
+        role: 'client',
         fallback: true,
         serverUrl: 'ws://localhost:9001'
       };
@@ -25,7 +26,8 @@ export class TransportConfigHelper {
     // On server, prefer WebSocket server
     if (environment === JTAG_ENVIRONMENTS.SERVER) {
       return {
-        preferred: 'websocket',
+        protocol: 'websocket',
+        role: 'server',
         fallback: true,
         serverPort: 9001
       };
@@ -33,7 +35,8 @@ export class TransportConfigHelper {
     
     // Remote contexts use HTTP by default
     return {
-      preferred: 'http',
+      protocol: 'http',
+      role: 'client',
       fallback: false
     };
   }
@@ -44,7 +47,7 @@ export class TransportConfigHelper {
   static mergeWithDefaults(
     environment: JTAGContext['environment'], 
     userConfig: Partial<TransportConfig> = {}
-  ): TransportConfig {
+  ): Partial<TransportConfig> {
     const defaults = this.detectOptimalConfig(environment);
     return { ...defaults, ...userConfig };
   }
@@ -53,9 +56,9 @@ export class TransportConfigHelper {
    * Validate transport configuration
    */
   static validateConfig(config: TransportConfig): void {
-    const { preferred, serverPort, serverUrl } = config;
+    const { protocol, serverPort, serverUrl } = config;
 
-    if (preferred === 'websocket') {
+    if (protocol === 'websocket') {
       if (!serverPort && !serverUrl) {
         throw new Error('WebSocket transport requires either serverPort or serverUrl');
       }

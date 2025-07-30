@@ -26,7 +26,7 @@ import { generateUUID, type UUID} from './CrossPlatformUUID';
 import { JTAGBase, type CommandsInterface } from './JTAGBase';
 import type { JTAGContext } from './JTAGTypes';
 import { TransportFactory } from '@systemTransports';
-import type { TransportConfig, JTAGTransport } from '@systemTransports';
+import type { TransportConfig, JTAGTransport, TransportProtocol, TransportRole } from '@systemTransports';
 
 /**
  * JTAGClient connection options
@@ -57,13 +57,13 @@ export class JTAGClient extends JTAGBase {
 
   protected override async initialize(options?: JTAGClientConnectOptions): Promise<void> {
     const transportConfig: TransportConfig = { 
-      preferred: options?.transportType ?? 'websocket',
-      role: 'client', // JTAGClient always creates client transports (connectors)
-      fallback: options?.enableFallback ?? true,
+      protocol: (options?.transportType ?? 'websocket') as TransportProtocol,
+      role: 'client' as TransportRole, // JTAGClient always creates client transports (connectors)
+      eventSystem: this.eventManager.events,
+      sessionId: this.sessionId, // Pass sessionId for client handshake
       serverPort: options?.serverPort ?? 9001, // Default WebSocket port
       serverUrl: options?.serverUrl ?? `ws://localhost:${options?.serverPort ?? 9001}`,
-      eventSystem: this.eventManager.events,
-      sessionId: this.sessionId // Pass sessionId for client handshake
+      fallback: options?.enableFallback ?? true
     };
 
     this.systemTransport = await TransportFactory.createTransport(this.context.environment, transportConfig);

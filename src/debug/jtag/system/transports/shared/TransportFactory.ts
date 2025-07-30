@@ -29,36 +29,31 @@ export class TransportFactory {
    */
   static async createTransport(
     environment: JTAGContext['environment'], 
-    config: Partial<TransportConfig> = {}
+    config: TransportConfig
   ): Promise<JTAGTransport> {
     
-    // Merge with defaults and validate
-    const fullConfig = TransportConfigHelper.mergeWithDefaults(environment, config);
-    TransportConfigHelper.validateConfig(fullConfig);
+    // Validate required fields are present
+    TransportConfigHelper.validateConfig(config);
     
-    console.log(`🏭 Transport Factory: Creating ${fullConfig.preferred} transport for ${environment} environment`);
+    console.log(`🏭 Transport Factory: Creating ${config.protocol} transport for ${environment} environment`);
     
     // UDP multicast transport for P2P networking
-    if (fullConfig.preferred === 'udp-multicast') {
-      // return await this.createUDPMulticastTransport(environment, fullConfig); // Future module
+    if (config.protocol === 'udp-multicast') {
+      // return await this.createUDPMulticastTransport(environment, config); // Future module
       throw new Error('UDP Multicast transport not yet modularized');
     }
     
     // WebSocket transport
-    if (fullConfig.preferred === 'websocket') {
-      try {
-        return await WebSocketTransportFactory.createTransport(environment, fullConfig);
-      } catch (error) {
-        console.warn(`⚠️ Transport Factory: WebSocket failed, trying fallback:`, error);
-        if (fullConfig.fallback) {
-          return await this.createHTTPTransport(fullConfig);
-        }
-        throw error;
-      }
+    if (config.protocol === 'websocket') {
+      return await WebSocketTransportFactory.createTransport(environment, config);
     }
     
-    // HTTP transport (also used as fallback)
-    return await this.createHTTPTransport(fullConfig);
+    // HTTP transport
+    if (config.protocol === 'http') {
+      return await this.createHTTPTransport(config);
+    }
+    
+    throw new Error(`Unsupported transport protocol: ${config.protocol}`);
   }
   
   /**
@@ -71,12 +66,6 @@ export class TransportFactory {
     return transport;
   }
   
-  /**
-   * Auto-detect optimal transport configuration (delegated to helper)
-   */
-  static detectOptimalConfig(environment: JTAGContext['environment']): TransportConfig {
-    return TransportConfigHelper.detectOptimalConfig(environment);
-  }
 }
 
 // Re-export types and interfaces for backwards compatibility

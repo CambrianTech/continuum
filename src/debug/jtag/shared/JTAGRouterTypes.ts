@@ -7,6 +7,7 @@
 
 import type { TransportRole } from '@systemTransports';
 import { TRANSPORT_ROLES } from '@systemTransports';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 /**
  * Queue configuration for JTAGRouter
@@ -56,7 +57,7 @@ export interface JTAGRouterConfig {
   readonly response?: Partial<JTAGRouterResponseConfig>;
   readonly transport?: Partial<JTAGRouterTransportConfig>;
   readonly enableLogging?: boolean;
-  readonly sessionId?: string; // Session ID for transport handshake
+  readonly sessionId?: UUID; // Session ID for transport handshake
 }
 
 /**
@@ -68,7 +69,7 @@ export interface ResolvedJTAGRouterConfig {
   readonly response: JTAGRouterResponseConfig;
   readonly transport: JTAGRouterTransportConfig;
   readonly enableLogging: boolean;
-  readonly sessionId?: string; // Session ID for transport handshake
+  readonly sessionId?: UUID; // Session ID for transport handshake
 }
 
 /**
