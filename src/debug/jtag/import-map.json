@@ -42,10 +42,9 @@
     "@systemEvents": "./system/events",
     "@eventsRouter": "./system/events/router",
     "@systemTransports": "./system/transports",
-    "@transportsHttp": "./system/transports/http",
-    "@httpClient": "./system/transports/http/client",
-    "@transportsWebsocket": "./system/transports/websocket",
-    "@websocketClient": "./system/transports/websocket/client",
+    "@transportsHttpTransport": "./system/transports/http-transport",
+    "@transportsWebsocketTransport": "./system/transports/websocket-transport",
+    "@websocket-transportClient": "./system/transports/websocket-transport/client",
     "@templates": "./templates",
     "@tests": "./tests",
     "@testsIntegration": "./tests/integration",
@@ -63,8 +62,8 @@
   },
   "description": "Auto-generated import map for browser builds from unified-config.json",
   "_generated": {
-    "timestamp": "2025-07-30T04:11:26.985Z",
+    "timestamp": "2025-07-30T17:25:27.560Z",
     "source": "unified-config.json",
-    "importCount": 60
+    "importCount": 59
   }
 }
