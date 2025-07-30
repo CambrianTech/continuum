@@ -20,6 +20,7 @@
     "@fileLoad": "./commands/file/load",
     "@fileSave": "./commands/file/save",
     "@commandsGetText": "./commands/get-text",
+    "@commandsList": "./commands/list",
     "@commandsNavigate": "./commands/navigate",
     "@commandsProxyNavigate": "./commands/proxy-navigate",
     "@commandsScreenshot": "./commands/screenshot",
@@ -62,8 +63,8 @@
   },
   "description": "Auto-generated import map for browser builds from unified-config.json",
   "_generated": {
-    "timestamp": "2025-07-30T19:19:12.692Z",
+    "timestamp": "2025-07-30T19:35:27.742Z",
     "source": "unified-config.json",
-    "importCount": 59
+    "importCount": 60
   }
 }

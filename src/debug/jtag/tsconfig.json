@@ -130,6 +130,12 @@
       "@commandsGetText/*": [
         "commands/get-text/*"
       ],
+      "@commandsList": [
+        "commands/list"
+      ],
+      "@commandsList/*": [
+        "commands/list/*"
+      ],
       "@commandsNavigate": [
         "commands/navigate"
       ],
@@ -397,8 +403,8 @@
     "**/*.bak/**/*"
   ],
   "_generated": {
-    "timestamp": "2025-07-30T19:19:12.688Z",
+    "timestamp": "2025-07-30T19:35:27.737Z",
     "source": "unified-config.json",
-    "pathCount": 118
+    "pathCount": 120
   }
 }
