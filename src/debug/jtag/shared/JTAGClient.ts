@@ -24,7 +24,8 @@
 
 import { generateUUID, type UUID} from './CrossPlatformUUID';
 import { JTAGBase, type CommandsInterface } from './JTAGBase';
-import type { JTAGContext } from './JTAGTypes';
+import type { JTAGContext, JTAGMessage, JTAGPayload } from './JTAGTypes';
+import { JTAGMessageFactory, JTAGMessageTypes } from './JTAGTypes';
 import { TransportFactory } from '@systemTransports';
 import type { TransportConfig, JTAGTransport, TransportProtocol, TransportRole } from '@systemTransports';
 
@@ -40,6 +41,7 @@ export interface JTAGClientConnectOptions {
   readonly enableFallback?: boolean;
   readonly maxRetries?: number;
   readonly retryDelay?: number;
+  readonly sessionId?: UUID; // Allow sharing sessionId across clients
 }
 
 export class JTAGClient extends JTAGBase {
@@ -94,6 +96,18 @@ export class JTAGClient extends JTAGBase {
   }
 
   /**
+   * Send message through transport - let router handle correlation
+   */
+  public async sendMessage(message: JTAGMessage): Promise<void> {
+    if (!this.systemTransport) {
+      throw new Error('Transport not connected');
+    }
+
+    console.log(`📤 JTAGClient: Sending message to ${message.endpoint}`);
+    await this.systemTransport.send(message);
+  }
+
+  /**
    * Static factory method for easy client creation with robust retry logic for slow server startup
    */
   static async connect(options?: JTAGClientConnectOptions): Promise<JTAGClient> {
@@ -101,7 +115,7 @@ export class JTAGClient extends JTAGBase {
     const retryDelay = options?.retryDelay ?? 500; // 500ms between retries
     
     const context: JTAGContext = {
-      uuid: generateUUID(),
+      uuid: options?.sessionId ?? generateUUID(), // Join existing session or create new one
       environment: options?.targetEnvironment ?? 'server' // CLI runs in server environment by default
     };
     
