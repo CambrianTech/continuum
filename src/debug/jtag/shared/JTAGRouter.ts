@@ -505,6 +505,7 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint {
     const ctxTransportConfig: TransportConfig = { 
       preferred: this.config.transport.preferred,
       fallback: this.config.transport.fallback,
+      role: this.config.transport.role,
       serverPort: this.config.transport.serverPort,
       serverUrl: this.config.transport.serverUrl,
       eventSystem: this.eventManager.events,

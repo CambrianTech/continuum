@@ -28,6 +28,20 @@ import type { JTAGContext } from './JTAGTypes';
 import { TransportFactory } from '@systemTransports';
 import type { TransportConfig, JTAGTransport } from '@systemTransports';
 
+/**
+ * JTAGClient connection options
+ */
+export interface JTAGClientConnectOptions {
+  readonly targetEnvironment?: 'server' | 'browser';
+  readonly transportType?: 'websocket' | 'http';
+  readonly serverPort?: number;
+  readonly serverUrl?: string;
+  readonly timeout?: number;
+  readonly enableFallback?: boolean;
+  readonly maxRetries?: number;
+  readonly retryDelay?: number;
+}
+
 export class JTAGClient extends JTAGBase {
   protected systemTransport?: JTAGTransport;
   protected commandsInterface?: CommandsInterface;
@@ -41,10 +55,13 @@ export class JTAGClient extends JTAGBase {
   }
 
 
-  protected override async initialize(): Promise<void> {
+  protected override async initialize(options?: JTAGClientConnectOptions): Promise<void> {
     const transportConfig: TransportConfig = { 
-      preferred: 'websocket', 
-      fallback: true,
+      preferred: options?.transportType ?? 'websocket',
+      role: 'client', // JTAGClient always creates client transports (connectors)
+      fallback: options?.enableFallback ?? true,
+      serverPort: options?.serverPort ?? 9001, // Default WebSocket port
+      serverUrl: options?.serverUrl ?? `ws://localhost:${options?.serverPort ?? 9001}`,
       eventSystem: this.eventManager.events,
       sessionId: this.sessionId // Pass sessionId for client handshake
     };
@@ -77,17 +94,39 @@ export class JTAGClient extends JTAGBase {
   }
 
   /**
-   * Static factory method for easy client creation
+   * Static factory method for easy client creation with robust retry logic for slow server startup
    */
-  static async connect(): Promise<JTAGClient> {
+  static async connect(options?: JTAGClientConnectOptions): Promise<JTAGClient> {
+    const maxRetries = options?.maxRetries ?? 120; // 120 retries = ~60 seconds with 500ms delay
+    const retryDelay = options?.retryDelay ?? 500; // 500ms between retries
+    
     const context: JTAGContext = {
       uuid: generateUUID(),
-      environment: 'server' // CLI runs in server environment but acts as client
+      environment: options?.targetEnvironment ?? 'server' // CLI runs in server environment by default
     };
     
-    const client = new JTAGClient(context);
-    await client.initialize(); // Actually initialize the client
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const client = new JTAGClient(context);
+        await client.initialize(options);
+        
+        console.log(`✅ JTAGClient: Connected using ${options?.transportType ?? 'websocket'} transport on port ${options?.serverPort ?? 9001}`);
+        return client;
+        
+      } catch (error) {
+        if (attempt === maxRetries) {
+          console.error(`❌ JTAGClient: Failed to connect after ${maxRetries} attempts (${maxRetries * retryDelay / 1000}s)`);
+          throw error;
+        }
+        
+        if (attempt === 1 || attempt % 10 === 0) { // Show progress every 10th attempt
+          console.log(`⏳ JTAGClient: Connection attempt ${attempt}/${maxRetries}, server may still be starting...`);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+      }
+    }
     
-    return client;
+    throw new Error('Connection failed after all retry attempts');
   }
 }

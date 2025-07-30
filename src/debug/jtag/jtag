@@ -1,29 +1,24 @@
 #!/bin/bash
 # JTAG Terminal Portal - Ensures system is running and connects CLI
 
-JTAG_SESSION="jtag-system"
-LOG_DIR="examples/test-bench/.continuum/jtag/logs"
-
-# Ensure log directory exists
-mkdir -p "$LOG_DIR"
-
-# Check if tmux session is running
-if ! tmux has-session -t "$JTAG_SESSION" 2>/dev/null; then
-    echo "🚀 Starting JTAG system in background..."
-    
-    # Start tmux session with npm start, logging to system logs
-    tmux new-session -d -s "$JTAG_SESSION" \
-        "npm start 2>&1 | tee $LOG_DIR/system.log"
-    
-    echo "✅ JTAG system started in tmux session '$JTAG_SESSION'"
-    echo "📋 Logs: $LOG_DIR/system.log"
-    
-    # Give system time to start up
-    echo "⏳ Waiting for system to initialize..."
-    sleep 5
+# Check for --restart flag
+RESTART_FLAG=""
+if [[ "$*" == *"--restart"* ]]; then
+  echo "🔄 Restart requested, launching npm start..."
+  npm start &
+  RESTART_FLAG="--restart"
 else
-    echo "✅ JTAG system already running in tmux session '$JTAG_SESSION'"
+  # Check if ports 9001 and 9002 are in use
+  PORT_9001=$(lsof -ti:9001 2>/dev/null)
+  PORT_9002=$(lsof -ti:9002 2>/dev/null)
+  
+  if [[ -z "$PORT_9001" || -z "$PORT_9002" ]]; then
+    echo "🚀 JTAG system not running, starting with npm start..."
+    npm start &
+  else
+    echo "✅ JTAG system detected running (ports 9001: $PORT_9001, 9002: $PORT_9002)"
+  fi
 fi
 
-# Now run the CLI command
-exec node src/debug/cli/index.js "$@"
+# Forward all args to CLI (we need to create this file)
+npx tsx cli.ts "$@"

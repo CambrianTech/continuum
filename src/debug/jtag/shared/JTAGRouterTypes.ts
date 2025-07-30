@@ -5,6 +5,9 @@
  * Allows configuration to be passed down from system level.
  */
 
+import type { TransportRole } from '@systemTransports';
+import { TRANSPORT_ROLES } from '@systemTransports';
+
 /**
  * Queue configuration for JTAGRouter
  */
@@ -39,6 +42,7 @@ export interface JTAGRouterResponseConfig {
 export interface JTAGRouterTransportConfig {
   readonly preferred: 'websocket' | 'http' | 'udp-multicast';
   readonly fallback: boolean;
+  readonly role: TransportRole;
   readonly serverPort?: number;
   readonly serverUrl?: string;
 }
@@ -91,6 +95,7 @@ export const DEFAULT_JTAG_ROUTER_CONFIG: ResolvedJTAGRouterConfig = {
   transport: {
     preferred: 'websocket',
     fallback: true,
+    role: TRANSPORT_ROLES.SERVER, // Default to server role (browsers will override to 'client')
     serverPort: 9001, // WebSocket default port
     serverUrl: undefined // Will be auto-derived from port
   },
