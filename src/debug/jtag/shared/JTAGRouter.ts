@@ -1,4 +1,4 @@
-// ISSUES: 4 open, last updated 2025-07-29 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// ISSUES: 1 open, last updated 2025-07-30 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 
 /**
  * JTAG Universal Router - Context-Aware Message Routing with Bus-Level Queuing
@@ -8,10 +8,10 @@
  * message delivery with automatic fallback and retry mechanisms.
  * 
  * ISSUES: (look for TODOs)
- * - Move the event system out to a shared module to avoid circular dependencies and improve maintainability
+ * - ✅ RESOLVED: Move the event system out to a shared module to avoid circular dependencies and improve maintainability
+ * - ✅ RESOLVED: Implement a TransportEndpoint interface in the transports module to standardize transport initialization and management
+ * - ✅ RESOLVED: Eliminate non typed things like `any` and `unknown` in this file. Think of promise return types and eliminate void where possible. Think of how this routes these payloads as commands and events
  * - Move the transport factory to a shared module for better abstraction and reusability. We will use this in the JTAGClient to connect to this very router.
- * - Implement a TransportEndpoint interface in the transports module to standardize transport initialization and management
- * - Eliminate non typed things like `any` and `unknown` in this file. Think of promise return types and eliminate void where possible. Think of how this routes these payloads as commands and events
  * 
  * CORE ARCHITECTURE:
  * - MessageSubscriber pattern for daemon registration
@@ -38,7 +38,7 @@ import { JTAGModule } from '@shared/JTAGModule';
 import type { JTAGContext, JTAGEnvironment, JTAGMessage } from '@shared/JTAGTypes';
 import { JTAGMessageTypes, JTAGMessageFactory } from '@shared/JTAGTypes';
 import { TransportFactory } from '@systemTransports';
-import type { TransportConfig, JTAGTransport } from '@systemTransports';
+import type { TransportConfig, JTAGTransport, TransportEndpoint } from '@systemTransports';
 import { JTAGMessageQueue, MessagePriority } from '@sharedQueuing/JTAGMessageQueue';
 import type { QueuedItem } from '@sharedQueuing/PriorityQueue';
 import { ConnectionHealthManager } from '@shared/ConnectionHealthManager';
@@ -83,6 +83,15 @@ export interface RouterStatus {
   } | null;
   queue: ReturnType<JTAGMessageQueue['getStatus']>;
   health: ReturnType<ConnectionHealthManager['getHealth']>;
+  transportStatus: {
+    initialized: boolean;
+    transportCount: number;
+    transports: Array<{
+      name: string;
+      connected: boolean;
+      type: string;
+    }>;
+  };
 }
 
 enum TRANSPORT_TYPES {
@@ -90,7 +99,7 @@ enum TRANSPORT_TYPES {
   P2P = 'p2p',  
 }
 
-export class JTAGRouter extends JTAGModule {
+export class JTAGRouter extends JTAGModule implements TransportEndpoint {
   private readonly endpointMatcher = new EndpointMatcher<MessageSubscriber>();
 
   //Use a map, strongly typed keys, for our transports
@@ -200,7 +209,10 @@ export class JTAGRouter extends JTAGModule {
       // RESPONSE PATTERN: Send response back to requesting client
       return await this.handleResponseMessage(message);
     } else {
-      throw new Error(`Unknown message type: ${(message as any).messageType ?? 'undefined'}`);
+      // This should never happen as all valid JTAGMessage types are handled above
+      // Type assertion is safe here since we know message is a JTAGMessage
+      const unknownMessage = message as JTAGMessage;
+      throw new Error(`Unknown message type: ${unknownMessage.messageType ?? 'undefined'}`);
     }
   }
 
@@ -269,8 +281,11 @@ export class JTAGRouter extends JTAGModule {
 
     try {
       const crossContextTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
+      if (!crossContextTransport) {
+        throw new Error('No cross-context transport available for request');
+      }
       // Send message immediately (requests need immediate delivery)
-      await crossContextTransport!.send(message);
+      await crossContextTransport.send(message);
       console.log(`📤 ${this.toString()}: Request sent, awaiting response...`);
       
       // Await the correlated response
@@ -305,7 +320,11 @@ export class JTAGRouter extends JTAGModule {
     if (priority <= MessagePriority.HIGH && health.isHealthy) {
       try {
         const crossContextTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
-        await crossContextTransport!.send(message);
+        if (!crossContextTransport) {
+          console.warn(`⚠️ ${this.toString()}: No transport available for immediate delivery, queued for retry`);
+          return { success: false, queued: true, willRetry: true };
+        }
+        await crossContextTransport.send(message);
         return { success: true, delivered: true };
       } catch (error) {
         console.warn(`⚠️ ${this.toString()}: Immediate delivery failed, queued for retry`, error);
@@ -330,7 +349,10 @@ export class JTAGRouter extends JTAGModule {
     try {
       // Send response immediately (responses are critical)
       const crossContextTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
-      await crossContextTransport!.send(message);
+      if (!crossContextTransport) {
+        throw new Error('No cross-context transport available for response');
+      }
+      await crossContextTransport.send(message);
       console.log(`✅ ${this.toString()}: Response sent for ${message.correlationId}`);
       return { success: true, delivered: true };
     } catch (error) {
@@ -354,11 +376,18 @@ export class JTAGRouter extends JTAGModule {
     }
 
     // Console errors get high priority (but will be deduplicated)
-    if (message.origin.includes('console') && (message.payload as ConsolePayload)?.level === 'error') {
+    if (message.origin.includes('console') && this.isConsolePayload(message.payload) && message.payload.level === 'error') {
       return MessagePriority.HIGH;
     }
 
     return MessagePriority.NORMAL;
+  }
+
+  /**
+   * Type guard for ConsolePayload
+   */
+  private isConsolePayload(payload: any): payload is ConsolePayload {
+    return payload && typeof payload === 'object' && 'level' in payload;
   }
 
   /**
@@ -471,17 +500,18 @@ export class JTAGRouter extends JTAGModule {
   }
 
   /**
-   * Initialize transport (called by initialize())
+   * Initialize transport (TransportEndpoint interface implementation)
    */
-  // TODO: add this method to a TransportEndpoint interface in tranports module. Our Router should implement this interface and this is one of the methods
-  private async initializeTransport(): Promise<void> {
+  async initializeTransport(config?: TransportConfig): Promise<void> {
     console.log(`🔗 ${this.toString()}: Initializing transport with base64 encoding`);
     
+    // Create cross-context transport
     const ctxTransportConfig: TransportConfig = { 
       preferred: 'websocket', 
       fallback: true,
       eventSystem: this.eventManager.events,
-      sessionId: this.config.sessionId // Pass sessionId for client handshake
+      sessionId: this.config.sessionId,
+      ...config // Allow override from parameter
     };
     
     const crossContextTransport = await TransportFactory.createTransport(this.context.environment, ctxTransportConfig);
@@ -497,7 +527,14 @@ export class JTAGRouter extends JTAGModule {
     // const p2pTransport = await TransportFactory.createTransport(this.context.environment, p2pTransportConfig);
     // this.transports.set(TRANSPORT_TYPES.P2P, p2pTransport);
 
-    //iterate over all transports and postMessage to each one
+    // Set up message handlers
+    await this.setupMessageHandlers();
+  }
+
+  /**
+   * Set up message handlers for all transports (TransportEndpoint interface implementation)
+   */
+  async setupMessageHandlers(): Promise<void> {
     for (const transport of this.transports.values()) {
       if (transport.setMessageHandler) {
         transport.setMessageHandler((message: JTAGMessage) => {
@@ -506,6 +543,35 @@ export class JTAGRouter extends JTAGModule {
         console.log(`✅ ${this.toString()}: Transport ready: ${transport.name}`);
       }
     }
+  }
+
+  /**
+   * Shutdown all transports (TransportEndpoint interface implementation)
+   */
+  async shutdownTransports(): Promise<void> {
+    console.log(`🔄 ${this.toString()}: Shutting down transports...`);
+    
+    for (const transport of this.transports.values()) {
+      await transport.disconnect();
+    }
+    this.transports.clear();
+    
+    console.log(`✅ ${this.toString()}: Transport shutdown complete`);
+  }
+
+  /**
+   * Get transport status (TransportEndpoint interface implementation)
+   */
+  getTransportStatus(): { initialized: boolean; transportCount: number; transports: Array<{ name: string; connected: boolean; type: string; }> } {
+    return {
+      initialized: this.isInitialized,
+      transportCount: this.transports.size,
+      transports: Array.from(this.transports.entries()).map(([type, transport]) => ({
+        name: transport.name,
+        connected: transport.isConnected(),
+        type: type.toString()
+      }))
+    };
   }
 
   /**
@@ -525,11 +591,8 @@ export class JTAGRouter extends JTAGModule {
     this.healthManager.stopMonitoring();
     this.messageQueue.stopProcessing();
     
-    // Disconnect transport
-    for (const transport of this.transports.values()) {
-      await transport.disconnect();
-    }
-    this.transports.clear();
+    // Shutdown transports using interface method
+    await this.shutdownTransports();
     
     this.endpointMatcher.clear();
     
@@ -541,6 +604,8 @@ export class JTAGRouter extends JTAGModule {
    */
   get status(): RouterStatus {
     const crossContextTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
+    const transportStatus = this.getTransportStatus();
+    
     return {
       environment: this.context.environment,
       initialized: this.isInitialized,
@@ -550,7 +615,9 @@ export class JTAGRouter extends JTAGModule {
         connected: crossContextTransport.isConnected()
       } : null,
       queue: this.messageQueue.getStatus(),
-      health: this.healthManager.getHealth()
+      health: this.healthManager.getHealth(),
+      // Enhanced transport status from interface
+      transportStatus
     };
   }
 }
