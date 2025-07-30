@@ -16,7 +16,7 @@
 
 import { CommandBase, type ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { UUID } from 'crypto';
+import { UUID } from '@shared/CrossPlatformUUID';
 import { type CompileTypescriptParams, createCompileTypescriptParams } from '@commandsCompileTypescript/shared/CompileTypescriptTypes';
 import type { CompileTypescriptResult } from '@commandsCompileTypescript/shared/CompileTypescriptTypes';
 

@@ -7,7 +7,7 @@
 
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { UUID } from 'crypto';
+import { UUID } from '@shared/CrossPlatformUUID';
 import { FileCommand } from '@commandsFile/shared/FileTypes';
 import { type FileSaveParams, type FileSaveResult, createFileSaveParams } from '@fileSave/shared/FileSaveTypes';
 

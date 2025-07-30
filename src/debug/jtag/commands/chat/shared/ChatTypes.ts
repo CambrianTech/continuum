@@ -20,7 +20,7 @@
 
 import { CommandParams, CommandResult, type JTAGContext, createPayload } from '@shared/JTAGTypes';
 import type { JTAGError } from '@shared/ErrorTypes';
-import { UUID } from 'crypto';
+import { UUID } from '@shared/CrossPlatformUUID';
 
 /**
  * Generic base parameters for distributed chat operations

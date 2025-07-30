@@ -18,7 +18,7 @@
 import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { UUID } from 'crypto';
+import { UUID } from '@shared/CrossPlatformUUID';
 import { type NavigateParams, type NavigateResult, createNavigateParams } from '@commandsNavigate/shared/NavigateTypes';
 
 export abstract class NavigateCommand extends CommandBase<NavigateParams, NavigateResult> {
