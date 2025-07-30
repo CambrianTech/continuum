@@ -105,7 +105,7 @@ export abstract class TransportEndpointBase implements TransportEndpoint {
    * Template method for transport initialization
    * Subclasses can override specific steps while reusing common logic
    */
-  async initializeTransport(config: TransportConfig = {}): Promise<void> {
+  async initializeTransport(config: TransportConfig): Promise<void> {
     if (this.initialized) {
       console.log(`🔄 TransportEndpoint[${this.context.environment}]: Already initialized`);
       return;

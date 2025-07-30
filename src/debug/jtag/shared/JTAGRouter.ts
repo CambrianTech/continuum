@@ -503,13 +503,13 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint {
     
     // Create cross-context transport using router configuration
     const ctxTransportConfig: TransportConfig = { 
-      preferred: this.config.transport.preferred,
-      fallback: this.config.transport.fallback,
+      protocol: this.config.transport.preferred,
       role: this.config.transport.role,
+      eventSystem: this.eventManager.events,
+      sessionId: this.config.sessionId!,  // sessionId is required, router must have one
       serverPort: this.config.transport.serverPort,
       serverUrl: this.config.transport.serverUrl,
-      eventSystem: this.eventManager.events,
-      sessionId: this.config.sessionId,
+      fallback: this.config.transport.fallback,
       ...config // Allow override from parameter
     };
     
