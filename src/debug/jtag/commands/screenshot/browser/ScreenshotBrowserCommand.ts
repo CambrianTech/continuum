@@ -4,15 +4,20 @@
  * MINIMAL WORK PER COMMAND: Just implements what browser does
  */
 
+import { CommandBase, type ICommandDaemon } from '@commandBase';
+import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
 import type { ScreenshotParams, Html2CanvasCanvas, Html2CanvasOptions, ScreenshotResult } from '@commandsScreenshot/shared/ScreenshotTypes';
 import { createScreenshotResultFromParams, createScreenshotResult } from '@commandsScreenshot/shared/ScreenshotTypes';
-import { ScreenshotCommand } from '@commandsScreenshot/shared/ScreenshotCommand';
 import { getGlobalAPI, safeQuerySelector, getViewportDimensions } from '@shared/GlobalUtils';
 
 const DEFAULT_FORMAT = 'png';
 const DEFAULT_QUALITY = 0.9;
 
-export class ScreenshotBrowserCommand extends ScreenshotCommand {
+export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
+  
+  constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
+    super('screenshot', context, subpath, commander);
+  }
   
   /**
    * Browser does ONE thing: capture screenshot with html2canvas

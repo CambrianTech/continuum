@@ -47,15 +47,15 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
    * Generate default parameters - override in subclasses for command-specific defaults
    * @param sessionId - Current session ID from the active request
    */
-  public getDefaultParams(sessionId: UUID): TParams {
-    return {} as TParams;
+  public getDefaultParams(sessionId: UUID, context: JTAGContext): TParams {
+    return {sessionId, context} as TParams;
   }
 
   /**
    * Merge user params with defaults - used by proxy interface
    */
-  public withDefaults(params: Partial<TParams>, sessionId: UUID): TParams {
-    return { ...this.getDefaultParams(sessionId), ...params } as TParams;
+  public withDefaults(params: Partial<TParams>, sessionId: UUID, context: JTAGContext): TParams {
+    return { ...this.getDefaultParams(sessionId, context), ...params } as TParams;
   }
 
   /**

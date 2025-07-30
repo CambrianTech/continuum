@@ -52,7 +52,9 @@ export abstract class JTAGBase extends JTAGModule {
         // Wrap command to inject real sessionId and ensure required fields
         return async (params?: CommandParams) => {
 
-          const fullParams = command.withDefaults(params ?? {}, this.sessionId);
+          const fullParams = command.withDefaults(params ?? {}, this.sessionId, this.context);
+
+          console.log(`Executing command '${commandName}' with params:`, fullParams);
           
           // Execute the command directly with proper typing
           return await command.execute(fullParams);

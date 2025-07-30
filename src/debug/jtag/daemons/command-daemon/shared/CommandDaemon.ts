@@ -7,7 +7,6 @@
 
 import { DaemonBase } from '@shared/DaemonBase';
 import type { JTAGContext, JTAGMessage, CommandParams, CommandResult } from '@shared/JTAGTypes';
-import { JTAGMessageFactory } from '@shared/JTAGTypes';
 import type { JTAGRouter } from '@shared/JTAGRouter';
 import type{ CommandBase, CommandEntry } from '@commandBase';
 import type { CommandResponse } from '@daemonsCommandDaemon/shared/CommandResponseTypes';
@@ -77,7 +76,7 @@ export abstract class CommandDaemon extends DaemonBase {
           
           // Only add session context if missing from params
           const sessionId = this.context.uuid as UUID;
-          const fullParams = validCommand.withDefaults(params || {}, sessionId);
+          const fullParams = validCommand.withDefaults(params || {}, sessionId, this.context);
           
           // Execute the command directly - it will handle its own routing if needed
           return await validCommand.execute(fullParams);
@@ -97,8 +96,8 @@ export abstract class CommandDaemon extends DaemonBase {
     const command = this.commands.get(commandName);
     
     // Extract session context from incoming payload for response accountability
-    const requestPayload = message.payload as any; // Payload contains context + sessionId
-    const requestContext = requestPayload.context || this.context;
+    const requestPayload = message.payload; // Payload contains context + sessionId
+    const requestContext = requestPayload.context ?? this.context;
     
     if (!requestPayload.sessionId) {
       throw new Error(`SECURITY: All commands require valid sessionId. Missing sessionId for command: ${commandName}`);
@@ -125,15 +124,17 @@ export abstract class CommandDaemon extends DaemonBase {
   /**
    * Execute command directly (used by JTAGSystem.commands.screenshot())
    */
-  async execute(commandName: string, params?: CommandParams): Promise<CommandResult> {
+  async execute(commandName: string, sessionId: UUID, params?: CommandParams): Promise<CommandResult> {
     const command = this.commands.get(commandName);
     if (!command) {
       throw new Error(`Command '${commandName}' not available in ${this.context.environment} context`);
     }
 
-    console.log(`⚡ ${this.toString()}: Executing ${commandName} directly`);
-    // SECURITY: Direct command execution requires explicit session context
-    throw new Error(`SECURITY: Direct command execution requires session context. Use message-based routing instead for command: ${commandName}`);
+    const fullParams = command.withDefaults(params ?? {}, sessionId, this.context);
+
+    console.log(`⚡ ${this.toString()}: Executing ${commandName} directly`, fullParams);
+
+    return await command.execute(fullParams);
   }
 
   /**
