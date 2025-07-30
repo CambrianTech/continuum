@@ -34,8 +34,8 @@ import { type UUID } from '@shared/CrossPlatformUUID';
 import { SYSTEM_SCOPES } from '@shared/SystemScopes';
 
 // Import modular event categories - co-located with their modules
-import type { SystemEventData, SystemEventName } from '@sharedEvents/SystemEvents';
-import type { RouterEventData, RouterEventName } from '@shared/RouterEvents';
+import type { SystemEventData, SystemEventName } from './SystemEvents';
+import type { RouterEventData, RouterEventName } from '../router/RouterEvents';
 import type { TransportEventData, TransportEventName } from '@system/transports/shared/TransportEvents';
 import type { ConsoleEventData, ConsoleEventName } from '@daemonsConsoleDaemon/ConsoleEvents';
 import type { CommandEventData, CommandEventName } from '@daemonsCommandDaemon/CommandEvents';

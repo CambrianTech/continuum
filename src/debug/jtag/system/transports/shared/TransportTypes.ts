@@ -6,7 +6,7 @@
  */
 
 import type { JTAGMessage } from '@shared/JTAGTypes';
-import type { EventsInterface } from '@shared/JTAGEventSystem';
+import type { EventsInterface } from '@systemEvents';
 
 /**
  * Transport configuration interface

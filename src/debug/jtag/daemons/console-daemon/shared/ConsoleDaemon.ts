@@ -38,7 +38,7 @@ import type { JTAGContext, JTAGMessage } from '@shared/JTAGTypes';
 import { type JTAGPayload, JTAGMessageFactory, createPayload } from '@shared/JTAGTypes';
 import { type UUID } from '@shared/CrossPlatformUUID';
 import type { JTAGRouter } from '@shared/JTAGRouter';
-import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
+import { SYSTEM_EVENTS } from '@systemEvents';
 import { TRANSPORT_EVENTS } from '@system/transports/shared/TransportEvents';
 import { SYSTEM_SCOPES, globalSessionContext } from '@shared/SystemScopes';
 import { CONSOLE_EVENTS } from '@daemonsConsoleDaemon/ConsoleEvents';

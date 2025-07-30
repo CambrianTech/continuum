@@ -36,11 +36,11 @@
     "@daemonsSessionDaemon": "./daemons/session-daemon",
     "@daemonsWidgetDaemon": "./daemons/widget-daemon",
     "@scripts": "./scripts",
-    "@sharedEvents": "./shared/events",
     "@sharedQueuing": "./shared/queuing",
     "@sharedRouting": "./shared/routing",
     "@system": "./system",
     "@systemEvents": "./system/events",
+    "@eventsRouter": "./system/events/router",
     "@systemTransports": "./system/transports",
     "@transportsHttp": "./system/transports/http",
     "@httpClient": "./system/transports/http/client",
@@ -63,7 +63,7 @@
   },
   "description": "Auto-generated import map for browser builds from unified-config.json",
   "_generated": {
-    "timestamp": "2025-07-30T00:01:32.386Z",
+    "timestamp": "2025-07-30T00:13:31.068Z",
     "source": "unified-config.json",
     "importCount": 60
   }

@@ -8,7 +8,7 @@
 
 import { JTAGBase, type CommandsInterface } from '@shared/JTAGBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { SYSTEM_EVENTS } from '@sharedEvents/SystemEvents';
+import { SYSTEM_EVENTS } from '@systemEvents';
 import type { JTAGRouter } from '@shared/JTAGRouter';
 import type { DaemonBase } from '@shared/DaemonBase';
 import type { DaemonEntry } from '@shared/DaemonBase';

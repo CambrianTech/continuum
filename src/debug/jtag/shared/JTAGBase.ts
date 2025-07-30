@@ -8,7 +8,7 @@ import { JTAGModule } from './JTAGModule';
 import type { CommandParams, CommandResult } from './JTAGTypes';
 import type { UUID } from './CrossPlatformUUID';
 import type { CommandBase } from '@commandBase';
-import { EventManager } from './JTAGEventSystem';
+import { EventManager } from '@systemEvents';
 
 /**
  * Strongly-typed command function signature
