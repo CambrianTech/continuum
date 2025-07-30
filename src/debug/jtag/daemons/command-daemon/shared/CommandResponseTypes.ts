@@ -7,7 +7,7 @@
 
 import { type JTAGContext, createPayload } from '@shared/JTAGTypes';
 import { type BaseResponsePayload } from '@shared/ResponseTypes';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 // Command daemon response types
 export interface CommandSuccessResponse extends BaseResponsePayload {

@@ -17,7 +17,7 @@
 import { ChatParams, ChatResult, createChatParams, createChatResult } from '@commandsChat/shared/ChatTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGError } from '@shared/ErrorTypes';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 export interface SendRoomEventParams extends ChatParams {
   readonly sourceParticipantId: string;

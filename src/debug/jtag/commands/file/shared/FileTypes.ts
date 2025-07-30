@@ -29,7 +29,7 @@ import { CommandParams, CommandResult, createPayload } from '@shared/JTAGTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGError } from '@shared/ErrorTypes';
 import { CommandBase, type ICommandDaemon } from '@commandBase';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 /**
  * Generic base parameters for all file operations

@@ -9,7 +9,7 @@
 import { type FileParams, type FileResult, createFileParams, createFileResult } from '@commandsFile/shared/FileTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGError } from '@shared/ErrorTypes';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 export interface FileAppendParams extends FileParams {
   readonly content: string;

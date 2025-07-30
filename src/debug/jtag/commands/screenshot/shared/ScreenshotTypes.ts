@@ -6,7 +6,7 @@
 
 import { CommandParams, CommandResult, type JTAGContext, createPayload, transformPayload } from '@shared/JTAGTypes';
 import type { JTAGError } from '@shared/ErrorTypes';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 /**
  * Screenshot Command Parameters - interface extending CommandParams

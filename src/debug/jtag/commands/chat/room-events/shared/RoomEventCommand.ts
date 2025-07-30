@@ -1,7 +1,7 @@
 import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 import { type RoomEventSubscriptionParams, createRoomEventSubscriptionParams } from '@chatRoomEvents/shared/RoomEventTypes';
 import type { RoomEventSubscriptionResult } from '@chatRoomEvents/shared/RoomEventTypes';
 

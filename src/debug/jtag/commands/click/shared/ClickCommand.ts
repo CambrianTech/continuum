@@ -17,7 +17,7 @@
 import { CommandBase } from '@commandBase';
 import type { ICommandDaemon } from '@commandBase';
 import type { JTAGContext } from '@shared/JTAGTypes';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 import { type ClickParams, createClickParams } from '@commandsClick/shared/ClickTypes';
 import type { ClickResult } from '@commandsClick/shared/ClickTypes';
 

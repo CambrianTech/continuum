@@ -11,7 +11,7 @@
 import { ChatParams, ChatResult } from '@commandsChat/shared/ChatTypes';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { createPayload } from '@shared/JTAGTypes';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 export interface SendMessageParams extends ChatParams {
   readonly content: string;

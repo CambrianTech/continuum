@@ -21,7 +21,7 @@
 
 import { CommandParams, CommandResult, createPayload, type JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGError } from '@shared/ErrorTypes';
-import { UUID } from '@shared/CrossPlatformUUID';
+import type { UUID } from '@shared/CrossPlatformUUID';
 
 export interface CompileTypescriptParams extends CommandParams {
   readonly source: string;
