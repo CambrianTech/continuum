@@ -33,7 +33,7 @@ export class JTAGSystemServer extends JTAGSystem {
     }
   }
 
-  private static instance: JTAGSystemServer | null = null;
+  public static instance: JTAGSystemServer | null = null;
 
   private constructor(context: JTAGContext, router: JTAGRouter, config?: JTAGSystemConfig) {
     super(context, router, {

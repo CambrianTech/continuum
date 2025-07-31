@@ -63,7 +63,7 @@ export class JTAGSystemBrowser extends JTAGSystem {
     }
   }
 
-  private static instance: JTAGSystemBrowser | null = null;
+  public static instance: JTAGSystemBrowser | null = null;
 
   private constructor(context: JTAGContext, router: JTAGRouter, config?: JTAGSystemConfig) {
     super(context, router, {
