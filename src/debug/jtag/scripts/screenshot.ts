@@ -1,10 +1,27 @@
 #!/usr/bin/env tsx
 /**
- * Smart screenshot command - connects to user session for browser interaction
+ * Smart screenshot command - uses JTAGClient with DEADBEEF bootstrap for proper session management
+ * Ensures system is running before attempting screenshot
  */
 
-import { JTAGSystemServer } from '../server/JTAGSystemServer';
-import type { ConnectionParams } from '../shared/JTAGSystem';
+import { JTAGClientServer } from '../server/JTAGClientServer';
+import type { JTAGClientConnectOptions } from '../shared/JTAGClient';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
+
+/**
+ * TODO: Replace with integration test pattern
+ * Hard-coded remote connection to force transport usage instead of local system
+ */
+class RemoteOnlyJTAGClient extends JTAGClientServer {
+  // Override to force remote connection - never return local system
+  protected async getLocalSystem() {
+    console.log('🔒 RemoteOnly: Forcing remote connection, ignoring local system');
+    return null; // Always return null to force transport connection
+  }
+}
 
 async function findUserSession(): Promise<string | undefined> {
   // Try to find an active user session by checking browser sessionStorage
@@ -25,29 +42,29 @@ async function findUserSession(): Promise<string | undefined> {
 
 async function takeScreenshot() {
   try {
-    console.log('🎯 Connecting to running JTAG system for screenshot...');
+    console.log('🎯 Connecting to existing JTAG system via WebSocket...');
     
-    // Try different connection strategies
+    // First ensure the system is running
+    console.log('🔄 Ensuring JTAG system is running...');
+    await execAsync('npm run system:ensure');
+    console.log('✅ JTAG system is ready');
+    
+    // Connect as remote client to existing server (forces transport connection)
     const userSessionId = await findUserSession();
     
-    let jtag;
-    if (userSessionId) {
-      console.log(`🔗 Connecting to specific user session: ${userSessionId}`);
-      const connectionParams: ConnectionParams = {
-        sessionId: userSessionId as any,
-        sessionCategory: 'user',
-        createIfNotExists: false
-      };
-      jtag = await JTAGSystemServer.connect({ 
-        connection: connectionParams 
-      });
-    } else {
-      console.log('🔗 Connecting with default session discovery...');
-      // Let the system handle session discovery automatically
-      jtag = await JTAGSystemServer.connect();
-    }
+    const options: JTAGClientConnectOptions = {
+      targetEnvironment: 'server', // We're connecting TO a server
+      transportType: 'websocket',
+      serverUrl: 'ws://localhost:9001',
+      enableFallback: false, // Don't fallback to local - we want remote connection
+      sessionId: userSessionId as any // If undefined, will use DEADBEEF UNKNOWN_SESSION
+    };
+    
+    console.log('🔗 Connecting via WebSocket transport to running JTAG server...');
+    const { client: jtag, listResult } = await RemoteOnlyJTAGClient.connect(options);
     
     console.log(`🆔 Connected with session: ${jtag.sessionId}`);
+    console.log(`📋 Available commands: ${listResult.totalCount}`);
     console.log('📸 Taking screenshot...');
     
     const result = await jtag.commands.screenshot({
