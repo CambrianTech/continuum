@@ -7,7 +7,13 @@
 
 // Core factory and types
 export { TransportFactory } from './TransportFactory';
-export type { JTAGTransport, TransportConfig, TransportSendResult, TransportRole } from './TransportTypes';
+export type { 
+  JTAGTransport, 
+  TransportConfig,
+  TransportSendResult, 
+  TransportRole,
+  TransportProtocol 
+} from './TransportTypes';
 export { TRANSPORT_TYPES, TRANSPORT_ROLES } from './TransportTypes';
 
 // Base classes

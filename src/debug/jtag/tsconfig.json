@@ -280,12 +280,6 @@
       "@transportsWebsocketTransport/*": [
         "system/transports/websocket-transport/*"
       ],
-      "@websocket-transportClient": [
-        "system/transports/websocket-transport/client"
-      ],
-      "@websocket-transportClient/*": [
-        "system/transports/websocket-transport/client/*"
-      ],
       "@templates": [
         "templates"
       ],
@@ -403,8 +397,8 @@
     "**/*.bak/**/*"
   ],
   "_generated": {
-    "timestamp": "2025-07-31T01:20:09.900Z",
+    "timestamp": "2025-07-31T03:28:37.299Z",
     "source": "unified-config.json",
-    "pathCount": 120
+    "pathCount": 118
   }
 }

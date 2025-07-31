@@ -8,10 +8,12 @@
 import { WebSocketTransportBase, type WebSocketConfig } from '../shared/WebSocketTransportBase';
 import type { JTAGMessage } from '@shared/JTAGTypes';
 import type { TransportSendResult } from '../../shared/TransportTypes';
+import type { ITransportHandler } from '../../shared/ITransportHandler';
 
 // WebSocket client specific configuration
 export interface WebSocketClientConfig extends WebSocketConfig {
   url: string;
+  handler: ITransportHandler; // REQUIRED transport protocol handler
 }
 
 export class WebSocketClientTransport extends WebSocketTransportBase {
@@ -19,9 +21,11 @@ export class WebSocketClientTransport extends WebSocketTransportBase {
   
   private socket?: WebSocket;
   private lastConnectedUrl?: string;
+  private handler: ITransportHandler;
 
   constructor(config: WebSocketClientConfig) {
     super(config);
+    this.handler = config.handler;
   }
 
   /**
@@ -48,11 +52,14 @@ export class WebSocketClientTransport extends WebSocketTransportBase {
       this.socket = new WebSocket(url);
       const clientId = this.generateClientId('ws_client');
       
-      this.socket.onopen = () => {
+      this.socket.onopen = async () => {
         console.log(`✅ ${this.name}: Connected to ${url}`);
         this.connected = true;
         
-        // Send session handshake immediately after connection
+        // TypeScript guarantees handler implements ITransportHandler
+        console.log(`✅ ${this.name}: Handler compliance enforced by TypeScript`);
+        
+        // Send session handshake after validation
         this.sendSessionHandshake();
         
         // Emit CONNECTED event using shared method
@@ -131,4 +138,5 @@ export class WebSocketClientTransport extends WebSocketTransportBase {
     // Reconnect using stored URL
     await this.connect(this.lastConnectedUrl);
   }
+
 }

@@ -8,6 +8,7 @@
 import type { JTAGMessage } from '@shared/JTAGTypes';
 import type { EventsInterface } from '@systemEvents';
 import type { UUID } from '@shared/CrossPlatformUUID';
+import type { ITransportHandler } from './ITransportHandler';
 
 /**
  * Transport roles - defines the connection behavior and capabilities
@@ -45,17 +46,17 @@ import type { UUID } from '@shared/CrossPlatformUUID';
 export const TRANSPORT_ROLES = {
   CLIENT: 'client',
   SERVER: 'server', 
-  PEER: 'peer',
-  RELAY: 'relay',
-  HYBRID: 'hybrid'
+  PEER: 'peer'
 } as const;
 
 export type TransportRole = typeof TRANSPORT_ROLES[keyof typeof TRANSPORT_ROLES];
 
 export type TransportProtocol = 'websocket' | 'http' | 'udp-multicast';
 
+
 /**
- * Transport configuration interface
+ * Transport configuration - simplified payload-based architecture
+ * Follows same pattern as other JTAG config interfaces
  */
 export interface TransportConfig {
   protocol: TransportProtocol;                         // REQUIRED - which transport to use
@@ -65,6 +66,7 @@ export interface TransportConfig {
   serverPort?: number;                                 // OPTIONAL - required for server role
   serverUrl?: string;                                  // OPTIONAL - required for client role  
   fallback?: boolean;                                  // OPTIONAL - enable fallback transport
+  handler: ITransportHandler;                          // REQUIRED - transport protocol handler
   // UDP multicast specific options
   p2p?: {
     nodeId?: string;
@@ -91,6 +93,8 @@ export interface TransportSendResult {
  * 
  * Abstraction for cross-context message delivery mechanisms.
  * Implementations include WebSocket, HTTP, and UDP multicast transports.
+ * 
+ * PAYLOAD-BASED: Same pattern as other JTAG interfaces
  */
 export interface JTAGTransport {
   name: string;

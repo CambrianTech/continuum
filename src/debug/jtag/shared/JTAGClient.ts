@@ -42,9 +42,11 @@ import { JTAGBase, type CommandsInterface } from './JTAGBase';
 import type { JTAGContext, JTAGMessage, JTAGPayload } from './JTAGTypes';
 import { JTAGMessageFactory } from './JTAGTypes';
 import { TransportFactory } from '@systemTransports';
-import type { TransportConfig, JTAGTransport, TransportProtocol, TransportRole } from '@systemTransports';
+import type { TransportConfig, JTAGTransport, TransportProtocol } from '@systemTransports';
+import type { ITransportHandler } from '../system/transports/shared/ITransportHandler';
 import type { ListParams, ListResult, CommandSignature } from '../commands/list/shared/ListTypes';
 import { createListParams } from '../commands/list/shared/ListTypes';
+import type { BaseResponsePayload, JTAGResponsePayload } from './ResponseTypes';
 
 /**
  * JTAGClient connection options
@@ -85,7 +87,7 @@ export interface DynamicCommandsInterface {
   [commandName: string]: (params?: any) => Promise<any>;
 }
 
-export abstract class JTAGClient extends JTAGBase {
+export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   protected systemTransport?: JTAGTransport;
   protected commandsInterface?: CommandsInterface;
   protected connection?: JTAGConnection;
@@ -100,15 +102,38 @@ export abstract class JTAGClient extends JTAGBase {
   }
 
 
+  // ITransportHandler implementation - payload in, payload out
+  async handleTransportMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
+    console.log(`📥 JTAGClient: Transport message received:`, message);
+    
+    // Handle transport protocol messages (health checks, events, correlation)
+    // Same pattern as daemon handleMessage methods
+    
+    // For now, return success response
+    // TODO: Implement specific transport message handling
+    const response: BaseResponsePayload = {
+      success: true,
+      timestamp: new Date().toISOString(),
+      context: this.context,
+      sessionId: this.sessionId
+    };
+    return response as JTAGResponsePayload;
+  }
+  
+  get transportId(): UUID {
+    return this.sessionId;
+  }
+
   protected override async initialize(options?: JTAGClientConnectOptions): Promise<void> {
     const transportConfig: TransportConfig = { 
       protocol: (options?.transportType ?? 'websocket') as TransportProtocol,
-      role: 'client' as TransportRole, // JTAGClient always creates client transports (connectors)
+      role: 'client', // JTAGClient always creates client transports
       eventSystem: this.eventManager.events,
-      sessionId: this.sessionId, // Pass sessionId for client handshake
-      serverPort: options?.serverPort ?? 9001, // Default WebSocket port
+      sessionId: this.sessionId,
+      serverPort: options?.serverPort ?? 9001,
       serverUrl: options?.serverUrl ?? `ws://localhost:${options?.serverPort ?? 9001}`,
-      fallback: options?.enableFallback ?? true
+      fallback: options?.enableFallback ?? true,
+      handler: this // TypeScript enforces ITransportHandler compliance
     };
 
     this.systemTransport = await TransportFactory.createTransport(this.context.environment, transportConfig);
