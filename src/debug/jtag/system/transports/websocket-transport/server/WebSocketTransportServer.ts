@@ -1,8 +1,8 @@
 /**
- * WebSocket Server Transport - Server-side WebSocket implementation
+ * WebSocket Transport Server - Server-specific WebSocket implementation
  * 
- * Refactored to use shared WebSocket base class to eliminate duplication.
- * Handles WebSocket server connections and broadcasting to multiple clients.
+ * Uses typed inheritance from shared WebSocket base class.
+ * Server role: server transport that accepts client connections.
  */
 
 import { WebSocketTransportBase, type WebSocketConfig } from '../shared/WebSocketTransportBase';
@@ -10,12 +10,12 @@ import type { JTAGMessage } from '@shared/JTAGTypes';
 import type { WebSocketServer, WebSocket as WSWebSocket } from 'ws';
 import type { TransportSendResult } from '../../shared/TransportTypes';
 
-// WebSocket server specific configuration
+// Server-specific WebSocket configuration with typed inheritance
 export interface WebSocketServerConfig extends WebSocketConfig {
   port: number;
 }
 
-export class WebSocketServerTransport extends WebSocketTransportBase {
+export class WebSocketTransportServer extends WebSocketTransportBase {
   public readonly name = 'websocket-server';
   
   private server?: WebSocketServer;

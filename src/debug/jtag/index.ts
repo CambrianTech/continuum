@@ -5,16 +5,11 @@
  * fully connected and ready to use, regardless of where you're running from.
  */
 
-import { JTAGClientFactory } from './shared/JTAGClientFactory';
-
 // Auto-detect environment for legacy compatibility
 const isServer = typeof window === 'undefined';
 
 export const jtag = {
-  // Smart client factory - automatically gives you the best client, fully connected
-  getClient: JTAGClientFactory.getClient.bind(JTAGClientFactory),
-
-  // Legacy system access (creates new systems)
+  // System access - delegates to environment-specific implementations
   async connect() {
     if (isServer) {
       const { jtag } = await import('./server-index');

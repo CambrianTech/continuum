@@ -5,8 +5,8 @@
  * Most consumers should use the main transport index instead.
  */
 
-// Core factory and types
-export { TransportFactory } from './TransportFactory';
+// Core factory interface - implemented by environment-specific factories
+export type { ITransportFactory } from './ITransportFactory';
 export type { 
   JTAGTransport, 
   TransportConfig,

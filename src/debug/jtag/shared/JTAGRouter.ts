@@ -41,8 +41,8 @@ import { JTAGModule } from '@shared/JTAGModule';
 import type { JTAGContext, JTAGEnvironment, JTAGMessage } from '@shared/JTAGTypes';
 import { JTAGMessageTypes, JTAGMessageFactory } from '@shared/JTAGTypes';
 import type { UUID } from '@shared/CrossPlatformUUID';
-import { TransportFactory, TRANSPORT_TYPES } from '@systemTransports';
-import type { TransportConfig, JTAGTransport, TransportEndpoint } from '@systemTransports';
+import { TRANSPORT_TYPES } from '@systemTransports';
+import type { ITransportFactory, TransportConfig, JTAGTransport, TransportEndpoint } from '@systemTransports';
 import type { ITransportHandler } from '../system/transports/shared/ITransportHandler';
 import { JTAGMessageQueue, MessagePriority } from '@sharedQueuing/JTAGMessageQueue';
 import type { QueuedItem } from '@sharedQueuing/PriorityQueue';
@@ -100,7 +100,7 @@ export interface RouterStatus {
 }
 
 
-export class JTAGRouter extends JTAGModule implements TransportEndpoint, ITransportHandler {
+export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint, ITransportHandler {
   private readonly endpointMatcher = new EndpointMatcher<MessageSubscriber>();
 
   //Use a map, strongly typed keys, for our transports
@@ -185,6 +185,11 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint, ITransp
   /**
    * Route message remotely with proper type-based routing
    */
+  /**
+   * Get environment-specific transport factory - implemented by JTAGRouterServer/JTAGRouterBrowser
+   */
+  protected abstract getTransportFactory(): Promise<ITransportFactory>;
+
   private async routeRemotelyWithQueue(message: JTAGMessage): Promise<RouterResult> {
     // Check if this is a remote P2P route
     const remoteInfo = this.parseRemoteEndpoint(message.endpoint);
@@ -515,7 +520,9 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint, ITransp
       handler: this // TypeScript enforces ITransportHandler compliance
     };
     
-    const crossContextTransport = await TransportFactory.createTransport(this.context.environment, ctxTransportConfig);
+    // Use environment-specific transport factory
+    const factory = await this.getTransportFactory();
+    const crossContextTransport = await factory.createTransport(this.context.environment, ctxTransportConfig);
     this.transports.set(TRANSPORT_TYPES.CROSS_CONTEXT, crossContextTransport);
 
     // P2P transport disabled - needs UDP multicast implementation, not WebSocket

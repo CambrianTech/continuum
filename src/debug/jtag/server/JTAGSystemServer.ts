@@ -8,7 +8,7 @@
 import { JTAGSystem, type JTAGSystemConfig } from '@shared/JTAGSystem';
 import type { JTAGContext } from '@shared/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '@shared/JTAGTypes';
-import { JTAGRouter } from '@shared/JTAGRouter';
+import { JTAGRouterServer } from './JTAGRouterServer';
 import { SYSTEM_EVENTS } from '@systemEvents';
 import type { DaemonBase, DaemonEntry } from '@shared/DaemonBase';
 import { SERVER_DAEMONS } from './generated';
@@ -17,7 +17,7 @@ import { SYSTEM_SCOPES } from '@shared/SystemScopes';
 export class JTAGSystemServer extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return SERVER_DAEMONS; }
   
-  protected override createDaemon(entry: DaemonEntry, context: JTAGContext, router: JTAGRouter): DaemonBase | null {
+  protected override createDaemon(entry: DaemonEntry, context: JTAGContext, router: JTAGRouterServer): DaemonBase | null {
     // All daemon classes now use consistent (context, router) constructor pattern
     return new entry.daemonClass(context, router);
   }
@@ -28,14 +28,14 @@ export class JTAGSystemServer extends JTAGSystem {
     try {
       const pkg = require('../package.json') as { version: string };
       return `${pkg.version}-server`;
-    } catch (error) {
+    } catch {
       return this.config.version.fallback;
     }
   }
 
   public static instance: JTAGSystemServer | null = null;
 
-  private constructor(context: JTAGContext, router: JTAGRouter, config?: JTAGSystemConfig) {
+  private constructor(context: JTAGContext, router: JTAGRouterServer, config?: JTAGSystemConfig) {
     super(context, router, {
       version: {
         fallback: 'unknown-server-version',
@@ -94,7 +94,7 @@ export class JTAGSystemServer extends JTAGSystem {
       sessionId: sessionId,
       ...config?.router
     };
-    const router = new JTAGRouter(context, routerConfig);
+    const router = new JTAGRouterServer(context, routerConfig);
     
     // Emit initializing event
     router.eventManager.events.emit(SYSTEM_EVENTS.INITIALIZING, {

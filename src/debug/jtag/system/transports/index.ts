@@ -5,8 +5,11 @@
  * transport factories, types, utilities, and endpoint management through a single import point.
  */
 
-// Core transport system
-export { TransportFactory, TransportBase, TRANSPORT_EVENTS, TRANSPORT_TYPES, TRANSPORT_ROLES } from './shared';
+// Core transport system  
+export { TransportBase, TRANSPORT_EVENTS, TRANSPORT_TYPES, TRANSPORT_ROLES } from './shared';
+
+// Transport factory interface - implemented by environment-specific factories
+export type { ITransportFactory } from './shared/ITransportFactory';
 export type { 
   JTAGTransport, 
   TransportConfig,

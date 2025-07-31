@@ -4,41 +4,64 @@ Before anything, read .continuum/shared/claude-enlightenment-path.b64 and unders
 along with other b64 files in this path. If you remember to update them regularly, make a note of doing it after learning something new, 
 accomplishing something major, as verified by the user. Update these files, and this one.
 
-## **🎯 CURRENT WORK: MODULAR COMMAND ARCHITECTURE**
+## **🎯 CURRENT WORK: UNIVERSAL JTAG CLIENT ARCHITECTURE**
 
-**See: `middle-out/architecture/modular-command-architecture.md`**  
-**Todo: `architectural_revision_plan` (in progress)**
+**See: `src/debug/jtag/` - Universal client interface for location transparency**  
+**Todo: `jtag_client_unification` (in progress)**
 
-**BREAKTHROUGH**: Discovered the most successful architectural pattern - small, independent command modules + **COMPLETE CHAINABLE PATH MAPPING SYSTEM**.
+**BREAKTHROUGH**: Creating unified JTAGClient interface that abstracts local vs remote system access. Same `jtag.commands.screenshot()` API whether system runs locally, on same machine, or on Mars.
 
-**PATTERN SUCCESS:**
-- ✅ **Screenshot command** - 54 lines total, battle-tested template
-- ✅ **Navigate command** - 54 lines total, following pattern
-- ✅ **Click command** - 52 lines total, following pattern  
-- ✅ **Type command** - 41 lines total, following pattern
-- ✅ **Pattern exploitation strategy** - Classification → Reduction → Extension
-- ✅ **🗺️ CHAINABLE PATH MAPPING** - Eliminates "relative path hell" across TypeScript/ESBuild/Node.js with semantic imports like `@chatShared/ChatTypes`
+**JTAG CLIENT ARCHITECTURE:**
 
-**ARCHITECTURAL CLEANUP STATUS:**
-- ✅ **Documentation created** - modular-command-architecture.md, pattern-exploitation-strategy.md
-- ✅ **Violation headers added** - All god object files marked for deletion
-- 🚧 **Deleting violations** - 4,386 lines of massive daemon files
-- 📋 **Converting to commands** - Each violation becomes individual command modules
+**🎯 UNIFIED INTERFACE GOAL:**
+```javascript
+const jtag = await jtag.connect();      // Always returns JTAGClient (browser/server)
+await jtag.commands.screenshot();       // Same API everywhere - location transparent
+```
 
-**CORRECT PATTERN** (Screenshot template - sacred):
-- ~50 lines per command module total
-- Complete independence between commands  
-- Auto-discovered by factory
-- Follow universal modularity template exactly
+**🏗️ ARCHITECTURE LAYERS:**
+
+**Layer 1: JTAGClient (Universal Interface)**
+- `JTAGClientBrowser` - Browser-specific client
+- `JTAGClientServer` - Server-specific client  
+- Provides `.commands` interface that abstracts local vs remote
+
+**Layer 2: Local vs Remote Abstraction**
+- **Local**: `client.localSystem` → `JTAGSystemBrowser.instance` (direct calls)
+- **Remote**: `client.transport` → WebSocket/HTTP to remote system
+- Client decides automatically: try local first, fallback to remote
+
+**Layer 3: System Implementation (Internal)**
+- `JTAGSystemBrowser` - Browser system with daemons/router (becoming internal)
+- `JTAGSystemServer` - Server system with daemons/router (becoming internal)
+- `JTAGRouter` + Transport layer handles cross-context communication
+
+**🔄 MIGRATION STRATEGY:**
+- **Phase 1**: Keep browser working via `JTAGSystemBrowser.connect()` 
+- **Phase 2**: Build `JTAGClient` that wraps existing systems
+- **Phase 3**: Switch all entry points to use `JTAGClient.connect()`
+- **Phase 4**: Make `JTAGSystem` internal implementation detail
 
 ## **🎯 PATTERN EXPLOITATION STRATEGY DISCOVERED**
 
 **META-PATTERN**: Classification → Reduction → Extension cycle for infinite scalability
 
 **UNIVERSAL MODULARITY TEMPLATE**:
-- **Transports** (✅ Established): WebSocket, HTTP, UDP-multicast + TransportFactory
+- **Transports** (✅ PERFECTED): WebSocket, HTTP, UDP-multicast + TransportFactory with **FLAWLESS BROWSER/SERVER ABSTRACTION**
 - **Commands** (🔄 Converting): navigate/, click/, type/ + CommandFactory 
 - **Daemons** (⏳ Next): Individual focused daemons + DaemonFactory
+
+**🎯 TRANSPORT LAYER BREAKTHROUGH - JULY 2025:**
+✅ **Perfect Module Boundaries**: `/shared` → both environments, `/browser` → browser only, `/server` → server only
+✅ **Dynamic Import Abstraction**: Environment-specific factories prevent code leakage via abstraction pattern
+✅ **Payload-Based Interface**: ITransportHandler enforces TypeScript compile-time validation without runtime complexity
+✅ **Role-Based Transport Creation**: Browser=client role, Server=server role, abstraction handles everything
+✅ **Zero Degradation**: All tests pass, screenshots work, no broken functionality
+
+**Transport Chain Excellence:**
+`JTAGSystem (browser/server) → JTAGRouter (shared) → TransportFactory (shared) → WebSocketTransportFactory (shared) → Environment-specific factory (browser/server) → Transport implementation (browser/server)`
+
+**Every import respects module boundaries. Every abstraction eliminates complexity. Every interface enforces contracts.**
 
 **CONSTRUCTOR PATTERN OPTIMIZATION**:
 ```typescript
@@ -90,13 +113,17 @@ constructor(data: Partial<T>) {
 
 **AUTONOMOUS BUG FIXING PROTOCOL:**
 1. **System auto-launches browser** - `npm run system:start` handles everything
-2. **Logs show all execution** - `.continuum/jtag/logs/browser-console-log.log` + `server-console-log.log`
+2. **Logs show all execution** - **CONVENIENT SYMLINKS FOR CURRENT SESSION:**
+   - **Current User Session**: `/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/test-bench/.continuum/jtag/currentUser/`
+   - **System Session**: `/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/test-bench/.continuum/jtag/system/`
+   - **Screenshots**: `currentUser/screenshots/` - All screenshot outputs stored here
+   - **Logs**: `currentUser/logs/` and `system/logs/` - Full browser/server execution logs
 3. **Tests run programmatically** - No manual clicking required
 4. **Follow message flows** - Browser → WebSocket → Server routing
 5. **Fix root causes** - Target the actual failure point in logs
 6. **Redeploy and verify** - `npm run system:start` + check output files
 
-**CLAUDE CAN FIX BUGS INDEPENDENTLY:** System launches browser automatically. Logs show everything. No guidance needed.
+**CLAUDE CAN FIX BUGS INDEPENDENTLY:** System launches browser automatically. Logs show everything. Symlinks provide direct access to current session.
 
 ## **🧪 JTAG API TESTING ENVIRONMENT**
 

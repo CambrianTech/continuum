@@ -5,8 +5,7 @@
  * must be imported from their respective directories.
  */
 
-// Main factory for creating WebSocket transports (abstracted)
-export { WebSocketTransportFactory } from './shared/WebSocketTransportFactory';
+// No more WebSocketTransportFactory - TransportFactory handles directly
 
 // Shared base class for custom WebSocket implementations
 export { WebSocketTransportBase } from './shared/WebSocketTransportBase';

@@ -30,11 +30,13 @@
  * - Performance tests: Local connection overhead vs direct calls
  */
 
-import type { JTAGContext } from './JTAGTypes';
-import { generateUUID, type UUID } from './CrossPlatformUUID';
-import type { JTAGSystemBrowser } from '../browser/JTAGSystemBrowser';
-import { JTAGClient, type JTAGClientConnectOptions, LocalConnection } from './JTAGClient';
+import { type UUID } from '../shared/CrossPlatformUUID';
+import { JTAGSystemBrowser } from './JTAGSystemBrowser';
+import { JTAGClient, type JTAGClientConnectOptions, LocalConnection } from '../shared/JTAGClient';
 import type { ListResult } from '../commands/list/shared/ListTypes';
+import type { ITransportFactory} from '@systemTransports';
+import { TransportFactoryBrowser } from '../system/transports/browser/TransportFactoryBrowser';
+import type { JTAGSystem } from '../shared/JTAGSystem';
 
 // NOTE: Command types are now dynamically discovered, no need for hardcoded imports
 
@@ -58,75 +60,46 @@ export interface RemoteConnectionConfig {
  * Extends shared JTAGClient with browser-specific local system integration
  */
 export class JTAGClientBrowser extends JTAGClient {
-
-  /**
-   * Browser-specific: Get local JTAGSystemBrowser instance
-   */
-  protected getLocalSystem(): JTAGSystemBrowser {
-    // This will be set during connectLocal()
-    if (!this.localSystemInstance) {
-      throw new Error('Local system not available. Use connectLocal() first.');
-    }
-    return this.localSystemInstance;
-  }
   
-  private localSystemInstance?: JTAGSystemBrowser;
+  protected getLocalSystem(): JTAGSystem | null {
+    // Browser can access local system
+    return JTAGSystemBrowser.instance;
+  }
   
   /**
    * Connect to local JTAGSystemBrowser instance (direct calls)
-   * 🔄 BOOTSTRAP PATTERN: Returns list result for CLI integration
+   * Uses shared base class connect() logic
    */
   static async connectLocal(): Promise<{ client: JTAGClientBrowser; listResult: ListResult }> {
-    // Dynamic import to avoid circular dependency
-    const { JTAGSystemBrowser } = await import('../browser/JTAGSystemBrowser');
-    
-    const context: JTAGContext = {
-      uuid: generateUUID(),
-      environment: 'browser'
-    };
-    
-    console.log('🔄 JTAGClientBrowser: Connecting to local browser system...');
-    
-    // Get direct reference to local system
-    const localSystem = await JTAGSystemBrowser.connect();
-    const client = new JTAGClientBrowser(context);
-    client.localSystemInstance = localSystem;
-    
-    // Set up local connection
-    client.connection = client.createLocalConnection();
-    
-    console.log('✅ JTAGClientBrowser: Local connection established');
-    
-    // 🔑 BOOTSTRAP: Call list() to discover commands and return result for CLI
-    console.log('🔄 JTAGClientBrowser: Discovering available commands...');
-    const listResult = await client.commands.list();
-    
-    console.log(`✅ JTAGClientBrowser: Bootstrap complete! Discovered ${listResult.totalCount} commands`);
-    
-    return { client, listResult };
+    return await JTAGClientBrowser.connect({
+      targetEnvironment: 'browser'
+    });
   }
 
   /**
    * Connect to remote JTAG system via transport
-   * Uses shared JTAGClient.connect() with browser-specific configuration
+   * Uses shared base class connect() logic
    */
   static async connectRemote(config: RemoteConnectionConfig): Promise<{ client: JTAGClientBrowser; listResult: ListResult }> {
-    const clientOptions: JTAGClientConnectOptions = {
+    return await JTAGClientBrowser.connect({
       targetEnvironment: 'server', // Remote system is typically server
       transportType: config.transportType ?? 'websocket',
       serverUrl: config.serverUrl,
       sessionId: config.sessionId,
       maxRetries: config.maxRetries ?? 30,
       retryDelay: config.retryDelay ?? 1000
-    };
-
-    // Use shared connect logic
-    const { client, listResult } = await JTAGClient.connect(clientOptions);
-    
-    return { client: client as JTAGClientBrowser, listResult };
+    });
   }
 
   // Commands interface inherited from base JTAGClient - now uses dynamic discovery!
+
+  /**
+   * Get browser-specific transport factory
+   */
+  protected async getTransportFactory(): Promise<ITransportFactory> {
+    return new TransportFactoryBrowser();
+  }
+
 
   /**
    * Browser-specific connection metadata
