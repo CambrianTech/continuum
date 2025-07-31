@@ -6,7 +6,7 @@
  * This is the main entry point that ./jtag forwards to.
  */
 
-import { JTAGClient } from './shared/JTAGClient';
+import { JTAGClientServer } from './server/JTAGClientServer';
 import type { JTAGClientConnectOptions } from './shared/JTAGClient';
 
 async function main() {
@@ -26,14 +26,15 @@ async function main() {
     
     console.log(`🔌 Connecting to JTAG system...`);
     
-    // Connect to the running JTAG system
+    // Connect to the running JTAG system - force remote connection (no local system)
     const clientOptions: JTAGClientConnectOptions = {
-      targetEnvironment: 'server', // CLI connects to server environment
+      targetEnvironment: 'server', // Connect TO the server
       transportType: 'websocket',
-      serverPort: 9001
+      serverUrl: 'ws://localhost:9001',
+      enableFallback: false // CLI must use remote connection (no local system)
     };
     
-    const client = await JTAGClient.connect(clientOptions);
+    const { client } = await JTAGClientServer.connect(clientOptions);
     
     // For now, just log what we would do
     console.log(`📤 Would execute command: ${command}`);

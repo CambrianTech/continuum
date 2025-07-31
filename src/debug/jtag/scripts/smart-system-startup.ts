@@ -94,16 +94,16 @@ class SmartSystemStartup {
   async runNpmStart(background: boolean = false): Promise<void> {
     console.log(`🚀 Starting JTAG system (${background ? 'background' : 'foreground'})...`);
     
-    if (background) {
-      // Use existing tmux-based system:start for reliable background execution
-      console.log(`🔄 Using tmux for reliable background startup...`);
-      await execAsync('npm run system:start');
-      
-      // Wait a bit for startup
-      await new Promise(resolve => setTimeout(resolve, 3000));
-    } else {
-      // Run in foreground
-      await execAsync('npm start');
+    // ALWAYS use background tmux startup for reliability
+    // Even "foreground" mode should use tmux to prevent process exit issues
+    console.log(`🔄 Using tmux for reliable background startup...`);
+    await execAsync('npm run system:start');
+    
+    // Wait a bit for startup
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    if (!background) {
+      console.log(`💡 System started in background with tmux - use 'npm run system:stop' to stop`);
     }
   }
 
@@ -195,6 +195,35 @@ async function main() {
   } catch (error) {
     console.error(`❌ Smart startup failed:`, error);
     process.exit(1);
+  }
+}
+
+/**
+ * Convenience function for tests and other scripts
+ * Ensures system is running and returns true if successful
+ */
+export async function ensureJTAGSystemRunning(options: StartupOptions = {}): Promise<boolean> {
+  const startup = new SmartSystemStartup();
+  try {
+    return await startup.ensureSystemRunning({ background: true, ...options });
+  } catch (error) {
+    console.error(`❌ Failed to ensure JTAG system running:`, error);
+    return false;
+  }
+}
+
+/**
+ * Convenience function to stop the system
+ */
+export async function stopJTAGSystem(): Promise<boolean> {
+  try {
+    console.log(`🛑 Stopping JTAG system...`);
+    await execAsync('npm run system:stop');
+    console.log(`✅ JTAG system stopped`);
+    return true;
+  } catch (error) {
+    console.error(`❌ Failed to stop JTAG system:`, error);
+    return false;
   }
 }
 

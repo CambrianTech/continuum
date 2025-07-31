@@ -10,6 +10,7 @@ import type { JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGTransport, TransportConfig } from '../shared/TransportTypes';
 import { TransportConfigHelper } from '../shared/TransportConfig';
 import { WebSocketTransportServer } from '../websocket-transport/server/WebSocketTransportServer';
+import { WebSocketTransportServerClient } from '../websocket-transport/server/WebSocketTransportServerClient';
 import { HTTPTransport } from '../http-transport/shared/HTTPTransport';
 
 export class TransportFactoryServer implements ITransportFactory {
@@ -51,7 +52,7 @@ export class TransportFactoryServer implements ITransportFactory {
     environment: JTAGContext['environment'],
     config: TransportConfig
   ): Promise<JTAGTransport> {
-    const { role, serverPort = 9001 } = config;
+    const { role, serverPort = 9001, serverUrl, handler, eventSystem } = config;
 
     console.log(`🔗 WebSocket Server Factory: Creating ${role} transport in ${environment} environment`);
 
@@ -65,6 +66,28 @@ export class TransportFactoryServer implements ITransportFactory {
         sessionHandshake: true
       });
       await transport.start(serverPort);
+      return transport;
+    }
+
+    if (role === 'client') {
+      if (environment === 'browser') {
+        throw new Error('Use TransportFactoryBrowser for browser client connections');
+      }
+
+      // Create Node.js WebSocket client for server environment (CLI, server-to-server)
+      const url = serverUrl || `ws://localhost:${serverPort}`;
+      
+      if (!handler) {
+        throw new Error('WebSocket client transport requires handler configuration');
+      }
+
+      const transport = new WebSocketTransportServerClient({ 
+        url,
+        handler,
+        sessionHandshake: true,
+        eventSystem
+      });
+      await transport.connect(url);
       return transport;
     }
 
