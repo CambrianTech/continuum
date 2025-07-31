@@ -1,15 +1,12 @@
 /**
- * WebSocket Transport - Public API Exports
+ * WebSocket Transport - Shared API Exports
  * 
- * Clean module interface for WebSocket transport implementations.
+ * Only exports shared abstractions - environment-specific code
+ * must be imported from their respective directories.
  */
 
-// Factory for creating WebSocket transports
-export { WebSocketTransportFactory } from './server/WebSocketTransportFactory';
-
-// Transport implementations
-export { WebSocketClientTransport } from './client/WebSocketClientTransport';
-export { WebSocketServerTransport } from './server/WebSocketServerTransport';
+// Main factory for creating WebSocket transports (abstracted)
+export { WebSocketTransportFactory } from './shared/WebSocketTransportFactory';
 
 // Shared base class for custom WebSocket implementations
 export { WebSocketTransportBase } from './shared/WebSocketTransportBase';

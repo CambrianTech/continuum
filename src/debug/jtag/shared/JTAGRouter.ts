@@ -40,8 +40,10 @@
 import { JTAGModule } from '@shared/JTAGModule';
 import type { JTAGContext, JTAGEnvironment, JTAGMessage } from '@shared/JTAGTypes';
 import { JTAGMessageTypes, JTAGMessageFactory } from '@shared/JTAGTypes';
+import type { UUID } from '@shared/CrossPlatformUUID';
 import { TransportFactory, TRANSPORT_TYPES } from '@systemTransports';
 import type { TransportConfig, JTAGTransport, TransportEndpoint } from '@systemTransports';
+import type { ITransportHandler } from '../system/transports/shared/ITransportHandler';
 import { JTAGMessageQueue, MessagePriority } from '@sharedQueuing/JTAGMessageQueue';
 import type { QueuedItem } from '@sharedQueuing/PriorityQueue';
 import { ConnectionHealthManager } from '@shared/ConnectionHealthManager';
@@ -60,7 +62,7 @@ import { createJTAGRouterConfig } from '@shared/JTAGRouterTypes';
 export type { JTAGRouterConfig, ResolvedJTAGRouterConfig } from '@shared/JTAGRouterTypes';
 export { DEFAULT_JTAG_ROUTER_CONFIG, createJTAGRouterConfig } from '@shared/JTAGRouterTypes';
 
-import type { JTAGResponsePayload } from '@shared/ResponseTypes';
+import type { JTAGResponsePayload, BaseResponsePayload } from '@shared/ResponseTypes';
 import type { ConsolePayload } from '@daemonsConsoleDaemon/shared/ConsoleDaemon';
 import type { RouterResult, RequestResult, EventResult, LocalRoutingResult } from '@shared/RouterTypes';
 
@@ -98,7 +100,7 @@ export interface RouterStatus {
 }
 
 
-export class JTAGRouter extends JTAGModule implements TransportEndpoint {
+export class JTAGRouter extends JTAGModule implements TransportEndpoint, ITransportHandler {
   private readonly endpointMatcher = new EndpointMatcher<MessageSubscriber>();
 
   //Use a map, strongly typed keys, for our transports
@@ -498,19 +500,19 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint {
   /**
    * Initialize transport (TransportEndpoint interface implementation)
    */
-  async initializeTransport(config?: TransportConfig): Promise<void> {
+  async initializeTransport(config?: Partial<TransportConfig>): Promise<void> {
     console.log(`🔗 ${this.toString()}: Initializing transport with base64 encoding`);
     
     // Create cross-context transport using router configuration
     const ctxTransportConfig: TransportConfig = { 
       protocol: this.config.transport.preferred,
-      role: this.config.transport.role,
+      role: this.config.transport.role, // Use configured role (server for server, client for browser)
       eventSystem: this.eventManager.events,
-      sessionId: this.config.sessionId!,  // sessionId is required, router must have one
+      sessionId: this.config.sessionId!,
       serverPort: this.config.transport.serverPort,
       serverUrl: this.config.transport.serverUrl,
       fallback: this.config.transport.fallback,
-      ...config // Allow override from parameter
+      handler: this // TypeScript enforces ITransportHandler compliance
     };
     
     const crossContextTransport = await TransportFactory.createTransport(this.context.environment, ctxTransportConfig);
@@ -577,7 +579,7 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint {
   /**
    * Legacy method for compatibility - transport factory is now in shared module
    */
-  async setupCrossContextTransport(config?: TransportConfig): Promise<void> {
+  async setupCrossContextTransport(config?: Partial<TransportConfig>): Promise<void> {
     if (!this.isInitialized) {
       await this.initialize();
     }
@@ -618,5 +620,38 @@ export class JTAGRouter extends JTAGModule implements TransportEndpoint {
       // Enhanced transport status from interface
       transportStatus
     };
+  }
+
+  // ITransportHandler implementation - ENFORCED by TypeScript
+  
+  /**
+   * Handle transport protocol messages - same pattern as MessageSubscriber
+   */
+  async handleTransportMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
+    console.log(`📥 JTAGRouter: Transport message received:`, message);
+    
+    // Route transport message through existing router infrastructure
+    const result = await this.postMessage(message);
+    
+    // Extract response from RouterResult union type
+    if ('response' in result && result.response) {
+      return result.response as JTAGResponsePayload;
+    }
+    
+    // Fallback: Create proper BaseResponsePayload for successful routing
+    const response: BaseResponsePayload = {
+      success: true,
+      timestamp: new Date().toISOString(),
+      context: this.context,
+      sessionId: this.context.uuid
+    };
+    return response as JTAGResponsePayload;
+  }
+  
+  /**
+   * Transport identifier for routing
+   */
+  get transportId(): UUID {
+    return this.context.uuid;
   }
 }

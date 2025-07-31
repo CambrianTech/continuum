@@ -19,7 +19,7 @@
 import type { JTAGContext } from '@shared/JTAGTypes';
 import type { JTAGTransport, TransportConfig } from './TransportTypes';
 import { TransportConfigHelper } from './TransportConfig';
-import { WebSocketTransportFactory } from '../websocket-transport/server/WebSocketTransportFactory';
+import { WebSocketTransportFactory } from '../websocket-transport/shared/WebSocketTransportFactory';
 import { HTTPTransport } from '../http-transport/shared/HTTPTransport';
 
 export class TransportFactory {
@@ -43,7 +43,7 @@ export class TransportFactory {
       throw new Error('UDP Multicast transport not yet modularized');
     }
     
-    // WebSocket transport
+    // WebSocket transport - use abstracted factory
     if (config.protocol === 'websocket') {
       return await WebSocketTransportFactory.createTransport(environment, config);
     }
