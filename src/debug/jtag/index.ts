@@ -1,15 +1,20 @@
 /**
- * JTAG Universal Command Bus - Dynamic Entry Point
+ * JTAG Universal Command Bus - Smart Client Entry Point
  * 
- * Automatically redirects to appropriate environment-specific entry point
+ * Provides intelligent client connection that automatically gives you the best client,
+ * fully connected and ready to use, regardless of where you're running from.
  */
 
-// Auto-detect environment
+import { JTAGClientFactory } from './shared/JTAGClientFactory';
+
+// Auto-detect environment for legacy compatibility
 const isServer = typeof window === 'undefined';
 
-// Dynamic export based on environment
 export const jtag = {
-  // Full system access
+  // Smart client factory - automatically gives you the best client, fully connected
+  getClient: JTAGClientFactory.getClient.bind(JTAGClientFactory),
+
+  // Legacy system access (creates new systems)
   async connect() {
     if (isServer) {
       const { jtag } = await import('./server-index');

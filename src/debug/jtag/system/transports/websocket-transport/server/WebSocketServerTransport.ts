@@ -42,7 +42,25 @@ export class WebSocketServerTransport extends WebSocketTransportBase {
       const WebSocketModule = await eval('import("ws")');
       const WSServer = WebSocketModule.WebSocketServer ?? WebSocketModule.default?.WebSocketServer;
       
-      this.server = new WSServer({ port });
+      // Create server with proper error handling for port conflicts
+      const server = new WSServer({ port });
+      
+      // Wait for server to successfully start or fail
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', (error: Error) => {
+          if (error.message.includes('EADDRINUSE')) {
+            reject(new Error(`WebSocket server port ${port} already in use - another JTAG server may be running`));
+          } else {
+            reject(error);
+          }
+        });
+        
+        server.once('listening', () => {
+          resolve();
+        });
+      });
+      
+      this.server = server;
       this.connected = true;
       
       this.server!.on('connection', (ws: WSWebSocket) => {
