@@ -30,6 +30,13 @@ export class WebSocketTransportServerClient extends WebSocketTransportBase {
     super(config);
     this.handler = config.handler;
     
+    // Set message handler for incoming messages (CRITICAL for message routing)
+    if (config.handler && config.handler.handleTransportMessage) {
+      this.setMessageHandler((message: JTAGMessage) => {
+        config.handler.handleTransportMessage(message);
+      });
+    }
+    
     // Set event system for transport events (CRITICAL for health management)
     if (config.eventSystem) {
       this.setEventSystem(config.eventSystem);
