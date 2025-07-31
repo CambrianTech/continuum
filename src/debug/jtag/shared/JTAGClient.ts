@@ -112,7 +112,7 @@ import type { ListParams, ListResult, CommandSignature } from '../commands/list/
 import { createListParams } from '../commands/list/shared/ListTypes';
 import type { BaseResponsePayload, JTAGResponsePayload } from './ResponseTypes';
 import type { JTAGSystem } from './JTAGSystem';
-import { SYSTEM_SCOPES } from './SystemScopes';
+import { SYSTEM_SCOPES, isUnknownSession } from './SystemScopes';
 
 /**
  * JTAGClient connection options
@@ -200,6 +200,44 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
   protected abstract getLocalSystem(): Promise<JTAGSystem | null>;
 
   /**
+   * Request session from SessionDaemon using proper bootstrap protocol
+   * Solves chicken-and-egg problem: use bootstrap context to get real session
+   */
+  private async requestSessionFromDaemon(system: JTAGSystem): Promise<UUID> {
+    const isBootstrap = isUnknownSession(this.sessionId);
+    console.log(`🏷️ JTAGClient: Requesting session from SessionDaemon (${isBootstrap ? 'UNKNOWN_SESSION bootstrap' : 'existing context'}: ${this.sessionId})`);
+    
+    try {
+      // Find SessionDaemon in the system - check by name since we can't import specific types
+      const sessionDaemon = system.systemDaemons.find(daemon => 
+        daemon.name === 'session-daemon' || 
+        daemon.constructor.name.includes('SessionDaemon')
+      );
+      
+      if (!sessionDaemon) {
+        console.warn(`⚠️ JTAGClient: No SessionDaemon found in ${system.systemDaemons.length} daemons, keeping bootstrap session ${this.sessionId}`);
+        return this.sessionId;
+      }
+
+      console.log(`🔍 JTAGClient: Found SessionDaemon: ${sessionDaemon.constructor.name}`);
+
+      // Call SessionDaemon's getOrCreateSession method directly (local system)
+      if (typeof (sessionDaemon as any).getOrCreateSession === 'function') {
+        const realSessionId = await (sessionDaemon as any).getOrCreateSession();
+        console.log(`✅ JTAGClient: SessionDaemon returned session: ${realSessionId}`);
+        return realSessionId;
+      } else {
+        console.warn(`⚠️ JTAGClient: SessionDaemon missing getOrCreateSession method, keeping bootstrap session`);
+        return this.sessionId;
+      }
+    } catch (error) {
+      console.error(`❌ JTAGClient: Failed to get session from SessionDaemon:`, error);
+      console.log(`🔄 JTAGClient: Falling back to bootstrap session: ${this.sessionId}`);
+      return this.sessionId;
+    }
+  }
+
+  /**
    * Abstract initialization method - subclasses implement environment-specific setup
    * 
    * TODO: Implement proper local vs remote detection logic
@@ -214,11 +252,15 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
       console.log('🏠 JTAGClient: Using local system connection (hard-coded for development)');
       this.systemInstance = localSystem;
       
-      // ISSUE 9 FIX: Inherit session ID from local system to ensure correlation
-      if (localSystem.sessionId !== this.sessionId) {
-        console.log(`🔄 JTAGClient: Inheriting session ID from local system: ${this.sessionId} → ${localSystem.sessionId}`);
-        (this as any).sessionId = localSystem.sessionId;
-        this.context.uuid = localSystem.sessionId;
+      // PROPER ARCHITECTURE: Request session from SessionDaemon instead of inheriting
+      console.log('🏷️ JTAGClient: Requesting session from SessionDaemon...');
+      const realSessionId = await this.requestSessionFromDaemon(localSystem);
+      
+      if (realSessionId !== this.sessionId) {
+        const wasBootstrap = isUnknownSession(this.sessionId);
+        console.log(`🔄 JTAGClient: ${wasBootstrap ? 'Bootstrap complete' : 'Session updated'}: ${this.sessionId} → ${realSessionId}`);
+        (this as any).sessionId = realSessionId;
+        this.context.uuid = realSessionId;
       }
       
       this.connection = await this.createLocalConnection();
@@ -375,13 +417,13 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
    * 🔄 BOOTSTRAP PATTERN: Returns list result for CLI integration
    */
   static async connect<T extends JTAGClient>(this: new (context: JTAGContext) => T, options?: JTAGClientConnectOptions): Promise<{ client: T; listResult: ListResult }> {
-    // ISSUE 9 FIX: Don't generate new UUID - use system scope for bootstrap, get real session from SessionDaemon
+    // Bootstrap with UNKNOWN_SESSION - will be replaced by SessionDaemon with real session
     const context: JTAGContext = {
-      uuid: options?.sessionId ?? SYSTEM_SCOPES.SYSTEM, // Use system scope until we get real session
+      uuid: options?.sessionId ?? SYSTEM_SCOPES.UNKNOWN_SESSION, // Bootstrap context for session request
       environment: options?.targetEnvironment ?? 'server'
     };
 
-    console.log(`🔄 JTAGClient: Connecting to ${context.environment} system using bootstrap context...`);
+    console.log(`🔄 JTAGClient: Connecting to ${context.environment} system with UNKNOWN_SESSION bootstrap...`);
     
     const client = new this(context);
     await client.initialize(options);

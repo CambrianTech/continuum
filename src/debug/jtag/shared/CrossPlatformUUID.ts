@@ -6,9 +6,18 @@
  */
 
 /**
- * UUID type - matches crypto.UUID format
+ * UUIDv4 type - represents RFC 4122 compliant UUIDs
+ * Format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx where:
+ * - x is any hexadecimal digit (0-9, a-f)  
+ * - y is one of 8, 9, a, or b (variant bits)
+ * - 4 indicates version 4 (random UUID)
+ * 
+ * Total: 32 hex digits (128 bits) in 8-4-4-4-12 format
+ * Example: 550e8400-e29b-41d4-a716-446655440000
+ * 
+ * Note: Uses string for TypeScript performance - validated at runtime
  */
-export type UUID = `${string}-${string}-${string}-${string}-${string}`;
+export type UUID = string;
 
 /**
  * Cross-platform UUID generation
