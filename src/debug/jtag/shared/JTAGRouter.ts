@@ -114,6 +114,12 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   private readonly config: ResolvedJTAGRouterConfig;
   private isInitialized = false;
 
+  // Track who sent each request for response routing (correlationId -> sender info)
+  private readonly requestSenders = new Map<string, {
+    environment: JTAGEnvironment;
+    transport?: JTAGTransport;
+  }>();
+
   constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
     super('universal-router', context);
     
@@ -173,7 +179,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   async postMessage(message: JTAGMessage): Promise<RouterResult> {
     console.log(`📨 ${this.toString()}: Routing message to ${message.endpoint}`);
     
-    const targetEnvironment = this.extractEnvironment(message.endpoint);
+    const targetEnvironment = this.extractEnvironmentForMessage(message);
     
     if (targetEnvironment === this.context.environment) {
       return await this.routeLocally(message);
@@ -453,9 +459,15 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     console.log(`🏠 ${this.toString()}: Routing locally to ${message.endpoint}`);
     const result = await subscriber.handleMessage(message);
     
-    // If this was a request, send response back
+    // If this was a request, track sender and send response back
     if (JTAGMessageTypes.isRequest(message)) {
       console.log(`🔄 ${this.toString()}: Sending response for ${message.correlationId}`);
+      
+      // Track who sent this request for proper response routing
+      const senderEnvironment = this.determineSenderEnvironment(message);
+      this.requestSenders.set(message.correlationId, { 
+        environment: senderEnvironment 
+      });
       
       const responseMessage = JTAGMessageFactory.createResponse(
         this.context,
@@ -474,12 +486,61 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     return { success: true };
   }
 
-
   private extractEnvironment(endpoint: string): JTAGEnvironment {
     if (endpoint.startsWith('browser/')) return 'browser';
     if (endpoint.startsWith('server/')) return 'server';
     if (endpoint.startsWith('remote/')) return 'remote';
+    
     return this.context.environment;
+  }
+
+  /**
+   * Smart environment extraction that handles response routing
+   */
+  private extractEnvironmentForMessage(message: JTAGMessage): JTAGEnvironment {
+    const endpoint = message.endpoint;
+    
+    // For responses to 'client', look up who sent the original request
+    if (endpoint === 'client' && JTAGMessageTypes.isResponse(message)) {
+      const senderInfo = this.requestSenders.get(message.correlationId);
+      if (senderInfo) {
+        console.log(`🎯 ${this.toString()}: Routing response ${message.correlationId} back to original sender: ${senderInfo.environment}`);
+        // Clean up tracking after use
+        this.requestSenders.delete(message.correlationId);
+        return senderInfo.environment;
+      }
+      
+      console.warn(`⚠️ ${this.toString()}: No sender tracked for response ${message.correlationId}, using fallback`);
+      return 'browser'; // Fallback
+    }
+    
+    // For all other cases, use standard extraction
+    return this.extractEnvironment(endpoint);
+  }
+
+  /**
+   * Determine who sent this request based on message context and origin
+   */
+  private determineSenderEnvironment(message: JTAGMessage): JTAGEnvironment {
+    // If origin is 'client', they came from a transport connection
+    if (message.origin === 'client') {
+      // Client is connecting through transport to this server
+      // The key insight: we need to distinguish between:
+      // - Same-environment routing (server->server, browser->browser) 
+      // - Cross-transport routing (external client -> server via transport)
+      
+      // For external clients, use the opposite environment to force transport routing
+      if (this.context.environment === 'server') {
+        // Server receiving from external client - route response to browser to trigger transport
+        return 'browser';  
+      } else {
+        // Browser receiving from external client - route response to server to trigger transport  
+        return 'server';
+      }
+    }
+    
+    // For other origins, extract environment from the origin path
+    return this.extractEnvironment(message.origin);
   }
 
   /**
