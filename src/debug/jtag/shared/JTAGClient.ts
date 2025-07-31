@@ -1,4 +1,4 @@
-// ISSUES: 8 critical, last updated 2025-07-31 - ARCHITECTURAL CLEANUP REQUIRED
+// ISSUES: 9 critical, last updated 2025-07-31 - ARCHITECTURAL CLEANUP REQUIRED
 
 /**
  * JTAGClient - Universal Location-Transparent Interface to JTAG Systems
@@ -46,6 +46,12 @@
  *    - initialize() tries to be smart about local vs remote
  *    - Should be: try getLocalSystem(), if null use transport
  *    - Decision logic should be simple and clear
+ *
+ * 🚨 ISSUE 9: TEMPORARY HARD-CODED LOCAL CONNECTIONS
+ *    - Currently hard-coded to always prefer local system
+ *    - Need proper detection logic for local vs remote modes
+ *    - Need configuration-based connection mode selection
+ *    - Need automatic fallback when local system unavailable
  *
  * ELEGANT SOLUTION - FOLLOW JTAGSYSTEM PATTERN:
  * 
@@ -106,6 +112,7 @@ import type { ListParams, ListResult, CommandSignature } from '../commands/list/
 import { createListParams } from '../commands/list/shared/ListTypes';
 import type { BaseResponsePayload, JTAGResponsePayload } from './ResponseTypes';
 import type { JTAGSystem } from './JTAGSystem';
+import { SYSTEM_SCOPES } from './SystemScopes';
 
 /**
  * JTAGClient connection options
@@ -138,7 +145,7 @@ export interface JTAGConnection {
   readonly context: JTAGContext;
 }
 
-// TODO: Remove DynamicCommandsInterface - use JTAGBase.commands instead (ISSUE 1)
+// TODO: Keep DynamicCommandsInterface for now - needed for remote command discovery (ISSUE 1)
 /**
  * Dynamic commands interface generated from server's list command
  */
@@ -189,17 +196,31 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
     return this.sessionId;
   }
 
-  // TODO: Make async - may need to start system (ISSUE 4)
-  protected abstract getLocalSystem(): JTAGSystem | null;
+  // FIXED: Now async - may need to start system (ISSUE 4 RESOLVED)
+  protected abstract getLocalSystem(): Promise<JTAGSystem | null>;
 
   /**
    * Abstract initialization method - subclasses implement environment-specific setup
+   * 
+   * TODO: Implement proper local vs remote detection logic
+   * TODO: Add configuration-based connection mode selection
+   * TODO: Add automatic fallback when local system unavailable
    */
   protected async initialize(options?: JTAGClientConnectOptions): Promise<void> {
+    // TEMPORARY: Hard-code local connections during development (npm start)
     // Try local system first if available
     const localSystem = await this.getLocalSystem();
-    if (localSystem && !options?.transportType) {
+    if (localSystem) {
+      console.log('🏠 JTAGClient: Using local system connection (hard-coded for development)');
       this.systemInstance = localSystem;
+      
+      // ISSUE 9 FIX: Inherit session ID from local system to ensure correlation
+      if (localSystem.sessionId !== this.sessionId) {
+        console.log(`🔄 JTAGClient: Inheriting session ID from local system: ${this.sessionId} → ${localSystem.sessionId}`);
+        (this as any).sessionId = localSystem.sessionId;
+        this.context.uuid = localSystem.sessionId;
+      }
+      
       this.connection = await this.createLocalConnection();
     } else {
       // Remote connection setup
@@ -277,41 +298,37 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
     return this.connection?.getCommandsInterface() ?? new Map();
   }
 
-  // TODO: Remove custom commands getter - use JTAGBase.commands instead (ISSUE 1)
+  // TODO: Keep custom commands getter for now - needed for command discovery (ISSUE 1)
   /**
-   * Get dynamic commands interface - THE SINGLE DEPENDENCY PATTERN
-   * Only 'list' is hardcoded, everything else is discovered dynamically
+   * Get dynamic commands interface - works for both local and remote
+   * Local: Delegates to local system after discovery
+   * Remote: Routes through transport after discovery
    */
   get commands(): DynamicCommandsInterface {
     const self = this;
     
     return new Proxy({} as DynamicCommandsInterface, {
       get: (target, commandName: string) => {
-        // 🔑 SINGLE DEPENDENCY: 'list' is ALWAYS available (our only hardcoded command)
+        // 'list' is always available and needed for command discovery
         if (commandName === 'list') {
           return async (params?: Partial<ListParams>): Promise<ListResult> => {
             const fullParams = createListParams(self.context, self.sessionId, params || {});
-            
-            // 🔄 INTERCEPTION PATTERN: Update discovered commands from list result
-            const result = await self.executeListCommand(fullParams);
-            self.updateDiscoveredCommands(result);
-            
-            return result;
+            return await self.connection!.executeCommand<ListParams, ListResult>('list', fullParams);
           };
         }
-
-        // 🎯 DYNAMIC DISCOVERY: All other commands must be discovered first
+        
+        // For other commands, ensure they were discovered first
         if (!self.connection) {
-          throw new Error(`Command '${commandName}' not available. Call connect() first to discover commands.`);
+          throw new Error(`Command '${commandName}' not available. Call connect() first.`);
         }
         
         const commandSignature = self.discoveredCommands.get(commandName);
         if (!commandSignature) {
           const available = Array.from(self.discoveredCommands.keys());
-          throw new Error(`Command '${commandName}' not available. Available commands: ${available.join(', ')}. Call list() to refresh.`);
+          throw new Error(`Command '${commandName}' not available. Available commands: ${available.join(', ')}`);
         }
 
-        // Return dynamic command function
+        // Delegate to connection (works for both local and remote)
         return async (params?: any): Promise<any> => {
           const fullParams = {
             ...params,
@@ -325,36 +342,20 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
     });
   }
   
-  // TODO: Remove executeListCommand - dual command paths are confusing (ISSUE 3)
+  // TODO: Keep updateDiscoveredCommands - needed for remote command discovery (ISSUE 2)
   /**
-   * Execute list command through the appropriate connection
-   */
-  private async executeListCommand(params: ListParams): Promise<ListResult> {
-    if (!this.connection) {
-      throw new Error('No connection available for list command. Call connect() first.');
-    }
-    
-    // Delegate to connection (local system has already taken care of list command)
-    return await this.connection.executeCommand<ListParams, ListResult>('list', params);
-  }
-  
-  // TODO: Remove updateDiscoveredCommands - redundant with CommandsInterface (ISSUE 2)
-  /**
-   * Update discovered commands from list result (interception pattern)
+   * Update discovered commands from list result (called during connect)
    */
   private updateDiscoveredCommands(listResult: ListResult): void {
     if (listResult.success && listResult.commands) {
-      console.log(`🔄 JTAGClient: Updating command map with ${listResult.commands.length} commands`);
+      console.log(`🔍 JTAGClient: Discovered ${listResult.commands.length} commands from list response`);
       
-      // Clear and repopulate discovered commands
-      this.discoveredCommands.clear();
       for (const command of listResult.commands) {
         this.discoveredCommands.set(command.name, command);
       }
-      
-      console.log(`✅ JTAGClient: Command map updated. Available: ${Array.from(this.discoveredCommands.keys()).join(', ')}`);
     }
   }
+  // REMOVED: Duplicate updateDiscoveredCommands method cleaned up
 
   /**
    * Send message through transport - let router handle correlation
@@ -374,12 +375,13 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
    * 🔄 BOOTSTRAP PATTERN: Returns list result for CLI integration
    */
   static async connect<T extends JTAGClient>(this: new (context: JTAGContext) => T, options?: JTAGClientConnectOptions): Promise<{ client: T; listResult: ListResult }> {
+    // ISSUE 9 FIX: Don't generate new UUID - use system scope for bootstrap, get real session from SessionDaemon
     const context: JTAGContext = {
-      uuid: options?.sessionId ?? generateUUID(),
+      uuid: options?.sessionId ?? SYSTEM_SCOPES.SYSTEM, // Use system scope until we get real session
       environment: options?.targetEnvironment ?? 'server'
     };
 
-    console.log(`🔄 JTAGClient: Connecting to ${context.environment} system...`);
+    console.log(`🔄 JTAGClient: Connecting to ${context.environment} system using bootstrap context...`);
     
     const client = new this(context);
     await client.initialize(options);
