@@ -25,6 +25,13 @@ export class WebSocketTransportServerClient extends WebSocketTransportBase {
   private client?: any; // ws.WebSocket type
   private lastConnectedUrl?: string;
   private handler: ITransportHandler;
+  
+  // Promise-based correlation for request/response matching
+  private pendingRequests = new Map<string, {
+    resolve: (result: any) => void;
+    reject: (error: Error) => void;
+    timeout: NodeJS.Timeout;
+  }>();
 
   constructor(config: WebSocketServerClientConfig) {
     super(config);

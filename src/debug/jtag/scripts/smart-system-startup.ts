@@ -94,16 +94,25 @@ class SmartSystemStartup {
   async runGentleStart(background: boolean = false): Promise<void> {
     console.log(`🚀 Starting JTAG system gently (no force stop)...`);
     
+    // Create the log directory path (relative to current working directory)
+    const logDir = 'examples/test-bench/.continuum/jtag/sessions/system/00000000-0000-0000-0000-000000000000/logs';
+    const logFile = `${logDir}/server-node-output.log`;
+    
+    // Ensure log directory exists
+    const mkdirCommand = `mkdir -p ${logDir}`;
+    
     // Gentle startup: build and start test-bench without killing existing systems
     const startupCommands = [
+      mkdirCommand,
       'npm run build',
       'npm run version:bump', 
       'npm pack',
       'node scripts/update-test-bench.js',
-      'cd examples/test-bench && npm install && npm start'
+      `cd examples/test-bench && npm install && npm start > ../../${logFile} 2>&1`
     ].join(' && ');
     
     console.log(`🔄 Using tmux for gentle startup...`);
+    console.log(`📝 Server output will be logged to: ${logFile}`);
     try {
       await execAsync(`tmux new-session -d -s jtag-gentle "${startupCommands}"`);
       console.log(`✅ Started in tmux session 'jtag-gentle'`);
@@ -163,6 +172,53 @@ class SmartSystemStartup {
     return false;
   }
 
+  async killExistingProcesses(): Promise<void> {
+    console.log(`🛑 Killing existing JTAG processes...`);
+    
+    for (const port of this.ports) {
+      const pid = await this.checkPortInUse(port);
+      if (pid) {
+        try {
+          console.log(`🔫 Killing process ${pid} on port ${port}`);
+          await execAsync(`kill -TERM ${pid}`);
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for graceful shutdown
+          
+          // Force kill if still running
+          const stillRunning = await this.checkPortInUse(port);
+          if (stillRunning) {
+            console.log(`🔫 Force killing process ${pid} on port ${port}`);
+            await execAsync(`kill -KILL ${pid}`);
+          }
+        } catch (error) {
+          console.warn(`⚠️  Failed to kill process ${pid}: ${error}`);
+        }
+      }
+    }
+    
+    // Kill tmux sessions
+    try {
+      await execAsync('tmux kill-session -t jtag-gentle 2>/dev/null || true');
+    } catch {
+      // Ignore if session doesn't exist
+    }
+  }
+
+  async getSystemStatus(): Promise<'running' | 'starting' | 'stopped'> {
+    const portChecks = await Promise.all(
+      this.ports.map(port => this.checkPortInUse(port))
+    );
+    
+    const runningPorts = portChecks.filter(pid => pid !== null);
+    
+    if (runningPorts.length === this.ports.length) {
+      return 'running';
+    } else if (runningPorts.length > 0) {
+      return 'starting';  
+    } else {
+      return 'stopped';
+    }
+  }
+
   async ensureSystemRunning(options: StartupOptions = {}): Promise<boolean> {
     const { force = false, skipBuild = false, background = true, verbose = false } = options;
     
@@ -170,10 +226,15 @@ class SmartSystemStartup {
       console.log(`🎯 Smart System Startup - Options:`, { force, skipBuild, background, verbose });
     }
 
-    // Step 1: Check if system is already running - NEVER kill existing systems
-    if (await this.isSystemRunning()) {
+    const systemStatus = await this.getSystemStatus();
+    
+    // SCENARIO 1: System fully running
+    if (systemStatus === 'running') {
       if (force) {
-        console.log(`🔄 Force restart requested, but system is running - will restart`);
+        console.log(`🔄 Force restart requested - killing existing system first`);
+        await this.killExistingProcesses();
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for cleanup
+        console.log(`🚀 Starting new system after force kill`);
         await this.runNpmStart(background);
         return await this.waitForSystemReady();
       } else {
@@ -181,17 +242,31 @@ class SmartSystemStartup {
         return true;
       }
     }
+    
+    // SCENARIO 2: System partially running (starting up)
+    if (systemStatus === 'starting') {
+      console.log(`⏳ System is starting up - waiting for completion`);
+      const ready = await this.waitForSystemReady(30000); // Shorter timeout for already-starting system
+      if (ready) {
+        return true;
+      } else {
+        console.log(`❌ System failed to start completely - forcing restart`);
+        await this.killExistingProcesses();
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        await this.runNpmStart(background);
+        return await this.waitForSystemReady();
+      }
+    }
 
-    // Step 2: Check if build is needed (unless skipped)
+    // SCENARIO 3: System not running 
+    console.log(`🚀 No system detected - starting new system`);
+    
+    // Check if build is needed (unless skipped)
     if (!skipBuild && !await this.isBuildUpToDate()) {
       console.log(`📦 Build out of date - npm start will handle rebuild`);
     }
 
-    // Step 3: Start the system (only if not running)
-    console.log(`🚀 No system detected - starting new system`);
     await this.runNpmStart(background);
-    
-    // Step 4: Wait for system to be ready
     return await this.waitForSystemReady();
   }
 }

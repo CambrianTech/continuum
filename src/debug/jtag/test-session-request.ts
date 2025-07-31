@@ -14,8 +14,10 @@ class SessionRequestHandler {
   public realSessionId: string | null = null;
 
   async handleTransportMessage(message: JTAGMessage): Promise<void> {
+    console.log(`🔔 CLIENT RECEIVED MESSAGE!`);
     console.log(`📨 Received: ${message.messageType || (message as any).type} to ${message.endpoint || 'no-endpoint'}`);
     console.log(`📨 Message correlationId: ${(message as any).correlationId?.slice(0, 12) || 'none'}...`);
+    console.log(`📨 Full message:`, JSON.stringify(message, null, 2));
     
     if ((message.messageType === 'response' || (message as any).type === 'response') && (message as any).correlationId) {
       const correlationId = (message as any).correlationId;
