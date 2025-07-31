@@ -34,7 +34,8 @@ export const jtag = {
       console.log('   Reason:', error instanceof Error ? error.message : String(error));
       
       // Fall back to remote client
-      const { client } = await JTAGClient.connect({ targetEnvironment: 'server' });
+      const { JTAGClientServer } = await import('./server/JTAGClientServer');
+      const { client } = await JTAGClientServer.connectRemote({ targetEnvironment: 'server' });
       console.log('✅ Server: Remote client connected');
       return client;
     }

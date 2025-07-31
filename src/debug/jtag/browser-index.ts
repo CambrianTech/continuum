@@ -5,7 +5,7 @@
  */
 
 import { JTAGSystemBrowser } from './browser/JTAGSystemBrowser';
-import { JTAGClientBrowser } from './shared/JTAGClientBrowser';
+import { JTAGClientBrowser } from './browser/JTAGClientBrowser';
 import type { JTAGBase } from './shared/JTAGBase';
 
 export const jtag = {

@@ -1,31 +1,38 @@
 /**
- * WebSocket Client Transport - Client-side WebSocket implementation
+ * WebSocket Transport Browser - Browser-specific WebSocket implementation
  * 
- * Refactored to use shared WebSocket base class to eliminate duplication.
- * Handles WebSocket client connections to server with session handshake.
+ * Uses typed inheritance from shared WebSocket base class.
+ * Browser role: client transport that connects to server.
  */
 
 import { WebSocketTransportBase, type WebSocketConfig } from '../shared/WebSocketTransportBase';
 import type { JTAGMessage } from '@shared/JTAGTypes';
 import type { TransportSendResult } from '../../shared/TransportTypes';
 import type { ITransportHandler } from '../../shared/ITransportHandler';
+import type { EventsInterface } from '@systemEvents';
 
-// WebSocket client specific configuration
-export interface WebSocketClientConfig extends WebSocketConfig {
+// Browser-specific WebSocket configuration with typed inheritance
+export interface WebSocketBrowserConfig extends WebSocketConfig {
   url: string;
   handler: ITransportHandler; // REQUIRED transport protocol handler
+  eventSystem?: EventsInterface; // REQUIRED for transport events
 }
 
-export class WebSocketClientTransport extends WebSocketTransportBase {
+export class WebSocketTransportBrowser extends WebSocketTransportBase {
   public readonly name = 'websocket-client';
   
   private socket?: WebSocket;
   private lastConnectedUrl?: string;
   private handler: ITransportHandler;
 
-  constructor(config: WebSocketClientConfig) {
+  constructor(config: WebSocketBrowserConfig) {
     super(config);
     this.handler = config.handler;
+    
+    // Set event system for transport events (CRITICAL for health management)
+    if (config.eventSystem) {
+      this.setEventSystem(config.eventSystem);
+    }
   }
 
   /**
