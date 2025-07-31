@@ -61,9 +61,20 @@ export interface RemoteConnectionConfig {
  */
 export class JTAGClientBrowser extends JTAGClient {
   
-  protected getLocalSystem(): JTAGSystem | null {
-    // Browser can access local system
-    return JTAGSystemBrowser.instance;
+  protected async getLocalSystem(): Promise<JTAGSystem | null> {
+    // TODO: Implement proper local vs remote browser detection:
+    // - Check if we're in same-origin context with local JTAG system
+    // - Add configuration for remote browser connections
+    // - Handle embedded vs standalone browser scenarios
+    
+    // TEMPORARY: Hard-code local system access for development
+    // Browser can access local system - connect() creates instance if needed
+    try {
+      return await JTAGSystemBrowser.connect();
+    } catch (error) {
+      console.warn(`⚠️ JTAGClientBrowser: Local system not available:`, error);
+      return null;
+    }
   }
   
   /**
