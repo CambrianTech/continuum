@@ -91,20 +91,40 @@ class SmartSystemStartup {
     }
   }
 
+  async runGentleStart(background: boolean = false): Promise<void> {
+    console.log(`🚀 Starting JTAG system gently (no force stop)...`);
+    
+    // Gentle startup: build and start test-bench without killing existing systems
+    const startupCommands = [
+      'npm run build',
+      'npm run version:bump', 
+      'npm pack',
+      'node scripts/update-test-bench.js',
+      'cd examples/test-bench && npm install && npm start'
+    ].join(' && ');
+    
+    console.log(`🔄 Using tmux for gentle startup...`);
+    try {
+      await execAsync(`tmux new-session -d -s jtag-gentle "${startupCommands}"`);
+      console.log(`✅ Started in tmux session 'jtag-gentle'`);
+    } catch (error) {
+      console.log(`❌ Tmux command failed: ${error}`);
+      throw error;
+    }
+    
+    // Wait a bit for startup
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    if (!background) {
+      console.log(`💡 System started in tmux session 'jtag-gentle' - ports should be available soon`);
+    }
+  }
+
   async runNpmStart(background: boolean = false): Promise<void> {
     console.log(`🚀 Starting JTAG system (${background ? 'background' : 'foreground'})...`);
     
-    // ALWAYS use background tmux startup for reliability
-    // Even "foreground" mode should use tmux to prevent process exit issues
-    console.log(`🔄 Using tmux for reliable background startup...`);
-    await execAsync('npm run system:start');
-    
-    // Wait a bit for startup
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    if (!background) {
-      console.log(`💡 System started in background with tmux - use 'npm run system:stop' to stop`);
-    }
+    // Use gentle start to avoid killing existing systems
+    await this.runGentleStart(background);
   }
 
   async waitForSystemReady(timeoutMs: number = 60000): Promise<boolean> {
@@ -150,28 +170,28 @@ class SmartSystemStartup {
       console.log(`🎯 Smart System Startup - Options:`, { force, skipBuild, background, verbose });
     }
 
-    // Step 1: Check if force restart requested
-    if (force) {
-      console.log(`🔄 Force restart requested`);
-      await this.runNpmStart(background);
-      return await this.waitForSystemReady();
-    }
-
-    // Step 2: Check if system is already running
+    // Step 1: Check if system is already running - NEVER kill existing systems
     if (await this.isSystemRunning()) {
-      console.log(`✅ System already running - no action needed`);
-      return true;
+      if (force) {
+        console.log(`🔄 Force restart requested, but system is running - will restart`);
+        await this.runNpmStart(background);
+        return await this.waitForSystemReady();
+      } else {
+        console.log(`✅ System already running - connecting to existing system`);
+        return true;
+      }
     }
 
-    // Step 3: Check if build is needed (unless skipped)
+    // Step 2: Check if build is needed (unless skipped)
     if (!skipBuild && !await this.isBuildUpToDate()) {
       console.log(`📦 Build out of date - npm start will handle rebuild`);
     }
 
-    // Step 4: Start the system
+    // Step 3: Start the system (only if not running)
+    console.log(`🚀 No system detected - starting new system`);
     await this.runNpmStart(background);
     
-    // Step 5: Wait for system to be ready
+    // Step 4: Wait for system to be ready
     return await this.waitForSystemReady();
   }
 }

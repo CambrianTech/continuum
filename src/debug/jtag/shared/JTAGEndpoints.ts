@@ -49,7 +49,15 @@ export const JTAG_ENDPOINTS = {
   SESSION: {
     BASE: 'session-daemon',
     SERVER: 'server/session-daemon',
-    BROWSER: 'browser/session-daemon'
+    BROWSER: 'browser/session-daemon',
+    // Session-specific operations
+    GET_DEFAULT: 'session-daemon/get-default',
+    GET_CURRENT: 'session-daemon/current',
+    CREATE: 'session-daemon/create',
+    LIST: 'session-daemon/list',
+    ACTIVATE: 'session-daemon/activate',
+    DEACTIVATE: 'session-daemon/deactivate',
+    END: 'session-daemon/end'
   },
 
   // HTTP API endpoints

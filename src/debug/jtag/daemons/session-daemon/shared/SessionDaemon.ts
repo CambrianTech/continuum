@@ -261,33 +261,155 @@ export abstract class SessionDaemon extends DaemonBase {
   }
 
   /**
-   * Handle incoming session messages
+   * Handle incoming session messages - supports both endpoint-based and payload-type routing
    */
   async handleMessage(message: JTAGMessage): Promise<SessionResponse> {
-    const sessionPayload = message.payload as SessionPayload;
+    console.log(`📨 ${this.toString()}: Handling message to ${message.endpoint}`);
+    
+    // Extract session operation from endpoint (similar to CommandDaemon pattern)
+    const operation = this.extractOperation(message.endpoint);
+    const requestPayload = message.payload;
+    const requestContext = requestPayload.context ?? this.context;
+    const requestSessionId = requestPayload.sessionId;
+    
+    if (!requestSessionId) {
+      throw new Error(`SECURITY: All session operations require valid sessionId. Missing sessionId for operation: ${operation}`);
+    }
     
     try {
-      switch (sessionPayload.type) {
+      // Route based on extracted operation from endpoint
+      switch (operation) {
+        case 'get-default':
+          return await this.getOrCreateDefaultSession(requestContext, requestSessionId);
+        case 'current':
+          return await this.getCurrentSession(requestContext, requestSessionId);
         case 'create':
-          return await this.createSession(sessionPayload as CreateSessionPayload);
+          return await this.createSession(requestPayload as CreateSessionPayload);
         case 'get':
-          return this.getSession(sessionPayload as GetSessionPayload);
+          return this.getSession(requestPayload as GetSessionPayload);
         case 'list':
-          return this.listSessions(sessionPayload as ListSessionsPayload);
+          return this.listSessions(requestPayload as ListSessionsPayload);
         case 'activate':
-          return this.setActive(sessionPayload as ActivateSessionPayload, true);
+          return this.setActive(requestPayload as ActivateSessionPayload, true);
         case 'deactivate':
-          return this.setActive(sessionPayload as DeactivateSessionPayload, false);
+          return this.setActive(requestPayload as DeactivateSessionPayload, false);
         case 'end':
-          return await this.endSession(sessionPayload as EndSessionPayload);
+          return await this.endSession(requestPayload as EndSessionPayload);
         default:
-          console.warn(`⚠️ ${this.toString()}: Unknown session message type`);
-          return createSessionErrorResponse('Unknown session message type', (sessionPayload as any).context, (sessionPayload as any).sessionId);
+          // Fallback to legacy payload-type routing for compatibility
+          const sessionPayload = message.payload as SessionPayload;
+          if (sessionPayload.type) {
+            return await this.handleLegacyPayloadType(sessionPayload);
+          }
+          
+          console.warn(`⚠️ ${this.toString()}: Unknown session operation: ${operation}`);
+          return createSessionErrorResponse(`Unknown session operation: ${operation}`, requestContext, requestSessionId);
       }
     } catch (error: any) {
-      console.error(`❌ ${this.toString()}: Error processing session message:`, error.message);
-      return createSessionErrorResponse(error.message, sessionPayload.context, sessionPayload.sessionId);
+      console.error(`❌ ${this.toString()}: Error processing session operation ${operation}:`, error.message);
+      return createSessionErrorResponse(error.message, requestContext, requestSessionId);
     }
+  }
+
+  /**
+   * Extract session operation from endpoint path (similar to CommandDaemon.extractCommand)
+   */
+  private extractOperation(endpoint: string): string {
+    // endpoint format: "session-daemon/get-default" or "server/session-daemon/current"
+    const parts = endpoint.split('/');
+    
+    // Find the 'session-daemon' segment and extract everything after it
+    const sessionIndex = parts.findIndex(part => part === 'session-daemon');
+    if (sessionIndex === -1 || sessionIndex === parts.length - 1) {
+      // If no operation specified, default to base operation
+      return 'base';
+    }
+    
+    // Return everything after 'session-daemon' joined with '/'
+    // e.g., "session-daemon/get-default" -> "get-default"
+    return parts.slice(sessionIndex + 1).join('/');
+  }
+
+  /**
+   * Legacy payload-type routing for backward compatibility
+   */
+  private async handleLegacyPayloadType(sessionPayload: SessionPayload): Promise<SessionResponse> {
+    switch (sessionPayload.type) {
+      case 'create':
+        return await this.createSession(sessionPayload as CreateSessionPayload);
+      case 'get':
+        return this.getSession(sessionPayload as GetSessionPayload);
+      case 'list':
+        return this.listSessions(sessionPayload as ListSessionsPayload);
+      case 'activate':
+        return this.setActive(sessionPayload as ActivateSessionPayload, true);
+      case 'deactivate':
+        return this.setActive(sessionPayload as DeactivateSessionPayload, false);
+      case 'end':
+        return await this.endSession(sessionPayload as EndSessionPayload);
+      default:
+        console.warn(`⚠️ ${this.toString()}: Unknown session message type in legacy routing`);
+        return createSessionErrorResponse('Unknown session message type', (sessionPayload as any).context, (sessionPayload as any).sessionId);
+    }
+  }
+
+  /**
+   * Get or create default session - endpoint-based operation
+   */
+  private async getOrCreateDefaultSession(context: JTAGContext, sessionId: UUID): Promise<SessionResponse> {
+    console.log(`🏷️ ${this.toString()}: Getting or creating default session`);
+    
+    // Try to get existing default session first
+    const existingSessions = Array.from(this.sessions.values()).filter(s => s.isActive);
+    if (existingSessions.length > 0) {
+      const defaultSession = existingSessions[0]; // Use first active session as default
+      console.log(`✅ ${this.toString()}: Found existing default session: ${defaultSession.id}`);
+      return createSessionSuccessResponse(
+        { sessionId: defaultSession.id, metadata: defaultSession },
+        context,
+        sessionId
+      );
+    }
+    
+    // Create new default session
+    const newSessionId = generateUUID();
+    const session: SessionMetadata = {
+      id: newSessionId,
+      category: 'user',
+      userId: generateUUID(),
+      displayName: 'Default Session',
+      created: new Date(),
+      lastActive: new Date(),
+      isActive: true
+    };
+    
+    this.sessions.set(session.id, session);
+    console.log(`✅ ${this.toString()}: Created new default session: ${session.id}`);
+    
+    return createSessionSuccessResponse(
+      { sessionId: session.id, metadata: session },
+      context,
+      sessionId
+    );
+  }
+
+  /**
+   * Get current session - endpoint-based operation
+   */
+  private async getCurrentSession(context: JTAGContext, sessionId: UUID): Promise<SessionResponse> {
+    console.log(`🏷️ ${this.toString()}: Getting current session for ${sessionId}`);
+    
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      return createSessionSuccessResponse(
+        { sessionId: session.id, metadata: session },
+        context,
+        sessionId
+      );
+    }
+    
+    // Session not found, create one
+    return await this.getOrCreateDefaultSession(context, sessionId);
   }
 
   /**
