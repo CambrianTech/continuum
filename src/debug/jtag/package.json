@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.402",
+  "version": "1.0.404",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/index.js",
   "browser": "dist/browser/index.js",
@@ -251,7 +251,7 @@
     "node": ">=16.0.0"
   },
   "_importGeneration": {
-    "timestamp": "2025-07-30T23:32:54.672Z",
+    "timestamp": "2025-07-31T00:00:44.516Z",
     "source": "unified-config.json",
     "importCount": 120
   }
