@@ -107,18 +107,36 @@ class SmartSystemStartup {
     }
   }
 
-  async waitForSystemReady(timeoutMs: number = 30000): Promise<boolean> {
+  async waitForSystemReady(timeoutMs: number = 60000): Promise<boolean> {
     console.log(`⏳ Waiting for system to be ready (timeout: ${timeoutMs}ms)...`);
     
     const startTime = Date.now();
+    let lastPortCount = 0;
     
     while (Date.now() - startTime < timeoutMs) {
-      if (await this.isSystemRunning()) {
-        console.log(`✅ System ready!`);
+      const portChecks = await Promise.all(
+        this.ports.map(port => this.checkPortInUse(port))
+      );
+      
+      const runningPorts = portChecks.filter(pid => pid !== null);
+      const currentPortCount = runningPorts.length;
+      
+      // Show progress if ports are starting up
+      if (currentPortCount !== lastPortCount) {
+        if (currentPortCount > 0) {
+          console.log(`🔄 System starting... (${currentPortCount}/${this.ports.length} ports ready)`);
+        }
+        lastPortCount = currentPortCount;
+      }
+      
+      // Check if fully ready
+      if (currentPortCount === this.ports.length) {
+        console.log(`✅ System ready! All ports (${this.ports.join(', ')}) are running`);
         return true;
       }
       
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Wait 2 seconds between checks (system needs time to build/start)
+      await new Promise(resolve => setTimeout(resolve, 2000));
     }
     
     console.log(`❌ System not ready after ${timeoutMs}ms`);
