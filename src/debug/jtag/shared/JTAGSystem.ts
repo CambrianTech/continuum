@@ -73,6 +73,13 @@ export abstract class JTAGSystem extends JTAGBase {
   protected readonly config: ResolvedJTAGSystemConfig;
   public sessionId = this.context.uuid;
 
+  /**
+   * Public access to daemons for external clients
+   */
+  public get systemDaemons(): DaemonBase[] {
+    return this.daemons;
+  }
+
   constructor(context: JTAGContext, router: JTAGRouter, config: JTAGSystemConfig = {}) {
     super('jtag-system', context);
     this.router = router;

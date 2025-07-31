@@ -62,7 +62,7 @@
   },
   "description": "Auto-generated import map for browser builds from unified-config.json",
   "_generated": {
-    "timestamp": "2025-07-31T18:31:57.479Z",
+    "timestamp": "2025-07-31T19:01:36.535Z",
     "source": "unified-config.json",
     "importCount": 59
   }

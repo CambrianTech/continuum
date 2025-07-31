@@ -29,7 +29,16 @@ export const SYSTEM_SCOPES = {
    * Used for: system health, daemon status, console logging, events
    * Logs stored in: .continuum/jtag/sessions/system/{SYSTEM_UUID}/logs/
    */
-  SYSTEM: '00000000-0000-0000-0000-000000000000' as UUID
+  SYSTEM: '00000000-0000-0000-0000-000000000000' as UUID,
+  
+  /**
+   * Bootstrap session for clients before SessionDaemon assigns real session
+   * Used for: client initialization, session requests, temporary operations
+   * This session should be replaced by SessionDaemon with a real session ID
+   * Format: DEADBEEF-style hex that spells "UNKNOWN SESSION" using hex digits
+   * Uses only valid hex digits: 0-9, A-F (case insensitive)
+   */
+  UNKNOWN_SESSION: 'deadbeef-cafe-4bad-8ace-5e551000c0de' as UUID
 } as const;
 
 /**
@@ -37,6 +46,14 @@ export const SYSTEM_SCOPES = {
  */
 export function isSystemUUID(sessionId: UUID): boolean {
   return sessionId === SYSTEM_SCOPES.SYSTEM;
+}
+
+export function isUnknownSession(sessionId: UUID): boolean {
+  return sessionId === SYSTEM_SCOPES.UNKNOWN_SESSION;
+}
+
+export function isBootstrapSession(sessionId: UUID): boolean {
+  return isSystemUUID(sessionId) || isUnknownSession(sessionId);
 }
 
 /**
