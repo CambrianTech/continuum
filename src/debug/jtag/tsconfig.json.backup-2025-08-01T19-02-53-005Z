@@ -526,18 +526,6 @@
       "@generator/*": [
         "generator/*"
       ],
-      "@generatorTypes": [
-        "generator/types"
-      ],
-      "@generatorTypes/*": [
-        "generator/types/*"
-      ],
-      "@generatorUtils": [
-        "generator/utils"
-      ],
-      "@generatorUtils/*": [
-        "generator/utils/*"
-      ],
       "@scripts": [
         "scripts"
       ],
@@ -728,14 +716,8 @@
     "**/templates/**/*"
   ],
   "_generated": {
-    "timestamp": "2025-08-01T19:38:35.365Z",
+    "timestamp": "2025-08-01T18:13:15.989Z",
     "source": "unified-config.json",
-    "pathCount": 228
-  },
-  "_pathsGenerated": {
-    "timestamp": "2025-08-01T19:03:05.271Z",
-    "source": "generator/path-mappings.json",
-    "pathCount": 26,
-    "note": "Auto-generated from essential path mappings only"
+    "pathCount": 224
   }
 }
