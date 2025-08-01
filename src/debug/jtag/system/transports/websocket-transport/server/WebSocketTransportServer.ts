@@ -90,13 +90,12 @@ export class WebSocketTransportServer extends WebSocketTransportBase {
             
             console.log(`📨 ${this.name}: Received message from client`);
             
-            // Forward to registered message handlers
+            // Forward to registered message handlers (router handles all processing)
             for (const handler of this.messageHandlers) {
               handler(message);
             }
             
-            // Also call base class handler
-            this.handleIncomingMessage(message);
+            // Base class handler not needed - messageHandlers include router which does all processing
           } catch (error) {
             this.handleWebSocketError(error as Error, 'message processing');
           }

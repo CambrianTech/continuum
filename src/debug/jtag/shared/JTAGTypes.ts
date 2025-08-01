@@ -171,6 +171,13 @@ export interface JTAGMessageBase<T extends JTAGPayload = JTAGPayload> {
 }
 
 /**
+ * Correlation interface - ensures request/response messages have unique correlation IDs
+ */
+export interface ICorrelation {
+  readonly correlationId: UUID;
+}
+
+/**
  * Fire-and-forget event message (no response expected)
  */
 export interface JTAGEventMessage<T extends JTAGPayload = JTAGPayload> extends JTAGMessageBase<T> {
@@ -178,19 +185,20 @@ export interface JTAGEventMessage<T extends JTAGPayload = JTAGPayload> extends J
 }
 
 /**
- * Request message (expects a response)
+ * Request message (expects a response) - automatically generates correlationId
  */
-export interface JTAGRequestMessage<T extends JTAGPayload = JTAGPayload> extends JTAGMessageBase<T> {
+export interface JTAGRequestMessage<T extends JTAGPayload = JTAGPayload> extends JTAGMessageBase<T>, ICorrelation {
   readonly messageType: 'request';
-  readonly correlationId: string;
+  readonly correlationId: UUID;
 }
 
 /**
- * Response message (response to a request)
+ * Response message (response to a request) - inherits correlationId from request
  */
-export interface JTAGResponseMessage<T extends JTAGPayload = JTAGPayload> extends JTAGMessageBase<T> {
+export interface JTAGResponseMessage<T extends JTAGPayload = JTAGPayload> extends JTAGMessageBase<T>, ICorrelation {
   readonly messageType: 'response';
-  readonly correlationId: string;
+  readonly request: JTAGRequestMessage<T>; // Reference to the original request message
+  readonly correlationId: UUID; // Must match request.correlationId
 }
 
 /**
@@ -269,14 +277,14 @@ export class JTAGMessageFactory {
   }
 
   /**
-   * Create a response message
+   * Create a response message - automatically inherits correlationId from request
    */
   static createResponse<T extends JTAGPayload>(
     context: JTAGContext,
     origin: string,
     endpoint: string,
     payload: T,
-    correlationId: string
+    request: JTAGRequestMessage<T>
   ): JTAGResponseMessage<T> {
     const message = {
       messageType: 'response' as const,
@@ -284,13 +292,15 @@ export class JTAGMessageFactory {
       origin,
       endpoint,
       payload,
-      correlationId,
+      request,
+      correlationId: request.correlationId, // Automatically inherit from request
       hashCode(): string {
         return JTAGMessageUtils.generateMessageHash(this);
       }
     };
     return message;
   }
+
 
   /**
    * Generate unique correlation ID

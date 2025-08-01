@@ -120,6 +120,10 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     transport?: JTAGTransport;
   }>();
 
+  // Message Processing Token System - prevent duplicate processing
+  private readonly processedMessages = new Set<string>();
+  private readonly MESSAGE_PROCESSING_TIMEOUT = 30000; // 30 seconds
+
   constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
     super('universal-router', context);
     
@@ -172,19 +176,64 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   registerSubscriber(endpoint: string, subscriber: MessageSubscriber): void {
     const fullEndpoint = `${this.context.environment}/${endpoint}`;
     this.endpointMatcher.register(fullEndpoint, subscriber);
-    this.endpointMatcher.register(endpoint, subscriber);
-    console.log(`📋 ${this.toString()}: Registered subscriber at ${fullEndpoint}`);
+    
+    // Only register short endpoint if it doesn't already exist to avoid duplicates
+    if (!this.endpointMatcher.hasExact(endpoint)) {
+      this.endpointMatcher.register(endpoint, subscriber);
+      console.log(`📋 ${this.toString()}: Registered subscriber at ${fullEndpoint} AND ${endpoint}`);
+    } else {
+      console.log(`📋 ${this.toString()}: Registered subscriber at ${fullEndpoint} (${endpoint} already exists)`);
+    }
   }
 
   async postMessage(message: JTAGMessage): Promise<RouterResult> {
-    console.log(`📨 ${this.toString()}: Routing message to ${message.endpoint}`);
-    
-    const targetEnvironment = this.extractEnvironmentForMessage(message);
-    
-    if (targetEnvironment === this.context.environment) {
-      return await this.routeLocally(message);
+    // Create unique processing tokens for request/response messages to prevent cross-message deduplication
+    // Request and response with same correlationId should not block each other
+    let processingToken: string | undefined;
+    if (JTAGMessageTypes.isRequest(message)) {
+      processingToken = `req:${message.correlationId}`;
+    } else if (JTAGMessageTypes.isResponse(message)) {
+      processingToken = `res:${message.correlationId}`;
     } else {
-      return await this.routeRemotelyWithQueue(message);
+      // Event messages don't have correlationId and don't need deduplication
+      processingToken = undefined;
+    }
+    
+    if (processingToken) {
+      // Check if we've already processed this exact message
+      if (this.processedMessages.has(processingToken)) {
+        console.log(`🔄 ${this.toString()}: Skipping duplicate message ${processingToken}`);
+        return { success: true, deduplicated: true };
+      }
+      
+      // Mark message as being processed
+      this.processedMessages.add(processingToken);
+      
+      // Schedule cleanup of processing token after timeout
+      setTimeout(() => {
+        this.processedMessages.delete(processingToken);
+      }, this.MESSAGE_PROCESSING_TIMEOUT);
+      
+      console.log(`📨 ${this.toString()}: Processing message ${processingToken} to ${message.endpoint}`);
+    } else {
+      // Event messages don't need logging - would flood logs with console events
+      // console.log(`📨 ${this.toString()}: Processing event message to ${message.endpoint} (no deduplication)`);
+    }
+    
+    try {
+      const targetEnvironment = this.extractEnvironmentForMessage(message);
+      
+      if (targetEnvironment === this.context.environment) {
+        return await this.routeLocally(message);
+      } else {
+        return await this.routeRemotelyWithQueue(message);
+      }
+    } catch (error) {
+      // Remove token on error so message can be retried
+      if (processingToken) {
+        this.processedMessages.delete(processingToken);
+      }
+      throw error;
     }
   }
 
@@ -447,19 +496,23 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     const matchResult = this.endpointMatcher.match(message.endpoint);
     
     if (!matchResult) {
+      console.log(`❌ ${this.toString()}: No subscriber found for endpoint: ${message.endpoint}`);
+      console.log(`📋 ${this.toString()}: Available endpoints: ${this.endpointMatcher.getEndpoints().join(', ')}`);
       throw new Error(`No subscriber found for endpoint: ${message.endpoint}`);
     }
 
     const { subscriber, matchedEndpoint, matchType } = matchResult;
     
+    console.log(`🎯 ${this.toString()}: Match found - endpoint: ${message.endpoint}, matched: ${matchedEndpoint}, type: ${matchType}, subscriber: ${subscriber.uuid}`);
+    
     if (matchType === 'hierarchical') {
       console.log(`📋 ${this.toString()}: Using hierarchical routing: ${matchedEndpoint} handling ${message.endpoint}`);
     }
 
-    console.log(`🏠 ${this.toString()}: Routing locally to ${message.endpoint}`);
+    console.log(`🏠 ${this.toString()}: Routing locally to ${message.endpoint} via ${matchedEndpoint}`);
     const result = await subscriber.handleMessage(message);
     
-    // If this was a request, track sender and send response back
+    // For requests, the subscriber returns a response that needs to be sent back to the client
     if (JTAGMessageTypes.isRequest(message)) {
       console.log(`🔄 ${this.toString()}: Sending response for ${message.correlationId}`);
       
@@ -469,13 +522,16 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
         environment: senderEnvironment 
       });
       
+      // Create response message using the original request - enforces correlationId by construction
       const responseMessage = JTAGMessageFactory.createResponse(
         this.context,
         message.endpoint, // Response origin is the request's endpoint
         message.origin,   // Response endpoint is the request's origin
-        result,          // The result from handling the request
-        message.correlationId
+        result,          // The CommandResponse from the subscriber
+        message          // Pass the original request message
       );
+      
+      console.log(`📤 ${this.toString()}: Created response message - origin: "${responseMessage.origin}", endpoint: "${responseMessage.endpoint}", correlationId: ${responseMessage.correlationId}`);
       
       // Send response back (don't await, this is a fire-and-forget response)
       this.postMessage(responseMessage).catch(error => {
@@ -502,16 +558,17 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     
     // For responses to 'client', look up who sent the original request
     if (endpoint === 'client' && JTAGMessageTypes.isResponse(message)) {
+      console.log(`🔍 ${this.toString()}: Looking up sender for response ${message.correlationId} to endpoint '${endpoint}'`);
       const senderInfo = this.requestSenders.get(message.correlationId);
       if (senderInfo) {
-        console.log(`🎯 ${this.toString()}: Routing response ${message.correlationId} back to original sender: ${senderInfo.environment}`);
+        console.log(`🎯 ${this.toString()}: Found sender info - routing response ${message.correlationId} back to: ${senderInfo.environment}`);
         // Clean up tracking after use
         this.requestSenders.delete(message.correlationId);
         return senderInfo.environment;
       }
       
-      console.warn(`⚠️ ${this.toString()}: No sender tracked for response ${message.correlationId}, using fallback`);
-      return 'browser'; // Fallback
+      console.warn(`⚠️ ${this.toString()}: No sender tracked for response ${message.correlationId}, available keys: [${Array.from(this.requestSenders.keys()).join(', ')}]`);
+      return this.context.environment; // Stay in current environment for transport handling
     }
     
     // For all other cases, use standard extraction
@@ -522,21 +579,12 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
    * Determine who sent this request based on message context and origin
    */
   private determineSenderEnvironment(message: JTAGMessage): JTAGEnvironment {
-    // If origin is 'client', they came from a transport connection
+    // If origin is 'client', they came from a transport connection  
     if (message.origin === 'client') {
-      // Client is connecting through transport to this server
-      // The key insight: we need to distinguish between:
-      // - Same-environment routing (server->server, browser->browser) 
-      // - Cross-transport routing (external client -> server via transport)
-      
-      // For external clients, use the opposite environment to force transport routing
-      if (this.context.environment === 'server') {
-        // Server receiving from external client - route response to browser to trigger transport
-        return 'browser';  
-      } else {
-        // Browser receiving from external client - route response to server to trigger transport  
-        return 'server';
-      }
+      // The key insight: responses to transport clients should stay in the same environment
+      // The transport layer will handle routing back to the actual client
+      console.log(`🎯 ${this.toString()}: Transport client detected - keeping response in ${this.context.environment} environment`);
+      return this.context.environment;
     }
     
     // For other origins, extract environment from the origin path
