@@ -108,7 +108,7 @@ class SmartSystemStartup {
       'npm run version:bump', 
       'npm pack',
       'node scripts/update-test-bench.js',
-      `cd examples/test-bench && npm install && npm start > ../../${logFile} 2>&1`
+      `cd examples/test-bench && (npm install && npm start) 2>&1 | tee ../../${logFile}`
     ].join(' && ');
     
     console.log(`🔄 Using tmux for gentle startup...`);
