@@ -51,7 +51,7 @@ class StructureGenerator {
   }
 
   private loadConfig(): StructureConfig {
-    const unifiedConfigPath = join(this.rootPath, 'generator/unified-config.json');
+    const unifiedConfigPath = join(this.rootPath, '.continuum/generator/unified-config.json');
     const unifiedConfig = JSON.parse(readFileSync(unifiedConfigPath, 'utf8'));
     
     // Return the structureGeneration configuration from unified-config.json

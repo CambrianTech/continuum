@@ -36,9 +36,46 @@ export interface StructureTarget {
 }
 
 export interface StructureConfig {
+  version: string;
   targets: Record<string, StructureTarget>;
   generatedAt: string;
   description: string;
+}
+
+// ============================================================================
+// Package.json Configuration Types
+// ============================================================================
+
+export interface PackageJsonConfig {
+  name?: string;
+  version?: string;
+  imports?: Record<string, string>;
+  _importsGenerated?: {
+    timestamp: string;
+    source: string;
+    pathCount: number;
+  };
+  [key: string]: any;
+}
+
+// ============================================================================
+// TypeScript Configuration Types
+// ============================================================================
+
+export interface TypeScriptConfig {
+  compilerOptions: {
+    paths?: Record<string, string[]>;
+    [key: string]: any;
+  };
+  include?: string[];
+  exclude?: string[];
+  _pathsGenerated?: {
+    timestamp: string;
+    source: string;
+    pathCount: number;
+    note: string;
+  };
+  [key: string]: any;
 }
 
 // ============================================================================
@@ -132,10 +169,10 @@ export interface ValidationResult {
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface GeneratorLogger {
-  debug(message: string, ...args: any[]): void;
-  info(message: string, ...args: any[]): void;
-  warn(message: string, ...args: any[]): void;
-  error(message: string, ...args: any[]): void;
+  debug(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
 }
 
 export interface GeneratorOptions {
