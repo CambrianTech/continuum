@@ -20,29 +20,67 @@
  * TODO: Fix transport factory to support client connections
  */
 
-import { JTAGClient, type JTAGClientConnectOptions } from '@shared/JTAGClient';
+import { JTAGClient, type JTAGClientConnectOptions, type ICommandCorrelator } from '@shared/JTAGClient';
 import type { ITransportFactory} from '@systemTransports';
 import { TransportFactoryServer } from '../system/transports/server/TransportFactoryServer';
 import type { ListResult } from '../commands/list/shared/ListTypes';
 import type { JTAGSystem } from '../shared/JTAGSystem';
 import { JTAGSystemServer } from './JTAGSystemServer';
+import { ResponseCorrelator } from '@shared/ResponseCorrelator';
+import type { JTAGPayload } from '@shared/JTAGTypes';
 
 export class JTAGClientServer extends JTAGClient {
   
   protected async getLocalSystem(): Promise<JTAGSystem | null> {
-    // TODO: Implement proper local vs remote detection:
-    // - Check if we're in development mode (npm start)
-    // - Check for local JTAG system availability  
-    // - Add configuration override (--local, --remote flags)
-    // - Auto-detect based on environment variables
+    // Try local system first (same process)
+    if (JTAGSystemServer.instance) {
+      console.log('🏠 JTAGClientServer: Found existing local system instance');
+      return JTAGSystemServer.instance;
+    }
     
-    // TEMPORARY: Hard-code local system access for development
+    // Try to connect to local system (may create if needed in development)
     try {
-      // Try to connect to or create local JTAGSystemServer instance
-      return await JTAGSystemServer.connect();
+      console.log('🔄 JTAGClientServer: Attempting to connect to local JTAGSystemServer...');
+      const localSystem = await JTAGSystemServer.connect();
+      console.log('✅ JTAGClientServer: Connected to local system');
+      return localSystem;
     } catch (error) {
-      console.warn(`⚠️ JTAGClientServer: Local system not available, will use transport:`, error);
-      return null; // Fall back to transport connection
+      console.log('⚠️ JTAGClientServer: Local system connect failed:', error instanceof Error ? error.message : String(error));
+    }
+    
+    // Check if server is running on expected port (npm start scenario)
+    if (await this.isServerRunning()) {
+      console.log('🌐 JTAGClientServer: Server detected on port 9001, using remote connection');
+      return null; // Use remote connection to existing server
+    }
+    
+    console.log('❌ JTAGClientServer: No JTAG system found - run "npm start" first');
+    throw new Error('No JTAG system available. Please run "npm start" to start the system.');
+  }
+
+  private async isServerRunning(): Promise<boolean> {
+    try {
+      // Quick check if WebSocket server is running on 9001
+      const net = await import('net');
+      const socket = new net.Socket();
+      
+      return new Promise((resolve) => {
+        socket.setTimeout(1000);  
+        socket.on('connect', () => {
+          socket.destroy();
+          resolve(true);
+        });
+        socket.on('timeout', () => {
+          socket.destroy();
+          resolve(false);
+        });
+        socket.on('error', () => {
+          resolve(false);
+        });
+        socket.connect(9001, 'localhost');
+      });
+    } catch {
+      return false;
     }
   }
   
@@ -51,6 +89,17 @@ export class JTAGClientServer extends JTAGClient {
    */
   protected async getTransportFactory(): Promise<ITransportFactory> {
     return new TransportFactoryServer();
+  }
+
+  /**
+   * Get server-specific command correlator
+   */
+  protected getCommandCorrelator(): ICommandCorrelator {
+    return {
+      waitForResponse: async <TResult extends JTAGPayload>(correlationId: string, timeoutMs?: number): Promise<TResult> => {
+        return await this.responseCorrelator.createRequest(correlationId, timeoutMs) as TResult;
+      }
+    };
   }
 
 
