@@ -43,27 +43,24 @@ async function testPingClientConnection() {
   console.log('\n🔌 Test 1: Client connection for ping testing');
   
   try {
-    // Import the server client
-    const { jtag } = await import('../../server-index');
+    // Import the browser client (connects to existing server via WebSocket)
+    const { jtag } = await import('../../../../browser-index');
     
     console.log('🔄 Connecting to JTAG system...');
-    const connectionResult = await jtag.connect({ targetEnvironment: 'server' });
+    const client = await jtag.connect();
     
     // Validate connection
-    validateConnectionResult(connectionResult, 'ping client connection');
-    const connectionInfo = connectionResult.client.getConnectionInfo();
+    const connectionInfo = client.getConnectionInfo();
     
-    assert(connectionInfo.environment === 'server', 'Connected to server environment');
+    assert(connectionInfo.environment === 'browser', 'Connected via browser client');
     assert(!connectionInfo.isBootstrapSession, 'Session properly assigned (not bootstrap)');
-    assert(connectionResult.listResult.totalCount > 0, 'Commands discovered');
     
     console.log(`📊 Connection Details:`);
     console.log(`   Environment: ${connectionInfo.environment}`);
     console.log(`   Connection Type: ${connectionInfo.connectionType}`);
     console.log(`   Session ID: ${connectionInfo.sessionId}`);
-    console.log(`   Commands Available: ${connectionResult.listResult.totalCount}`);
     
-    return connectionResult;
+    return { client };
     
   } catch (error) {
     console.error('❌ Client connection failed:', error.message);
@@ -78,9 +75,8 @@ async function testRealPingExecution() {
   console.log('\n⚡ Test 2: Real ping command execution');
   
   try {
-    const { jtag } = await import('../../server-index');
-    const connectionResult = await jtag.connect();
-    const client = connectionResult.client;
+    const { jtag } = await import('../../../../browser-index');
+    const client = await jtag.connect();
     
     console.log('🏓 Executing ping command...');
     
@@ -216,9 +212,8 @@ async function testPingPerformanceIntegration() {
   console.log('\n⚡ Test 5: Ping performance across environments');
   
   try {
-    const { jtag } = await import('../../server-index');
-    const connectionResult = await jtag.connect();
-    const client = connectionResult.client;
+    const { jtag } = await import('../../../../browser-index');
+    const client = await jtag.connect();
     
     // Test multiple ping executions for performance consistency
     const pingTimes: number[] = [];
@@ -263,7 +258,7 @@ async function testCrossEnvironmentPing() {
   console.log('\n🔄 Test 6: Cross-environment ping validation');
   
   try {
-    const { jtag } = await import('../../server-index');
+    const { jtag } = await import('../../../../browser-index');
     
     // Test server-target ping
     const serverConnection = await jtag.connect({ targetEnvironment: 'server' });

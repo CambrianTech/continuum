@@ -1,6 +1,6 @@
 {
   "projectName": "@continuum/jtag",
-  "version": "1.0.460",
+  "version": "1.0.481",
   "pathMappings": {
     "@commands": {
       "alias": "@commands",
@@ -685,6 +685,6 @@
       }
     }
   },
-  "generatedAt": "2025-08-01T03:29:18.064Z",
+  "generatedAt": "2025-08-01T05:03:16.780Z",
   "description": "Auto-generated unified configuration for JTAG path mappings and structure generation"
 }
