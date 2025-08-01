@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.483",
+  "version": "1.0.485",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/index.js",
   "browser": "dist/browser/index.js",
@@ -91,6 +91,7 @@
     "@daemonsProxyDaemon/*": "./dist/daemons/proxy-daemon/*",
     "@daemonsSessionDaemon/*": "./dist/daemons/session-daemon/*",
     "@daemonsWidgetDaemon/*": "./dist/daemons/widget-daemon/*",
+    "@generator/*": "./dist/generator/*",
     "@scripts/*": "./dist/scripts/*",
     "@system/*": "./dist/system/*",
     "@systemCore/*": "./dist/system/core/*",
@@ -203,7 +204,7 @@
     "start": "npm run system:stop && npm run clean:all && npm run build && npm run version:bump && npm pack && node scripts/update-test-bench.js && cd examples/test-bench && npm install && npm start",
     "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
-    "prebuild": "npx tsx scripts/update-all-configs.ts && npx tsx scripts/generate-structure.ts",
+    "prebuild": "npx tsx generator/update-all-configs.ts && npx tsx generator/generate-structure.ts",
     "build": "npm run prebuild && npm run build:ts",
     "postbuild": "node scripts/create-import-map.js && node scripts/convert-imports-to-relative.js",
     "prepack": "node scripts/create-import-map.js",
@@ -302,8 +303,8 @@
     "node": ">=16.0.0"
   },
   "_importGeneration": {
-    "timestamp": "2025-08-01T18:00:11.321Z",
+    "timestamp": "2025-08-01T18:13:15.992Z",
     "source": "unified-config.json",
-    "importCount": 222
+    "importCount": 224
   }
 }

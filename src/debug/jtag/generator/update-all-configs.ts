@@ -293,7 +293,7 @@ class UnifiedConfigGenerator {
   }
 
   private async saveConfig(config: UnifiedConfig): Promise<void> {
-    const configPath = path.join(this.rootPath, 'unified-config.json');
+    const configPath = path.join(this.rootPath, 'generator/unified-config.json');
     await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2));
     console.log(`💾 Saved unified config to: ${configPath}`);
   }
@@ -325,7 +325,7 @@ class ConfigFilesGenerator {
   }
 
   private async loadUnifiedConfig(): Promise<void> {
-    const configPath = path.join(this.rootPath, 'unified-config.json');
+    const configPath = path.join(this.rootPath, 'generator/unified-config.json');
     const configContent = await fs.promises.readFile(configPath, 'utf-8');
     this.config = JSON.parse(configContent);
   }
@@ -448,7 +448,7 @@ async function main() {
     console.log('\n' + '🎉'.repeat(20));
     console.log('✅ All configurations updated successfully!');
     console.log('📁 Files updated:');
-    console.log('   • unified-config.json (master source)');
+    console.log('   • generator/unified-config.json (master source)');
     console.log('   • tsconfig.json (TypeScript paths)');
     console.log('   • package.json (import mappings)');
     console.log('   • jtag-paths.json (build system paths)');
