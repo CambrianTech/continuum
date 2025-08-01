@@ -119,6 +119,27 @@ async function testSessionFlow() {
     
     const listResult = await handler.sendAndWait(transport, 'commands/list', { category: 'all' }, sessionToUse);
     console.log(`✅ LIST worked with session! Found ${listResult.commands?.length || 0} commands`);
+
+    // Step 3: Test health/ping command
+    console.log('\n💓 Step 3: Testing HEALTH/PING command...');
+    try {
+      const pingResult = await handler.sendAndWait(transport, 'health', {}, sessionToUse);
+      console.log(`✅ HEALTH command successful:`, pingResult);
+    } catch (error) {
+      console.log(`❌ HEALTH command failed:`, error.message);
+    }
+
+    // Step 4: Test screenshot command (if available)
+    console.log('\n📸 Step 4: Testing SCREENSHOT command...');
+    try {
+      const screenshotResult = await handler.sendAndWait(transport, 'screenshot', { 
+        querySelector: 'body',
+        filename: 'test-ping-screenshot.png'
+      }, sessionToUse);
+      console.log(`✅ SCREENSHOT command successful:`, screenshotResult);
+    } catch (error) {
+      console.log(`❌ SCREENSHOT command failed:`, error.message);
+    }
     
     console.log('\n🎉 Session flow test completed!');
     
