@@ -5,9 +5,9 @@
  * Handles JSON reading/writing with proper error handling.
  */
 
-import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from 'fs';
-import { dirname, join } from 'path';
-import type { FileUpdate, GeneratorLogger } from '../types/GeneratorTypes';
+import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, statSync, renameSync } from 'fs';
+import { dirname } from 'path';
+import type { FileUpdate, GeneratorLogger, TypeScriptConfig, PathMappingsConfig, StructureConfig, PathMapping, StructureTarget } from '../types/GeneratorTypes';
 
 // ============================================================================
 // Safe File Operations
@@ -69,7 +69,7 @@ export class FileManager {
       writeFileSync(tempPath, content, 'utf8');
       
       // Rename temp file to final location (atomic on most filesystems)
-      require('fs').renameSync(tempPath, filePath);
+      renameSync(tempPath, filePath);
       
       this.logger.info(`✅ Updated ${filePath}: ${reason}`);
       
@@ -174,7 +174,7 @@ export class FileManager {
       if (!existsSync(filePath)) {
         return null;
       }
-      const stats = require('fs').statSync(filePath);
+      const stats = statSync(filePath);
       return stats.mtime;
     } catch {
       return null;
@@ -190,7 +190,7 @@ export class ConfigTemplates {
   /**
    * Create minimal path mappings config
    */
-  static createPathMappingsConfig(mappings: Record<string, any>): any {
+  static createPathMappingsConfig(mappings: Record<string, PathMapping>): PathMappingsConfig {
     return {
       version: '2.0.0',
       generatedAt: new Date().toISOString(),
@@ -202,7 +202,7 @@ export class ConfigTemplates {
   /**
    * Create structure generation config
    */
-  static createStructureConfig(targets: Record<string, any>): any {
+  static createStructureConfig(targets: Record<string, StructureTarget>): StructureConfig {
     return {
       version: '2.0.0',  
       generatedAt: new Date().toISOString(),
@@ -214,7 +214,7 @@ export class ConfigTemplates {
   /**
    * Create TypeScript config update
    */
-  static createTypeScriptUpdate(existingConfig: any, paths: Record<string, string[]>): any {
+  static createTypeScriptUpdate(existingConfig: TypeScriptConfig, paths: Record<string, string[]>, sourcePath: string): TypeScriptConfig {
     return {
       ...existingConfig,
       compilerOptions: {
@@ -223,7 +223,7 @@ export class ConfigTemplates {
       },
       _pathsGenerated: {
         timestamp: new Date().toISOString(),
-        source: 'generator/path-mappings.json',
+        source: sourcePath,
         pathCount: Object.keys(paths).length,
         note: 'Auto-generated from essential path mappings only'
       }

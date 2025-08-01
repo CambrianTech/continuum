@@ -7,6 +7,17 @@
 
 import { relative, join, dirname } from 'path';
 import type { PathMapping, AliasStrategy } from '../types/GeneratorTypes';
+import { statSync } from 'fs';
+
+// ============================================================================
+// Generator Path Configuration (Centralized)
+// ============================================================================
+
+export class GeneratorPaths {
+  static readonly GENERATOR_DIR = '.continuum/generator';
+  static readonly PATH_MAPPINGS_FILE = '.continuum/generator/path-mappings.json';
+  static readonly UNIFIED_CONFIG_FILE = '.continuum/generator/unified-config.json';
+}
 
 // ============================================================================
 // Semantic Alias Strategy (Clean, Human-Readable)
@@ -212,9 +223,7 @@ export class DirectoryScanner {
   /**
    * Find essential directories that should have aliases
    */
-  findEssentialDirectories(): string[] {
-    const fs = require('fs');
-    
+  findEssentialDirectories(): string[] {    
     // Get all possible paths from semantic mappings
     const allPossiblePaths = Object.keys(SemanticAliasStrategy.SEMANTIC_MAPPINGS);
     
@@ -222,7 +231,7 @@ export class DirectoryScanner {
     return allPossiblePaths.filter(dir => {
       try {
         const fullPath = this.resolver.resolve(dir);
-        const stats = fs.statSync(fullPath);
+        const stats = statSync(fullPath);
         return stats.isDirectory();
       } catch {
         return false;

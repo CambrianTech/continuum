@@ -6,12 +6,14 @@
  */
 
 import type { 
-  PathMappingsConfig, 
   GeneratorOptions, 
   GenerationResult, 
-  FileUpdate 
+  FileUpdate,
+  PathMapping,
+  TypeScriptConfig,
+  PackageJsonConfig
 } from './types/GeneratorTypes';
-import { PathResolver, SemanticAliasStrategy, PathMappingGenerator as Generator, DirectoryScanner } from './utils/PathUtils';
+import { PathResolver, SemanticAliasStrategy, PathMappingGenerator as Generator, DirectoryScanner, GeneratorPaths } from './utils/PathUtils';
 import { FileManager, ConfigTemplates } from './utils/FileManager';
 import { ConsoleLogger, ProgressTracker, GeneratorStats } from './utils/Logger';
 
@@ -89,7 +91,7 @@ export class PathMappingGenerator {
       this.logger.info('💾 Saving path mappings configuration...');
       const pathMappingsConfig = ConfigTemplates.createPathMappingsConfig(mappings);
       const pathMappingsFile = this.fileManager.writeJSON(
-        this.resolver.resolve('generator/path-mappings.json'),
+        this.resolver.resolve(GeneratorPaths.PATH_MAPPINGS_FILE),
         pathMappingsConfig,
         `Generated ${mappingCount} essential path mappings`
       );
@@ -124,9 +126,9 @@ export class PathMappingGenerator {
   /**
    * Update TypeScript configuration with minimal path mappings
    */
-  private async updateTypeScriptConfig(mappings: Record<string, any>): Promise<FileUpdate | null> {
+  private async updateTypeScriptConfig(mappings: Record<string, PathMapping>): Promise<FileUpdate | null> {
     const tsconfigPath = this.resolver.resolve('tsconfig.json');
-    const existingConfig = this.fileManager.readJSON(tsconfigPath);
+    const existingConfig = this.fileManager.readJSON<TypeScriptConfig>(tsconfigPath);
     
     if (!existingConfig) {
       this.logger.warn('tsconfig.json not found - skipping TypeScript update');
@@ -135,7 +137,7 @@ export class PathMappingGenerator {
 
     // Generate TypeScript paths from clean mappings
     const paths = this.generator.createTypeScriptPaths(mappings);
-    const updatedConfig = ConfigTemplates.createTypeScriptUpdate(existingConfig, paths);
+    const updatedConfig = ConfigTemplates.createTypeScriptUpdate(existingConfig, paths, GeneratorPaths.PATH_MAPPINGS_FILE);
 
     this.logger.info(`   Updating tsconfig.json with ${Object.keys(paths).length} path entries`);
     
@@ -168,12 +170,12 @@ export class PathMappingGenerator {
    */
   private async cleanPackageJsonImports(): Promise<void> {
     const packagePath = this.resolver.resolve('package.json');
-    const packageJson = this.fileManager.readJSON(packagePath);
+    const packageJson = this.fileManager.readJSON<PackageJsonConfig>(packagePath);
     
-    if (packageJson && packageJson.imports) {
+    if (packageJson?.imports) {
       this.logger.info('   Removing unused package.json imports field (224+ mappings)');
       delete packageJson.imports;
-      delete packageJson._importGeneration;
+      delete packageJson._importsGenerated;
       
       this.fileManager.writeJSON(
         packagePath,
