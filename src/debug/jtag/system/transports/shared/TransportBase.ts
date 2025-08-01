@@ -5,8 +5,8 @@
  * Follows the pattern from CommandBase for consistent architecture.
  */
 
-import type { JTAGMessage } from '@shared/JTAGTypes';
-import type { EventsInterface } from '@systemEvents';
+import type { JTAGMessage } from '../../core/types/JTAGTypes';
+import type { EventsInterface } from '../../events';
 import type { JTAGTransport, TransportSendResult } from './TransportTypes';
 
 export abstract class TransportBase implements JTAGTransport {

@@ -5,8 +5,8 @@
  * Essential command that all JTAG systems must implement for client discovery.
  */
 
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 /**
  * List command parameters

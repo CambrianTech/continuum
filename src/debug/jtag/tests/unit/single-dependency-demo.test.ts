@@ -6,8 +6,8 @@
  * Shows that only 'list' is available initially, then everything else is discovered.
  */
 
-import type { JTAGContext } from '../../shared/JTAGTypes';
-import { JTAGClientBrowser } from '../../shared/JTAGClientBrowser';
+import type { JTAGContext } from '../../system/core/types/JTAGTypes';
+import { JTAGClientBrowser } from '../../system/core/client/browser/JTAGClientBrowser';
 import type { ListResult } from '../../commands/list/shared/ListTypes';
 
 console.log('🧪 Single Dependency Pattern Demo');

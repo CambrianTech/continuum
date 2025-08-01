@@ -4,15 +4,15 @@
  * Handles health checks, ping responses, and system monitoring across contexts.
  */
 
-import { DaemonBase } from '@shared/DaemonBase';
-import type { JTAGContext, JTAGMessage, JTAGPayload } from '@shared/JTAGTypes';
-import { createPayload } from '@shared/JTAGTypes';
-import { getHighResolutionTime, getProcessInfo } from '@shared/CrossPlatformTypes';
-import { JTAGRouter } from '@shared/JTAGRouter';
-import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
-import { createHealthPingResponse, createHealthErrorResponse, type HealthResponse } from '@shared/ResponseTypes';
-import { type UUID } from '@shared/CrossPlatformUUID';
-import { SYSTEM_SCOPES } from '@shared/SystemScopes';
+import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
+import type { JTAGContext, JTAGMessage, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import { createPayload } from '../../../system/core/types/JTAGTypes';
+import { getHighResolutionTime, getProcessInfo } from '../../../system/core/types/CrossPlatformTypes';
+import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { JTAG_ENDPOINTS } from '../../../system/core/router/shared/JTAGEndpoints';
+import { createHealthPingResponse, createHealthErrorResponse, type HealthResponse } from '../../../system/core/types/ResponseTypes';
+import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 
 // Health-specific payload - system-level, no session required
 export interface HealthPayload extends JTAGPayload {

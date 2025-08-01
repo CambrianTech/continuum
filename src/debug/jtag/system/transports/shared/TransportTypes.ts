@@ -5,9 +5,9 @@
  * Provides core transport interfaces that all transport implementations must follow.
  */
 
-import type { JTAGMessage } from '@shared/JTAGTypes';
-import type { EventsInterface } from '@systemEvents';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import type { JTAGMessage } from '../../core/types/JTAGTypes';
+import type { EventsInterface } from '../../events';
+import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { ITransportHandler } from './ITransportHandler';
 
 /**

@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { WaitForElementParams, WaitForElementResult } from '../shared/WaitForElementTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 WaitForElement Command Tests');
 

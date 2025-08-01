@@ -1,7 +1,7 @@
 import { ChatCommandBase } from '@commandsChat/shared/ChatCommandBase';
-import type { ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { type SendMessageParams, type SendMessageResult, createSendMessageParams } from '@chatSendMessage/shared/SendMessageTypes';
 
 export abstract class SendMessageCommand extends ChatCommandBase<SendMessageParams, SendMessageResult> {

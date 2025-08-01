@@ -4,9 +4,9 @@
  * Common types and interfaces used by both browser and server screenshot implementations.
  */
 
-import { CommandParams, CommandResult, type JTAGContext, createPayload, transformPayload } from '@shared/JTAGTypes';
-import type { JTAGError } from '@shared/ErrorTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import { CommandParams, CommandResult, type JTAGContext, createPayload, transformPayload } from '../../../system/core/types/JTAGTypes';
+import type { JTAGError } from '../../../system/core/types/ErrorTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Screenshot Command Parameters - interface extending CommandParams

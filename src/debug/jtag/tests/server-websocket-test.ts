@@ -9,9 +9,9 @@
  * 4. Server processes messages correctly
  */
 
-import { JTAGBase } from '@shared/JTAGBase';
+import { JTAGBase } from '../system/core/shared/JTAGBase';
 import WebSocket from 'ws';
-import { JTAGMessageFactory, JTAG_MESSAGE_TYPES, JTAG_CONTEXTS } from '@shared/JTAGTypes';
+import { JTAGMessageFactory, JTAG_MESSAGE_TYPES, JTAG_CONTEXTS } from '../../../system/core/types/JTAGTypes';
 
 async function testServerWebSocket() {
   console.log('🧪 Step 2B: Testing WebSocket Server with Node.js Client\n');

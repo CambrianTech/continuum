@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { JTAGWebSocketServer } from '@shared/JTAGWebSocket';
 import { jtagConfig } from '@shared/config';
-import { jtagRouter } from '@shared/JTAGRouter';
+import { jtagRouter } from '../../system/core/router/shared/JTAGRouter';
 
 describe('Piece 2: Console Log Flow', () => {
   let server: JTAGWebSocketServer;

@@ -34,7 +34,7 @@ function createJTAGPathTransformer() {
         // Fallback mappings
         pathMappings = {
           '@shared': 'shared',
-          '@commandBase': 'daemons/command-daemon/shared/CommandBase',
+          '../../daemons/command-daemon/shared/CommandBase': 'daemons/command-daemon/shared/CommandBase',
           '@chatShared': 'commands/chat/shared',
           '@daemons': 'daemons',
           '@browser': 'browser',

@@ -4,8 +4,8 @@
  * Base implementation for ping command that provides timing and environment detection.
  */
 
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import { type PingParams, type PingResult, createPingResultFromParams } from './PingTypes';
 
 export abstract class PingCommand extends CommandBase<PingParams, PingResult> {

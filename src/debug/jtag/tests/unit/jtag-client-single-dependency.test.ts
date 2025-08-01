@@ -6,7 +6,7 @@
  * All other commands should be discovered dynamically via list command response.
  */
 
-import { JTAGClientBrowser } from '../../shared/JTAGClientBrowser';
+import { JTAGClientBrowser } from '../../system/core/client/browser/JTAGClientBrowser';
 import type { ListResult } from '../../commands/list/shared/ListTypes';
 
 console.log('🧪 JTAGClient Single Command Dependency Test Suite');

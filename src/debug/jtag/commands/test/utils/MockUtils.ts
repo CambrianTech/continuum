@@ -4,12 +4,12 @@
  * Provides consistent mock implementations that can be used across all command tests.
  */
 
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
-import { generateUUID } from '@shared/CrossPlatformUUID';
-import type { JTAGSystem } from '@shared/JTAGSystem';
-import type { JTAGClient } from '@shared/JTAGClient';
-import type { CommandsInterface } from '@shared/JTAGBase';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { JTAGSystem } from '../../../system/core/system/shared/JTAGSystem';
+import type { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
+import type { CommandsInterface } from '../../../system/core/shared/JTAGBase';
 import type { ListResult, CommandSignature } from '../../list/shared/ListTypes';
 
 /**

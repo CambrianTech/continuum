@@ -18,9 +18,9 @@
  * - Same simple pattern as all other JTAG interfaces
  */
 
-import type { UUID } from '@shared/CrossPlatformUUID';
-import type { JTAGMessage } from '@shared/JTAGTypes';
-import type { JTAGResponsePayload } from '../../../shared/ResponseTypes';
+import type { UUID } from '../../core/types/CrossPlatformUUID';
+import type { JTAGMessage } from '../../core/types/JTAGTypes';
+import type { JTAGResponsePayload } from '../../core/types/ResponseTypes';
 
 /**
  * Transport Handler - handles transport protocol messages using payload architecture

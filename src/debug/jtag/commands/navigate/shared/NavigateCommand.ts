@@ -15,11 +15,11 @@
  * ✅ No unnecessary complexity or interfaces
  */
 
-import { CommandBase } from '@commandBase';
-import type { ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
-import { type NavigateParams, type NavigateResult, createNavigateParams } from '@commandsNavigate/shared/NavigateTypes';
+import { CommandBase } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { type NavigateParams, type NavigateResult, createNavigateParams } from './NavigateTypes';
 
 export abstract class NavigateCommand extends CommandBase<NavigateParams, NavigateResult> {
 

@@ -6,7 +6,7 @@
  */
 
 import { TransportBase } from '../../shared/TransportBase';
-import type { JTAGMessage } from '@shared/JTAGTypes';
+import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import { TRANSPORT_EVENTS } from '../../shared/TransportEvents';
 
 // WebSocket specific configuration shared between client and server

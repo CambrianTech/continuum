@@ -169,7 +169,7 @@ class UnifiedConfigGenerator {
     // Add special mappings for individual files with conflict detection
     const specialMappings = [
       {
-        alias: '@commandBase',
+        alias: '../daemons/command-daemon/shared/CommandBase',
         relativePath: 'daemons/command-daemon/shared/CommandBase',
         description: 'Special mapping for CommandBase file (not directory)'
       },

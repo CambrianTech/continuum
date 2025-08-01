@@ -26,8 +26,8 @@
  * - Supports multiple transport types with unified interface
  */
 
-import type { JTAGMessage, JTAGContext } from '@shared/JTAGTypes';
-import type { EventsInterface } from '@systemEvents';
+import type { JTAGMessage, JTAGContext } from '../../core/types/JTAGTypes';
+import type { EventsInterface } from '../../events';
 import type { JTAGTransport, TransportConfig } from './TransportTypes';
 
 /**

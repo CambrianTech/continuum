@@ -8,8 +8,8 @@
  * 4. Widget-persona-human coordination
  */
 
-import { CommandBase } from '@commandBase';
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import type { 
   RoomEventSubscriptionParams, 
   RoomEvent, 
@@ -18,7 +18,7 @@ import type {
   WidgetEventCoordination 
 } from '../shared/RoomEventTypes';
 import { RoomEventSubscriptionResult } from '../shared/RoomEventTypes';
-import type { ICommandDaemon } from '@commandBase';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 
 export class RoomEventServerCommand extends CommandBase<RoomEventSubscriptionParams, RoomEventSubscriptionResult> {
   

@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { FileParams, FileResult } from '../shared/FileTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 File Command Tests');
 

@@ -2,7 +2,7 @@
  * JTAG Universal Transport Router - Comprehensive Test Suite
  */
 
-import { JTAGRouter, JTAGMessage, JTAGTransportBackend } from '@shared/JTAGRouter';
+import { JTAGRouter, JTAGMessage, JTAGTransportBackend } from '../system/core/router/shared/JTAGRouter';
 
 // Mock Transport for Testing
 class MockTransport implements JTAGTransportBackend {

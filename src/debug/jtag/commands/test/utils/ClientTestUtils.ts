@@ -5,8 +5,8 @@
  * and command execution across different environments.
  */
 
-import type { JTAGClient, JTAGClientConnectOptions, JTAGClientConnectionResult } from '@shared/JTAGClient';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import type { JTAGClient, JTAGClientConnectOptions, JTAGClientConnectionResult } from '../../../system/core/client/shared/JTAGClient';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { ListResult } from '../../list/shared/ListTypes';
 
 /**

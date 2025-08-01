@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { CompileTypescriptParams, CompileTypescriptResult } from '../shared/CompileTypescriptTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 CompileTypescript Command Integration Tests');
 

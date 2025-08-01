@@ -11,7 +11,7 @@
  */
 
 import { jtag } from '../../index';
-import type { JTAGUUIDInfo } from '@shared/JTAGTypes';
+import type { JTAGUUIDInfo } from '../../../system/core/types/JTAGTypes';
 
 export interface ComprehensiveTestResults {
   execTests: number;

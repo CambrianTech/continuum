@@ -6,14 +6,14 @@
  * command discovery, session management, and connection abstraction patterns.
  */
 
-import { JTAGClient, LocalConnection, RemoteConnection, type JTAGConnection, type JTAGClientConnectOptions } from '../../shared/JTAGClient';
-import { JTAGClientBrowser } from '../../browser/JTAGClientBrowser';
-import { JTAGClientServer } from '../../server/JTAGClientServer';
-import type { JTAGContext, JTAGMessage, JTAGPayload } from '@shared/JTAGTypes';
+import { JTAGClient, LocalConnection, RemoteConnection, type JTAGConnection, type JTAGClientConnectOptions } from '../../system/core/client/shared/JTAGClient';
+import { JTAGClientBrowser } from '../../system/core/client/browser/JTAGClientBrowser';
+import { JTAGClientServer } from '../../system/core/client/server/JTAGClientServer';
+import type { JTAGContext, JTAGMessage, JTAGPayload } from '../../system/core/types/JTAGTypes';
 import type { ListResult, CommandSignature } from '../../commands/list/shared/ListTypes';
-import type { JTAGSystem } from '../../shared/JTAGSystem';
-import type { CommandsInterface } from '../../shared/JTAGBase';
-import { SYSTEM_SCOPES } from '../../shared/SystemScopes';
+import type { JTAGSystem } from '../../system/core/system/shared/JTAGSystem';
+import type { CommandsInterface } from '../../system/core/shared/JTAGBase';
+import { SYSTEM_SCOPES } from '../../system/core/types/SystemScopes';
 
 console.log('🧪 Client Connection Logic Unit Test Suite');
 

@@ -6,7 +6,7 @@
  */
 
 import type { ITransportFactory } from '../shared/ITransportFactory';
-import type { JTAGContext } from '@shared/JTAGTypes';
+import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGTransport, TransportConfig } from '../shared/TransportTypes';
 import { TransportConfigHelper } from '../shared/TransportConfig';
 import { WebSocketTransportServer } from '../websocket-transport/server/WebSocketTransportServer';

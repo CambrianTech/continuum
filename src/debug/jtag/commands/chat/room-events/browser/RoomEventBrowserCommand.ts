@@ -1,7 +1,7 @@
 import { RoomEventCommand } from '@chatRoomEvents/shared/RoomEventCommand';
 import { type RoomEventSubscriptionParams, type RoomEventSubscriptionResult, createRoomEventSubscriptionResult } from '@chatRoomEvents/shared/RoomEventTypes';
-import type { ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 
 export class RoomEventBrowserCommand extends RoomEventCommand {
 

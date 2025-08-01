@@ -9,7 +9,7 @@
  */
 
 import { SendMessageCommand } from '@chatSendMessage/shared/SendMessageCommand';
-import { NetworkError } from '@shared/ErrorTypes';
+import { NetworkError } from '../../../../system/core/types/ErrorTypes';
 import { type SendMessageParams, type SendMessageResult, createSendMessageResult } from '@chatSendMessage/shared/SendMessageTypes';
 
 export class SendMessageServerCommand extends SendMessageCommand {

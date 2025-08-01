@@ -9,7 +9,7 @@
  * 4. Client-server promise-based communication works
  */
 
-import { JTAGBase } from '@shared/JTAGBase';
+import { JTAGBase } from '../system/core/shared/JTAGBase';
 import { JTAGWebSocketClient } from '@shared/JTAGWebSocket';
 
 async function testWebSocketTransport() {

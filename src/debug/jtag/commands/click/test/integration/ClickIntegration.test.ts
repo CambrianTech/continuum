@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { ClickParams, ClickResult } from '../shared/ClickTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 Click Command Integration Tests');
 

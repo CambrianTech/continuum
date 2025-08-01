@@ -5,8 +5,8 @@
  * Provides patterns for testing location transparency and environment-specific behavior.
  */
 
-import type { JTAGClient, JTAGClientConnectOptions } from '@shared/JTAGClient';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import type { JTAGClient, JTAGClientConnectOptions } from '../../../system/core/client/shared/JTAGClient';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { 
   testClientCommandExecution,
   testClientConnection,

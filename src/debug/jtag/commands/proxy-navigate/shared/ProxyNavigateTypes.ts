@@ -5,10 +5,10 @@
  * Solves the fundamental html2canvas + cross-origin iframe limitation.
  */
 
-import { CommandParams, CommandResult, createPayload } from '@shared/JTAGTypes';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { JTAGError } from '@shared/ErrorTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import { CommandParams, CommandResult, createPayload } from '../../../system/core/types/JTAGTypes';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGError } from '../../../system/core/types/ErrorTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 export interface ProxyNavigateParams extends CommandParams {
   readonly url: string;

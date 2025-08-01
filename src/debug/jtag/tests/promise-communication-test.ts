@@ -8,7 +8,7 @@
  * - Simple, direct communication without complex routing
  */
 
-import { JTAGBase } from '@shared/JTAGBase';
+import { JTAGBase } from '../system/core/shared/JTAGBase';
 import WebSocket from 'ws';
 
 // Simple promise-based client that can grab server endpoint

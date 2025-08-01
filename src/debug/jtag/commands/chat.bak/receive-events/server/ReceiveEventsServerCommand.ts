@@ -8,11 +8,11 @@
  * 4. Event filtering and processing
  */
 
-import { CommandBase } from '@commandBase';
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import type { ReceiveEventsParams, ChatEvent, MultiContextState, EventResponse } from '../shared/ReceiveEventsTypes';
 import { ReceiveEventsResult } from '../shared/ReceiveEventsTypes';
-import type { ICommandDaemon } from '@commandBase';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 
 export class ReceiveEventsServerCommand extends CommandBase<ReceiveEventsParams, ReceiveEventsResult> {
   

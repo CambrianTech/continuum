@@ -26,7 +26,7 @@
  * - Type union enables exhaustive event handling patterns
  */
 
-import type { JTAGContext } from '@shared/JTAGTypes';
+import type { JTAGContext } from '../../core/types/JTAGTypes';
 
 export const SYSTEM_EVENTS = {
   INITIALIZING: 'system.initializing',

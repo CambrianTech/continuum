@@ -8,8 +8,8 @@
 
 import { TestUtilities } from '@tests/shared/TestUtilities';
 import { TestBenchClient } from '@tests/shared/TestBenchClient';
-import { JTAGSystem } from '@shared/JTAGSystem';
-import { ScreenshotParams, ScreenshotResult } from '@shared/JTAGTypes';
+import { JTAGSystem } from '../../system/core/system/shared/JTAGSystem';
+import { ScreenshotParams, ScreenshotResult } from '../../../system/core/types/JTAGTypes';
 
 describe('Layer 4: Promise Chain Cross-Context Integration', () => {
   let testUtils: TestUtilities;

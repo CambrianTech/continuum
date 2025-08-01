@@ -6,8 +6,8 @@
  * Works in both browser and server environments.
  */
 
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import { type ListParams, type ListResult, type CommandSignature, createListResultFromParams } from './ListTypes';
 
 export class ListCommand extends CommandBase<ListParams, ListResult> {

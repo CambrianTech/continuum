@@ -86,9 +86,12 @@
     "@daemonsSessionDaemon": "daemons/session-daemon",
     "@daemonsWidgetDaemon": "daemons/widget-daemon",
     "@scripts": "scripts",
-    "@sharedQueuing": "shared/queuing",
-    "@sharedRouting": "shared/routing",
     "@system": "system",
+    "@systemCore": "system/core",
+    "@coreClient": "system/core/client",
+    "@coreRouter": "system/core/router",
+    "@coreSystem": "system/core/system",
+    "@coreTypes": "system/core/types",
     "@systemEvents": "system/events",
     "@eventsRouter": "system/events/router",
     "@systemTransports": "system/transports",
@@ -106,13 +109,13 @@
     "@testsPiece-2SimpleMessageTransport": "tests/piece-2-simple-message-transport",
     "@testsUnit": "tests/unit",
     "@widgets": "widgets",
-    "@commandBase": "daemons/command-daemon/shared/CommandBase",
+    "../daemons/command-daemon/shared/CommandBase": "daemons/command-daemon/shared/CommandBase",
     "@shared": "shared"
   },
   "description": "Auto-generated JTAG TypeScript path mappings from unified-config.json",
   "_generated": {
-    "timestamp": "2025-08-01T05:03:16.793Z",
+    "timestamp": "2025-08-01T18:00:11.323Z",
     "source": "unified-config.json",
-    "mappingCount": 108
+    "mappingCount": 111
   }
 }

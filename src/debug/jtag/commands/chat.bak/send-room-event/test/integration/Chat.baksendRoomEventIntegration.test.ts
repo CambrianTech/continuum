@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { Chat.baksendRoomEventParams, Chat.baksendRoomEventResult } from '../shared/Chat.baksendRoomEventTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 Chat.baksendRoomEvent Command Integration Tests');
 

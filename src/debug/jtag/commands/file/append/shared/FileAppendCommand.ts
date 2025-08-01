@@ -5,12 +5,12 @@
  * Inherits path from parent group: commands/file/append
  */
 
-import { CommandBase } from '@commandBase';
-import type { ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
-import { type FileAppendParams, createFileAppendParams } from '@fileAppend/shared/FileAppendTypes';
-import type { FileAppendResult } from '@fileAppend/shared/FileAppendTypes';
+import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { type FileAppendParams, createFileAppendParams } from './FileAppendTypes';
+import type { FileAppendResult } from './FileAppendTypes';
 
 export abstract class FileAppendCommand extends CommandBase<FileAppendParams, FileAppendResult> {
 

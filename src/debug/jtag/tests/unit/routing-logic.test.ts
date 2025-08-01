@@ -9,8 +9,8 @@
 import { JTAGRouterServer } from '../../server/JTAGRouterServer';
 import { JTAGRouterBrowser } from '../../browser/JTAGRouterBrowser';
 import { EndpointMatcher } from '@sharedRouting/EndpointMatcher';
-import { ResponseCorrelator } from '@shared/ResponseCorrelator';
-import type { JTAGContext, JTAGMessage } from '@shared/JTAGTypes';
+import { ResponseCorrelator } from '../../system/core/shared/ResponseCorrelator';
+import type { JTAGContext, JTAGMessage } from '../../../system/core/types/JTAGTypes';
 
 console.log('🧪 Routing Logic Unit Test Suite');
 

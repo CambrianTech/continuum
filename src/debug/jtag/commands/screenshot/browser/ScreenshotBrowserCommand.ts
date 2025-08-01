@@ -4,11 +4,11 @@
  * MINIMAL WORK PER COMMAND: Just implements what browser does
  */
 
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { ScreenshotParams, Html2CanvasCanvas, Html2CanvasOptions, ScreenshotResult } from '@commandsScreenshot/shared/ScreenshotTypes';
-import { createScreenshotResultFromParams, createScreenshotResult } from '@commandsScreenshot/shared/ScreenshotTypes';
-import { getGlobalAPI, safeQuerySelector, getViewportDimensions } from '@shared/GlobalUtils';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { ScreenshotParams, Html2CanvasCanvas, Html2CanvasOptions, ScreenshotResult } from '../shared/ScreenshotTypes';
+import { createScreenshotResultFromParams, createScreenshotResult } from '../shared/ScreenshotTypes';
+import { getGlobalAPI, safeQuerySelector, getViewportDimensions } from '../../../daemons/command-daemon/shared/GlobalUtils';
 
 const DEFAULT_FORMAT = 'png';
 const DEFAULT_QUALITY = 0.9;

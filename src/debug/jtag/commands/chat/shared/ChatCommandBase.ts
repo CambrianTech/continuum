@@ -14,12 +14,12 @@
  * ✅ Browser/server delegation patterns
  */
 
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type{ ChatParams, ChatResult } from '@commandsChat/shared/ChatTypes';
-import { createChatResult } from '@commandsChat/shared/ChatTypes';
-import { ValidationError } from '@shared/ErrorTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type{ ChatParams, ChatResult } from './ChatTypes';
+import { createChatResult } from './ChatTypes';
+import { ValidationError } from '../../../system/core/types/ErrorTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Base class for all chat commands

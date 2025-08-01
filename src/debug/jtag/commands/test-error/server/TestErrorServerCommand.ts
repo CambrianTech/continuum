@@ -5,8 +5,8 @@
  * to validate error handling flow and session mapping
  */
 
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import { type TestErrorParams, type TestErrorResult, createTestErrorResult } from '../shared/TestErrorTypes';
 
 export class TestErrorServerCommand extends CommandBase<TestErrorParams, TestErrorResult> {

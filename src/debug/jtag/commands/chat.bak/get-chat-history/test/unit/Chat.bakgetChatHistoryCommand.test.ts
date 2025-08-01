@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { Chat.bakgetChatHistoryParams, Chat.bakgetChatHistoryResult } from '../shared/Chat.bakgetChatHistoryTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 Chat.bakgetChatHistory Command Tests');
 

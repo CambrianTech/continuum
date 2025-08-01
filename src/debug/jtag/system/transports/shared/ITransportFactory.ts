@@ -5,7 +5,7 @@
  * Each environment implements this interface with their specific transports.
  */
 
-import type { JTAGContext } from '@shared/JTAGTypes';
+import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGTransport, TransportConfig } from './TransportTypes';
 
 export interface ITransportFactory {

@@ -20,9 +20,9 @@
  * - Elegant simplicity without feature creep
  */
 
-import { type NavigateParams, type NavigateResult, createNavigateResult } from '@commandsNavigate/shared/NavigateTypes';
-import { NetworkError } from '@shared/ErrorTypes';
-import { NavigateCommand } from '@commandsNavigate/shared/NavigateCommand';
+import { type NavigateParams, type NavigateResult, createNavigateResult } from '../shared/NavigateTypes';
+import { NetworkError } from '../../../system/core/types/ErrorTypes';
+import { NavigateCommand } from '../shared/NavigateCommand';
 
 export class NavigateServerCommand extends NavigateCommand {
   

@@ -14,9 +14,9 @@
  * ✅ No unnecessary complexity
  */
 
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { type CompileTypescriptParams, createCompileTypescriptParams } from '@commandsCompileTypescript/shared/CompileTypescriptTypes';
 import type { CompileTypescriptResult } from '@commandsCompileTypescript/shared/CompileTypescriptTypes';
 

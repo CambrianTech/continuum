@@ -5,8 +5,8 @@
  * Tests the transport-agnostic status event system with all transport types
  */
 
-import { JTAGBase } from '@shared/JTAGBase';
-import { JTAG_STATUS, JTAG_TRANSPORT, JTAGStatusEvent, JTAGStatusEventListener } from '@shared/JTAGTypes';
+import { JTAGBase } from '../../system/core/shared/JTAGBase';
+import { JTAG_STATUS, JTAG_TRANSPORT, JTAGStatusEvent, JTAGStatusEventListener } from '../../../system/core/types/JTAGTypes';
 import { JTAGRESTTransport, JTAGMCPTransport, JTAGPollingTransport } from '@shared/transport-examples';
 
 interface TestResults {

@@ -1,7 +1,7 @@
-import { GetChatHistoryCommand } from '@chatGetChatHistory/shared/GetChatHistoryCommand';
-import { type GetChatHistoryParams, type GetChatHistoryResult, createGetChatHistoryResult, type ChatMessage } from '@chatGetChatHistory/shared/GetChatHistoryTypes';
-import type { ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
+import { GetChatHistoryCommand } from '../shared/GetChatHistoryCommand';
+import { type GetChatHistoryParams, type GetChatHistoryResult, createGetChatHistoryResult, type ChatMessage } from '../shared/GetChatHistoryTypes';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 
 export class GetChatHistoryBrowserCommand extends GetChatHistoryCommand {
 

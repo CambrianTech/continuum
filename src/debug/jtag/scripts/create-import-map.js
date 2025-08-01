@@ -23,8 +23,8 @@ for (const [alias, relativePath] of Object.entries(config.pathMappings)) {
   // For wildcard imports (like @shared/*)
   imports[`${alias}/*`] = `./dist/${relativePath}/*`;
   
-  // For exact imports (like @commandBase)
-  if (alias === '@commandBase') {
+  // For exact imports (like '../daemons/command-daemon/shared/CommandBase')
+  if (alias === '../daemons/command-daemon/shared/CommandBase') {
     imports[alias] = `./dist/${relativePath}.js`;
   }
 }

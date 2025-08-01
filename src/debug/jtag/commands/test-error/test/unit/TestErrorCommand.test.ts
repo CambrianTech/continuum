@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { TestErrorParams, TestErrorResult } from '../shared/TestErrorTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 TestError Command Tests');
 

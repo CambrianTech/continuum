@@ -5,9 +5,9 @@
  * Co-located with command daemon to maintain proper module boundaries.
  */
 
-import { type JTAGContext, createPayload } from '@shared/JTAGTypes';
-import { type BaseResponsePayload } from '@shared/ResponseTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import { type JTAGContext, createPayload } from '../../../system/core/types/JTAGTypes';
+import { type BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 // Command daemon response types
 export interface CommandSuccessResponse extends BaseResponsePayload {

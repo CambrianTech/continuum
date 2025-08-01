@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { AcademyParams, AcademyResult } from '../shared/AcademyTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 Academy Command Integration Tests');
 

@@ -6,7 +6,7 @@
 
 import { JTAGTransportFactory } from '@shared/transports/TransportFactory';
 import { BaseJTAGTransport } from '@shared/transports/BaseTransport';
-import { JTAG_STATUS, JTAGConfig } from '@shared/JTAGTypes';
+import { JTAG_STATUS, JTAGConfig } from '../../../system/core/types/JTAGTypes';
 
 interface TestResults {
   totalTransports: number;

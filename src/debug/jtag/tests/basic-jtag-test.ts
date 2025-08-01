@@ -9,7 +9,7 @@
  * 4. Return correct status
  */
 
-import { JTAGBase } from '@shared/JTAGBase';
+import { JTAGBase } from '../system/core/shared/JTAGBase';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 

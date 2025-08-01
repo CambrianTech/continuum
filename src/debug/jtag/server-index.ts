@@ -4,9 +4,9 @@
  * Server-specific entry point that exports JTAGSystemServer as jtag
  */
 
-import { JTAGSystemServer } from './server/JTAGSystemServer';
-import { JTAGClientServer } from './server/JTAGClientServer';
-import type { JTAGBase } from './shared/JTAGBase';
+import { JTAGSystemServer } from './system/core/system/server/JTAGSystemServer';
+import { JTAGClientServer } from './system/core/client/server/JTAGClientServer';
+import type { JTAGBase } from './system/core/shared/JTAGBase';
 
 export const jtag = {
   // Universal client interface - allows targeting different environments
@@ -30,4 +30,4 @@ export const jtag = {
 
 // Direct export for advanced usage
 export { JTAGSystemServer };
-export * from '@shared/JTAGTypes';
+export * from './system/core/types/JTAGTypes';

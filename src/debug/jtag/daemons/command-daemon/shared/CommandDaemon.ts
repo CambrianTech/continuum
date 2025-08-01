@@ -5,14 +5,14 @@
  * Contains shared logic while allowing browser/server specific implementations.
  */
 
-import { DaemonBase } from '@shared/DaemonBase';
-import type { JTAGContext, JTAGMessage, CommandParams, CommandResult } from '@shared/JTAGTypes';
-import type { JTAGRouter } from '@shared/JTAGRouter';
-import type{ CommandBase, CommandEntry } from '@commandBase';
-import type { CommandResponse } from '@daemonsCommandDaemon/shared/CommandResponseTypes';
-import { createCommandErrorResponse, createCommandSuccessResponse } from '@daemonsCommandDaemon/shared/CommandResponseTypes';
-import { type UUID } from '@shared/CrossPlatformUUID';
-import { globalSessionContext } from '@shared/SystemScopes';
+import { DaemonBase } from './DaemonBase';
+import type { JTAGContext, JTAGMessage, CommandParams, CommandResult } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import type{ CommandBase, CommandEntry } from './CommandBase';
+import type { CommandResponse } from './CommandResponseTypes';
+import { createCommandErrorResponse, createCommandSuccessResponse } from './CommandResponseTypes';
+import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { globalSessionContext } from '../../../system/core/types/SystemScopes';
 
 
 export abstract class CommandDaemon extends DaemonBase {

@@ -4,11 +4,11 @@
  * MINIMAL WORK PER COMMAND: Just implements what server does
  */
 
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import { JTAGMessageFactory } from '@shared/JTAGTypes';
-import { type ScreenshotParams, type ScreenshotResult, createScreenshotResult } from '@commandsScreenshot/shared/ScreenshotTypes';
-import { PersistenceError } from '@shared/ErrorTypes';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import { JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
+import { type ScreenshotParams, type ScreenshotResult, createScreenshotResult } from '../shared/ScreenshotTypes';
+import { PersistenceError } from '../../../system/core/types/ErrorTypes';
 
 export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
   

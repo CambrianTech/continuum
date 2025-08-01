@@ -169,7 +169,7 @@ class StructureGenerator {
     return regex.test(filename);
   }
 
-  private extractDaemonInfo(filePath: string): DaemonEntry | null {
+  private extractDaemonInfo(filePath: string, outputPath: string): DaemonEntry | null {
     try {
       const content = readFileSync(filePath, 'utf8');
       const relativePath = relative(this.rootPath, filePath);
@@ -186,13 +186,15 @@ class StructureGenerator {
         return null;
       }
       
-      // Generate proper import path
-      const importPath = relativePath.replace('.ts', '').replace(/\\/g, '/');
+      // Calculate proper relative path from output file to daemon file
+      const outputDir = join(this.rootPath, outputPath).replace(/[^/]*$/, ''); // Get directory of output file
+      const daemonAbsolutePath = filePath;
+      const relativeImportPath = relative(outputDir, daemonAbsolutePath).replace('.ts', '').replace(/\\/g, '/');
       
       return {
         name: daemonName,
         className,
-        importPath: `../${importPath}`
+        importPath: `./${relativeImportPath}`
       };
     } catch (e) {
       console.warn(`Ignoring daemon info from ${filePath}:`, e);
@@ -200,7 +202,7 @@ class StructureGenerator {
     }
   }
 
-  private extractCommandInfo(filePath: string, baseDir?: string): CommandEntry | null {
+  private extractCommandInfo(filePath: string, outputPath: string): CommandEntry | null {
     try {
       const content = readFileSync(filePath, 'utf8');
       const relativePath = relative(this.rootPath, filePath);
@@ -210,7 +212,7 @@ class StructureGenerator {
       const className = filename.replace('.ts', '');
       
       // Extract command name from path structure
-      // e.g., daemons/command-daemon/commands/screenshot/browser/ScreenshotBrowserCommand.ts -> screenshot
+      // e.g., commands/screenshot/browser/ScreenshotBrowserCommand.ts -> screenshot
       const pathParts = relativePath.split('/');
       const commandIndex = pathParts.indexOf('commands');
       let commandName = '';
@@ -230,22 +232,15 @@ class StructureGenerator {
         return null;
       }
       
-      // Generate proper import path relative to the output file
-      let importPath: string;
-      if (baseDir && relativePath.startsWith('commands/')) {
-        // For command daemon structure files, use relative path from daemon directory to commands
-        const commandPath = relativePath.replace('commands/', '');
-        importPath = `../../../commands/${commandPath.replace('.ts', '')}`;
-      } else {
-        // For root structure files, use full relative path
-        const fullImportPath = relativePath.replace('.ts', '').replace(/\\/g, '/');
-        importPath = `../${fullImportPath}`;
-      }
+      // Calculate proper relative path from output file to command file
+      const outputDir = join(this.rootPath, outputPath).replace(/[^/]*$/, ''); // Get directory of output file
+      const commandAbsolutePath = filePath;
+      const relativeImportPath = relative(outputDir, commandAbsolutePath).replace('.ts', '').replace(/\\/g, '/');
       
       return {
         name: commandName,
         className,
-        importPath
+        importPath: `./${relativeImportPath}`
       };
     } catch (e) {
       return null;
@@ -288,13 +283,21 @@ class StructureGenerator {
       sections.push(commands.map(c => `import { ${c.className} } from '${c.importPath}';`).join('\n'));
     }
     
-    // Type imports
+    // Type imports - calculate proper relative paths
     sections.push('\n// Types');
-    if (daemons.length > 0) {
-      sections.push(`import type { DaemonEntry } from '${relativePath}shared/DaemonBase';`);
-    }
-    if (commands.length > 0) {
-      sections.push(`import type { CommandEntry } from '${relativePath}daemons/command-daemon/shared/CommandBase';`);
+    if (daemons.length > 0 || commands.length > 0) {
+      const outputDir = join(this.rootPath, outputPath).replace(/[^/]*$/, ''); // Get directory of output file
+      const daemonBasePath = join(this.rootPath, 'daemons/command-daemon/shared/DaemonBase.ts');
+      const commandBasePath = join(this.rootPath, 'daemons/command-daemon/shared/CommandBase.ts');
+      
+      if (daemons.length > 0) {
+        const daemonBaseImport = relative(outputDir, daemonBasePath).replace('.ts', '').replace(/\\/g, '/');
+        sections.push(`import type { DaemonEntry } from './${daemonBaseImport}';`);
+      }
+      if (commands.length > 0) {
+        const commandBaseImport = relative(outputDir, commandBasePath).replace('.ts', '').replace(/\\/g, '/');
+        sections.push(`import type { CommandEntry } from './${commandBaseImport}';`);
+      }
     }
     
     // Exports
@@ -335,7 +338,7 @@ class StructureGenerator {
         console.log(`   Searching for daemons: ${dirConfig.daemonPaths.join(', ')}`);
         const daemonFiles = this.findFiles(dirConfig.daemonPaths, dirConfig.excludePatterns);
         daemons = daemonFiles
-          .map(f => this.extractDaemonInfo(f))
+          .map(f => this.extractDaemonInfo(f, dirConfig.outputFile))
           .filter((d): d is DaemonEntry => d !== null);
         
         console.log(`   Found ${daemons.length} daemons: ${daemons.map(d => d.name).join(', ')}`);
@@ -346,13 +349,12 @@ class StructureGenerator {
       if (dirConfig.commandPaths) {
         console.log(`   Searching for commands: ${dirConfig.commandPaths.join(', ')}`);
         const commandFiles = this.findFiles(dirConfig.commandPaths, dirConfig.excludePatterns);
-        const isCommandDaemonStructure = dirConfig.outputFile.includes('command-daemon');
         
         // Deduplicate command files by path
         const uniqueCommandFiles = Array.from(new Set(commandFiles));
         
         commands = uniqueCommandFiles
-          .map(f => this.extractCommandInfo(f, isCommandDaemonStructure ? 'command-daemon' : undefined))
+          .map(f => this.extractCommandInfo(f, dirConfig.outputFile))
           .filter((c): c is CommandEntry => c !== null);
         
         console.log(`   Found ${commands.length} commands: ${commands.map(c => c.name).join(', ')}`);

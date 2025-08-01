@@ -34,7 +34,7 @@ import {
 } from '../../../test/utils/MockUtils';
 
 import type { ScreenshotParams, ScreenshotResult } from '../shared/ScreenshotTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 Screenshot Command Tests');
 

@@ -14,10 +14,10 @@
  * ✅ Focused scope - just basic room event coordination
  */
 
-import { ChatParams, ChatResult, createChatParams, createChatResult } from '@commandsChat/shared/ChatTypes';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { JTAGError } from '@shared/ErrorTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import { ChatParams, ChatResult, createChatParams, createChatResult } from '../../shared/ChatTypes';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 export interface SendRoomEventParams extends ChatParams {
   readonly sourceParticipantId: string;

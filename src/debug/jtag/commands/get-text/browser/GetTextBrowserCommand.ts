@@ -5,10 +5,10 @@
  * Perfect example of focused browser implementation - no over-engineering.
  */
 
-import { type GetTextParams, type GetTextResult, createGetTextResult } from '@commandsGetText/shared/GetTextTypes';
-import { ValidationError } from '@shared/ErrorTypes';
+import { type GetTextParams, type GetTextResult, createGetTextResult } from '../shared/GetTextTypes';
+import { ValidationError } from '../../../system/core/types/ErrorTypes';
 import { GetTextCommand } from '@commandsGetText/shared/GetTextCommand';
-import { safeQuerySelector } from '@shared/GlobalUtils';
+import { safeQuerySelector } from '../../../daemons/command-daemon/shared/GlobalUtils';
 
 export class GetTextBrowserCommand extends GetTextCommand {
   

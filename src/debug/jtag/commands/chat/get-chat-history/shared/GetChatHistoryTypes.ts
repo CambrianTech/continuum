@@ -8,10 +8,10 @@
  * ChatResult → GetChatHistoryResult (adds messages, totalCount)
  */
 
-import { ChatParams, ChatResult } from '@commandsChat/shared/ChatTypes';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import { createPayload } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import { ChatParams, ChatResult } from '../../shared/ChatTypes';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import { createPayload } from '../../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 export interface GetChatHistoryParams extends ChatParams {
   readonly participantId?: string;
