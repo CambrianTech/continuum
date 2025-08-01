@@ -10,8 +10,8 @@
 
 import { SendMessageCommand } from '@chatSendMessage/shared/SendMessageCommand';
 import { type SendMessageParams, type SendMessageResult, createSendMessageResult } from '@chatSendMessage/shared/SendMessageTypes';
-import type { ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 
 export class SendMessageBrowserCommand extends SendMessageCommand {
 

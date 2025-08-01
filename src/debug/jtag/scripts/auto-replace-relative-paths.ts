@@ -4,7 +4,7 @@
  * Automatic Relative Path Replacement Script
  * 
  * Clean, modular system for converting ugly relative paths to clean aliases.
- * Transforms "../../../../../../shared/JTAGTypes" → "@shared/JTAGTypes"
+ * Transforms "../../../../../../shared/JTAGTypes" → "../../../system/core/types/JTAGTypes"
  */
 
 import * as fs from 'fs';

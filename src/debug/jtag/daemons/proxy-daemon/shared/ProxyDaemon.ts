@@ -5,9 +5,9 @@
  * solving CORS and iframe restrictions for training and interaction.
  */
 
-import { DaemonBase } from '@shared/DaemonBase';
-import type { JTAGMessage, JTAGContext } from '@shared/JTAGTypes';
-import type { JTAGRouter } from '@shared/JTAGRouter';
+import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
+import type { JTAGMessage, JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 
 export interface ProxyRequest {
   url: string;

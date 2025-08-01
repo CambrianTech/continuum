@@ -5,8 +5,8 @@
  * Used by both browser and server implementations for persona-chat integration.
  */
 
-import { CommandParams, CommandResult } from '@shared/JTAGTypes';
-import type { JTAGContext } from '@shared/JTAGTypes';
+import { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 
 /**
  * Send Message Command Parameters - extends CommandParams

@@ -8,8 +8,8 @@
  * 4. Log files created with correct naming
  */
 
-import { JTAGBase } from '@shared/JTAGBase';
-import { jtagRouter } from '@shared/JTAGRouter';
+import { JTAGBase } from '../system/core/shared/JTAGBase';
+import { jtagRouter } from '../system/core/router/shared/JTAGRouter';
 import * as fs from 'fs';
 import * as path from 'path';
 

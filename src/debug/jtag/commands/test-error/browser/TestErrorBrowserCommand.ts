@@ -4,8 +4,8 @@
  * Browser-side error generation for testing cross-context error handling
  */
 
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import { type TestErrorParams, type TestErrorResult, createTestErrorResult } from '../shared/TestErrorTypes';
 
 export class TestErrorBrowserCommand extends CommandBase<TestErrorParams, TestErrorResult> {

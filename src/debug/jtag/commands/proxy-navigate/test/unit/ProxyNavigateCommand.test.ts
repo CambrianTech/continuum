@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { ProxyNavigateParams, ProxyNavigateResult } from '../shared/ProxyNavigateTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 ProxyNavigate Command Tests');
 

@@ -9,7 +9,7 @@
  * 4. Server responds to messages
  */
 
-import { JTAGBase } from '@shared/JTAGBase';
+import { JTAGBase } from '../system/core/shared/JTAGBase';
 import WebSocket from 'ws';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';

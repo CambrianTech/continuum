@@ -9,7 +9,7 @@
 
 import { SendRoomEventCommand } from '@chatSendRoomEvent/shared/SendRoomEventCommand';
 import { type SendRoomEventParams, type SendRoomEventResult, createSendRoomEventResult } from '@chatSendRoomEvent/shared/SendRoomEventTypes';
-import { NetworkError } from '@shared/ErrorTypes';
+import { NetworkError } from '../../../../system/core/types/ErrorTypes';
 
 export class SendRoomEventServerCommand extends SendRoomEventCommand {
 

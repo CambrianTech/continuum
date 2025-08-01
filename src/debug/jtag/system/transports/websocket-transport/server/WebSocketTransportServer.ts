@@ -6,7 +6,7 @@
  */
 
 import { WebSocketTransportBase, type WebSocketConfig } from '../shared/WebSocketTransportBase';
-import type { JTAGMessage } from '@shared/JTAGTypes';
+import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import type { WebSocketServer, WebSocket as WSWebSocket } from 'ws';
 import type { TransportSendResult } from '../../shared/TransportTypes';
 

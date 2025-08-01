@@ -6,10 +6,10 @@
  */
 
 import { WebSocketTransportBase, type WebSocketConfig } from '../shared/WebSocketTransportBase';
-import type { JTAGMessage } from '@shared/JTAGTypes';
+import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import type { TransportSendResult } from '../../shared/TransportTypes';
 import type { ITransportHandler } from '../../shared/ITransportHandler';
-import type { EventsInterface } from '@systemEvents';
+import type { EventsInterface } from '../../../events';
 
 // Browser-specific WebSocket configuration with typed inheritance
 export interface WebSocketBrowserConfig extends WebSocketConfig {

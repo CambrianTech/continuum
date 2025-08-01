@@ -4,9 +4,9 @@
  * Browser-specific entry point that exports JTAGSystemBrowser as jtag
  */
 
-import { JTAGSystemBrowser } from './browser/JTAGSystemBrowser';
-import { JTAGClientBrowser } from './browser/JTAGClientBrowser';
-import type { JTAGBase } from './shared/JTAGBase';
+import { JTAGSystemBrowser } from './system/core/system/browser/JTAGSystemBrowser';
+import { JTAGClientBrowser } from './system/core/client/browser/JTAGClientBrowser';
+import type { JTAGBase } from './system/core/shared/JTAGBase';
 
 export const jtag = {
   // Universal client interface - always returns JTAGClientBrowser for browser environment
@@ -25,4 +25,4 @@ export const jtag = {
 
 // Direct export for advanced usage
 export { JTAGSystemBrowser };
-export * from '@shared/JTAGTypes';
+export * from './system/core/types/JTAGTypes';

@@ -13,14 +13,14 @@
  * - Message routing → RouterDaemon
  */
 
-import { DaemonBase } from '@shared/DaemonBase';
-import type { JTAGContext, JTAGMessage, JTAGPayload } from '@shared/JTAGTypes';
-import { createPayload, JTAGMessageFactory } from '@shared/JTAGTypes';
-import { JTAGRouter } from '@shared/JTAGRouter';
-import { createSessionSuccessResponse, createSessionErrorResponse, type SessionResponse } from '@shared/ResponseTypes';
-import { generateUUID, type UUID } from '@shared/CrossPlatformUUID';
-import { type SessionCategory } from '@shared/SystemScopes';
-import { JTAG_DAEMON_ENDPOINTS, JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
+import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
+import type { JTAGContext, JTAGMessage, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import { createPayload, JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
+import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { createSessionSuccessResponse, createSessionErrorResponse, type SessionResponse } from '../../../system/core/types/ResponseTypes';
+import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { type SessionCategory } from '../../../system/core/types/SystemScopes';
+import { JTAG_DAEMON_ENDPOINTS, JTAG_ENDPOINTS } from '../../../system/core/router/shared/JTAGEndpoints';
 
 /**
  * Session Metadata - Core identity information only

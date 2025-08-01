@@ -4,8 +4,8 @@
  * Tests the complete transport and command system end-to-end
  */
 
-import { JTAGClientServer } from '../server/JTAGClientServer';
-import type { JTAGClientConnectOptions } from '../shared/JTAGClient';
+import { JTAGClientServer } from '../system/core/client/server/JTAGClientServer';
+import type { JTAGClientConnectOptions } from '../system/core/client/shared/JTAGClient';
 import { ensureJTAGSystemRunning } from './smart-system-startup';
 
 async function takeScreenshot() {

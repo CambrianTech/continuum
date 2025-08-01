@@ -22,7 +22,7 @@ import {
   JTAGSmartTransport 
 } from '@shared/JTAGTransportFactory';
 import { TransportTestUtils } from '@tests/shared/MockTransports';
-import type { JTAGConfig, JTAGWebSocketMessage } from '@shared/JTAGTypes';
+import type { JTAGConfig, JTAGWebSocketMessage } from '../../../system/core/types/JTAGTypes';
 
 class TransportIntegrationTest {
   private testConfig: JTAGConfig = {

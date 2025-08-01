@@ -25,11 +25,11 @@
  * - Shared types ensure consistency across file operations
  */
 
-import { CommandParams, CommandResult, createPayload } from '@shared/JTAGTypes';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { JTAGError } from '@shared/ErrorTypes';
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import { CommandParams, CommandResult, createPayload } from '../../../system/core/types/JTAGTypes';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGError } from '../../../system/core/types/ErrorTypes';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Generic base parameters for all file operations

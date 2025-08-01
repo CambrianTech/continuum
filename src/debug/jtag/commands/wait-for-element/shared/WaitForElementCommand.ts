@@ -5,11 +5,11 @@
  * generics and clean inheritance. Follows screenshot/navigate/click/type examples exactly.
  */
 
-import { CommandBase } from '@commandBase';
-import type { ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
-import { type WaitForElementParams, type WaitForElementResult, createWaitForElementParams } from '@commandsWaitForElement/shared/WaitForElementTypes';
+import { CommandBase } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { type WaitForElementParams, type WaitForElementResult, createWaitForElementParams } from './WaitForElementTypes';
 
 export abstract class WaitForElementCommand extends CommandBase<WaitForElementParams, WaitForElementResult> {
 

@@ -9,8 +9,8 @@
 import { PingBrowserCommand } from '../../commands/ping/browser/PingBrowserCommand';
 import { PingServerCommand } from '../../commands/ping/server/PingServerCommand';
 import { createPingParams } from '../../commands/ping/shared/PingTypes';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { ICommandDaemon } from '../../daemons/command-daemon/shared/CommandBase';
 
 console.log('🧪 Ping Command Unit Test Suite');
 

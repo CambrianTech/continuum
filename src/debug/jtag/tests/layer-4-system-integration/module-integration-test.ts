@@ -18,7 +18,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { jtag } from '../../index';
-import type { JTAGStats, JTAGLogEntry } from '@shared/JTAGTypes';
+import type { JTAGStats, JTAGLogEntry } from '../../../system/core/types/JTAGTypes';
 import { ComprehensiveTestSuite } from '@tests/shared/TestUtilities';
 
 interface EnhancedModuleTestResults {

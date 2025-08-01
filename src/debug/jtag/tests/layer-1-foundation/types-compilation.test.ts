@@ -11,11 +11,11 @@ import {
   JTAGMessageTypes,
   JTAGMessageFactory,
   JTAGContext
-} from '@shared/JTAGTypes';
-import { ScreenshotParams } from '@commandsScreenshot/shared/ScreenshotTypes';
-import { DaemonBase } from '@shared/DaemonBase';
-import { JTAGRouter } from '@shared/JTAGRouter';
-import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
+} from '../../../system/core/types/JTAGTypes';
+import { ScreenshotParams } from '../../commands/screenshot/shared/ScreenshotTypes';
+import { DaemonBase } from '../../daemons/command-daemon/shared/DaemonBase';
+import { JTAGRouter } from '../../system/core/router/shared/JTAGRouter';
+import { JTAG_ENDPOINTS } from '../../system/core/router/shared/JTAGEndpoints';
 
 /**
  * Test payload for console messages

@@ -2,9 +2,9 @@
  * Proxy Navigate Command - Abstract Base
  */
 
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { type ProxyNavigateParams, type ProxyNavigateResult, createProxyNavigateParams } from '@commandsProxyNavigate/shared/ProxyNavigateTypes';
 
 export abstract class ProxyNavigateCommand extends CommandBase<ProxyNavigateParams, ProxyNavigateResult> {

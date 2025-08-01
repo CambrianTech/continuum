@@ -5,11 +5,11 @@
  * Inherits path from parent group: commands/file/save
  */
 
-import type { ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { FileCommand } from '@commandsFile/shared/FileTypes';
-import { type FileSaveParams, type FileSaveResult, createFileSaveParams } from '@fileSave/shared/FileSaveTypes';
+import { type FileSaveParams, type FileSaveResult, createFileSaveParams } from './FileSaveTypes';
 
 export abstract class FileSaveCommand extends FileCommand<FileSaveParams, FileSaveResult> {
 

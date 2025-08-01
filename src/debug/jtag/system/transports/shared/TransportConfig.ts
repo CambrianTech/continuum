@@ -4,8 +4,8 @@
  * Extracted from TransportFactory to handle transport configuration logic.
  */
 
-import { JTAG_ENVIRONMENTS } from '@shared/JTAGTypes';
-import type { JTAGContext } from '@shared/JTAGTypes';
+import { JTAG_ENVIRONMENTS } from '../../core/types/JTAGTypes';
+import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { TransportConfig } from './TransportTypes';
 
 export class TransportConfigHelper {

@@ -33,19 +33,19 @@
  * - Event correlation enables distributed debugging
  */
 
-import { DaemonBase } from '@shared/DaemonBase';
-import type { JTAGContext, JTAGMessage } from '@shared/JTAGTypes';
-import { type JTAGPayload, JTAGMessageFactory, createPayload } from '@shared/JTAGTypes';
-import { type UUID } from '@shared/CrossPlatformUUID';
-import type { JTAGRouter } from '@shared/JTAGRouter';
-import { SYSTEM_EVENTS } from '@systemEvents';
+import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
+import type { JTAGContext, JTAGMessage } from '../../../system/core/types/JTAGTypes';
+import { type JTAGPayload, JTAGMessageFactory, createPayload } from '../../../system/core/types/JTAGTypes';
+import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { SYSTEM_EVENTS } from '../../../system/events';
 import { TRANSPORT_EVENTS } from '@system/transports/shared/TransportEvents';
-import { SYSTEM_SCOPES, globalSessionContext } from '@shared/SystemScopes';
-import { CONSOLE_EVENTS } from '@daemonsConsoleDaemon/ConsoleEvents';
-import { JTAG_ENDPOINTS } from '@shared/JTAGEndpoints';
-import { type ConsoleResponse, createConsoleSuccessResponse, createConsoleErrorResponse } from '@shared/ResponseTypes';
-import type { TimerHandle } from '@shared/CrossPlatformTypes';
-import type { LogLevel } from '@shared/LogLevels';
+import { SYSTEM_SCOPES, globalSessionContext } from '../../../system/core/types/SystemScopes';
+import { CONSOLE_EVENTS } from '../ConsoleEvents';
+import { JTAG_ENDPOINTS } from '../../../system/core/router/shared/JTAGEndpoints';
+import { type ConsoleResponse, createConsoleSuccessResponse, createConsoleErrorResponse } from '../../../system/core/types/ResponseTypes';
+import type { TimerHandle } from '../../../system/core/types/CrossPlatformTypes';
+import type { LogLevel } from './LogLevels';
 
 
 // Console-specific payload

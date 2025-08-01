@@ -7,12 +7,12 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { CommandBase } from '@commandBase';
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { FileSaveParams, FileSaveResult } from '@fileSave/shared/FileSaveTypes';
-import { createFileSaveResult } from '@fileSave/shared/FileSaveTypes';
-import { PersistenceError } from '@shared/ErrorTypes';
-import type { ICommandDaemon } from '@commandBase';
+import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { FileSaveParams, FileSaveResult } from '../shared/FileSaveTypes';
+import { createFileSaveResult } from '../shared/FileSaveTypes';
+import { PersistenceError } from '../../../../system/core/types/ErrorTypes';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 
 export class FileSaveServerCommand extends CommandBase<FileSaveParams, FileSaveResult> {
   

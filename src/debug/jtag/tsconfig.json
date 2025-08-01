@@ -526,23 +526,41 @@
       "@scripts/*": [
         "scripts/*"
       ],
-      "@sharedQueuing": [
-        "shared/queuing"
-      ],
-      "@sharedQueuing/*": [
-        "shared/queuing/*"
-      ],
-      "@sharedRouting": [
-        "shared/routing"
-      ],
-      "@sharedRouting/*": [
-        "shared/routing/*"
-      ],
       "@system": [
         "system"
       ],
       "@system/*": [
         "system/*"
+      ],
+      "@systemCore": [
+        "system/core"
+      ],
+      "@systemCore/*": [
+        "system/core/*"
+      ],
+      "@coreClient": [
+        "system/core/client"
+      ],
+      "@coreClient/*": [
+        "system/core/client/*"
+      ],
+      "@coreRouter": [
+        "system/core/router"
+      ],
+      "@coreRouter/*": [
+        "system/core/router/*"
+      ],
+      "@coreSystem": [
+        "system/core/system"
+      ],
+      "@coreSystem/*": [
+        "system/core/system/*"
+      ],
+      "@coreTypes": [
+        "system/core/types"
+      ],
+      "@coreTypes/*": [
+        "system/core/types/*"
       ],
       "@systemEvents": [
         "system/events"
@@ -646,10 +664,10 @@
       "@widgets/*": [
         "widgets/*"
       ],
-      "@commandBase": [
+      "../daemons/command-daemon/shared/CommandBase": [
         "daemons/command-daemon/shared/CommandBase"
       ],
-      "@commandBase/*": [
+      "../daemons/command-daemon/shared/CommandBase/*": [
         "daemons/command-daemon/shared/CommandBase/*"
       ],
       "@shared": [
@@ -692,8 +710,8 @@
     "**/templates/**/*"
   ],
   "_generated": {
-    "timestamp": "2025-08-01T05:03:16.790Z",
+    "timestamp": "2025-08-01T18:00:11.319Z",
     "source": "unified-config.json",
-    "pathCount": 216
+    "pathCount": 222
   }
 }

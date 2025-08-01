@@ -10,7 +10,7 @@
  * 5. Log file templates are used correctly
  */
 
-import { JTAGBase } from '@shared/JTAGBase';
+import { JTAGBase } from '../system/core/shared/JTAGBase';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 

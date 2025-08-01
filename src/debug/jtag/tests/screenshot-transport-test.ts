@@ -9,7 +9,7 @@
  * 4. Both server and client screenshot methods work
  */
 
-import { JTAGBase } from '@shared/JTAGBase';
+import { JTAGBase } from '../system/core/shared/JTAGBase';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 

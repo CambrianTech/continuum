@@ -21,9 +21,9 @@
  * - Clean, readable implementation
  */
 
-import { type NavigateParams, type NavigateResult, createNavigateResult } from '@commandsNavigate/shared/NavigateTypes';
-import { ValidationError } from '@shared/ErrorTypes';
-import { NavigateCommand } from '@commandsNavigate/shared/NavigateCommand';
+import { type NavigateParams, type NavigateResult, createNavigateResult } from '../shared/NavigateTypes';
+import { ValidationError } from '../../../system/core/types/ErrorTypes';
+import { NavigateCommand } from '../shared/NavigateCommand';
 
 export class NavigateBrowserCommand extends NavigateCommand {
   

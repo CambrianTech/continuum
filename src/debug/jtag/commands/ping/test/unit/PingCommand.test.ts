@@ -26,7 +26,7 @@ import {
 } from '../../../test/utils/MockUtils';
 
 import type { PingParams, PingResult } from '../shared/PingTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 Ping Command Unit Tests');
 

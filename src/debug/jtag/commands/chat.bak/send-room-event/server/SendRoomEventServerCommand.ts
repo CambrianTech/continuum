@@ -5,9 +5,9 @@
  * Routes events through room event bus for proper delivery to all participants.
  */
 
-import { CommandBase } from '@commandBase';
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { ICommandDaemon } from '@commandBase';
+import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { SendRoomEventParams, SendRoomEventResult } from '../shared/SendRoomEventTypes';
 import type { RoomEvent } from '../../room-events/shared/RoomEventTypes';
 

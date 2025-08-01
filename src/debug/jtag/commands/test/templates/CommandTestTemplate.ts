@@ -34,7 +34,7 @@ import {
 } from '../../../test/utils/MockUtils';
 
 import type { [COMMAND_NAME]Params, [COMMAND_NAME]Result } from '../shared/[COMMAND_NAME]Types';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 [COMMAND_NAME] Command Tests');
 

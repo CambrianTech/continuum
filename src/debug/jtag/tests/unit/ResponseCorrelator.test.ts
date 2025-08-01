@@ -6,7 +6,7 @@
  * across cross-context communication.
  */
 
-import { ResponseCorrelator } from '@shared/ResponseCorrelator';
+import { ResponseCorrelator } from '../../system/core/shared/ResponseCorrelator';
 
 console.log('🧪 ResponseCorrelator Test Suite');
 

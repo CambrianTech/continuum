@@ -11,10 +11,10 @@
  * regardless of the transport layer - WebSocket, REST API, MCP, etc.
  */
 
-import { JTAGBase } from '../shared/JTAGBase';
-import { jtagRouter } from '../shared/JTAGRouter';
+import { JTAGBase } from '../../system/core/shared/JTAGBase';
+import { jtagRouter } from '../../system/core/router/shared/JTAGRouter';
 import { RestApiTransport } from '../transports/RestApiTransport';
-import { JTAGMessageFactory, JTAG_MESSAGE_TYPES, JTAG_CONTEXTS } from '../shared/JTAGTypes';
+import { JTAGMessageFactory, JTAG_MESSAGE_TYPES, JTAG_CONTEXTS } from '../../system/core/types/JTAGTypes';
 
 async function demonstrateTransportAbstraction() {
   console.log('🎪 JTAG Transport Abstraction Demo\n');

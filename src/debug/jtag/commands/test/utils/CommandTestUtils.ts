@@ -5,10 +5,10 @@
  * Follows middle-out testing methodology with proper Layer 3 (Command System) validation.
  */
 
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
-import { generateUUID } from '@shared/CrossPlatformUUID';
-import type { JTAGClient } from '@shared/JTAGClient';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 
 /**
  * Test environment info - matches what real commands return

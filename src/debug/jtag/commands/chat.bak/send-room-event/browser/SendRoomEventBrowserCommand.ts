@@ -1,6 +1,6 @@
 import { SendRoomEventCommand } from '../shared/SendRoomEventCommand';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { SendRoomEventParams, SendRoomEventResult } from '../shared/SendRoomEventTypes';
 
 export class SendRoomEventBrowserCommand extends SendRoomEventCommand {

@@ -4,8 +4,8 @@
  * Browser-specific console daemon that handles browser console interception.
  */
 
-import { ConsoleDaemon } from '@daemonsConsoleDaemon/shared/ConsoleDaemon';
-import type { ConsolePayload } from '@daemonsConsoleDaemon/shared/ConsoleDaemon';
+import { ConsoleDaemon } from '../shared/ConsoleDaemon';
+import type { ConsolePayload } from '../shared/ConsoleDaemon';
 
 // Declare window for TypeScript if not already in the global scope
 declare const window: Window & typeof globalThis;

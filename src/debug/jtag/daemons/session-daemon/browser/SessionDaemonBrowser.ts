@@ -5,10 +5,10 @@
  * TEMPORARY: Direct sessionStorage access until ArtifactoryDaemon is created.
  */
 
-import { JTAGContext, JTAGMessageFactory } from '@shared/JTAGTypes';
-import { JTAGRouter } from '@shared/JTAGRouter';
-import { SessionDaemon } from '@daemonsSessionDaemon/shared/SessionDaemon';
-import { type UUID } from '@shared/CrossPlatformUUID';
+import { JTAGContext, JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
+import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { SessionDaemon } from '../shared/SessionDaemon';
+import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 export class SessionDaemonBrowser extends SessionDaemon {
   private static readonly SESSION_STORAGE_KEY = 'jtag_session_id';

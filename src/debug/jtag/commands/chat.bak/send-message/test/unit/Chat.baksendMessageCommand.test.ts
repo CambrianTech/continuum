@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { Chat.baksendMessageParams, Chat.baksendMessageResult } from '../shared/Chat.baksendMessageTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 Chat.baksendMessage Command Tests');
 

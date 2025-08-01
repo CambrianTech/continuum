@@ -6,7 +6,7 @@
  */
 
 import { type ProxyNavigateParams, type ProxyNavigateResult, createProxyNavigateResult } from '@commandsProxyNavigate/shared/ProxyNavigateTypes';
-import { ValidationError } from '@shared/ErrorTypes';
+import { ValidationError } from '../../../system/core/types/ErrorTypes';
 import { ProxyNavigateCommand } from '@commandsProxyNavigate/shared/ProxyNavigateCommand';
 
 export class ProxyNavigateServerCommand extends ProxyNavigateCommand {

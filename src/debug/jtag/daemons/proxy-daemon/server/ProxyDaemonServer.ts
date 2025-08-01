@@ -6,8 +6,8 @@
  */
 
 import { ProxyDaemon, type ProxyRequest, type ProxyResponse } from '@daemonsProxyDaemon/shared/ProxyDaemon';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { JTAGRouter } from '@shared/JTAGRouter';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 
 export class ProxyDaemonServer extends ProxyDaemon {
   private userAgent = 'Continuum-ProxyDaemon/1.0 (Training Bot)';

@@ -4,9 +4,9 @@
  * Server-specific console daemon that handles server console logging and file writes.
  */
 
-import { ConsoleDaemon } from '@daemonsConsoleDaemon/shared/ConsoleDaemon';
-import type { ConsolePayload } from '@daemonsConsoleDaemon/shared/ConsoleDaemon';
-import { SYSTEM_SCOPES, shouldDualScope } from '@shared/SystemScopes';
+import { ConsoleDaemon } from '../shared/ConsoleDaemon';
+import type { ConsolePayload } from '../shared/ConsoleDaemon';
+import { SYSTEM_SCOPES, shouldDualScope } from '../../../system/core/types/SystemScopes';
 
 export class ConsoleDaemonServer extends ConsoleDaemon {
   private symlinkWarningShown = false;

@@ -4,8 +4,8 @@
  * Server-side ping command with server-specific environment detection.
  */
 
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { ICommandDaemon } from '@commandBase';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
 import { PingCommand } from '../shared/PingCommand';
 import type { PingResult } from '../shared/PingTypes';
 

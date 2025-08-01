@@ -5,8 +5,8 @@
  * and environment detection.
  */
 
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Ping command parameters

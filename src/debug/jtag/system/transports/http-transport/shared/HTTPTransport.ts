@@ -6,7 +6,7 @@
  */
 
 import { TransportBase } from '../../shared/TransportBase';
-import type { JTAGMessage } from '@shared/JTAGTypes';
+import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import type { TransportSendResult } from '../../shared/TransportTypes';
 
 export class HTTPTransport extends TransportBase {

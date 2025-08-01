@@ -6,8 +6,8 @@
  */
 
 import { WidgetDaemon } from '@daemonsWidgetDaemon/shared/WidgetDaemon';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { JTAGRouter } from '@shared/JTAGRouter';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 
 export class WidgetDaemonServer extends WidgetDaemon {
   

@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { ChatParams, ChatResult } from '../shared/ChatTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 Chat Command Integration Tests');
 

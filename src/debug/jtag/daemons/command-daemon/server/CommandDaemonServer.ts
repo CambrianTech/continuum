@@ -5,11 +5,11 @@
  */
 
 
-import type { JTAGContext, CommandParams, CommandResult } from '@shared/JTAGTypes';
-import { CommandDaemon } from '@daemonsCommandDaemon/shared/CommandDaemon';
-import type { CommandEntry } from '@commandBase';
+import type { JTAGContext, CommandParams, CommandResult } from '../../../system/core/types/JTAGTypes';
+import { CommandDaemon } from '../shared/CommandDaemon';
+import type { CommandEntry } from '../shared/CommandBase';
 import { SERVER_COMMANDS } from '../../../server/generated';
-import type { CommandBase } from '@commandBase';
+import type { CommandBase } from '../shared/CommandBase';
 
 export class CommandDaemonServer extends CommandDaemon {
   

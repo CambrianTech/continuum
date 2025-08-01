@@ -28,17 +28,17 @@
  * - Subscription cleanup prevents memory leaks in long-running systems
  */
 
-import type { JTAGMessage, JTAGContext } from '@shared/JTAGTypes';
-import { type JTAGPayload, JTAGMessageFactory, createPayload } from '@shared/JTAGTypes';
-import { type UUID } from '@shared/CrossPlatformUUID';
-import { SYSTEM_SCOPES } from '@shared/SystemScopes';
+import type { JTAGMessage, JTAGContext } from '../../core/types/JTAGTypes';
+import { type JTAGPayload, JTAGMessageFactory, createPayload } from '../../core/types/JTAGTypes';
+import { type UUID } from '../../core/types/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../../core/types/SystemScopes';
 
 // Import modular event categories - co-located with their modules
 import type { SystemEventData, SystemEventName } from './SystemEvents';
 import type { RouterEventData, RouterEventName } from '../router/RouterEvents';
 import type { TransportEventData, TransportEventName } from '@system/transports/shared/TransportEvents';
-import type { ConsoleEventData, ConsoleEventName } from '@daemonsConsoleDaemon/ConsoleEvents';
-import type { CommandEventData, CommandEventName } from '@daemonsCommandDaemon/CommandEvents';
+import type { ConsoleEventData, ConsoleEventName } from '../../../daemons/console-daemon/ConsoleEvents';
+import type { CommandEventData, CommandEventName } from '../../../daemons/command-daemon/CommandEvents';
 
 // Combine all event types for the system
 export type JTAGEventName = 

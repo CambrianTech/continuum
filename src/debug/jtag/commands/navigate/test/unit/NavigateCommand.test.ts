@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { NavigateParams, NavigateResult } from '../shared/NavigateTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 Navigate Command Tests');
 

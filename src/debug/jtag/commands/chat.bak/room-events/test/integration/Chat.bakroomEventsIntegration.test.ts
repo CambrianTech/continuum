@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { Chat.bakroomEventsParams, Chat.bakroomEventsResult } from '../shared/Chat.bakroomEventsTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 Chat.bakroomEvents Command Integration Tests');
 

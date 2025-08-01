@@ -14,12 +14,12 @@
  * ✅ Proper constructor delegation pattern
  */
 
-import { CommandBase } from '@commandBase';
-import type { ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
-import { type ClickParams, createClickParams } from '@commandsClick/shared/ClickTypes';
-import type { ClickResult } from '@commandsClick/shared/ClickTypes';
+import { CommandBase } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { type ClickParams, createClickParams } from './ClickTypes';
+import type { ClickResult } from './ClickTypes';
 
 export abstract class ClickCommand extends CommandBase<ClickParams, ClickResult> {
 

@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { GetTextParams, GetTextResult } from '../shared/GetTextTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 GetText Command Tests');
 

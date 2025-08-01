@@ -22,8 +22,8 @@ export const jtag = {
 };
 
 // Export types and base classes for advanced usage
-export * from '@shared/JTAGTypes';
-export { JTAGSystem } from '@shared/JTAGSystem';
+export * from './system/core/types/JTAGTypes';
+export { JTAGSystem } from './system/core/system/shared/JTAGSystem';
 
 // Default export for easy importing
 export default jtag;

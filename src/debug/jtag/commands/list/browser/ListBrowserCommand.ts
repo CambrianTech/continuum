@@ -5,8 +5,8 @@
  * Essential command for client command discovery - works locally in browser.
  */
 
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import { type ListParams, type ListResult, type CommandSignature, createListResultFromParams } from '../shared/ListTypes';
 
 export class ListBrowserCommand extends CommandBase<ListParams, ListResult> {

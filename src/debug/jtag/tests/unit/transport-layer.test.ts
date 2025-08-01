@@ -8,7 +8,7 @@
 
 import { WebSocketTransportBase } from '../../system/transports/websocket-transport/shared/WebSocketTransportBase';
 import { TransportBase } from '../../system/transports/shared/TransportBase';
-import type { JTAGMessage, JTAGContext } from '@shared/JTAGTypes';
+import type { JTAGMessage, JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGTransport, TransportSendResult, TransportConfig } from '../../system/transports/shared/TransportTypes';
 
 console.log('🧪 Transport Layer Unit Test Suite');

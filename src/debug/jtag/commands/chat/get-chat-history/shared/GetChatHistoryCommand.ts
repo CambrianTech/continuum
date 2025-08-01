@@ -1,7 +1,7 @@
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
-import { type GetChatHistoryParams, type GetChatHistoryResult, createGetChatHistoryParams } from '@chatGetChatHistory/shared/GetChatHistoryTypes';
+import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { type GetChatHistoryParams, type GetChatHistoryResult, createGetChatHistoryParams } from './GetChatHistoryTypes';
 
 export abstract class GetChatHistoryCommand extends CommandBase<GetChatHistoryParams, GetChatHistoryResult> {
 

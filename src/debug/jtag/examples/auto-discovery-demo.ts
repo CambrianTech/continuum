@@ -8,7 +8,7 @@
  * - Zero registration boilerplate
  */
 
-import { JTAGSystem } from '../shared/JTAGSystem';
+import { JTAGSystem } from '../system/core/system/shared/JTAGSystem';
 
 async function demonstrateAutoDiscovery() {
   console.log('🚀 JTAG Auto-Discovery Demo');

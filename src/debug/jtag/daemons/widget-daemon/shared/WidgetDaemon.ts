@@ -5,11 +5,11 @@
  * Provides executeCommand() interface that widgets expect.
  */
 
-import { DaemonBase } from '@shared/DaemonBase';
-import type { JTAGMessage, JTAGContext } from '@shared/JTAGTypes';
-import { JTAGMessageFactory } from '@shared/JTAGTypes';
-import type { JTAGRouter } from '@shared/JTAGRouter';
-import { SYSTEM_SCOPES } from '@shared/SystemScopes';
+import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
+import type { JTAGMessage, JTAGContext } from '../../../system/core/types/JTAGTypes';
+import { JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 
 export abstract class WidgetDaemon extends DaemonBase {
   public readonly subpath = 'widget';

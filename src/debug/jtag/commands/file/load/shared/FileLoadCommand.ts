@@ -5,12 +5,12 @@
  * Inherits path from parent group: commands/file/load
  */
 
-import { CommandBase } from '@commandBase';
-import type { ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { UUID } from '@shared/CrossPlatformUUID';
-import { type FileLoadParams, createFileLoadParams } from '@fileLoad/shared/FileLoadTypes';
-import type { FileLoadResult } from '@fileLoad/shared/FileLoadTypes';
+import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { type FileLoadParams, createFileLoadParams } from './FileLoadTypes';
+import type { FileLoadResult } from './FileLoadTypes';
 
 export abstract class FileLoadCommand extends CommandBase<FileLoadParams, FileLoadResult> {
 

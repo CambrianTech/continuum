@@ -1,6 +1,6 @@
-import { CommandBase } from '@commandBase';
-import type { ICommandDaemon } from '@commandBase';
-import type { JTAGContext } from '@shared/JTAGTypes';
+import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { ReceiveEventsParams } from './ReceiveEventsTypes';
 import type { ReceiveEventsResult } from './ReceiveEventsTypes';
 

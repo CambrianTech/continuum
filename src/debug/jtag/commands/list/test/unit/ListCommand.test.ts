@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { ListParams, ListResult } from '../shared/ListTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 List Command Tests');
 

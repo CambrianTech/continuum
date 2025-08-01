@@ -5,8 +5,8 @@
  * Enables personas to respond to chat events like humans do.
  */
 
-import { CommandParams, CommandResult } from '@shared/JTAGTypes';
-import type { JTAGContext } from '@shared/JTAGTypes';
+import { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ChatEventType } from '../../../chat-daemon/shared/ActivePersonaTypes';
 
 /**

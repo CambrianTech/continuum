@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.482",
+  "version": "1.0.483",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/index.js",
   "browser": "dist/browser/index.js",
@@ -92,9 +92,12 @@
     "@daemonsSessionDaemon/*": "./dist/daemons/session-daemon/*",
     "@daemonsWidgetDaemon/*": "./dist/daemons/widget-daemon/*",
     "@scripts/*": "./dist/scripts/*",
-    "@sharedQueuing/*": "./dist/shared/queuing/*",
-    "@sharedRouting/*": "./dist/shared/routing/*",
     "@system/*": "./dist/system/*",
+    "@systemCore/*": "./dist/system/core/*",
+    "@coreClient/*": "./dist/system/core/client/*",
+    "@coreRouter/*": "./dist/system/core/router/*",
+    "@coreSystem/*": "./dist/system/core/system/*",
+    "@coreTypes/*": "./dist/system/core/types/*",
     "@systemEvents/*": "./dist/system/events/*",
     "@eventsRouter/*": "./dist/system/events/router/*",
     "@systemTransports/*": "./dist/system/transports/*",
@@ -112,8 +115,8 @@
     "@testsPiece-2SimpleMessageTransport/*": "./dist/tests/piece-2-simple-message-transport/*",
     "@testsUnit/*": "./dist/tests/unit/*",
     "@widgets/*": "./dist/widgets/*",
-    "@commandBase/*": "./dist/daemons/command-daemon/shared/CommandBase/*",
-    "@commandBase": "./dist/daemons/command-daemon/shared/CommandBase.js",
+    "../daemons/command-daemon/shared/CommandBase/*": "./dist/daemons/command-daemon/shared/CommandBase/*",
+    "../daemons/command-daemon/shared/CommandBase": "./dist/daemons/command-daemon/shared/CommandBase.js",
     "@shared/*": "./dist/shared/*"
   },
   "author": "Continuum Development Team",
@@ -299,8 +302,8 @@
     "node": ">=16.0.0"
   },
   "_importGeneration": {
-    "timestamp": "2025-08-01T05:03:16.792Z",
+    "timestamp": "2025-08-01T18:00:11.321Z",
     "source": "unified-config.json",
-    "importCount": 216
+    "importCount": 222
   }
 }

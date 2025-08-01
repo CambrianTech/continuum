@@ -34,7 +34,7 @@ import {
 } from '../utils/MockUtils';
 
 import type { Chat.bakreceiveEventsParams, Chat.bakreceiveEventsResult } from '../shared/Chat.bakreceiveEventsTypes';
-import { generateUUID } from '@shared/CrossPlatformUUID';
+import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
 
 console.log('🧪 Chat.bakreceiveEvents Command Tests');
 

@@ -27,7 +27,7 @@ import {
   DefaultMessageQueue
 } from '@shared/JTAGTransportFactory';
 
-import type { JTAGConfig } from '@shared/JTAGTypes';
+import type { JTAGConfig } from '../../../system/core/types/JTAGTypes';
 
 class TransportAbstractionTest {
   private testConfig: JTAGConfig = {

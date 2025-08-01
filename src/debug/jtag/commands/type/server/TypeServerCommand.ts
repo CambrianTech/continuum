@@ -4,10 +4,10 @@
  * MINIMAL WORK PER COMMAND: Just implements what server does
  */
 
-import { CommandBase, type ICommandDaemon } from '@commandBase';
-import type { JTAGContext, JTAGPayload } from '@shared/JTAGTypes';
-import { type TypeParams, type TypeResult, createTypeResult } from '@commandsType/shared/TypeTypes';
-import { NetworkError } from '@shared/ErrorTypes';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import { type TypeParams, type TypeResult, createTypeResult } from '../shared/TypeTypes';
+import { NetworkError } from '../../../system/core/types/ErrorTypes';
 
 export class TypeServerCommand extends CommandBase<TypeParams, TypeResult> {
   

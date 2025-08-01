@@ -5,10 +5,10 @@
  * Follows the sparse override pattern - minimal server-specific logic.
  */
 
-import type { JTAGContext } from '@shared/JTAGTypes';
-import type { JTAGRouter } from '@shared/JTAGRouter';
-import { SessionDaemon } from '@daemonsSessionDaemon/shared/SessionDaemon';
-import type { UUID } from '@shared/CrossPlatformUUID';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { SessionDaemon } from '../shared/SessionDaemon';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 export class SessionDaemonServer extends SessionDaemon {
   private activeSession: UUID | null = null;

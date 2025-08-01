@@ -19,8 +19,8 @@
  * - Widget-persona-human coordination through shared event streams
  */
 
-import { CommandParams, CommandResult } from '@shared/JTAGTypes';
-import type { JTAGContext } from '@shared/JTAGTypes';
+import { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 
 // ========================
 // Room Event Subscription
