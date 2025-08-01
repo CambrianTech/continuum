@@ -169,6 +169,39 @@ class StructureGenerator {
     return regex.test(filename);
   }
 
+  /**
+   * Check for duplicate names in daemon/command entries and warn
+   */
+  private validateUniqueNames<T extends { name: string; className: string; importPath: string }>(
+    entries: T[], 
+    type: 'daemon' | 'command'
+  ): T[] {
+    const nameMap = new Map<string, T[]>();
+    
+    // Group by name
+    entries.forEach(entry => {
+      if (!nameMap.has(entry.name)) {
+        nameMap.set(entry.name, []);
+      }
+      nameMap.get(entry.name)!.push(entry);
+    });
+    
+    // Check for duplicates
+    const duplicates = Array.from(nameMap.entries()).filter(([_, entries]) => entries.length > 1);
+    
+    if (duplicates.length > 0) {
+      console.warn(`⚠️  Found duplicate ${type} names:`);
+      duplicates.forEach(([name, entries]) => {
+        console.warn(`   ${name}:`);
+        entries.forEach(entry => {
+          console.warn(`     - ${entry.className} (${entry.importPath})`);
+        });
+      });
+    }
+    
+    return entries;
+  }
+
   private extractDaemonInfo(filePath: string, outputPath: string): DaemonEntry | null {
     try {
       const content = readFileSync(filePath, 'utf8');
@@ -181,8 +214,10 @@ class StructureGenerator {
       // Extract daemon name (e.g., CommandDaemonBrowser -> CommandDaemon)
       const daemonName = className.replace(/(Browser|Server)$/, '');
       
-      // Check if file exports the expected class
-      if (!content.includes(`export class ${className}`)) {
+      // Check if file exports the expected class with more robust pattern matching
+      const exportPattern = new RegExp(`export\\s+class\\s+${className}\\b`);
+      if (!exportPattern.test(content)) {
+        console.warn(`⚠️  Skipping ${filePath}: No export for class ${className}`);
         return null;
       }
       
@@ -227,8 +262,10 @@ class StructureGenerator {
         }
       }
       
-      // Check if file exports the expected class
-      if (!content.includes(`export class ${className}`)) {
+      // Check if file exports the expected class with more robust pattern matching
+      const exportPattern = new RegExp(`export\\s+class\\s+${className}\\b`);
+      if (!exportPattern.test(content)) {
+        console.warn(`⚠️  Skipping ${filePath}: No export for class ${className}`);
         return null;
       }
       
@@ -256,9 +293,8 @@ class StructureGenerator {
     const envCap = environment.charAt(0).toUpperCase() + environment.slice(1);
     const envUpper = environment.toUpperCase();
     
-    // Determine relative path depth for import paths
-    const pathDepth = outputPath.split('/').length - 1;
-    const relativePath = '../'.repeat(pathDepth);
+    // Note: Import paths are calculated using Node.js relative() function 
+    // in extractDaemonInfo/extractCommandInfo methods for accuracy
     
     // Build content sections
     const sections: string[] = [];
@@ -341,6 +377,9 @@ class StructureGenerator {
           .map(f => this.extractDaemonInfo(f, dirConfig.outputFile))
           .filter((d): d is DaemonEntry => d !== null);
         
+        // Validate unique daemon names
+        daemons = this.validateUniqueNames(daemons, 'daemon');
+        
         console.log(`   Found ${daemons.length} daemons: ${daemons.map(d => d.name).join(', ')}`);
       }
       
@@ -356,6 +395,9 @@ class StructureGenerator {
         commands = uniqueCommandFiles
           .map(f => this.extractCommandInfo(f, dirConfig.outputFile))
           .filter((c): c is CommandEntry => c !== null);
+        
+        // Validate unique command names
+        commands = this.validateUniqueNames(commands, 'command');
         
         console.log(`   Found ${commands.length} commands: ${commands.map(c => c.name).join(', ')}`);
       }
