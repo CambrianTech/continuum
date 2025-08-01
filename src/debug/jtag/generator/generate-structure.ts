@@ -13,6 +13,131 @@
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, relative } from 'path';
 
+// ============================================================================
+// WELL-TYPED CONFIGURATION STRUCTURE
+// ============================================================================
+
+type Environment = 'browser' | 'server';
+
+interface NameExtractionRule {
+  type: 'regex' | 'path-segment' | 'custom';
+  pattern?: string;          // For regex type
+  pathIndex?: number;        // For path-segment type  
+  pathAnchor?: string;       // Anchor point in path (e.g., 'commands', 'daemons')
+  segmentRange?: [number, number]; // Range of segments to join
+  customExtractor?: (filePath: string, className: string) => string;
+}
+
+interface EntryTypeDefinition {
+  name: string;               // 'daemon', 'command', 'widget', etc.
+  pluralName: string;         // 'daemons', 'commands', 'widgets', etc.
+  patterns: string[];         // File glob patterns to match
+  nameExtraction: NameExtractionRule;
+  registryTemplate: {
+    arrayName: string;        // 'BROWSER_DAEMONS', 'SERVER_COMMANDS', etc.
+    entryTemplate: string;    // Template for registry entry
+  };
+}
+
+interface EnvironmentTarget {
+  environment: Environment;
+  outputFile: string;
+  entryTypes: string[];      // Which entry types to include
+  typeImports: {             // Additional type imports needed
+    [typeName: string]: string; // type name -> import path pattern
+  };
+}
+
+interface GeneratorConfig {
+  rootPatterns: {
+    exclude: string[];       // Global exclusions
+  };
+  entryTypes: EntryTypeDefinition[];
+  targets: EnvironmentTarget[];
+}
+
+// ============================================================================
+// HARDCODED CONFIGURATION (to be refined)
+// ============================================================================
+
+const STRUCTURE_CONFIG: GeneratorConfig = {
+  rootPatterns: {
+    exclude: [
+      '**/*.bak',
+      '**/*.bak/**/*', 
+      '**/node_modules/**/*',
+      '**/dist/**/*',
+      '**/*.test.ts',
+      '**/*.spec.ts'
+    ]
+  },
+  
+  entryTypes: [
+    {
+      name: 'daemon',
+      pluralName: 'daemons',
+      patterns: ['daemons/*/browser/*Browser.ts', 'daemons/*/server/*Server.ts'],
+      nameExtraction: {
+        type: 'regex',
+        pattern: '^(.+?)(Browser|Server)$'  // Extract base name, removing Browser/Server suffix
+      },
+      registryTemplate: {
+        arrayName: '{ENV}_DAEMONS',
+        entryTemplate: `{
+    name: '{name}',
+    className: '{className}',
+    daemonClass: {className}
+  }`
+      }
+    },
+    
+    {
+      name: 'command', 
+      pluralName: 'commands',
+      patterns: ['commands/**/browser/*Command.ts', 'commands/**/server/*Command.ts'],
+      nameExtraction: {
+        type: 'path-segment',
+        pathAnchor: 'commands',
+        segmentRange: [1, -2]  // From after 'commands' to before 'browser/server'
+      },
+      registryTemplate: {
+        arrayName: '{ENV}_COMMANDS',
+        entryTemplate: `{
+    name: '{name}',
+    className: '{className}',
+    commandClass: {className}
+  }`
+      }
+    }
+  ],
+  
+  targets: [
+    {
+      environment: 'browser',
+      outputFile: 'browser/generated.ts',
+      entryTypes: ['daemon', 'command'],
+      typeImports: {
+        'DaemonEntry': 'daemons/command-daemon/shared/DaemonBase',
+        'CommandEntry': 'daemons/command-daemon/shared/CommandBase'
+      }
+    },
+    
+    {
+      environment: 'server', 
+      outputFile: 'server/generated.ts',
+      entryTypes: ['daemon', 'command'],
+      typeImports: {
+        'DaemonEntry': 'daemons/command-daemon/shared/DaemonBase',
+        'CommandEntry': 'daemons/command-daemon/shared/CommandBase'  
+      }
+    }
+  ]
+};
+
+// ============================================================================
+// LEGACY INTERFACES (for backward compatibility)
+// ============================================================================
+
 interface StructureConfig {
   directories: {
     [key: string]: {
@@ -41,36 +166,67 @@ interface CommandEntry {
   reason?: string;
 }
 
+// Generic entry interface
+interface GeneratedEntry {
+  name: string;
+  className: string;
+  importPath: string;
+  disabled?: boolean;
+  reason?: string;
+}
+
 class StructureGenerator {
-  private config: StructureConfig;
+  private config: GeneratorConfig;
   private rootPath: string;
 
-  constructor(rootPath: string) {
+  constructor(rootPath: string, config?: GeneratorConfig) {
     this.rootPath = rootPath;
-    this.config = this.loadConfig();
+    this.config = config ?? STRUCTURE_CONFIG;
   }
 
-  private loadConfig(): StructureConfig {
-    const unifiedConfigPath = join(this.rootPath, '.continuum/generator/unified-config.json');
-    const unifiedConfig = JSON.parse(readFileSync(unifiedConfigPath, 'utf8'));
-    
-    // Return the structureGeneration configuration from unified-config.json
-    return unifiedConfig.structureGeneration ?? {
-      directories: {
-        browser: {
-          outputFile: 'browser/generated.ts',
-          environment: 'browser',
-          daemonPaths: ['daemons/*/browser/*Browser.ts'],
-          excludePatterns: ['**/*.bak', '**/*.bak/**/*', '**/node_modules/**/*']
-        },
-        server: {
-          outputFile: 'server/generated.ts',
-          environment: 'server', 
-          daemonPaths: ['daemons/*/server/*Server.ts'],
-          excludePatterns: ['**/*.bak', '**/*.bak/**/*', '**/node_modules/**/*']
-        }
-      }
-    };
+  /**
+   * Create name extractor function from configuration
+   */
+  private createNameExtractor(rule: NameExtractionRule): (filePath: string, className: string) => string {
+    switch (rule.type) {
+      case 'regex':
+        const regex = new RegExp(rule.pattern!);
+        return (_, className) => {
+          const match = className.match(regex);
+          return match ? match[1] : className;
+        };
+        
+      case 'path-segment':
+        return (filePath) => {
+          const relativePath = relative(this.rootPath, filePath);
+          const pathParts = relativePath.split('/');
+          const anchorIndex = pathParts.indexOf(rule.pathAnchor!);
+          
+          if (anchorIndex !== -1) {
+            const [start, end] = rule.segmentRange!;
+            const segmentStart = anchorIndex + start;
+            const segmentEnd = end < 0 ? pathParts.length + end : anchorIndex + end;
+            return pathParts.slice(segmentStart, segmentEnd).join('/');
+          }
+          return '';
+        };
+        
+      case 'custom':
+        return rule.customExtractor!;
+        
+      default:
+        return (_, className) => className;
+    }
+  }
+
+  /**
+   * Get all patterns for a specific environment and entry type
+   */
+  private getPatternsForEnvironment(entryType: EntryTypeDefinition, environment: Environment): string[] {
+    const envSuffix = environment.charAt(0).toUpperCase() + environment.slice(1);
+    return entryType.patterns.filter(pattern => 
+      pattern.includes(`/${environment}/`) || pattern.includes(`*${envSuffix}.ts`)
+    );
   }
 
   private isExcluded(filePath: string, excludePatterns: string[]): boolean {
@@ -313,9 +469,173 @@ class StructureGenerator {
     console.log(`✅ Generated ${outputPath} with ${daemons.length} daemons and ${commands.length} commands`);
   }
 
+  /**
+   * Generate structure file using new configuration system
+   */
+  private generateStructureFileFromConfig(
+    target: EnvironmentTarget,
+    allEntries: Map<string, GeneratedEntry[]>
+  ): void {
+    const envCap = target.environment.charAt(0).toUpperCase() + target.environment.slice(1);
+    const envUpper = target.environment.toUpperCase();
+    
+    const sections: string[] = [];
+    
+    // Header
+    const entryTypeCounts = Array.from(allEntries.entries())
+      .map(([type, entries]) => `${entries.length} ${type}${entries.length !== 1 ? 's' : ''}`)
+      .join(' and ');
+    
+    sections.push(`/**
+ * ${envCap} Structure Registry - Auto-generated on ${new Date().toISOString()}
+ * 
+ * Contains ${entryTypeCounts}.
+ * Generated by scripts/generate-structure.ts - DO NOT EDIT MANUALLY
+ */`);
+    
+    // Imports by entry type
+    Array.from(allEntries.entries()).forEach(([entryTypeName, entries]) => {
+      if (entries.length > 0) {
+        const entryType = this.config.entryTypes.find(et => et.name === entryTypeName);
+        sections.push(`\n// ${envCap} ${entryType?.pluralName || entryTypeName} Imports`);
+        sections.push(entries.map(e => `import { ${e.className} } from '${e.importPath}';`).join('\n'));
+      }
+    });
+    
+    // Type imports
+    sections.push('\n// Types');
+    for (const [typeName, importPath] of Object.entries(target.typeImports)) {
+      const outputDir = join(this.rootPath, target.outputFile).replace(/[^/]*$/, '');
+      const fullImportPath = join(this.rootPath, importPath + '.ts');
+      const relativeImportPath = relative(outputDir, fullImportPath).replace('.ts', '').replace(/\\/g, '/');
+      sections.push(`import type { ${typeName} } from './${relativeImportPath}';`);
+    }
+    
+    // Exports
+    sections.push(`\n/**\n * ${envCap} Environment Registry\n */`);
+    
+    Array.from(allEntries.entries()).forEach(([entryTypeName, entries], index) => {
+      if (entries.length > 0) {
+        const entryType = this.config.entryTypes.find(et => et.name === entryTypeName);
+        if (entryType) {
+          const arrayName = entryType.registryTemplate.arrayName.replace('{ENV}', envUpper);
+          sections.push(`export const ${arrayName}: ${this.getEntryTypeName(entryTypeName)}[] = [`);
+          
+          const entryStrings = entries.map(entry => {
+            return entryType.registryTemplate.entryTemplate
+              .replace(/\{name\}/g, entry.name)
+              .replace(/\{className\}/g, entry.className)
+              .replace(/\{importPath\}/g, entry.importPath);
+          });
+          
+          sections.push(entryStrings.join(',\n'));
+          sections.push('];');
+          
+          if (index < allEntries.size - 1) {
+            sections.push('');
+          }
+        }
+      }
+    });
+    
+    const content = sections.join('\n') + '\n';
+    const fullOutputPath = join(this.rootPath, target.outputFile);
+    writeFileSync(fullOutputPath, content, 'utf8');
+    
+    const totalEntries = Array.from(allEntries.values()).reduce((sum, entries) => sum + entries.length, 0);
+    console.log(`✅ Generated ${target.outputFile} with ${totalEntries} entries`);
+  }
 
   /**
-   * Generic entry processing pipeline
+   * Get TypeScript type name for entry type
+   */
+  private getEntryTypeName(entryTypeName: string): string {
+    const typeMap: Record<string, string> = {
+      'daemon': 'DaemonEntry',
+      'command': 'CommandEntry'
+    };
+    return typeMap[entryTypeName] || `${entryTypeName.charAt(0).toUpperCase() + entryTypeName.slice(1)}Entry`;
+  }
+
+
+  /**
+   * Process entries using the new configuration system
+   */
+  private processEntriesFromConfig(
+    target: EnvironmentTarget,
+    entryTypeName: string
+  ): GeneratedEntry[] {
+    const entryType = this.config.entryTypes.find(et => et.name === entryTypeName);
+    if (!entryType) {
+      console.warn(`⚠️  Entry type '${entryTypeName}' not found in configuration`);
+      return [];
+    }
+
+    const patterns = this.getPatternsForEnvironment(entryType, target.environment);
+    if (patterns.length === 0) {
+      console.log(`   No patterns found for ${entryTypeName} in ${target.environment} environment`);
+      return [];
+    }
+
+    console.log(`   Searching for ${entryType.pluralName}: ${patterns.join(', ')}`);
+    
+    const files = this.findFiles(patterns, this.config.rootPatterns.exclude);
+    const uniqueFiles = Array.from(new Set(files));
+    
+    const nameExtractor = this.createNameExtractor(entryType.nameExtraction);
+    
+    const entries = uniqueFiles
+      .map(filePath => this.extractEntryFromConfig(filePath, target.outputFile, nameExtractor, entryType.name))
+      .filter((entry): entry is GeneratedEntry => entry !== null);
+    
+    const validatedEntries = this.validateUniqueNames(entries, entryType.name);
+    
+    console.log(`   Found ${validatedEntries.length} ${entryType.pluralName}: ${validatedEntries.map(e => e.name).join(', ')}`);
+    
+    return validatedEntries;
+  }
+
+  /**
+   * Extract entry info using configuration-driven approach
+   */
+  private extractEntryFromConfig(
+    filePath: string,
+    outputPath: string,
+    nameExtractor: (filePath: string, className: string) => string,
+    entryType: string
+  ): GeneratedEntry | null {
+    try {
+      const content = readFileSync(filePath, 'utf8');
+      const filename = filePath.split('/').pop()!;
+      const className = filename.replace('.ts', '');
+      
+      // Check if file exports the expected class
+      const exportPattern = new RegExp(`export\\s+class\\s+${className}\\b`);
+      if (!exportPattern.test(content)) {
+        console.warn(`⚠️  Skipping ${filePath}: No export for class ${className}`);
+        return null;
+      }
+      
+      // Extract name using configured strategy  
+      const name = nameExtractor(filePath, className);
+      
+      // Calculate proper relative import path
+      const outputDir = join(this.rootPath, outputPath).replace(/[^/]*$/, '');
+      const relativeImportPath = relative(outputDir, filePath).replace('.ts', '').replace(/\\/g, '/');
+      
+      return {
+        name,
+        className,
+        importPath: `./${relativeImportPath}`
+      };
+    } catch (e) {
+      console.warn(`Ignoring ${entryType} info from ${filePath}:`, e);
+      return null;
+    }
+  }
+
+  /**
+   * Legacy generic entry processing pipeline (for backward compatibility)
    */
   private processEntries<T extends { name: string; className: string; importPath: string }>(
     config: { paths?: string[]; excludePatterns: string[]; outputFile: string },
@@ -341,34 +661,25 @@ class StructureGenerator {
   }
 
   public generate(): void {
-    console.log('🏭 Intelligent Structure Generator');
-    console.log('================================');
+    console.log('🏭 Intelligent Structure Generator (Config-Driven)');
+    console.log('=================================================');
     console.log(`📍 Root path: ${this.rootPath}`);
-    console.log(`📋 Directories configured: ${Object.keys(this.config.directories).join(', ')}`);
+    console.log(`📋 Entry types: ${this.config.entryTypes.map(et => et.name).join(', ')}`);
+    console.log(`📂 Targets: ${this.config.targets.map(t => `${t.environment} (${t.outputFile})`).join(', ')}`);
     
-    for (const [dirName, dirConfig] of Object.entries(this.config.directories)) {
-      console.log(`\n🔍 Processing ${dirName} (${dirConfig.environment})...`);
+    for (const target of this.config.targets) {
+      console.log(`\n🔍 Processing ${target.environment} target...`);
       
-      // Process daemons and commands using unified pipeline
-      const daemons = this.processEntries(
-        { paths: dirConfig.daemonPaths, excludePatterns: dirConfig.excludePatterns, outputFile: dirConfig.outputFile },
-        this.extractDaemonInfo.bind(this),
-        'daemon'
-      );
+      // Process all configured entry types for this target
+      const allEntries = new Map<string, GeneratedEntry[]>();
       
-      const commands = this.processEntries(
-        { paths: dirConfig.commandPaths, excludePatterns: dirConfig.excludePatterns, outputFile: dirConfig.outputFile },
-        this.extractCommandInfo.bind(this),
-        'command'
-      );
+      for (const entryTypeName of target.entryTypes) {
+        const entries = this.processEntriesFromConfig(target, entryTypeName);
+        allEntries.set(entryTypeName, entries);
+      }
       
-      // Generate structure file
-      this.generateStructureFile(
-        dirConfig.outputFile,
-        dirConfig.environment,
-        daemons,
-        commands
-      );
+      // Generate structure file using new configuration-driven approach
+      this.generateStructureFileFromConfig(target, allEntries);
     }
     
     console.log('\n🎉 Structure generation complete!');
