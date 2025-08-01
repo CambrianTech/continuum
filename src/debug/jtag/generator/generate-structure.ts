@@ -84,82 +84,57 @@ class StructureGenerator {
   }
 
   private findFiles(patterns: string[], excludePatterns: string[]): string[] {
-    const found: string[] = [];
-    
-    for (const pattern of patterns) {
-      // Simple pattern matching - look for files matching the pattern structure
-      const parts = pattern.split('/');
-      const searchPaths = this.expandPattern(parts, this.rootPath);
-      
-      for (const searchPath of searchPaths) {
-        if (existsSync(searchPath) && !this.isExcluded(searchPath, excludePatterns)) {
-          found.push(searchPath);
-        }
-      }
-    }
-    
-    return found.sort();
+    return patterns
+      .flatMap(pattern => this.expandPattern(pattern.split('/'), this.rootPath))
+      .filter(path => existsSync(path) && !this.isExcluded(path, excludePatterns))
+      .sort();
   }
 
   private expandPattern(patternParts: string[], basePath: string, index = 0): string[] {
-    if (index >= patternParts.length) {
-      return [basePath];
-    }
+    if (index >= patternParts.length) return [basePath];
     
     const part = patternParts[index];
-    const results: string[] = [];
     
-    if (part === '**') {
-      // Double wildcard - recursive directory matching
-      try {
-        // First, try continuing from current directory (zero directories matched)
-        results.push(...this.expandPattern(patternParts, basePath, index + 1));
-        
-        // Then recursively descend into subdirectories
-        const entries = readdirSync(basePath);
-        for (const entry of entries) {
-          const fullPath = join(basePath, entry);
-          if (statSync(fullPath).isDirectory()) {
-            // Continue with ** (stay at the same pattern index)
-            results.push(...this.expandPattern(patternParts, fullPath, index));
-          }
-        }
-      } catch (e) {
-        // Directory doesn't exist or can't be read
-      }
-    } else if (part === '*') {
-      // Single wildcard - check all directories at this level
-      try {
-        const entries = readdirSync(basePath);
-        for (const entry of entries) {
-          const fullPath = join(basePath, entry);
-          if (statSync(fullPath).isDirectory()) {
-            results.push(...this.expandPattern(patternParts, fullPath, index + 1));
-          }
-        }
-      } catch (e) {
-        // Directory doesn't exist or can't be read
-      }
-    } else if (part.includes('*')) {
-      // Pattern matching (e.g., *Browser.ts)
-      try {
-        const entries = readdirSync(basePath);
-        for (const entry of entries) {
-          const fullPath = join(basePath, entry);
-          if (this.matchesPattern(entry, part) && statSync(fullPath).isFile()) {
-            results.push(fullPath);
-          }
-        }
-      } catch (e) {
-        // Directory doesn't exist or can't be read
-      }
-    } else {
-      // Literal path component
-      const fullPath = join(basePath, part);
-      results.push(...this.expandPattern(patternParts, fullPath, index + 1));
-    }
+    const safeReadDir = (path: string): string[] => {
+      try { return readdirSync(path); } catch { return []; }
+    };
     
-    return results;
+    const safeIsDirectory = (path: string): boolean => {
+      try { return statSync(path).isDirectory(); } catch { return false; }
+    };
+    
+    const safeIsFile = (path: string): boolean => {
+      try { return statSync(path).isFile(); } catch { return false; }
+    };
+    
+    const handlers = {
+      '**': () => [
+        // Zero directories matched - continue from current directory
+        ...this.expandPattern(patternParts, basePath, index + 1),
+        // Recursively descend into subdirectories
+        ...safeReadDir(basePath)
+          .map(entry => join(basePath, entry))
+          .filter(safeIsDirectory)
+          .flatMap(fullPath => this.expandPattern(patternParts, fullPath, index))
+      ],
+      
+      '*': () => safeReadDir(basePath)
+        .map(entry => join(basePath, entry))
+        .filter(safeIsDirectory)
+        .flatMap(fullPath => this.expandPattern(patternParts, fullPath, index + 1)),
+      
+      'pattern': () => safeReadDir(basePath)
+        .filter(entry => this.matchesPattern(entry, part))
+        .map(entry => join(basePath, entry))
+        .filter(safeIsFile),
+      
+      'literal': () => this.expandPattern(patternParts, join(basePath, part), index + 1)
+    };
+    
+    if (part === '**') return handlers['**']();
+    if (part === '*') return handlers['*']();
+    if (part.includes('*')) return handlers['pattern']();
+    return handlers['literal']();
   }
 
   private matchesPattern(filename: string, pattern: string): boolean {
@@ -170,24 +145,18 @@ class StructureGenerator {
   }
 
   /**
-   * Check for duplicate names in daemon/command entries and warn
+   * Check for duplicate names in entries and warn
    */
   private validateUniqueNames<T extends { name: string; className: string; importPath: string }>(
     entries: T[], 
-    type: 'daemon' | 'command'
+    type: string
   ): T[] {
-    const nameMap = new Map<string, T[]>();
-    
-    // Group by name
-    entries.forEach(entry => {
-      if (!nameMap.has(entry.name)) {
-        nameMap.set(entry.name, []);
-      }
-      nameMap.get(entry.name)!.push(entry);
-    });
-    
-    // Check for duplicates
-    const duplicates = Array.from(nameMap.entries()).filter(([_, entries]) => entries.length > 1);
+    const duplicates = Object.entries(
+      entries.reduce((acc, entry) => {
+        (acc[entry.name] ??= []).push(entry);
+        return acc;
+      }, {} as Record<string, T[]>)
+    ).filter(([_, entries]) => entries.length > 1);
     
     if (duplicates.length > 0) {
       console.warn(`⚠️  Found duplicate ${type} names:`);
@@ -202,86 +171,73 @@ class StructureGenerator {
     return entries;
   }
 
-  private extractDaemonInfo(filePath: string, outputPath: string): DaemonEntry | null {
+  /**
+   * Generic entry extraction with type-specific name extraction
+   */
+  private extractEntryInfo<T extends { name: string; className: string; importPath: string }>(
+    filePath: string, 
+    outputPath: string,
+    nameExtractor: (filePath: string, className: string) => string,
+    type: string
+  ): T | null {
     try {
       const content = readFileSync(filePath, 'utf8');
-      const relativePath = relative(this.rootPath, filePath);
-      
-      // Extract class name from filename (e.g., CommandDaemonBrowser.ts -> CommandDaemonBrowser)
       const filename = filePath.split('/').pop()!;
       const className = filename.replace('.ts', '');
       
-      // Extract daemon name (e.g., CommandDaemonBrowser -> CommandDaemon)
-      const daemonName = className.replace(/(Browser|Server)$/, '');
-      
-      // Check if file exports the expected class with more robust pattern matching
+      // Check if file exports the expected class
       const exportPattern = new RegExp(`export\\s+class\\s+${className}\\b`);
       if (!exportPattern.test(content)) {
         console.warn(`⚠️  Skipping ${filePath}: No export for class ${className}`);
         return null;
       }
       
-      // Calculate proper relative path from output file to daemon file
-      const outputDir = join(this.rootPath, outputPath).replace(/[^/]*$/, ''); // Get directory of output file
-      const daemonAbsolutePath = filePath;
-      const relativeImportPath = relative(outputDir, daemonAbsolutePath).replace('.ts', '').replace(/\\/g, '/');
+      // Extract name using provided strategy
+      const name = nameExtractor(filePath, className);
+      
+      // Calculate proper relative import path
+      const outputDir = join(this.rootPath, outputPath).replace(/[^/]*$/, '');
+      const relativeImportPath = relative(outputDir, filePath).replace('.ts', '').replace(/\\/g, '/');
       
       return {
-        name: daemonName,
+        name,
         className,
         importPath: `./${relativeImportPath}`
-      };
+      } as T;
     } catch (e) {
-      console.warn(`Ignoring daemon info from ${filePath}:`, e);
+      console.warn(`Ignoring ${type} info from ${filePath}:`, e);
       return null;
     }
   }
 
+  private extractDaemonInfo(filePath: string, outputPath: string): DaemonEntry | null {
+    return this.extractEntryInfo<DaemonEntry>(
+      filePath, 
+      outputPath,
+      (_, className) => className.replace(/(Browser|Server)$/, ''),
+      'daemon'
+    );
+  }
+
   private extractCommandInfo(filePath: string, outputPath: string): CommandEntry | null {
-    try {
-      const content = readFileSync(filePath, 'utf8');
-      const relativePath = relative(this.rootPath, filePath);
-      
-      // Extract class name from filename
-      const filename = filePath.split('/').pop()!;
-      const className = filename.replace('.ts', '');
-      
-      // Extract command name from path structure
-      // e.g., commands/screenshot/browser/ScreenshotBrowserCommand.ts -> screenshot
-      const pathParts = relativePath.split('/');
-      const commandIndex = pathParts.indexOf('commands');
-      let commandName = '';
-      
-      if (commandIndex !== -1 && commandIndex + 1 < pathParts.length) {
-        const commandParts = pathParts.slice(commandIndex + 1);
-        // Handle nested commands (e.g., chat/send-message)
-        if (commandParts.length > 2) {
-          commandName = commandParts.slice(0, -2).join('/');
-        } else {
-          commandName = commandParts[0];
+    return this.extractEntryInfo<CommandEntry>(
+      filePath,
+      outputPath,
+      (filePath) => {
+        const relativePath = relative(this.rootPath, filePath);
+        const pathParts = relativePath.split('/');
+        const commandIndex = pathParts.indexOf('commands');
+        
+        if (commandIndex !== -1 && commandIndex + 1 < pathParts.length) {
+          const commandParts = pathParts.slice(commandIndex + 1);
+          return commandParts.length > 2 
+            ? commandParts.slice(0, -2).join('/')
+            : commandParts[0];
         }
-      }
-      
-      // Check if file exports the expected class with more robust pattern matching
-      const exportPattern = new RegExp(`export\\s+class\\s+${className}\\b`);
-      if (!exportPattern.test(content)) {
-        console.warn(`⚠️  Skipping ${filePath}: No export for class ${className}`);
-        return null;
-      }
-      
-      // Calculate proper relative path from output file to command file
-      const outputDir = join(this.rootPath, outputPath).replace(/[^/]*$/, ''); // Get directory of output file
-      const commandAbsolutePath = filePath;
-      const relativeImportPath = relative(outputDir, commandAbsolutePath).replace('.ts', '').replace(/\\/g, '/');
-      
-      return {
-        name: commandName,
-        className,
-        importPath: `./${relativeImportPath}`
-      };
-    } catch (e) {
-      return null;
-    }
+        return '';
+      },
+      'command'
+    );
   }
 
   private generateStructureFile(
@@ -358,6 +314,32 @@ class StructureGenerator {
   }
 
 
+  /**
+   * Generic entry processing pipeline
+   */
+  private processEntries<T extends { name: string; className: string; importPath: string }>(
+    config: { paths?: string[]; excludePatterns: string[]; outputFile: string },
+    extractor: (filePath: string, outputPath: string) => T | null,
+    type: string
+  ): T[] {
+    if (!config.paths) return [];
+    
+    console.log(`   Searching for ${type}s: ${config.paths.join(', ')}`);
+    
+    const files = this.findFiles(config.paths, config.excludePatterns);
+    const uniqueFiles = Array.from(new Set(files));
+    
+    const entries = uniqueFiles
+      .map(f => extractor(f, config.outputFile))
+      .filter((entry): entry is T => entry !== null);
+    
+    const validatedEntries = this.validateUniqueNames(entries, type);
+    
+    console.log(`   Found ${validatedEntries.length} ${type}s: ${validatedEntries.map(e => e.name).join(', ')}`);
+    
+    return validatedEntries;
+  }
+
   public generate(): void {
     console.log('🏭 Intelligent Structure Generator');
     console.log('================================');
@@ -367,40 +349,18 @@ class StructureGenerator {
     for (const [dirName, dirConfig] of Object.entries(this.config.directories)) {
       console.log(`\n🔍 Processing ${dirName} (${dirConfig.environment})...`);
       
+      // Process daemons and commands using unified pipeline
+      const daemons = this.processEntries(
+        { paths: dirConfig.daemonPaths, excludePatterns: dirConfig.excludePatterns, outputFile: dirConfig.outputFile },
+        this.extractDaemonInfo.bind(this),
+        'daemon'
+      );
       
-      // Find daemon files (if configured)
-      let daemons: DaemonEntry[] = [];
-      if (dirConfig.daemonPaths) {
-        console.log(`   Searching for daemons: ${dirConfig.daemonPaths.join(', ')}`);
-        const daemonFiles = this.findFiles(dirConfig.daemonPaths, dirConfig.excludePatterns);
-        daemons = daemonFiles
-          .map(f => this.extractDaemonInfo(f, dirConfig.outputFile))
-          .filter((d): d is DaemonEntry => d !== null);
-        
-        // Validate unique daemon names
-        daemons = this.validateUniqueNames(daemons, 'daemon');
-        
-        console.log(`   Found ${daemons.length} daemons: ${daemons.map(d => d.name).join(', ')}`);
-      }
-      
-      // Find command files (if configured)
-      let commands: CommandEntry[] = [];
-      if (dirConfig.commandPaths) {
-        console.log(`   Searching for commands: ${dirConfig.commandPaths.join(', ')}`);
-        const commandFiles = this.findFiles(dirConfig.commandPaths, dirConfig.excludePatterns);
-        
-        // Deduplicate command files by path
-        const uniqueCommandFiles = Array.from(new Set(commandFiles));
-        
-        commands = uniqueCommandFiles
-          .map(f => this.extractCommandInfo(f, dirConfig.outputFile))
-          .filter((c): c is CommandEntry => c !== null);
-        
-        // Validate unique command names
-        commands = this.validateUniqueNames(commands, 'command');
-        
-        console.log(`   Found ${commands.length} commands: ${commands.map(c => c.name).join(', ')}`);
-      }
+      const commands = this.processEntries(
+        { paths: dirConfig.commandPaths, excludePatterns: dirConfig.excludePatterns, outputFile: dirConfig.outputFile },
+        this.extractCommandInfo.bind(this),
+        'command'
+      );
       
       // Generate structure file
       this.generateStructureFile(
