@@ -5,8 +5,8 @@
  * Handles JSON reading/writing with proper error handling.
  */
 
-import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, statSync, renameSync } from 'fs';
-import { dirname } from 'path';
+import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, statSync, renameSync, readdirSync, unlinkSync } from 'fs';
+import { dirname, basename, join } from 'path';
 import type { FileUpdate, GeneratorLogger, TypeScriptConfig, PathMappingsConfig, StructureConfig, PathMapping, StructureTarget } from '../types/GeneratorTypes';
 
 // ============================================================================
@@ -16,10 +16,12 @@ import type { FileUpdate, GeneratorLogger, TypeScriptConfig, PathMappingsConfig,
 export class FileManager {
   private logger: GeneratorLogger;
   private dryRun: boolean;
+  private maxBackups: number;
 
-  constructor(logger: GeneratorLogger, dryRun = false) {
+  constructor(logger: GeneratorLogger, dryRun = false, maxBackups = 3) {
     this.logger = logger;
     this.dryRun = dryRun;
+    this.maxBackups = maxBackups;
   }
 
   /**
@@ -86,7 +88,7 @@ export class FileManager {
   }
 
   /**
-   * Create backup of existing file
+   * Create backup of existing file with automatic cleanup
    */
   private createBackup(filePath: string): string | undefined {
     if (!existsSync(filePath)) {
@@ -99,10 +101,53 @@ export class FileManager {
     try {
       copyFileSync(filePath, backupPath);
       this.logger.debug(`📋 Created backup: ${backupPath}`);
+      
+      // Clean up old backups to prevent pollution
+      this.cleanupOldBackups(filePath);
+      
       return backupPath;
     } catch (error) {
       this.logger.warn(`Failed to create backup for ${filePath}:`, error);
       return undefined;
+    }
+  }
+
+  /**
+   * Clean up old backup files, keeping only the most recent ones
+   */
+  private cleanupOldBackups(originalFilePath: string): void {
+    try {
+      const dir = dirname(originalFilePath);
+      const filename = basename(originalFilePath);
+      const backupPattern = `${filename}.backup-`;
+
+      // Find all backup files for this original file
+      const backupFiles = readdirSync(dir)
+        .filter(file => file.startsWith(backupPattern))
+        .map(file => ({
+          name: file,
+          path: join(dir, file),
+          mtime: statSync(join(dir, file)).mtime
+        }))
+        .sort((a, b) => b.mtime.getTime() - a.mtime.getTime()); // Sort by modification time, newest first
+
+      // Keep only the most recent backups
+      const filesToDelete = backupFiles.slice(this.maxBackups);
+      
+      if (filesToDelete.length > 0) {
+        this.logger.debug(`🧹 Cleaning up ${filesToDelete.length} old backup files for ${filename}`);
+        
+        for (const fileToDelete of filesToDelete) {
+          try {
+            unlinkSync(fileToDelete.path);
+            this.logger.debug(`   Deleted old backup: ${fileToDelete.name}`);
+          } catch (error) {
+            this.logger.warn(`Failed to delete backup ${fileToDelete.name}:`, error);
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to cleanup old backups for ${originalFilePath}:`, error);
     }
   }
 
@@ -178,6 +223,41 @@ export class FileManager {
       return stats.mtime;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Clean up all existing backup files in a directory
+   */
+  cleanupAllBackups(directory: string): void {
+    try {
+      if (!existsSync(directory)) {
+        return;
+      }
+
+      const files = readdirSync(directory);
+      const backupFiles = files
+        .filter(file => file.includes('.backup-'))
+        .map(file => join(directory, file));
+
+      if (backupFiles.length > 0) {
+        this.logger.info(`🧹 Found ${backupFiles.length} backup files in ${directory}`);
+        
+        let deletedCount = 0;
+        for (const backupFile of backupFiles) {
+          try {
+            unlinkSync(backupFile);
+            deletedCount++;
+            this.logger.debug(`   Deleted: ${basename(backupFile)}`);
+          } catch (error) {
+            this.logger.warn(`Failed to delete ${basename(backupFile)}:`, error);
+          }
+        }
+        
+        this.logger.info(`✅ Cleaned up ${deletedCount} backup files`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to cleanup backups in ${directory}:`, error);
     }
   }
 }
