@@ -149,10 +149,14 @@ export class PathMappingGenerator {
   }
 
   /**
-   * Clean up old configuration artifacts
+   * Clean up old configuration artifacts and backup file pollution
    */
   async cleanup(): Promise<void> {
     this.logger.info('🧹 Cleaning up old configuration artifacts...');
+    
+    // Clean up backup file pollution
+    this.logger.info('🧹 Cleaning up backup file pollution...');
+    this.fileManager.cleanupAllBackups(this.resolver.resolve('.'));
     
     // Remove old unified-config.json with 224 mappings
     const oldConfigPath = this.resolver.resolve('generator/unified-config.json');
