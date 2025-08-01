@@ -520,6 +520,12 @@
       "@daemonsWidgetDaemon/*": [
         "daemons/widget-daemon/*"
       ],
+      "@generator": [
+        "generator"
+      ],
+      "@generator/*": [
+        "generator/*"
+      ],
       "@scripts": [
         "scripts"
       ],
@@ -710,8 +716,8 @@
     "**/templates/**/*"
   ],
   "_generated": {
-    "timestamp": "2025-08-01T18:00:11.319Z",
+    "timestamp": "2025-08-01T18:13:15.989Z",
     "source": "unified-config.json",
-    "pathCount": 222
+    "pathCount": 224
   }
 }
