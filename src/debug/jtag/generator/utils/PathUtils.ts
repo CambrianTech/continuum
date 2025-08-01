@@ -16,13 +16,12 @@ export class SemanticAliasStrategy implements AliasStrategy {
   name = 'semantic';
   description = 'Generates clean, semantic aliases like @core, @shared, @daemons';
 
-  private static readonly SEMANTIC_MAPPINGS: Record<string, string> = {
+  public static readonly SEMANTIC_MAPPINGS: Record<string, string> = {
     'system/core': '@core',
     'system/core/types': '@types', 
     'system/core/client': '@client',
     'system/core/router': '@router',
     'system/core/system': '@system',
-    'system/transports': '@transports',
     'system/events': '@events',
     'daemons': '@daemons',
     'commands': '@commands',
@@ -30,7 +29,31 @@ export class SemanticAliasStrategy implements AliasStrategy {
     'scripts': '@scripts',
     'tests': '@tests',
     'widgets': '@widgets',
-    'templates': '@templates'
+    'templates': '@templates',
+    // Essential command-specific aliases that are actually used
+    'commands/chat': '@commandsChat',
+    'commands/chat/get-chat-history': '@chatGetChatHistory',
+    'commands/chat/receive-events': '@chatReceiveEvents', 
+    'commands/chat/room-events': '@chatRoomEvents',
+    'commands/chat/send-message': '@chatSendMessage',
+    'commands/chat/send-room-event': '@chatSendRoomEvent',
+    'commands/file': '@commandsFile',
+    'commands/file/append': '@fileAppend',
+    'commands/file/load': '@fileLoad', 
+    'commands/file/save': '@fileSave',
+    'commands/get-text': '@commandsGetText',
+    'commands/compile-typescript': '@commandsCompileTypescript',
+    'commands/type': '@commandsType',
+    'commands/wait-for-element': '@commandsWaitForElement',
+    'commands/proxy-navigate': '@commandsProxyNavigate',
+    // Essential daemon-specific aliases that are actually used
+    'daemons/proxy-daemon': '@daemonsProxyDaemon',
+    'daemons/health-daemon': '@daemonsHealthDaemon',
+    'daemons/widget-daemon': '@daemonsWidgetDaemon',
+    // Essential test aliases that are actually used
+    'tests/middle-out': '@testsMiddleOut',
+    // Special nested patterns (these create nested alias structures)
+    'system/transports': '@system/transports'
   };
 
   generateAlias(relativePath: string): string {
@@ -190,27 +213,16 @@ export class DirectoryScanner {
    * Find essential directories that should have aliases
    */
   findEssentialDirectories(): string[] {
-    const essential = [
-      'system/core',
-      'system/core/types',
-      'system/core/client', 
-      'system/core/router',
-      'system/core/system',
-      'system/transports',
-      'system/events',
-      'daemons',
-      'commands',
-      'shared',
-      'scripts',
-      'tests',
-      'widgets',
-      'templates'
-    ];
-
+    const fs = require('fs');
+    
+    // Get all possible paths from semantic mappings
+    const allPossiblePaths = Object.keys(SemanticAliasStrategy.SEMANTIC_MAPPINGS);
+    
     // Filter to only directories that actually exist
-    return essential.filter(dir => {
+    return allPossiblePaths.filter(dir => {
       try {
-        const stats = require('fs').statSync(this.resolver.resolve(dir));
+        const fullPath = this.resolver.resolve(dir);
+        const stats = fs.statSync(fullPath);
         return stats.isDirectory();
       } catch {
         return false;
