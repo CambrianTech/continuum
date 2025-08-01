@@ -1,0 +1,65 @@
+{
+  "name": "@continuum/jtag-command-list",
+  "version": "1.0.0",
+  "description": "JTAG List Command - Discover and list available commands with signatures",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "config": {
+    "category": "core"
+  },
+  "environmentTestConfig": {
+    "environments": ["browser", "server"],
+    "commandName": "list",
+    "testParams": {
+      "category": "all",
+      "includeDescription": true,
+      "includeSignature": true
+    },
+    "expectedFields": [
+      "success",
+      "commands",
+      "totalCount",
+      "context",
+      "sessionId"
+    ],
+    "performanceThresholdMs": 500,
+    "validateEnvironmentData": true,
+    "testScenarios": [
+      {
+        "name": "list-all-commands",
+        "description": "List all available commands",
+        "params": {
+          "category": "all"
+        }
+      },
+      {
+        "name": "list-browser-commands",
+        "description": "List only browser commands",
+        "params": {
+          "category": "browser"
+        }
+      },
+      {
+        "name": "list-with-signatures",
+        "description": "List commands with full signatures",
+        "params": {
+          "includeSignature": true,
+          "includeDescription": true
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "test": "echo 'Run tests via parent JTAG test system'",
+    "test:unit": "echo 'Unit tests for list command'",
+    "test:integration": "echo 'Integration tests for list command'"
+  },
+  "keywords": [
+    "jtag",
+    "list",
+    "discovery",
+    "commands",
+    "core"
+  ]
+}

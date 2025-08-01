@@ -1,0 +1,69 @@
+{
+  "name": "@continuum/jtag-command-screenshot",
+  "version": "1.0.0",
+  "description": "JTAG Screenshot Command - Browser screenshot capture with element selection",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "config": {
+    "category": "browser"
+  },
+  "environmentTestConfig": {
+    "environments": ["browser", "server"],
+    "commandName": "screenshot",
+    "testParams": {
+      "querySelector": "body",
+      "filename": "test-screenshot.png",
+      "width": 800,
+      "height": 600
+    },
+    "expectedFields": [
+      "success",
+      "filename",
+      "dimensions",
+      "filePath",
+      "captureTime"
+    ],
+    "performanceThresholdMs": 5000,
+    "validateEnvironmentData": true,
+    "testScenarios": [
+      {
+        "name": "full-page-screenshot",
+        "description": "Capture full page screenshot",
+        "params": {
+          "querySelector": "body"
+        }
+      },
+      {
+        "name": "element-screenshot",
+        "description": "Capture specific element",
+        "params": {
+          "querySelector": "#main-content",
+          "filename": "element-test.png"
+        }
+      },
+      {
+        "name": "custom-dimensions",
+        "description": "Screenshot with custom dimensions",
+        "params": {
+          "querySelector": "body",
+          "width": 1200,
+          "height": 800,
+          "filename": "custom-size.png"
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "test": "echo 'Run tests via parent JTAG test system'",
+    "test:unit": "echo 'Unit tests for screenshot command'",
+    "test:integration": "echo 'Integration tests for screenshot command'"
+  },
+  "keywords": [
+    "jtag",
+    "screenshot",
+    "browser",
+    "capture",
+    "command"
+  ]
+}

@@ -104,9 +104,10 @@
 
 import { generateUUID, type UUID} from './CrossPlatformUUID';
 import { JTAGBase, type CommandsInterface } from './JTAGBase';
-import type { JTAGContext, JTAGMessage, JTAGPayload, CommandParams, CommandResult } from './JTAGTypes';
-import { JTAGMessageFactory } from './JTAGTypes';
-import type { ITransportFactory, TransportConfig, JTAGTransport, TransportProtocol } from '@systemTransports';
+import type { JTAGContext, JTAGMessage, JTAGPayload, CommandParams, CommandResult, JTAGRequestMessage, JTAGResponseMessage, JTAGEnvironment } from './JTAGTypes';
+import { JTAGMessageFactory, JTAGMessageTypes } from './JTAGTypes';
+import { ResponseCorrelator } from './ResponseCorrelator';
+import type { ITransportFactory, TransportConfig, JTAGTransport, TransportProtocol, TransportSendResult } from '@systemTransports';
 import type { ITransportHandler } from '../system/transports/shared/ITransportHandler';
 import type { ListParams, ListResult, CommandSignature } from '../commands/list/shared/ListTypes';
 import { createListParams } from '../commands/list/shared/ListTypes';
@@ -127,6 +128,18 @@ export interface JTAGClientConnectOptions {
   readonly maxRetries?: number;
   readonly retryDelay?: number;
   readonly sessionId?: UUID; // Allow sharing sessionId across clients
+}
+
+/**
+ * Connection result metadata - describes HOW the client connected
+ */
+export interface JTAGClientConnectionResult {
+  client: JTAGClient;
+  connectionType: 'local' | 'remote';
+  sessionId: UUID;
+  reason: string;
+  localSystemAvailable: boolean;
+  listResult: ListResult;
 }
 
 // TODO: Fix JTAGConnection interface - remove generics, add getCommandsInterface() (ISSUE 5)
@@ -164,6 +177,18 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
   // TODO: Remove discoveredCommands - redundant with CommandsInterface (ISSUE 2)
   protected discoveredCommands: Map<string, CommandSignature> = new Map();
   protected systemInstance?: JTAGSystem;
+  protected responseCorrelator: ResponseCorrelator = new ResponseCorrelator(30000);
+
+  // Connection metadata for diagnostics
+  protected connectionMetadata: {
+    connectionType: 'local' | 'remote';
+    reason: string;
+    localSystemAvailable: boolean;
+  } = {
+    connectionType: 'remote',
+    reason: 'Not yet initialized',
+    localSystemAvailable: false
+  };
 
   public readonly sessionId: UUID;
 
@@ -172,17 +197,57 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
     this.sessionId = context.uuid;
   }
 
+  /**
+   * Get connection information for diagnostics and testing
+   */
+  public getConnectionInfo(): {
+    connectionType: 'local' | 'remote';
+    reason: string;
+    localSystemAvailable: boolean;
+    sessionId: UUID;
+    environment: JTAGEnvironment;
+    isBootstrapSession: boolean;
+  } {
+    return {
+      connectionType: this.connectionMetadata.connectionType,
+      reason: this.connectionMetadata.reason,
+      localSystemAvailable: this.connectionMetadata.localSystemAvailable,
+      sessionId: this.sessionId,
+      environment: this.context.environment,
+      isBootstrapSession: this.sessionId === 'deadbeef-cafe-4bad-8ace-5e551000c0de'
+    };
+  }
 
-  // TODO: Remove handleTransportMessage - not needed for client (ISSUE 7)
-  // ITransportHandler implementation - payload in, payload out
+
+  /**
+   * Handle transport messages - route responses to correlation system
+   */
   async handleTransportMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
-    console.log(`📥 JTAGClient: Transport message received:`, message);
+    console.log(`📥 JTAGClient: Transport message received (type: ${message.messageType})`);
     
-    // Handle transport protocol messages (health checks, events, correlation)
-    // Same pattern as daemon handleMessage methods
+    // Handle correlated responses - complete pending requests
+    if (JTAGMessageTypes.isResponse(message)) {
+      console.log(`🔗 JTAGClient: Processing response for correlation ${message.correlationId}`);
+      
+      const resolved = this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
+      if (resolved) {
+        console.log(`✅ JTAGClient: Completed correlation ${message.correlationId}`);
+      } else {
+        console.warn(`⚠️ JTAGClient: No pending request for correlation ${message.correlationId}`);
+      }
+      
+      // Return acknowledgment for transport protocol
+      const response: BaseResponsePayload = {
+        success: true,
+        timestamp: new Date().toISOString(),
+        context: this.context,
+        sessionId: this.sessionId
+      };
+      return response as JTAGResponsePayload;
+    }
     
-    // For now, return success response
-    // TODO: Implement specific transport message handling
+    // Handle other transport protocol messages (health checks, events, etc.)
+    console.log(`📋 JTAGClient: Non-response message type '${message.messageType}' - acknowledging`);
     const response: BaseResponsePayload = {
       success: true,
       timestamp: new Date().toISOString(),
@@ -245,14 +310,17 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
    * TODO: Add automatic fallback when local system unavailable
    */
   protected async initialize(options?: JTAGClientConnectOptions): Promise<void> {
-    // TEMPORARY: Hard-code local connections during development (npm start)
     // Try local system first if available
     const localSystem = await this.getLocalSystem();
+    this.connectionMetadata.localSystemAvailable = !!localSystem;
+    
     if (localSystem) {
-      console.log('🏠 JTAGClient: Using local system connection (hard-coded for development)');
+      console.log('🏠 JTAGClient: Using local system connection');
       this.systemInstance = localSystem;
+      this.connectionMetadata.connectionType = 'local';
+      this.connectionMetadata.reason = 'Local system instance available';
       
-      // PROPER ARCHITECTURE: Request session from SessionDaemon instead of inheriting
+      // Request session from SessionDaemon
       console.log('🏷️ JTAGClient: Requesting session from SessionDaemon...');
       const realSessionId = await this.requestSessionFromDaemon(localSystem);
       
@@ -266,6 +334,9 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
       this.connection = await this.createLocalConnection();
     } else {
       // Remote connection setup
+      this.connectionMetadata.connectionType = 'remote';
+      this.connectionMetadata.reason = 'No local system available - using transport';
+      
       const transportConfig: TransportConfig = { 
         protocol: (options?.transportType ?? 'websocket') as TransportProtocol,
         role: 'client',
@@ -291,11 +362,17 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
   protected abstract getTransportFactory(): Promise<ITransportFactory>;
 
   /**
+   * Get environment-specific command correlator - implemented by subclasses
+   */
+  protected abstract getCommandCorrelator(): ICommandCorrelator;
+
+  /**
    * Set up commands interface that routes commands through transport to remote JTAGSystem
    * Now includes dynamic command discovery via list command
    */
   protected createRemoteConnection(): JTAGConnection {
-    return new RemoteConnection(this);
+    const correlator = this.getCommandCorrelator();
+    return new RemoteConnection(this, correlator);
   }
 
   /**
@@ -411,12 +488,19 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
     await this.systemTransport.send(message);
   }
 
+  /**
+   * Get system transport - for use by connection classes
+   */
+  public getSystemTransport(): JTAGTransport | undefined {
+    return this.systemTransport;
+  }
+
   // TODO: Move static connect to subclasses - belongs on concrete classes (ISSUE 6)
   /**
    * Shared connect logic - creates client instance and bootstraps with list command
    * 🔄 BOOTSTRAP PATTERN: Returns list result for CLI integration
    */
-  static async connect<T extends JTAGClient>(this: new (context: JTAGContext) => T, options?: JTAGClientConnectOptions): Promise<{ client: T; listResult: ListResult }> {
+  static async connect<T extends JTAGClient>(this: new (context: JTAGContext) => T, options?: JTAGClientConnectOptions): Promise<JTAGClientConnectionResult & { client: T }> {
     // Bootstrap with UNKNOWN_SESSION - will be replaced by SessionDaemon with real session
     const context: JTAGContext = {
       uuid: options?.sessionId ?? SYSTEM_SCOPES.UNKNOWN_SESSION, // Bootstrap context for session request
@@ -436,7 +520,14 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
     
     console.log(`✅ JTAGClient: Bootstrap complete! Discovered ${listResult.totalCount} commands`);
     
-    return { client, listResult };
+    return { 
+      client, 
+      listResult,
+      connectionType: client.connectionMetadata.connectionType,
+      sessionId: client.sessionId,
+      reason: client.connectionMetadata.reason,
+      localSystemAvailable: client.connectionMetadata.localSystemAvailable
+    };
   }
   
   // TODO: Make async and take system parameter - connection setup is async (ISSUE 4)
@@ -487,13 +578,24 @@ export class LocalConnection implements JTAGConnection {
 }
 
 /**
+ * Correlation interface for remote command execution
+ * Implemented by environment-specific correlators
+ */
+export interface ICommandCorrelator {
+  waitForResponse<TResult extends JTAGPayload>(correlationId: string, timeoutMs?: number): Promise<TResult>;
+}
+
+/**
  * Remote connection - transport-based calls to remote JTAG system
  */
 export class RemoteConnection implements JTAGConnection {
   public readonly sessionId: UUID;
   public readonly context: JTAGContext;
 
-  constructor(private readonly client: JTAGClient) {
+  constructor(
+    private readonly client: JTAGClient,
+    private readonly correlator: ICommandCorrelator
+  ) {
     this.sessionId = client.sessionId;
     this.context = client.context;
   }
@@ -513,12 +615,21 @@ export class RemoteConnection implements JTAGConnection {
       correlationId
     );
 
-    // Send via transport - router handles correlation
-    await this.client.sendMessage(requestMessage);
+    // Send via transport - correlation handled by shared ResponseCorrelator
+    const transport = this.client.getSystemTransport();
+    if (!transport) {
+      throw new Error('No transport available for remote command execution');
+    }
     
-    // TODO: Need to wait for correlated response
-    // This is where we need the router's correlation system
-    throw new Error('Remote correlation not yet implemented - need router integration');
+    const sendResult: TransportSendResult = await transport.send(requestMessage);
+    
+    if (!sendResult.success) {
+      throw new Error(`Transport failed to send command at ${sendResult.timestamp}`);
+    }
+    
+    // Wait for correlated response using the shared correlation interface
+    const response = await this.correlator.waitForResponse<TResult>(correlationId, 30000);
+    return response;
   }
 
   getCommandsInterface(): CommandsInterface {

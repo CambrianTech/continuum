@@ -32,11 +32,12 @@
 
 import { type UUID } from '../shared/CrossPlatformUUID';
 import { JTAGSystemBrowser } from './JTAGSystemBrowser';
-import { JTAGClient, type JTAGClientConnectOptions, LocalConnection } from '../shared/JTAGClient';
+import { JTAGClient, type JTAGClientConnectOptions, type ICommandCorrelator, LocalConnection } from '../shared/JTAGClient';
 import type { ListResult } from '../commands/list/shared/ListTypes';
 import type { ITransportFactory} from '@systemTransports';
 import { TransportFactoryBrowser } from '../system/transports/browser/TransportFactoryBrowser';
 import type { JTAGSystem } from '../shared/JTAGSystem';
+import type { JTAGPayload } from '@shared/JTAGTypes';
 
 // NOTE: Command types are now dynamically discovered, no need for hardcoded imports
 
@@ -60,6 +61,17 @@ export interface RemoteConnectionConfig {
  * Extends shared JTAGClient with browser-specific local system integration
  */
 export class JTAGClientBrowser extends JTAGClient {
+  
+  /**
+   * Get browser-specific command correlator
+   */
+  protected getCommandCorrelator(): ICommandCorrelator {
+    return {
+      waitForResponse: async <TResult extends JTAGPayload>(correlationId: string, timeoutMs?: number): Promise<TResult> => {
+        return await this.responseCorrelator.createRequest(correlationId, timeoutMs) as TResult;
+      }
+    };
+  }
   
   protected async getLocalSystem(): Promise<JTAGSystem | null> {
     // TODO: Implement proper local vs remote browser detection:

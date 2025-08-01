@@ -1,0 +1,70 @@
+{
+  "name": "@continuum/jtag-command-file-save",
+  "version": "1.0.0",
+  "description": "JTAG File Save Command - Cross-platform file saving with validation",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "config": {
+    "category": "file"
+  },
+  "environmentTestConfig": {
+    "environments": ["browser", "server"],
+    "commandName": "file/save",
+    "testParams": {
+      "filePath": "/tmp/test-file.txt",
+      "content": "Test file content",
+      "encoding": "utf8",
+      "createDirectories": true
+    },
+    "expectedFields": [
+      "success",
+      "filePath",
+      "bytesWritten",
+      "encoding",
+      "timestamp"
+    ],
+    "performanceThresholdMs": 1000,
+    "validateEnvironmentData": true,
+    "testScenarios": [
+      {
+        "name": "simple-text-file",
+        "description": "Save simple text file",
+        "params": {
+          "filePath": "/tmp/simple.txt",
+          "content": "Hello World"
+        }
+      },
+      {
+        "name": "json-file",
+        "description": "Save JSON file with formatting",
+        "params": {
+          "filePath": "/tmp/data.json",
+          "content": "{\"test\": true, \"data\": [1,2,3]}",
+          "encoding": "utf8"
+        }
+      },
+      {
+        "name": "create-directories",
+        "description": "Save file with directory creation",
+        "params": {
+          "filePath": "/tmp/nested/deep/file.txt",
+          "content": "Nested file content",
+          "createDirectories": true
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "test": "echo 'Run tests via parent JTAG test system'",
+    "test:unit": "echo 'Unit tests for file save command'",
+    "test:integration": "echo 'Integration tests for file save command'"
+  },
+  "keywords": [
+    "jtag",
+    "file",
+    "save",
+    "filesystem",
+    "command"
+  ]
+}
