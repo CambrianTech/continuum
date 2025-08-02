@@ -8,12 +8,14 @@
 
 import type { JTAGMessage, JTAGEnvironment } from '../../types/JTAGTypes';
 import { MessagePriority } from './queuing/JTAGMessageQueue';
-import type { ConsolePayload } from '../../../../daemons/console-daemon/shared/ConsoleDaemon';
+import { DefaultPriorityStrategy, type IMessagePriorityStrategy } from './priority/MessagePriorityStrategy';
 
 /**
  * RouterUtilities - Static utility methods for message processing
  */
 export class RouterUtilities {
+  
+  private static priorityStrategy: IMessagePriorityStrategy = new DefaultPriorityStrategy();
   
   /**
    * Extract environment from endpoint path
@@ -47,32 +49,24 @@ export class RouterUtilities {
   }
 
   /**
-   * Determine message priority for queue processing
+   * Determine message priority using pluggable strategy
    */
   static determinePriority(message: JTAGMessage): MessagePriority {
-    // System/health messages get critical priority
-    if (message.origin.includes('system') || message.origin.includes('health')) {
-      return MessagePriority.CRITICAL;
-    }
-
-    // Commands get high priority
-    if (message.endpoint.includes('commands')) {
-      return MessagePriority.HIGH;
-    }
-
-    // Console errors get high priority (but will be deduplicated)
-    if (message.origin.includes('console') && RouterUtilities.isConsolePayload(message.payload) && message.payload.level === 'error') {
-      return MessagePriority.HIGH;
-    }
-
-    return MessagePriority.NORMAL;
+    return RouterUtilities.priorityStrategy.determinePriority(message);
   }
 
   /**
-   * Type guard for ConsolePayload
+   * Set custom priority strategy - allows pluggable priority rules
    */
-  static isConsolePayload(payload: any): payload is ConsolePayload {
-    return payload && typeof payload === 'object' && 'level' in payload;
+  static setPriorityStrategy(strategy: IMessagePriorityStrategy): void {
+    RouterUtilities.priorityStrategy = strategy;
+  }
+
+  /**
+   * Get current priority strategy
+   */
+  static getPriorityStrategy(): IMessagePriorityStrategy {
+    return RouterUtilities.priorityStrategy;
   }
 
   /**
