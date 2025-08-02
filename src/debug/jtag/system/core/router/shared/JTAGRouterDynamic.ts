@@ -163,6 +163,13 @@ export class JTAGRouterDynamic extends JTAGRouterBase implements TransportEndpoi
   }
 
   /**
+   * Get transport status with dynamic enhancements
+   */
+  getTransportStatus(): { initialized: boolean; transportCount: number; transports: Array<{ name: string; connected: boolean; type: string; }> } {
+    return this.transportStrategy.getTransportStatusInfo();
+  }
+
+  /**
    * Get environment-specific transport factory - to be implemented by concrete classes
    */
   protected async getTransportFactory(): Promise<ITransportFactory> {
