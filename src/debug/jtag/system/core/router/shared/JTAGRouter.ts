@@ -54,6 +54,7 @@ import { EventManager } from '../../../events';
 // Import transport strategy for extraction pattern
 import { HardcodedTransportStrategy, type ITransportStrategy } from './HardcodedTransportStrategy';
 import type { MessageSubscriber } from './JTAGRouterBase';
+import { RouterUtilities } from './RouterUtilities';
 
 // Import configuration types and utilities
 import type { 
@@ -237,7 +238,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
 
   private async routeRemotelyWithQueue(message: JTAGMessage): Promise<RouterResult> {
     // Check if this is a remote P2P route
-    const remoteInfo = this.parseRemoteEndpoint(message.endpoint);
+    const remoteInfo = RouterUtilities.parseRemoteEndpoint(message.endpoint);
     if (remoteInfo) {
       return await this.routeToRemoteNode(message, remoteInfo);
     }
@@ -354,7 +355,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
    */
   private async handleEventMessage(message: JTAGMessage): Promise<EventResult> {
     // Determine priority based on message content
-    const priority = this.determinePriority(message);
+    const priority = RouterUtilities.determinePriority(message);
     
     // Queue message with deduplication (prevents console error flooding)
     const queued = this.messageQueue.enqueue(message, priority);
@@ -409,34 +410,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     }
   }
 
-  /**
-   * Determine message priority for queue processing
-   */
-  private determinePriority(message: JTAGMessage): MessagePriority {
-    // System/health messages get critical priority
-    if (message.origin.includes('system') || message.origin.includes('health')) {
-      return MessagePriority.CRITICAL;
-    }
-
-    // Commands get high priority
-    if (message.endpoint.includes('commands')) {
-      return MessagePriority.HIGH;
-    }
-
-    // Console errors get high priority (but will be deduplicated)
-    if (message.origin.includes('console') && this.isConsolePayload(message.payload) && message.payload.level === 'error') {
-      return MessagePriority.HIGH;
-    }
-
-    return MessagePriority.NORMAL;
-  }
-
-  /**
-   * Type guard for ConsolePayload
-   */
-  private isConsolePayload(payload: any): payload is ConsolePayload {
-    return payload && typeof payload === 'object' && 'level' in payload;
-  }
+  // determinePriority and isConsolePayload moved to JTAGRouterBase
 
   /**
    * Flush queued messages (called by JTAGMessageQueue)
@@ -507,7 +481,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
       console.log(`🔄 ${this.toString()}: Sending response for ${message.correlationId}`);
       
       // Track who sent this request for proper response routing
-      const senderEnvironment = this.determineSenderEnvironment(message);
+      const senderEnvironment = RouterUtilities.determineSenderEnvironment(message, this.context.environment);
       this.requestSenders.set(message.correlationId, { 
         environment: senderEnvironment 
       });
@@ -532,10 +506,9 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     return { success: true };
   }
 
-  // extractEnvironment moved to JTAGRouterBase
-
   /**
    * Smart environment extraction that handles response routing
+   * (Object-specific method - needs this.requestSenders state)
    */
   private extractEnvironmentForMessage(message: JTAGMessage): JTAGEnvironment {
     const endpoint = message.endpoint;
@@ -555,8 +528,8 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
       return this.context.environment; // Stay in current environment for transport handling
     }
     
-    // For all other cases, use standard extraction
-    return this.extractEnvironment(endpoint);
+    // For all other cases, use static utility
+    return RouterUtilities.extractEnvironment(endpoint, this.context.environment);
   }
 
   // determineSenderEnvironment moved to JTAGRouterBase
