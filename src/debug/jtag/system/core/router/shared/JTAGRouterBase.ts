@@ -14,6 +14,7 @@ import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 import { EndpointMatcher } from './EndpointMatcher';
 import { RouterUtilities } from './RouterUtilities';
 import type { ITransportStrategy } from './HardcodedTransportStrategy';
+import type { IRouterEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
 
 /**
  * Message Subscriber Interface - Core contract for message handling
@@ -35,6 +36,9 @@ export abstract class JTAGRouterBase extends JTAGModule {
   
   // Transport strategy pattern - extensible and P2P ready
   protected abstract transportStrategy: ITransportStrategy;
+  
+  // Enhancement strategy pattern - pluggable cross-cutting concerns
+  protected abstract enhancementStrategy: IRouterEnhancementStrategy;
   
   constructor(name: string, context: JTAGContext, config: JTAGRouterConfig = {}) {
     super(name, context);

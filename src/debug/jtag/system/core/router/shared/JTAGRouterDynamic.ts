@@ -18,6 +18,7 @@ import type { JTAGRouterConfig } from './JTAGRouterTypes';
 import { createJTAGRouterConfig } from './JTAGRouterTypes';
 import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 import { EndpointMatcher } from './EndpointMatcher';
+import { MinimalEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
 
 // Import the MessageSubscriber interface from working router
 export interface MessageSubscriber {
@@ -43,6 +44,9 @@ export class JTAGRouterDynamic extends JTAGRouterBase implements TransportEndpoi
   // Dynamic transport strategy implementation (concrete - enhances base contract)
   protected transportStrategy!: DynamicTransportStrategy;
   
+  // Minimal enhancement strategy - lightweight, no complex bus-level features
+  protected enhancementStrategy: MinimalEnhancementStrategy;
+  
   private readonly config;
   // isInitialized inherited from JTAGRouterBase ✅
 
@@ -55,7 +59,10 @@ export class JTAGRouterDynamic extends JTAGRouterBase implements TransportEndpoi
     // Initialize dynamic transport strategy with P2P enabled
     this.transportStrategy = new DynamicTransportStrategy(this.transports, true);
     
-    console.log(`🚀 JTAGRouterDynamic[${context.environment}]: Initialized with P2P capabilities`);
+    // Initialize with minimal enhancement strategy (lightweight)
+    this.enhancementStrategy = new MinimalEnhancementStrategy();
+    
+    console.log(`🚀 JTAGRouterDynamic[${context.environment}]: Initialized with P2P capabilities and minimal enhancements`);
   }
 
   /**
