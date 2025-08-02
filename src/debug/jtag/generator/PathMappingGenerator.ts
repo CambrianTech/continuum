@@ -106,6 +106,9 @@ export class PathMappingGenerator {
       }
       this.progress.completeStep('Update TypeScript config');
 
+      // Clean up package.json imports field (part of transaction)
+      await this.cleanPackageJsonImports();
+
       // Success!
       result.success = true;
       result.stats.pathMappingsGenerated = mappingCount;
@@ -118,6 +121,9 @@ export class PathMappingGenerator {
       const errorMsg = error instanceof Error ? error.message : String(error);
       result.errors.push(errorMsg);
       this.logger.error('💥 Path mapping generation failed:', error);
+      
+      // Rollback any changes made during this transaction
+      this.fileManager.rollbackTransaction();
     }
 
     return result;
@@ -154,9 +160,8 @@ export class PathMappingGenerator {
   async cleanup(): Promise<void> {
     this.logger.info('🧹 Cleaning up old configuration artifacts...');
     
-    // Clean up backup file pollution
-    this.logger.info('🧹 Cleaning up backup file pollution...');
-    this.fileManager.cleanupAllBackups(this.resolver.resolve('.'));
+    // Commit transaction backups - this cleans up only the files we modified
+    this.fileManager.commitTransaction();
     
     // Remove old unified-config.json with 224 mappings
     const oldConfigPath = this.resolver.resolve('generator/unified-config.json');
@@ -165,8 +170,7 @@ export class PathMappingGenerator {
       // Note: In a real implementation, we'd implement file deletion in FileManager
     }
 
-    // Clean up package.json imports field
-    await this.cleanPackageJsonImports();
+    // Package.json cleanup is now part of the main transaction
   }
 
   /**

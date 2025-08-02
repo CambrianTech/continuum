@@ -17,8 +17,9 @@ export class FileManager {
   private logger: GeneratorLogger;
   private dryRun: boolean;
   private maxBackups: number;
+  private transactionBackups: Map<string, string> = new Map(); // Track backups for current transaction
 
-  constructor(logger: GeneratorLogger, dryRun = false, maxBackups = 3) {
+  constructor(logger: GeneratorLogger, dryRun = false, maxBackups = 1) {
     this.logger = logger;
     this.dryRun = dryRun;
     this.maxBackups = maxBackups;
@@ -102,8 +103,8 @@ export class FileManager {
       copyFileSync(filePath, backupPath);
       this.logger.debug(`📋 Created backup: ${backupPath}`);
       
-      // Clean up old backups to prevent pollution
-      this.cleanupOldBackups(filePath);
+      // Track backup for transaction management
+      this.transactionBackups.set(filePath, backupPath);
       
       return backupPath;
     } catch (error) {
@@ -227,37 +228,106 @@ export class FileManager {
   }
 
   /**
-   * Clean up all existing backup files in a directory
+   * Commit transaction - delete all backup files created during this transaction
+   */
+  commitTransaction(): void {
+    if (this.transactionBackups.size === 0) {
+      return;
+    }
+
+    this.logger.info(`✅ Committing transaction - cleaning up ${this.transactionBackups.size} backup files`);
+    
+    for (const [originalPath, backupPath] of this.transactionBackups) {
+      try {
+        if (existsSync(backupPath)) {
+          unlinkSync(backupPath);
+          this.logger.debug(`   Deleted transaction backup: ${basename(backupPath)}`);
+        }
+      } catch (error) {
+        this.logger.warn(`Failed to delete transaction backup ${basename(backupPath)}:`, error);
+      }
+    }
+    
+    this.transactionBackups.clear();
+  }
+
+  /**
+   * Rollback transaction - restore all files from backups and clean up
+   */
+  rollbackTransaction(): void {
+    if (this.transactionBackups.size === 0) {
+      return;
+    }
+
+    this.logger.warn(`🔄 Rolling back transaction - restoring ${this.transactionBackups.size} files from backups`);
+    
+    for (const [originalPath, backupPath] of this.transactionBackups) {
+      try {
+        if (existsSync(backupPath)) {
+          copyFileSync(backupPath, originalPath);
+          unlinkSync(backupPath);
+          this.logger.info(`   Restored ${basename(originalPath)} from backup`);
+        }
+      } catch (error) {
+        this.logger.error(`Failed to restore ${basename(originalPath)} from backup:`, error);
+      }
+    }
+    
+    this.transactionBackups.clear();
+  }
+
+  /**
+   * Clean up all existing backup files in a directory recursively
+   * DISABLED: Prevents destruction of important chat history and other backup files
    */
   cleanupAllBackups(directory: string): void {
-    try {
-      if (!existsSync(directory)) {
-        return;
+    // DISABLED: This was destroying chat history and other important backups
+    // Use commitTransaction() instead for proper transactional cleanup
+    this.logger.debug(`🚫 Backup cleanup disabled - use commitTransaction() for proper cleanup`);
+    return;
+  }
+
+  /**
+   * Recursively clean up backup files
+   */
+  private recursivelyCleanBackups(directory: string): void {
+    const items = readdirSync(directory, { withFileTypes: true });
+    const backupFiles: string[] = [];
+    const subdirectories: string[] = [];
+
+    for (const item of items) {
+      const fullPath = join(directory, item.name);
+      
+      if (item.isFile() && (item.name.includes('.backup-') || item.name.endsWith('.bak'))) {
+        backupFiles.push(fullPath);
+      } else if (item.isDirectory() && !item.name.includes('node_modules') && !item.name.includes('.git')) {
+        subdirectories.push(fullPath);
       }
+    }
 
-      const files = readdirSync(directory);
-      const backupFiles = files
-        .filter(file => file.includes('.backup-'))
-        .map(file => join(directory, file));
-
-      if (backupFiles.length > 0) {
-        this.logger.info(`🧹 Found ${backupFiles.length} backup files in ${directory}`);
-        
-        let deletedCount = 0;
-        for (const backupFile of backupFiles) {
-          try {
-            unlinkSync(backupFile);
-            deletedCount++;
-            this.logger.debug(`   Deleted: ${basename(backupFile)}`);
-          } catch (error) {
-            this.logger.warn(`Failed to delete ${basename(backupFile)}:`, error);
-          }
+    // Clean backup files in current directory
+    if (backupFiles.length > 0) {
+      this.logger.info(`🧹 Found ${backupFiles.length} backup files in ${directory}`);
+      
+      let deletedCount = 0;
+      for (const backupFile of backupFiles) {
+        try {
+          unlinkSync(backupFile);
+          deletedCount++;
+          this.logger.debug(`   Deleted: ${basename(backupFile)}`);
+        } catch (error) {
+          this.logger.warn(`Failed to delete ${basename(backupFile)}:`, error);
         }
-        
+      }
+      
+      if (deletedCount > 0) {
         this.logger.info(`✅ Cleaned up ${deletedCount} backup files`);
       }
-    } catch (error) {
-      this.logger.error(`Failed to cleanup backups in ${directory}:`, error);
+    }
+
+    // Recursively clean subdirectories
+    for (const subdirectory of subdirectories) {
+      this.recursivelyCleanBackups(subdirectory);
     }
   }
 }
