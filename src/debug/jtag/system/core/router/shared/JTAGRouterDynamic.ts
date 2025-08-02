@@ -9,10 +9,22 @@
 import { JTAGRouterBase } from './JTAGRouterBase';
 import { DynamicTransportStrategy } from './DynamicTransportStrategy';
 import { TRANSPORT_TYPES } from '../../../transports';
-import type { JTAGContext, JTAGMessage } from '../../types/JTAGTypes';
-import type { ITransportFactory, JTAGTransport, TransportConfig } from '../../../transports';
+import type { JTAGContext, JTAGMessage, JTAGEnvironment } from '../../types/JTAGTypes';
+import { JTAGMessageTypes, JTAGMessageFactory } from '../../types/JTAGTypes';
+import type { UUID } from '../../types/CrossPlatformUUID';
+import type { ITransportFactory, JTAGTransport, TransportConfig, TransportEndpoint } from '../../../transports';
+import type { ITransportHandler } from '../../../transports';
 import type { JTAGRouterConfig } from './JTAGRouterTypes';
 import { createJTAGRouterConfig } from './JTAGRouterTypes';
+import type { JTAGResponsePayload } from '../../types/ResponseTypes';
+import { EndpointMatcher } from './EndpointMatcher';
+
+// Import the MessageSubscriber interface from working router
+export interface MessageSubscriber {
+  handleMessage(message: JTAGMessage): Promise<JTAGResponsePayload>;
+  get endpoint(): string;
+  get uuid(): string;
+}
 
 /**
  * JTAGRouterDynamic - Advanced Router with P2P and Dynamic Transport Selection
@@ -24,7 +36,9 @@ import { createJTAGRouterConfig } from './JTAGRouterTypes';
  * - Load balancing across multiple transports
  * - Real-time transport status monitoring
  */
-export class JTAGRouterDynamic extends JTAGRouterBase {
+export class JTAGRouterDynamic extends JTAGRouterBase implements TransportEndpoint, ITransportHandler {
+  
+  // endpointMatcher inherited from JTAGRouterBase ✅
   
   //Use a map for transports (matches JTAGRouter pattern)
   protected readonly transports = new Map<TRANSPORT_TYPES, JTAGTransport>();
