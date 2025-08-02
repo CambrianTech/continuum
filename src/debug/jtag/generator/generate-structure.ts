@@ -31,6 +31,7 @@ interface NameExtractionRule {
 interface EntryTypeDefinition {
   name: string;               // 'daemon', 'command', 'widget', etc.
   pluralName: string;         // 'daemons', 'commands', 'widgets', etc.
+  typeScriptTypeName: string; // 'DaemonEntry', 'CommandEntry', etc.
   patterns: string[];         // File glob patterns to match
   nameExtraction: NameExtractionRule;
   registryTemplate: {
@@ -76,6 +77,7 @@ const STRUCTURE_CONFIG: GeneratorConfig = {
     {
       name: 'daemon',
       pluralName: 'daemons',
+      typeScriptTypeName: 'DaemonEntry',
       patterns: ['daemons/*/browser/*Browser.ts', 'daemons/*/server/*Server.ts'],
       nameExtraction: {
         type: 'regex',
@@ -94,6 +96,7 @@ const STRUCTURE_CONFIG: GeneratorConfig = {
     {
       name: 'command', 
       pluralName: 'commands',
+      typeScriptTypeName: 'CommandEntry',
       patterns: ['commands/**/browser/*Command.ts', 'commands/**/server/*Command.ts'],
       nameExtraction: {
         type: 'path-segment',
@@ -135,38 +138,9 @@ const STRUCTURE_CONFIG: GeneratorConfig = {
 };
 
 // ============================================================================
-// LEGACY INTERFACES (for backward compatibility)
+// ENTRY INTERFACES
 // ============================================================================
 
-interface StructureConfig {
-  directories: {
-    [key: string]: {
-      outputFile: string;
-      environment: 'browser' | 'server';
-      daemonPaths?: string[];
-      commandPaths?: string[];
-      excludePatterns: string[];
-    }
-  };
-}
-
-interface DaemonEntry {
-  name: string;
-  className: string;
-  importPath: string;
-  disabled?: boolean;
-  reason?: string;
-}
-
-interface CommandEntry {
-  name: string;
-  className: string;
-  importPath: string;
-  disabled?: boolean;
-  reason?: string;
-}
-
-// Generic entry interface
 interface GeneratedEntry {
   name: string;
   className: string;
@@ -189,14 +163,15 @@ class StructureGenerator {
    */
   private createNameExtractor(rule: NameExtractionRule): (filePath: string, className: string) => string {
     switch (rule.type) {
-      case 'regex':
+      case 'regex': {
         const regex = new RegExp(rule.pattern!);
         return (_, className) => {
           const match = className.match(regex);
           return match ? match[1] : className;
         };
+      }
         
-      case 'path-segment':
+      case 'path-segment': {
         return (filePath) => {
           const relativePath = relative(this.rootPath, filePath);
           const pathParts = relativePath.split('/');
@@ -210,12 +185,15 @@ class StructureGenerator {
           }
           return '';
         };
+      }
         
-      case 'custom':
+      case 'custom': {
         return rule.customExtractor!;
+      }
         
-      default:
+      default: {
         return (_, className) => className;
+      }
     }
   }
 
@@ -230,13 +208,23 @@ class StructureGenerator {
   }
 
   private isExcluded(filePath: string, excludePatterns: string[]): boolean {
-    return excludePatterns.some(pattern => {
-      // Simple glob pattern matching for .bak files and directories
-      if (pattern === '**/*.bak' && filePath.includes('.bak')) return true;
-      if (pattern === '**/*.bak/**/*' && filePath.includes('.bak/')) return true;
-      if (pattern === '**/node_modules/**/*' && filePath.includes('node_modules/')) return true;
-      return false;
-    });
+    const relativePath = relative(this.rootPath, filePath).replace(/\\/g, '/');
+    return excludePatterns.some(pattern => this.matchesGlobPattern(relativePath, pattern));
+  }
+
+  /**
+   * Efficient glob pattern matching
+   */
+  private matchesGlobPattern(filePath: string, pattern: string): boolean {
+    // Convert glob pattern to regex - be more careful about order
+    const regexPattern = pattern
+      .replace(/\./g, '\\.')            // Escape dots first
+      .replace(/\*\*/g, '§DOUBLESTAR§')  // Temporarily replace ** to avoid conflicts
+      .replace(/\*/g, '[^/]*')          // * matches within a segment  
+      .replace(/§DOUBLESTAR§/g, '.*');  // ** matches any path segments
+    
+    const regex = new RegExp(`^${regexPattern}$`);
+    return regex.test(filePath);
   }
 
   private findFiles(patterns: string[], excludePatterns: string[]): string[] {
@@ -263,8 +251,9 @@ class StructureGenerator {
       try { return statSync(path).isFile(); } catch { return false; }
     };
     
-    const handlers = {
-      '**': () => [
+    // Handle different pattern types
+    if (part === '**') {
+      return [
         // Zero directories matched - continue from current directory
         ...this.expandPattern(patternParts, basePath, index + 1),
         // Recursively descend into subdirectories
@@ -272,25 +261,25 @@ class StructureGenerator {
           .map(entry => join(basePath, entry))
           .filter(safeIsDirectory)
           .flatMap(fullPath => this.expandPattern(patternParts, fullPath, index))
-      ],
-      
-      '*': () => safeReadDir(basePath)
+      ];
+    }
+    
+    if (part === '*') {
+      return safeReadDir(basePath)
         .map(entry => join(basePath, entry))
         .filter(safeIsDirectory)
-        .flatMap(fullPath => this.expandPattern(patternParts, fullPath, index + 1)),
-      
-      'pattern': () => safeReadDir(basePath)
+        .flatMap(fullPath => this.expandPattern(patternParts, fullPath, index + 1));
+    }
+    
+    if (part.includes('*')) {
+      return safeReadDir(basePath)
         .filter(entry => this.matchesPattern(entry, part))
         .map(entry => join(basePath, entry))
-        .filter(safeIsFile),
-      
-      'literal': () => this.expandPattern(patternParts, join(basePath, part), index + 1)
-    };
+        .filter(safeIsFile);
+    }
     
-    if (part === '**') return handlers['**']();
-    if (part === '*') return handlers['*']();
-    if (part.includes('*')) return handlers['pattern']();
-    return handlers['literal']();
+    // Literal path component
+    return this.expandPattern(patternParts, join(basePath, part), index + 1);
   }
 
   private matchesPattern(filename: string, pattern: string): boolean {
@@ -366,108 +355,6 @@ class StructureGenerator {
     }
   }
 
-  private extractDaemonInfo(filePath: string, outputPath: string): DaemonEntry | null {
-    return this.extractEntryInfo<DaemonEntry>(
-      filePath, 
-      outputPath,
-      (_, className) => className.replace(/(Browser|Server)$/, ''),
-      'daemon'
-    );
-  }
-
-  private extractCommandInfo(filePath: string, outputPath: string): CommandEntry | null {
-    return this.extractEntryInfo<CommandEntry>(
-      filePath,
-      outputPath,
-      (filePath) => {
-        const relativePath = relative(this.rootPath, filePath);
-        const pathParts = relativePath.split('/');
-        const commandIndex = pathParts.indexOf('commands');
-        
-        if (commandIndex !== -1 && commandIndex + 1 < pathParts.length) {
-          const commandParts = pathParts.slice(commandIndex + 1);
-          return commandParts.length > 2 
-            ? commandParts.slice(0, -2).join('/')
-            : commandParts[0];
-        }
-        return '';
-      },
-      'command'
-    );
-  }
-
-  private generateStructureFile(
-    outputPath: string,
-    environment: 'browser' | 'server',
-    daemons: DaemonEntry[],
-    commands: CommandEntry[]
-  ): void {
-    const envCap = environment.charAt(0).toUpperCase() + environment.slice(1);
-    const envUpper = environment.toUpperCase();
-    
-    // Note: Import paths are calculated using Node.js relative() function 
-    // in extractDaemonInfo/extractCommandInfo methods for accuracy
-    
-    // Build content sections
-    const sections: string[] = [];
-    
-    // Header
-    sections.push(`/**
- * ${envCap} Structure Registry - Auto-generated on ${new Date().toISOString()}
- * 
- * Contains ${daemons.length > 0 ? environment + '-side daemon' : ''}${daemons.length > 0 && commands.length > 0 ? ' and ' : ''}${commands.length > 0 ? 'command' : ''} imports.
- * Generated by scripts/generate-structure.ts - DO NOT EDIT MANUALLY
- */`);
-    
-    // Daemon imports
-    if (daemons.length > 0) {
-      sections.push(`\n// ${envCap} Daemon Imports`);
-      sections.push(daemons.map(d => `import { ${d.className} } from '${d.importPath}';`).join('\n'));
-    }
-    
-    // Command imports  
-    if (commands.length > 0) {
-      sections.push(`\n// ${envCap} Command Imports`);
-      sections.push(commands.map(c => `import { ${c.className} } from '${c.importPath}';`).join('\n'));
-    }
-    
-    // Type imports - calculate proper relative paths
-    sections.push('\n// Types');
-    if (daemons.length > 0 || commands.length > 0) {
-      const outputDir = join(this.rootPath, outputPath).replace(/[^/]*$/, ''); // Get directory of output file
-      const daemonBasePath = join(this.rootPath, 'daemons/command-daemon/shared/DaemonBase.ts');
-      const commandBasePath = join(this.rootPath, 'daemons/command-daemon/shared/CommandBase.ts');
-      
-      if (daemons.length > 0) {
-        const daemonBaseImport = relative(outputDir, daemonBasePath).replace('.ts', '').replace(/\\/g, '/');
-        sections.push(`import type { DaemonEntry } from './${daemonBaseImport}';`);
-      }
-      if (commands.length > 0) {
-        const commandBaseImport = relative(outputDir, commandBasePath).replace('.ts', '').replace(/\\/g, '/');
-        sections.push(`import type { CommandEntry } from './${commandBaseImport}';`);
-      }
-    }
-    
-    // Exports
-    sections.push(`\n/**\n * ${envCap} Environment Registry\n */`);
-    
-    if (daemons.length > 0) {
-      sections.push(`export const ${envUpper}_DAEMONS: DaemonEntry[] = [`);
-      sections.push(daemons.map(d => `  {\n    name: '${d.name}',\n    className: '${d.className}',\n    daemonClass: ${d.className}\n  }`).join(',\n'));
-      sections.push('];');
-    }
-    
-    if (commands.length > 0) {
-      if (daemons.length > 0) sections.push('');
-      sections.push(`export const ${envUpper}_COMMANDS: CommandEntry[] = [`);
-      sections.push(commands.map(c => `  {\n    name: '${c.name}',\n    className: '${c.className}',\n    commandClass: ${c.className}\n  }`).join(',\n'));
-      sections.push('];');
-    }
-    
-    const content = sections.join('\n') + '\n';
-    writeFileSync(join(this.rootPath, outputPath), content, 'utf8');
-    console.log(`✅ Generated ${outputPath} with ${daemons.length} daemons and ${commands.length} commands`);
-  }
 
   /**
    * Generate structure file using new configuration system
@@ -547,16 +434,12 @@ class StructureGenerator {
   }
 
   /**
-   * Get TypeScript type name for entry type
+   * Get TypeScript type name for entry type from configuration
    */
   private getEntryTypeName(entryTypeName: string): string {
-    const typeMap: Record<string, string> = {
-      'daemon': 'DaemonEntry',
-      'command': 'CommandEntry'
-    };
-    return typeMap[entryTypeName] || `${entryTypeName.charAt(0).toUpperCase() + entryTypeName.slice(1)}Entry`;
+    const entryType = this.config.entryTypes.find(et => et.name === entryTypeName);
+    return entryType?.typeScriptTypeName ?? `${entryTypeName.charAt(0).toUpperCase() + entryTypeName.slice(1)}Entry`;
   }
-
 
   /**
    * Process entries using the new configuration system
@@ -634,31 +517,6 @@ class StructureGenerator {
     }
   }
 
-  /**
-   * Legacy generic entry processing pipeline (for backward compatibility)
-   */
-  private processEntries<T extends { name: string; className: string; importPath: string }>(
-    config: { paths?: string[]; excludePatterns: string[]; outputFile: string },
-    extractor: (filePath: string, outputPath: string) => T | null,
-    type: string
-  ): T[] {
-    if (!config.paths) return [];
-    
-    console.log(`   Searching for ${type}s: ${config.paths.join(', ')}`);
-    
-    const files = this.findFiles(config.paths, config.excludePatterns);
-    const uniqueFiles = Array.from(new Set(files));
-    
-    const entries = uniqueFiles
-      .map(f => extractor(f, config.outputFile))
-      .filter((entry): entry is T => entry !== null);
-    
-    const validatedEntries = this.validateUniqueNames(entries, type);
-    
-    console.log(`   Found ${validatedEntries.length} ${type}s: ${validatedEntries.map(e => e.name).join(', ')}`);
-    
-    return validatedEntries;
-  }
 
   public generate(): void {
     console.log('🏭 Intelligent Structure Generator (Config-Driven)');
