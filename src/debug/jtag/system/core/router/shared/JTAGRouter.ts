@@ -559,41 +559,9 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     return this.extractEnvironment(endpoint);
   }
 
-  /**
-   * Determine who sent this request based on message context and origin
-   */
-  private determineSenderEnvironment(message: JTAGMessage): JTAGEnvironment {
-    // If origin is 'client', they came from a transport connection  
-    if (message.origin === 'client') {
-      // The key insight: responses to transport clients should stay in the same environment
-      // The transport layer will handle routing back to the actual client
-      console.log(`🎯 ${this.toString()}: Transport client detected - keeping response in ${this.context.environment} environment`);
-      return this.context.environment;
-    }
-    
-    // For other origins, extract environment from the origin path
-    return this.extractEnvironment(message.origin);
-  }
+  // determineSenderEnvironment moved to JTAGRouterBase
 
-  /**
-   * Parse remote endpoint to extract node ID and target path
-   * Format: /remote/{nodeId}/daemon/command or /remote/{nodeId}/server/daemon/command
-   */
-  private parseRemoteEndpoint(endpoint: string): { nodeId: string; targetPath: string } | null {
-    if (!endpoint.startsWith('remote/')) {
-      return null;
-    }
-
-    const parts = endpoint.split('/');
-    if (parts.length < 3) {
-      return null;
-    }
-
-    const nodeId = parts[1]; // remote/{nodeId}/...
-    const targetPath = parts.slice(2).join('/'); // everything after nodeId
-
-    return { nodeId, targetPath };
-  }
+  // parseRemoteEndpoint moved to JTAGRouterBase
 
   /**
    * Initialize transport (TransportEndpoint interface implementation)

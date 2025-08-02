@@ -58,6 +58,42 @@ export abstract class JTAGRouterBase extends JTAGModule {
   }
 
   /**
+   * Parse remote endpoint for P2P routing (moved from JTAGRouter)
+   * Format: /remote/{nodeId}/daemon/command or /remote/{nodeId}/server/daemon/command
+   */
+  protected parseRemoteEndpoint(endpoint: string): { nodeId: string; targetPath: string } | null {
+    if (!endpoint.startsWith('remote/')) {
+      return null;
+    }
+
+    const parts = endpoint.split('/');
+    if (parts.length < 3) {
+      return null;
+    }
+
+    const nodeId = parts[1]; // remote/{nodeId}/...
+    const targetPath = parts.slice(2).join('/'); // everything after nodeId
+
+    return { nodeId, targetPath };
+  }
+
+  /**
+   * Determine sender environment for response routing (moved from JTAGRouter)
+   */
+  protected determineSenderEnvironment(message: JTAGMessage): JTAGEnvironment {
+    // If origin is 'client', they came from a transport connection  
+    if (message.origin === 'client') {
+      // The key insight: responses to transport clients should stay in the same environment
+      // The transport layer will handle routing back to the actual client
+      console.log(`🎯 ${this.toString()}: Transport client detected - keeping response in ${this.context.environment} environment`);
+      return this.context.environment;
+    }
+    
+    // For other origins, extract environment from the origin path
+    return this.extractEnvironment(message.origin);
+  }
+
+  /**
    * Get environment-specific transport factory
    */
   protected abstract getTransportFactory(): Promise<ITransportFactory>;
