@@ -53,6 +53,7 @@ import { EventManager } from '../../../events';
 
 // Import transport strategy for extraction pattern
 import { HardcodedTransportStrategy, type ITransportStrategy } from './HardcodedTransportStrategy';
+import type { MessageSubscriber } from './JTAGRouterBase';
 
 // Import configuration types and utilities
 import type { 
@@ -69,17 +70,8 @@ import type { JTAGResponsePayload, BaseResponsePayload } from '../../types/Respo
 import type { ConsolePayload } from '../../../../daemons/console-daemon/shared/ConsoleDaemon';
 import type { RouterResult, RequestResult, EventResult, LocalRoutingResult } from './RouterTypes';
 
-/**
- * Message Subscriber Interface
- * 
- * Contract for all components that can receive and process JTAG messages.
- * Daemons implement this interface to register for message delivery.
- */
-export interface MessageSubscriber {
-  handleMessage(message: JTAGMessage): Promise<JTAGResponsePayload>;
-  get endpoint(): string;
-  get uuid(): string;
-}
+// Re-export MessageSubscriber for backward compatibility
+export type { MessageSubscriber } from './JTAGRouterBase';
 
 export interface RouterStatus {
   environment: string;
@@ -104,7 +96,7 @@ export interface RouterStatus {
 
 
 export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndpoint, ITransportHandler {
-  private readonly endpointMatcher = new EndpointMatcher<MessageSubscriber>();
+  // endpointMatcher moved to JTAGRouterBase
 
   //Use a map, strongly typed keys, for our transports
   protected readonly transports = new Map<TRANSPORT_TYPES, JTAGTransport>();
@@ -182,18 +174,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     console.log(`✅ ${this.toString()}: Initialization complete`);
   }
 
-  registerSubscriber(endpoint: string, subscriber: MessageSubscriber): void {
-    const fullEndpoint = `${this.context.environment}/${endpoint}`;
-    this.endpointMatcher.register(fullEndpoint, subscriber);
-    
-    // Only register short endpoint if it doesn't already exist to avoid duplicates
-    if (!this.endpointMatcher.hasExact(endpoint)) {
-      this.endpointMatcher.register(endpoint, subscriber);
-      console.log(`📋 ${this.toString()}: Registered subscriber at ${fullEndpoint} AND ${endpoint}`);
-    } else {
-      console.log(`📋 ${this.toString()}: Registered subscriber at ${fullEndpoint} (${endpoint} already exists)`);
-    }
-  }
+  // registerSubscriber moved to JTAGRouterBase
 
   async postMessage(message: JTAGMessage): Promise<RouterResult> {
     // Create unique processing tokens for request/response messages to prevent cross-message deduplication
@@ -551,13 +532,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     return { success: true };
   }
 
-  private extractEnvironment(endpoint: string): JTAGEnvironment {
-    if (endpoint.startsWith('browser/')) return 'browser';
-    if (endpoint.startsWith('server/')) return 'server';
-    if (endpoint.startsWith('remote/')) return 'remote';
-    
-    return this.context.environment;
-  }
+  // extractEnvironment moved to JTAGRouterBase
 
   /**
    * Smart environment extraction that handles response routing
