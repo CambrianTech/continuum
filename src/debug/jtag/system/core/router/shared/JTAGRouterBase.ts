@@ -7,7 +7,8 @@
 
 import { JTAGModule } from '../../shared/JTAGModule';
 import type { JTAGContext, JTAGMessage, JTAGEnvironment } from '../../types/JTAGTypes';
-import type { ITransportFactory } from '../../../transports';
+import type { ITransportFactory, JTAGTransport, TransportConfig } from '../../../transports';
+import { TRANSPORT_TYPES } from '../../../transports';
 import type { JTAGRouterConfig } from './JTAGRouterTypes';
 import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 import { EndpointMatcher } from './EndpointMatcher';
@@ -26,6 +27,10 @@ export abstract class JTAGRouterBase extends JTAGModule {
   
   // Core subscriber management (moved from JTAGRouter)  
   protected readonly endpointMatcher = new EndpointMatcher<MessageSubscriber>();
+  
+  // Transport management pattern (moved from JTAGRouter)
+  protected readonly transports = new Map<TRANSPORT_TYPES, JTAGTransport>();
+  protected isInitialized = false;
   
   constructor(name: string, context: JTAGContext, config: JTAGRouterConfig = {}) {
     super(name, context);
@@ -56,13 +61,23 @@ export abstract class JTAGRouterBase extends JTAGModule {
   protected abstract getTransportFactory(): Promise<ITransportFactory>;
 
   /**
-   * Get transport status - to be implemented by concrete routers
+   * Get transport status - default implementation using shared transport map
    */
-  abstract getTransportStatus(): { 
+  getTransportStatus(): { 
     initialized: boolean; 
     transportCount: number; 
     transports: Array<{ name: string; connected: boolean; type: string; }> 
-  };
+  } {
+    return {
+      initialized: this.isInitialized,
+      transportCount: this.transports.size,
+      transports: Array.from(this.transports.entries()).map(([type, transport]) => ({
+        name: transport.name,
+        connected: transport.isConnected(),
+        type: type.toString()
+      }))
+    };
+  }
 
   /**
    * Initialize the router - to be implemented by concrete routers

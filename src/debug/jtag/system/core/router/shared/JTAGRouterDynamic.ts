@@ -38,16 +38,13 @@ export interface MessageSubscriber {
  */
 export class JTAGRouterDynamic extends JTAGRouterBase implements TransportEndpoint, ITransportHandler {
   
-  // endpointMatcher inherited from JTAGRouterBase ✅
-  
-  //Use a map for transports (matches JTAGRouter pattern)
-  protected readonly transports = new Map<TRANSPORT_TYPES, JTAGTransport>();
+  // endpointMatcher and transports inherited from JTAGRouterBase ✅
   
   // Dynamic transport strategy (enhanced vs HardcodedTransportStrategy)
   protected transportStrategy: DynamicTransportStrategy;
   
   private readonly config;
-  private isInitialized = false;
+  // isInitialized inherited from JTAGRouterBase ✅
 
   constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
     super('dynamic-router', context, config);
@@ -162,12 +159,8 @@ export class JTAGRouterDynamic extends JTAGRouterBase implements TransportEndpoi
     console.log(`✅ ${this.toString()}: Dynamic shutdown complete`);
   }
 
-  /**
-   * Get transport status with dynamic enhancements
-   */
-  getTransportStatus(): { initialized: boolean; transportCount: number; transports: Array<{ name: string; connected: boolean; type: string; }> } {
-    return this.transportStrategy.getTransportStatusInfo();
-  }
+  // getTransportStatus() inherited from JTAGRouterBase ✅
+  // Can override if dynamic enhancements needed: this.transportStrategy.getTransportStatusInfo()
 
   /**
    * Get environment-specific transport factory - to be implemented by concrete classes
