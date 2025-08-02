@@ -97,17 +97,10 @@ export interface RouterStatus {
 
 
 export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndpoint, ITransportHandler {
-  // endpointMatcher and transports moved to JTAGRouterBase
+  // endpointMatcher, transports, eventManager, messageQueue, healthManager, 
+  // responseCorrelator, config moved to JTAGRouterBase
 
-  public readonly eventManager:EventManager;
-
-  // transportStrategy inherited from JTAGRouterBase (abstract)
-
-  // Bus-level enhancements
-  private readonly messageQueue: JTAGMessageQueue;
-  private readonly healthManager: ConnectionHealthManager;
-  private readonly responseCorrelator: ResponseCorrelator;
-  private readonly config: ResolvedJTAGRouterConfig;
+  // transportStrategy inherited from JTAGRouterBase (concrete)
   // isInitialized moved to JTAGRouterBase
 
   // Track who sent each request for response routing (correlationId -> sender info)
@@ -122,30 +115,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
 
   constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
     super('universal-router', context, config);
-    
-    // Apply default configuration with strong typing using centralized utility
-    this.config = createJTAGRouterConfig(config);
-
-    // Initialize event manager
-    this.eventManager = new EventManager();
-    
-    // Transport strategy initialized by concrete implementations (EVOLUTION: towards dynamic)
-    
-    // Initialize modular bus-level features with resolved config
-    this.messageQueue = new JTAGMessageQueue(context, {
-      enableDeduplication: this.config.queue.enableDeduplication,
-      deduplicationWindow: this.config.queue.deduplicationWindow,
-      maxSize: this.config.queue.maxSize,
-      maxRetries: this.config.queue.maxRetries,
-      flushInterval: this.config.queue.flushInterval
-    });
-    
-    this.healthManager = new ConnectionHealthManager(context, this.eventManager.events);
-    this.responseCorrelator = new ResponseCorrelator(this.config.response.correlationTimeout);
-    
-    if (this.config.enableLogging) {
-      console.log(`🚀 JTAGRouter[${context.environment}]: Initialized with request-response correlation and queuing`);
-    }
+    // Bus-level initialization is now handled by JTAGRouterBase constructor
   }
 
   async initialize(): Promise<void> {

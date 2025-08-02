@@ -15,6 +15,14 @@ import { EndpointMatcher } from './EndpointMatcher';
 import { RouterUtilities } from './RouterUtilities';
 import type { ITransportStrategy } from './HardcodedTransportStrategy';
 import type { IRouterEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
+import { HardcodedTransportStrategy } from './HardcodedTransportStrategy';
+import { DynamicTransportStrategy } from './DynamicTransportStrategy';
+import { MinimalEnhancementStrategy, LegacyEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
+import { JTAGMessageQueue } from './queuing/JTAGMessageQueue';
+import { ConnectionHealthManager } from './ConnectionHealthManager';
+import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
+import { EventManager } from '../../../events';
+import { createJTAGRouterConfig, type ResolvedJTAGRouterConfig } from './JTAGRouterTypes';
 
 /**
  * Message Subscriber Interface - Core contract for message handling
@@ -35,13 +43,69 @@ export abstract class JTAGRouterBase extends JTAGModule {
   protected isInitialized = false;
   
   // Transport strategy pattern - extensible and P2P ready
-  protected abstract transportStrategy: ITransportStrategy;
+  protected transportStrategy!: ITransportStrategy;
   
   // Enhancement strategy pattern - pluggable cross-cutting concerns
-  protected abstract enhancementStrategy: IRouterEnhancementStrategy;
+  protected enhancementStrategy!: IRouterEnhancementStrategy;
+  
+  // Bus-level components - shared initialization
+  public readonly eventManager: EventManager;
+  protected readonly messageQueue: JTAGMessageQueue;
+  protected readonly healthManager: ConnectionHealthManager;
+  protected readonly responseCorrelator: ResponseCorrelator;
+  protected readonly config: ResolvedJTAGRouterConfig;
   
   constructor(name: string, context: JTAGContext, config: JTAGRouterConfig = {}) {
     super(name, context);
+    
+    // Apply default configuration with strong typing using centralized utility
+    this.config = createJTAGRouterConfig(config);
+    
+    // Initialize bus-level components with resolved config
+    this.eventManager = new EventManager();
+    
+    this.messageQueue = new JTAGMessageQueue(context, {
+      enableDeduplication: this.config.queue.enableDeduplication,
+      deduplicationWindow: this.config.queue.deduplicationWindow,
+      maxSize: this.config.queue.maxSize,
+      maxRetries: this.config.queue.maxRetries,
+      flushInterval: this.config.queue.flushInterval
+    });
+    
+    this.healthManager = new ConnectionHealthManager(context, this.eventManager.events);
+    this.responseCorrelator = new ResponseCorrelator(this.config.response.correlationTimeout);
+    
+    // Initialize transport and enhancement strategies using shared config logic
+    this.initializeStrategies(config);
+    
+    if (this.config.enableLogging) {
+      console.log(`🚀 ${this.toString()}: Initialized with request-response correlation and queuing`);
+    }
+  }
+
+  /**
+   * Shared strategy initialization logic - eliminates duplication
+   */
+  protected initializeStrategies(config: JTAGRouterConfig): void {
+    // EVOLUTION: Dynamic is now DEFAULT - explicit opt-out to legacy
+    const forceLegacy = config.transport?.forceLegacy === true ||
+                       config.transport?.strategy === 'hardcoded' ||
+                       (typeof process !== 'undefined' && process.env?.JTAG_FORCE_LEGACY === 'true');
+    
+    const useDynamicTransport = !forceLegacy; // Dynamic by default
+    
+    if (useDynamicTransport) {
+      console.log(`🚀 ${this.toString()}: Using dynamic transport strategy (P2P ready)`);
+      this.transportStrategy = new DynamicTransportStrategy(this.transports, config.transport?.enableP2P ?? true);
+      // Use minimal enhancements with dynamic strategy (following JTAGRouterDynamic pattern)
+      this.enhancementStrategy = new MinimalEnhancementStrategy();
+    } else {
+      console.log(`📡 ${this.toString()}: Using hardcoded transport strategy (legacy - explicitly requested)`);
+      console.warn(`⚠️ ${this.toString()}: DEPRECATION NOTICE - You've opted into legacy transport strategy. This will be removed in future versions. Migration guide: remove 'forceLegacy: true' from config.`);
+      this.transportStrategy = new HardcodedTransportStrategy(this.transports);
+      // Use legacy enhancements with hardcoded strategy (existing JTAGRouter pattern)
+      this.enhancementStrategy = new LegacyEnhancementStrategy();
+    }
   }
 
   /**
