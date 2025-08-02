@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.507",
+  "version": "1.0.512",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/index.js",
   "browser": "dist/browser/index.js",
@@ -87,7 +87,7 @@
   "scripts": {
     "screenshot": "npx tsx scripts/screenshot.ts",
     "start": "npm run system:stop && npm run clean:all && npm run build && npm run version:bump && npm pack && npx tsx scripts/update-test-bench.ts && cd examples/test-bench && npm install && npm start",
-    "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true",
+    "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
     "paths:clean": "npx tsx generator/PathMappingGenerator.ts",
     "prebuild": "npx tsx generator/generate-structure.ts",
@@ -223,7 +223,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-02T01:08:41.329Z",
+    "timestamp": "2025-08-02T16:35:46.653Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 32,
     "note": "Generated from clean essential path mappings only"
