@@ -51,6 +51,9 @@ import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
 import { EndpointMatcher } from './EndpointMatcher';
 import { EventManager } from '../../../events';
 
+// Import transport strategy interface for future refactoring
+import type { ITransportStrategy } from './ITransportStrategy';
+
 // Import configuration types and utilities
 import type { 
   JTAGRouterConfig, 
@@ -106,6 +109,9 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   //Use a map, strongly typed keys, for our transports
   protected readonly transports = new Map<TRANSPORT_TYPES, JTAGTransport>();
   public readonly eventManager:EventManager;
+
+  // Transport strategy for future refactoring (not used yet - maintains compatibility)
+  protected transportStrategy?: ITransportStrategy;
 
   // Bus-level enhancements
   private readonly messageQueue: JTAGMessageQueue;
