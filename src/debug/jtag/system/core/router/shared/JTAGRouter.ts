@@ -51,8 +51,8 @@ import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
 import { EndpointMatcher } from './EndpointMatcher';
 import { EventManager } from '../../../events';
 
-// Import transport strategy interface for future refactoring
-import type { ITransportStrategy } from './ITransportStrategy';
+// Import transport strategy for extraction pattern
+import { HardcodedTransportStrategy, type ITransportStrategy } from './HardcodedTransportStrategy';
 
 // Import configuration types and utilities
 import type { 
@@ -110,8 +110,8 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
   protected readonly transports = new Map<TRANSPORT_TYPES, JTAGTransport>();
   public readonly eventManager:EventManager;
 
-  // Transport strategy for future refactoring (not used yet - maintains compatibility)
-  protected transportStrategy?: ITransportStrategy;
+  // Transport strategy implementation (concrete - not optional)
+  protected transportStrategy: ITransportStrategy;
 
   // Bus-level enhancements
   private readonly messageQueue: JTAGMessageQueue;
@@ -138,6 +138,9 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
 
     // Initialize event manager
     this.eventManager = new EventManager();
+    
+    // Initialize hardcoded transport strategy (EVOLUTION TARGET)
+    this.transportStrategy = new HardcodedTransportStrategy(this.transports);
     
     // Initialize modular bus-level features with resolved config
     this.messageQueue = new JTAGMessageQueue(context, {
@@ -621,7 +624,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
    * Initialize transport (TransportEndpoint interface implementation)
    */
   async initializeTransport(config?: Partial<TransportConfig>): Promise<void> {
-    console.log(`🔗 ${this.toString()}: Initializing transport with base64 encoding`);
+    console.log(`🔗 ${this.toString()}: Initializing transport with strategy pattern`);
     
     // Create cross-context transport using router configuration
     const ctxTransportConfig: TransportConfig = { 
@@ -637,22 +640,14 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     
     // Use environment-specific transport factory
     const factory = await this.getTransportFactory();
-    const crossContextTransport = await factory.createTransport(this.context.environment, ctxTransportConfig);
-    this.transports.set(TRANSPORT_TYPES.CROSS_CONTEXT, crossContextTransport);
+    
+    // Delegate to transport strategy (preserves exact same behavior)
+    await this.transportStrategy.initializeTransports(factory, this.context, ctxTransportConfig);
 
-    // P2P transport disabled - needs UDP multicast implementation, not WebSocket
-    // See ENHANCEMENT issue above for dedicated P2P transport requirements
-    // const p2pTransportConfig: TransportConfig = { 
-    //   preferred: 'websocket', 
-    //   fallback: true,
-    //   eventSystem: this.eventManager.events,
-    //   sessionId: this.config.sessionId // Pass sessionId for client handshake
-    // };
-    // const p2pTransport = await TransportFactory.createTransport(this.context.environment, p2pTransportConfig);
-    // this.transports.set(TRANSPORT_TYPES.P2P, p2pTransport);
-
-    // Set up message handlers
-    await this.setupMessageHandlers();
+    // Set up message handlers through strategy
+    await this.transportStrategy.setupMessageHandlers((message: JTAGMessage) => {
+      this.postMessage(message).catch(console.error);
+    });
   }
 
   /**
