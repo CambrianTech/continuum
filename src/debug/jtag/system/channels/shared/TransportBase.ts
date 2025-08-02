@@ -62,17 +62,3 @@ export abstract class TransportBase implements JTAGTransport {
   abstract disconnect(): Promise<void>;
   abstract reconnect?(): Promise<void>;
 }
-
-/**
- * Adapter Entry - Registry entry for protocol adapter implementations
- */
-export interface AdapterEntry {
-  name: string;
-  className: string;
-  adapterClass: new (...args: any[]) => JTAGTransport;
-}
-
-/**
- * @deprecated Use AdapterEntry instead - keeping for backward compatibility
- */
-export interface TransportEntry extends AdapterEntry {}

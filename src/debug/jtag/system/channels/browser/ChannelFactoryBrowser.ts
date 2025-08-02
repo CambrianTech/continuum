@@ -1,37 +1,39 @@
 /**
  * Transport Factory Browser - Browser-specific transport creation
  * 
- * Extends TransportFactoryBase following Universal Module Architecture.
- * Only implements browser-specific transport creation logic.
+ * Implements ITransportFactory with browser-only transport implementations.
+ * Creates WebSocketTransportBrowser for browser environment.
  */
 
+import type { ITransportFactory } from '../shared/ITransportFactory';
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGTransport, TransportConfig } from '../shared/TransportTypes';
-import { TransportFactoryBase } from '../shared/TransportFactoryBase';
+import { TransportConfigHelper } from '../shared/TransportConfig';
 import { WebSocketTransportBrowser } from '../websocket-transport/browser/WebSocketTransportBrowser';
 import { HTTPTransport } from '../http-transport/shared/HTTPTransport';
 
-export class TransportFactoryBrowser extends TransportFactoryBase {
-  
-  constructor() {
-    super('browser');
-  }
+export class TransportFactoryBrowser implements ITransportFactory {
   /**
-   * Browser-specific transport creation implementation
+   * Create appropriate transport for browser environment
    */
-  protected async createTransportImpl(
+  async createTransport(
     environment: JTAGContext['environment'], 
     config: TransportConfig
   ): Promise<JTAGTransport> {
     
+    // Validate required fields are present
+    TransportConfigHelper.validateConfig(config);
+    
+    console.log(`🏭 Browser Transport Factory: Creating ${config.protocol} transport for ${environment} environment`);
+    
     // UDP multicast transport not supported in browser
     if (config.protocol === 'udp-multicast') {
-      this.throwUnsupportedProtocol('udp-multicast');
+      throw new Error('UDP Multicast transport not supported in browser environment');
     }
     
     // WebSocket transport
     if (config.protocol === 'websocket') {
-      return await this.createWebSocketTransportImpl(environment, config);
+      return await this.createWebSocketTransport(environment, config);
     }
     
     // HTTP transport
@@ -39,20 +41,19 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
       return await this.createHTTPTransport(config);
     }
     
-    this.throwUnsupportedProtocol(config.protocol);
+    throw new Error(`Unsupported transport protocol: ${config.protocol}`);
   }
 
   /**
-   * Browser-specific WebSocket transport implementation
+   * Create WebSocket transport for browser environment
    */
-  protected async createWebSocketTransportImpl(
+  async createWebSocketTransport(
     environment: JTAGContext['environment'],
     config: TransportConfig
   ): Promise<JTAGTransport> {
     const { role, serverPort = 9001, serverUrl, handler } = config;
 
-    // Validate supported roles
-    this.validateRole(role, ['client']);
+    console.log(`🔗 WebSocket Browser Factory: Creating ${role} transport in ${environment} environment`);
 
     if (role === 'client') {
       const url = serverUrl || `ws://localhost:${serverPort}`;
@@ -63,11 +64,10 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
         eventSystem: config.eventSystem // CRITICAL: Pass event system for health management
       });
       await transport.connect(url);
-      return this.createTransportResult(transport, 'WebSocket');
+      return transport;
     }
 
-    // This should never be reached due to validateRole above
-    this.throwUnsupportedProtocol(`WebSocket ${role}`);
+    throw new Error(`WebSocket transport role '${role}' not supported in browser environment`);
   }
 
   /**
@@ -76,13 +76,7 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
   private async createHTTPTransport(config: TransportConfig): Promise<JTAGTransport> {
     const baseUrl = config.serverUrl || 'http://localhost:9002';
     const transport = new HTTPTransport(baseUrl);
-    return this.createTransportResult(transport, 'HTTP');
-  }
-
-  /**
-   * Get factory label for logging
-   */
-  protected getFactoryLabel(): string {
-    return 'Browser Transport Factory';
+    console.log(`✅ Browser Transport Factory: HTTP transport created`);
+    return transport;
   }
 }

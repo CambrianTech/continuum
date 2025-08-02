@@ -18,7 +18,6 @@ export { TRANSPORT_TYPES, TRANSPORT_ROLES } from './TransportTypes';
 
 // Base classes
 export { TransportBase } from './TransportBase';
-export { TransportFactoryBase } from './TransportFactoryBase';
 
 // Configuration utilities
 export { TransportConfigHelper } from './TransportConfig';
