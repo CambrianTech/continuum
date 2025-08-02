@@ -1,38 +1,40 @@
 /**
  * Transport Factory Server - Server-specific transport creation
  * 
- * Extends TransportFactoryBase following Universal Module Architecture.
- * Only implements server-specific transport creation logic.
+ * Implements ITransportFactory with server-only transport implementations.
+ * Creates WebSocketTransportServer for server environment.
  */
 
+import type { ITransportFactory } from '../shared/ITransportFactory';
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGTransport, TransportConfig } from '../shared/TransportTypes';
-import { TransportFactoryBase } from '../shared/TransportFactoryBase';
+import { TransportConfigHelper } from '../shared/TransportConfig';
 import { WebSocketTransportServer } from '../websocket-transport/server/WebSocketTransportServer';
 import { WebSocketTransportServerClient } from '../websocket-transport/server/WebSocketTransportServerClient';
 import { HTTPTransport } from '../http-transport/shared/HTTPTransport';
 
-export class TransportFactoryServer extends TransportFactoryBase {
-  
-  constructor() {
-    super('server');
-  }
+export class TransportFactoryServer implements ITransportFactory {
   /**
-   * Server-specific transport creation implementation
+   * Create appropriate transport for server environment
    */
-  protected async createTransportImpl(
+  async createTransport(
     environment: JTAGContext['environment'], 
     config: TransportConfig
   ): Promise<JTAGTransport> {
     
+    // Validate required fields are present
+    TransportConfigHelper.validateConfig(config);
+    
+    console.log(`🏭 Server Transport Factory: Creating ${config.protocol} transport for ${environment} environment`);
+    
     // UDP multicast transport for P2P networking
     if (config.protocol === 'udp-multicast') {
-      this.throwUnsupportedProtocol('udp-multicast (not yet modularized)');
+      throw new Error('UDP Multicast transport not yet modularized');
     }
     
     // WebSocket transport
     if (config.protocol === 'websocket') {
-      return await this.createWebSocketTransportImpl(environment, config);
+      return await this.createWebSocketTransport(environment, config);
     }
     
     // HTTP transport
@@ -40,13 +42,13 @@ export class TransportFactoryServer extends TransportFactoryBase {
       return await this.createHTTPTransport(config);
     }
     
-    this.throwUnsupportedProtocol(config.protocol);
+    throw new Error(`Unsupported transport protocol: ${config.protocol}`);
   }
 
   /**
-   * Server-specific WebSocket transport implementation
+   * Create WebSocket transport for server environment
    */
-  protected async createWebSocketTransportImpl(
+  async createWebSocketTransport(
     environment: JTAGContext['environment'],
     config: TransportConfig
   ): Promise<JTAGTransport> {
@@ -64,7 +66,7 @@ export class TransportFactoryServer extends TransportFactoryBase {
         sessionHandshake: true
       });
       await transport.start(serverPort);
-      return this.createTransportResult(transport, 'WebSocket Server');
+      return transport;
     }
 
     if (role === 'client') {
@@ -86,17 +88,10 @@ export class TransportFactoryServer extends TransportFactoryBase {
         eventSystem
       });
       await transport.connect(url);
-      return this.createTransportResult(transport, 'WebSocket Client');
+      return transport;
     }
 
     throw new Error(`WebSocket transport role '${role}' not supported in server environment`);
-  }
-
-  /**
-   * Get factory label for logging
-   */
-  protected getFactoryLabel(): string {
-    return 'Server Transport Factory';
   }
 
   /**

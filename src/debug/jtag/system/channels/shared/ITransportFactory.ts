@@ -19,12 +19,3 @@ export interface ITransportFactory {
     config: TransportConfig
   ): Promise<JTAGTransport>;
 }
-
-/**
- * Transport Factory Entry - Registry entry for transport factories
- */
-export interface TransportFactoryEntry {
-  name: string;
-  className: string;
-  factoryClass: new () => ITransportFactory;
-}
