@@ -97,4 +97,23 @@ export abstract class JTAGRouterBase extends JTAGModule {
    * Get environment-specific transport factory
    */
   protected abstract getTransportFactory(): Promise<ITransportFactory>;
+
+  /**
+   * Get transport status - to be implemented by concrete routers
+   */
+  abstract getTransportStatus(): { 
+    initialized: boolean; 
+    transportCount: number; 
+    transports: Array<{ name: string; connected: boolean; type: string; }> 
+  };
+
+  /**
+   * Initialize the router - to be implemented by concrete routers
+   */
+  abstract initialize(): Promise<void>;
+
+  /**
+   * Shutdown the router - to be implemented by concrete routers  
+   */
+  abstract shutdown(): Promise<void>;
 }
