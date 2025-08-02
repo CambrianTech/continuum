@@ -37,7 +37,7 @@
  * - Transport factory abstracts connection management complexity
  */
 
-import { JTAGModule } from '../../shared/JTAGModule';
+import { JTAGRouterBase } from './JTAGRouterBase';
 import type { JTAGContext, JTAGEnvironment, JTAGMessage } from '../../types/JTAGTypes';
 import { JTAGMessageTypes, JTAGMessageFactory } from '../../types/JTAGTypes';
 import type { UUID } from '../../types/CrossPlatformUUID';
@@ -103,7 +103,7 @@ export interface RouterStatus {
 }
 
 
-export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint, ITransportHandler {
+export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndpoint, ITransportHandler {
   private readonly endpointMatcher = new EndpointMatcher<MessageSubscriber>();
 
   //Use a map, strongly typed keys, for our transports
@@ -131,7 +131,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   private readonly MESSAGE_PROCESSING_TIMEOUT = 30000; // 30 seconds
 
   constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
-    super('universal-router', context);
+    super('universal-router', context, config);
     
     // Apply default configuration with strong typing using centralized utility
     this.config = createJTAGRouterConfig(config);
