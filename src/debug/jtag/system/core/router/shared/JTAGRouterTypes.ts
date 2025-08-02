@@ -48,6 +48,7 @@ export interface JTAGRouterTransportConfig {
   readonly serverUrl?: string;
   readonly enableP2P?: boolean;
   readonly strategy?: 'hardcoded' | 'dynamic';
+  readonly forceLegacy?: boolean; // Explicit opt-in to legacy behavior
 }
 
 /**

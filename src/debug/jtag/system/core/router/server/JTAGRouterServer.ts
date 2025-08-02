@@ -25,10 +25,12 @@ export class JTAGRouterServer extends JTAGRouter {
   constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
     super(context, config);
     
-    // EVOLUTION: Steering toward dynamic, P2P-ready transport strategy
-    const useDynamicTransport = config.transport?.enableP2P || 
-                               config.transport?.strategy === 'dynamic' ||
-                               (typeof process !== 'undefined' && process.env?.JTAG_ENABLE_P2P === 'true');
+    // EVOLUTION: Dynamic is now DEFAULT - explicit opt-out to legacy
+    const forceLegacy = config.transport?.forceLegacy === true ||
+                       config.transport?.strategy === 'hardcoded' ||
+                       (typeof process !== 'undefined' && process.env?.JTAG_FORCE_LEGACY === 'true');
+    
+    const useDynamicTransport = !forceLegacy; // Dynamic by default
     
     if (useDynamicTransport) {
       console.log(`🚀 ${this.toString()}: Using dynamic transport strategy (P2P ready)`);
@@ -36,7 +38,8 @@ export class JTAGRouterServer extends JTAGRouter {
       // Use minimal enhancements with dynamic strategy (following JTAGRouterDynamic pattern)
       this.enhancementStrategy = new MinimalEnhancementStrategy();
     } else {
-      console.log(`📡 ${this.toString()}: Using hardcoded transport strategy (legacy)`);
+      console.log(`📡 ${this.toString()}: Using hardcoded transport strategy (legacy - explicitly requested)`);
+      console.warn(`⚠️ ${this.toString()}: DEPRECATION NOTICE - You've opted into legacy transport strategy. This will be removed in future versions. Migration guide: remove 'forceLegacy: true' from config.`);
       this.transportStrategy = new HardcodedTransportStrategy(this.transports);
       // Use legacy enhancements with hardcoded strategy (existing JTAGRouter pattern)
       this.enhancementStrategy = new LegacyEnhancementStrategy();
