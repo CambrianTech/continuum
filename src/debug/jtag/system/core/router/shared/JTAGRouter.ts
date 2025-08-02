@@ -97,10 +97,8 @@ export interface RouterStatus {
 
 
 export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndpoint, ITransportHandler {
-  // endpointMatcher moved to JTAGRouterBase
+  // endpointMatcher and transports moved to JTAGRouterBase
 
-  //Use a map, strongly typed keys, for our transports
-  protected readonly transports = new Map<TRANSPORT_TYPES, JTAGTransport>();
   public readonly eventManager:EventManager;
 
   // Transport strategy implementation (concrete - not optional)
@@ -111,7 +109,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
   private readonly healthManager: ConnectionHealthManager;
   private readonly responseCorrelator: ResponseCorrelator;
   private readonly config: ResolvedJTAGRouterConfig;
-  private isInitialized = false;
+  // isInitialized moved to JTAGRouterBase
 
   // Track who sent each request for response routing (correlationId -> sender info)
   private readonly requestSenders = new Map<string, {
@@ -594,20 +592,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     console.log(`✅ ${this.toString()}: Transport shutdown complete`);
   }
 
-  /**
-   * Get transport status (TransportEndpoint interface implementation)
-   */
-  getTransportStatus(): { initialized: boolean; transportCount: number; transports: Array<{ name: string; connected: boolean; type: string; }> } {
-    return {
-      initialized: this.isInitialized,
-      transportCount: this.transports.size,
-      transports: Array.from(this.transports.entries()).map(([type, transport]) => ({
-        name: transport.name,
-        connected: transport.isConnected(),
-        type: type.toString()
-      }))
-    };
-  }
+  // getTransportStatus() inherited from JTAGRouterBase
 
   /**
    * Legacy method for compatibility - transport factory is now in shared module
