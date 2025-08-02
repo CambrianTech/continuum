@@ -13,6 +13,7 @@ import type { JTAGRouterConfig } from './JTAGRouterTypes';
 import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 import { EndpointMatcher } from './EndpointMatcher';
 import { RouterUtilities } from './RouterUtilities';
+import type { ITransportStrategy } from './HardcodedTransportStrategy';
 
 /**
  * Message Subscriber Interface - Core contract for message handling
@@ -31,6 +32,9 @@ export abstract class JTAGRouterBase extends JTAGModule {
   // Transport management pattern (moved from JTAGRouter)
   protected readonly transports = new Map<TRANSPORT_TYPES, JTAGTransport>();
   protected isInitialized = false;
+  
+  // Transport strategy pattern - extensible and P2P ready
+  protected abstract transportStrategy: ITransportStrategy;
   
   constructor(name: string, context: JTAGContext, config: JTAGRouterConfig = {}) {
     super(name, context);

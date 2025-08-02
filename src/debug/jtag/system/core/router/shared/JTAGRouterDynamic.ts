@@ -38,10 +38,10 @@ export interface MessageSubscriber {
  */
 export class JTAGRouterDynamic extends JTAGRouterBase implements TransportEndpoint, ITransportHandler {
   
-  // endpointMatcher and transports inherited from JTAGRouterBase ✅
+  // endpointMatcher, transports, and transportStrategy inherited from JTAGRouterBase ✅
   
-  // Dynamic transport strategy (enhanced vs HardcodedTransportStrategy)
-  protected transportStrategy: DynamicTransportStrategy;
+  // Dynamic transport strategy implementation (concrete - enhances base contract)
+  protected transportStrategy!: DynamicTransportStrategy;
   
   private readonly config;
   // isInitialized inherited from JTAGRouterBase ✅

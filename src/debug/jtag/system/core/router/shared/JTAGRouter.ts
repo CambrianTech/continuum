@@ -101,8 +101,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
 
   public readonly eventManager:EventManager;
 
-  // Transport strategy implementation (concrete - not optional)
-  protected transportStrategy: ITransportStrategy;
+  // transportStrategy inherited from JTAGRouterBase (abstract)
 
   // Bus-level enhancements
   private readonly messageQueue: JTAGMessageQueue;
@@ -130,8 +129,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     // Initialize event manager
     this.eventManager = new EventManager();
     
-    // Initialize hardcoded transport strategy (EVOLUTION TARGET)
-    this.transportStrategy = new HardcodedTransportStrategy(this.transports);
+    // Transport strategy initialized by concrete implementations (EVOLUTION: towards dynamic)
     
     // Initialize modular bus-level features with resolved config
     this.messageQueue = new JTAGMessageQueue(context, {

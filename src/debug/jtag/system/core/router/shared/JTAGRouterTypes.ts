@@ -46,6 +46,8 @@ export interface JTAGRouterTransportConfig {
   readonly role: TransportRole;
   readonly serverPort?: number;
   readonly serverUrl?: string;
+  readonly enableP2P?: boolean;
+  readonly strategy?: 'hardcoded' | 'dynamic';
 }
 
 /**
