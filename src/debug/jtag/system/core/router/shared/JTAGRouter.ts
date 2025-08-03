@@ -44,56 +44,26 @@ import type { UUID } from '../../types/CrossPlatformUUID';
 import { TRANSPORT_TYPES } from '../../../transports';
 import type { ITransportFactory, TransportConfig, JTAGTransport, TransportEndpoint } from '../../../transports';
 import type { ITransportHandler } from '../../../transports';
-import { JTAGMessageQueue, MessagePriority } from './queuing/JTAGMessageQueue';
+import { MessagePriority } from './queuing/JTAGMessageQueue';
 import type { QueuedItem } from './queuing/PriorityQueue';
-import { ConnectionHealthManager } from './ConnectionHealthManager';
-import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
-import { EndpointMatcher } from './EndpointMatcher';
-import { EventManager } from '../../../events';
 
 // Import transport strategy for extraction pattern
-import { HardcodedTransportStrategy, type ITransportStrategy } from './HardcodedTransportStrategy';
-import type { MessageSubscriber } from './JTAGRouterBase';
 import { RouterUtilities } from './RouterUtilities';
 
 // Import configuration types and utilities
-import type { 
-  JTAGRouterConfig, 
-  ResolvedJTAGRouterConfig 
-} from './JTAGRouterTypes';
-import { createJTAGRouterConfig } from './JTAGRouterTypes';
+import type { JTAGRouterConfig} from './JTAGRouterTypes';
 
 // Re-export configuration types for convenience
-export type { JTAGRouterConfig, ResolvedJTAGRouterConfig } from './JTAGRouterTypes';
+export type { JTAGRouterConfig, ResolvedJTAGRouterConfig, RouterStatus } from './JTAGRouterTypes';
 export { DEFAULT_JTAG_ROUTER_CONFIG, createJTAGRouterConfig } from './JTAGRouterTypes';
 
 import type { JTAGResponsePayload, BaseResponsePayload } from '../../types/ResponseTypes';
-import type { ConsolePayload } from '../../../../daemons/console-daemon/shared/ConsoleDaemon';
 import type { RouterResult, RequestResult, EventResult, LocalRoutingResult } from './RouterTypes';
 
 // Re-export MessageSubscriber for backward compatibility
 export type { MessageSubscriber } from './JTAGRouterBase';
 
-export interface RouterStatus {
-  environment: string;
-  initialized: boolean;
-  subscribers: number;
-  transport: {
-    name: string;
-    connected: boolean;
-  } | null;
-  queue: ReturnType<JTAGMessageQueue['getStatus']>;
-  health: ReturnType<ConnectionHealthManager['getHealth']>;
-  transportStatus: {
-    initialized: boolean;
-    transportCount: number;
-    transports: Array<{
-      name: string;
-      connected: boolean;
-      type: string;
-    }>;
-  };
-}
+// RouterStatus interface moved to JTAGRouterTypes.ts for better organization
 
 
 export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndpoint, ITransportHandler {
@@ -586,27 +556,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     console.log(`✅ ${this.toString()}: Shutdown complete`);
   }
 
-  /**
-   * Get enhanced router status
-   */
-  get status(): RouterStatus {
-    const crossContextTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
-    const transportStatus = this.getTransportStatus();
-    
-    return {
-      environment: this.context.environment,
-      initialized: this.isInitialized,
-      subscribers: this.endpointMatcher.size(),
-      transport: crossContextTransport ? {
-        name: crossContextTransport.name,
-        connected: crossContextTransport.isConnected()
-      } : null,
-      queue: this.messageQueue.getStatus(),
-      health: this.healthManager.getHealth(),
-      // Enhanced transport status from interface
-      transportStatus
-    };
-  }
+  // status method moved to JTAGRouterBase for simplification
 
   // ITransportHandler implementation - ENFORCED by TypeScript
   

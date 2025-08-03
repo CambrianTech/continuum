@@ -5,9 +5,12 @@
  * Allows configuration to be passed down from system level.
  */
 
-import type { TransportRole } from '../../../transports';
+import type { TransportRole, TransportEndpointStatus } from '../../../transports';
 import { TRANSPORT_ROLES } from '../../../transports';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import type { JTAGEnvironment } from '../../types/JTAGTypes';
+import type { JTAGMessageQueue } from './queuing/JTAGMessageQueue';
+import type { ConnectionHealthManager } from './ConnectionHealthManager';
 
 /**
  * Queue configuration for JTAGRouter
@@ -131,3 +134,32 @@ export function createJTAGRouterConfig(config: JTAGRouterConfig = {}): ResolvedJ
     sessionId: config.sessionId
   } as const;
 }
+
+/**
+ * Router Status Interface - Strongly typed router status information
+ * 
+ * Provides comprehensive view of router state with compile-time safety.
+ * Eliminates any usage by leveraging TypeScript's ReturnType utility.
+ */
+export interface RouterStatus {
+  /** Current router environment */
+  readonly environment: JTAGEnvironment;
+  /** Whether router has been initialized */
+  readonly initialized: boolean;
+  /** Number of registered message subscribers */
+  readonly subscribers: number;
+  /** Primary transport connection status */
+  readonly transport: {
+    readonly name: string;
+    readonly connected: boolean;
+  } | null;
+  /** Message queue status from JTAGMessageQueue */
+  readonly queue: ReturnType<JTAGMessageQueue['getStatus']>;
+  /** Connection health status from ConnectionHealthManager */
+  readonly health: ReturnType<ConnectionHealthManager['getHealth']>;
+  /** Detailed transport status for all transports */
+  readonly transportStatus: TransportEndpointStatus;
+}
+
+// Transport status types now use TransportEndpointStatus from transport system
+// This eliminates duplication and ensures consistency with transport interfaces

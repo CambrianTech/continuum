@@ -14,7 +14,7 @@ import type { ITransportStrategy } from './HardcodedTransportStrategy';
 /**
  * Transport Discovery Result - Information about available transports
  */
-interface TransportDiscoveryResult {
+export interface TransportDiscoveryResult {
   available: TRANSPORT_TYPES[];
   preferred: TRANSPORT_TYPES;
   fallbacks: TRANSPORT_TYPES[];

@@ -8,23 +8,48 @@
 
 import { JTAGRouterBase } from './JTAGRouterBase';
 import { DynamicTransportStrategy } from './DynamicTransportStrategy';
-import { TRANSPORT_TYPES } from '../../../transports';
-import type { JTAGContext, JTAGMessage, JTAGEnvironment } from '../../types/JTAGTypes';
-import { JTAGMessageTypes, JTAGMessageFactory } from '../../types/JTAGTypes';
-import type { UUID } from '../../types/CrossPlatformUUID';
-import type { ITransportFactory, JTAGTransport, TransportConfig, TransportEndpoint } from '../../../transports';
-import type { ITransportHandler } from '../../../transports';
-import type { JTAGRouterConfig } from './JTAGRouterTypes';
-import { createJTAGRouterConfig } from './JTAGRouterTypes';
+import type { JTAGContext, JTAGMessage } from '../../types/JTAGTypes';
+import { JTAGMessageTypes } from '../../types/JTAGTypes';
 import type { JTAGResponsePayload } from '../../types/ResponseTypes';
-import { EndpointMatcher } from './EndpointMatcher';
-import { MinimalEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
+import type { ITransportFactory, TransportConfig } from '../../../transports';
+import type { JTAGRouterConfig } from './JTAGRouterTypes';
 
-// Import the MessageSubscriber interface from working router
-export interface MessageSubscriber {
-  handleMessage(message: JTAGMessage): Promise<JTAGResponsePayload>;
-  get endpoint(): string;
-  get uuid(): string;
+/**
+ * Basic transport info from ITransportStrategy interface
+ */
+interface BasicTransportInfo {
+  readonly name: string;
+  readonly connected: boolean;
+  readonly type: string;
+}
+
+/**
+ * Extended transport info from DynamicTransportStrategy
+ */
+interface ExtendedTransportInfo extends BasicTransportInfo {
+  readonly health: {
+    readonly latency: number;
+    readonly errorCount: number;
+    readonly lastActivity: string;
+  } | null;
+}
+
+/**
+ * Dynamic router status interface - handles both basic and extended transport info
+ */
+interface DynamicRouterStatus {
+  readonly environment: string;
+  readonly transportStrategy: 'dynamic';
+  readonly initialized: boolean;
+  readonly transportCount: number;
+  readonly transports: Array<BasicTransportInfo | ExtendedTransportInfo>;
+  readonly p2pEnabled: boolean;
+  readonly discovery: {
+    readonly available: string[];
+    readonly preferred: string;
+    readonly fallbacks: string[];
+    readonly p2pCapable: boolean;
+  };
 }
 
 /**
@@ -37,32 +62,17 @@ export interface MessageSubscriber {
  * - Load balancing across multiple transports
  * - Real-time transport status monitoring
  */
-export class JTAGRouterDynamic extends JTAGRouterBase implements TransportEndpoint, ITransportHandler {
+export class JTAGRouterDynamic extends JTAGRouterBase {
   
-  // endpointMatcher, transports, and transportStrategy inherited from JTAGRouterBase ✅
-  
-  // Dynamic transport strategy implementation (concrete - enhances base contract)
-  protected transportStrategy!: DynamicTransportStrategy;
-  
-  // Minimal enhancement strategy - lightweight, no complex bus-level features
-  protected enhancementStrategy: MinimalEnhancementStrategy;
-  
-  private readonly config;
-  // isInitialized inherited from JTAGRouterBase ✅
+  // All properties inherited from JTAGRouterBase: endpointMatcher, transports, 
+  // transportStrategy, enhancementStrategy, config, eventManager, messageQueue, 
+  // healthManager, responseCorrelator, isInitialized
 
   constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
     super('dynamic-router', context, config);
-    
-    // Apply configuration with defaults
-    this.config = createJTAGRouterConfig(config);
-    
-    // Initialize dynamic transport strategy with P2P enabled
-    this.transportStrategy = new DynamicTransportStrategy(this.transports, true);
-    
-    // Initialize with minimal enhancement strategy (lightweight)
-    this.enhancementStrategy = new MinimalEnhancementStrategy();
-    
-    console.log(`🚀 JTAGRouterDynamic[${context.environment}]: Initialized with P2P capabilities and minimal enhancements`);
+    // All initialization is now handled by JTAGRouterBase constructor
+    // Dynamic strategy is automatically selected based on configuration
+    console.log(`🚀 JTAGRouterDynamic[${context.environment}]: Initialized via base constructor with dynamic capabilities`);
   }
 
   /**
@@ -86,7 +96,7 @@ export class JTAGRouterDynamic extends JTAGRouterBase implements TransportEndpoi
   /**
    * Initialize transport using dynamic strategy
    */
-  async initializeTransport(config?: Partial<TransportConfig>): Promise<void> {
+  async initializeTransport(_config?: Partial<TransportConfig>): Promise<void> {
     console.log(`🔗 ${this.toString()}: Initializing dynamic transport system...`);
     
     // Create transport configuration (same pattern as JTAGRouter)
@@ -97,7 +107,11 @@ export class JTAGRouterDynamic extends JTAGRouterBase implements TransportEndpoi
       serverPort: this.config.transport.serverPort,
       serverUrl: this.config.transport.serverUrl,
       fallback: this.config.transport.fallback,
-      handler: this // Assuming this implements ITransportHandler
+      eventSystem: this.eventManager.events,
+      handler: {
+        handleTransportMessage: (message: JTAGMessage) => this.handleDynamicMessage(message),
+        transportId: this.context.uuid
+      }
     };
     
     // Get environment-specific transport factory
@@ -115,7 +129,7 @@ export class JTAGRouterDynamic extends JTAGRouterBase implements TransportEndpoi
   /**
    * Handle messages with dynamic routing logic
    */
-  private async handleDynamicMessage(message: JTAGMessage): Promise<void> {
+  private async handleDynamicMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
     console.log(`📨 JTAGRouterDynamic: Processing message with dynamic routing: ${message.endpoint}`);
     
     // TODO: Implement intelligent message routing
@@ -124,20 +138,48 @@ export class JTAGRouterDynamic extends JTAGRouterBase implements TransportEndpoi
     // - Implement smart retry logic
     
     // For now, log the message for debugging
-    console.log(`🎯 JTAGRouterDynamic: Message type: ${message.type}, origin: ${message.origin}`);
+    const messageType = JTAGMessageTypes.isRequest(message) ? 'request' : 
+                       JTAGMessageTypes.isResponse(message) ? 'response' : 'event';
+    console.log(`🎯 JTAGRouterDynamic: Message type: ${messageType}, origin: ${message.origin}`);
+    
+    // Return proper response payload for ITransportHandler compliance
+    return {
+      success: true,
+      timestamp: new Date().toISOString(),
+      context: this.context,
+      sessionId: this.context.uuid
+    };
   }
 
   /**
    * Get router status with dynamic transport information
    */
-  get dynamicStatus() {
+  get dynamicStatus(): DynamicRouterStatus {
     const transportStatus = this.transportStrategy.getTransportStatusInfo();
     
+    // Type-safe check for DynamicTransportStrategy
+    if (this.transportStrategy instanceof DynamicTransportStrategy) {
+      // Use the DynamicTransportStrategy's extended getTransportStatusInfo method
+      const extendedStatus = this.transportStrategy.getTransportStatusInfo();
+      return {
+        ...extendedStatus, // Already includes p2pEnabled and discovery
+        environment: this.context.environment,
+        transportStrategy: 'dynamic' as const
+      };
+    }
+    
+    // Fallback for non-dynamic strategies (shouldn't happen in JTAGRouterDynamic)
     return {
+      ...transportStatus,
       environment: this.context.environment,
-      initialized: this.isInitialized,
-      transportStrategy: 'dynamic',
-      ...transportStatus
+      transportStrategy: 'dynamic' as const,
+      p2pEnabled: false,
+      discovery: {
+        available: [],
+        preferred: 'websocket',
+        fallbacks: [],
+        p2pCapable: false
+      }
     };
   }
 
