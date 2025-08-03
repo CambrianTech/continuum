@@ -6,13 +6,12 @@
  */
 
 import { JTAGModule } from '../../shared/JTAGModule';
-import type { JTAGContext, JTAGMessage, JTAGEnvironment } from '../../types/JTAGTypes';
-import type { ITransportFactory, JTAGTransport, TransportConfig } from '../../../transports';
+import type { JTAGContext, JTAGMessage } from '../../types/JTAGTypes';
+import type { ITransportFactory, JTAGTransport } from '../../../transports';
 import { TRANSPORT_TYPES } from '../../../transports';
 import type { JTAGRouterConfig } from './JTAGRouterTypes';
 import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 import { EndpointMatcher } from './EndpointMatcher';
-import { RouterUtilities } from './RouterUtilities';
 import type { ITransportStrategy } from './HardcodedTransportStrategy';
 import type { IRouterEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
 import { HardcodedTransportStrategy } from './HardcodedTransportStrategy';
@@ -22,7 +21,8 @@ import { JTAGMessageQueue } from './queuing/JTAGMessageQueue';
 import { ConnectionHealthManager } from './ConnectionHealthManager';
 import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
 import { EventManager } from '../../../events';
-import { createJTAGRouterConfig, type ResolvedJTAGRouterConfig } from './JTAGRouterTypes';
+import { createJTAGRouterConfig, type ResolvedJTAGRouterConfig, type RouterStatus } from './JTAGRouterTypes';
+import type { TransportEndpointStatus } from '../../../transports';
 
 /**
  * Message Subscriber Interface - Core contract for message handling
@@ -133,13 +133,9 @@ export abstract class JTAGRouterBase extends JTAGModule {
   protected abstract getTransportFactory(): Promise<ITransportFactory>;
 
   /**
-   * Get transport status - default implementation using shared transport map
+   * Get transport status - conforms to TransportEndpoint interface
    */
-  getTransportStatus(): { 
-    initialized: boolean; 
-    transportCount: number; 
-    transports: Array<{ name: string; connected: boolean; type: string; }> 
-  } {
+  getTransportStatus(): TransportEndpointStatus {
     return {
       initialized: this.isInitialized,
       transportCount: this.transports.size,
@@ -148,6 +144,27 @@ export abstract class JTAGRouterBase extends JTAGModule {
         connected: transport.isConnected(),
         type: type.toString()
       }))
+    };
+  }
+
+  /**
+   * Get enhanced router status - strongly typed router information
+   */
+  get status(): RouterStatus {
+    const crossContextTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
+    const transportStatus = this.getTransportStatus();
+    
+    return {
+      environment: this.context.environment,
+      initialized: this.isInitialized,
+      subscribers: this.endpointMatcher.size(),
+      transport: crossContextTransport ? {
+        name: crossContextTransport.name,
+        connected: crossContextTransport.isConnected()
+      } : null,
+      queue: this.messageQueue.getStatus(),
+      health: this.healthManager.getHealth(),
+      transportStatus
     };
   }
 

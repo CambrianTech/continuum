@@ -73,8 +73,8 @@ export class TransportFactoryServer extends TransportFactoryBase {
       }
 
       // Create Node.js WebSocket client for server environment (CLI, server-to-server)
-      const url = serverUrl || `ws://localhost:${serverPort}`;
-      
+      const url = serverUrl ?? `ws://localhost:${serverPort}`;
+
       if (!handler) {
         throw new Error('WebSocket client transport requires handler configuration');
       }
@@ -103,7 +103,7 @@ export class TransportFactoryServer extends TransportFactoryBase {
    * Create HTTP transport
    */
   private async createHTTPTransport(config: TransportConfig): Promise<JTAGTransport> {
-    const baseUrl = config.serverUrl || 'http://localhost:9002';
+    const baseUrl = config.serverUrl ?? 'http://localhost:9002';
     const transport = new HTTPTransport(baseUrl);
     console.log(`✅ Server Transport Factory: HTTP transport created`);
     return transport;
