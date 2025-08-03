@@ -9,22 +9,28 @@ import { WebSocketTransportBase, type WebSocketConfig } from '../shared/WebSocke
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import type { WebSocketServer, WebSocket as WSWebSocket } from 'ws';
 import type { TransportSendResult } from '../../shared/TransportTypes';
+import type { ITransportAdapter } from '../../shared/TransportBase';
 
 // Server-specific WebSocket configuration with typed inheritance
 export interface WebSocketServerConfig extends WebSocketConfig {
   port: number;
 }
 
-export class WebSocketTransportServer extends WebSocketTransportBase {
+export class WebSocketTransportServer extends WebSocketTransportBase implements ITransportAdapter {
   public readonly name = 'websocket-server';
+  public readonly protocol = 'websocket';
+  public readonly supportedRoles = ['server'];
+  public readonly supportedEnvironments = ['server'];
   
   private server?: WebSocketServer;
   private clients = new Set<WSWebSocket>();
   private messageHandlers = new Set<(message: JTAGMessage) => void>();
   private sessionHandshakeHandler?: (sessionId: string) => void;
+  private serverConfig: WebSocketServerConfig;
 
   constructor(config: WebSocketServerConfig) {
     super(config);
+    this.serverConfig = config;
   }
 
   /**
@@ -32,6 +38,15 @@ export class WebSocketTransportServer extends WebSocketTransportBase {
    */
   setSessionHandshakeHandler(handler: (sessionId: string) => void): void {
     this.sessionHandshakeHandler = handler;
+  }
+
+  /**
+   * ITransportAdapter interface compliance - delegates to start()
+   * @param url - ignored for server (uses port from config)
+   */
+  async connect(url?: string): Promise<void> {
+    // Use typed config port
+    return this.start(this.serverConfig.port);
   }
 
   async start(port: number): Promise<void> {
