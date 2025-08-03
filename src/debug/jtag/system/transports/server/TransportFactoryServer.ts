@@ -31,17 +31,23 @@ export class TransportFactoryServer extends TransportFactoryBase {
     
     // Find adapter by protocol AND role in auto-generated registry
     const adapterEntry = SERVER_ADAPTERS.find(adapter => {
-      const matchesProtocol = adapter.name.includes(config.protocol) || 
-                             adapter.className.toLowerCase().includes(config.protocol);
+      // Check protocol matching
+      if (!adapter.name.includes(config.protocol) && !adapter.className.toLowerCase().includes(config.protocol)) {
+        return false;
+      }
       
       // For WebSocket, also match role (server vs client)
       if (config.protocol === 'websocket') {
-        const matchesRole = (config.role === 'server' && adapter.name.includes('server') && !adapter.name.includes('client')) ||
-                           (config.role === 'client' && adapter.name.includes('client'));
-        return matchesProtocol && matchesRole;
+        if (config.role === 'server') {
+          return adapter.name.includes('server') && !adapter.name.includes('client');
+        }
+        if (config.role === 'client') {
+          return adapter.name.includes('client');
+        }
+        return false;
       }
       
-      return matchesProtocol;
+      return true;
     });
     
     if (!adapterEntry) {
@@ -57,16 +63,12 @@ export class TransportFactoryServer extends TransportFactoryBase {
     // ✅ Type-safe adapter creation - TypeScript enforces ITransportAdapter interface
     const adapter = new adapterEntry.adapterClass(adapterConfig);
     
-    // ✅ Type-safe connection - handle different connection patterns
-    if (adapterEntry.className === 'WebSocketTransportServer') {
-      // WebSocketTransportServer uses start() method, not connect()
-      const serverTransport = adapter as any; // Safe cast since we know it's WebSocketTransportServer
-      await serverTransport.start(config.serverPort || 9001);
-      console.log(`🚀 Server Factory: WebSocket server started on port ${config.serverPort || 9001}`);
-    } else if (adapter.connect) {
-      // Other adapters use connect() method
-      const connectParam = config.protocol === 'websocket' ? config.serverUrl || `ws://localhost:${config.serverPort || 9001}` : undefined;
+    // ✅ Type-safe connection - all adapters implement ITransportAdapter.connect()
+    if (adapter.connect) {
+      // Universal adapter pattern with connect() method
+      const connectParam = config.protocol === 'websocket' ? config.serverUrl ?? `ws://localhost:${config.serverPort ?? 9001}` : undefined;
       await adapter.connect(connectParam);
+      console.log(`🚀 Server Factory: Adapter ${adapterEntry.className} connected successfully`);
     } else {
       // Legacy transport pattern - already connected in constructor
       console.log(`📡 Server Factory: Legacy transport ${adapterEntry.className} connected via constructor`);
@@ -83,7 +85,7 @@ export class TransportFactoryServer extends TransportFactoryBase {
       if (adapterEntry.className === 'WebSocketTransportServer') {
         // WebSocketServerConfig requires port
         const serverConfig: WebSocketServerConfig = {
-          port: config.serverPort || 9001,
+          port: config.serverPort ?? 9001,
           // WebSocket-specific options
           reconnectAttempts: 5,
           reconnectDelay: 1000,
@@ -94,7 +96,7 @@ export class TransportFactoryServer extends TransportFactoryBase {
       } else if (adapterEntry.className === 'WebSocketTransportServerClient') {
         // WebSocketServerClientConfig requires url, handler, eventSystem
         const clientConfig: WebSocketServerClientConfig = {
-          url: config.serverUrl || `ws://localhost:${config.serverPort || 9001}`,
+          url: config.serverUrl ?? `ws://localhost:${config.serverPort ?? 9001}`,
           handler: config.handler,
           eventSystem: config.eventSystem,
           // WebSocket-specific options
