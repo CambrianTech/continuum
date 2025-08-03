@@ -5,7 +5,7 @@
  * This should have caught the infinite retry loop bug.
  */
 
-import { jtag } from '@tests/index'; // This should auto-start WebSocket server
+import { jtag } from '../../server-index'; // This should auto-start WebSocket server
 import * as net from 'net';
 
 const JTAG_PORT = 9001;

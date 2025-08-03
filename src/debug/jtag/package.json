@@ -1,10 +1,26 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.559",
+  "version": "1.0.570",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
-  "main": "dist/index.js",
-  "browser": "dist/browser/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/server-index.js",
+  "browser": "dist/browser-index.js",
+  "types": "dist/server-index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/server-index.d.ts",
+      "browser": "./dist/browser-index.js",
+      "default": "./dist/server-index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser-index.d.ts",
+      "default": "./dist/browser-index.js"
+    },
+    "./server": {
+      "types": "./dist/server-index.d.ts",
+      "default": "./dist/server-index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "author": "Continuum Development Team",
   "license": "MIT",
   "repository": {
@@ -223,7 +239,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-03T02:09:20.737Z",
+    "timestamp": "2025-08-03T04:30:36.188Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 32,
     "note": "Generated from clean essential path mappings only"

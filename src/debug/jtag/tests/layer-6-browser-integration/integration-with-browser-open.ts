@@ -13,7 +13,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { jtag } from '@tests/index';
+import { jtag } from '../../server-index';
 
 interface IntegrationTestResults {
   screenshotTests: number;

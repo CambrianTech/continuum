@@ -30,4 +30,5 @@ export const jtag = {
 
 // Direct export for advanced usage
 export { JTAGSystemServer };
+export { JTAGSystem } from './system/core/system/shared/JTAGSystem';
 export * from './system/core/types/JTAGTypes';

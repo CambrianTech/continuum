@@ -5,11 +5,11 @@
  * No mocks, no fake connections - real integration testing.
  */
 
+import fetch from 'node-fetch';
 import { jtag, JTAG, JTAGLogEntry, JTAGStats } from '@tests/jtag';
 import * as WebSocket from 'ws';
 import * as fs from 'fs';
 import * as path from 'path';
-import fetch from 'node-fetch';
 
 const TEST_PORT = 9001;
 const LOG_DIR = '.continuum/jtag/logs';

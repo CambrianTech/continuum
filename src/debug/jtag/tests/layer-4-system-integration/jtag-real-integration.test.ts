@@ -5,6 +5,7 @@
  * No mocks - real WebSocket server, real browser simulation, real log files.
  */
 
+import fetch from 'node-fetch';
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import { jtag, JTAG, JTAGLogEntry } from '@tests/jtag';
@@ -176,8 +177,6 @@ describe('JTAG Real Integration Tests - Layer 1: Foundation', () => {
 
     it('should respond to health endpoint (Layer 1)', async () => {
       try {
-        // Use dynamic import for fetch to handle ES modules
-        const { default: fetch } = await import('node-fetch');
         const response = await fetch(`http://localhost:${TEST_PORT}/health`);
         const data = await response.json() as any;
         

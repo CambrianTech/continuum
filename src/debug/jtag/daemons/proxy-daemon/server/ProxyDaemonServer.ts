@@ -5,6 +5,7 @@
  * Handles URL rewriting, header forwarding, and content processing.
  */
 
+import fetch from 'node-fetch';
 import { ProxyDaemon, type ProxyRequest, type ProxyResponse } from '@daemonsProxyDaemon/shared/ProxyDaemon';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
@@ -53,11 +54,9 @@ export class ProxyDaemonServer extends ProxyDaemon {
   }
 
   /**
-   * Make HTTP request using native fetch with JTAG integration
+   * Make HTTP request using node-fetch with JTAG integration
    */
   private async makeHTTPRequest(request: ProxyRequest): Promise<ProxyResponse> {
-    // Import fetch dynamically for Node.js compatibility
-    const fetch = (await import('node-fetch')).default;
     
     // Prepare request options
     const fetchOptions: any = {
