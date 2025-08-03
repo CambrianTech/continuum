@@ -86,8 +86,11 @@ export class PriorityQueue<T> {
     this.flushTimer = setInterval(async () => {
       if (this.queue.length === 0) return;
 
-      const itemsToFlush = [...this.queue];
-      this.queue = [];
+      // FAIR PRIORITY SELECTION: Use percentages to prevent starvation
+      const itemsToFlush = this.selectItemsForFairFlush();
+      
+      // Remove selected items from queue
+      this.queue = this.queue.filter(item => !itemsToFlush.includes(item));
 
       try {
         const failedItems = await flushHandler(itemsToFlush);
@@ -108,6 +111,155 @@ export class PriorityQueue<T> {
         this.queue = [...itemsToFlush, ...this.queue];
       }
     }, this.config.flushInterval);
+  }
+
+  /**
+   * Select items for fair flush using stochastic scheduling with percentages and age-based promotion
+   * Implements classic computer science fair scheduling algorithms with randomization
+   */
+  private selectItemsForFairFlush(): QueuedItem<T>[] {
+    if (this.queue.length === 0) return [];
+    
+    const now = Date.now();
+    const AGE_PROMOTION_THRESHOLD = 30000; // 30 seconds
+    const MAX_FLUSH_SIZE = 20; // Process max 20 items per flush
+    
+    // Age-based promotion: boost priority of old messages
+    this.queue.forEach(item => {
+      const age = now - item.timestamp;
+      if (age > AGE_PROMOTION_THRESHOLD && item.priority > Priority.CRITICAL) {
+        console.log(`⏰ Queue: Promoting aged message (${age}ms old) from ${Priority[item.priority]} to HIGH`);
+        item.priority = Priority.HIGH;
+      }
+    });
+    
+    // STOCHASTIC FAIR ALLOCATION with percentage guarantees
+    const totalItems = Math.min(this.queue.length, MAX_FLUSH_SIZE);
+    
+    // Base allocation percentages (ensuring fairness guarantees)
+    const allocations = {
+      [Priority.CRITICAL]: Math.max(1, Math.floor(totalItems * 0.4)), // 40%
+      [Priority.HIGH]: Math.max(1, Math.floor(totalItems * 0.4)),     // 40% 
+      [Priority.NORMAL]: Math.max(1, Math.floor(totalItems * 0.15)),  // 15%
+      [Priority.LOW]: Math.max(1, Math.floor(totalItems * 0.05))      // 5%
+    };
+    
+    const selected: QueuedItem<T>[] = [];
+    const priorityGroups = this.groupByPriority();
+    
+    // STOCHASTIC SELECTION: Randomize within each priority band
+    for (const [priority, allocation] of Object.entries(allocations)) {
+      const priorityNum = parseInt(priority) as Priority;
+      const availableItems = priorityGroups[priorityNum] || [];
+      
+      if (availableItems.length === 0) continue;
+      
+      // Sort by age within priority band, then apply stochastic selection
+      availableItems.sort((a, b) => a.timestamp - b.timestamp); // Older first
+      
+      const takeCount = Math.min(allocation, availableItems.length);
+      
+      if (takeCount >= availableItems.length) {
+        // Take all if allocation >= available
+        selected.push(...availableItems);
+      } else {
+        // STOCHASTIC SELECTION: Weighted random selection favoring older messages
+        const stochasticSelection = this.selectStochastically(availableItems, takeCount);
+        selected.push(...stochasticSelection);
+      }
+      
+      if (takeCount > 0) {
+        console.log(`🎲 Queue: Stochastically selected ${takeCount}/${availableItems.length} ${Priority[priorityNum]} priority items`);
+      }
+    }
+    
+    return selected.slice(0, totalItems);
+  }
+  
+  /**
+   * Stochastic selection with age-weighted probability that grows over time
+   * Ensures eventual delivery through exponential age weighting
+   */
+  private selectStochastically(items: QueuedItem<T>[], count: number): QueuedItem<T>[] {
+    if (count >= items.length) return items;
+    
+    const now = Date.now();
+    const selected: QueuedItem<T>[] = [];
+    const available = [...items]; // Copy to avoid mutation
+    
+    // Calculate age-weighted probabilities for each item
+    const calculateSelectionProbability = (item: QueuedItem<T>): number => {
+      const age = now - item.timestamp;
+      const ageSeconds = age / 1000;
+      
+      // EXPONENTIAL AGE WEIGHTING: Probability grows exponentially with age
+      // Formula: P(age) = base + (age_factor * (1 - e^(-growth_rate * age)))
+      // This ensures very old messages eventually get probability near 1.0
+      
+      const baseProb = 0.1;           // Minimum 10% chance for new messages
+      const ageFactor = 0.9;          // Maximum additional 90% from age weighting  
+      const growthRate = 0.002;       // Growth rate per second (tunable)
+      
+      // Exponential growth: P approaches baseProb + ageFactor as age → ∞
+      const ageWeight = ageFactor * (1 - Math.exp(-growthRate * ageSeconds));
+      const probability = Math.min(1.0, baseProb + ageWeight);
+      
+      return probability;
+    };
+    
+    // Select items stochastically using weighted random selection
+    for (let i = 0; i < count && available.length > 0; i++) {
+      // Calculate selection weights for all remaining items
+      const weights = available.map(item => ({
+        item,
+        weight: calculateSelectionProbability(item)
+      }));
+      
+      // Weighted random selection
+      const totalWeight = weights.reduce((sum, w) => sum + w.weight, 0);
+      let randomValue = Math.random() * totalWeight;
+      
+      let selectedIndex = 0;
+      for (let j = 0; j < weights.length; j++) {
+        randomValue -= weights[j].weight;
+        if (randomValue <= 0) {
+          selectedIndex = j;
+          break;
+        }
+      }
+      
+      // Select the item and remove from available pool
+      const selectedItem = available[selectedIndex];
+      selected.push(selectedItem);
+      available.splice(selectedIndex, 1);
+      
+      // Log selection for very old messages (debugging)
+      const age = now - selectedItem.timestamp;
+      if (age > 15000) { // Log if older than 15 seconds
+        const probability = calculateSelectionProbability(selectedItem);
+        console.log(`🎯 Queue: Stochastic selection - aged item (${Math.round(age/1000)}s) with P=${probability.toFixed(3)}`);
+      }
+    }
+    
+    return selected;
+  }
+
+  /**
+   * Group queue items by priority for fair allocation
+   */
+  private groupByPriority(): Record<Priority, QueuedItem<T>[]> {
+    const groups: Record<Priority, QueuedItem<T>[]> = {
+      [Priority.CRITICAL]: [],
+      [Priority.HIGH]: [],
+      [Priority.NORMAL]: [],
+      [Priority.LOW]: []
+    };
+    
+    this.queue.forEach(item => {
+      groups[item.priority].push(item);
+    });
+    
+    return groups;
   }
 
   /**
