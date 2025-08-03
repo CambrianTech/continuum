@@ -113,7 +113,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
 
   // registerSubscriber moved to JTAGRouterBase
 
-  async postMessage(message: JTAGMessage): Promise<RouterResult> {
+  async postMessage<T extends RouterResult>(message: JTAGMessage): Promise<T> {
     // Create unique processing tokens for request/response messages to prevent cross-message deduplication
     // Request and response with same correlationId should not block each other
     let processingToken: string | undefined;
@@ -129,8 +129,8 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     if (processingToken) {
       // Check if we've already processed this exact message
       if (this.processedMessages.has(processingToken)) {
-        console.log(`🔄 ${this.toString()}: Skipping duplicate message ${processingToken}`);
-        return { success: true, deduplicated: true };
+        console.warn(`🔄 ${this.toString()}: Skipping duplicate message ${processingToken}`);
+        return { success: true, deduplicated: true } as T;
       }
       
       // Mark message as being processed
@@ -151,9 +151,10 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
       const targetEnvironment = this.extractEnvironmentForMessage(message);
       
       if (targetEnvironment === this.context.environment) {
-        return await this.routeLocally(message);
+        console.log(`🏠 ${this.toString()}: Routing locally to ${message.endpoint}`);
+        return await this.routeLocally(message) as T;
       } else {
-        return await this.routeRemotelyWithQueue(message);
+        return await this.routeRemotelyWithQueue(message) as T;
       }
     } catch (error) {
       // Remove token on error so message can be retried
@@ -409,7 +410,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
       console.log(`📋 ${this.toString()}: Using hierarchical routing: ${matchedEndpoint} handling ${message.endpoint}`);
     }
 
-    console.log(`🏠 ${this.toString()}: Routing locally to ${message.endpoint} via ${matchedEndpoint}`);
+    console.log(`🏠 ${this.toString()}: RRouting locally to ${message.endpoint} via ${matchedEndpoint}`);
     const result = await subscriber.handleMessage(message);
     
     // For requests, the subscriber returns a response that needs to be sent back to the client
