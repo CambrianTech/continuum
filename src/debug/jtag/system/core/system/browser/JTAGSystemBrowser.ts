@@ -8,7 +8,7 @@
 import { JTAGSystem, type JTAGSystemConfig } from '../shared/JTAGSystem';
 import type { JTAGContext } from '../../types/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '../../types/JTAGTypes';
-import { JTAGRouterBrowser } from '../../router/browser/JTAGRouterBrowser';
+import { JTAGRouterDynamicBrowser } from '../../router/browser/JTAGRouterDynamicBrowser';
 import { SYSTEM_EVENTS } from '../../../events';
 import type { DaemonBase, DaemonEntry } from '../../../../daemons/command-daemon/shared/DaemonBase';
 import { BROWSER_DAEMONS } from '../../../../browser/generated';
@@ -18,7 +18,7 @@ import { SessionDaemonBrowser } from '../../../../daemons/session-daemon/browser
 export class JTAGSystemBrowser extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return BROWSER_DAEMONS; }
   
-  protected override createDaemon(entry: DaemonEntry, context: JTAGContext, router: JTAGRouterBrowser): DaemonBase | null {
+  protected override createDaemon(entry: DaemonEntry, context: JTAGContext, router: JTAGRouterDynamicBrowser): DaemonBase | null {
     return new entry.daemonClass(context, router);
   }
 
@@ -65,7 +65,7 @@ export class JTAGSystemBrowser extends JTAGSystem {
 
   public static instance: JTAGSystemBrowser | null = null;
 
-  private constructor(context: JTAGContext, router: JTAGRouterBrowser, config?: JTAGSystemConfig) {
+  private constructor(context: JTAGContext, router: JTAGRouterDynamicBrowser, config?: JTAGSystemConfig) {
     super(context, router, {
       version: {
         fallback: '{VERSION_STRING}-browser',
@@ -118,7 +118,7 @@ export class JTAGSystemBrowser extends JTAGSystem {
         role: 'client' as const // Browser router always connects as client to server
       }
     };
-    const router = new JTAGRouterBrowser(context, routerConfig);
+    const router = new JTAGRouterDynamicBrowser(context, routerConfig);
     
     // Emit initializing event
     router.eventManager.events.emit(SYSTEM_EVENTS.INITIALIZING, {
