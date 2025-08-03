@@ -10,7 +10,7 @@
  * - Cross-context communication
  */
 
-import { jtag } from '../../index';
+import { jtag } from '../../server-index';
 import type { JTAGUUIDInfo } from '../../../system/core/types/JTAGTypes';
 
 export interface ComprehensiveTestResults {

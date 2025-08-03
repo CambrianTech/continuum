@@ -4,8 +4,8 @@
 
 console.log('🚀 JTAG Demo script loading...');
 
-// Import JTAG browser-specific entry point
-import { jtag } from '@continuum/jtag/dist/browser-index';
+// Import JTAG (browser build will automatically use browser-index via package.json)
+import { jtag } from '@continuum/jtag';
 
 console.log('✅ JTAG Demo script loaded, jtag imported:', typeof jtag);
 

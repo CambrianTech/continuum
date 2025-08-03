@@ -12,7 +12,7 @@
 
 import * as puppeteer from 'puppeteer';
 import * as http from 'http';
-import { jtagRouter } from '../../index';
+import { jtagRouter } from '../../system/core/router/shared/JTAGRouter';
 
 const TEST_PORT = 9002;
 const TEST_TIMEOUT = 15000;

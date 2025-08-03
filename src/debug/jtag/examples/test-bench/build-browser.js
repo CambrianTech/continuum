@@ -102,6 +102,7 @@ async function buildBrowser() {
       format: 'esm',
       target: 'es2020',
       platform: 'browser',
+      mainFields: ['browser', 'module', 'main'],
       external: [
         'fs', 'fs/promises', 'path', 'child_process', 'os', 'util', 'crypto',
         'http', 'https', 'net', 'tls', 'url', 'querystring', 'stream', 

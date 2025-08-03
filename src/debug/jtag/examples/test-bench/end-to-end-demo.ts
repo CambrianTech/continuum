@@ -9,7 +9,8 @@
 import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
-import { jtag, jtagRouter } from '../index';
+import { jtag } from '../server-index';
+import { jtagRouter } from '../system/core/router/shared/JTAGRouter';
 
 const PORT = 9002;
 const JTAG_PORT = 9001;

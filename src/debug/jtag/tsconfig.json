@@ -216,6 +216,8 @@
   },
   "include": [
     "index.ts",
+    "browser-index.ts",
+    "server-index.ts",
     "browser/**/*.ts",
     "server/**/*.ts",
     "shared/**/*.ts",
@@ -241,7 +243,7 @@
     "pathCount": 228
   },
   "_pathsGenerated": {
-    "timestamp": "2025-08-03T02:09:20.097Z",
+    "timestamp": "2025-08-03T04:30:35.614Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 64,
     "note": "Auto-generated from essential path mappings only"

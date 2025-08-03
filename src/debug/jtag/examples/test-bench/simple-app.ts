@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 // ONE LINE - that's it! Console auto-attached, full API available
-import { jtag } from '../index';
+import { jtag } from '../server-index';
 
 // Your normal app code - console automatically logged
 console.log('Hello from simple app!');
