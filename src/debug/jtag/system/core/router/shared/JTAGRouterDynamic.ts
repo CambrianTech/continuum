@@ -191,13 +191,10 @@ export class JTAGRouterDynamic extends JTAGRouter {
    * Log routing decision information for debugging
    */
   private logRoutingDecision(message: JTAGMessage): void {
-    const transportInfo = (this.transportStrategy as DynamicTransportStrategy).getTransportStatusInfo();
-    
-    console.log(`🧠 JTAGRouterDynamic: Decision tree for ${message.endpoint}:`);
-    console.log(`   • Transport count: ${transportInfo.transports.length}`);
-    console.log(`   • P2P enabled: ${transportInfo.p2pEnabled}`);
-    console.log(`   • Has remote target: ${message.endpoint.includes('/remote/')}`);
-    console.log(`   • Message origin: ${message.origin ?? 'unknown'}`);
+    // Only log for non-console messages to avoid feedback loops
+    if (!message.endpoint.includes('console')) {
+      console.log(`🎯 JTAGRouterDynamic: Routing ${message.endpoint}`);
+    }
   }
 
   /**
@@ -261,9 +258,7 @@ export class JTAGRouterDynamic extends JTAGRouter {
       }
     }
     
-    if (bestTransport) {
-      console.log(`⚡ JTAGRouterDynamic: Selected optimal transport ${bestTransport} for ${message.endpoint}`);
-    }
+    // Removed verbose transport selection logging
     
     return bestTransport;
   }
@@ -285,7 +280,7 @@ export class JTAGRouterDynamic extends JTAGRouter {
    * Route via optimal transport
    */
   private async routeViaOptimalTransport(message: JTAGMessage, transportName: string): Promise<JTAGResponsePayload> {
-    console.log(`🚀 JTAGRouterDynamic: Routing ${message.endpoint} via optimal transport ${transportName}`);
+    // Route via optimal transport (reduced logging for cleaner output)
     
     // TODO: Implement actual transport-specific routing
     // For now, delegate to endpoint matching

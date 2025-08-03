@@ -12,9 +12,8 @@ import { TRANSPORT_TYPES } from '../../../transports';
 import type { JTAGRouterConfig } from './JTAGRouterTypes';
 import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 import { EndpointMatcher } from './EndpointMatcher';
-import type { ITransportStrategy } from './HardcodedTransportStrategy';
+import type { ITransportStrategy } from './ITransportStrategy';
 import type { IRouterEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
-import { HardcodedTransportStrategy } from './HardcodedTransportStrategy';
 import { DynamicTransportStrategy } from './DynamicTransportStrategy';
 import { MinimalEnhancementStrategy, LegacyEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
 import { JTAGMessageQueue } from './queuing/JTAGMessageQueue';
@@ -100,11 +99,9 @@ export abstract class JTAGRouterBase extends JTAGModule {
       // Use minimal enhancements with dynamic strategy (following JTAGRouterDynamic pattern)
       this.enhancementStrategy = new MinimalEnhancementStrategy();
     } else {
-      console.log(`📡 ${this.toString()}: Using hardcoded transport strategy (legacy - explicitly requested)`);
-      console.warn(`⚠️ ${this.toString()}: DEPRECATION NOTICE - You've opted into legacy transport strategy. This will be removed in future versions. Migration guide: remove 'forceLegacy: true' from config.`);
-      this.transportStrategy = new HardcodedTransportStrategy(this.transports);
-      // Use legacy enhancements with hardcoded strategy (existing JTAGRouter pattern)
-      this.enhancementStrategy = new LegacyEnhancementStrategy();
+      console.log(`📡 ${this.toString()}: Legacy transport strategy removed - using dynamic strategy instead`);
+      this.transportStrategy = new DynamicTransportStrategy(this.transports);
+      this.enhancementStrategy = new MinimalEnhancementStrategy();
     }
   }
 
