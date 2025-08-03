@@ -6,6 +6,7 @@
  */
 
 import { WebSocketTransportBase, type WebSocketConfig } from '../shared/WebSocketTransportBase';
+import type { ITransportAdapter } from '../../shared/TransportBase';
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import type { TransportSendResult } from '../../shared/TransportTypes';
 import type { ITransportHandler } from '../../shared/ITransportHandler';
@@ -18,8 +19,11 @@ export interface WebSocketBrowserConfig extends WebSocketConfig {
   eventSystem?: EventsInterface; // REQUIRED for transport events
 }
 
-export class WebSocketTransportBrowser extends WebSocketTransportBase {
+export class WebSocketTransportBrowser extends WebSocketTransportBase implements ITransportAdapter {
   public readonly name = 'websocket-client';
+  public readonly protocol = 'websocket';
+  public readonly supportedRoles = ['client'];
+  public readonly supportedEnvironments = ['browser'];
   
   private socket?: WebSocket;
   private lastConnectedUrl?: string;

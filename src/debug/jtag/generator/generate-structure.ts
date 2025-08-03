@@ -216,7 +216,10 @@ const STRUCTURE_CONFIG: GeneratorConfig = {
         entryTemplate: `{
     name: '{name}',
     className: '{className}',
-    adapterClass: {className}
+    adapterClass: {className},
+    protocol: 'websocket', // TODO: Extract from transport type
+    supportedRoles: ['client', 'server'], // TODO: Extract from class metadata
+    supportedEnvironments: ['{env}'] // Current environment
   }`
       }
     }

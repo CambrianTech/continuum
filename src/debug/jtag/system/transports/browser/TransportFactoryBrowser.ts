@@ -1,88 +1,92 @@
 /**
  * Transport Factory Browser - Browser-specific transport creation
  * 
- * Extends TransportFactoryBase following Universal Module Architecture.
- * Only implements browser-specific transport creation logic.
+ * Registry-based factory using auto-generated BROWSER_ADAPTERS.
+ * Eliminates god methods through plugin architecture.
  */
 
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGTransport, TransportConfig } from '../shared/TransportTypes';
 import { TransportFactoryBase } from '../shared/TransportFactoryBase';
-import { WebSocketTransportBrowser } from '../websocket-transport/browser/WebSocketTransportBrowser';
-import { HTTPTransport } from '../http-transport/shared/HTTPTransport';
+import { BROWSER_ADAPTERS } from '../../../browser/generated';
+import type { AdapterEntry } from '../shared/TransportBase';
+import type { WebSocketBrowserConfig } from '../websocket-transport/browser/WebSocketTransportBrowser';
 
 export class TransportFactoryBrowser extends TransportFactoryBase {
   
   constructor() {
     super('browser');
   }
+
   /**
-   * Browser-specific transport creation implementation
+   * Registry-based transport creation - no god methods!
    */
   protected async createTransportImpl(
     environment: JTAGContext['environment'], 
     config: TransportConfig
   ): Promise<JTAGTransport> {
     
-    // UDP multicast transport not supported in browser
-    if (config.protocol === 'udp-multicast') {
-      this.throwUnsupportedProtocol('udp-multicast');
+    console.log(`🔍 Browser Factory: Looking for ${config.protocol} transport in registry`);
+    
+    // Find adapter by protocol in auto-generated registry
+    const adapterEntry = BROWSER_ADAPTERS.find(adapter => 
+      adapter.name.includes(config.protocol) || 
+      adapter.className.toLowerCase().includes(config.protocol)
+    );
+    
+    if (!adapterEntry) {
+      console.log(`📋 Available browser adapters: ${BROWSER_ADAPTERS.map(a => a.name).join(', ')}`);
+      this.throwUnsupportedProtocol(config.protocol);
     }
     
-    // WebSocket transport
-    if (config.protocol === 'websocket') {
-      return await this.createWebSocketTransportImpl(environment, config);
+    console.log(`✅ Browser Factory: Found adapter ${adapterEntry.className} for ${config.protocol}`);
+    
+    // Create adapter-specific configuration from generic TransportConfig
+    const adapterConfig = this.createAdapterConfig(config, adapterEntry);
+    
+    // ✅ Type-safe adapter creation - TypeScript enforces ITransportAdapter interface
+    const adapter = new adapterEntry.adapterClass(adapterConfig);
+    
+    // ✅ Type-safe connection - handle different connection patterns
+    if (adapter.connect) {
+      // New adapter pattern with connect() method (use URL for WebSocket)
+      const connectParam = config.protocol === 'websocket' ? config.serverUrl || `ws://localhost:${config.serverPort || 9001}` : undefined;
+      await adapter.connect(connectParam);
+    } else {
+      // Legacy transport pattern - already connected in constructor
+      console.log(`📡 Browser Factory: Legacy transport ${adapterEntry.className} connected via constructor`);
     }
     
-    // HTTP transport
-    if (config.protocol === 'http') {
-      return await this.createHTTPTransport(config);
-    }
-    
-    this.throwUnsupportedProtocol(config.protocol);
+    return this.createTransportResult(adapter, adapterEntry.name);
   }
 
   /**
-   * Browser-specific WebSocket transport implementation
+   * Create adapter-specific configuration from generic TransportConfig
    */
-  protected async createWebSocketTransportImpl(
-    environment: JTAGContext['environment'],
-    config: TransportConfig
-  ): Promise<JTAGTransport> {
-    const { role, serverPort = 9001, serverUrl, handler } = config;
-
-    // Validate supported roles
-    this.validateRole(role, ['client']);
-
-    if (role === 'client') {
-      const url = serverUrl || `ws://localhost:${serverPort}`;
-      const transport = new WebSocketTransportBrowser({ 
-        url,
-        handler: handler!,
-        sessionHandshake: true,
-        eventSystem: config.eventSystem // CRITICAL: Pass event system for health management
-      });
-      await transport.connect(url);
-      return this.createTransportResult(transport, 'WebSocket');
+  private createAdapterConfig(config: TransportConfig, adapterEntry: AdapterEntry): WebSocketBrowserConfig | TransportConfig {
+    if (config.protocol === 'websocket' && adapterEntry.className === 'WebSocketTransportBrowser') {
+      // WebSocketBrowserConfig requires specific format
+      const webSocketConfig: WebSocketBrowserConfig = {
+        url: config.serverUrl || `ws://localhost:${config.serverPort || 9001}`,
+        handler: config.handler,
+        eventSystem: config.eventSystem,
+        // WebSocket-specific options
+        reconnectAttempts: 5,
+        reconnectDelay: 1000,
+        pingInterval: 30000,
+        sessionHandshake: true
+      };
+      return webSocketConfig;
     }
-
-    // This should never be reached due to validateRole above
-    this.throwUnsupportedProtocol(`WebSocket ${role}`);
-  }
-
-  /**
-   * Create HTTP transport
-   */
-  private async createHTTPTransport(config: TransportConfig): Promise<JTAGTransport> {
-    const baseUrl = config.serverUrl || 'http://localhost:9002';
-    const transport = new HTTPTransport(baseUrl);
-    return this.createTransportResult(transport, 'HTTP');
+    
+    // For other adapters, pass the config as-is
+    return config;
   }
 
   /**
    * Get factory label for logging
    */
   protected getFactoryLabel(): string {
-    return 'Browser Transport Factory';
+    return 'Browser Transport Factory (Registry-Based)';
   }
 }
