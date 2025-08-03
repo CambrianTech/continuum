@@ -32,8 +32,8 @@ export class DefaultPriorityStrategy implements IMessagePriorityStrategy {
       return MessagePriority.HIGH;
     }
 
-    // Console errors get high priority (but will be deduplicated)
-    if (message.origin.includes('console') && this.isConsoleError(message.payload)) {
+    // All console messages get high priority for immediate delivery
+    if (message.origin.includes('console') || message.endpoint.includes('console')) {
       return MessagePriority.HIGH;
     }
 

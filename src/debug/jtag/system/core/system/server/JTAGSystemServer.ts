@@ -8,7 +8,7 @@
 import { JTAGSystem, type JTAGSystemConfig } from '../shared/JTAGSystem';
 import type { JTAGContext } from '../../types/JTAGTypes';
 import { JTAG_ENVIRONMENTS } from '../../types/JTAGTypes';
-import { JTAGRouterServer } from '../../router/server/JTAGRouterServer';
+import { JTAGRouterDynamicServer } from '../../router/server/JTAGRouterDynamicServer';
 import { SYSTEM_EVENTS } from '../../../events';
 import type { DaemonBase, DaemonEntry } from '../../../../daemons/command-daemon/shared/DaemonBase';
 import { SERVER_DAEMONS } from '../../../../server/generated';
@@ -17,7 +17,7 @@ import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 export class JTAGSystemServer extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return SERVER_DAEMONS; }
   
-  protected override createDaemon(entry: DaemonEntry, context: JTAGContext, router: JTAGRouterServer): DaemonBase | null {
+  protected override createDaemon(entry: DaemonEntry, context: JTAGContext, router: JTAGRouterDynamicServer): DaemonBase | null {
     // All daemon classes now use consistent (context, router) constructor pattern
     return new entry.daemonClass(context, router);
   }
@@ -35,7 +35,7 @@ export class JTAGSystemServer extends JTAGSystem {
 
   public static instance: JTAGSystemServer | null = null;
 
-  private constructor(context: JTAGContext, router: JTAGRouterServer, config?: JTAGSystemConfig) {
+  private constructor(context: JTAGContext, router: JTAGRouterDynamicServer, config?: JTAGSystemConfig) {
     super(context, router, {
       version: {
         fallback: 'unknown-server-version',
@@ -94,7 +94,7 @@ export class JTAGSystemServer extends JTAGSystem {
       sessionId: sessionId,
       ...config?.router
     };
-    const router = new JTAGRouterServer(context, routerConfig);
+    const router = new JTAGRouterDynamicServer(context, routerConfig);
     
     // Emit initializing event
     router.eventManager.events.emit(SYSTEM_EVENTS.INITIALIZING, {
