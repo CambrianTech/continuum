@@ -9,7 +9,7 @@
 import { TRANSPORT_TYPES } from '../../../transports';
 import type { JTAGTransport, TransportConfig, ITransportFactory } from '../../../transports';
 import type { JTAGMessage, JTAGContext } from '../../types/JTAGTypes';
-import type { ITransportStrategy } from './HardcodedTransportStrategy';
+import type { ITransportStrategy } from './ITransportStrategy';
 
 /**
  * Transport Discovery Result - Information about available transports

@@ -10,7 +10,8 @@
  */
 
 import type { JTAGTransport, TransportConfig } from '../../../transports/shared/TransportTypes';
-import type { JTAGMessage } from '../../types/JTAGTypes';
+import type { ITransportFactory } from '../../../transports/shared/ITransportFactory';
+import type { JTAGMessage, JTAGContext } from '../../types/JTAGTypes';
 
 /**
  * Transport Strategy Interface
@@ -23,7 +24,7 @@ export interface ITransportStrategy {
    * Initialize transport layer
    * MAPS TO: JTAGRouter.initializeTransport()
    */
-  initializeTransports(config?: Partial<TransportConfig>): Promise<void>;
+  initializeTransports(factory: ITransportFactory, context: JTAGContext, config: TransportConfig): Promise<void>;
 
   /**
    * Get cross-context transport (browser ↔ server)
@@ -41,7 +42,7 @@ export interface ITransportStrategy {
    * Setup message handlers for all transports
    * MAPS TO: JTAGRouter.setupMessageHandlers()
    */
-  setupTransportMessageHandlers(): Promise<void>;
+  setupMessageHandlers(messageHandler: (message: JTAGMessage) => void): Promise<void>;
 
   /**
    * Shutdown all transports
@@ -60,7 +61,19 @@ export interface ITransportStrategy {
       name: string;
       connected: boolean;
       type: string;
+      health?: {
+        latency: number;
+        errorCount: number;
+        lastActivity: string;
+      } | null;
     }>;
+    p2pEnabled?: boolean;
+    discovery?: {
+      available: string[];
+      preferred: string;
+      fallbacks: string[];
+      p2pCapable: boolean;
+    };
   };
 }
 
