@@ -9,6 +9,40 @@ import type { JTAGMessage } from '../../core/types/JTAGTypes';
 import type { EventsInterface } from '../../events';
 import type { JTAGTransport, TransportSendResult } from './TransportTypes';
 
+/**
+ * Universal Transport Adapter Interface - enforces plugin contract
+ * Compatible with existing JTAGTransport implementations
+ */
+export interface ITransportAdapter {
+  readonly name: string;
+  readonly protocol?: string;               // Optional for backward compatibility
+  readonly supportedRoles?: string[];      // Optional for backward compatibility  
+  readonly supportedEnvironments?: string[]; // Optional for backward compatibility
+  
+  // Universal lifecycle - matches existing JTAGTransport interface
+  connect?(url?: string): Promise<void>;   // Optional, existing transports use different connection patterns
+  disconnect(): Promise<void>;
+  send(message: any): Promise<any>;
+  isConnected(): boolean;
+  
+  // Optional capabilities
+  setMessageHandler?(handler: (message: any) => void): void;
+  getHealth?(): any;
+}
+
+/**
+ * Adapter Entry - Universal transport adapter registry interface
+ * Used by generator for auto-discovery and registration
+ */
+export interface AdapterEntry {
+  name: string;                    // 'websocket', 'http', 'udp-multicast'
+  className: string;               // 'WebSocketTransportBrowser'
+  adapterClass: new (...args: any[]) => ITransportAdapter; // ✅ Type-safe constructor
+  protocol: string;                // Protocol identifier
+  supportedRoles: string[];        // ['server', 'client'] 
+  supportedEnvironments: string[]; // ['browser', 'server']
+}
+
 export abstract class TransportBase implements JTAGTransport {
   public abstract readonly name: string;
   
@@ -64,15 +98,10 @@ export abstract class TransportBase implements JTAGTransport {
 }
 
 /**
- * Adapter Entry - Registry entry for protocol adapter implementations
+ * @deprecated Use AdapterEntry instead - keeping for backward compatibility
  */
-export interface AdapterEntry {
+export interface TransportEntry {
   name: string;
   className: string;
   adapterClass: new (...args: any[]) => JTAGTransport;
 }
-
-/**
- * @deprecated Use AdapterEntry instead - keeping for backward compatibility
- */
-export interface TransportEntry extends AdapterEntry {}

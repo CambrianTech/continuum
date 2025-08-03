@@ -39,22 +39,17 @@ export abstract class TransportFactoryBase implements ITransportFactory {
   }
 
   /**
-   * Create WebSocket transport - delegates to concrete implementation
+   * Create WebSocket transport - DEPRECATED: Use registry-based createTransport() instead
    */
   async createWebSocketTransport(
     environment: JTAGContext['environment'],
     config: TransportConfig
   ): Promise<JTAGTransport> {
     
-    // Shared validation
-    if (config.protocol !== 'websocket') {
-      throw new Error(`WebSocket transport requires protocol 'websocket', got '${config.protocol}'`);
-    }
-
-    console.log(`🔗 ${this.getFactoryLabel()}: Creating WebSocket ${config.role} transport`);
+    console.log(`🔗 ${this.getFactoryLabel()}: DEPRECATED WebSocket method - delegating to registry-based creation`);
     
-    // Delegate to environment-specific implementation
-    return this.createWebSocketTransportImpl(environment, config);
+    // Delegate to registry-based implementation
+    return this.createTransport(environment, config);
   }
 
   /**
@@ -84,11 +79,6 @@ export abstract class TransportFactoryBase implements ITransportFactory {
   // Abstract methods that environments must implement
   protected abstract createTransportImpl(
     environment: JTAGContext['environment'], 
-    config: TransportConfig
-  ): Promise<JTAGTransport>;
-
-  protected abstract createWebSocketTransportImpl(
-    environment: JTAGContext['environment'],
     config: TransportConfig
   ): Promise<JTAGTransport>;
 

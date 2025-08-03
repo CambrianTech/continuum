@@ -1,111 +1,120 @@
 /**
  * Transport Factory Server - Server-specific transport creation
  * 
- * Extends TransportFactoryBase following Universal Module Architecture.
- * Only implements server-specific transport creation logic.
+ * Registry-based factory using auto-generated SERVER_ADAPTERS.
+ * Eliminates god methods through plugin architecture.
  */
 
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGTransport, TransportConfig } from '../shared/TransportTypes';
 import { TransportFactoryBase } from '../shared/TransportFactoryBase';
-import { WebSocketTransportServer } from '../websocket-transport/server/WebSocketTransportServer';
-import { WebSocketTransportServerClient } from '../websocket-transport/server/WebSocketTransportServerClient';
-import { HTTPTransport } from '../http-transport/shared/HTTPTransport';
+import { SERVER_ADAPTERS } from '../../../server/generated';
+import type { AdapterEntry } from '../shared/TransportBase';
+import type { WebSocketServerConfig } from '../websocket-transport/server/WebSocketTransportServer';
+import type { WebSocketServerClientConfig } from '../websocket-transport/server/WebSocketTransportServerClient';
 
 export class TransportFactoryServer extends TransportFactoryBase {
   
   constructor() {
     super('server');
   }
+
   /**
-   * Server-specific transport creation implementation
+   * Registry-based transport creation - no god methods!
    */
   protected async createTransportImpl(
     environment: JTAGContext['environment'], 
     config: TransportConfig
   ): Promise<JTAGTransport> {
     
-    // UDP multicast transport for P2P networking
-    if (config.protocol === 'udp-multicast') {
-      this.throwUnsupportedProtocol('udp-multicast (not yet modularized)');
+    console.log(`🔍 Server Factory: Looking for ${config.protocol} transport (role: ${config.role}) in registry`);
+    
+    // Find adapter by protocol AND role in auto-generated registry
+    const adapterEntry = SERVER_ADAPTERS.find(adapter => {
+      const matchesProtocol = adapter.name.includes(config.protocol) || 
+                             adapter.className.toLowerCase().includes(config.protocol);
+      
+      // For WebSocket, also match role (server vs client)
+      if (config.protocol === 'websocket') {
+        const matchesRole = (config.role === 'server' && adapter.name.includes('server') && !adapter.name.includes('client')) ||
+                           (config.role === 'client' && adapter.name.includes('client'));
+        return matchesProtocol && matchesRole;
+      }
+      
+      return matchesProtocol;
+    });
+    
+    if (!adapterEntry) {
+      console.log(`📋 Available server adapters: ${SERVER_ADAPTERS.map(a => a.name).join(', ')}`);
+      this.throwUnsupportedProtocol(`${config.protocol} (role: ${config.role})`);
     }
     
-    // WebSocket transport
-    if (config.protocol === 'websocket') {
-      return await this.createWebSocketTransportImpl(environment, config);
+    console.log(`✅ Server Factory: Found adapter ${adapterEntry.className} for ${config.protocol}/${config.role}`);
+    
+    // Create adapter-specific configuration from generic TransportConfig
+    const adapterConfig = this.createAdapterConfig(config, adapterEntry);
+    
+    // ✅ Type-safe adapter creation - TypeScript enforces ITransportAdapter interface
+    const adapter = new adapterEntry.adapterClass(adapterConfig);
+    
+    // ✅ Type-safe connection - handle different connection patterns
+    if (adapterEntry.className === 'WebSocketTransportServer') {
+      // WebSocketTransportServer uses start() method, not connect()
+      const serverTransport = adapter as any; // Safe cast since we know it's WebSocketTransportServer
+      await serverTransport.start(config.serverPort || 9001);
+      console.log(`🚀 Server Factory: WebSocket server started on port ${config.serverPort || 9001}`);
+    } else if (adapter.connect) {
+      // Other adapters use connect() method
+      const connectParam = config.protocol === 'websocket' ? config.serverUrl || `ws://localhost:${config.serverPort || 9001}` : undefined;
+      await adapter.connect(connectParam);
+    } else {
+      // Legacy transport pattern - already connected in constructor
+      console.log(`📡 Server Factory: Legacy transport ${adapterEntry.className} connected via constructor`);
     }
     
-    // HTTP transport
-    if (config.protocol === 'http') {
-      return await this.createHTTPTransport(config);
-    }
-    
-    this.throwUnsupportedProtocol(config.protocol);
+    return this.createTransportResult(adapter, adapterEntry.name);
   }
 
   /**
-   * Server-specific WebSocket transport implementation
+   * Create adapter-specific configuration from generic TransportConfig
    */
-  protected async createWebSocketTransportImpl(
-    environment: JTAGContext['environment'],
-    config: TransportConfig
-  ): Promise<JTAGTransport> {
-    const { role, serverPort = 9001, serverUrl, handler, eventSystem } = config;
-
-    console.log(`🔗 WebSocket Server Factory: Creating ${role} transport in ${environment} environment`);
-
-    if (role === 'server') {
-      if (environment === 'browser') {
-        throw new Error('Cannot create server transport in browser environment');
+  private createAdapterConfig(config: TransportConfig, adapterEntry: AdapterEntry): WebSocketServerConfig | WebSocketServerClientConfig | TransportConfig {
+    if (config.protocol === 'websocket') {
+      if (adapterEntry.className === 'WebSocketTransportServer') {
+        // WebSocketServerConfig requires port
+        const serverConfig: WebSocketServerConfig = {
+          port: config.serverPort || 9001,
+          // WebSocket-specific options
+          reconnectAttempts: 5,
+          reconnectDelay: 1000,
+          pingInterval: 30000,
+          sessionHandshake: true
+        };
+        return serverConfig;
+      } else if (adapterEntry.className === 'WebSocketTransportServerClient') {
+        // WebSocketServerClientConfig requires url, handler, eventSystem
+        const clientConfig: WebSocketServerClientConfig = {
+          url: config.serverUrl || `ws://localhost:${config.serverPort || 9001}`,
+          handler: config.handler,
+          eventSystem: config.eventSystem,
+          // WebSocket-specific options
+          reconnectAttempts: 5,
+          reconnectDelay: 1000,
+          pingInterval: 30000,
+          sessionHandshake: true
+        };
+        return clientConfig;
       }
-
-      const transport = new WebSocketTransportServer({ 
-        port: serverPort,
-        sessionHandshake: true
-      });
-      await transport.start(serverPort);
-      return this.createTransportResult(transport, 'WebSocket Server');
     }
-
-    if (role === 'client') {
-      if (environment === 'browser') {
-        throw new Error('Use TransportFactoryBrowser for browser client connections');
-      }
-
-      // Create Node.js WebSocket client for server environment (CLI, server-to-server)
-      const url = serverUrl ?? `ws://localhost:${serverPort}`;
-
-      if (!handler) {
-        throw new Error('WebSocket client transport requires handler configuration');
-      }
-
-      const transport = new WebSocketTransportServerClient({ 
-        url,
-        handler,
-        sessionHandshake: true,
-        eventSystem
-      });
-      await transport.connect(url);
-      return this.createTransportResult(transport, 'WebSocket Client');
-    }
-
-    throw new Error(`WebSocket transport role '${role}' not supported in server environment`);
+    
+    // For other adapters, pass the config as-is
+    return config;
   }
 
   /**
    * Get factory label for logging
    */
   protected getFactoryLabel(): string {
-    return 'Server Transport Factory';
-  }
-
-  /**
-   * Create HTTP transport
-   */
-  private async createHTTPTransport(config: TransportConfig): Promise<JTAGTransport> {
-    const baseUrl = config.serverUrl ?? 'http://localhost:9002';
-    const transport = new HTTPTransport(baseUrl);
-    console.log(`✅ Server Transport Factory: HTTP transport created`);
-    return transport;
+    return 'Server Transport Factory (Registry-Based)';
   }
 }
