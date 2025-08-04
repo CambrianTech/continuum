@@ -76,10 +76,20 @@ class JTAGAgent {
         }
       }
       
-      // 4. Show available commands
+      // 4. Show live monitor section
+      this.showLiveMonitorInfo();
+      
+      // 5. Show available commands
       this.showAvailableCommands();
       
-      // 5. Interactive command mode if requested
+      // 6. Check if user wants live updates
+      if (process.argv.includes('--live') || process.argv.includes('-l')) {
+        console.log('\n🔄 Starting live updates (with full diagnostic info)...');
+        await this.startLiveDiagnosticMode();
+        return;
+      }
+      
+      // 7. Interactive command mode if requested
       if (process.argv.includes('--interactive') || process.argv.includes('-i')) {
         await this.startInteractiveMode();
       }
@@ -140,7 +150,7 @@ class JTAGAgent {
         console.log('   ⚠️  System running but tmux session ended (this is normal after build)');
       }
     } else {
-      console.log('\n   🚀 To start: npm run system:start (or use interactive mode)');
+      console.log('\n   🚀 To start: npm run system:ensure (or use interactive mode)');
       if (tmuxRunning && (!port9001 || !port9002)) {
         console.log('   ⚠️  Tmux running but ports not ready - system may still be starting');
       }
@@ -247,11 +257,24 @@ class JTAGAgent {
     console.log('   tmux capture-pane -t jtag-test -p    # Capture tmux output');
   }
 
+  private showLiveMonitorInfo(): void {
+    console.log('\n📊 LIVE MONITORING OPTIONS');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('   npm run agent -- --live      # Live diagnostics (full info, updates every 3s)');
+    console.log('   npm run agent:live           # Compact dashboard (minimal info, real-time)');
+    console.log('   • Live system status updates with all diagnostic information');
+    console.log('   • Log file sizes and timestamps updating in real-time');
+    console.log('   • Correlation status and available commands');
+    console.log('   • Ctrl+C to exit live mode');
+    console.log('');
+    console.log('   For debugging: Use --live to see all information updating');
+  }
+
   private showAvailableCommands(): void {
     console.log('\n🚀 AVAILABLE COMMANDS');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('   npm run agent -- -i          # Interactive mode (easy start/stop/rebuild)');
-    console.log('   npm run system:start         # Start system in tmux (non-blocking)');
+    console.log('   npm run system:ensure        # Start system with smart startup logic');
     console.log('   npm run system:stop          # Stop tmux system');
     console.log('   npm run system:restart       # Restart system');
     console.log('   npm run build                # Build project');
@@ -264,7 +287,7 @@ class JTAGAgent {
     console.log('   tmux attach -t jtag-test     # Attach to tmux session (see live output)');
     console.log('   tmux capture-pane -t jtag-test -p  # Capture tmux output');
     console.log('');
-    console.log('⚠️  Never run "npm start" directly - it blocks! Use system:start instead.');
+    console.log('⚠️  Never run "npm start" directly - it blocks! Use system:ensure instead.');
   }
 
   async executeCommand(command: string): Promise<void> {
@@ -340,8 +363,8 @@ class JTAGAgent {
         try {
           switch (cmd) {
             case 'start':
-              await this.executeCommand('npm run system:start');
-              console.log('📋 Starting system... check tmux session for progress');
+              await this.executeCommand('npm run system:ensure');
+              console.log('📋 Starting system using smart startup logic...');
               break;
               
             case 'stop':
@@ -351,10 +374,8 @@ class JTAGAgent {
               
             case 'restart':
               console.log('🔄 Restarting system...');
-              await this.executeCommand('npm run system:stop');
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              await this.executeCommand('npm run system:start');
-              console.log('📋 Restarting... check tmux session for progress');
+              await this.executeCommand('npm run system:restart');
+              console.log('📋 Restarting using smart restart logic...');
               break;
               
             case 'build':
@@ -569,6 +590,95 @@ class JTAGAgent {
   private saveReport(report: any): void {
     const reportPath = '.continuum/jtag/system/logs/agent-report.json';
     writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  }
+
+
+  private showAINextActions(): void {
+    const port9001 = this.isPortListening(9001);
+    const port9002 = this.isPortListening(9002);
+    const tmux = this.isTmuxSessionRunning();
+    
+    console.log('\n🧠 AI NEXT ACTIONS');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
+    if (!port9001 && !port9002) {
+      console.log('   🎯 PRIORITY: System is offline');
+      console.log('   📋 Action: Run `npm run system:start` to start the system');
+      console.log('   ⏱️  Wait: 45+ seconds for TypeScript build to complete');
+      console.log('   ✅ Success: Watch for ports 9001/9002 to become active');
+    } else if (port9001 && port9002) {
+      const browser = this.checkBrowserConnections();
+      if (!browser) {
+        console.log('   🎯 PRIORITY: System online but no browser connected');
+        console.log('   📋 Action: Open http://localhost:9002 in browser');
+        console.log('   ✅ Success: Browser WebSocket should connect');
+      } else {
+        console.log('   🎯 PRIORITY: System healthy - ready for testing');
+        console.log('   📋 Action: Test correlation with `npx tsx test-server-client.ts`');
+        console.log('   📋 Action: Take screenshot with JTAG commands');
+        console.log('   ✅ Success: All systems operational');
+      }
+    } else {
+      console.log('   🎯 PRIORITY: Partial system startup');
+      console.log('   📋 Action: Wait for both ports to become active');
+      console.log('   ⚠️  Warning: System may still be building');
+    }
+  }
+
+  private async startLiveDiagnosticMode(): Promise<void> {
+    let updateCount = 0;
+    const startTime = Date.now();
+    
+    const updateFullDiagnostics = async () => {
+      updateCount++;
+      const uptime = Math.floor((Date.now() - startTime) / 1000);
+      
+      // Clear and show full diagnostic info
+      console.clear();
+      console.log(`🤖 JTAG Live Diagnostics │ Update ${updateCount} │ Runtime ${uptime}s`);
+      console.log('━'.repeat(80));
+      
+      // All the comprehensive information
+      this.showCurrentStatus();
+      this.showLogLocations();
+      
+      // Test correlation if system is running
+      const port9001 = this.isPortListening(9001);
+      const port9002 = this.isPortListening(9002);
+      
+      if (port9001 && port9002) {
+        console.log('\n🔗 WEBSOCKET CORRELATION STATUS');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('   🔍 System online - correlation testing available');
+        console.log('   🧪 Test now: npx tsx test-server-client.ts');
+      } else {
+        console.log('\n🔗 WEBSOCKET CORRELATION STATUS');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('   ❌ System offline - cannot test correlation');
+        console.log('   🚀 Start system first: npm run system:start');
+      }
+      
+      this.showLiveMonitorInfo();
+      this.showAvailableCommands();
+      
+      console.log('\n⏱️  Auto-updating every 3 seconds - Ctrl+C to exit');
+    };
+    
+    // Initial update
+    await updateFullDiagnostics();
+    
+    // Update every 3 seconds
+    const interval = setInterval(updateFullDiagnostics, 3000);
+    
+    // Handle exit
+    process.on('SIGINT', () => {
+      clearInterval(interval);
+      console.log('\n👋 Live diagnostics stopped');
+      process.exit(0);
+    });
+    
+    // Keep alive
+    await new Promise(() => {}); // Never resolves
   }
 
   private async startContinuousMonitoring(): Promise<void> {

@@ -107,7 +107,7 @@ class SmartSystemStartup {
       'npm run build',
       'npm run version:bump', 
       'npm pack',
-      'node scripts/update-test-bench.js',
+      'npx tsx scripts/update-test-bench.ts',
       `cd examples/test-bench && (npm install && npm start) 2>&1 | tee ../../${logFile}`
     ].join(' && ');
     
