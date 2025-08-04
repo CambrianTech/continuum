@@ -109,6 +109,11 @@ export class WebSocketTransportServerClient extends WebSocketTransportBase {
             }
             
             // Forward regular messages to base class handler (CRITICAL for correlation)
+            
+            // CORRELATION DEBUG: Log external client requests for debugging
+            if (message.correlationId?.startsWith('client_')) {
+              console.log(`🌐 WebSocket: External client request - correlation: ${message.correlationId}, endpoint: ${message.endpoint}`);
+            }
             this.handleIncomingMessage(message);
           } catch (error) {
             this.handleWebSocketError(error as Error, 'message parsing');
