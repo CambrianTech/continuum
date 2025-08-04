@@ -6,36 +6,63 @@ console.log('🚀 JTAG Demo script loading...');
 
 // Import JTAG (browser build will automatically use browser-index via package.json)
 import { jtag } from '@continuum/jtag';
+import type { JTAGClient } from '@continuum/jtag/dist/system/core/client/shared/JTAGClient';
 
 console.log('✅ JTAG Demo script loaded, jtag imported:', typeof jtag);
 
-let browserUUID: any = null;
-let jtagConnected = false;
-let serverUUID: string | null = null;
-let jtagSystem: any = null;
+// Cross-platform environment detection
+const isBrowser = typeof window !== 'undefined' && typeof document !== 'undefined';
 
-// Initialize the demo when page loads
-document.addEventListener('DOMContentLoaded', async () => {
-  console.log('🎪 JTAG Demo: Page loaded');
-  
-  try {
-    // Connect to JTAG system and get status
-    jtagSystem = await jtag.connect();
-    jtagConnected = true;
-    browserUUID = { uuid: jtagSystem.context.uuid, context: 'browser' };
+// Safe document access
+declare const document: Document;
+// eslint-disable-next-line @typescript-eslint/naming-convention
+declare const Image: new() => HTMLImageElement;
+
+// Extend window interface for our demo functions
+interface WindowWithDemoFunctions extends Window {
+  testServerLogging: () => void;
+  testServerExec: () => Promise<void>;
+  testServerScreenshot: () => Promise<void>;
+  testBrowserLogging: () => void;
+  testBrowserExec: () => Promise<void>;
+  testBrowserScreenshot: () => Promise<void>;
+  testCrossContext: () => void;
+  clearAllLogs: () => void;
+  demoScreenshotWidget: () => Promise<void>;
+  demoCropAndManipulate: () => Promise<void>;
+  demoDownloadScreenshot: () => Promise<void>;
+}
+
+declare const window: WindowWithDemoFunctions;
+
+let sessionUUID = "FIX ME";
+let jtagConnected = false;
+let jtagClient: JTAGClient | null = null;
+
+// Initialize the demo when page loads (only in browser)
+if (isBrowser) {
+  document.addEventListener('DOMContentLoaded', async () => {
+    console.log('🎪 JTAG Demo: Page loaded');
     
-    console.log('✅ JTAG Demo: JTAG SDK connected successfully');
-  } catch (error) {
-    console.error('❌ JTAG Demo: Failed to connect to JTAG SDK:', error);
-    jtagConnected = false;
-  }
-  
-  initializeDemo();
-});
+    try {
+      // Connect to JTAG client and get status
+      const connectionResult = await jtag.connect();
+      jtagClient = connectionResult.client;
+      jtagConnected = true;
+      
+      console.log('✅ JTAG Demo: JTAG Client connected successfully');
+    } catch (error) {
+      console.error('❌ JTAG Demo: Failed to connect to JTAG Client:', error);
+      jtagConnected = false;
+    }
+    
+    initializeDemo();
+  });
+}
 
 // JTAG client initialization is now handled in DOMContentLoaded above
 
-function initializeDemo() {
+function initializeDemo(): void {
   console.log('🔧 JTAG Demo: Initializing UI...');
   
   // Set up UI elements
@@ -48,7 +75,7 @@ function initializeDemo() {
   console.log('✅ JTAG Demo: UI initialized');
 }
 
-function setupEventHandlers() {
+function setupEventHandlers(): void {
   // Server-side buttons
   const serverLogBtn = document.getElementById('btn-server-log');
   const serverExecBtn = document.getElementById('btn-server-exec');  
@@ -78,21 +105,14 @@ function setupEventHandlers() {
   console.log('📋 JTAG Demo: Event handlers set up');
 }
 
-function updateServerUUID() {
+function updateServerUUID(): void {
   const serverUuidElement = document.getElementById('server-uuid');
   if (serverUuidElement) {
     serverUuidElement.textContent = 'Loading from server...';
   }
 }
 
-function updateBrowserUUID() {
-  const browserUuidElement = document.getElementById('browser-uuid');
-  if (browserUuidElement && browserUUID) {
-    browserUuidElement.textContent = browserUUID.uuid;
-  }
-}
-
-function updateConnectionStatus() {
+function updateConnectionStatus(): void {
   const statusElement = document.getElementById('connection-status');
   if (statusElement) {
     if (jtagConnected) {
@@ -106,12 +126,12 @@ function updateConnectionStatus() {
 }
 
 // Clean event handler functions - no globals, no window pollution
-function testServerLogging() {
+function testServerLogging(): void {
   console.log('🖥️ Testing server logging...');
   appendToLog('server-log', 'Server logging test initiated');
   
   try {
-    jtagSystem.log('DEMO_SERVER_TEST', 'Server logging test from browser');
+    console.log('DEMO_SERVER_TEST', 'Server logging test from browser');
     appendToLog('server-log', 'Server log sent via JTAG SDK');
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -119,12 +139,12 @@ function testServerLogging() {
   }
 }
 
-async function testServerExec() {
+async function testServerExec(): Promise<void> {
   console.log('🖥️ Testing server exec...');
   appendToLog('server-log', 'Server exec test initiated');
   
   try {
-    const result = await jtagSystem.exec('console.log("Server exec test")');
+    const result = await jtagClient.commands.exec('console.log("Server exec test")');
     appendToLog('server-log', `Exec result: ${JSON.stringify(result)}`);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -132,12 +152,12 @@ async function testServerExec() {
   }
 }
 
-async function testServerScreenshot() {
+async function testServerScreenshot(): Promise<void> {
   console.log('🖥️ Testing server screenshot...');
   appendToLog('server-log', 'Server screenshot test initiated');
   
   try {
-    const result = await jtagSystem.commands.screenshot({ filename: 'demo-test.png' });
+    const result = await jtagClient.commands.screenshot({ filename: 'demo-test.png' });
     appendToLog('server-log', `Screenshot result: ${JSON.stringify(result)}`);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -145,11 +165,14 @@ async function testServerScreenshot() {
   }
 }
 
-function testBrowserLogging() {
+const testBrowserLogging = (): void => {
   console.log('🌐 Testing browser logging...');
   appendToLog('browser-log', 'Browser logging test initiated');
   
-  jtagSystem.log('DEMO_BROWSER_TEST', 'Browser logging test');
+  jtagClient?.commands.log({
+    category: 'DEMO_BROWSER_TEST',
+    message: 'Browser logging test'
+  });
   
   // Test console interception
   console.log('This should be intercepted by JTAG');
@@ -157,12 +180,12 @@ function testBrowserLogging() {
   console.warn('This warning should be intercepted by JTAG');
 }
 
-async function testBrowserExec() {
+const testBrowserExec = async (): Promise<void> => {
   console.log('🌐 Testing browser exec...');
   appendToLog('browser-log', 'Browser exec test initiated');
   
   try {
-    const result = await jtagSystem.exec('document.title');
+    const result = await jtagClient.commands.exec('document.title');
     appendToLog('browser-log', `Exec result: ${JSON.stringify(result)}`);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -170,17 +193,15 @@ async function testBrowserExec() {
   }
 }
 
-async function testBrowserScreenshot() {
+const testBrowserScreenshot = async (): Promise<void> => {
   console.log('🌐 Testing browser screenshot...');
   appendToLog('browser-log', 'Browser screenshot test initiated');
   
   try {
-    console.log('🔍 JTAG System available:', !!jtagSystem);
-    console.log('🔍 Available daemon keys:', jtagSystem?.getDaemons ? Array.from(jtagSystem.getDaemons().keys()) : 'No keys');
-    console.log('🔍 CommandDaemon available:', !!jtagSystem?.getDaemons?.()?.get('CommandDaemon'));
-    console.log('🔍 Screenshot command available:', typeof jtagSystem?.commands?.screenshot);
+    console.log('🔍 JTAG Client available:', !!jtagClient);
+    console.log('🔍 Screenshot command available:', typeof jtagClient?.commands?.screenshot);
     
-    const result = await jtagSystem.commands.screenshot({ filename: 'browser-demo-test.png' });
+    const result = await jtagClient.commands.screenshot({ filename: 'browser-demo-test.png' });
     appendToLog('browser-log', `Screenshot result: ${JSON.stringify(result)}`);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -197,33 +218,33 @@ async function testBrowserScreenshot() {
  * Demo: Screenshot with different parameter behaviors
  * Shows the modular parametric design in action
  */
-async function demoScreenshotWidget() {
+const demoScreenshotWidget = async (): Promise<void> => {
   console.log('📸 Screenshot Widget Demo: Starting parametric demo...');
   appendToLog('widget-log', '🎯 Starting Screenshot Widget Demo - showcasing parametric behavior');
   
   try {
     // Demo 1: Basic screenshot with session-aware saving
     appendToLog('widget-log', '📷 Demo 1: Basic screenshot → server save');
-    const basicResult = await jtagSystem.commands.screenshot({
+    const basicResult = await jtagClient.commands.screenshot({
       filename: `widget-demo-${Date.now()}.png`,
       selector: '.browser-panel', // Target specific element
       returnFormat: 'file'
     });
-    appendToLog('widget-log', `✅ Saved to: ${basicResult.filepath || 'session directory'}`);
+    appendToLog('widget-log', `✅ Saved to: ${basicResult.filepath ?? 'session directory'}`);
 
     // Demo 2: Get screenshot as bytes for manipulation
     appendToLog('widget-log', '📷 Demo 2: Screenshot → bytes for browser manipulation');
-    const bytesResult = await jtagSystem.commands.screenshot({
+    const bytesResult = await jtagClient.commands.screenshot({
       filename: `widget-bytes-${Date.now()}.png`,
       selector: '.server-panel',
       returnFormat: 'bytes',
       crop: { x: 10, y: 10, width: 300, height: 200 }
     });
-    appendToLog('widget-log', `✅ Got ${bytesResult.metadata?.size || 'unknown'} bytes for manipulation`);
+    appendToLog('widget-log', `✅ Got ${bytesResult.metadata?.size ?? 'unknown'} bytes for manipulation`);
     
     // Demo 3: High-quality JPEG with custom options
     appendToLog('widget-log', '📷 Demo 3: Custom format & quality');
-    const customResult = await jtagSystem.commands.screenshot({
+    const customResult = await jtagClient.commands.screenshot({
       filename: `widget-custom-${Date.now()}.jpg`,
       selector: 'h1',
       options: {
@@ -233,7 +254,7 @@ async function demoScreenshotWidget() {
         scale: 2
       }
     });
-    appendToLog('widget-log', `✅ Custom screenshot: ${customResult.metadata?.format} @ ${customResult.metadata?.quality || 'default'}% quality`);
+    appendToLog('widget-log', `✅ Custom screenshot: ${customResult.metadata?.format} @ ${customResult.metadata?.quality ?? 'default'}% quality`);
 
     appendToLog('widget-log', '🎉 Screenshot Widget Demo Complete - All parameters worked!');
     
@@ -247,13 +268,13 @@ async function demoScreenshotWidget() {
 /**
  * Demo: Screenshot cropping and browser manipulation
  */
-async function demoCropAndManipulate() {
+async function demoCropAndManipulate(): Promise<void> {
   console.log('✂️ Crop & Manipulate Demo: Starting...');
   appendToLog('widget-log', '✂️ Demo: Crop & Manipulate - browser-side processing');
   
   try {
     // Get screenshot as bytes for manipulation
-    const result = await jtagSystem.commands.screenshot({
+    const result = await jtagClient.commands.screenshot({
       filename: 'crop-demo.png',
       selector: '.container',
       returnFormat: 'bytes',
@@ -269,7 +290,7 @@ async function demoCropAndManipulate() {
       const ctx = canvas.getContext('2d');
       const img = new Image();
       
-      img.onload = () => {
+      img.onload = (): void => {
         canvas.width = img.width;
         canvas.height = img.height;
         
@@ -285,7 +306,7 @@ async function demoCropAndManipulate() {
         const processedDataUrl = canvas.toDataURL('image/png');
         
         // Now save the processed version
-        jtagSystem.commands.screenshot({
+        jtagClient.commands.screenshot({
           filename: `processed-${Date.now()}.png`,
           dataUrl: processedDataUrl, // Pass processed data
           returnFormat: 'file'
@@ -307,12 +328,12 @@ async function demoCropAndManipulate() {
 /**
  * Demo: Download screenshot directly in browser
  */
-async function demoDownloadScreenshot() {
+async function demoDownloadScreenshot(): Promise<void> {
   console.log('⬇️ Download Demo: Starting...');
   appendToLog('widget-log', '⬇️ Demo: Direct browser download');
   
   try {
-    const result = await jtagSystem.commands.screenshot({
+    const result = await jtagClient.commands.screenshot({
       filename: `download-demo-${Date.now()}.png`,
       selector: '.browser-panel',
       returnFormat: 'download' // This should trigger browser download
@@ -336,20 +357,23 @@ async function demoDownloadScreenshot() {
   }
 }
 
-function testCrossContext() {
+function testCrossContext(): void {
   console.log('🔄 Testing cross-context communication...');
   appendToLog('cross-context-log', 'Cross-context test initiated');
   
-  jtagSystem.log('CROSS_CONTEXT_TEST', 'Browser sending message to server', {
-    testType: 'cross-context',
-    timestamp: new Date().toISOString(),
-    browserUUID: browserUUID?.uuid
+  jtagClient?.commands.log({
+    category: 'CROSS_CONTEXT_TEST',
+    message: 'Browser sending message to server',
+    metadata: {
+      testType: 'cross-context',
+      timestamp: new Date().toISOString(),
+    }
   });
   
   appendToLog('cross-context-log', 'Message sent from browser to server');
 }
 
-function clearAllLogs() {
+function clearAllLogs(): void {
   console.log('🧹 Clearing all logs...');
   
   const logElements = ['server-log', 'browser-log', 'cross-context-log', 'widget-log'];
@@ -366,26 +390,26 @@ function clearAllLogs() {
 // ========================================
 
 // Make functions available globally for HTML onclick handlers
-(window as any).testServerLogging = testServerLogging;
-(window as any).testServerExec = testServerExec;
-(window as any).testServerScreenshot = testServerScreenshot;
-(window as any).testBrowserLogging = testBrowserLogging;
-(window as any).testBrowserExec = testBrowserExec;
-(window as any).testBrowserScreenshot = testBrowserScreenshot;
-(window as any).testCrossContext = testCrossContext;
-(window as any).clearAllLogs = clearAllLogs;
+window.testServerLogging = testServerLogging;
+window.testServerExec = testServerExec;
+window.testServerScreenshot = testServerScreenshot;
+window.testBrowserLogging = testBrowserLogging;
+window.testBrowserExec = testBrowserExec;
+window.testBrowserScreenshot = testBrowserScreenshot;
+window.testCrossContext = testCrossContext;
+window.clearAllLogs = clearAllLogs;
 
 // Screenshot Widget Demo Functions
-(window as any).demoScreenshotWidget = demoScreenshotWidget;
-(window as any).demoCropAndManipulate = demoCropAndManipulate;
-(window as any).demoDownloadScreenshot = demoDownloadScreenshot;
+window.demoScreenshotWidget = demoScreenshotWidget;
+window.demoCropAndManipulate = demoCropAndManipulate;
+window.demoDownloadScreenshot = demoDownloadScreenshot;
 
-function appendToLog(logId: string, message: string) {
+function appendToLog(logId: string, message: string): void {
   const logElement = document.getElementById(logId);
   if (logElement) {
     const timestamp = new Date().toLocaleTimeString();
     const logEntry = `[${timestamp}] ${message}\n`;
-    logElement.textContent = (logElement.textContent || '') + logEntry;
+    logElement.textContent = (logElement.textContent ?? '') + logEntry;
     logElement.scrollTop = logElement.scrollHeight;
   }
 }
