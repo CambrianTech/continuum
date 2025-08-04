@@ -23,7 +23,8 @@ async function takeScreenshot() {
     // Smart connection - let the client figure out local vs remote
     console.log('🔗 Connecting with smart defaults...');
     const { client: jtag, listResult } = await JTAGClientServer.connect({
-      // Minimal options - let transport factory handle the details
+      // Use the default server session for proper response routing
+      sessionId: '00000000-0000-0000-0000-000000000000',
       enableFallback: false // Force remote connection for testing
     });
     

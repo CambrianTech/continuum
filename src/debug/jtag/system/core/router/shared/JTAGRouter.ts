@@ -1,3 +1,4 @@
+
 // ISSUES: 2 open, last updated 2025-07-30 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 
 /**
@@ -385,12 +386,42 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     if (JTAGMessageTypes.isResponse(message)) {
       console.log(`📨 ${this.toString()}: Received response for ${message.correlationId}`);
       const resolved = this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
+      
+      // RESPONSE ROUTING FIX: Send external responses back via WebSocket
+      if (resolved && message.correlationId?.startsWith('client_')) {
+        console.log(`📡 ${this.toString()}: Routing external response ${message.correlationId} back via WebSocket`);
+        
+        // Find the WebSocket transport to send response back to external client
+        const webSocketTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
+        if (webSocketTransport) {
+          try {
+            // Send the response message back through WebSocket
+            await webSocketTransport.send(message);
+            console.log(`✅ ${this.toString()}: External response sent via WebSocket for ${message.correlationId}`);
+          } catch (error) {
+            console.error(`❌ ${this.toString()}: Failed to send external response ${message.correlationId}:`, error);
+          }
+        } else {
+          console.warn(`⚠️ ${this.toString()}: No WebSocket transport available for external response ${message.correlationId}`);
+        }
+      }
+      
       if (resolved) {
         return { success: true, resolved: true };
       } else {
         console.warn(`⚠️ ${this.toString()}: No pending request found for ${message.correlationId}`);
         return { success: false, error: 'No pending request found' };
       }
+    }
+
+    // CORRELATION FIX: Register external client correlation IDs with ResponseCorrelator
+    if (JTAGMessageTypes.isRequest(message) && message.correlationId?.startsWith('client_')) {
+      console.log(`🔗 ${this.toString()}: Registering external correlation ${message.correlationId}`);
+      
+      // Register external correlation with ResponseCorrelator (don't await - let it resolve later)
+      this.responseCorrelator.createRequest(message.correlationId).catch(error => {
+        console.warn(`⚠️ External correlation ${message.correlationId} failed: ${error.message}`);
+      });
     }
 
     // Regular message routing for events and requests using EndpointMatcher
