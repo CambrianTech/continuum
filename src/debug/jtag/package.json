@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.586",
+  "version": "1.0.593",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -114,7 +114,7 @@
     "build:ts": "tsc --project tsconfig.json",
     "build:mcp": "npx tsc mcp/jtag-mcp-server.ts --outDir mcp --target ES2020 --module commonjs --esModuleInterop",
     "version:bump": "npm version patch --no-git-tag-version",
-    "system:start": "tmux new-session -d -s jtag-test 'npm start' || echo 'System already running'",
+    "system:start": "tmux new-session -d -s jtag-test 'npm start > .continuum/jtag/system/logs/npm-start.log 2>&1' || echo 'System already running'",
     "system:stop": "tmux kill-session -t jtag-test 2>/dev/null || true; lsof -ti:9002 | xargs kill -9 2>/dev/null || true; lsof -ti:9001 | xargs kill -9 2>/dev/null || true",
     "system:wait": "sleep 8 && curl -s http://localhost:9002 >/dev/null && curl -s http://localhost:9001 >/dev/null",
     "system:ensure": "npx tsx scripts/smart-system-startup.ts",
@@ -159,6 +159,12 @@
     "test:browser-automation": "npx tsx tests/layer-6-end-to-end/browser-automation.test.ts",
     "test:verify": "echo '🎯 All JTAG middle-out tests passed!' && npm run logs:show",
     "test:single-dependency": "npm run system:ensure && npx tsx tests/integration/real-single-dependency.test.ts",
+    "agent": "npx tsx agents/jtag-agent.ts",
+    "agent:interactive": "npx tsx agents/jtag-agent.ts --interactive",
+    "agent:monitor": "npx tsx agents/jtag-agent.ts --continuous",
+    "agent:test": "npx tsx agents/jtag-agent.ts --no-autofix",
+    "agent:debug": "npx tsx debug-correlation.ts",
+    "agent:logs": "tail -f .continuum/jtag/system/logs/server-node-output.log",
     "demo": "npm start",
     "demo:server": "npx tsx examples/simple-app.ts",
     "demo:browser": "npm start",
@@ -239,7 +245,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-04T00:55:12.751Z",
+    "timestamp": "2025-08-04T02:55:17.553Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 32,
     "note": "Generated from clean essential path mappings only"

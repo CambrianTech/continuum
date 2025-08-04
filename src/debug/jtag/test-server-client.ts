@@ -10,11 +10,10 @@ async function testServerClient() {
   console.log('🧪 Testing server-side JTAGClient...');
   
   try {
-    // Connect to browser environment from server (via test-bench system on port 9002)
-    console.log('🔌 Connecting to browser environment from server (via test-bench system)...');
+    // Connect to the running JTAG server system
+    console.log('🔌 Connecting to running JTAG server system...');
     const connectionResult = await jtag.connect({ 
-      targetEnvironment: 'browser',
-      serverPort: 9002
+      targetEnvironment: 'server'  // Connect to the server system
     });
     const { client } = connectionResult;
     

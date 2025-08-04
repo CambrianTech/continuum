@@ -108,7 +108,7 @@ export class WebSocketTransportServerClient extends WebSocketTransportBase {
               return;
             }
             
-            // Forward regular messages to base class handler
+            // Forward regular messages to base class handler (CRITICAL for correlation)
             this.handleIncomingMessage(message);
           } catch (error) {
             this.handleWebSocketError(error as Error, 'message parsing');
