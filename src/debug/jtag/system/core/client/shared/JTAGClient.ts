@@ -270,6 +270,34 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * Request session from SessionDaemon using proper bootstrap protocol
    * Solves chicken-and-egg problem: use bootstrap context to get real session
    */
+  private async requestSessionFromRemoteDaemon(): Promise<UUID> {
+    const isBootstrap = isUnknownSession(this.sessionId);
+    console.log(`🏷️ JTAGClient: Requesting session from remote SessionDaemon (${isBootstrap ? 'UNKNOWN_SESSION bootstrap' : 'existing context'}: ${this.sessionId})`);
+    
+    try {
+      // Call SessionDaemon via remote connection using proper endpoint
+      if (!this.connection) {
+        throw new Error('No remote connection available');
+      }
+      
+      // Use the session-daemon/get-default endpoint for default session
+      const response = await this.connection.executeCommand('session-daemon/get-default', {
+        context: this.context,
+        sessionId: this.sessionId,
+        type: 'get',
+        currentSessionId: this.sessionId
+      });
+      
+      const newSessionId = response.sessionId as UUID;
+      console.log(`✅ JTAGClient: SessionDaemon returned session: ${newSessionId}`);
+      return newSessionId;
+    } catch (error) {
+      console.warn(`⚠️ JTAGClient: Failed to get session from remote SessionDaemon: ${error}`);
+      console.log(`🔄 JTAGClient: Keeping bootstrap session: ${this.sessionId}`);
+      return this.sessionId;
+    }
+  }
+
   private async requestSessionFromDaemon(system: JTAGSystem): Promise<UUID> {
     const isBootstrap = isUnknownSession(this.sessionId);
     console.log(`🏷️ JTAGClient: Requesting session from SessionDaemon (${isBootstrap ? 'UNKNOWN_SESSION bootstrap' : 'existing context'}: ${this.sessionId})`);
@@ -322,17 +350,6 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       this.connectionMetadata.connectionType = 'local';
       this.connectionMetadata.reason = 'Local system instance available';
       
-      // Request session from SessionDaemon
-      console.log('🏷️ JTAGClient: Requesting session from SessionDaemon...');
-      const realSessionId = await this.requestSessionFromDaemon(localSystem);
-      
-      if (realSessionId !== this.sessionId) {
-        const wasBootstrap = isUnknownSession(this.sessionId);
-        console.log(`🔄 JTAGClient: ${wasBootstrap ? 'Bootstrap complete' : 'Session updated'}: ${this.sessionId} → ${realSessionId}`);
-        (this as any).sessionId = realSessionId;
-        this.context.uuid = realSessionId;
-      }
-      
       this.connection = await this.createLocalConnection();
     } else {
       // Remote connection setup
@@ -353,6 +370,19 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       const factory = await this.getTransportFactory();
       this.systemTransport = await factory.createTransport(this.context.environment, transportConfig);
       this.connection = await this.createRemoteConnection();
+    }
+
+    // Universal session management - works for both local and remote
+    console.log('🏷️ JTAGClient: Requesting session from SessionDaemon...');
+    const realSessionId = localSystem 
+      ? await this.requestSessionFromDaemon(localSystem)
+      : await this.requestSessionFromRemoteDaemon();
+    
+    if (realSessionId !== this.sessionId) {
+      const wasBootstrap = isUnknownSession(this.sessionId);
+      console.log(`🔄 JTAGClient: ${wasBootstrap ? 'Bootstrap complete' : 'Session updated'}: ${this.sessionId} → ${realSessionId}`);
+      (this as any).sessionId = realSessionId;
+      this.context.uuid = realSessionId;
     }
 
     await this.discoverCommands();
