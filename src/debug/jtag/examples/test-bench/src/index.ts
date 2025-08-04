@@ -35,7 +35,6 @@ interface WindowWithDemoFunctions extends Window {
 
 declare const window: WindowWithDemoFunctions;
 
-let sessionUUID = "FIX ME";
 let jtagConnected = false;
 let jtagClient: JTAGClient | null = null;
 

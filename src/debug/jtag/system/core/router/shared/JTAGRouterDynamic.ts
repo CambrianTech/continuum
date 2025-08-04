@@ -23,6 +23,7 @@
 import { JTAGRouter } from './JTAGRouter';
 import { DynamicTransportStrategy } from './DynamicTransportStrategy';
 import type { JTAGContext, JTAGMessage } from '../../types/JTAGTypes';
+import { JTAGMessageTypes } from '../../types/JTAGTypes';
 import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 import type { ITransportFactory, TransportConfig } from '../../../transports';
 import type { JTAGRouterConfig } from './JTAGRouterTypes';
@@ -158,6 +159,16 @@ export class JTAGRouterDynamic extends JTAGRouter {
    */
   private async handleDynamicMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
     console.log(`📨 JTAGRouterDynamic: Processing message with intelligent routing: ${message.endpoint}`);
+    
+    // CORRELATION FIX: Register external client correlation IDs with ResponseCorrelator
+    if (JTAGMessageTypes.isRequest(message) && message.correlationId?.startsWith('client_')) {
+      console.log(`🔗 ${this.toString()}: Registering external correlation ${message.correlationId}`);
+      
+      // Register external correlation with ResponseCorrelator (don't await - let it resolve later)
+      this.responseCorrelator.createRequest(message.correlationId).catch(error => {
+        console.warn(`⚠️ External correlation ${message.correlationId} failed: ${error.message}`);
+      });
+    }
     
     // Log routing decision tree for visibility
     this.logRoutingDecision(message);

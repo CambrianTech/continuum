@@ -5,7 +5,6 @@
  */
 
 import { JTAGClientServer } from '../system/core/client/server/JTAGClientServer';
-import type { JTAGClientConnectOptions } from '../system/core/client/shared/JTAGClient';
 import { ensureJTAGSystemRunning } from './smart-system-startup';
 
 async function takeScreenshot() {
@@ -20,13 +19,9 @@ async function takeScreenshot() {
     }
     console.log('✅ JTAG system is ready');
     
-    // Smart connection - let the client figure out local vs remote
-    console.log('🔗 Connecting with smart defaults...');
-    const { client: jtag, listResult } = await JTAGClientServer.connect({
-      // Use the default server session for proper response routing
-      sessionId: '00000000-0000-0000-0000-000000000000',
-      enableFallback: false // Force remote connection for testing
-    });
+    // Connect with zero params - should auto-join existing session
+    console.log('🔗 Connecting with zero params (should auto-join existing session)...');
+    const { client: jtag, listResult } = await JTAGClientServer.connect();
     
     console.log(`🆔 Connected with session: ${jtag.sessionId}`);
     console.log(`📋 Available commands: ${listResult.totalCount}`);
