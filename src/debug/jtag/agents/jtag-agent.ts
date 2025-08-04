@@ -114,6 +114,19 @@ class JTAGAgent {
     const systemOnline = port9001 && port9002;
     console.log(`   📊 JTAG System: ${systemOnline ? '✅ FULLY ONLINE' : '❌ OFFLINE'}`);
     
+    // Show connected clients (like nvidia-smi)
+    const clients = this.getAllConnectedClients();
+    if (clients.length > 0) {
+      console.log('\n📱 CONNECTED CLIENTS');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('   Type      PID    User    Process         Connection');
+      console.log('   ────────  ─────  ──────  ─────────────  ──────────────────────');
+      for (const client of clients) {
+        const typeIcon = client.type === 'browser' ? '🌐' : client.type === 'external' ? '🔗' : '⚙️ ';
+        console.log(`   ${typeIcon} ${client.type.padEnd(7)} ${client.pid.toString().padEnd(6)} ${client.user.padEnd(7)} ${client.process.padEnd(14)} ${client.connection}`);
+      }
+    }
+    
     if (systemOnline) {
       console.log('\n   🎯 Ready for:');
       console.log('      • Browser UI: http://localhost:9002');
@@ -150,6 +163,59 @@ class JTAGAgent {
       return result.trim().length > 0;
     } catch {
       return false;
+    }
+  }
+  
+  private getAllConnectedClients(): Array<{type: string, pid: number, user: string, process: string, connection: string}> {
+    try {
+      const result = execSync('lsof -i :9001 -i :9002 | grep ESTABLISHED', { encoding: 'utf8' });
+      const lines = result.trim().split('\n').filter(line => line.length > 0);
+      
+      return lines.map(line => {
+        const parts = line.trim().split(/\s+/);
+        const processName = parts[0] || 'unknown';
+        const pid = parseInt(parts[1]) || 0;
+        const user = parts[2] || 'unknown';
+        const connection = parts[parts.length - 1] || 'unknown';
+        
+        // Enhanced client detection with meaningful names
+        let type = 'unknown';
+        let displayName = processName;
+        
+        if (processName.toLowerCase().includes('opera') || processName.toLowerCase().includes('chrome') || processName.toLowerCase().includes('safari')) {
+          type = 'browser';
+          displayName = processName.replace('\\x20', ' '); // Clean up encoded spaces
+        } else if (processName === 'node') {
+          // For node processes, check if it's the JTAG server or external client
+          try {
+            const cmdLine = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 1000 });
+            if (cmdLine.includes('test-server-client') || cmdLine.includes('JTAGClient')) {
+              type = 'external';
+              displayName = 'JTAGClient';
+            } else if (cmdLine.includes('tsx') && cmdLine.includes('test-')) {
+              type = 'external';
+              displayName = 'external-test';
+            } else if (cmdLine.includes('minimal-server') || cmdLine.includes('test-bench')) {
+              type = 'server';
+              displayName = 'JTAG-server';
+            } else {
+              type = 'server';
+              displayName = 'node-server';
+            }
+          } catch {
+            // Fallback: assume server if we can't determine
+            type = 'server';
+            displayName = 'node-process';
+          }
+        } else if (processName.includes('tsx')) {
+          type = 'external';
+          displayName = 'tsx-client';
+        }
+        
+        return { type, pid, user, process: displayName, connection };
+      });
+    } catch {
+      return [];
     }
   }
 

@@ -171,13 +171,16 @@ export interface DynamicCommandsInterface {
 }
 
 // TODO: Remove ITransportHandler - mixing client/server responsibilities (ISSUE 7)
-export abstract class JTAGClient extends JTAGBase /* implements ITransportHandler */ {
+export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   protected systemTransport?: JTAGTransport;
   protected connection?: JTAGConnection;
   // TODO: Remove discoveredCommands - redundant with CommandsInterface (ISSUE 2)
   protected discoveredCommands: Map<string, CommandSignature> = new Map();
   protected systemInstance?: JTAGSystem;
   protected responseCorrelator: ResponseCorrelator = new ResponseCorrelator(30000);
+  
+  // ITransportHandler implementation
+  public readonly transportId: UUID;
 
   // Connection metadata for diagnostics
   protected connectionMetadata: {
@@ -195,7 +198,9 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
   constructor(context: JTAGContext) {
     super('jtag-client', context);
     this.sessionId = context.uuid;
+    this.transportId = generateUUID();
   }
+
 
   /**
    * Get connection information for diagnostics and testing
@@ -257,9 +262,6 @@ export abstract class JTAGClient extends JTAGBase /* implements ITransportHandle
     return response as JTAGResponsePayload;
   }
   
-  get transportId(): UUID {
-    return this.sessionId;
-  }
 
   // FIXED: Now async - may need to start system (ISSUE 4 RESOLVED)
   protected abstract getLocalSystem(): Promise<JTAGSystem | null>;
