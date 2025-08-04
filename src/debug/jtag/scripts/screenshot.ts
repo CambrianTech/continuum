@@ -8,6 +8,7 @@ import { JTAGClientServer } from '../system/core/client/server/JTAGClientServer'
 import { ensureJTAGSystemRunning } from './smart-system-startup';
 
 async function takeScreenshot() {
+  let jtag: any = null;
   try {
     console.log('🎯 Universal Screenshot Test - Smart Connection');
     
@@ -21,7 +22,8 @@ async function takeScreenshot() {
     
     // Connect with zero params - should auto-join existing session
     console.log('🔗 Connecting with zero params (should auto-join existing session)...');
-    const { client: jtag, listResult } = await JTAGClientServer.connect();
+    const { client: jtagClient, listResult } = await JTAGClientServer.connect();
+    jtag = jtagClient;
     
     console.log(`🆔 Connected with session: ${jtag.sessionId}`);
     console.log(`📋 Available commands: ${listResult.totalCount}`);
@@ -39,6 +41,13 @@ async function takeScreenshot() {
     console.error('❌ Screenshot failed:', error);
     console.log('💡 This tests the complete universal command system');
     console.log('💡 Error details may show what needs to be implemented');
+  } finally {
+    // Disconnect client to allow clean exit
+    if (jtag) {
+      console.log('🔌 Disconnecting client...');
+      await jtag.disconnect();
+      console.log('✅ Client disconnected - exiting cleanly');
+    }
   }
 }
 

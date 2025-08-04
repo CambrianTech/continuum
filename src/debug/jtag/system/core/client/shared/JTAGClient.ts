@@ -572,6 +572,19 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     }
     return new LocalConnection(this.systemInstance, this.context, this.sessionId);
   }
+
+  /**
+   * Disconnect the client and cleanup resources
+   */
+  public async disconnect(): Promise<void> {
+    console.log('🔌 JTAGClient: Disconnecting...');
+    if (this.systemTransport) {
+      await this.systemTransport.disconnect();
+      console.log('✅ JTAGClient: Transport disconnected');
+    } else {
+      console.log('ℹ️ JTAGClient: No transport to disconnect (local connection)');
+    }
+  }
 }
 
 
