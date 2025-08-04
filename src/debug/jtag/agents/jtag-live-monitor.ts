@@ -13,6 +13,7 @@ interface SystemState {
   port9002: boolean;
   browser: boolean;
   clients: Array<{type: string, pid: number, process: string}>;
+  correlationStatus: 'unknown' | 'testing' | 'working' | 'failed';
   timestamp: Date;
 }
 
@@ -29,6 +30,8 @@ class JTAGLiveMonitor {
   private changes: StateChange[] = [];
   private startTime = new Date();
   private updateCount = 0;
+  private correlationTestInProgress = false;
+  private lastCorrelationTest = 0;
 
   constructor() {
     this.currentState = this.getSystemState();
@@ -41,8 +44,17 @@ class JTAGLiveMonitor {
     const port9002 = this.checkPort(9002);
     const browser = this.checkBrowser();
     const clients = this.getClients();
+    
+    // Determine correlation status based on system state
+    let correlationStatus: 'unknown' | 'testing' | 'working' | 'failed' = 'unknown';
+    if (this.correlationTestInProgress) {
+      correlationStatus = 'testing';
+    } else if (port9001 && port9002) {
+      // Only show status if we have ports available
+      correlationStatus = this.currentState?.correlationStatus || 'unknown';
+    }
 
-    return { tmux, port9001, port9002, browser, clients, timestamp: new Date() };
+    return { tmux, port9001, port9002, browser, clients, correlationStatus, timestamp: new Date() };
   }
 
   private checkTmux(): boolean {
@@ -176,7 +188,12 @@ class JTAGLiveMonitor {
     const serverLogIcon = logs.server ? '📊✅' : '📊❌';  
     const systemLogIcon = logs.system ? '📝✅' : '📝❌';
     
-    console.log(`${browserLogIcon} browser │ ${serverLogIcon} server │ ${systemLogIcon} system │ 📂 logs`);
+    // Correlation status
+    const corrIcon = this.currentState.correlationStatus === 'testing' ? '🔄' : 
+                     this.currentState.correlationStatus === 'working' ? '✅' : 
+                     this.currentState.correlationStatus === 'failed' ? '❌' : '❓';
+    
+    console.log(`${browserLogIcon} browser │ ${serverLogIcon} server │ ${systemLogIcon} system │ ${corrIcon} correlation`);
     
     // Clients section
     if (this.currentState.clients.length > 0) {
@@ -201,22 +218,77 @@ class JTAGLiveMonitor {
     
     // Commands with log commands
     console.log('━'.repeat(72));
-    console.log('⌨️  [s]tart [r]estart [q]uit [t]est [c]lear [l]ogs │ Updates: 2s');
+    console.log('⌨️  [s]tart [r]estart [q]uit [t]est [c]lear [l]ogs │ ESC/Ctrl+C to exit');
+  }
+
+  private async testCorrelationBackground(): Promise<void> {
+    if (this.correlationTestInProgress) return;
+    
+    this.correlationTestInProgress = true;
+    this.currentState.correlationStatus = 'testing';
+    
+    // Run test in background without blocking UI
+    const { spawn } = require('child_process');
+    const testProcess = spawn('npx', ['tsx', 'test-server-client.ts'], {
+      stdio: 'pipe',
+      detached: false
+    });
+    
+    let output = '';
+    let timeoutId: NodeJS.Timeout;
+    
+    const cleanup = () => {
+      this.correlationTestInProgress = false;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+    
+    testProcess.stdout?.on('data', (data: Buffer) => {
+      output += data.toString();
+    });
+    
+    testProcess.stderr?.on('data', (data: Buffer) => {
+      output += data.toString();
+    });
+    
+    testProcess.on('close', (code: number) => {
+      cleanup();
+      this.currentState.correlationStatus = code === 0 ? 'working' : 'failed';
+    });
+    
+    // 30 second timeout
+    timeoutId = setTimeout(() => {
+      testProcess.kill();
+      cleanup();
+      this.currentState.correlationStatus = 'failed';
+    }, 30000);
   }
 
   private handleCommand(key: string): void {
+    // Handle escape key (ASCII 27)
+    if (key.charCodeAt(0) === 27) {
+      process.exit(0);
+      return;
+    }
+    
+    // Handle Ctrl+C (ASCII 3)
+    if (key.charCodeAt(0) === 3) {
+      process.exit(0);
+      return;
+    }
+    
     switch(key.toLowerCase()) {
       case 's':
         console.log('🚀 Starting system...');
-        execSync('npm run system:start', { stdio: 'ignore' });
+        execSync('npm run system:ensure', { stdio: 'ignore' });
         break;
       case 'r':
         console.log('🔄 Restarting system...');
         execSync('npm run system:restart', { stdio: 'ignore' });
         break;
       case 't':
-        console.log('🧪 Testing correlation...');
-        execSync('npx tsx test-server-client.ts', { stdio: 'ignore' });
+        if (!this.correlationTestInProgress) {
+          this.testCorrelationBackground();
+        }
         break;
       case 'c':
         this.changes = [];
@@ -268,6 +340,14 @@ class JTAGLiveMonitor {
       // Keep only last 10 changes
       if (this.changes.length > 10) {
         this.changes = this.changes.slice(-10);
+      }
+      
+      // Auto-test correlation every 60 seconds if system is online
+      const now = Date.now();
+      const online = this.currentState.port9001 && this.currentState.port9002;
+      if (online && !this.correlationTestInProgress && (now - this.lastCorrelationTest) > 60000) {
+        this.lastCorrelationTest = now;
+        this.testCorrelationBackground();
       }
       
       this.updateCount++;
