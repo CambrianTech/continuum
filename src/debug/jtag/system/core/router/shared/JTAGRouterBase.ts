@@ -15,7 +15,7 @@ import { EndpointMatcher } from './EndpointMatcher';
 import type { ITransportStrategy } from './ITransportStrategy';
 import type { IRouterEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
 import { DynamicTransportStrategy } from './DynamicTransportStrategy';
-import { MinimalEnhancementStrategy, LegacyEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
+import { MinimalEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
 import { JTAGMessageQueue } from './queuing/JTAGMessageQueue';
 import { ConnectionHealthManager } from './ConnectionHealthManager';
 import { ResponseCorrelator } from '../../shared/ResponseCorrelator';

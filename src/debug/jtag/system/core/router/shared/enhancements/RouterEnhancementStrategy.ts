@@ -8,8 +8,6 @@
 
 import type { JTAGMessage, JTAGContext } from '../../../types/JTAGTypes';
 import type { JTAGResponsePayload } from '../../../types/ResponseTypes';
-import type { UUID } from '../../../types/CrossPlatformUUID';
-
 /**
  * Router Enhancement Strategy Interface
  */
@@ -74,11 +72,11 @@ export class MinimalEnhancementStrategy implements IRouterEnhancementStrategy {
     return message; // Pass through unchanged
   }
   
-  async processOutgoingResponse(response: JTAGResponsePayload, originalMessage: JTAGMessage): Promise<JTAGResponsePayload> {
+  async processOutgoingResponse(response: JTAGResponsePayload, _originalMessage: JTAGMessage): Promise<JTAGResponsePayload> {
     return response; // Pass through unchanged
   }
   
-  async shouldRouteMessage(message: JTAGMessage): Promise<boolean> {
+  async shouldRouteMessage(_message: JTAGMessage): Promise<boolean> {
     return true; // Always route
   }
   
@@ -119,13 +117,13 @@ export class LegacyEnhancementStrategy implements IRouterEnhancementStrategy {
     // TODO: Apply queuing, deduplication, correlation tracking
     return message;
   }
-  
-  async processOutgoingResponse(response: JTAGResponsePayload, originalMessage: JTAGMessage): Promise<JTAGResponsePayload> {
+
+  async processOutgoingResponse(response: JTAGResponsePayload, _originalMessage: JTAGMessage): Promise<JTAGResponsePayload> {
     // TODO: Apply response correlation, health tracking
     return response;
   }
-  
-  async shouldRouteMessage(message: JTAGMessage): Promise<boolean> {
+
+  async shouldRouteMessage(_message: JTAGMessage): Promise<boolean> {
     // TODO: Apply health-based routing decisions
     return true;
   }

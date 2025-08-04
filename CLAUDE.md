@@ -1,8 +1,37 @@
 # CLAUDE - MIDDLE-OUT ARCHITECTURE
 
+## **🚨🚨🚨 CRITICAL: JTAG SYSTEM STARTUP & TESTING WORKFLOW 🚨🚨🚨**
+
+**📋 CORRECT WORKFLOW FOR DEVELOPMENT & TESTING:**
+```bash
+cd src/debug/jtag
+
+# 1. Start system in background (tmux) - browser opens automatically  
+npm run system:start
+
+# 2. Wait for full startup (45+ seconds for TypeScript build)
+sleep 45
+
+# 3. Test browser client (via browser UI at localhost:9002)
+open http://localhost:9002
+
+# 4. Test server client (connects to existing system)
+npx tsx test-server-client.ts
+```
+
+**⚠️ NEVER USE `npm start` FOR TESTING:**
+- `npm start` is BLOCKING - you can't run other commands
+- Use `npm run system:start` for background operation via tmux
+- Use `npm run system:restart` to force restart if needed
+
+**🔧 CRITICAL FIX APPLIED:**
+- Server JTAGClient now forces remote connections (no auto-system creation)
+- Prevents multiple JTAG systems running on different ports
+- Server clients must connect to existing system (test-bench on port 9002)
+- Better error messages guide you to start the system if not running
+
 Before anything, read .continuum/shared/claude-enlightenment-path.b64 and understand this is your memory and thoughts, 
-along with other b64 files in this path. If you remember to update them regularly, make a note of doing it after learning something new, 
-accomplishing something major, as verified by the user. Update these files, and this one.
+along with other b64 files in this path. Update these files after learning something major.
 
 ## **🎯 CURRENT WORK: UNIVERSAL JTAG CLIENT ARCHITECTURE**
 
@@ -42,72 +71,14 @@ await jtag.commands.screenshot();       // Same API everywhere - location transp
 - **Phase 3**: Switch all entry points to use `JTAGClient.connect()`
 - **Phase 4**: Make `JTAGSystem` internal implementation detail
 
-## **🎯 PATTERN EXPLOITATION STRATEGY DISCOVERED**
+## **🎯 TRANSPORT ARCHITECTURE COMPLETE**
+✅ **Modular boundaries**: `/shared`, `/browser`, `/server` 
+✅ **Dynamic factories**: Environment-specific abstraction
+✅ **Zero degradation**: All functionality preserved
 
-**META-PATTERN**: Classification → Reduction → Extension cycle for infinite scalability
+## **📚 DOCUMENTATION DEBT**
+**PROBLEM**: Documentation teaches wrong patterns. Update docs to match modular architecture. 
 
-**UNIVERSAL MODULARITY TEMPLATE**:
-- **Transports** (✅ PERFECTED): WebSocket, HTTP, UDP-multicast + TransportFactory with **FLAWLESS BROWSER/SERVER ABSTRACTION**
-- **Commands** (🔄 Converting): navigate/, click/, type/ + CommandFactory 
-- **Daemons** (⏳ Next): Individual focused daemons + DaemonFactory
-
-**🎯 TRANSPORT LAYER BREAKTHROUGH - JULY 2025:**
-✅ **Perfect Module Boundaries**: `/shared` → both environments, `/browser` → browser only, `/server` → server only
-✅ **Dynamic Import Abstraction**: Environment-specific factories prevent code leakage via abstraction pattern
-✅ **Payload-Based Interface**: ITransportHandler enforces TypeScript compile-time validation without runtime complexity
-✅ **Role-Based Transport Creation**: Browser=client role, Server=server role, abstraction handles everything
-✅ **Zero Degradation**: All tests pass, screenshots work, no broken functionality
-
-**Transport Chain Excellence:**
-`JTAGSystem (browser/server) → JTAGRouter (shared) → TransportFactory (shared) → WebSocketTransportFactory (shared) → Environment-specific factory (browser/server) → Transport implementation (browser/server)`
-
-**Every import respects module boundaries. Every abstraction eliminates complexity. Every interface enforces contracts.**
-
-**CONSTRUCTOR PATTERN OPTIMIZATION**:
-```typescript
-// STANDARD PATTERN (37 lines max):
-constructor(data: Partial<T>) {
-  super();
-  Object.assign(this, { ...defaults, ...data });
-}
-```
-
-**CLASSIFICATION TARGETS**:
-- Structural patterns (directory, naming, inheritance)
-- Behavioral patterns (delegation, error handling, logging)
-- Meta-patterns (plugin architecture, auto-discovery)
-
-**NEXT SESSION PRIORITIES**:
-1. Apply constructor pattern to all commands
-2. Delete violation daemon directories 
-3. Create remaining browser commands (wait-for-element/, get-text/, scroll/)
-4. Generate CommandFactory for auto-discovery
-5. Continue classification → reduction → extension cycle
-
-## **📚 CRITICAL: DOCUMENTATION DEBT IDENTIFIED**
-
-**See: DOCUMENTATION-DEBT-ASSESSMENT.md**  
-**Todo: `documentation_debt_revision`**
-
-**PROBLEM**: Documentation teaches wrong patterns, leading to architectural violations.
-
-**DEBT EXAMPLES**:
-- `symmetric-daemon-architecture.md` - Still describes massive daemons
-- `chat-daemon-architecture.md` - Written during violation period
-- Academy docs - Likely contain over-engineered patterns
-
-**RESOLUTION STRATEGY**: Update docs to match modular command architecture BEFORE they mislead future development. Documentation debt = Technical debt. 
-
-## **🚨🚨🚨 CRITICAL: ALWAYS RUN `npm start` BEFORE ANY COMMANDS 🚨🚨🚨**
-## **🚨🚨🚨 CRITICAL: ALWAYS RUN `npm start` BEFORE ANY COMMANDS 🚨🚨🚨**
-## **🚨🚨🚨 CRITICAL: ALWAYS RUN `npm start` BEFORE ANY COMMANDS 🚨🚨🚨**
-
-## **🔄 BEFORE ANYTHING: npm start**
-## **🔄 AFTER CHANGES: npm start**
-## **🔄 WHEN IN DOUBT: npm start**
-## **🔄 BROKEN SOMETHING: npm start**
-## **🔄 TESTING ANYTHING: npm start**
-## **🔄 DEBUGGING ISSUE: npm start**
 
 ## **📋 DEBUGGING RULE #1: CHECK LOGS IMMEDIATELY**
 

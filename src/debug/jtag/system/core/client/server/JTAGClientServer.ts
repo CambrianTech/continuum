@@ -32,21 +32,19 @@ import type { JTAGPayload } from '../../types/JTAGTypes';
 export class JTAGClientServer extends JTAGClient {
   
   protected async getLocalSystem(): Promise<JTAGSystem | null> {
-    // Try local system first (same process)
+    // FIXED: Never auto-create systems - only connect to existing ones
+    // This prevents server clients from automatically creating new JTAG systems
+    // when they should connect to existing systems (like test-bench on port 9002)
+    
+    // Only return existing instance if it's already running in same process
     if (JTAGSystemServer.instance) {
       console.log('🏠 JTAGClientServer: Found existing local system instance');
       return JTAGSystemServer.instance;
     }
     
-    // Try to connect to local system (may create if needed in development)
-    try {
-      console.log('🔄 JTAGClientServer: Attempting to connect to local JTAGSystemServer...');
-      const localSystem = await JTAGSystemServer.connect();
-      console.log('✅ JTAGClientServer: Connected to local system');
-      return localSystem;
-    } catch (error) {
-      console.log('⚠️ JTAGClientServer: Local system connect failed:', error instanceof Error ? error.message : String(error));
-    }
+    // Force remote connection for all other cases
+    console.log('🌐 JTAGClientServer: No local system - using remote connection');
+    return null;
     
     // Check if server is running on expected port (npm start scenario)
     if (await this.isServerRunning()) {
