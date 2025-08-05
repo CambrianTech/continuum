@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.623",
+  "version": "1.0.631",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -116,11 +116,15 @@
     "pack": "npm run version:bump && npm pack",
     "system:run": "cd examples/test-bench && npm start",
     "system:deploy": "npx tsx scripts/update-test-bench.ts && cd examples/test-bench && npm install",
-    "system:start": "tmux new-session -d -s jtag-test \"stdbuf -oL -eL bash -c 'npm start' &> .continuum/jtag/system/logs/npm-start.log\" || echo 'System already running'",
-    "system:stop": "tmux kill-session -t jtag-test 2>/dev/null || true; lsof -ti:9002 | xargs kill -9 2>/dev/null || true; lsof -ti:9001 | xargs kill -9 2>/dev/null || true",
+    "system:start": "tsx scripts/launch-and-capture.ts",
+    "system:stop": "pkill -f 'npm.*start' 2>/dev/null || true; lsof -ti:9002 | xargs kill -9 2>/dev/null || true; lsof -ti:9001 | xargs kill -9 2>/dev/null || true; tmux kill-session -t jtag-test 2>/dev/null || true",
     "system:wait": "sleep 8 && curl -s http://localhost:9002 >/dev/null && curl -s http://localhost:9001 >/dev/null",
     "system:restart": "npm run system:stop && npm run system:start && npm run system:wait",
     "system:ensure": "npx tsx scripts/ensure-system-running.ts",
+    "logs:npm": "tail -f .continuum/jtag/system/logs/npm-start.log",
+    "logs:npm:live": "timeout 30 cat /tmp/jtag-pipe || echo 'No output received'",
+    "test:tty": "tmux kill-session -t debug-npm 2>/dev/null; rm -f /tmp/debug-npm.log; tmux new-session -d -s debug-npm \"script -q /dev/null npm run clean\" \\; pipe-pane -o 'cat >> /tmp/debug-npm.log'",
+    "system:debug": "echo '=== Tmux session state ===' && (tmux has-session -t jtag-test 2>/dev/null && echo 'Session running' && tmux capture-pane -t jtag-test -p || echo 'Session not running') && echo '' && echo '=== Log file ===' && tail -20 .continuum/jtag/system/logs/npm-start.log",
     "screenshot": "npx tsx scripts/screenshot.ts",
     "test": "npm run test:all",
     "test:all": "npm run test:layer-1 && npm run test:layer-2 && npm run test:layer-3 && npm run test:layer-4 && npm run test:promise-event-system && npm run test:layer-5 && npm run test:layer-6 && npm run test:verify",
@@ -239,7 +243,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-05T01:39:15.207Z",
+    "timestamp": "2025-08-05T03:00:45.419Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 32,
     "note": "Generated from clean essential path mappings only"
