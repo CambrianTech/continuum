@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.640",
+  "version": "1.0.646",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -116,7 +116,7 @@
     "prepack": "npm run paths:clean && npx tsx scripts/create-import-map.ts",
     "pack": "npm run version:bump && npm pack",
     "system:run": "cd examples/test-bench && npm start",
-    "system:deploy": "npx tsx scripts/deploy.ts",
+    "system:deploy": "npx tsx scripts/smart-deploy.ts",
     "system:start": "tsx scripts/launch-and-capture.ts",
     "system:stop": "pkill -f 'npm.*start' 2>/dev/null || true; lsof -ti:9002 | xargs kill -9 2>/dev/null || true; lsof -ti:9001 | xargs kill -9 2>/dev/null || true; tmux kill-session -t jtag-test 2>/dev/null || true",
     "system:wait": "sleep 8 && curl -s http://localhost:9002 >/dev/null && curl -s http://localhost:9001 >/dev/null",
@@ -246,7 +246,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-05T03:43:43.105Z",
+    "timestamp": "2025-08-05T04:05:53.619Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 32,
     "note": "Generated from clean essential path mappings only"

@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 import { globSync } from 'glob';
 
@@ -50,23 +51,66 @@ function checkTypeScriptBuild(): BuildCheck {
   return { name: 'TypeScript', needed: false, reason: 'All TypeScript files up to date' };
 }
 
+function getContentHash(content: string): string {
+  // Remove timestamp lines and normalize whitespace for content comparison
+  const normalized = content
+    .replace(/Auto-generated on \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/, 'TIMESTAMP_PLACEHOLDER')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return crypto.createHash('md5').update(normalized).digest('hex');
+}
+
+function getFileContentHash(filePath: string): string {
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    return getContentHash(content);
+  } catch {
+    return '';
+  }
+}
+
 function checkGeneratedFiles(): BuildCheck {
   const sourceFiles = getNewestFileTime('{daemons,commands,system}/**/*.ts');
   const generatedBrowser = getFileModTime('browser/generated.ts');
   const generatedServer = getFileModTime('server/generated.ts');
   const packageJson = getFileModTime('package.json');
   
-  const oldestGenerated = Math.min(generatedBrowser, generatedServer);
-  
-  if (oldestGenerated === 0) {
+  if (generatedBrowser === 0 || generatedServer === 0) {
     return { name: 'Generated files', needed: true, reason: 'Generated files missing' };
   }
+  
+  // Check if source files changed since generation
+  const oldestGenerated = Math.min(generatedBrowser, generatedServer);
   if (sourceFiles > oldestGenerated) {
     return { name: 'Generated files', needed: true, reason: 'Source files newer than generated files' };
   }
+  
+  // Check if package.json structure changed since generation
   if (packageJson > oldestGenerated) {
-    return { name: 'Generated files', needed: true, reason: 'package.json modified since last generation' };
+    // But only if the structureGenerator config actually changed
+    try {
+      const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+      const structureGen = pkg.structureGenerator;
+      const configHash = crypto.createHash('md5').update(JSON.stringify(structureGen || {})).digest('hex');
+      
+      // Store and compare config hash to detect real changes
+      const hashFile = '.continuum/generator/structure-config.hash';
+      let lastConfigHash = '';
+      try {
+        lastConfigHash = fs.readFileSync(hashFile, 'utf8').trim();
+      } catch {}
+      
+      if (configHash !== lastConfigHash) {
+        // Config actually changed - need rebuild
+        fs.mkdirSync(path.dirname(hashFile), { recursive: true });
+        fs.writeFileSync(hashFile, configHash);
+        return { name: 'Generated files', needed: true, reason: 'Structure generator configuration changed' };
+      }
+    } catch {
+      // If we can't determine config changes, assume no change needed
+    }
   }
+  
   return { name: 'Generated files', needed: false, reason: 'Generated files up to date' };
 }
 
