@@ -1,11 +1,10 @@
 #!/usr/bin/env npx tsx
 
 /**
- * Smart deployment - usually just installs, handles edge cases gracefully
+ * Smart deployment - tries quick install first, falls back to full clean only when needed
  */
 
 import * as fs from 'fs';
-import * as path from 'path';
 import { execSync } from 'child_process';
 
 function getVersionInfo() {
@@ -15,87 +14,93 @@ function getVersionInfo() {
   return { version, tarballName };
 }
 
-function checkTestBenchDependency(): boolean {
+function updateTestBenchDependency(tarballName: string): void {
   const testBenchPath = 'examples/test-bench/package.json';
-  if (!fs.existsSync(testBenchPath)) return false;
-  
-  const testBench = JSON.parse(fs.readFileSync(testBenchPath, 'utf8'));
-  const currentDep = testBench.dependencies?.['@continuum/jtag'];
-  const { tarballName } = getVersionInfo();
-  const expectedDep = `file:../../${tarballName}`;
-  
-  return currentDep === expectedDep;
-}
-
-function smartDeploy(): void {
-  console.log('🧠 Smart deployment analysis...\n');
-  
-  const { version, tarballName } = getVersionInfo();
-  const tarballExists = fs.existsSync(tarballName);
-  const testBenchCorrect = checkTestBenchDependency();
-  
-  console.log(`📦 Version: ${version}`);
-  console.log(`📋 Tarball exists: ${tarballExists ? '✅' : '❌'}`);
-  console.log(`📋 Test-bench dependency correct: ${testBenchCorrect ? '✅' : '❌'}`);
-  
-  if (!tarballExists) {
-    console.log('\n❌ Tarball missing - this should not happen in smart-build');
+  if (!fs.existsSync(testBenchPath)) {
+    console.log('❌ Test-bench not found');
     process.exit(1);
   }
   
-  if (testBenchCorrect) {
-    console.log('\n✅ Test-bench already configured correctly - skipping deployment');
+  const testBench = JSON.parse(fs.readFileSync(testBenchPath, 'utf8'));
+  const currentDep = testBench.dependencies?.['@continuum/jtag'];
+  const expectedDep = `file:../../${tarballName}`;
+  
+  if (currentDep === expectedDep) {
+    console.log('✅ Test-bench already up-to-date');
     return;
   }
   
-  console.log('\n🔧 Updating test-bench dependency...');
-  
-  // Quick dependency update only
-  const testBenchPath = 'examples/test-bench/package.json';
-  const testBench = JSON.parse(fs.readFileSync(testBenchPath, 'utf8'));
-  
   if (!testBench.dependencies) testBench.dependencies = {};
-  testBench.dependencies['@continuum/jtag'] = `file:../../${tarballName}`;
+  testBench.dependencies['@continuum/jtag'] = expectedDep;
   
   fs.writeFileSync(testBenchPath, JSON.stringify(testBench, null, 2) + '\n');
   console.log(`✅ Updated test-bench to use ${tarballName}`);
+}
+
+function trySmartInstall(): boolean {
+  console.log('📥 Trying smart install...');
   
-  // Only clean install if really needed
-  const nodeModulesPath = 'examples/test-bench/node_modules/@continuum/jtag';
-  if (fs.existsSync(nodeModulesPath)) {
-    console.log('🗑️  Cleaning old JTAG installation...');
-    fs.rmSync(nodeModulesPath, { recursive: true, force: true });
+  // Only clean the specific JTAG module
+  const jtagPath = 'examples/test-bench/node_modules/@continuum/jtag';
+  if (fs.existsSync(jtagPath)) {
+    fs.rmSync(jtagPath, { recursive: true, force: true });
   }
   
-  console.log('📥 Installing updated dependency...');
   try {
     execSync('npm install', { 
       cwd: 'examples/test-bench',
-      stdio: 'pipe' // Quiet install
+      stdio: 'pipe'
     });
-    console.log('✅ Smart deployment complete!');
+    console.log('✅ Smart install successful');
+    return true;
   } catch (error) {
-    console.log('⚠️  Quick install failed, trying full clean install...');
-    
-    // Fallback to full clean only if needed
-    const cleanPaths = [
-      'examples/test-bench/node_modules',
-      'examples/test-bench/package-lock.json'
-    ];
-    
-    for (const cleanPath of cleanPaths) {
-      if (fs.existsSync(cleanPath)) {
-        fs.rmSync(cleanPath, { recursive: true, force: true });
-        console.log(`🗑️  Removed ${path.basename(cleanPath)}`);
-      }
-    }
-    
-    execSync('npm install', { 
-      cwd: 'examples/test-bench',
-      stdio: 'inherit'
-    });
-    console.log('✅ Full clean deployment complete!');
+    console.log('⚠️  Smart install failed, trying full clean...');
+    return false;
   }
+}
+
+function doFullCleanInstall(): void {
+  console.log('🧹 Full clean install...');
+  
+  // Remove everything
+  const cleanPaths = [
+    'examples/test-bench/node_modules',
+    'examples/test-bench/package-lock.json'
+  ];
+  
+  for (const cleanPath of cleanPaths) {
+    if (fs.existsSync(cleanPath)) {
+      fs.rmSync(cleanPath, { recursive: true, force: true });
+    }
+  }
+  
+  execSync('npm install', { 
+    cwd: 'examples/test-bench',
+    stdio: 'inherit'
+  });
+  console.log('✅ Full clean install complete');
+}
+
+function smartDeploy(): void {
+  console.log('🧠 Smart deployment...\n');
+  
+  const { version, tarballName } = getVersionInfo();
+  
+  if (!fs.existsSync(tarballName)) {
+    console.log('❌ Tarball missing - build first');
+    process.exit(1);
+  }
+  
+  console.log(`📦 Version: ${version}`);
+  
+  updateTestBenchDependency(tarballName);
+  
+  // Try smart first, fallback to full clean
+  if (!trySmartInstall()) {
+    doFullCleanInstall();
+  }
+  
+  console.log('\n🎉 Smart deployment complete!');
 }
 
 if (require.main === module) {
