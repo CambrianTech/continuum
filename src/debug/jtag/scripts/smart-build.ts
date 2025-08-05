@@ -143,6 +143,29 @@ function runBuildStep(stepName: string, command: string): void {
   }
 }
 
+function smartClean(rebuildsNeeded: BuildCheck[]): void {
+  const needsTypeScript = rebuildsNeeded.some(c => c.name === 'TypeScript');
+  const needsTarball = rebuildsNeeded.some(c => c.name === 'Tarball');
+  
+  if (needsTypeScript) {
+    console.log('🧹 Smart clean: Removing dist/ (TypeScript rebuild needed)');
+    try {
+      execSync('rm -rf dist/ 2>/dev/null || true', { stdio: 'inherit' });
+    } catch {}
+  }
+  
+  if (needsTarball) {
+    console.log('🧹 Smart clean: Removing *.tgz (Tarball rebuild needed)');
+    try {
+      execSync('rm -f *.tgz 2>/dev/null || true', { stdio: 'inherit' });
+    } catch {}
+  }
+  
+  if (!needsTypeScript && !needsTarball) {
+    console.log('🧹 Smart clean: Nothing to clean (no rebuilds needed)');
+  }
+}
+
 function smartBuild(): void {
   console.log('🧠 Smart build analysis...\n');
   
@@ -166,6 +189,9 @@ function smartBuild(): void {
   
   console.log(`\n🔨 ${rebuildsNeeded.length} build step(s) needed:`);
   rebuildsNeeded.forEach(c => console.log(`   • ${c.name}`));
+  
+  // Smart clean - only clean what needs rebuilding
+  smartClean(rebuildsNeeded);
   
   for (const check of checks) {
     if (!check.needed) continue;
