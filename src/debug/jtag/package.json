@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.618",
+  "version": "1.0.619",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -168,14 +168,7 @@
     "agent:monitor": "npx tsx agents/jtag-agent.ts --continuous",
     "agent:test": "npx tsx agents/jtag-agent.ts --no-autofix",
     "agent:debug": "npx tsx debug-correlation.ts",
-    "agent:logs": "tail -f .continuum/jtag/system/logs/server-node-output.log",
-    "demo": "npm start",
-    "demo:server": "npx tsx examples/simple-app.ts",
-    "demo:browser": "npm start",
-    "dev": "node examples/simple-usage.js && npm run build",
-    "serve": "cd examples && python3 -m http.server 8080",
-    "serve:examples": "echo 'Open http://localhost:8080/browser-simulation.html' && npm run serve",
-    "prepublishOnly": "npm run build && npm run paths:clean && npx tsx scripts/create-import-map.ts"
+    "agent:logs": "tail -f .continuum/jtag/system/logs/server-node-output.log"
   },
   "keywords": [
     "debugging",
@@ -249,7 +242,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-05T00:54:44.047Z",
+    "timestamp": "2025-08-05T01:01:05.293Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 32,
     "note": "Generated from clean essential path mappings only"
