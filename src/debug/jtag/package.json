@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.634",
+  "version": "1.0.640",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -101,7 +101,8 @@
     }
   },
   "scripts": {
-    "start": "npm run kill && npm run clean && npm run build && npm run pack && npm run system:deploy && npm run system:run",
+    "start": "npm run kill && npm run clean && npm run smart-build && npm run system:deploy && npm run system:run",
+    "smart-build": "npx tsx scripts/smart-build.ts",
     "kill": "tmux kill-session -t jtag-test 2>/dev/null || true; lsof -ti:9002 | xargs kill -9 2>/dev/null || true; lsof -ti:9001 | xargs kill -9 2>/dev/null || true",
     "clean": "rm -rf dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
     "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
@@ -193,10 +194,12 @@
   ],
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@types/glob": "^8.1.0",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.15.29",
     "@types/node-fetch": "^2.6.12",
     "@types/ws": "^8.18.1",
+    "glob": "^11.0.3",
     "jest": "^29.5.0",
     "node-fetch": "^3.3.2",
     "puppeteer": "^24.15.0",
@@ -243,7 +246,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-05T03:17:46.428Z",
+    "timestamp": "2025-08-05T03:43:43.105Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 32,
     "note": "Generated from clean essential path mappings only"
