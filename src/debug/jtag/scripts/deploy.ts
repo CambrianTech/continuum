@@ -19,85 +19,133 @@ interface PackageJson {
   [key: string]: any;
 }
 
-function deployTestBench(): void {
-    try {
-        // Read the main package.json to get current version
-        const mainPackagePath = path.join(__dirname, '..', 'package.json');
-        const mainPackage: PackageJson = JSON.parse(fs.readFileSync(mainPackagePath, 'utf8'));
-        const currentVersion = mainPackage.version;
-        
-        console.log(`📦 Current JTAG version: ${currentVersion}`);
-        
-        // Check if the corresponding tarball exists
-        const tarballName = `continuum-jtag-${currentVersion}.tgz`;
-        const tarballPath = path.join(__dirname, '..', tarballName);
-        
-        if (!fs.existsSync(tarballPath)) {
-            console.error(`❌ Tarball not found: ${tarballPath}`);
-            process.exit(1);
-        }
-        
-        console.log(`✅ Found tarball: ${tarballName}`);
-        
-        // Update test-bench package.json
-        const testBenchDir = path.join(__dirname, '..', 'examples', 'test-bench');
-        const testBenchPackagePath = path.join(testBenchDir, 'package.json');
-        
-        if (!fs.existsSync(testBenchPackagePath)) {
-            console.error(`❌ Test bench package.json not found: ${testBenchPackagePath}`);
-            process.exit(1);
-        }
-        
-        const testBenchPackage: PackageJson = JSON.parse(fs.readFileSync(testBenchPackagePath, 'utf8'));
-        
-        // Update the dependency to point to the local tarball
-        if (!testBenchPackage.dependencies) {
-            testBenchPackage.dependencies = {};
-        }
-        
-        testBenchPackage.dependencies['@continuum/jtag'] = `file:../../${tarballName}`;
-        
-        // Write back the updated package.json
-        fs.writeFileSync(testBenchPackagePath, JSON.stringify(testBenchPackage, null, 2) + '\n');
-        
-        console.log(`✅ Test bench updated to use JTAG v${currentVersion}`);
-        console.log(`   Dependency: @continuum/jtag → file:../../${tarballName}`);
-        
-        // Clean and reinstall dependencies
-        console.log(`🧹 Cleaning test-bench dependencies...`);
-        
-        const nodeModulesPath = path.join(testBenchDir, 'node_modules');
-        const packageLockPath = path.join(testBenchDir, 'package-lock.json');
-        
-        // Remove node_modules and package-lock.json if they exist
-        if (fs.existsSync(nodeModulesPath)) {
-            fs.rmSync(nodeModulesPath, { recursive: true, force: true });
-            console.log(`   Removed node_modules`);
-        }
-        
-        if (fs.existsSync(packageLockPath)) {
-            fs.unlinkSync(packageLockPath);
-            console.log(`   Removed package-lock.json`);
-        }
-        
-        // Fresh npm install
-        console.log(`📥 Installing dependencies...`);
-        execSync('npm install', { 
-            cwd: testBenchDir, 
-            stdio: 'inherit' 
+interface DeploymentInfo {
+  version: string;
+  tarballName: string;
+  tarballPath: string;
+}
+
+interface ProjectInfo {
+  name: string;
+  projectDir: string;
+  packageJsonPath: string;
+}
+
+function getCurrentVersion(): DeploymentInfo {
+  const mainPackagePath = path.join(__dirname, '..', 'package.json');
+  const mainPackage: PackageJson = JSON.parse(fs.readFileSync(mainPackagePath, 'utf8'));
+  const version = mainPackage.version;
+  const tarballName = `continuum-jtag-${version}.tgz`;
+  const tarballPath = path.join(__dirname, '..', tarballName);
+  
+  if (!fs.existsSync(tarballPath)) {
+    throw new Error(`Tarball not found: ${tarballPath}`);
+  }
+  
+  return { version, tarballName, tarballPath };
+}
+
+function discoverNodeProjects(): ProjectInfo[] {
+  const examplesDir = path.join(__dirname, '..', 'examples');
+  const projects: ProjectInfo[] = [];
+  
+  const items = fs.readdirSync(examplesDir, { withFileTypes: true });
+  
+  for (const item of items) {
+    if (item.isDirectory()) {
+      const projectDir = path.join(examplesDir, item.name);
+      const packageJsonPath = path.join(projectDir, 'package.json');
+      
+      if (fs.existsSync(packageJsonPath)) {
+        projects.push({
+          name: item.name,
+          projectDir,
+          packageJsonPath
         });
-        
-        console.log(`🎉 Test bench deployment complete!`);
-        
-    } catch (error) {
-        console.error(`❌ Failed to deploy test bench: ${error}`);
-        process.exit(1);
+      }
     }
+  }
+  
+  return projects;
+}
+
+function cleanProjectDependencies(projectDir: string): void {
+  const nodeModulesPath = path.join(projectDir, 'node_modules');
+  const packageLockPath = path.join(projectDir, 'package-lock.json');
+  
+  if (fs.existsSync(nodeModulesPath)) {
+    fs.rmSync(nodeModulesPath, { recursive: true, force: true });
+    console.log(`   🗑️  Removed node_modules`);
+  }
+  
+  if (fs.existsSync(packageLockPath)) {
+    fs.unlinkSync(packageLockPath);
+    console.log(`   🗑️  Removed package-lock.json`);
+  }
+}
+
+function deployToSingleProject(project: ProjectInfo, deployment: DeploymentInfo): void {
+  console.log(`\n🚀 Deploying to ${project.name}...`);
+  
+  // Read and update package.json
+  const projectPackage: PackageJson = JSON.parse(fs.readFileSync(project.packageJsonPath, 'utf8'));
+  
+  if (!projectPackage.dependencies) {
+    projectPackage.dependencies = {};
+  }
+  
+  projectPackage.dependencies['@continuum/jtag'] = `file:../../${deployment.tarballName}`;
+  
+  // Write back the updated package.json
+  fs.writeFileSync(project.packageJsonPath, JSON.stringify(projectPackage, null, 2) + '\n');
+  
+  console.log(`   ✅ Updated ${project.name} to use JTAG v${deployment.version}`);
+  console.log(`   📋 Dependency: @continuum/jtag → file:../../${deployment.tarballName}`);
+  
+  // Clean dependencies
+  console.log(`   🧹 Cleaning dependencies...`);
+  cleanProjectDependencies(project.projectDir);
+  
+  // Fresh npm install
+  console.log(`   📥 Installing dependencies...`);
+  execSync('npm install', { 
+    cwd: project.projectDir, 
+    stdio: 'inherit' 
+  });
+  
+  console.log(`   ✅ ${project.name} deployment complete!`);
+}
+
+function deployToNode(): void {
+  try {
+    const deployment = getCurrentVersion();
+    console.log(`📦 Current JTAG version: ${deployment.version}`);
+    console.log(`✅ Found tarball: ${deployment.tarballName}`);
+    
+    const projects = discoverNodeProjects();
+    
+    if (projects.length === 0) {
+      console.log(`ℹ️  No Node.js projects found in examples/`);
+      return;
+    }
+    
+    console.log(`🔍 Found ${projects.length} Node.js project(s): ${projects.map(p => p.name).join(', ')}`);
+    
+    for (const project of projects) {
+      deployToSingleProject(project, deployment);
+    }
+    
+    console.log(`\n🎉 All Node.js projects deployed successfully!`);
+    
+  } catch (error) {
+    console.error(`❌ Failed to deploy to Node.js projects: ${error}`);
+    process.exit(1);
+  }
 }
 
 // Run if called directly
 if (require.main === module) {
-    deployTestBench();
+    deployToNode();
 }
 
-export { deployTestBench };
+export { deployToNode };
