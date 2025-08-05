@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.615",
+  "version": "1.0.618",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -101,19 +101,21 @@
     }
   },
   "scripts": {
-    "screenshot": "npx tsx scripts/screenshot.ts",
-    "start": "npm run system:stop && npm run clean:all && npm run build && npm run version:bump && npm pack && npx tsx scripts/update-test-bench.ts && cd examples/test-bench && npm install && npm start",
+    "start": "npm run kill && npm run clean && npm run build && npm run pack && npm run deploy && npm run run",
+    "kill": "tmux kill-session -t jtag-test 2>/dev/null || true; lsof -ti:9002 | xargs kill -9 2>/dev/null || true; lsof -ti:9001 | xargs kill -9 2>/dev/null || true",
+    "clean": "rm -rf dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
+    "run": "cd examples/test-bench && npm start",
     "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
     "paths:clean": "npx tsx generator/PathMappingGenerator.ts",
     "prebuild": "npx tsx generator/generate-structure.ts",
+    "build:ts": "tsc --project tsconfig.json",
     "build": "npm run prebuild && npm run build:ts",
     "postbuild": "npm run paths:clean && npx tsx scripts/create-import-map.ts && npx tsx scripts/convert-imports-to-relative.ts",
-    "prepack": "npm run paths:clean && npx tsx scripts/create-import-map.ts",
-    "build:with-test-bench": "npm run build && npm pack && npx tsx scripts/update-test-bench.ts && cd examples/test-bench && npm install",
-    "build:ts": "tsc --project tsconfig.json",
-    "build:mcp": "npx tsc mcp/jtag-mcp-server.ts --outDir mcp --target ES2020 --module commonjs --esModuleInterop",
     "version:bump": "npm version patch --no-git-tag-version",
+    "prepack": "npm run paths:clean && npx tsx scripts/create-import-map.ts",
+    "pack": "npm run version:bump && npm pack",
+    "deploy": "npx tsx scripts/update-test-bench.ts && cd examples/test-bench && npm install",
     "system:start": "tmux new-session -d -s jtag-test 'stdbuf -oL -eL npm start &> .continuum/jtag/system/logs/npm-start.log' || echo 'System already running'",
     "system:stop": "tmux kill-session -t jtag-test 2>/dev/null || true; lsof -ti:9002 | xargs kill -9 2>/dev/null || true; lsof -ti:9001 | xargs kill -9 2>/dev/null || true",
     "system:wait": "sleep 8 && curl -s http://localhost:9002 >/dev/null && curl -s http://localhost:9001 >/dev/null",
@@ -122,6 +124,7 @@
     "system:restart": "npx tsx scripts/smart-system-startup.ts --force",
     "logs:show": "echo '📋 JTAG Log Status:' && ls -la ../../../.continuum/jtag/logs/ 2>/dev/null || echo 'No logs found'",
     "logs:tail": "find ../../../.continuum/jtag/logs -name '*.log' -type f | head -1 | xargs tail -f 2>/dev/null || echo 'No log files to tail'",
+    "screenshot": "npx tsx scripts/screenshot.ts",
     "test": "npm run test:all",
     "test:all": "npm run test:layer-1 && npm run test:layer-2 && npm run test:layer-3 && npm run test:layer-4 && npm run test:promise-event-system && npm run test:layer-5 && npm run test:layer-6 && npm run test:verify",
     "pretest:layer-1": "npm run system:ensure",
@@ -246,7 +249,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-04T23:25:03.667Z",
+    "timestamp": "2025-08-05T00:54:44.047Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 32,
     "note": "Generated from clean essential path mappings only"
