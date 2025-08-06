@@ -27,41 +27,6 @@ export class JTAGSystemBrowser extends JTAGSystem {
     return '{VERSION_STRING}-browser';
   }
 
-  /**
-   * Initialize session from SessionDaemon and update context UUID
-   */
-  private async initializeSessionFromDaemon(): Promise<void> {
-    const sessionDaemon = this.daemons.find(d => d instanceof SessionDaemonBrowser);
-    if (!sessionDaemon) {
-      console.warn(`⚠️ ${this.toString()}: No SessionDaemon available - keeping system scope`);
-      return;
-    }
-
-    try {
-      console.log(`🏷️ ${this.toString()}: Getting session ID from SessionDaemon...`);
-      
-      // Set a shorter timeout for session creation to avoid blocking system initialization
-      const sessionPromise = sessionDaemon.getOrCreateSession();
-      const timeoutPromise = new Promise<never>((_, reject) => 
-        setTimeout(() => reject(new Error('Session creation timeout')), 3000)
-      );
-      
-      const sessionId = await Promise.race([sessionPromise, timeoutPromise]);
-      
-      // Update context UUID to use session ID from SessionDaemon
-      this.context.uuid = sessionId;
-      this.sessionId = sessionId;
-      
-      // Update ConsoleDaemon with the session ID
-      this.updateConsoleDaemonSessionId();
-      
-      console.log(`✅ ${this.toString()}: Session initialized from daemon - ${sessionId}`);
-    } catch (error) {
-      console.error(`❌ ${this.toString()}: Error getting session from daemon:`, error);
-      // Keep system scope if session daemon fails
-      console.log(`🔄 ${this.toString()}: Falling back to system scope`);
-    }
-  }
 
   public static instance: JTAGSystemBrowser | null = null;
 
@@ -136,7 +101,7 @@ export class JTAGSystemBrowser extends JTAGSystem {
     await system.setupDaemons();
 
     // 5. Get session ID from SessionDaemon and update context
-    await system.initializeSessionFromDaemon();
+    // Session management handled by JTAGClient, not JTAGSystem
 
     // 6. Setup cross-context transport
     await system.setupTransports();

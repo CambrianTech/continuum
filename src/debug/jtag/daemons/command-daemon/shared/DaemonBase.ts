@@ -6,8 +6,9 @@
  */
 
 import { JTAGModule } from '../../../system/core/shared/JTAGModule';
-import type { JTAGContext, JTAGMessage } from '../../../system/core/types/JTAGTypes';
+import { JTAGEnvironment, JTAGMessageFactory, useEnvironment, type JTAGContext, type JTAGMessage, type JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter, MessageSubscriber } from '../../../system/core/router/shared/JTAGRouter';
+import { type RouterResult } from '@core/router/shared/RouterTypes';
 
 export interface DaemonEntry {
   name: string;
@@ -60,6 +61,26 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
   }
 
 
+  protected createRequestMessage(endpoint:string, payload: JTAGPayload): JTAGMessage {
+    return JTAGMessageFactory.createRequest(
+      this.context,
+      this.subpath,
+      endpoint,
+      payload
+    );
+  }
+
+
+  /**
+   * Execute remote daemon operation - universal cross-environment method
+   * Allows any daemon to call operations on any other daemon
+   */
+  protected async executeRemote(message: JTAGMessage, environment: JTAGEnvironment): Promise<RouterResult> { 
+    message.endpoint = useEnvironment(message.endpoint, environment);
+    console.log(`⚡ ${this.toString()}: Executing remote operation: ${message.endpoint}`);
+    return this.router.postMessage(message);
+  }
+  
   /**
    * Cleanup resources when daemon shuts down
    * Override in subclasses if cleanup is needed

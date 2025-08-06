@@ -30,7 +30,7 @@
  *
  * 🚨 ISSUE 5: CONNECTION ABSTRACTION LEAKY
  *    - JTAGConnection interface forces JTAGPayload generics
- *    - Should be: executeCommand(name: string, params: any): Promise<any>
+ *    - Should be: executeCommand(name: string, params:any): Promise<any>
  *    - Over-typing creates complexity without benefit
  *
  * 🚨 ISSUE 6: STATIC CONNECT METHOD WRONG PLACE
@@ -105,7 +105,7 @@
 
 import { generateUUID, type UUID} from '../../types/CrossPlatformUUID';
 import { JTAGBase, type CommandsInterface } from '../../shared/JTAGBase';
-import type { JTAGContext, JTAGMessage, JTAGPayload, CommandParams, CommandResult, JTAGRequestMessage, JTAGResponseMessage, JTAGEnvironment } from '../../types/JTAGTypes';
+import type { JTAGContext, JTAGMessage, JTAGPayload, JTAGEnvironment } from '../../types/JTAGTypes';
 import { JTAGMessageFactory, JTAGMessageTypes } from '../../types/JTAGTypes';
 import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
 import type { ITransportFactory, TransportConfig, JTAGTransport, TransportProtocol, TransportSendResult } from '../../../transports';
@@ -114,8 +114,9 @@ import type { ListParams, ListResult, CommandSignature } from '../../../../comma
 import { createListParams } from '../../../../commands/list/shared/ListTypes';
 import type { BaseResponsePayload, JTAGResponsePayload } from '../../types/ResponseTypes';
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
-import { SYSTEM_SCOPES, isUnknownSession } from '../../types/SystemScopes';
-
+import { SYSTEM_SCOPES } from '../../types/SystemScopes';
+import type { SessionMetadata } from '../../../../daemons/session-daemon/shared/SessionTypes';
+import type { SessionCreateResult } from '../../../../commands/session/create/shared/SessionCreateTypes';
 /**
  * JTAGClient connection options
  */
@@ -194,15 +195,16 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     localSystemAvailable: false
   };
 
-  public readonly sessionId: UUID;
+  public get sessionId(): UUID {
+    return this._session?.sessionId ?? SYSTEM_SCOPES.UNKNOWN_SESSION;
+  }
+  private _session: SessionMetadata | undefined;
 
   constructor(context: JTAGContext) {
     super('jtag-client', context);
-    this.sessionId = context.uuid;
     this.transportId = generateUUID();
   }
-
-
+  
   /**
    * Get connection information for diagnostics and testing
    */
@@ -268,72 +270,6 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   protected abstract getLocalSystem(): Promise<JTAGSystem | null>;
 
   /**
-   * Request session from SessionDaemon using proper bootstrap protocol
-   * Solves chicken-and-egg problem: use bootstrap context to get real session
-   */
-  private async requestSessionFromRemoteDaemon(): Promise<UUID> {
-    const isBootstrap = isUnknownSession(this.sessionId);
-    console.log(`🏷️ JTAGClient: Requesting session from remote SessionDaemon (${isBootstrap ? 'UNKNOWN_SESSION bootstrap' : 'existing context'}: ${this.sessionId})`);
-    
-    try {
-      // Call SessionDaemon via remote connection using proper endpoint
-      if (!this.connection) {
-        throw new Error('No remote connection available');
-      }
-      
-      // Use the session-daemon/get-default endpoint for default session
-      const response = await this.connection.executeCommand('session-daemon/get-default', {
-        context: this.context,
-        sessionId: this.sessionId,
-        type: 'get',
-        currentSessionId: this.sessionId
-      });
-      
-      const newSessionId = response.sessionId as UUID;
-      console.log(`✅ JTAGClient: SessionDaemon returned session: ${newSessionId}`);
-      return newSessionId;
-    } catch (error) {
-      console.warn(`⚠️ JTAGClient: Failed to get session from remote SessionDaemon: ${error}`);
-      console.log(`🔄 JTAGClient: Keeping bootstrap session: ${this.sessionId}`);
-      return this.sessionId;
-    }
-  }
-
-  private async requestSessionFromDaemon(system: JTAGSystem): Promise<UUID> {
-    const isBootstrap = isUnknownSession(this.sessionId);
-    console.log(`🏷️ JTAGClient: Requesting session from SessionDaemon (${isBootstrap ? 'UNKNOWN_SESSION bootstrap' : 'existing context'}: ${this.sessionId})`);
-    
-    try {
-      // Find SessionDaemon in the system - check by name since we can't import specific types
-      const sessionDaemon = system.systemDaemons.find(daemon => 
-        daemon.name === 'session-daemon' || 
-        daemon.constructor.name.includes('SessionDaemon')
-      );
-      
-      if (!sessionDaemon) {
-        console.warn(`⚠️ JTAGClient: No SessionDaemon found in ${system.systemDaemons.length} daemons, keeping bootstrap session ${this.sessionId}`);
-        return this.sessionId;
-      }
-
-      console.log(`🔍 JTAGClient: Found SessionDaemon: ${sessionDaemon.constructor.name}`);
-
-      // Call SessionDaemon's getOrCreateSession method directly (local system)
-      if (typeof (sessionDaemon as any).getOrCreateSession === 'function') {
-        const realSessionId = await (sessionDaemon as any).getOrCreateSession();
-        console.log(`✅ JTAGClient: SessionDaemon returned session: ${realSessionId}`);
-        return realSessionId;
-      } else {
-        console.warn(`⚠️ JTAGClient: SessionDaemon missing getOrCreateSession method, keeping bootstrap session`);
-        return this.sessionId;
-      }
-    } catch (error) {
-      console.error(`❌ JTAGClient: Failed to get session from SessionDaemon:`, error);
-      console.log(`🔄 JTAGClient: Falling back to bootstrap session: ${this.sessionId}`);
-      return this.sessionId;
-    }
-  }
-
-  /**
    * Abstract initialization method - subclasses implement environment-specific setup
    * 
    * TODO: Implement proper local vs remote detection logic
@@ -351,7 +287,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       this.connectionMetadata.connectionType = 'local';
       this.connectionMetadata.reason = 'Local system instance available';
       
-      this.connection = await this.createLocalConnection();
+      this.connection = this.createLocalConnection();
     } else {
       // Remote connection setup
       this.connectionMetadata.connectionType = 'remote';
@@ -370,27 +306,37 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
 
       const factory = await this.getTransportFactory();
       this.systemTransport = await factory.createTransport(this.context.environment, transportConfig);
-      this.connection = await this.createRemoteConnection();
+      this.connection = this.createRemoteConnection();
     }
 
     // Universal session management - works for both local and remote
     console.log('🏷️ JTAGClient: Requesting session from SessionDaemon...');
-    const realSessionId = localSystem 
-      ? await this.requestSessionFromDaemon(localSystem)
-      : await this.requestSessionFromRemoteDaemon();
-    
-    if (realSessionId !== this.sessionId) {
-      const wasBootstrap = isUnknownSession(this.sessionId);
-      console.log(`🔄 JTAGClient: ${wasBootstrap ? 'Bootstrap complete' : 'Session updated'}: ${this.sessionId} → ${realSessionId}`);
-      (this as any).sessionId = realSessionId;
-      this.context.uuid = realSessionId;
+
+    const sessionParams = {
+      context: this.context,
+      sessionId: this.sessionId,
+      category: 'user' as const,
+      displayName: 'Anonymous User',
+      isShared: true
+    };
+    const result = await this.connection.executeCommand('session/create', sessionParams);
+    const sessionResult = result as SessionCreateResult;
+    const session = sessionResult.session;
+    const error = sessionResult.error;
+
+    if (error) {
+      console.error('❌ JTAGClient: Failed to create session:', error);
+    } else if (session) {
+      const wasBootstrap = this.sessionId === SYSTEM_SCOPES.UNKNOWN_SESSION;
+      console.log(`🔄 JTAGClient: ${wasBootstrap ? 'Bootstrap complete' : 'Session updated'}: ${this.sessionId} → ${session.sessionId}`);
+      this._session = session;
     }
 
     await this.discoverCommands();
   }
 
   /**
-   * Get environment-specific transport factory - implemented by JTAGClientServer/JTAGClientBrowser
+   * Get environment-specific transport factory - implemented by JT`AGClientServer/JTAGClientBrowser
    */
   protected abstract getTransportFactory(): Promise<ITransportFactory>;
 
@@ -398,6 +344,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * Get environment-specific command correlator - implemented by subclasses
    */
   protected abstract getCommandCorrelator(): ICommandCorrelator;
+
 
   /**
    * Set up commands interface that routes commands through transport to remote JTAGSystem
@@ -595,12 +542,14 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
 export class LocalConnection implements JTAGConnection {
   public readonly sessionId: UUID;
   public readonly context: JTAGContext;
+  public readonly localSystem: JTAGSystem;
 
   constructor(
-    private readonly localSystem: any, 
+    localSystem: JTAGSystem, 
     context: JTAGContext, 
     sessionId: UUID
   ) {
+    this.localSystem = localSystem;
     this.context = context;
     this.sessionId = sessionId;
   }
@@ -610,7 +559,7 @@ export class LocalConnection implements JTAGConnection {
     params: TParams
   ): Promise<TResult> {
     // Direct call to local system - zero transport overhead
-    const commandFn = (this.localSystem.commands as any)[commandName];
+    const commandFn = this.localSystem.commands[commandName];
     if (!commandFn) {
       throw new Error(`Command '${commandName}' not available in local system`);
     }

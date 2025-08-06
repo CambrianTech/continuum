@@ -19,6 +19,18 @@ async function testServerClient() {
     
     console.log('✅ Connected! Available commands:', connectionResult.listResult.totalCount);
     
+    // Test session create command directly 
+    console.log('🏷️ Testing session/create command from server...');
+    const sessionResult = await client.commands['session/create']({
+      context: { uuid: 'direct-test-session', environment: 'server' },
+      sessionId: 'direct-test-session',
+      category: 'user' as const,
+      displayName: 'Direct Test Session',
+      isShared: true
+    });
+    
+    console.log('✅ Session create command result:', JSON.stringify(sessionResult, null, 2));
+
     // Test screenshot command routing from server -> browser
     console.log('📸 Testing screenshot command from server -> browser...');
     const screenshotResult = await client.commands.screenshot({ 

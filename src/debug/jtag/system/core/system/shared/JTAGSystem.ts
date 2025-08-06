@@ -16,7 +16,7 @@ import { CommandDaemon } from '../../../../daemons/command-daemon/shared/Command
 import { ConsoleDaemon } from '../../../../daemons/console-daemon/shared/ConsoleDaemon';
 import type { JTAGRouterConfig } from '../../router/shared/JTAGRouterTypes';
 import type { UUID } from '../../types/CrossPlatformUUID';
-import type { SessionCategory } from '../../types/SystemScopes';
+import type { SessionCategory } from '../../../../daemons/session-daemon/shared/SessionTypes';
 
 
 /**
@@ -218,7 +218,7 @@ export abstract class JTAGSystem extends JTAGBase {
    * Implementation of abstract method from JTAGBase
    * Provides command source from CommandDaemon
    */
-  protected getCommandsInterface(): CommandsInterface {
+  public getCommandsInterface(): CommandsInterface {
     const commandDaemon = this.daemons.find(d => d instanceof CommandDaemon);
     if (!commandDaemon) {
       throw new Error('CommandDaemon not available');
