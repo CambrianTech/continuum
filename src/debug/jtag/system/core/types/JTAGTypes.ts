@@ -56,6 +56,23 @@ export interface JTAGContext {
   environment: JTAGEnvironment;
 }
 
+export const extractEnvironment = (endpoint: string, parts?: string[]): JTAGEnvironment | undefined => {
+    parts = parts ?? endpoint.split('/');
+    return parts.length > 1 ? parts[0] as JTAGEnvironment : undefined;
+}
+
+export const useEnvironment = (endpoint: string, environment: JTAGEnvironment): string => {
+  const parts = endpoint.split('/');
+  const existingEnvironment = extractEnvironment(endpoint, parts);
+
+  if (existingEnvironment) {
+    parts[0] = environment; // Replace existing environment
+  } else {
+    parts.unshift(environment);
+  }
+  return `$${parts.join('/')}`;
+}
+
 /**
  * JTAG Payload Base Class
  * 
@@ -260,7 +277,7 @@ export class JTAGMessageFactory {
     origin: string,
     endpoint: string,
     payload: T,
-    correlationId: string
+    correlationId?: string
   ): JTAGRequestMessage<T> {
     const message = {
       messageType: 'request' as const,
@@ -268,7 +285,7 @@ export class JTAGMessageFactory {
       origin,
       endpoint,
       payload,
-      correlationId,
+      correlationId: correlationId ?? JTAGMessageFactory.generateCorrelationId(),
       hashCode(): string {
         return JTAGMessageUtils.generateMessageHash(this);
       }

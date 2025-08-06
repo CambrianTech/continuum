@@ -5,10 +5,10 @@
  * TEMPORARY: Direct sessionStorage access until ArtifactoryDaemon is created.
  */
 
-import { JTAGContext, JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
-import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import type { JTAGContext, JTAGMessage } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { SessionDaemon } from '../shared/SessionDaemon';
-import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { SessionResponse } from '../shared/SessionTypes';
 
 export class SessionDaemonBrowser extends SessionDaemon {
   private static readonly SESSION_STORAGE_KEY = 'jtag_session_id';
@@ -26,34 +26,22 @@ export class SessionDaemonBrowser extends SessionDaemon {
   }
 
   /**
-   * Override: Check existing session in sessionStorage (browser-specific)
+   * Override handleMessage for browser to properly await server response
    */
-  protected override async checkExistingSession(): Promise<UUID | null> {
-    if (typeof sessionStorage === 'undefined') {
-      return null;
-    }
+  async handleMessage(message: JTAGMessage): Promise<SessionResponse> {
+    console.log(`📨 ${this.toString()}: Forwarding session message to server`);
     
-    const sessionId = sessionStorage.getItem(SessionDaemonBrowser.SESSION_STORAGE_KEY);
-    return sessionId as UUID | null;
-  }
-
-  /**
-   * Override: Store session in sessionStorage (browser-specific)
-   */
-  protected override async storeSession(sessionId: UUID): Promise<void> {
-    if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.setItem(SessionDaemonBrowser.SESSION_STORAGE_KEY, sessionId);
-      console.log(`💾 ${this.toString()}: Stored session in sessionStorage: ${sessionId}`);
-    }
-  }
-
-  /**
-   * Override: Clear session from sessionStorage (browser-specific)
-   */
-  protected override async clearSession(): Promise<void> {
-    if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.removeItem(SessionDaemonBrowser.SESSION_STORAGE_KEY);
-      console.log(`🗑️ ${this.toString()}: Cleared session from sessionStorage`);
+    // Forward to server and await full response with session data
+    const serverOperation = message.endpoint.split('/').pop() || 'create';
+    console.log(`⚡ ${this.toString()}: Executing remote operation: $server/${serverOperation}`);
+    
+    try {
+      const result = await this.executeRemote(message, 'server') as SessionResponse;
+      console.log(`🔍 ${this.toString()}: Server response received:`, JSON.stringify(result, null, 2));
+      return result;
+    } catch (error) {
+      console.error(`❌ ${this.toString()}: Remote execution failed:`, error);
+      throw error;
     }
   }
 }

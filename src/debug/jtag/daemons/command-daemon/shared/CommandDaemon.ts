@@ -122,7 +122,7 @@ export abstract class CommandDaemon extends DaemonBase {
   }
 
   /**
-   * Execute command directly (used by JTAGSystem.commands.screenshot())
+   * Execute command directly (used by all command invocations)
    */
   async execute(commandName: string, sessionId: UUID, params?: CommandParams): Promise<CommandResult> {
     const command = this.commands.get(commandName);
