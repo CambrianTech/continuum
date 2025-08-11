@@ -27,6 +27,13 @@ import { JTAGMessageTypes } from '../../types/JTAGTypes';
 import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 import type { ITransportFactory, TransportConfig } from '../../../transports';
 import type { JTAGRouterConfig } from './JTAGRouterTypes';
+import {
+  CLIENT_CORRELATION_PREFIX,
+  REMOTE_ENDPOINT_PREFIX,
+  COMMAND_TYPES,
+  STRATEGY_DYNAMIC,
+  TRANSPORT_WEBSOCKET
+} from './RouterConstants';
 
 /**
  * Basic transport info from ITransportStrategy interface
@@ -161,7 +168,7 @@ export class JTAGRouterDynamic extends JTAGRouter {
     console.log(`📨 JTAGRouterDynamic: Processing message with intelligent routing: ${message.endpoint}`);
     
     // CORRELATION FIX: Register external client correlation IDs with ResponseCorrelator
-    if (JTAGMessageTypes.isRequest(message) && message.correlationId?.startsWith('client_')) {
+    if (JTAGMessageTypes.isRequest(message) && message.correlationId?.startsWith(CLIENT_CORRELATION_PREFIX)) {
       console.log(`🔗 ${this.toString()}: Registering external correlation ${message.correlationId}`);
       
       // Register external correlation with ResponseCorrelator (don't await - let it resolve later)
@@ -203,7 +210,7 @@ export class JTAGRouterDynamic extends JTAGRouter {
    */
   private logRoutingDecision(message: JTAGMessage): void {
     // Only log for non-console messages to avoid feedback loops
-    if (!message.endpoint.includes('console')) {
+    if (!message.endpoint.includes(COMMAND_TYPES.CONSOLE)) {
       console.log(`🎯 JTAGRouterDynamic: Routing ${message.endpoint}`);
     }
   }
@@ -217,10 +224,10 @@ export class JTAGRouterDynamic extends JTAGRouter {
     // - P2P discovery shows available nodes
     // - Message type benefits from distributed routing
     
-    const hasRemoteTarget = message.endpoint.includes('/remote/');
+    const hasRemoteTarget = message.endpoint.includes(REMOTE_ENDPOINT_PREFIX);
     const transportInfo = (this.transportStrategy as DynamicTransportStrategy).getTransportStatusInfo();
     const isP2PAvailable = transportInfo.p2pEnabled;
-    const benefitsFromP2P = ['chat', 'file', 'screenshot'].some(cmd => message.endpoint.includes(cmd));
+    const benefitsFromP2P = [COMMAND_TYPES.CHAT, COMMAND_TYPES.FILE, COMMAND_TYPES.SCREENSHOT].some(cmd => message.endpoint.includes(cmd));
     
     const shouldUseP2P = hasRemoteTarget || (isP2PAvailable && benefitsFromP2P);
     
@@ -371,7 +378,7 @@ export class JTAGRouterDynamic extends JTAGRouter {
       return {
         ...extendedStatus, // Already includes p2pEnabled and discovery
         environment: this.context.environment,
-        transportStrategy: 'dynamic' as const
+        transportStrategy: STRATEGY_DYNAMIC
       };
     }
     
@@ -379,11 +386,11 @@ export class JTAGRouterDynamic extends JTAGRouter {
     return {
       ...transportStatus,
       environment: this.context.environment,
-      transportStrategy: 'dynamic' as const,
+      transportStrategy: STRATEGY_DYNAMIC,
       p2pEnabled: false,
       discovery: {
         available: [],
-        preferred: 'websocket',
+        preferred: TRANSPORT_WEBSOCKET,
         fallbacks: [],
         p2pCapable: false
       }

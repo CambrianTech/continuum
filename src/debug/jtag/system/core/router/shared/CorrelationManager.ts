@@ -5,6 +5,8 @@
  * Handles the mapping between processing tokens and correlation IDs for ResponseCorrelator.
  */
 
+import { REQUEST_TOKEN_PREFIX, RESPONSE_TOKEN_PREFIX } from './RouterConstants';
+
 export class CorrelationManager {
   // Map req: processing tokens to raw correlation IDs for ResponseCorrelator
   private readonly reqToCorrelation = new Map<string, string>(); // req:abc123 -> abc123
@@ -16,8 +18,8 @@ export class CorrelationManager {
    * Register a new request correlation mapping
    */
   registerRequest(correlationId: string): void {
-    const reqToken = `req:${correlationId}`;
-    const resToken = `res:${correlationId}`;
+    const reqToken = `${REQUEST_TOKEN_PREFIX}${correlationId}`;
+    const resToken = `${RESPONSE_TOKEN_PREFIX}${correlationId}`;
     this.reqToCorrelation.set(reqToken, correlationId);
     this.resToReq.set(resToken, reqToken);
   }
@@ -40,8 +42,8 @@ export class CorrelationManager {
    * Clean up correlation mappings for a given correlation ID
    */
   cleanup(correlationId: string): void {
-    const reqToken = `req:${correlationId}`;
-    const resToken = `res:${correlationId}`;
+    const reqToken = `${REQUEST_TOKEN_PREFIX}${correlationId}`;
+    const resToken = `${RESPONSE_TOKEN_PREFIX}${correlationId}`;
     this.reqToCorrelation.delete(reqToken);
     this.resToReq.delete(resToken);
   }

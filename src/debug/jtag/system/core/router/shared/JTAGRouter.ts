@@ -51,6 +51,19 @@ import type { QueuedItem } from './queuing/PriorityQueue';
 // Import transport strategy for extraction pattern
 import { RouterUtilities } from './RouterUtilities';
 import { CorrelationManager } from './CorrelationManager';
+import { 
+  ROUTER_CONSTANTS,
+  UNIVERSAL_ROUTER,
+  CLIENT_ENDPOINT,
+  STRATEGY_HARDCODED,
+  ENV_JTAG_FORCE_LEGACY,
+  REQUEST_TOKEN_PREFIX,
+  RESPONSE_TOKEN_PREFIX,
+  CLIENT_CORRELATION_PREFIX,
+  HIERARCHICAL_MATCH_TYPE,
+  TIMEOUTS,
+  type TransportStrategy
+} from './RouterConstants';
 
 // Import configuration types and utilities
 import type { JTAGRouterConfig} from './JTAGRouterTypes';
@@ -119,10 +132,10 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
 
   // Message Processing Token System - prevent duplicate processing
   private readonly processedMessages = new Set<string>();
-  private readonly MESSAGE_PROCESSING_TIMEOUT = 30000; // 30 seconds
+  private readonly MESSAGE_PROCESSING_TIMEOUT = TIMEOUTS.MESSAGE_PROCESSING;
 
   constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
-    super('universal-router', context);
+    super(UNIVERSAL_ROUTER, context);
     
     // Apply default configuration with strong typing using centralized utility
     this.config = createJTAGRouterConfig(config);
@@ -178,8 +191,8 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   protected initializeStrategies(config: JTAGRouterConfig): void {
     // EVOLUTION: Dynamic is now DEFAULT - explicit opt-out to legacy
     const forceLegacy = config.transport?.forceLegacy === true ||
-                       config.transport?.strategy === 'hardcoded' ||
-                       (typeof process !== 'undefined' && process.env?.JTAG_FORCE_LEGACY === 'true');
+                       config.transport?.strategy === STRATEGY_HARDCODED ||
+                       (typeof process !== 'undefined' && process.env?.[ENV_JTAG_FORCE_LEGACY] === 'true');
     
     const useDynamicTransport = !forceLegacy; // Dynamic by default
     
@@ -224,11 +237,11 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     // Request and response with same correlationId should not block each other
     let processingToken: string | undefined;
     if (JTAGMessageTypes.isRequest(message)) {
-      processingToken = `req:${message.correlationId}`;
+      processingToken = `${REQUEST_TOKEN_PREFIX}${message.correlationId}`;
       // Register the correlation mapping for future response resolution
       this.correlationManager.registerRequest(message.correlationId);
     } else if (JTAGMessageTypes.isResponse(message)) {
-      processingToken = `res:${message.correlationId}`;
+      processingToken = `${RESPONSE_TOKEN_PREFIX}${message.correlationId}`;
     } else {
       // Event messages don't have correlationId and don't need deduplication
       processingToken = undefined;
@@ -516,7 +529,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     const resolved = this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
     
     // Send external responses back via WebSocket
-    if (resolved && message.correlationId?.startsWith('client_')) {
+    if (resolved && message.correlationId?.startsWith(CLIENT_CORRELATION_PREFIX)) {
       await this.routeExternalResponse(message);
     }
     
@@ -538,7 +551,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     }
 
     // Register external client correlations
-    if (message.correlationId?.startsWith('client_')) {
+    if (message.correlationId?.startsWith(CLIENT_CORRELATION_PREFIX)) {
       this.registerExternalCorrelation(message.correlationId);
     }
 
@@ -605,7 +618,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     
     console.log(`🎯 ${this.toString()}: Match found - endpoint: ${message.endpoint}, matched: ${matchedEndpoint}, type: ${matchType}, subscriber: ${subscriber.uuid}`);
     
-    if (matchType === 'hierarchical') {
+    if (matchType === HIERARCHICAL_MATCH_TYPE) {
       console.log(`📋 ${this.toString()}: Using hierarchical routing: ${matchedEndpoint} handling ${message.endpoint}`);
     }
 
@@ -657,7 +670,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     const endpoint = message.endpoint;
     
     // For responses to 'client', look up who sent the original request
-    if (endpoint === 'client' && JTAGMessageTypes.isResponse(message)) {
+    if (endpoint === CLIENT_ENDPOINT && JTAGMessageTypes.isResponse(message)) {
       console.log(`🔍 ${this.toString()}: Looking up sender for response ${message.correlationId} to endpoint '${endpoint}'`);
       const senderInfo = this.requestSenders.get(message.correlationId);
       if (senderInfo) {
