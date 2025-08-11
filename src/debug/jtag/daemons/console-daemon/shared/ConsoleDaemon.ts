@@ -476,7 +476,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
    */
   getCurrentSessionId(): UUID {
     // Use provider if available, otherwise fall back to system session
-    return this.sessionIdProvider?.() ?? '00000000-0000-0000-0000-000000000000' as UUID;
+    return this.sessionIdProvider?.() ?? SYSTEM_SCOPES.SYSTEM;
   }
 
   /**

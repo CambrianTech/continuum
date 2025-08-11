@@ -180,16 +180,17 @@ export abstract class JTAGSystem extends JTAGBase {
    * Connect to SessionDaemon to get real sessionId and update ConsoleDaemon
    */
   protected async connectSession(): Promise<void> {
-    this.sessionId = this.context.uuid;
+    // Get sessionId from router config (the proper source)
+    this.sessionId = this.config.router.sessionId ?? SYSTEM_SCOPES.SYSTEM;
 
     try {      
       this.updateConsoleDaemonSessionId();
-      console.log(`✅ ${this.toString()}: Session connected - ${this.sessionId}`);
+      console.log(`✅ ${this.toString()}: Session connected - ${this.sessionId} (context: ${this.context.uuid})`);
     } catch (error) {
       console.error(`❌ ${this.toString()}: Error connecting session:`, error);
-      // Fallback to context.uuid
-      if (this.sessionId !== this.context.uuid) {
-        this.sessionId = this.context.uuid;
+      // Fallback to system scope (not context.uuid!)
+      if (this.sessionId !== SYSTEM_SCOPES.SYSTEM) {
+        this.sessionId = SYSTEM_SCOPES.SYSTEM;
         this.updateConsoleDaemonSessionId();
       }
     }
