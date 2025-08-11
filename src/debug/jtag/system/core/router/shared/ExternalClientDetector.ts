@@ -1,0 +1,69 @@
+/**
+ * External Client Detector - Clean automatic WebSocket client detection
+ * 
+ * Replaces sloppy correlation prefix approach with intelligent message analysis.
+ * Detects external WebSocket clients based on clean endpoint patterns.
+ */
+
+import type { JTAGMessage } from '../../types/JTAGTypes';
+import { JTAGMessageTypes } from '../../types/JTAGTypes';
+
+export class ExternalClientDetector {
+  private readonly externalCorrelations = new Set<string>();
+
+  /**
+   * Detect if message comes from external WebSocket client
+   * 
+   * External clients use clean endpoints: commands/ping, commands/screenshot
+   * Internal systems use prefixed: server/commands/ping, browser/commands/screenshot
+   */
+  isExternalClient(message: JTAGMessage): boolean {
+    // Only requests and responses have correlation IDs
+    if (!JTAGMessageTypes.isRequest(message) && !JTAGMessageTypes.isResponse(message)) {
+      return false;
+    }
+
+    // External clients use clean command endpoints without environment prefixes
+    const hasCleanEndpoint = message.endpoint.startsWith('commands/') && 
+                             !message.endpoint.includes('server/') && 
+                             !message.endpoint.includes('browser/');
+
+    // External clients have clean origins (not internal daemon routes)
+    const hasCleanOrigin = !message.origin.includes('server/') && 
+                           !message.origin.includes('browser/') &&
+                           !message.origin.includes('daemon');
+
+    return hasCleanEndpoint && hasCleanOrigin;
+  }
+
+  /**
+   * Register external correlation for response routing
+   */
+  registerExternal(correlationId: string): void {
+    this.externalCorrelations.add(correlationId);
+  }
+
+  /**
+   * Check if correlation belongs to external client
+   */
+  isExternal(correlationId: string): boolean {
+    return this.externalCorrelations.has(correlationId);
+  }
+
+  /**
+   * Clean up completed correlations
+   */
+  removeCorrelation(correlationId: string): void {
+    this.externalCorrelations.delete(correlationId);
+  }
+
+  /**
+   * Get correlation ID safely with proper type checking
+   */
+  getCorrelationId(message: JTAGMessage): string | null {
+    if (JTAGMessageTypes.isRequest(message) || JTAGMessageTypes.isResponse(message)) {
+      return (message as any).correlationId;
+    }
+    return null;
+  }
+}

@@ -87,6 +87,7 @@ import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
 import { EventManager } from '../../../events';
 import { createJTAGRouterConfig, type ResolvedJTAGRouterConfig, type RouterStatus } from './JTAGRouterTypes';
 import type { TransportEndpointStatus } from '../../../transports';
+import { ExternalClientDetector } from './ExternalClientDetector';
 
 /**
  * Message Subscriber Interface - Core contract for message handling
@@ -126,6 +127,9 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     environment: JTAGEnvironment;
     transport?: JTAGTransport;
   }>();
+
+  // Clean external client detection (replaces sloppy prefix approach)
+  private readonly externalClientDetector = new ExternalClientDetector();
 
   // Correlation management - extracted for better modularity
   private readonly correlationManager = new CorrelationManager();
@@ -502,16 +506,22 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   }
 
   private async routeLocally(message: JTAGMessage): Promise<LocalRoutingResult> {
+    const correlationId = (JTAGMessageTypes.isRequest(message) || JTAGMessageTypes.isResponse(message)) ? message.correlationId : 'none';
+    console.log(`🔍 ${this.toString()}: Routing locally - message type: ${message.messageType}, isRequest: ${JTAGMessageTypes.isRequest(message)}, isResponse: ${JTAGMessageTypes.isResponse(message)}, correlationId: ${correlationId}`);
+    
     // Handle different message types with focused methods
     if (JTAGMessageTypes.isResponse(message)) {
+      console.log(`📥 ${this.toString()}: Taking response path for ${correlationId}`);
       return await this.handleIncomingResponse(message);
     }
     
     if (JTAGMessageTypes.isRequest(message)) {
+      console.log(`📨 ${this.toString()}: Taking request path for ${correlationId}`);
       return await this.handleIncomingRequest(message);
     }
     
     // Events - just route to subscriber
+    console.log(`📢 ${this.toString()}: Taking event path for ${correlationId}`);
     return await this.routeToSubscriber(message);
   }
 
@@ -528,8 +538,8 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     
     const resolved = this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
     
-    // Send external responses back via WebSocket
-    if (resolved && message.correlationId?.startsWith(CLIENT_CORRELATION_PREFIX)) {
+    // Check if this response should be routed to an external client
+    if (resolved && this.externalClientDetector.isExternal(message.correlationId)) {
       await this.routeExternalResponse(message);
     }
     
@@ -550,17 +560,31 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       return { success: false, error: 'Expected request message' };
     }
 
-    // Register external client correlations
-    if (message.correlationId?.startsWith(CLIENT_CORRELATION_PREFIX)) {
-      this.registerExternalCorrelation(message.correlationId);
+    // Clean external client detection and registration
+    if (this.externalClientDetector.isExternalClient(message)) {
+      const correlationId = this.externalClientDetector.getCorrelationId(message);
+      if (correlationId) {
+        this.externalClientDetector.registerExternal(correlationId);
+        console.log(`🔗 ${this.toString()}: Registered external client correlation ${correlationId}`);
+        
+        // Also register with response correlator for promise resolution
+        this.responseCorrelator.createRequest(correlationId).catch(error => {
+          console.warn(`⚠️ External correlation ${correlationId} failed: ${error.message}`);
+        });
+      }
     }
 
     // Route to subscriber and handle response creation
     const result = await this.routeToSubscriber(message);
     
+    console.log(`🔍 ${this.toString()}: Request result for ${message.correlationId}: success=${result.success}, hasHandlerResult=${!!result.handlerResult}`);
+    
     // Create and send response for request messages
     if (result.success && result.handlerResult) {
+      console.log(`✅ ${this.toString()}: Creating response for ${message.correlationId}`);
       await this.createAndSendResponse(message, result.handlerResult);
+    } else {
+      console.log(`⚠️ ${this.toString()}: No response created for ${message.correlationId} - success=${result.success}, handlerResult=${!!result.handlerResult}`);
     }
     
     return result;
@@ -591,16 +615,6 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     }
   }
 
-  /**
-   * Register external client correlation for later resolution
-   */
-  private registerExternalCorrelation(correlationId: string): void {
-    console.log(`🔗 ${this.toString()}: Registering external correlation ${correlationId}`);
-    
-    this.responseCorrelator.createRequest(correlationId).catch(error => {
-      console.warn(`⚠️ External correlation ${correlationId} failed: ${error.message}`);
-    });
-  }
 
   /**
    * Route message to appropriate subscriber
