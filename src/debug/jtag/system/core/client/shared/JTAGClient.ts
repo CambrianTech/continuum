@@ -330,6 +330,9 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       const wasBootstrap = this.sessionId === SYSTEM_SCOPES.UNKNOWN_SESSION;
       console.log(`🔄 JTAGClient: ${wasBootstrap ? 'Bootstrap complete' : 'Session updated'}: ${this.sessionId} → ${session.sessionId}`);
       this._session = session;
+      
+      // For browser clients: update sessionStorage (JTAGClientBrowser overrides this)
+      this.updateClientSessionStorage(session.sessionId);
     }
 
     await this.discoverCommands();
@@ -339,6 +342,14 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * Get environment-specific transport factory - implemented by JT`AGClientServer/JTAGClientBrowser
    */
   protected abstract getTransportFactory(): Promise<ITransportFactory>;
+
+  /**
+   * Update client-specific session storage - overridden by JTAGClientBrowser for sessionStorage
+   */
+  protected updateClientSessionStorage(sessionId: UUID): void {
+    // Base implementation: no-op (JTAGClientServer doesn't need session storage)
+    // JTAGClientBrowser overrides this to update sessionStorage
+  }
 
   /**
    * Get environment-specific command correlator - implemented by subclasses
@@ -481,9 +492,9 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * 🔄 BOOTSTRAP PATTERN: Returns list result for CLI integration
    */
   static async connect<T extends JTAGClient>(this: new (context: JTAGContext) => T, options?: JTAGClientConnectOptions): Promise<JTAGClientConnectionResult & { client: T }> {
-    // Bootstrap with UNKNOWN_SESSION - will be replaced by SessionDaemon with real session
+    // Create context with proper system UUID (separate from sessionId)
     const context: JTAGContext = {
-      uuid: options?.sessionId ?? SYSTEM_SCOPES.UNKNOWN_SESSION, // Bootstrap context for session request
+      uuid: generateUUID(), // System context identifier - separate from session
       environment: options?.targetEnvironment ?? 'server'
     };
 

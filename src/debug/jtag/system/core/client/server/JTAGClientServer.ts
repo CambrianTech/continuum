@@ -27,9 +27,21 @@ import type { ListResult } from '../../../../commands/list/shared/ListTypes';
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
 import { JTAGSystemServer } from '../../system/server/JTAGSystemServer';
 import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
-import type { JTAGPayload } from '../../types/JTAGTypes';
+import type { JTAGPayload, JTAGContext } from '../../types/JTAGTypes';
+import type { UUID } from '../../types/CrossPlatformUUID';
 
 export class JTAGClientServer extends JTAGClient {
+  
+  constructor(context: JTAGContext) {
+    super(context);
+  }
+
+  /**
+   * Server always uses system session ID
+   */
+  public get sessionId(): UUID {
+    return '00000000-0000-0000-0000-000000000000' as UUID;
+  }
   
   protected async getLocalSystem(): Promise<JTAGSystem | null> {
     // FIXED: Never auto-create systems - only connect to existing ones

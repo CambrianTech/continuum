@@ -37,7 +37,7 @@ import type { ListResult } from '../../../../commands/list/shared/ListTypes';
 import type { ITransportFactory} from '../../../transports/shared/ITransportFactory';
 import { TransportFactoryBrowser } from '../../../transports/browser/TransportFactoryBrowser';
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
-import type { JTAGPayload } from '../../types/JTAGTypes';
+import type { JTAGPayload, JTAGContext } from '../../types/JTAGTypes';
 
 // NOTE: Command types are now dynamically discovered, no need for hardcoded imports
 
@@ -61,7 +61,58 @@ export interface RemoteConnectionConfig {
  * Extends shared JTAGClient with browser-specific local system integration
  */
 export class JTAGClientBrowser extends JTAGClient {
+  private static readonly SESSION_STORAGE_KEY = 'jtag_session_id';
+  private _sessionId: UUID;
   
+  constructor(context: JTAGContext) {
+    super(context);
+    // Initialize session ID from sessionStorage or fallback to system session
+    this._sessionId = this.initializeSessionId();
+  }
+
+  /**
+   * Initialize session ID from sessionStorage or use system session fallback
+   */
+  private initializeSessionId(): UUID {
+    try {
+      const storedSessionId = sessionStorage.getItem(JTAGClientBrowser.SESSION_STORAGE_KEY);
+      if (storedSessionId) {
+        console.log(`🏷️ JTAGClientBrowser: Loaded session from sessionStorage: ${storedSessionId}`);
+        return storedSessionId as UUID;
+      } else {
+        // Fallback to system session ID
+        const systemSessionId = '00000000-0000-0000-0000-000000000000' as UUID;
+        console.log(`🏷️ JTAGClientBrowser: Using system session fallback: ${systemSessionId}`);
+        return systemSessionId;
+      }
+    } catch (error) {
+      console.warn(`⚠️ JTAGClientBrowser: Failed to read from sessionStorage, using system session fallback`, error);
+      return '00000000-0000-0000-0000-000000000000' as UUID;
+    }
+  }
+
+  /**
+   * Update session ID and store in sessionStorage
+   */
+  public setSessionId(sessionId: UUID): void {
+    try {
+      this._sessionId = sessionId;
+      sessionStorage.setItem(JTAGClientBrowser.SESSION_STORAGE_KEY, sessionId);
+      console.log(`🏷️ JTAGClientBrowser: Updated session and stored in sessionStorage: ${sessionId}`);
+    } catch (error) {
+      console.warn(`⚠️ JTAGClientBrowser: Failed to save session to sessionStorage`, error);
+      // Still update the in-memory value even if sessionStorage fails
+      this._sessionId = sessionId;
+    }
+  }
+
+  /**
+   * Get current session ID
+   */
+  public get sessionId(): UUID {
+    return this._sessionId;
+  }
+
   /**
    * Get browser-specific command correlator
    */
@@ -121,6 +172,34 @@ export class JTAGClientBrowser extends JTAGClient {
    */
   protected async getTransportFactory(): Promise<ITransportFactory> {
     return new TransportFactoryBrowser();
+  }
+
+  /**
+   * Update browser sessionStorage with new session ID and notify local system
+   */
+  protected updateClientSessionStorage(sessionId: UUID): void {
+    this.setSessionId(sessionId);
+    
+    // If using local connection, update the local system's ConsoleDaemon to use client session
+    if (this.connection instanceof LocalConnection) {
+      this.updateSystemConsoleDaemon();
+    }
+  }
+
+  /**
+   * Update the local system's ConsoleDaemon to use client session ID
+   * This ensures the ConsoleDaemon uses the client as the single source of truth for session IDs
+   */
+  private updateSystemConsoleDaemon(): void {
+    const system = (this.connection as LocalConnection).localSystem;
+    if (system && 'daemons' in system) {
+      // Find ConsoleDaemon and set provider to use client session
+      const consoleDaemon = (system as any).daemons?.find((d: any) => d.constructor.name === 'ConsoleDaemonBrowser');
+      if (consoleDaemon && 'setSessionIdProvider' in consoleDaemon) {
+        consoleDaemon.setSessionIdProvider(() => this.sessionId);
+        console.log(`🏷️ JTAGClientBrowser: Updated ConsoleDaemon to use client session: ${this.sessionId}`);
+      }
+    }
   }
 
 

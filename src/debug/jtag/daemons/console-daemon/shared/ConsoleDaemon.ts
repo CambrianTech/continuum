@@ -91,8 +91,8 @@ export interface ConsoleFilter {
 export abstract class ConsoleDaemon extends DaemonBase {
   public readonly subpath: string = 'console';
   protected intercepting = false;
-  private currentSessionId: UUID = SYSTEM_SCOPES.SYSTEM;
   private temporarySessionId: UUID | null = null;
+  private sessionIdProvider?: () => UUID;
   protected originalConsole: {
     log: typeof console.log;
     info: typeof console.info;
@@ -363,9 +363,9 @@ export abstract class ConsoleDaemon extends DaemonBase {
       return;
     }
 
-    // Use session context: global session > temporary session > current session
+    // Use session context: global session > temporary session > provider session
     const globalSessionId = globalSessionContext.getCurrentSessionId();
-    const effectiveSessionId = globalSessionId ?? this.temporarySessionId ?? this.currentSessionId;
+    const effectiveSessionId = globalSessionId ?? this.temporarySessionId ?? this.getCurrentSessionId();
     
     const consolePayload = createConsolePayload(this.context, effectiveSessionId, {
       level,
@@ -443,11 +443,11 @@ export abstract class ConsoleDaemon extends DaemonBase {
 
 
   /**
-   * Set the current session ID for console logging
+   * Set the session ID provider (typically from client)
    */
-  setCurrentSessionId(sessionId: UUID): void {
-    this.currentSessionId = sessionId;
-    this.originalConsole.log(`🏷️ ${this.toString()}: Session updated to ${sessionId}`);
+  setSessionIdProvider(provider: () => UUID): void {
+    this.sessionIdProvider = provider;
+    this.originalConsole.log(`🏷️ ${this.toString()}: Session provider updated`);
   }
 
   /**
@@ -475,7 +475,8 @@ export abstract class ConsoleDaemon extends DaemonBase {
    * Get the current session ID
    */
   getCurrentSessionId(): UUID {
-    return this.currentSessionId;
+    // Use provider if available, otherwise fall back to system session
+    return this.sessionIdProvider?.() ?? '00000000-0000-0000-0000-000000000000' as UUID;
   }
 
   /**
