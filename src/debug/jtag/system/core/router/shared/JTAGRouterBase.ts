@@ -121,6 +121,14 @@ export abstract class JTAGRouterBase extends JTAGModule {
     }
   }
 
+  /**
+   * Get subscriber for endpoint - type-safe access
+   */
+  getSubscriber(endpoint: string): MessageSubscriber | null {
+    const matchResult = this.endpointMatcher.match(endpoint);
+    return matchResult?.subscriber || null;
+  }
+
   // Pure utility methods moved to RouterUtilities class
   // Object-specific methods that need 'this' context remain here
 

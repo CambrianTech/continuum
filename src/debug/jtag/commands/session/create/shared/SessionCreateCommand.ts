@@ -6,7 +6,6 @@
 
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
-import { JTAGMessageFactory } from '../../../../system/core/types/JTAGTypes';
 import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { type SessionCreateParams, type SessionCreateResult, createSessionCreateResult } from './SessionCreateTypes';
 import { type CreateSessionParams, type CreateSessionResult, type SessionErrorResponse } from '../../../../daemons/session-daemon/shared/SessionTypes';

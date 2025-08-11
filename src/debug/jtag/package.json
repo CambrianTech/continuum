@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.666",
+  "version": "1.0.671",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -210,5 +210,45 @@
   },
   "engines": {
     "node": ">=16.0.0"
+  },
+  "imports": {
+    "@core/*": "./dist/system/core/*",
+    "@types/*": "./dist/system/core/types/*",
+    "@client/*": "./dist/system/core/client/*",
+    "@router/*": "./dist/system/core/router/*",
+    "@system/*": "./dist/system/core/system/*",
+    "@events/*": "./dist/system/events/*",
+    "@daemons/*": "./dist/daemons/*",
+    "@commands/*": "./dist/commands/*",
+    "@scripts/*": "./dist/scripts/*",
+    "@tests/*": "./dist/tests/*",
+    "@widgets/*": "./dist/widgets/*",
+    "@templates/*": "./dist/templates/*",
+    "@commandsChat/*": "./dist/commands/chat/*",
+    "@chatGetChatHistory/*": "./dist/commands/chat/get-chat-history/*",
+    "@chatReceiveEvents/*": "./dist/commands/chat/receive-events/*",
+    "@chatRoomEvents/*": "./dist/commands/chat/room-events/*",
+    "@chatSendMessage/*": "./dist/commands/chat/send-message/*",
+    "@chatSendRoomEvent/*": "./dist/commands/chat/send-room-event/*",
+    "@commandsFile/*": "./dist/commands/file/*",
+    "@fileAppend/*": "./dist/commands/file/append/*",
+    "@fileLoad/*": "./dist/commands/file/load/*",
+    "@fileSave/*": "./dist/commands/file/save/*",
+    "@commandsGetText/*": "./dist/commands/get-text/*",
+    "@commandsCompileTypescript/*": "./dist/commands/compile-typescript/*",
+    "@commandsType/*": "./dist/commands/type/*",
+    "@commandsWaitForElement/*": "./dist/commands/wait-for-element/*",
+    "@commandsProxyNavigate/*": "./dist/commands/proxy-navigate/*",
+    "@daemonsProxyDaemon/*": "./dist/daemons/proxy-daemon/*",
+    "@daemonsHealthDaemon/*": "./dist/daemons/health-daemon/*",
+    "@daemonsWidgetDaemon/*": "./dist/daemons/widget-daemon/*",
+    "@testsMiddleOut/*": "./dist/tests/middle-out/*",
+    "@system/transports/*": "./dist/system/transports/*"
+  },
+  "_importsGenerated": {
+    "timestamp": "2025-08-11T01:11:01.870Z",
+    "source": ".continuum/generator/path-mappings.json",
+    "pathCount": 32,
+    "note": "Generated from clean essential path mappings only"
   }
 }
