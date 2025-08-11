@@ -134,7 +134,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   private readonly processedMessages = new Set<string>();
   private readonly MESSAGE_PROCESSING_TIMEOUT = TIMEOUTS.MESSAGE_PROCESSING;
 
-  constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
+  constructor(context: JTAGContext, config: JTAGRouterConfig) {
     super(UNIVERSAL_ROUTER, context);
     
     // Apply default configuration with strong typing using centralized utility
@@ -605,7 +605,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   /**
    * Route message to appropriate subscriber
    */
-  private async routeToSubscriber(message: JTAGMessage): Promise<LocalRoutingResult & { handlerResult?: JTAGResponsePayload }> {
+  private async routeToSubscriber(message: JTAGMessage): Promise<LocalRoutingResult & { handlerResult: JTAGResponsePayload }> {
     const matchResult = this.endpointMatcher.match(message.endpoint);
     
     if (!matchResult) {

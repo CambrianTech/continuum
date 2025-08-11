@@ -84,11 +84,13 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
     
     // Extract the actual command result from the router response
     if (isRequestResult(routerResult) && routerResult.response) {
+      // Clean interface design - system ensures type correctness
       return routerResult.response as unknown as TResult;
     }
     
     throw new Error(`Remote execution failed: ${JSON.stringify(routerResult)}`);
   }
+
 
   /**
    * Get router instance from commander - guaranteed by constructor

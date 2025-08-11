@@ -13,6 +13,8 @@ import { SYSTEM_EVENTS } from '../../../events';
 import type { DaemonBase, DaemonEntry } from '../../../../daemons/command-daemon/shared/DaemonBase';
 import { SERVER_DAEMONS } from '../../../../server/generated';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
+import type { UUID } from '../../types/CrossPlatformUUID';
+import { generateUUID } from '../../types/CrossPlatformUUID';
 
 export class JTAGSystemServer extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return SERVER_DAEMONS; }
@@ -48,6 +50,7 @@ export class JTAGSystemServer extends JTAGSystem {
         ...config?.daemons
       },
       router: {
+        sessionId: SYSTEM_SCOPES.SYSTEM, // Router already created with proper sessionId
         queue: {
           maxSize: 2000, // Server - larger queue for handling more traffic
           flushInterval: 1000, // Server - less frequent flushing for efficiency
@@ -75,10 +78,10 @@ export class JTAGSystemServer extends JTAGSystem {
       return JTAGSystemServer.instance;
     }
 
-    // 1. Create server context - use specific session if provided
+    // 1. Create server context - generate unique context ID (NOT sessionId)
     const sessionId = config?.connection?.sessionId ?? SYSTEM_SCOPES.SYSTEM;
     const context: JTAGContext = {
-      uuid: sessionId,
+      uuid: generateUUID(),
       environment: JTAG_ENVIRONMENTS.SERVER
     };
 

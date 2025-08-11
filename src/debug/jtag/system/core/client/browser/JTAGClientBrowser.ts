@@ -31,6 +31,7 @@
  */
 
 import { type UUID } from '../../types/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import { JTAGSystemBrowser } from '../../system/browser/JTAGSystemBrowser';
 import { JTAGClient, type JTAGClientConnectOptions, type ICommandCorrelator, LocalConnection } from '../shared/JTAGClient';
 import type { ListResult } from '../../../../commands/list/shared/ListTypes';
@@ -50,7 +51,7 @@ import type { JTAGPayload, JTAGContext } from '../../types/JTAGTypes';
  */
 export interface RemoteConnectionConfig {
   readonly serverUrl: string;
-  readonly sessionId?: UUID;
+  readonly sessionId: UUID;
   readonly maxRetries?: number;
   readonly retryDelay?: number;
   readonly transportType?: 'websocket' | 'http';
@@ -146,7 +147,8 @@ export class JTAGClientBrowser extends JTAGClient {
    */
   static async connectLocal(): Promise<{ client: JTAGClientBrowser; listResult: ListResult }> {
     return await JTAGClientBrowser.connect({
-      targetEnvironment: 'browser'
+      targetEnvironment: 'browser',
+      sessionId: SYSTEM_SCOPES.SYSTEM
     });
   }
 
