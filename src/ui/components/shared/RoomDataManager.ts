@@ -76,9 +76,9 @@ export class RoomDataManager extends EventTarget {
       await this.loadRoomTypeConfig();
       
       // First try to load from server API
-      if (window.continuum && typeof window.continuum.execute === 'function') {
+      if ((window as any).continuum && typeof (window as any).continuum.execute === 'function') {
         try {
-          const response = await window.continuum.execute('listrooms', {});
+          const response = await (window as any).continuum.execute('listrooms', {});
           if (response?.rooms) {
             this.loadRoomsFromAPI(response.rooms);
             this.isInitialized = true;
