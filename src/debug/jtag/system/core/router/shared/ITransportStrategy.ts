@@ -12,6 +12,9 @@
 import type { JTAGTransport, TransportConfig } from '../../../transports/shared/TransportTypes';
 import type { ITransportFactory } from '../../../transports/shared/ITransportFactory';
 import type { JTAGMessage, JTAGContext } from '../../types/JTAGTypes';
+import type { UUID } from '../../types/CrossPlatformUUID';
+import type { EventManager } from '../../../events';
+import type { ResolvedJTAGRouterConfig } from './JTAGRouterTypes';
 
 /**
  * Transport Strategy Interface
@@ -85,9 +88,9 @@ export interface ITransportStrategy {
  */
 export interface ITransportStrategyContext {
   readonly environment: string;
-  readonly sessionId: string;
-  readonly eventManager: any; // Will type properly later
-  readonly config: any; // Will type properly later
+  readonly sessionId: UUID;
+  readonly eventManager: EventManager;
+  readonly config: ResolvedJTAGRouterConfig;
   
   /**
    * Method for strategy to route messages back to router
@@ -97,7 +100,7 @@ export interface ITransportStrategyContext {
   /**
    * Get transport factory for this environment
    */
-  getTransportFactory(): Promise<any>; // Will type properly later
+  getTransportFactory(): Promise<ITransportFactory>;
   
   /**
    * Logging method

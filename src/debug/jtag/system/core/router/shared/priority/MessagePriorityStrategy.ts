@@ -8,6 +8,7 @@
 
 import type { JTAGMessage } from '../../../types/JTAGTypes';
 import { MessagePriority } from '../queuing/JTAGMessageQueue';
+import { MessageTypeGuards, type ConsoleMessagePayload } from '../MessageTypeGuards';
 
 /**
  * Strategy interface for message priority determination
@@ -41,10 +42,7 @@ export class DefaultPriorityStrategy implements IMessagePriorityStrategy {
   }
 
   private isConsoleError(payload: unknown): boolean {
-    return payload !== null && 
-           typeof payload === 'object' && 
-           'level' in payload && 
-           (payload as any).level === 'error';
+    return MessageTypeGuards.isConsoleError(payload);
   }
 }
 
@@ -107,14 +105,11 @@ export class PriorityRuleFactory {
     };
   }
 
-  static consoleLevel(level: string, priority: MessagePriority): PriorityRule {
+  static consoleLevel(level: ConsoleMessagePayload['level'], priority: MessagePriority): PriorityRule {
     return {
       matches: (message) => {
         const payload = message.payload;
-        return payload !== null && 
-               typeof payload === 'object' && 
-               'level' in payload && 
-               (payload as any).level === level;
+        return MessageTypeGuards.isConsoleLevel(payload, level);
       },
       priority,
       description: `Console level is '${level}'`

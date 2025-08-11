@@ -391,7 +391,7 @@ export class ConnectionHealthManager {
       this.onDisconnected();
     });
 
-    this.eventSystem.on(TRANSPORT_EVENTS.ERROR, (error: any) => {
+    this.eventSystem.on(TRANSPORT_EVENTS.ERROR, (error: Error | string | unknown) => {
       console.warn(`⚠️ HealthManager: Transport error:`, error);
       this.recordHealthCheck(this.config.pingTimeout, false);
     });
