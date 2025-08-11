@@ -243,7 +243,7 @@
     "pathCount": 228
   },
   "_pathsGenerated": {
-    "timestamp": "2025-08-11T17:18:10.473Z",
+    "timestamp": "2025-08-11T17:29:35.947Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 64,
     "note": "Auto-generated from essential path mappings only"
