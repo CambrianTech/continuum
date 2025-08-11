@@ -92,7 +92,7 @@ interface DynamicRouterStatus {
  */
 export class JTAGRouterDynamic extends JTAGRouter {
   
-  // All properties inherited from JTAGRouterBase: endpointMatcher, transports, 
+  // All properties inherited from JTAGRouter: endpointMatcher, transports, 
   // transportStrategy, enhancementStrategy, config, eventManager, messageQueue, 
   // healthManager, responseCorrelator, isInitialized
 
@@ -415,7 +415,7 @@ export class JTAGRouterDynamic extends JTAGRouter {
     console.log(`✅ ${this.toString()}: Dynamic shutdown complete`);
   }
 
-  // getTransportStatus() inherited from JTAGRouterBase ✅
+  // getTransportStatus() inherited from JTAGRouter ✅
   // Can override if dynamic enhancements needed: this.transportStrategy.getTransportStatusInfo()
 
   /**

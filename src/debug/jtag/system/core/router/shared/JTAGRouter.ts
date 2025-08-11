@@ -38,7 +38,7 @@
  * - Transport factory abstracts connection management complexity
  */
 
-import { JTAGRouterBase } from './JTAGRouterBase';
+import { JTAGModule } from '../../shared/JTAGModule';
 import type { JTAGContext, JTAGEnvironment, JTAGMessage } from '../../types/JTAGTypes';
 import { JTAGMessageTypes, JTAGMessageFactory } from '../../types/JTAGTypes';
 import type { UUID } from '../../types/CrossPlatformUUID';
@@ -50,6 +50,7 @@ import type { QueuedItem } from './queuing/PriorityQueue';
 
 // Import transport strategy for extraction pattern
 import { RouterUtilities } from './RouterUtilities';
+import { CorrelationManager } from './CorrelationManager';
 
 // Import configuration types and utilities
 import type { JTAGRouterConfig} from './JTAGRouterTypes';
@@ -61,18 +62,51 @@ export { DEFAULT_JTAG_ROUTER_CONFIG, createJTAGRouterConfig } from './JTAGRouter
 import type { JTAGResponsePayload, BaseResponsePayload } from '../../types/ResponseTypes';
 import type { RouterResult, RequestResult, EventResult, LocalRoutingResult } from './RouterTypes';
 
-// Re-export MessageSubscriber for backward compatibility
-export type { MessageSubscriber } from './JTAGRouterBase';
+// Import base class components that were in JTAGRouterBase
+import { EndpointMatcher } from './EndpointMatcher';
+import type { ITransportStrategy } from './ITransportStrategy';
+import type { IRouterEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
+import { DynamicTransportStrategy } from './DynamicTransportStrategy';
+import { MinimalEnhancementStrategy } from './enhancements/RouterEnhancementStrategy';
+import { JTAGMessageQueue } from './queuing/JTAGMessageQueue';
+import { ConnectionHealthManager } from './ConnectionHealthManager';
+import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
+import { EventManager } from '../../../events';
+import { createJTAGRouterConfig, type ResolvedJTAGRouterConfig, type RouterStatus } from './JTAGRouterTypes';
+import type { TransportEndpointStatus } from '../../../transports';
+
+/**
+ * Message Subscriber Interface - Core contract for message handling
+ */
+export interface MessageSubscriber {
+  handleMessage(message: JTAGMessage): Promise<JTAGResponsePayload>;
+  get endpoint(): string;
+  get uuid(): string;
+}
 
 // RouterStatus interface moved to JTAGRouterTypes.ts for better organization
 
 
-export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndpoint, ITransportHandler {
-  // endpointMatcher, transports, eventManager, messageQueue, healthManager, 
-  // responseCorrelator, config moved to JTAGRouterBase
-
-  // transportStrategy inherited from JTAGRouterBase (concrete)
-  // isInitialized moved to JTAGRouterBase
+export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint, ITransportHandler {
+  // Core subscriber management (moved from JTAGRouterBase)  
+  protected readonly endpointMatcher = new EndpointMatcher<MessageSubscriber>();
+  
+  // Transport management pattern (moved from JTAGRouterBase)
+  protected readonly transports = new Map<TRANSPORT_TYPES, JTAGTransport>();
+  protected isInitialized = false;
+  
+  // Transport strategy pattern - extensible and P2P ready
+  protected transportStrategy!: ITransportStrategy;
+  
+  // Enhancement strategy pattern - pluggable cross-cutting concerns
+  protected enhancementStrategy!: IRouterEnhancementStrategy;
+  
+  // Bus-level components - shared initialization
+  public readonly eventManager: EventManager;
+  protected readonly messageQueue: JTAGMessageQueue;
+  protected readonly healthManager: ConnectionHealthManager;
+  protected readonly responseCorrelator: ResponseCorrelator;
+  protected readonly config: ResolvedJTAGRouterConfig;
 
   // Track who sent each request for response routing (correlationId -> sender info)
   private readonly requestSenders = new Map<string, {
@@ -80,44 +114,39 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     transport?: JTAGTransport;
   }>();
 
-  // Correlation mapping structure - maps processing tokens to raw correlation IDs
-  private readonly correlationMap = {
-    // Map req: processing tokens to raw correlation IDs for ResponseCorrelator
-    reqToCorrelation: new Map<string, string>(), // req:abc123 -> abc123
-    // Map res: processing tokens to corresponding req: tokens for lookup
-    resToReq: new Map<string, string>(), // res:abc123 -> req:abc123
-    
-    // Helper methods
-    registerRequest: (correlationId: string) => {
-      const reqToken = `req:${correlationId}`;
-      const resToken = `res:${correlationId}`;
-      this.correlationMap.reqToCorrelation.set(reqToken, correlationId);
-      this.correlationMap.resToReq.set(resToken, reqToken);
-    },
-    
-    getCorrelationFromReq: (reqToken: string) => {
-      return this.correlationMap.reqToCorrelation.get(reqToken);
-    },
-    
-    getReqFromRes: (resToken: string) => {
-      return this.correlationMap.resToReq.get(resToken);
-    },
-    
-    cleanup: (correlationId: string) => {
-      const reqToken = `req:${correlationId}`;
-      const resToken = `res:${correlationId}`;
-      this.correlationMap.reqToCorrelation.delete(reqToken);
-      this.correlationMap.resToReq.delete(resToken);
-    }
-  };
+  // Correlation management - extracted for better modularity
+  private readonly correlationManager = new CorrelationManager();
 
   // Message Processing Token System - prevent duplicate processing
   private readonly processedMessages = new Set<string>();
   private readonly MESSAGE_PROCESSING_TIMEOUT = 30000; // 30 seconds
 
   constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
-    super('universal-router', context, config);
-    // Bus-level initialization is now handled by JTAGRouterBase constructor
+    super('universal-router', context);
+    
+    // Apply default configuration with strong typing using centralized utility
+    this.config = createJTAGRouterConfig(config);
+    
+    // Initialize bus-level components with resolved config
+    this.eventManager = new EventManager();
+    
+    this.messageQueue = new JTAGMessageQueue(context, {
+      enableDeduplication: this.config.queue.enableDeduplication,
+      deduplicationWindow: this.config.queue.deduplicationWindow,
+      maxSize: this.config.queue.maxSize,
+      maxRetries: this.config.queue.maxRetries,
+      flushInterval: this.config.queue.flushInterval
+    });
+    
+    this.healthManager = new ConnectionHealthManager(context, this.eventManager.events);
+    this.responseCorrelator = new ResponseCorrelator(this.config.response.correlationTimeout);
+    
+    // Initialize transport and enhancement strategies using shared config logic
+    this.initializeStrategies(config);
+    
+    if (this.config.enableLogging) {
+      console.log(`🚀 ${this.toString()}: Initialized with request-response correlation and queuing`);
+    }
   }
 
   async initialize(): Promise<void> {
@@ -143,7 +172,52 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     console.log(`✅ ${this.toString()}: Initialization complete`);
   }
 
-  // registerSubscriber moved to JTAGRouterBase
+  /**
+   * Shared strategy initialization logic - eliminates duplication
+   */
+  protected initializeStrategies(config: JTAGRouterConfig): void {
+    // EVOLUTION: Dynamic is now DEFAULT - explicit opt-out to legacy
+    const forceLegacy = config.transport?.forceLegacy === true ||
+                       config.transport?.strategy === 'hardcoded' ||
+                       (typeof process !== 'undefined' && process.env?.JTAG_FORCE_LEGACY === 'true');
+    
+    const useDynamicTransport = !forceLegacy; // Dynamic by default
+    
+    if (useDynamicTransport) {
+      console.log(`🚀 ${this.toString()}: Using dynamic transport strategy (P2P ready)`);
+      this.transportStrategy = new DynamicTransportStrategy(this.transports, config.transport?.enableP2P ?? true);
+      // Use minimal enhancements with dynamic strategy (following JTAGRouterDynamic pattern)
+      this.enhancementStrategy = new MinimalEnhancementStrategy();
+    } else {
+      console.log(`📡 ${this.toString()}: Legacy transport strategy removed - using dynamic strategy instead`);
+      this.transportStrategy = new DynamicTransportStrategy(this.transports);
+      this.enhancementStrategy = new MinimalEnhancementStrategy();
+    }
+  }
+
+  /**
+   * Register subscriber for message routing (moved from JTAGRouterBase)
+   */
+  registerSubscriber(endpoint: string, subscriber: MessageSubscriber): void {
+    const fullEndpoint = `${this.context.environment}/${endpoint}`;
+    this.endpointMatcher.register(fullEndpoint, subscriber);
+    
+    // Only register short endpoint if it doesn't already exist to avoid duplicates
+    if (!this.endpointMatcher.hasExact(endpoint)) {
+      this.endpointMatcher.register(endpoint, subscriber);
+      console.log(`📋 ${this.toString()}: Registered subscriber at ${fullEndpoint} AND ${endpoint}`);
+    } else {
+      console.log(`📋 ${this.toString()}: Registered subscriber at ${fullEndpoint} (${endpoint} already exists)`);
+    }
+  }
+
+  /**
+   * Get subscriber for endpoint - type-safe access
+   */
+  getSubscriber(endpoint: string): MessageSubscriber | null {
+    const matchResult = this.endpointMatcher.match(endpoint);
+    return matchResult?.subscriber || null;
+  }
 
   async postMessage<T extends RouterResult>(message: JTAGMessage): Promise<T> {
     // Create unique processing tokens for request/response messages to prevent cross-message deduplication
@@ -152,7 +226,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     if (JTAGMessageTypes.isRequest(message)) {
       processingToken = `req:${message.correlationId}`;
       // Register the correlation mapping for future response resolution
-      this.correlationMap.registerRequest(message.correlationId);
+      this.correlationManager.registerRequest(message.correlationId);
     } else if (JTAGMessageTypes.isResponse(message)) {
       processingToken = `res:${message.correlationId}`;
     } else {
@@ -381,7 +455,7 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     }
   }
 
-  // determinePriority and isConsolePayload moved to JTAGRouterBase
+  // determinePriority and isConsolePayload available in RouterUtilities
 
   /**
    * Flush queued messages (called by JTAGMessageQueue)
@@ -601,9 +675,9 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     return RouterUtilities.extractEnvironment(endpoint, this.context.environment);
   }
 
-  // determineSenderEnvironment moved to JTAGRouterBase
+  // determineSenderEnvironment available in RouterUtilities
 
-  // parseRemoteEndpoint moved to JTAGRouterBase
+  // parseRemoteEndpoint available in RouterUtilities
 
   /**
    * Initialize transport (TransportEndpoint interface implementation)
@@ -663,7 +737,41 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     console.log(`✅ ${this.toString()}: Transport shutdown complete`);
   }
 
-  // getTransportStatus() inherited from JTAGRouterBase
+  /**
+   * Get transport status - conforms to TransportEndpoint interface
+   */
+  getTransportStatus(): TransportEndpointStatus {
+    return {
+      initialized: this.isInitialized,
+      transportCount: this.transports.size,
+      transports: Array.from(this.transports.entries()).map(([type, transport]) => ({
+        name: transport.name,
+        connected: transport.isConnected(),
+        type: type.toString()
+      }))
+    };
+  }
+
+  /**
+   * Get enhanced router status - strongly typed router information
+   */
+  get status(): RouterStatus {
+    const crossContextTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
+    const transportStatus = this.getTransportStatus();
+    
+    return {
+      environment: this.context.environment,
+      initialized: this.isInitialized,
+      subscribers: this.endpointMatcher.size(),
+      transport: crossContextTransport ? {
+        name: crossContextTransport.name,
+        connected: crossContextTransport.isConnected()
+      } : null,
+      queue: this.messageQueue.getStatus(),
+      health: this.healthManager.getHealth(),
+      transportStatus
+    };
+  }
 
   /**
    * Legacy method for compatibility - transport factory is now in shared module
@@ -689,7 +797,6 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     console.log(`✅ ${this.toString()}: Shutdown complete`);
   }
 
-  // status method moved to JTAGRouterBase for simplification
 
   // ITransportHandler implementation - ENFORCED by TypeScript
   

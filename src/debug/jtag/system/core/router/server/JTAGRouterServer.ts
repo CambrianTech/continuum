@@ -15,7 +15,7 @@ export class JTAGRouterServer extends JTAGRouter {
   
   constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
     super(context, config);
-    // Strategy initialization is now handled by JTAGRouterBase.initializeStrategies()
+    // Strategy initialization is now handled by JTAGRouter.initializeStrategies()
   }
 
   /**
