@@ -30,7 +30,7 @@
  * - Performance tests: Local connection overhead vs direct calls
  */
 
-import { type UUID } from '../../types/CrossPlatformUUID';
+import { type UUID, generateUUID } from '../../types/CrossPlatformUUID';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import { JTAGSystemBrowser } from '../../system/browser/JTAGSystemBrowser';
 import { JTAGClient, type JTAGClientConnectOptions, type ICommandCorrelator, LocalConnection } from '../shared/JTAGClient';
@@ -81,14 +81,13 @@ export class JTAGClientBrowser extends JTAGClient {
         console.log(`🏷️ JTAGClientBrowser: Loaded session from sessionStorage: ${storedSessionId}`);
         return storedSessionId as UUID;
       } else {
-        // Fallback to system session ID
-        const systemSessionId = '00000000-0000-0000-0000-000000000000' as UUID;
-        console.log(`🏷️ JTAGClientBrowser: Using system session fallback: ${systemSessionId}`);
-        return systemSessionId;
+        // No session stored - will be assigned by server on connection
+        console.log(`🏷️ JTAGClientBrowser: No session in storage, will be assigned by server`);
+        return SYSTEM_SCOPES.UNKNOWN_SESSION; // Bootstrap session until server assigns real session
       }
     } catch (error) {
-      console.warn(`⚠️ JTAGClientBrowser: Failed to read from sessionStorage, using system session fallback`, error);
-      return '00000000-0000-0000-0000-000000000000' as UUID;
+      console.warn(`⚠️ JTAGClientBrowser: Failed to read from sessionStorage, using bootstrap session`, error);
+      return SYSTEM_SCOPES.UNKNOWN_SESSION;
     }
   }
 
