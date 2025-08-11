@@ -13,7 +13,6 @@ import { SYSTEM_EVENTS } from '../../../events';
 import type { DaemonBase, DaemonEntry } from '../../../../daemons/command-daemon/shared/DaemonBase';
 import { BROWSER_DAEMONS } from '../../../../browser/generated';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
-import { SessionDaemonBrowser } from '../../../../daemons/session-daemon/browser/SessionDaemonBrowser';
 
 export class JTAGSystemBrowser extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return BROWSER_DAEMONS; }

@@ -22,23 +22,24 @@ export class SessionCreateServerCommand extends SessionCreateCommand {
   protected async routeToSessionDaemon(params: CreateSessionParams): Promise<CreateSessionResult | SessionErrorResponse> {
     console.log(`🏷️ SERVER: Creating session directly via session daemon`);
 
-    // Route via commander's router to local session daemon
-    const router = (this.commander as any).router;
-    if (!router) {
-      throw new Error('Router not available for session daemon communication');
+    // Find the SessionDaemon directly
+    const sessionDaemon = this.commander.router.getSubscriber('session-daemon');
+    
+    if (!sessionDaemon) {
+      throw new Error('SessionDaemon not available');
     }
 
-    // Create message for server session daemon
+    // Create message for session daemon
     const sessionMessage = JTAGMessageFactory.createRequest(
       this.context,
-      `server/session-daemon`,  // Route to server session daemon
+      'server/session-daemon',  
       'session-daemon/create',
       params,
       JTAGMessageFactory.generateCorrelationId()
     );
 
-    console.log(`🔍 SERVER: Routing to server session daemon directly`);
-    const response = await router.postMessage(sessionMessage);
+    console.log(`🔍 SERVER: Calling session daemon directly`);
+    const response = await sessionDaemon.handleMessage(sessionMessage);
     console.log(`🔍 SERVER: Session daemon response:`, JSON.stringify(response, null, 2));
     
     return response as CreateSessionResult | SessionErrorResponse;

@@ -74,9 +74,9 @@ export abstract class CommandDaemon extends DaemonBase {
         return async (params?: CommandParams) => {
           console.log(`⚡ ${this.toString()}: Executing ${commandName} directly with session context`);
           
-          // Only add session context if missing from params
-          const sessionId = this.context.uuid as UUID;
-          const fullParams = validCommand.withDefaults(params || {}, sessionId, this.context);
+          // Only add session context if missing from params 
+          const sessionId = params?.sessionId ?? this.context.uuid;
+          const fullParams = validCommand.withDefaults(params ?? {}, sessionId, this.context);
           
           // Execute the command directly - it will handle its own routing if needed
           return await validCommand.execute(fullParams);

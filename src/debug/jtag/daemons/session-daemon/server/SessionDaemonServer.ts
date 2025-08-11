@@ -101,7 +101,7 @@ export class SessionDaemonServer extends SessionDaemon {
       }
     }
 
-    private async createOrGetSession(params: CreateSessionParams): Promise<CreateSessionResult | GetSessionResult> {
+    public async createOrGetSession(params: CreateSessionParams): Promise<CreateSessionResult | GetSessionResult> {
         if (params.isShared) {
           // Check for existing shared session
           const existingSession = this.sessions.find(s => s.isShared && s.isActive);
@@ -132,6 +132,8 @@ export class SessionDaemonServer extends SessionDaemon {
         isActive: true,
         isShared: params.isShared
       };
+
+      console.log(`✅ ${this.toString()}: New session created:`, newSession);
 
       this.sessions.push(newSession);
 

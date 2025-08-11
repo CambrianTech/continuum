@@ -80,6 +80,37 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     transport?: JTAGTransport;
   }>();
 
+  // Correlation mapping structure - maps processing tokens to raw correlation IDs
+  private readonly correlationMap = {
+    // Map req: processing tokens to raw correlation IDs for ResponseCorrelator
+    reqToCorrelation: new Map<string, string>(), // req:abc123 -> abc123
+    // Map res: processing tokens to corresponding req: tokens for lookup
+    resToReq: new Map<string, string>(), // res:abc123 -> req:abc123
+    
+    // Helper methods
+    registerRequest: (correlationId: string) => {
+      const reqToken = `req:${correlationId}`;
+      const resToken = `res:${correlationId}`;
+      this.correlationMap.reqToCorrelation.set(reqToken, correlationId);
+      this.correlationMap.resToReq.set(resToken, reqToken);
+    },
+    
+    getCorrelationFromReq: (reqToken: string) => {
+      return this.correlationMap.reqToCorrelation.get(reqToken);
+    },
+    
+    getReqFromRes: (resToken: string) => {
+      return this.correlationMap.resToReq.get(resToken);
+    },
+    
+    cleanup: (correlationId: string) => {
+      const reqToken = `req:${correlationId}`;
+      const resToken = `res:${correlationId}`;
+      this.correlationMap.reqToCorrelation.delete(reqToken);
+      this.correlationMap.resToReq.delete(resToken);
+    }
+  };
+
   // Message Processing Token System - prevent duplicate processing
   private readonly processedMessages = new Set<string>();
   private readonly MESSAGE_PROCESSING_TIMEOUT = 30000; // 30 seconds
@@ -120,6 +151,8 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
     let processingToken: string | undefined;
     if (JTAGMessageTypes.isRequest(message)) {
       processingToken = `req:${message.correlationId}`;
+      // Register the correlation mapping for future response resolution
+      this.correlationMap.registerRequest(message.correlationId);
     } else if (JTAGMessageTypes.isResponse(message)) {
       processingToken = `res:${message.correlationId}`;
     } else {
@@ -382,49 +415,110 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
   }
 
   private async routeLocally(message: JTAGMessage): Promise<LocalRoutingResult> {
-    // Handle response messages - resolve pending requests
+    // Handle different message types with focused methods
     if (JTAGMessageTypes.isResponse(message)) {
-      console.log(`📨 ${this.toString()}: Received response for ${message.correlationId}`);
-      const resolved = this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
-      
-      // RESPONSE ROUTING FIX: Send external responses back via WebSocket
-      if (resolved && message.correlationId?.startsWith('client_')) {
-        console.log(`📡 ${this.toString()}: Routing external response ${message.correlationId} back via WebSocket`);
-        
-        // Find the WebSocket transport to send response back to external client
-        const webSocketTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
-        if (webSocketTransport) {
-          try {
-            // Send the response message back through WebSocket
-            await webSocketTransport.send(message);
-            console.log(`✅ ${this.toString()}: External response sent via WebSocket for ${message.correlationId}`);
-          } catch (error) {
-            console.error(`❌ ${this.toString()}: Failed to send external response ${message.correlationId}:`, error);
-          }
-        } else {
-          console.warn(`⚠️ ${this.toString()}: No WebSocket transport available for external response ${message.correlationId}`);
-        }
-      }
-      
-      if (resolved) {
-        return { success: true, resolved: true };
-      } else {
-        console.warn(`⚠️ ${this.toString()}: No pending request found for ${message.correlationId}`);
-        return { success: false, error: 'No pending request found' };
-      }
+      return await this.handleIncomingResponse(message);
+    }
+    
+    if (JTAGMessageTypes.isRequest(message)) {
+      return await this.handleIncomingRequest(message);
+    }
+    
+    // Events - just route to subscriber
+    return await this.routeToSubscriber(message);
+  }
+
+  /**
+   * Handle incoming response messages - resolve correlations
+   */
+  private async handleIncomingResponse(message: JTAGMessage): Promise<LocalRoutingResult> {
+    // Type guard: response messages have correlationId
+    if (!JTAGMessageTypes.isResponse(message)) {
+      return { success: false, error: 'Expected response message' };
     }
 
-    // CORRELATION FIX: Register external client correlation IDs with ResponseCorrelator
-    if (JTAGMessageTypes.isRequest(message) && message.correlationId?.startsWith('client_')) {
-      console.log(`🔗 ${this.toString()}: Registering external correlation ${message.correlationId}`);
-      
-      // Register external correlation with ResponseCorrelator (don't await - let it resolve later)
-      this.responseCorrelator.createRequest(message.correlationId).catch(error => {
-        console.warn(`⚠️ External correlation ${message.correlationId} failed: ${error.message}`);
-      });
+    console.log(`📨 ${this.toString()}: Received response for ${message.correlationId}`);
+    
+    const resolved = this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
+    
+    // Send external responses back via WebSocket
+    if (resolved && message.correlationId?.startsWith('client_')) {
+      await this.routeExternalResponse(message);
+    }
+    
+    if (resolved) {
+      return { success: true, resolved: true };
+    } else {
+      console.warn(`⚠️ ${this.toString()}: No pending request found for ${message.correlationId}`);
+      return { success: false, error: 'No pending request found' };
+    }
+  }
+
+  /**
+   * Handle incoming request messages - register correlations and route
+   */
+  private async handleIncomingRequest(message: JTAGMessage): Promise<LocalRoutingResult> {
+    // Type guard: request messages have correlationId
+    if (!JTAGMessageTypes.isRequest(message)) {
+      return { success: false, error: 'Expected request message' };
     }
 
-    // Regular message routing for events and requests using EndpointMatcher
+    // Register external client correlations
+    if (message.correlationId?.startsWith('client_')) {
+      this.registerExternalCorrelation(message.correlationId);
+    }
+
+    // Route to subscriber and handle response creation
+    const result = await this.routeToSubscriber(message);
+    
+    // Create and send response for request messages
+    if (result.success) {
+      await this.createAndSendResponse(message, result.handlerResult);
+    }
+    
+    return result;
+  }
+
+  /**
+   * Route external responses back via WebSocket
+   */
+  private async routeExternalResponse(message: JTAGMessage): Promise<void> {
+    // Type guard: only response messages should reach here
+    if (!JTAGMessageTypes.isResponse(message)) {
+      return;
+    }
+
+    console.log(`📡 ${this.toString()}: Routing external response ${message.correlationId} back via WebSocket`);
+    
+    const webSocketTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
+    if (!webSocketTransport) {
+      console.warn(`⚠️ ${this.toString()}: No WebSocket transport available for external response ${message.correlationId}`);
+      return;
+    }
+
+    try {
+      await webSocketTransport.send(message);
+      console.log(`✅ ${this.toString()}: External response sent via WebSocket for ${message.correlationId}`);
+    } catch (error) {
+      console.error(`❌ ${this.toString()}: Failed to send external response ${message.correlationId}:`, error);
+    }
+  }
+
+  /**
+   * Register external client correlation for later resolution
+   */
+  private registerExternalCorrelation(correlationId: string): void {
+    console.log(`🔗 ${this.toString()}: Registering external correlation ${correlationId}`);
+    
+    this.responseCorrelator.createRequest(correlationId).catch(error => {
+      console.warn(`⚠️ External correlation ${correlationId} failed: ${error.message}`);
+    });
+  }
+
+  /**
+   * Route message to appropriate subscriber
+   */
+  private async routeToSubscriber(message: JTAGMessage): Promise<LocalRoutingResult & { handlerResult?: any }> {
     const matchResult = this.endpointMatcher.match(message.endpoint);
     
     if (!matchResult) {
@@ -441,37 +535,44 @@ export abstract class JTAGRouter extends JTAGRouterBase implements TransportEndp
       console.log(`📋 ${this.toString()}: Using hierarchical routing: ${matchedEndpoint} handling ${message.endpoint}`);
     }
 
-    console.log(`🏠 ${this.toString()}: RRouting locally to ${message.endpoint} via ${matchedEndpoint}`);
+    console.log(`🏠 ${this.toString()}: Routing locally to ${message.endpoint} via ${matchedEndpoint}`);
     const result = await subscriber.handleMessage(message);
     
-    // For requests, the subscriber returns a response that needs to be sent back to the client
-    if (JTAGMessageTypes.isRequest(message)) {
-      console.log(`🔄 ${this.toString()}: Sending response for ${message.correlationId}`);
-      
-      // Track who sent this request for proper response routing
-      const senderEnvironment = RouterUtilities.determineSenderEnvironment(message, this.context.environment);
-      this.requestSenders.set(message.correlationId, { 
-        environment: senderEnvironment 
-      });
-      
-      // Create response message using the original request - enforces correlationId by construction
-      const responseMessage = JTAGMessageFactory.createResponse(
-        this.context,
-        message.endpoint, // Response origin is the request's endpoint
-        message.origin,   // Response endpoint is the request's origin
-        result,          // The CommandResponse from the subscriber
-        message          // Pass the original request message
-      );
-      
-      console.log(`📤 ${this.toString()}: Created response message - origin: "${responseMessage.origin}", endpoint: "${responseMessage.endpoint}", correlationId: ${responseMessage.correlationId}`);
-      
-      // Send response back (don't await, this is a fire-and-forget response)
-      this.postMessage(responseMessage).catch(error => {
-        console.error(`❌ ${this.toString()}: Failed to send response:`, error);
-      });
+    return { success: true, handlerResult: result };
+  }
+
+  /**
+   * Create and send response for request messages
+   */
+  private async createAndSendResponse(originalMessage: JTAGMessage, handlerResult: any): Promise<void> {
+    // Type guard: only request messages should reach here
+    if (!JTAGMessageTypes.isRequest(originalMessage)) {
+      return;
     }
+
+    console.log(`🔄 ${this.toString()}: Sending response for ${originalMessage.correlationId}`);
     
-    return { success: true };
+    // Track who sent this request for proper response routing
+    const senderEnvironment = RouterUtilities.determineSenderEnvironment(originalMessage, this.context.environment);
+    this.requestSenders.set(originalMessage.correlationId, { 
+      environment: senderEnvironment 
+    });
+    
+    // Create response message using the original request
+    const responseMessage = JTAGMessageFactory.createResponse(
+      this.context,
+      originalMessage.endpoint, // Response origin is the request's endpoint
+      originalMessage.origin,   // Response endpoint is the request's origin
+      handlerResult,           // The CommandResponse from the subscriber
+      originalMessage          // Pass the original request message
+    );
+    
+    console.log(`📤 ${this.toString()}: Created response message - origin: "${responseMessage.origin}", endpoint: "${responseMessage.endpoint}", correlationId: ${responseMessage.correlationId}`);
+    
+    // Send response back (don't await, this is a fire-and-forget response)
+    this.postMessage(responseMessage).catch(error => {
+      console.error(`❌ ${this.toString()}: Failed to send response:`, error);
+    });
   }
 
   /**

@@ -6,9 +6,11 @@
  */
 
 import { JTAGModule } from '../../../system/core/shared/JTAGModule';
-import { JTAGEnvironment, JTAGMessageFactory, useEnvironment, type JTAGContext, type JTAGMessage, type JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { JTAGEnvironment, JTAGContext, JTAGMessage, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import {JTAGMessageFactory, useEnvironment} from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter, MessageSubscriber } from '../../../system/core/router/shared/JTAGRouter';
 import { type RouterResult } from '@core/router/shared/RouterTypes';
+import { type BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 
 export interface DaemonEntry {
   name: string;
@@ -51,7 +53,7 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
    * Handle incoming messages (MessageSubscriber interface)
    * Each daemon implements its own message handling logic
    */
-  abstract handleMessage(message: JTAGMessage): Promise<any>;
+  abstract handleMessage(message: JTAGMessage): Promise<BaseResponsePayload>;
 
   /**
    * Get endpoint (MessageSubscriber interface)
