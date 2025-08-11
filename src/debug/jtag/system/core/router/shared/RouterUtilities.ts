@@ -2,7 +2,7 @@
  * RouterUtilities - Pure utility functions for message routing
  * 
  * PURPOSE: Static utilities that don't need object state
- * SEPARATION: Keep object-specific methods in JTAGRouterBase
+ * SEPARATION: Keep object-specific methods in JTAGRouter
  * REUSABILITY: Can be used by any router implementation
  */
 
