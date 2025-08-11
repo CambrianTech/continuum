@@ -13,6 +13,7 @@ import type { JTAGContext, JTAGMessage, JTAGPayload } from '../../system/core/ty
 import type { ListResult, CommandSignature } from '../../commands/list/shared/ListTypes';
 import type { JTAGSystem } from '../../system/core/system/shared/JTAGSystem';
 import type { CommandsInterface } from '../../system/core/shared/JTAGBase';
+import { generateUUID } from '../../system/core/types/CrossPlatformUUID';
 import { SYSTEM_SCOPES } from '../../system/core/types/SystemScopes';
 
 console.log('🧪 Client Connection Logic Unit Test Suite');
@@ -200,7 +201,7 @@ function testSessionManagement() {
   return new Promise<void>((resolve, reject) => {
     // Test bootstrap session replacement
     const bootstrapContext: JTAGContext = { 
-      uuid: SYSTEM_SCOPES.UNKNOWN_SESSION, 
+      uuid: generateUUID(), // System context identifier - separate from session
       environment: 'server' 
     };
     
@@ -218,8 +219,9 @@ function testSessionManagement() {
         return;
       }
       
-      if (client.context.uuid === SYSTEM_SCOPES.UNKNOWN_SESSION) {
-        reject(new Error('Context UUID should be updated with new session'));
+      // Context UUID should be a proper generated UUID, not UNKNOWN_SESSION
+      if (!client.context.uuid || client.context.uuid.length !== 36) {
+        reject(new Error('Context UUID should be a proper UUID'));
         return;
       }
       

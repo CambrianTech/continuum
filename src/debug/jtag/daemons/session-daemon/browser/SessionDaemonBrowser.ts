@@ -11,7 +11,6 @@ import { SessionDaemon } from '../shared/SessionDaemon';
 import type { SessionResponse } from '../shared/SessionTypes';
 
 export class SessionDaemonBrowser extends SessionDaemon {
-  private static readonly SESSION_STORAGE_KEY = 'jtag_session_id';
   
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);

@@ -200,8 +200,9 @@ export abstract class JTAGSystem extends JTAGBase {
   protected updateConsoleDaemonSessionId(): void {
     const consoleDaemon = this.daemons.find(d => d instanceof ConsoleDaemon);
     if (consoleDaemon && this.sessionId) {
-      consoleDaemon.setCurrentSessionId(this.sessionId);
-      console.log(`🏷️ ${this.toString()}: Updated ConsoleDaemon sessionId to ${this.sessionId}`);
+      // Use session provider pattern - daemon gets session ID from system
+      consoleDaemon.setSessionIdProvider(() => this.sessionId);
+      console.log(`🏷️ ${this.toString()}: Updated ConsoleDaemon session provider to return ${this.sessionId}`);
     }
   }
 
