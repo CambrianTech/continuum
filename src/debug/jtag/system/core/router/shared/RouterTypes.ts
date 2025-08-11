@@ -3,12 +3,13 @@
  */
 
 import type { TransportSendResult } from '../../../transports';
+import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 
 // Request handling result
 export interface RequestResult {
   success: boolean;
   resolved?: boolean;
-  response?: unknown;
+  response?: JTAGResponsePayload;
 }
 
 // Event handling result  

@@ -357,7 +357,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
         const responsePromise = this.responseCorrelator.createRequest(remoteMessage.correlationId);
         
         await p2pTransport.send(remoteMessage);
-        const response = await responsePromise;
+        const response = await responsePromise as JTAGResponsePayload;
         
         console.log(`✅ ${this.toString()}: P2P response received from ${nodeId}`);
         return { success: true, resolved: true, response };
@@ -398,7 +398,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       console.log(`📤 ${this.toString()}: Request sent, awaiting response...`);
       
       // Await the correlated response
-      const response = await responsePromise;
+      const response = await responsePromise as JTAGResponsePayload;
       console.log(`✅ ${this.toString()}: Response received for ${message.correlationId}`);
       return { success: true, resolved: true, response };
 
@@ -559,7 +559,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     const result = await this.routeToSubscriber(message);
     
     // Create and send response for request messages
-    if (result.success) {
+    if (result.success && result.handlerResult) {
       await this.createAndSendResponse(message, result.handlerResult);
     }
     
@@ -605,7 +605,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   /**
    * Route message to appropriate subscriber
    */
-  private async routeToSubscriber(message: JTAGMessage): Promise<LocalRoutingResult & { handlerResult?: any }> {
+  private async routeToSubscriber(message: JTAGMessage): Promise<LocalRoutingResult & { handlerResult?: JTAGResponsePayload }> {
     const matchResult = this.endpointMatcher.match(message.endpoint);
     
     if (!matchResult) {
@@ -631,7 +631,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   /**
    * Create and send response for request messages
    */
-  private async createAndSendResponse(originalMessage: JTAGMessage, handlerResult: any): Promise<void> {
+  private async createAndSendResponse(originalMessage: JTAGMessage, handlerResult: JTAGResponsePayload): Promise<void> {
     // Type guard: only request messages should reach here
     if (!JTAGMessageTypes.isRequest(originalMessage)) {
       return;
