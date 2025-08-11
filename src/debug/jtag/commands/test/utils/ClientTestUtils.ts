@@ -7,6 +7,7 @@
 
 import type { JTAGClient, JTAGClientConnectOptions, JTAGClientConnectionResult } from '../../../system/core/client/shared/JTAGClient';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 import type { ListResult } from '../../list/shared/ListTypes';
 
 /**
@@ -242,14 +243,14 @@ export async function testConnectionScenarios(
 export const STANDARD_CONNECTION_SCENARIOS: ConnectionTestScenario[] = [
   {
     name: 'Server target connection',
-    options: { targetEnvironment: 'server' },
+    options: { targetEnvironment: 'server', sessionId: SYSTEM_SCOPES.SYSTEM },
     expectedEnvironment: 'server',
     minimumCommands: 15,
     shouldSucceed: true
   },
   {
     name: 'Browser target connection', 
-    options: { targetEnvironment: 'browser' },
+    options: { targetEnvironment: 'browser', sessionId: SYSTEM_SCOPES.SYSTEM },
     expectedEnvironment: 'browser',
     minimumCommands: 15,
     shouldSucceed: true

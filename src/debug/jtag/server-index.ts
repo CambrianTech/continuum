@@ -6,6 +6,7 @@
 
 import { JTAGSystemServer } from './system/core/system/server/JTAGSystemServer';
 import { JTAGClientServer } from './system/core/client/server/JTAGClientServer';
+import { SYSTEM_SCOPES } from './system/core/types/SystemScopes';
 import type { JTAGBase } from './system/core/shared/JTAGBase';
 
 export const jtag = {
@@ -15,7 +16,8 @@ export const jtag = {
     console.log(`🔌 Server: Connecting via JTAGClientServer (target: ${targetEnv})`);
     
     const connectionResult = await JTAGClientServer.connectRemote({ 
-      targetEnvironment: targetEnv 
+      targetEnvironment: targetEnv,
+      sessionId: SYSTEM_SCOPES.SYSTEM // System default session
     });
     
     console.log(`✅ Server: JTAGClient connected with ${connectionResult.listResult.totalCount} commands`);

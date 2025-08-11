@@ -21,6 +21,7 @@
  */
 
 import { JTAGClient, type JTAGClientConnectOptions, type ICommandCorrelator } from '../shared/JTAGClient';
+import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import type { ITransportFactory} from '../../../transports/shared/ITransportFactory';
 import { TransportFactoryServer } from '../../../transports/server/TransportFactoryServer';
 import type { ListResult } from '../../../../commands/list/shared/ListTypes';
@@ -130,6 +131,7 @@ export class JTAGClientServer extends JTAGClient {
   static async connectRemote(options?: JTAGClientConnectOptions): Promise<{ client: JTAGClientServer; listResult: ListResult }> {
     return await JTAGClientServer.connect({
       targetEnvironment: 'server',
+      sessionId: SYSTEM_SCOPES.SYSTEM, // Default to system session
       ...options
     });
   }

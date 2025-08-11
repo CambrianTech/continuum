@@ -8,6 +8,7 @@
 
 import { JTAGBase, type CommandsInterface } from '../../shared/JTAGBase';
 import type { JTAGContext } from '../../types/JTAGTypes';
+import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import { SYSTEM_EVENTS } from '../../../events';
 import type { JTAGRouter } from '../../router/shared/JTAGRouter';
 import type { DaemonBase } from '../../../../daemons/command-daemon/shared/DaemonBase';
@@ -96,7 +97,7 @@ export abstract class JTAGSystem extends JTAGBase {
         initTimeout: 10000,
         ...config.daemons
       },
-      router: config.router ?? {}
+      router: config.router ?? { sessionId: SYSTEM_SCOPES.SYSTEM }
     } as const;
     
     // Log JTAG version on initialization

@@ -13,6 +13,8 @@ import { SYSTEM_EVENTS } from '../../../events';
 import type { DaemonBase, DaemonEntry } from '../../../../daemons/command-daemon/shared/DaemonBase';
 import { BROWSER_DAEMONS } from '../../../../browser/generated';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
+import type { UUID } from '../../types/CrossPlatformUUID';
+import { generateUUID } from '../../types/CrossPlatformUUID';
 
 export class JTAGSystemBrowser extends JTAGSystem {
   protected override get daemonEntries(): DaemonEntry[] { return BROWSER_DAEMONS; }
@@ -42,6 +44,7 @@ export class JTAGSystemBrowser extends JTAGSystem {
         ...config?.daemons
       },
       router: {
+        sessionId: SYSTEM_SCOPES.SYSTEM, // Router already created with proper sessionId
         queue: {
           flushInterval: 300, // Browser - faster flush for UI responsiveness
           maxSize: 500, // Browser - smaller queue for memory efficiency
@@ -65,17 +68,19 @@ export class JTAGSystemBrowser extends JTAGSystem {
       return JTAGSystemBrowser.instance;
     }
 
-    // 1. Start with system scope for initial daemon setup
+    // 1. Create browser context - generate unique context ID (NOT sessionId)
     const context: JTAGContext = {
-      uuid: SYSTEM_SCOPES.SYSTEM, // Use system scope until SessionDaemon provides real session
+      uuid: generateUUID(), // Unique context identifier for this browser instance
       environment: JTAG_ENVIRONMENTS.BROWSER
     };
 
     console.log(`🔄 JTAG System: Connecting browser environment...`);
     console.log(`🆔 JTAG System: Starting with system scope, will get session from SessionDaemon`);
 
-    // 3. Create universal router with config (no sessionId - will receive from server)
+    // 3. Create universal router with config and system session (initial)
+    const sessionId = config?.connection?.sessionId ?? SYSTEM_SCOPES.SYSTEM;
     const routerConfig = {
+      sessionId: sessionId,
       ...config?.router,
       transport: {
         ...config?.router?.transport,

@@ -13,7 +13,7 @@ import type { JTAGRouterConfig } from '../shared/JTAGRouterTypes';
 
 export class JTAGRouterDynamicServer extends JTAGRouterDynamic {
   
-  constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
+  constructor(context: JTAGContext, config: JTAGRouterConfig) {
     super(context, config);
     console.log(`🚀 JTAGRouterDynamicServer: Initialized with intelligent routing capabilities`);
   }

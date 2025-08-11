@@ -103,7 +103,7 @@ export class JTAGRouterDynamic extends JTAGRouter {
   // transportStrategy, enhancementStrategy, config, eventManager, messageQueue, 
   // healthManager, responseCorrelator, isInitialized
 
-  constructor(context: JTAGContext, config: JTAGRouterConfig = {}) {
+  constructor(context: JTAGContext, config: JTAGRouterConfig) {
     super(context, config);
     // All initialization is now handled by JTAGRouter constructor
     // Dynamic strategy is automatically selected based on configuration

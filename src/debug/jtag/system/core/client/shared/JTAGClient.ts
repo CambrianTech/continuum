@@ -129,7 +129,7 @@ export interface JTAGClientConnectOptions {
   readonly enableFallback?: boolean;
   readonly maxRetries?: number;
   readonly retryDelay?: number;
-  readonly sessionId?: UUID; // Allow sharing sessionId across clients
+  readonly sessionId: UUID; // Required session ID - client is authority
 }
 
 /**

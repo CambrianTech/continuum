@@ -9,6 +9,7 @@ import type { TransportRole, TransportEndpointStatus } from '../../../transports
 import { TRANSPORT_ROLES } from '../../../transports';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { JTAGEnvironment } from '../../types/JTAGTypes';
+import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import type { JTAGMessageQueue } from './queuing/JTAGMessageQueue';
 import type { ConnectionHealthManager } from './ConnectionHealthManager';
 
@@ -63,7 +64,7 @@ export interface JTAGRouterConfig {
   readonly response?: Partial<JTAGRouterResponseConfig>;
   readonly transport?: Partial<JTAGRouterTransportConfig>;
   readonly enableLogging?: boolean;
-  readonly sessionId?: UUID; // Session ID for transport handshake
+  readonly sessionId: UUID; // Required session ID for transport handshake
 }
 
 /**
@@ -75,7 +76,7 @@ export interface ResolvedJTAGRouterConfig {
   readonly response: JTAGRouterResponseConfig;
   readonly transport: JTAGRouterTransportConfig;
   readonly enableLogging: boolean;
-  readonly sessionId?: UUID; // Session ID for transport handshake
+  readonly sessionId: UUID; // Required session ID for transport handshake
 }
 
 /**
@@ -106,13 +107,14 @@ export const DEFAULT_JTAG_ROUTER_CONFIG: ResolvedJTAGRouterConfig = {
     serverPort: 9001, // WebSocket default port
     serverUrl: undefined // Will be auto-derived from port
   },
-  enableLogging: true
+  enableLogging: true,
+  sessionId: SYSTEM_SCOPES.SYSTEM // System default session ID
 } as const;
 
 /**
  * Create resolved JTAGRouter config by merging user config with defaults
  */
-export function createJTAGRouterConfig(config: JTAGRouterConfig = {}): ResolvedJTAGRouterConfig {
+export function createJTAGRouterConfig(config: JTAGRouterConfig): ResolvedJTAGRouterConfig {
   return {
     queue: {
       ...DEFAULT_JTAG_ROUTER_CONFIG.queue,
