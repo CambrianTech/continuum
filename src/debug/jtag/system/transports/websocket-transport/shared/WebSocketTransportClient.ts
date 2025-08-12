@@ -32,6 +32,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
   protected config: WebSocketConfig;
   protected sessionId?: string;
   protected connected = false;
+  protected messageHandler?: (message: JTAGMessage) => void;
   
   constructor(config: WebSocketConfig = {}) {
     super();
@@ -80,7 +81,11 @@ export abstract class WebSocketTransportClient extends TransportBase {
         }
         
         // Forward regular messages to handler
-        this.handleIncomingMessage(message);
+        if (this.messageHandler) {
+          this.messageHandler(message);
+        } else {
+          console.warn(`${this.name}: Received message but no handler set:`, message);
+        }
       } catch (error) {
         this.handleWebSocketError(error as Error, 'message parsing');
       }
@@ -124,6 +129,20 @@ export abstract class WebSocketTransportClient extends TransportBase {
    */
   setSessionId(sessionId: string): void {
     this.sessionId = sessionId;
+  }
+
+  /**
+   * Set message handler for incoming messages
+   */
+  setMessageHandler(handler: (message: JTAGMessage) => void): void {
+    this.messageHandler = handler;
+  }
+
+  /**
+   * Set event system for transport events
+   */
+  setEventSystem(eventSystem: any): void {
+    this.eventSystem = eventSystem;
   }
 
   /**

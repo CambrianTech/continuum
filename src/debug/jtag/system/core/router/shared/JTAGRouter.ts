@@ -129,7 +129,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   }>();
 
   // Clean external client detection (replaces sloppy prefix approach)
-  private readonly externalClientDetector = new ExternalClientDetector();
+  protected readonly externalClientDetector = new ExternalClientDetector();
 
   // Correlation management - extracted for better modularity
   private readonly correlationManager = new CorrelationManager();

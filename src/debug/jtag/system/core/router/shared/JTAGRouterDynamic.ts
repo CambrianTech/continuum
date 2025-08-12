@@ -167,9 +167,12 @@ export class JTAGRouterDynamic extends JTAGRouter {
   private async handleDynamicMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
     console.log(`📨 JTAGRouterDynamic: Processing message with intelligent routing: ${message.endpoint}`);
     
-    // CORRELATION FIX: Register external client correlation IDs with ResponseCorrelator
+    // CORRELATION FIX: Register external client correlation IDs with both systems
     if (JTAGMessageTypes.isRequest(message) && message.correlationId?.startsWith(CLIENT_CORRELATION_PREFIX)) {
       console.log(`🔗 ${this.toString()}: Registering external correlation ${message.correlationId}`);
+      
+      // Register with ExternalClientDetector for WebSocket response routing
+      this.externalClientDetector.registerExternal(message.correlationId);
       
       // Register external correlation with ResponseCorrelator (don't await - let it resolve later)
       this.responseCorrelator.createRequest(message.correlationId).catch(error => {
