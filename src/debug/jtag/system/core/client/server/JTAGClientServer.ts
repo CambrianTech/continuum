@@ -27,7 +27,6 @@ import { TransportFactoryServer } from '../../../transports/server/TransportFact
 import type { ListResult } from '../../../../commands/list/shared/ListTypes';
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
 import { JTAGSystemServer } from '../../system/server/JTAGSystemServer';
-import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
 import type { JTAGPayload, JTAGContext } from '../../types/JTAGTypes';
 import type { UUID } from '../../types/CrossPlatformUUID';
 
@@ -58,41 +57,6 @@ export class JTAGClientServer extends JTAGClient {
     // Force remote connection for all other cases
     console.log('🌐 JTAGClientServer: No local system - using remote connection');
     return null;
-    
-    // Check if server is running on expected port (npm start scenario)
-    if (await this.isServerRunning()) {
-      console.log('🌐 JTAGClientServer: Server detected on port 9001, using remote connection');
-      return null; // Use remote connection to existing server
-    }
-    
-    console.log('❌ JTAGClientServer: No JTAG system found - run "npm start" first');
-    throw new Error('No JTAG system available. Please run "npm start" to start the system.');
-  }
-
-  private async isServerRunning(): Promise<boolean> {
-    try {
-      // Quick check if WebSocket server is running on 9001
-      const net = await import('net');
-      const socket = new net.Socket();
-      
-      return new Promise((resolve) => {
-        socket.setTimeout(1000);  
-        socket.on('connect', () => {
-          socket.destroy();
-          resolve(true);
-        });
-        socket.on('timeout', () => {
-          socket.destroy();
-          resolve(false);
-        });
-        socket.on('error', () => {
-          resolve(false);
-        });
-        socket.connect(9001, 'localhost');
-      });
-    } catch {
-      return false;
-    }
   }
   
   /**

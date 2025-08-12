@@ -8,6 +8,7 @@
 import { TransportBase } from '../../shared/TransportBase';
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import { TRANSPORT_EVENTS } from '../../shared/TransportEvents';
+import type { TransportSendResult } from '@system/transports/shared';
 
 // WebSocket specific configuration shared between client and server
 export interface WebSocketConfig {
@@ -39,16 +40,11 @@ export abstract class WebSocketTransportClient extends TransportBase {
   protected abstract createWebSocket(url: string): any;
 
   /**
-   * Abstract method for setting up WebSocket server - server-specific
-   */
-  protected abstract createWebSocketServer?(port: number): Promise<any>;
-
-  /**
    * Common WebSocket connection setup - shared between client and server
    */
   protected setupWebSocketEvents(socket: any, clientId: string): void {
     // Connection opened
-    socket.onopen = () => {
+    socket.onopen = (): void => {
       console.log(`✅ ${this.name || 'websocket'}: Connected`);
       this.connected = true;
       
@@ -237,7 +233,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
         // Override onopen to add resolve callback
         const originalOnopen = this.socket.onopen;
         this.socket.onopen = (event: Event): void => {
-          originalOnopen?.call(this.socket!, event);
+          originalOnopen?.call(this.socket, event);
           console.log(`✅ ${this.name}: Handler compliance enforced by TypeScript`);
           resolve();
         };
@@ -245,7 +241,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
         // Override onerror to add reject callback
         const originalOnerror = this.socket.onerror;
         this.socket.onerror = (error: any): void => {
-          originalOnerror?.call(this.socket!, error);
+          originalOnerror?.call(this.socket, error);
           reject(new Error(`WebSocket connection error: ${error.type || 'unknown'}`));
         };
         
@@ -258,7 +254,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
   /**
    * Send message via WebSocket - shared client implementation
    */
-  async send(message: any): Promise<any> {
+  async send(message: JTAGMessage): Promise<TransportSendResult> {
     console.log(`📤 ${this.name}: Sending message to server`);
     
     try {
