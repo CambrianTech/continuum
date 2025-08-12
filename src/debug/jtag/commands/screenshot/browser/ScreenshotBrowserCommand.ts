@@ -25,6 +25,8 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
    */
   async execute(params: ScreenshotParams): Promise<ScreenshotResult> {
     console.log(`📸 BROWSER: Capturing screenshot`);
+    console.log(`🔍 DEBUG: ScreenshotBrowserCommand.execute() CALLED with sessionId: ${params.sessionId}`);
+    console.log(`🔍 DEBUG: Full params:`, JSON.stringify(params, null, 2));
 
     try {
       // Get html2canvas API with proper typing

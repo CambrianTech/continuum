@@ -16,8 +16,8 @@ async function testBasicServerCommands(): Promise<void> {
     // Test 2: Check what's available on client object
     console.log('📋 Testing client properties...');
     console.log('🔍 Client properties:', Object.keys(client));
-    console.log('🔍 Client sessionId:', client.sessionId);
-    console.log('🔍 Client context:', client.context);
+    console.log('🔍 Client sessionId:', client.client.sessionId);
+    console.log('🔍 Client context:', client.client.context);
     
     // The WebSocket transport is working! 
     // Evidence: Session creation and command discovery completed successfully
