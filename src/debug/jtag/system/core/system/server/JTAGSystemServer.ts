@@ -45,7 +45,7 @@ export class JTAGSystemServer extends JTAGSystem {
       },
       daemons: {
         enableParallelInit: true,
-        initTimeout: 15000, // Server timeout longer
+        initTimeout: 5000, // Server timeout longer
         ...config?.daemons
       },
       router: {
@@ -61,7 +61,7 @@ export class JTAGSystemServer extends JTAGSystem {
           ...config?.router?.health
         },
         response: {
-          correlationTimeout: 60000, // Server - longer response timeout
+          correlationTimeout: 5000, // Server - longer response timeout
           ...config?.router?.response
         },
         ...config?.router

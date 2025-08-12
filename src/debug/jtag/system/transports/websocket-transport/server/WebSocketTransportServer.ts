@@ -7,6 +7,7 @@
 
 import { WebSocketTransportClient, type WebSocketConfig } from '../shared/WebSocketTransportClient';
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
+import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { JTAGMessageTypes } from '../../../core/types/JTAGTypes';
 import { WebSocketServer, type WebSocket as WSWebSocket } from 'ws';
 import type { TransportSendResult } from '../../shared/TransportTypes';
@@ -27,7 +28,7 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
   private server?: WebSocketServer;
   private clients = new Set<WSWebSocket>();
   private messageHandlers = new Set<(message: JTAGMessage) => void>();
-  private sessionHandshakeHandler?: (sessionId: string) => void;
+  private sessionHandshakeHandler?: (sessionId: UUID) => void;
   private serverConfig: WebSocketServerConfig;
   private responseRouter = new WebSocketResponseRouter();
 
@@ -53,7 +54,7 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
   /**
    * Set handler for session handshake messages
    */
-  setSessionHandshakeHandler(handler: (sessionId: string) => void): void {
+  setSessionHandshakeHandler(handler: (sessionId: UUID) => void): void {
     this.sessionHandshakeHandler = handler;
   }
 
