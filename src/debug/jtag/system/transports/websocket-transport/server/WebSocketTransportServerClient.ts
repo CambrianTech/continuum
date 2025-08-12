@@ -11,6 +11,7 @@ import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import type { TransportSendResult } from '../../shared/TransportTypes';
 import type { ITransportHandler } from '../../shared/ITransportHandler';
 import type { EventsInterface } from '../../../events';
+import { WebSocket as WSWebSocket } from 'ws';
 
 // Server client-specific WebSocket configuration with typed inheritance
 export interface WebSocketServerClientConfig extends WebSocketConfig {
@@ -22,7 +23,7 @@ export interface WebSocketServerClientConfig extends WebSocketConfig {
 export class WebSocketTransportServerClient extends WebSocketTransportBase {
   public readonly name = 'websocket-server-client';
   
-  private client?: any; // ws.WebSocket type
+  private client?: WSWebSocket;
   private lastConnectedUrl?: string;
   private handler: ITransportHandler;
   
@@ -51,9 +52,23 @@ export class WebSocketTransportServerClient extends WebSocketTransportBase {
   }
 
   /**
+   * Server-specific WebSocket creation - uses ws library
+   */
+  protected createWebSocket(url: string): any {
+    throw new Error('Use connect() method instead - createWebSocket is not used for server client');
+  }
+
+  /**
+   * Server client doesn't create servers - not implemented
+   */
+  protected createWebSocketServer(port: number): Promise<never> {
+    throw new Error('Server client cannot create WebSocket servers - use WebSocketTransportServer instead');
+  }
+
+  /**
    * Send session handshake to server - uses shared base method
    */
-  private sendSessionHandshake(): void {
+  protected sendSessionHandshake(): void {
     if (this.client && this.sessionId && this.config.sessionHandshake) {
       const handshake = this.createSessionHandshake();
       this.sendWebSocketMessage(this.client, handshake);
@@ -65,13 +80,9 @@ export class WebSocketTransportServerClient extends WebSocketTransportBase {
     this.lastConnectedUrl = url; // Store for reconnection
     console.log(`🔗 ${this.name}: Connecting to ${url}`);
     
-    return new Promise(async (resolve, reject) => {
+    return new Promise((resolve, reject) => {
       try {
-        // Dynamic import to handle WebSocket client availability
-        const WebSocketModule = await eval('import("ws")');
-        const WSClient = WebSocketModule.default || WebSocketModule.WebSocket;
-        
-        this.client = new WSClient(url);
+        this.client = new WSWebSocket(url);
         const clientId = this.generateClientId('ws_server_client');
         
         this.client.on('open', () => {
@@ -132,11 +143,11 @@ export class WebSocketTransportServerClient extends WebSocketTransportBase {
           
           this.client = undefined;
         });
-        
-      } catch (error) {
-        reject(new Error(`Failed to create WebSocket client: ${error}`));
-      }
-    });
+          
+        } catch (error) {
+          reject(new Error(`Failed to create WebSocket client: ${error}`));
+        }
+      });
   }
 
   async send(message: JTAGMessage): Promise<TransportSendResult> {

@@ -7,12 +7,11 @@
 import { JTAGSystemServer } from './system/core/system/server/JTAGSystemServer';
 import { JTAGClientServer } from './system/core/client/server/JTAGClientServer';
 import { SYSTEM_SCOPES } from './system/core/types/SystemScopes';
-import type { JTAGBase } from './system/core/shared/JTAGBase';
 
 export const jtag = {
   // Universal client interface - allows targeting different environments
-  async connect(options?: { targetEnvironment?: 'server' | 'browser' }) {
-    const targetEnv = options?.targetEnvironment || 'server';
+  async connect(options?: { targetEnvironment?: 'server' | 'browser' }): Promise<Awaited<ReturnType<typeof JTAGClientServer.connectRemote>>> {
+    const targetEnv = options?.targetEnvironment ?? 'server';
     console.log(`🔌 Server: Connecting via JTAGClientServer (target: ${targetEnv})`);
     
     const connectionResult = await JTAGClientServer.connectRemote({ 
@@ -25,7 +24,7 @@ export const jtag = {
   },
 
   // Legacy: Full system access (for advanced usage)
-  async getSystem() {
+  async getSystem(): Promise<ReturnType<typeof JTAGSystemServer.connect>> {
     return JTAGSystemServer.connect();
   }
 };
