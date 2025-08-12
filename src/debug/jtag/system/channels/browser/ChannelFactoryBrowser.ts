@@ -9,8 +9,9 @@ import type { ITransportFactory } from '../shared/ITransportFactory';
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGTransport, TransportConfig } from '../shared/TransportTypes';
 import { TransportConfigHelper } from '../shared/TransportConfig';
-import { WebSocketTransportBrowser } from '../websocket-transport/browser/WebSocketTransportBrowser';
-import { HTTPTransport } from '../http-transport/shared/HTTPTransport';
+import { WebSocketTransportClientBrowser } from '../../transports/websocket-transport/browser/WebSocketTransportClientBrowser';
+// Update the import path below if the actual location is different
+import { HTTPTransport } from '../../transports/http-transport/shared/HTTPTransport';
 
 export class TransportFactoryBrowser implements ITransportFactory {
   /**
@@ -56,10 +57,10 @@ export class TransportFactoryBrowser implements ITransportFactory {
     console.log(`🔗 WebSocket Browser Factory: Creating ${role} transport in ${environment} environment`);
 
     if (role === 'client') {
-      const url = serverUrl || `ws://localhost:${serverPort}`;
-      const transport = new WebSocketTransportBrowser({ 
+      const url = serverUrl ?? `ws://localhost:${serverPort}`;
+      const transport = new WebSocketTransportClientBrowser({ 
         url,
-        handler: handler!,
+        handler: handler,
         sessionHandshake: true,
         eventSystem: config.eventSystem // CRITICAL: Pass event system for health management
       });
@@ -74,7 +75,7 @@ export class TransportFactoryBrowser implements ITransportFactory {
    * Create HTTP transport
    */
   private async createHTTPTransport(config: TransportConfig): Promise<JTAGTransport> {
-    const baseUrl = config.serverUrl || 'http://localhost:9002';
+    const baseUrl = config.serverUrl ?? 'http://localhost:9002';
     const transport = new HTTPTransport(baseUrl);
     console.log(`✅ Browser Transport Factory: HTTP transport created`);
     return transport;

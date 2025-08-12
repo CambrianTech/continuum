@@ -5,7 +5,7 @@
  * Server role: server transport that accepts client connections.
  */
 
-import { WebSocketTransportBase, type WebSocketConfig } from '../shared/WebSocketTransportBase';
+import { WebSocketTransportClient, type WebSocketConfig } from '../shared/WebSocketTransportClient';
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import { JTAGMessageTypes } from '../../../core/types/JTAGTypes';
 import { WebSocketServer, type WebSocket as WSWebSocket } from 'ws';
@@ -18,7 +18,7 @@ export interface WebSocketServerConfig extends WebSocketConfig {
   port: number;
 }
 
-export class WebSocketTransportServer extends WebSocketTransportBase implements ITransportAdapter {
+export class WebSocketTransportServer extends WebSocketTransportClient implements ITransportAdapter {
   public readonly name = 'websocket-server';
   public readonly protocol = 'websocket';
   public readonly supportedRoles = ['server'];

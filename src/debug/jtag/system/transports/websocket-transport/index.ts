@@ -8,5 +8,5 @@
 // No more WebSocketTransportFactory - TransportFactory handles directly
 
 // Shared base class for custom WebSocket implementations
-export { WebSocketTransportBase } from './shared/WebSocketTransportBase';
-export type { WebSocketConfig } from './shared/WebSocketTransportBase';
+export { WebSocketTransportClient } from './shared/WebSocketTransportClient';
+export type { WebSocketConfig } from './shared/WebSocketTransportClient';

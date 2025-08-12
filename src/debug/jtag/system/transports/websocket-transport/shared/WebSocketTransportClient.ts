@@ -17,7 +17,7 @@ export interface WebSocketConfig {
   sessionHandshake?: boolean;
 }
 
-export abstract class WebSocketTransportBase extends TransportBase {
+export abstract class WebSocketTransportClient extends TransportBase {
   protected config: WebSocketConfig;
   protected sessionId?: string;
   protected connected = false;
@@ -212,5 +212,88 @@ export abstract class WebSocketTransportBase extends TransportBase {
       error: error.message,
       context
     });
+  }
+
+  // ===== SHARED CLIENT METHODS (from working browser implementation) =====
+
+  protected socket?: any; // WebSocket instance
+  protected lastConnectedUrl?: string; // For reconnection
+  
+  /**
+   * Connect to WebSocket server - shared client implementation
+   */
+  async connect(url: string): Promise<void> {
+    this.lastConnectedUrl = url; // Store for reconnection
+    console.log(`🔗 ${this.name}: Connecting to ${url}`);
+    
+    return new Promise((resolve, reject) => {
+      try {
+        this.socket = this.createWebSocket(url);
+        const clientId = this.generateClientId('ws_client');
+        
+        // Use shared event setup from base class
+        this.setupWebSocketEvents(this.socket, clientId);
+        
+        // Override onopen to add resolve callback
+        const originalOnopen = this.socket.onopen;
+        this.socket.onopen = (event: Event): void => {
+          originalOnopen?.call(this.socket!, event);
+          console.log(`✅ ${this.name}: Handler compliance enforced by TypeScript`);
+          resolve();
+        };
+        
+        // Override onerror to add reject callback
+        const originalOnerror = this.socket.onerror;
+        this.socket.onerror = (error: any): void => {
+          originalOnerror?.call(this.socket!, error);
+          reject(new Error(`WebSocket connection error: ${error.type || 'unknown'}`));
+        };
+        
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Send message via WebSocket - shared client implementation
+   */
+  async send(message: any): Promise<any> {
+    console.log(`📤 ${this.name}: Sending message to server`);
+    
+    try {
+      this.sendWebSocketMessage(this.socket, message);
+      return this.createResult(true);
+    } catch (error) {
+      this.handleWebSocketError(error as Error, 'message send');
+      throw error;
+    }
+  }
+
+  /**
+   * Disconnect WebSocket - shared client implementation
+   */
+  async disconnect(): Promise<void> {
+    if (this.socket) {
+      console.log(`🔌 ${this.name}: Disconnecting`);
+      this.socket.close();
+      this.socket = undefined;
+      this.connected = false;
+    }
+  }
+
+  /**
+   * Reconnect using stored URL - shared client implementation
+   */
+  async reconnect(): Promise<void> {
+    if (!this.lastConnectedUrl) {
+      throw new Error('Cannot reconnect: No previous connection URL stored');
+    }
+    
+    // Disconnect first if still connected
+    await this.disconnect();
+    
+    // Reconnect using stored URL
+    await this.connect(this.lastConnectedUrl);
   }
 }

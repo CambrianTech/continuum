@@ -3,7 +3,7 @@
  * Test Session Request - Proper session flow via SessionDaemon
  */
 
-import { WebSocketTransportServerClient } from './system/transports/websocket-transport/server/WebSocketTransportServerClient';
+import { WebSocketTransportClientServer } from './system/transports/websocket-transport/server/WebSocketTransportClientServer';
 import type { JTAGMessage, JTAGRequestMessage, JTAGPayload, JTAGContext } from './shared/JTAGTypes';
 import { SYSTEM_SCOPES } from './shared/SystemScopes';
 import { generateUUID } from './shared/CrossPlatformUUID';
@@ -27,7 +27,7 @@ class SessionRequestHandler {
     }
   }
 
-  async sendAndWait(transport: WebSocketTransportServerClient, endpoint: string, params: any = {}, sessionId?: string): Promise<any> {
+  async sendAndWait(transport: WebSocketTransportClientServer, endpoint: string, params: any = {}, sessionId?: string): Promise<any> {
     const correlationId = generateUUID();
     const useSessionId = sessionId || SYSTEM_SCOPES.UNKNOWN_SESSION;
     
@@ -80,7 +80,7 @@ async function testSessionFlow() {
     console.log('🧪 Testing proper session flow via SessionDaemon...');
     
     const handler = new SessionRequestHandler();
-    const transport = new WebSocketTransportServerClient({
+    const transport = new WebSocketTransportClientServer({
       url: 'ws://localhost:9001',
       handler: handler as any,
       sessionHandshake: true

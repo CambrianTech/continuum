@@ -10,7 +10,7 @@ import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGTransport, TransportConfig } from '../shared/TransportTypes';
 import { TransportConfigHelper } from '../shared/TransportConfig';
 import { WebSocketTransportServer } from '../websocket-transport/server/WebSocketTransportServer';
-import { WebSocketTransportServerClient } from '../websocket-transport/server/WebSocketTransportServerClient';
+import { WebSocketTransportClientServer } from '../websocket-transport/server/WebSocketTransportClientServer';
 import { HTTPTransport } from '../http-transport/shared/HTTPTransport';
 
 export class TransportFactoryServer implements ITransportFactory {
@@ -81,7 +81,7 @@ export class TransportFactoryServer implements ITransportFactory {
         throw new Error('WebSocket client transport requires handler configuration');
       }
 
-      const transport = new WebSocketTransportServerClient({ 
+      const transport = new WebSocketTransportClientServer({ 
         url,
         handler,
         sessionHandshake: true,

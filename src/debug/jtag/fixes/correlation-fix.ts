@@ -79,7 +79,7 @@ class CorrelationFix {
   }
 
   private async fixWebSocketTransport(): Promise<void> {
-    const transportPath = 'system/transports/websocket-transport/server/WebSocketTransportServerClient.ts';
+    const transportPath = 'system/transports/websocket-transport/server/WebSocketTransportClientServer.ts';
     
     if (!fs.existsSync(transportPath)) {
       console.log(`❌ WebSocket transport file not found: ${transportPath}`);
