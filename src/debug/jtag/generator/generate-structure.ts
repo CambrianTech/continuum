@@ -304,7 +304,7 @@ class StructureGenerator {
         return (filePath, className) => {
           // For transport classes, use the full class name to avoid duplicates
           // e.g., WebSocketTransportServer -> websocket-transport-server
-          //       WebSocketTransportServerClient -> websocket-transport-server-client
+          //       WebSocketTransportClientServer -> websocket-transport-server-client
           return className
             .replace(/Transport/g, '-transport-')
             .replace(/([A-Z])/g, (match, p1, offset) => offset > 0 ? '-' + p1.toLowerCase() : p1.toLowerCase())

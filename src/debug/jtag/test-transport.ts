@@ -2,10 +2,10 @@
 /**
  * Transport Test - Direct WebSocket transport test
  * 
- * Tests WebSocketTransportServerClient directly without going through JTAGClient
+ * Tests WebSocketTransportClientServer directly without going through JTAGClient
  */
 
-import { WebSocketTransportServerClient } from './system/transports/websocket-transport/server/WebSocketTransportServerClient';
+import { WebSocketTransportClientServer } from './system/transports/websocket-transport/server/WebSocketTransportClientServer';
 import type { JTAGMessage } from './shared/JTAGTypes';
 import { SYSTEM_SCOPES } from './shared/SystemScopes';
 import { generateUUID } from './shared/CrossPlatformUUID';
@@ -19,10 +19,10 @@ class TestTransportHandler {
 
 async function main() {
   try {
-    console.log('🧪 Testing WebSocketTransportServerClient directly...');
+    console.log('🧪 Testing WebSocketTransportClientServer directly...');
     
     const handler = new TestTransportHandler();
-    const transport = new WebSocketTransportServerClient({
+    const transport = new WebSocketTransportClientServer({
       url: 'ws://localhost:9001',
       handler: handler as any,
       sessionHandshake: true

@@ -11,7 +11,7 @@ import { TransportFactoryBase } from '../shared/TransportFactoryBase';
 import { SERVER_ADAPTERS } from '../../../server/generated';
 import type { AdapterEntry } from '../shared/TransportBase';
 import type { WebSocketServerConfig } from '../websocket-transport/server/WebSocketTransportServer';
-import type { WebSocketServerClientConfig } from '../websocket-transport/server/WebSocketTransportServerClient';
+import type { WebSocketServerClientConfig } from '../websocket-transport/server/WebSocketTransportClientServer';
 
 export class TransportFactoryServer extends TransportFactoryBase {
   
@@ -93,7 +93,7 @@ export class TransportFactoryServer extends TransportFactoryBase {
           sessionHandshake: true
         };
         return serverConfig;
-      } else if (adapterEntry.className === 'WebSocketTransportServerClient') {
+      } else if (adapterEntry.className === 'WebSocketTransportClientServer') {
         // WebSocketServerClientConfig requires url, handler, eventSystem
         const clientConfig: WebSocketServerClientConfig = {
           url: config.serverUrl ?? `ws://localhost:${config.serverPort ?? 9001}`,

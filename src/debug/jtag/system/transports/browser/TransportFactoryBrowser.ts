@@ -10,7 +10,7 @@ import type { JTAGTransport, TransportConfig } from '../shared/TransportTypes';
 import { TransportFactoryBase } from '../shared/TransportFactoryBase';
 import { BROWSER_ADAPTERS } from '../../../browser/generated';
 import type { AdapterEntry } from '../shared/TransportBase';
-import type { WebSocketBrowserConfig } from '../websocket-transport/browser/WebSocketTransportBrowser';
+import type { WebSocketBrowserConfig } from '../websocket-transport/browser/WebSocketTransportClientBrowser';
 
 export class TransportFactoryBrowser extends TransportFactoryBase {
   

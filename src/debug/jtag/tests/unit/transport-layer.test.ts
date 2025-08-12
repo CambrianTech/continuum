@@ -6,10 +6,11 @@
  * transport factories, message handling, and cross-environment compatibility.
  */
 
-import { WebSocketTransportBase } from '../../system/transports/websocket-transport/shared/WebSocketTransportBase';
+import { WebSocketTransportClient } from '../../system/transports/websocket-transport/shared/WebSocketTransportClient';
+
 import { TransportBase } from '../../system/transports/shared/TransportBase';
-import type { JTAGMessage, JTAGContext } from '../../../system/core/types/JTAGTypes';
-import type { JTAGTransport, TransportSendResult, TransportConfig } from '../../system/transports/shared/TransportTypes';
+import type { JTAGMessage } from '../../system/core/types/JTAGTypes';
+import type { TransportSendResult } from '../../system/transports/shared/TransportTypes';
 
 console.log('🧪 Transport Layer Unit Test Suite');
 
@@ -53,7 +54,7 @@ class MockWebSocket {
 }
 
 // Test WebSocket transport implementation
-class TestWebSocketTransport extends WebSocketTransportBase {
+class TestWebSocketTransport extends WebSocketTransportClient {
   public readonly name = 'TestWebSocketTransport';
   private socket?: MockWebSocket;
 

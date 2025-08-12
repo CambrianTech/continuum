@@ -5,7 +5,7 @@
  * Tests the 'list' command which should work server-side without browser
  */
 
-import { WebSocketTransportServerClient } from './system/transports/websocket-transport/server/WebSocketTransportServerClient';
+import { WebSocketTransportClientServer } from './system/transports/websocket-transport/server/WebSocketTransportClientServer';
 import type { JTAGMessage } from './shared/JTAGTypes';
 import { SYSTEM_SCOPES } from './shared/SystemScopes';
 import { generateUUID } from './shared/CrossPlatformUUID';
@@ -30,7 +30,7 @@ class ListCommandHandler {
     console.log('📄 Message payload:', JSON.stringify(message.payload, null, 2));
   }
 
-  async sendAndWaitForResponse(transport: WebSocketTransportServerClient, message: JTAGMessage, timeoutMs = 5000): Promise<JTAGMessage> {
+  async sendAndWaitForResponse(transport: WebSocketTransportClientServer, message: JTAGMessage, timeoutMs = 5000): Promise<JTAGMessage> {
     return new Promise((resolve, reject) => {
       // Set up correlation handler
       if (message.correlationId) {
@@ -56,7 +56,7 @@ async function main() {
     console.log('🧪 Testing LIST command via WebSocket...');
     
     const handler = new ListCommandHandler();
-    const transport = new WebSocketTransportServerClient({
+    const transport = new WebSocketTransportClientServer({
       url: 'ws://localhost:9001',
       handler: handler as any,
       sessionHandshake: true

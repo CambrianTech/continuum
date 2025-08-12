@@ -3,7 +3,7 @@
  * Test Direct Command - Bypass broken RemoteConnection and call commands directly
  */
 
-import { WebSocketTransportServerClient } from './system/transports/websocket-transport/server/WebSocketTransportServerClient';
+import { WebSocketTransportClientServer } from './system/transports/websocket-transport/server/WebSocketTransportClientServer';
 import type { JTAGMessage } from './shared/JTAGTypes';
 import { SYSTEM_SCOPES } from './shared/SystemScopes';
 import { generateUUID } from './shared/CrossPlatformUUID';
@@ -29,7 +29,7 @@ class DirectCommandHandler {
     }
   }
 
-  async sendAndWait(transport: WebSocketTransportServerClient, command: string, params: any = {}): Promise<any> {
+  async sendAndWait(transport: WebSocketTransportClientServer, command: string, params: any = {}): Promise<any> {
     const correlationId = generateUUID();
     
     const message: JTAGMessage = {
@@ -65,7 +65,7 @@ async function testDirectCommands() {
     console.log('🧪 Testing direct command execution...');
     
     const handler = new DirectCommandHandler();
-    const transport = new WebSocketTransportServerClient({
+    const transport = new WebSocketTransportClientServer({
       url: 'ws://localhost:9001',
       handler: handler as any,
       sessionHandshake: true
