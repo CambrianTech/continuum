@@ -10,7 +10,8 @@ import { WebSocketTransportClient, type WebSocketConfig } from '../shared/WebSoc
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import type { ITransportHandler } from '../../shared/ITransportHandler';
 import type { EventsInterface } from '../../../events';
-import type { UniversalWebSocket } from '../shared/WebSocketInterface';
+import type { JTAGUniversalWebSocket } from '../shared/WebSocketInterface';
+// No longer need JTAGWebSocketMessageData - everything is JTAGMessage
 import { ServerWebSocketAdapter } from './WebSocketAdapter';
 
 // Server client-specific WebSocket configuration with typed inheritance
@@ -50,9 +51,9 @@ export class WebSocketTransportClientServer extends WebSocketTransportClient {
   }
 
   /**
-   * Server-specific WebSocket creation - returns UniversalWebSocket adapter
+   * Server-specific WebSocket creation - returns JTAGUniversalWebSocket adapter
    */
-  protected createWebSocket(url: string): UniversalWebSocket {
+  protected createWebSocket(url: string): JTAGUniversalWebSocket {
     return new ServerWebSocketAdapter(url);
   }
 

@@ -1,18 +1,19 @@
 /**
- * Browser WebSocket Adapter - Makes browser WebSocket conform to UniversalWebSocket interface
+ * Browser WebSocket Adapter - Makes browser WebSocket conform to JTAGUniversalWebSocket interface
  * 
- * Adapts native browser WebSocket to use consistent addEventListener pattern.
+ * Adapts native browser WebSocket to use consistent addEventListener pattern with JTAG-specific typing.
  */
 
 import type { 
-  UniversalWebSocket, 
-  WebSocketOpenEvent, 
-  WebSocketMessageEvent, 
-  WebSocketCloseEvent, 
-  WebSocketErrorEvent 
+  JTAGUniversalWebSocket, 
+  JTAGWebSocketOpenEvent, 
+  JTAGWebSocketMessageEvent, 
+  JTAGWebSocketCloseEvent, 
+  JTAGWebSocketErrorEvent,
+  JTAGWebSocketReadyState
 } from '../shared/WebSocketInterface';
 
-export class BrowserWebSocketAdapter implements UniversalWebSocket {
+export class BrowserWebSocketAdapter implements JTAGUniversalWebSocket {
   private nativeSocket: WebSocket;
 
   constructor(url: string) {
@@ -28,66 +29,66 @@ export class BrowserWebSocketAdapter implements UniversalWebSocket {
     this.nativeSocket.close(code, reason);
   }
 
-  get readyState(): number {
-    return this.nativeSocket.readyState;
+  get readyState(): JTAGWebSocketReadyState {
+    return this.nativeSocket.readyState as JTAGWebSocketReadyState;
   }
 
   get url(): string {
     return this.nativeSocket.url;
   }
 
-  // Consistent addEventListener implementation
-  addEventListener(type: 'open', listener: (event: WebSocketOpenEvent) => void): void;
-  addEventListener(type: 'message', listener: (event: WebSocketMessageEvent) => void): void;
-  addEventListener(type: 'close', listener: (event: WebSocketCloseEvent) => void): void;
-  addEventListener(type: 'error', listener: (event: WebSocketErrorEvent) => void): void;
+  // Consistent addEventListener implementation with JTAG-specific typing
+  addEventListener(type: 'open', listener: (event: JTAGWebSocketOpenEvent) => void): void;
+  addEventListener(type: 'message', listener: (event: JTAGWebSocketMessageEvent) => void): void;
+  addEventListener(type: 'close', listener: (event: JTAGWebSocketCloseEvent) => void): void;
+  addEventListener(type: 'error', listener: (event: JTAGWebSocketErrorEvent) => void): void;
   addEventListener(type: string, listener: (event: any) => void): void {
     switch (type) {
       case 'open':
         this.nativeSocket.addEventListener('open', (nativeEvent) => {
-          const universalEvent: WebSocketOpenEvent = { type: 'open' };
-          listener(universalEvent);
+          const jtagEvent: JTAGWebSocketOpenEvent = { type: 'open' };
+          listener(jtagEvent);
         });
         break;
 
       case 'message':
         this.nativeSocket.addEventListener('message', (nativeEvent) => {
-          const universalEvent: WebSocketMessageEvent = {
+          const jtagEvent: JTAGWebSocketMessageEvent = {
             type: 'message',
             data: nativeEvent.data
           };
-          listener(universalEvent);
+          listener(jtagEvent);
         });
         break;
 
       case 'close':
         this.nativeSocket.addEventListener('close', (nativeEvent) => {
-          const universalEvent: WebSocketCloseEvent = {
+          const jtagEvent: JTAGWebSocketCloseEvent = {
             type: 'close',
             code: nativeEvent.code,
             reason: nativeEvent.reason
           };
-          listener(universalEvent);
+          listener(jtagEvent);
         });
         break;
 
       case 'error':
         this.nativeSocket.addEventListener('error', (nativeEvent) => {
-          const universalEvent: WebSocketErrorEvent = {
+          const jtagEvent: JTAGWebSocketErrorEvent = {
             type: 'error',
             message: 'WebSocket error occurred'
           };
-          listener(universalEvent);
+          listener(jtagEvent);
         });
         break;
     }
   }
 
-  // Consistent removeEventListener implementation
-  removeEventListener(type: 'open', listener: (event: WebSocketOpenEvent) => void): void;
-  removeEventListener(type: 'message', listener: (event: WebSocketMessageEvent) => void): void;
-  removeEventListener(type: 'close', listener: (event: WebSocketCloseEvent) => void): void;
-  removeEventListener(type: 'error', listener: (event: WebSocketErrorEvent) => void): void;
+  // Consistent removeEventListener implementation with JTAG-specific typing
+  removeEventListener(type: 'open', listener: (event: JTAGWebSocketOpenEvent) => void): void;
+  removeEventListener(type: 'message', listener: (event: JTAGWebSocketMessageEvent) => void): void;
+  removeEventListener(type: 'close', listener: (event: JTAGWebSocketCloseEvent) => void): void;
+  removeEventListener(type: 'error', listener: (event: JTAGWebSocketErrorEvent) => void): void;
   removeEventListener(type: string, listener: (event: any) => void): void {
     // Browser WebSocket removeEventListener requires the exact same function reference
     // This is a simplified implementation - in practice you'd need to track listeners

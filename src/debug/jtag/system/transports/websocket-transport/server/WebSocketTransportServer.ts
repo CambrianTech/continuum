@@ -114,7 +114,7 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
             if (this.isSessionHandshake(message)) {
               this.handleSessionHandshake(message);
               if (this.sessionHandshakeHandler) {
-                this.sessionHandshakeHandler(message.sessionId);
+                this.sessionHandshakeHandler(message.payload?.sessionId);
               }
               return; // Don't forward handshake messages to regular handlers
             }

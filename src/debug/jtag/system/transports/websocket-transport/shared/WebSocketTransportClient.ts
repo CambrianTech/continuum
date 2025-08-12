@@ -10,14 +10,15 @@ import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import { TRANSPORT_EVENTS } from '../../shared/TransportEvents';
 import type { TransportSendResult } from '@system/transports/shared';
 import type { 
-  UniversalWebSocket, 
-  WebSocketOpenEvent, 
-  WebSocketMessageEvent, 
-  WebSocketCloseEvent, 
-  WebSocketErrorEvent,
-  WebSocketReadyStateValue 
+  JTAGUniversalWebSocket, 
+  JTAGWebSocketOpenEvent, 
+  JTAGWebSocketMessageEvent, 
+  JTAGWebSocketCloseEvent, 
+  JTAGWebSocketErrorEvent,
+  JTAGWebSocketReadyState 
 } from './WebSocketInterface';
-import { WebSocketReadyState } from './WebSocketInterface';
+import { JTAG_WEBSOCKET_READY_STATE, JTAG_WEBSOCKET_EVENTS } from './WebSocketInterface';
+import { isJTAGSessionHandshake, isJTAGMessage } from './JTAGWebSocketTypes';
 
 // WebSocket specific configuration shared between client and server
 export interface WebSocketConfig {
@@ -45,16 +46,16 @@ export abstract class WebSocketTransportClient extends TransportBase {
 
   /**
    * Abstract method for creating WebSocket - environment-specific
-   * Must return a UniversalWebSocket-compatible object
+   * Must return a JTAG-compatible WebSocket object
    */
-  protected abstract createWebSocket(url: string): UniversalWebSocket;
+  protected abstract createWebSocket(url: string): JTAGUniversalWebSocket;
 
   /**
    * Common WebSocket connection setup - type-safe and consistent
    */
-  protected setupWebSocketEvents(socket: UniversalWebSocket, clientId: string): void {
+  protected setupWebSocketEvents(socket: JTAGUniversalWebSocket, clientId: string): void {
     // Connection opened - consistent addEventListener pattern
-    socket.addEventListener('open', (event: WebSocketOpenEvent) => {
+    socket.addEventListener('open', (event: JTAGWebSocketOpenEvent) => {
       console.log(`✅ ${this.name || 'websocket'}: Connected`);
       this.connected = true;
       
@@ -68,7 +69,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
     });
 
     // Message received - consistent addEventListener pattern
-    socket.addEventListener('message', (event: WebSocketMessageEvent) => {
+    socket.addEventListener('message', (event: JTAGWebSocketMessageEvent) => {
       try {
         const message = this.parseWebSocketMessage(event.data);
         
@@ -86,7 +87,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
     });
 
     // Connection closed - consistent addEventListener pattern
-    socket.addEventListener('close', (event: WebSocketCloseEvent) => {
+    socket.addEventListener('close', (event: JTAGWebSocketCloseEvent) => {
       console.log(`🔌 ${this.name || 'websocket'}: Connection closed (code: ${event.code})`);
       this.connected = false;
       
@@ -99,7 +100,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
     });
 
     // Connection error - consistent addEventListener pattern
-    socket.addEventListener('error', (event: WebSocketErrorEvent) => {
+    socket.addEventListener('error', (event: JTAGWebSocketErrorEvent) => {
       this.connected = false;
       const errorMsg = event.error?.message || event.message || 'Unknown WebSocket error';
       const errorObj = new Error(`WebSocket error: ${errorMsg}`);
@@ -110,7 +111,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
   /**
    * Send session handshake to peer
    */
-  protected sendSessionHandshake(socket: UniversalWebSocket): void {
+  protected sendSessionHandshake(socket: JTAGUniversalWebSocket): void {
     if (this.sessionId && this.config.sessionHandshake) {
       const handshake = this.createSessionHandshake();
       this.sendWebSocketMessage(socket, handshake);
@@ -126,35 +127,39 @@ export abstract class WebSocketTransportClient extends TransportBase {
   }
 
   /**
-   * Create session handshake message - shared format
+   * Create session handshake message - simplified for transport layer
    */
-  protected createSessionHandshake(): object {
+  protected createSessionHandshake(): any {
+    // Simplified handshake - will be properly structured when JTAG message factory is available
     return {
-      type: 'session_handshake',
-      sessionId: this.sessionId,
-      timestamp: new Date().toISOString()
+      messageType: 'event',
+      endpoint: 'session/handshake',
+      payload: {
+        sessionId: this.sessionId!,
+        timestamp: new Date().toISOString()
+      }
     };
   }
 
   /**
-   * Check if message is a session handshake
+   * Check if message is a session handshake - deprecated, use type guard
    */
-  protected isSessionHandshake(message: any): boolean {
-    return message.type === 'session_handshake' && message.sessionId;
+  protected isSessionHandshake(message: unknown): boolean {
+    return isJTAGSessionHandshake(message);
   }
 
   /**
    * Handle session handshake message - can be overridden by implementations
    */
   protected handleSessionHandshake(message: any): void {
-    console.log(`🤝 ${this.name}: Received session handshake with sessionId: ${message.sessionId}`);
+    console.log(`🤝 ${this.name}: Received session handshake with sessionId: ${message.payload?.sessionId}`);
   }
 
   /**
-   * Send message through WebSocket with error handling
+   * Send message through WebSocket with error handling - handles both regular messages and handshakes
    */
-  protected sendWebSocketMessage(socket: UniversalWebSocket, message: JTAGMessage | object): void {
-    if (!socket || socket.readyState !== WebSocketReadyState.OPEN) {
+  protected sendWebSocketMessage(socket: JTAGUniversalWebSocket, message: JTAGMessage | any): void {
+    if (!socket || socket.readyState !== JTAG_WEBSOCKET_READY_STATE.OPEN) {
       throw new Error(`WebSocket not ready (readyState: ${socket?.readyState})`);
     }
 
@@ -224,7 +229,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
 
   // ===== SHARED CLIENT METHODS (from working browser implementation) =====
 
-  protected socket?: UniversalWebSocket; // WebSocket instance
+  protected socket?: JTAGUniversalWebSocket; // WebSocket instance
   protected lastConnectedUrl?: string; // For reconnection
   
   /**
@@ -243,13 +248,13 @@ export abstract class WebSocketTransportClient extends TransportBase {
         this.setupWebSocketEvents(this.socket, clientId);
         
         // Add Promise resolution/rejection to the consistent event handlers
-        const handleOpen = (event: WebSocketOpenEvent): void => {
+        const handleOpen = (event: JTAGWebSocketOpenEvent): void => {
           console.log(`✅ ${this.name}: Handler compliance enforced by TypeScript`);
           this.socket!.removeEventListener('error', handleError);
           resolve();
         };
         
-        const handleError = (event: WebSocketErrorEvent): void => {
+        const handleError = (event: JTAGWebSocketErrorEvent): void => {
           const errorMsg = event.error?.message || event.message || 'Connection failed';
           this.socket!.removeEventListener('open', handleOpen);
           reject(new Error(`WebSocket connection error: ${errorMsg}`));
