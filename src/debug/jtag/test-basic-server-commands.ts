@@ -4,7 +4,7 @@
 
 import { jtag } from './server-index';
 
-async function testBasicServerCommands() {
+async function testBasicServerCommands(): Promise<void> {
   console.log('🧪 Testing basic server client commands...');
   
   try {

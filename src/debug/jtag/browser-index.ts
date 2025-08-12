@@ -6,11 +6,10 @@
 
 import { JTAGSystemBrowser } from './system/core/system/browser/JTAGSystemBrowser';
 import { JTAGClientBrowser } from './system/core/client/browser/JTAGClientBrowser';
-import type { JTAGBase } from './system/core/shared/JTAGBase';
 
 export const jtag = {
   // Universal client interface - always returns connection result with client property
-  async connect() {
+  async connect(): Promise<ReturnType<typeof JTAGClientBrowser.connectLocal>> {
     console.log('🔌 Browser: Connecting via JTAGClientBrowser (local connection)');
     const connectionResult = await JTAGClientBrowser.connectLocal();
     console.log('✅ Browser: JTAGClient connected with local system');
@@ -18,7 +17,7 @@ export const jtag = {
   },
 
   // Legacy: Full system access (for advanced usage)
-  async getSystem() {
+  async getSystem(): Promise<ReturnType<typeof JTAGSystemBrowser.connect>> {
     return JTAGSystemBrowser.connect();
   }
 };

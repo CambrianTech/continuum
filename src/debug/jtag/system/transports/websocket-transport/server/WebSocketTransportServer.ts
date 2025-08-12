@@ -91,7 +91,7 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
       this.server = server;
       this.connected = true;
       
-      this.server!.on('connection', (ws: WSWebSocket) => {
+      this.server.on('connection', (ws: WSWebSocket) => {
         console.log(`🔗 ${this.name}: New client connected`);
         
         this.clients.add(ws);
@@ -181,7 +181,7 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
   async send(message: JTAGMessage): Promise<TransportSendResult> {
     // Check if this is a response that should be routed to a specific client
     if (JTAGMessageTypes.isResponse(message)) {
-      const correlationId = (message as any).correlationId;
+      const correlationId = message.correlationId;
       
       // First check: Does this correlation exist in our router?
       if (correlationId && this.responseRouter.hasCorrelation(correlationId)) {
@@ -192,7 +192,7 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
       
       // Second check: Is this a server client response that we should try to route?
       // Server client responses have endpoint "server" but should be sent via WebSocket
-      if (correlationId && correlationId.startsWith('client_')) {
+      if (correlationId?.startsWith('client_')) {
         console.log(`🔍 WebSocket Server: Attempting to route server client response ${correlationId}`);
         // Try to send anyway in case correlation was briefly removed
         const success = await this.responseRouter.sendResponse(message);

@@ -45,13 +45,6 @@ export class WebSocketTransportClientBrowser extends WebSocketTransportClient im
     return new WebSocket(url);
   }
 
-  /**
-   * Browser doesn't create servers - not implemented
-   */
-  protected createWebSocketServer(port: number): Promise<never> {
-    throw new Error('Browser cannot create WebSocket servers - use server environment instead');
-  }
-
   // connect(), send(), disconnect(), reconnect() methods inherited from base class
 
 }

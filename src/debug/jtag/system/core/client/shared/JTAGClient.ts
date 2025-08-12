@@ -627,6 +627,7 @@ export class RemoteConnection implements JTAGConnection {
       throw new Error('No transport available for remote command execution');
     }
     
+    console.log(`📤 RemoteConnection: Sending command '${commandName}' with correlation ${correlationId}`);
     const sendResult: TransportSendResult = await transport.send(requestMessage);
     
     if (!sendResult.success) {

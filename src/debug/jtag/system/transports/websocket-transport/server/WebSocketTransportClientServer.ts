@@ -56,13 +56,6 @@ export class WebSocketTransportClientServer extends WebSocketTransportClient {
   }
 
   /**
-   * Server client doesn't create servers - not implemented
-   */
-  protected createWebSocketServer(port: number): Promise<never> {
-    throw new Error('Server client cannot create WebSocket servers - use WebSocketTransportServer instead');
-  }
-
-  /**
    * Send session handshake to server - uses shared base method
    */
   protected sendSessionHandshake(): void {
