@@ -40,14 +40,20 @@ export class WebSocketTransportBrowser extends WebSocketTransportBase implements
   }
 
   /**
-   * Send session handshake to server - uses shared base method
+   * Browser-specific WebSocket creation
    */
-  private sendSessionHandshake(): void {
-    if (this.socket && this.sessionId && this.config.sessionHandshake) {
-      const handshake = this.createSessionHandshake();
-      this.sendWebSocketMessage(this.socket, handshake);
-      console.log(`🤝 ${this.name}: Sent session handshake with sessionId: ${this.sessionId}`);
+  protected createWebSocket(url: string): WebSocket {
+    if (typeof WebSocket === 'undefined') {
+      throw new Error('WebSocket not available in this environment');
     }
+    return new WebSocket(url);
+  }
+
+  /**
+   * Browser doesn't create servers - not implemented
+   */
+  protected createWebSocketServer(port: number): Promise<never> {
+    throw new Error('Browser cannot create WebSocket servers - use server environment instead');
   }
 
   async connect(url: string): Promise<void> {
@@ -55,65 +61,31 @@ export class WebSocketTransportBrowser extends WebSocketTransportBase implements
     console.log(`🔗 ${this.name}: Connecting to ${url}`);
     
     return new Promise((resolve, reject) => {
-      if (typeof WebSocket === 'undefined') {
-        reject(new Error('WebSocket not available in this environment'));
-        return;
+      try {
+        this.socket = this.createWebSocket(url);
+        const clientId = this.generateClientId('ws_browser_client');
+        
+        // Use shared event setup from base class
+        this.setupWebSocketEvents(this.socket, clientId);
+        
+        // Override onopen to add resolve callback
+        const originalOnopen = this.socket.onopen;
+        this.socket.onopen = (event: Event): void => {
+          originalOnopen?.call(this.socket!, event);
+          console.log(`✅ ${this.name}: Handler compliance enforced by TypeScript`);
+          resolve();
+        };
+        
+        // Override onerror to add reject callback
+        const originalOnerror = this.socket.onerror;
+        this.socket.onerror = (error): void => {
+          originalOnerror?.call(this.socket!, error);
+          reject(new Error(`WebSocket connection error: (error.type || 'unknown')`));
+        };
+        
+      } catch (error) {
+        reject(error);
       }
-
-      this.socket = new WebSocket(url);
-      const clientId = this.generateClientId('ws_client');
-      
-      this.socket.onopen = async () => {
-        console.log(`✅ ${this.name}: Connected to ${url}`);
-        this.connected = true;
-        
-        // TypeScript guarantees handler implements ITransportHandler
-        console.log(`✅ ${this.name}: Handler compliance enforced by TypeScript`);
-        
-        // Send session handshake after validation
-        this.sendSessionHandshake();
-        
-        // Emit CONNECTED event using shared method
-        this.emitTransportEvent('CONNECTED', { clientId });
-        resolve();
-      };
-
-      this.socket.onerror = (error): void => {
-        this.connected = false;
-        const errorObj = new Error(`WebSocket connection error: ${error.type || 'unknown'}`);
-        this.handleWebSocketError(errorObj, 'connection');
-        reject(errorObj);
-      };
-      
-      this.socket.onmessage = (event): void => {
-        try {
-          const message = this.parseWebSocketMessage(event.data);
-          
-          // Handle session handshake messages
-          if (this.isSessionHandshake(message)) {
-            this.handleSessionHandshake(message);
-            return;
-          }
-          
-          // Forward regular messages to base class handler
-          this.handleIncomingMessage(message);
-        } catch (error) {
-          this.handleWebSocketError(error as Error, 'message parsing');
-        }
-      };
-      
-      this.socket.onclose = (): void => {
-        console.log(`🔌 ${this.name}: Connection closed`);
-        this.connected = false;
-        
-        // Emit DISCONNECTED event using shared method
-        this.emitTransportEvent('DISCONNECTED', {
-          clientId,
-          reason: 'connection_closed'
-        });
-        
-        this.socket = undefined;
-      };
     });
   }
 
@@ -131,7 +103,7 @@ export class WebSocketTransportBrowser extends WebSocketTransportBase implements
 
   async disconnect(): Promise<void> {
     if (this.socket) {
-      console.log(`🔌 WebSocket Client: Disconnecting`);
+      console.log(`🔌 ${this.name}: Disconnecting`);
       this.socket.close();
       this.socket = undefined;
       this.connected = false;

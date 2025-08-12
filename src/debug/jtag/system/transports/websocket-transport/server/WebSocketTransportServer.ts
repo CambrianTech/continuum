@@ -8,7 +8,7 @@
 import { WebSocketTransportBase, type WebSocketConfig } from '../shared/WebSocketTransportBase';
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import { JTAGMessageTypes } from '../../../core/types/JTAGTypes';
-import type { WebSocketServer, WebSocket as WSWebSocket } from 'ws';
+import { WebSocketServer, type WebSocket as WSWebSocket } from 'ws';
 import type { TransportSendResult } from '../../shared/TransportTypes';
 import type { ITransportAdapter } from '../../shared/TransportBase';
 import { WebSocketResponseRouter } from './WebSocketResponseRouter';
@@ -37,6 +37,20 @@ export class WebSocketTransportServer extends WebSocketTransportBase implements 
   }
 
   /**
+   * Server-specific WebSocket creation - not used for server
+   */
+  protected createWebSocket(url: string): never {
+    throw new Error('Server does not create WebSocket clients - use createWebSocketServer instead');
+  }
+
+  /**
+   * Server-specific WebSocket server creation
+   */
+  protected async createWebSocketServer(port: number): Promise<WebSocketServer> {
+    return new WebSocketServer({ port });
+  }
+
+  /**
    * Set handler for session handshake messages
    */
   setSessionHandshakeHandler(handler: (sessionId: string) => void): void {
@@ -56,12 +70,8 @@ export class WebSocketTransportServer extends WebSocketTransportBase implements 
     console.log(`🔗 WebSocket Server: Starting on port ${port}`);
     
     try {
-      // Dynamic import to handle WebSocket availability
-      const WebSocketModule = await eval('import("ws")');
-      const WSServer = WebSocketModule.WebSocketServer ?? WebSocketModule.default?.WebSocketServer;
-      
-      // Create server with proper error handling for port conflicts
-      const server = new WSServer({ port });
+      // Create server using clean abstracted method
+      const server = await this.createWebSocketServer(port);
       
       // Wait for server to successfully start or fail
       await new Promise<void>((resolve, reject) => {

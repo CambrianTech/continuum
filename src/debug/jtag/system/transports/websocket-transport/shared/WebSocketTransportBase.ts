@@ -20,6 +20,7 @@ export interface WebSocketConfig {
 export abstract class WebSocketTransportBase extends TransportBase {
   protected config: WebSocketConfig;
   protected sessionId?: string;
+  protected connected = false;
   
   constructor(config: WebSocketConfig = {}) {
     super();
@@ -30,6 +31,83 @@ export abstract class WebSocketTransportBase extends TransportBase {
       sessionHandshake: true,
       ...config
     };
+  }
+
+  /**
+   * Abstract method for creating WebSocket - environment-specific
+   */
+  protected abstract createWebSocket(url: string): any;
+
+  /**
+   * Abstract method for setting up WebSocket server - server-specific
+   */
+  protected abstract createWebSocketServer?(port: number): Promise<any>;
+
+  /**
+   * Common WebSocket connection setup - shared between client and server
+   */
+  protected setupWebSocketEvents(socket: any, clientId: string): void {
+    // Connection opened
+    socket.onopen = () => {
+      console.log(`✅ ${this.name || 'websocket'}: Connected`);
+      this.connected = true;
+      
+      // Send session handshake after connection
+      if (this.config.sessionHandshake) {
+        this.sendSessionHandshake(socket);
+      }
+      
+      // Emit CONNECTED event
+      this.emitTransportEvent('CONNECTED', { clientId });
+    };
+
+    // Message received  
+    socket.onmessage = (event: any) => {
+      try {
+        const message = this.parseWebSocketMessage(event.data);
+        
+        // Handle session handshake messages
+        if (this.isSessionHandshake(message)) {
+          this.handleSessionHandshake(message);
+          return;
+        }
+        
+        // Forward regular messages to handler
+        this.handleIncomingMessage(message);
+      } catch (error) {
+        this.handleWebSocketError(error as Error, 'message parsing');
+      }
+    };
+
+    // Connection closed
+    socket.onclose = () => {
+      console.log(`🔌 ${this.name || 'websocket'}: Connection closed`);
+      this.connected = false;
+      
+      // Emit DISCONNECTED event
+      this.emitTransportEvent('DISCONNECTED', {
+        clientId,
+        reason: 'connection_closed'
+      });
+    };
+
+    // Connection error
+    socket.onerror = (error: any) => {
+      this.connected = false;
+      const errorObj = new Error(`WebSocket error: ${error.type || 'unknown'}`);
+      this.handleWebSocketError(errorObj, 'connection');
+    };
+  }
+
+  /**
+   * Send session handshake to peer
+   */
+  protected sendSessionHandshake(socket: any): void {
+    if (this.sessionId && this.config.sessionHandshake) {
+      const handshake = this.createSessionHandshake();
+      this.sendWebSocketMessage(socket, handshake);
+      console.log(`🤝 ${this.name || 'websocket'}: Sent session handshake with sessionId: ${this.sessionId}`);
+    }
   }
 
   /**
