@@ -62,17 +62,35 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
    * Remote execution - delegates to another environment
    * This is the key method for cross-context communication
    */
-  protected async remoteExecute(
+  protected async remoteExecute<
+    TParams extends CommandParams = CommandParams,
+    TResult extends CommandResult = CommandResult
+  >(
     params: TParams, 
     subpath: string = this.subpath,
-    prefix: string = this.context.environment === JTAG_ENVIRONMENTS.BROWSER 
-      ? JTAG_ENVIRONMENTS.SERVER 
-      : JTAG_ENVIRONMENTS.BROWSER
+    prefix?: string 
   ): Promise<TResult> {
+
+    // Determine prefix based on current environment and subpath
+    if (!prefix) {
+      if (subpath === this.subpath) {
+        // If subpath matches current command, use the opposite environment
+        // This allows browser commands to call server commands and vice versa
+        prefix = this.context.environment == JTAG_ENVIRONMENTS.BROWSER
+          ? JTAG_ENVIRONMENTS.SERVER
+          : JTAG_ENVIRONMENTS.BROWSER;
+      }
+      else {
+        // If subpath is different, use the current environment
+        // This allows commands to call other commands in the same environment
+        prefix = this.context.environment;
+      }
+    }
+
     const origin = `${this.context.environment}/${this.commander.subpath}/${subpath}`;
     const endpoint = `${prefix}/${this.commander.subpath}/${subpath}`;
 
-    console.log(`🔀 ${this.toString()}: Remote executing from ${origin} to call ${endpoint}`);
+    console.log(`🔀 ${this.toString()}: ${subpath === this.subpath ? 'Remote' : 'Local'} executing from ${origin} to call ${endpoint}`);
 
     const message = JTAGMessageFactory.createRequest(
       this.context,
@@ -83,16 +101,27 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
     );
 
     const routerResult = await this.commander.router.postMessage(message);
+
+    console.log(`🔄 ${this.toString()}: Remote execution result:`, JSON.stringify(routerResult, null, 2));
     
     // Extract the actual command result from the router response
-    if (isRequestResult(routerResult) && routerResult.response) {
-      // Clean interface design - system ensures type correctness
-      return routerResult.response as unknown as TResult;
+    if (routerResult.success) {
+      const handlerResult = (routerResult as any).handlerResult;
+      if (handlerResult) {
+        // The actual command result is in handlerResult.commandResult for cross-context calls
+        const commandResult = handlerResult.commandResult || handlerResult;
+        return commandResult as unknown as TResult;
+      }
+      
+      // Fallback to legacy response structure
+      const response = (routerResult as any).response;
+      if (response) {
+        return response as unknown as TResult;
+      }
     }
     
     throw new Error(`Remote execution failed: ${JSON.stringify(routerResult)}`);
   }
-
 
   /**
    * Get router instance from commander - guaranteed by constructor

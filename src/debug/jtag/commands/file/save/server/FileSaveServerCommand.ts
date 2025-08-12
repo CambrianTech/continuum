@@ -8,7 +8,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { FileSaveParams, FileSaveResult } from '../shared/FileSaveTypes';
 import { createFileSaveResult } from '../shared/FileSaveTypes';
 import { PersistenceError } from '../../../../system/core/types/ErrorTypes';
@@ -24,8 +24,7 @@ export class FileSaveServerCommand extends CommandBase<FileSaveParams, FileSaveR
    * TEMPORARY: Direct filesystem access until ArtifactsDaemon is implemented
    * Creates session-based directory structure manually
    */
-  async execute(params: JTAGPayload): Promise<FileSaveResult> {
-    const saveParams = params as FileSaveParams;
+  async execute(saveParams: FileSaveParams): Promise<FileSaveResult> {
     
     console.log(`💾 SERVER: FileSave (TEMPORARY direct FS access)`);
     
