@@ -14,8 +14,9 @@ export class ExternalClientDetector {
   /**
    * Detect if message comes from external WebSocket client
    * 
-   * External clients use clean endpoints: commands/ping, commands/screenshot
-   * Internal systems use prefixed: server/commands/ping, browser/commands/screenshot
+   * External clients can be:
+   * 1. Clean endpoints: commands/ping, commands/screenshot (pure WebSocket clients)
+   * 2. Client prefixed correlations: client_* (JTAG clients using WebSocket transport)
    */
   isExternalClient(message: JTAGMessage): boolean {
     // Only requests and responses have correlation IDs
@@ -23,7 +24,14 @@ export class ExternalClientDetector {
       return false;
     }
 
-    // External clients use clean command endpoints without environment prefixes
+    const correlationId = this.getCorrelationId(message);
+    
+    // Method 1: Detect client_ correlation prefix (JTAG clients over WebSocket)
+    if (correlationId && correlationId.startsWith('client_')) {
+      return true;
+    }
+
+    // Method 2: Clean command endpoints without environment prefixes (direct WebSocket clients)
     const hasCleanEndpoint = message.endpoint.startsWith('commands/') && 
                              !message.endpoint.includes('server/') && 
                              !message.endpoint.includes('browser/');
