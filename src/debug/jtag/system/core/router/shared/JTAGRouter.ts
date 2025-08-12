@@ -233,7 +233,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
    */
   getSubscriber(endpoint: string): MessageSubscriber | null {
     const matchResult = this.endpointMatcher.match(endpoint);
-    return matchResult?.subscriber || null;
+    return matchResult?.subscriber ?? null;
   }
 
   async postMessage<T extends RouterResult>(message: JTAGMessage): Promise<T> {

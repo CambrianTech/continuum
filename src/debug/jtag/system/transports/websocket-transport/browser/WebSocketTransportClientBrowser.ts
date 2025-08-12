@@ -9,6 +9,8 @@ import { WebSocketTransportClient, type WebSocketConfig } from '../shared/WebSoc
 import type { ITransportAdapter } from '../../shared/TransportBase';
 import type { ITransportHandler } from '../../shared/ITransportHandler';
 import type { EventsInterface } from '../../../events';
+import type { UniversalWebSocket } from '../shared/WebSocketInterface';
+import { BrowserWebSocketAdapter } from './WebSocketAdapter';
 
 // Browser-specific WebSocket configuration with typed inheritance
 export interface WebSocketBrowserConfig extends WebSocketConfig {
@@ -36,13 +38,13 @@ export class WebSocketTransportClientBrowser extends WebSocketTransportClient im
   }
 
   /**
-   * Browser-specific WebSocket creation
+   * Browser-specific WebSocket creation - returns UniversalWebSocket adapter
    */
-  protected createWebSocket(url: string): WebSocket {
+  protected createWebSocket(url: string): UniversalWebSocket {
     if (typeof WebSocket === 'undefined') {
       throw new Error('WebSocket not available in this environment');
     }
-    return new WebSocket(url);
+    return new BrowserWebSocketAdapter(url);
   }
 
   // connect(), send(), disconnect(), reconnect() methods inherited from base class
