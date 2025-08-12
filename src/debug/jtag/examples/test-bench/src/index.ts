@@ -184,11 +184,30 @@ const testBrowserExec = async (): Promise<void> => {
   appendToLog('browser-log', 'Browser exec test initiated');
   
   try {
-    const result = await jtagClient.commands.exec('document.title');
-    appendToLog('browser-log', `Exec result: ${JSON.stringify(result)}`);
+    console.log('🔥 DEMO: Calling exec with correct API format...');
+    const result = await jtagClient.commands.exec({
+      code: {
+        type: 'inline',
+        language: 'javascript',
+        source: `
+          console.log('🔥 BROWSER EXEC TEST: Getting browser info');
+          const browserInfo = {
+            title: document.title,
+            userAgent: navigator.userAgent.substring(0, 50),
+            windowSize: window.innerWidth + 'x' + window.innerHeight,
+            timestamp: Date.now()
+          };
+          console.log('🔥 BROWSER EXEC TEST: Result:', browserInfo);
+          browserInfo;
+        `
+      }
+    });
+    console.log('✅ DEMO: Exec completed successfully');
+    appendToLog('browser-log', `✅ Exec result: ${JSON.stringify(result, null, 2)}`);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    appendToLog('browser-log', `Browser exec failed: ${errorMsg}`);
+    console.error('❌ DEMO: Exec failed:', error);
+    appendToLog('browser-log', `❌ Browser exec failed: ${errorMsg}`);
   }
 }
 

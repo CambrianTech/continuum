@@ -1,0 +1,89 @@
+{
+  "name": "@continuum/jtag-command-exec",
+  "version": "1.0.0",
+  "description": "JTAG Exec Command - Universal script execution meta-command for AI agent automation",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "config": {
+    "category": "core"
+  },
+  "environmentTestConfig": {
+    "environments": ["browser", "server"],
+    "commandName": "exec",
+    "testParams": {
+      "code": {
+        "type": "inline",
+        "language": "javascript",
+        "source": "return { success: true, message: 'ExecCommand test', timestamp: new Date().toISOString() };"
+      },
+      "timeout": 5000
+    },
+    "expectedFields": [
+      "success",
+      "result",
+      "executionTime",
+      "context",
+      "language",
+      "logs",
+      "screenshots"
+    ],
+    "performanceThresholdMs": 5000,
+    "validateEnvironmentData": true,
+    "testScenarios": [
+      {
+        "name": "basic-inline-javascript",
+        "description": "Execute basic inline JavaScript",
+        "params": {
+          "code": {
+            "type": "inline",
+            "language": "javascript",
+            "source": "return { test: 'success', timestamp: utils.timestamp() };"
+          }
+        }
+      },
+      {
+        "name": "parameter-access",
+        "description": "Test parameter passing to script",
+        "params": {
+          "code": {
+            "type": "inline", 
+            "language": "javascript",
+            "source": "return { receivedParams: params, paramCount: Object.keys(params).length };"
+          },
+          "parameters": {
+            "testParam": "test-value",
+            "number": 42
+          }
+        }
+      },
+      {
+        "name": "error-handling",
+        "description": "Test error handling and reporting",
+        "params": {
+          "code": {
+            "type": "inline",
+            "language": "javascript", 
+            "source": "throw new Error('Intentional test error');"
+          }
+        },
+        "expectError": true
+      }
+    ]
+  },
+  "scripts": {
+    "test": "echo 'Run tests via parent JTAG test system'",
+    "test:unit": "echo 'Unit tests for exec command'",
+    "test:integration": "echo 'Integration tests for exec command'"
+  },
+  "keywords": [
+    "jtag",
+    "exec",
+    "execution",
+    "scripting",
+    "automation",
+    "meta-command",
+    "ai-agent",
+    "command"
+  ]
+}
