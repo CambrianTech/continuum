@@ -6,6 +6,7 @@
  */
 
 import type { JTAGPayload } from '../../types/JTAGTypes';
+import { TypeUtilities } from '../../types/TypeUtilities';
 
 /**
  * Console message payload types
@@ -54,14 +55,14 @@ export class MessageTypeGuards {
    * Check if payload is a console message
    */
   static isConsolePayload(payload: unknown): payload is ConsoleMessagePayload {
+    if (!TypeUtilities.hasProperties(payload, ['level', 'message'])) {
+      return false;
+    }
+    
     return (
-      payload !== null &&
-      typeof payload === 'object' &&
-      'level' in payload &&
-      'message' in payload &&
-      typeof (payload as any).level === 'string' &&
-      typeof (payload as any).message === 'string' &&
-      ['error', 'warn', 'info', 'debug', 'log'].includes((payload as any).level)
+      typeof payload.level === 'string' &&
+      typeof payload.message === 'string' &&
+      ['error', 'warn', 'info', 'debug', 'log'].includes(payload.level)
     );
   }
 
@@ -90,12 +91,13 @@ export class MessageTypeGuards {
    * Check if payload is a health message
    */
   static isHealthPayload(payload: unknown): payload is HealthMessagePayload {
+    if (!TypeUtilities.hasProperty(payload, 'status')) {
+      return false;
+    }
+    
     return (
-      payload !== null &&
-      typeof payload === 'object' &&
-      'status' in payload &&
-      typeof (payload as any).status === 'string' &&
-      ['healthy', 'unhealthy', 'connecting', 'disconnected'].includes((payload as any).status)
+      typeof payload.status === 'string' &&
+      ['healthy', 'unhealthy', 'connecting', 'disconnected'].includes(payload.status)
     );
   }
 
@@ -103,26 +105,25 @@ export class MessageTypeGuards {
    * Check if payload is an error message
    */
   static isErrorPayload(payload: unknown): payload is ErrorMessagePayload {
-    return (
-      payload !== null &&
-      typeof payload === 'object' &&
-      'error' in payload &&
-      (typeof (payload as any).error === 'string' || (payload as any).error instanceof Error)
-    );
+    if (!TypeUtilities.hasProperty(payload, 'error')) {
+      return false;
+    }
+    
+    return (typeof payload.error === 'string' || payload.error instanceof Error);
   }
 
   /**
    * Check if payload is a system message
    */
   static isSystemPayload(payload: unknown): payload is SystemMessagePayload {
+    if (!TypeUtilities.hasProperties(payload, ['type', 'message'])) {
+      return false;
+    }
+    
     return (
-      payload !== null &&
-      typeof payload === 'object' &&
-      'type' in payload &&
-      'message' in payload &&
-      typeof (payload as any).type === 'string' &&
-      typeof (payload as any).message === 'string' &&
-      ['startup', 'shutdown', 'restart', 'alert'].includes((payload as any).type)
+      typeof payload.type === 'string' &&
+      typeof payload.message === 'string' &&
+      ['startup', 'shutdown', 'restart', 'alert'].includes(payload.type)
     );
   }
 

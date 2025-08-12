@@ -4,7 +4,7 @@
  * Test server-side JTAGClient to verify it can route commands to browser
  */
 
-import { jtag } from './server-index';
+import { jtag } from '../../server-index';
 
 async function testServerClient() {
   console.log('🧪 Testing server-side JTAGClient...');

@@ -144,12 +144,12 @@ export interface JTAGClientConnectionResult {
   listResult: ListResult;
 }
 
-// TODO: Fix JTAGConnection interface - remove generics, add getCommandsInterface() (ISSUE 5)
 /**
  * Connection abstraction - local vs remote execution strategy
+ * Support both generic (for type-safe commands) and non-generic (for transport) usage
  */
 export interface JTAGConnection {
-  executeCommand<TParams extends JTAGPayload, TResult extends JTAGPayload>(
+  executeCommand<TParams extends JTAGPayload = JTAGPayload, TResult extends JTAGPayload = JTAGPayload>(
     commandName: string, 
     params: TParams
   ): Promise<TResult>;
@@ -160,16 +160,16 @@ export interface JTAGConnection {
   readonly context: JTAGContext;
 }
 
-// TODO: Keep DynamicCommandsInterface for now - needed for remote command discovery (ISSUE 1)
 /**
  * Dynamic commands interface generated from server's list command
+ * Improved with better typing - no more 'any' types
  */
 export interface DynamicCommandsInterface {
   // Essential commands (always available)
   list(params?: Partial<ListParams>): Promise<ListResult>;
   
-  // Dynamic commands discovered from server
-  [commandName: string]: (params?: any) => Promise<any>;
+  // Dynamic commands discovered from server - properly typed
+  [commandName: string]: (params?: JTAGPayload) => Promise<JTAGPayload>;
 }
 
 // TODO: Remove ITransportHandler - mixing client/server responsibilities (ISSUE 7)
@@ -439,8 +439,8 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
         }
 
         // Delegate to connection (works for both local and remote)
-        return async (params?: any): Promise<any> => {
-          const fullParams = {
+        return async (params?: JTAGPayload): Promise<JTAGPayload> => {
+          const fullParams: JTAGPayload = {
             ...params,
             context: params?.context ?? self.context,
             sessionId: params?.sessionId ?? self.sessionId
@@ -565,7 +565,7 @@ export class LocalConnection implements JTAGConnection {
     this.sessionId = sessionId;
   }
 
-  async executeCommand<TParams extends JTAGPayload, TResult extends JTAGPayload>(
+  async executeCommand<TParams extends JTAGPayload = JTAGPayload, TResult extends JTAGPayload = JTAGPayload>(
     commandName: string, 
     params: TParams
   ): Promise<TResult> {
@@ -588,7 +588,7 @@ export class LocalConnection implements JTAGConnection {
  * Implemented by environment-specific correlators
  */
 export interface ICommandCorrelator {
-  waitForResponse<TResult extends JTAGPayload>(correlationId: string, timeoutMs?: number): Promise<TResult>;
+  waitForResponse(correlationId: string, timeoutMs?: number): Promise<JTAGPayload>;
 }
 
 /**
@@ -607,7 +607,7 @@ export class RemoteConnection implements JTAGConnection {
     this.context = client.context;
   }
 
-  async executeCommand<TParams extends JTAGPayload, TResult extends JTAGPayload>(
+  async executeCommand<TParams extends JTAGPayload = JTAGPayload, TResult extends JTAGPayload = JTAGPayload>(
     commandName: string, 
     params: TParams
   ): Promise<TResult> {
@@ -636,8 +636,8 @@ export class RemoteConnection implements JTAGConnection {
     }
     
     // Wait for correlated response using the shared correlation interface
-    const response = await this.correlator.waitForResponse<TResult>(correlationId, 30000);
-    return response;
+    const response = await this.correlator.waitForResponse(correlationId, 30000);
+    return response as TResult;
   }
 
   getCommandsInterface(): CommandsInterface {

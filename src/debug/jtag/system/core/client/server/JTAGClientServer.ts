@@ -94,18 +94,18 @@ export class JTAGClientServer extends JTAGClient {
    */
   protected getCommandCorrelator(): ICommandCorrelator {
     return {
-      waitForResponse: async <TResult extends JTAGPayload>(correlationId: string, timeoutMs?: number): Promise<TResult> => {
+      waitForResponse: async (correlationId: string, timeoutMs?: number): Promise<JTAGPayload> => {
         const response = await this.responseCorrelator.createRequest(correlationId, timeoutMs);
         
         // Extract commandResult from the nested response structure
         // Response structure: { payload: { commandResult: { commands: [...], success: true, ... } } }
         // Client expects: { commands: [...], success: true, ... }
         if (response && typeof response === 'object' && 'commandResult' in response) {
-          return response.commandResult as TResult;
+          return response.commandResult as JTAGPayload;
         }
         
         // Fallback: return response as-is for non-command responses
-        return response as TResult;
+        return response;
       }
     };
   }

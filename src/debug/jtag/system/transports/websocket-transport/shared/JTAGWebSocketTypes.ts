@@ -6,6 +6,7 @@
  */
 
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
+import { TypeUtilities } from '../../../core/types/TypeUtilities';
 
 // All WebSocket transport uses JTAGMessage - no need for separate type
 
@@ -59,11 +60,10 @@ export function isJTAGSessionHandshake(message: unknown): boolean {
 }
 
 export function isJTAGMessage(message: unknown): message is JTAGMessage {
-  if (typeof message !== 'object' || message === null) {
+  if (!TypeUtilities.hasProperties(message, ['endpoint', 'messageType'])) {
     return false;
   }
   
-  const msg = message as Record<string, unknown>;
-  return typeof msg.endpoint === 'string' &&
-         (msg.messageType === 'event' || msg.messageType === 'request' || msg.messageType === 'response');
+  return typeof message.endpoint === 'string' &&
+         (message.messageType === 'event' || message.messageType === 'request' || message.messageType === 'response');
 }

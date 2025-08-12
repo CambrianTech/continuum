@@ -7,6 +7,7 @@
 
 import { TransportBase } from '../../shared/TransportBase';
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
+import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { TRANSPORT_EVENTS } from '../../shared/TransportEvents';
 import type { TransportSendResult } from '@system/transports/shared';
 import type { 
@@ -30,7 +31,7 @@ export interface WebSocketConfig {
 
 export abstract class WebSocketTransportClient extends TransportBase {
   protected config: WebSocketConfig;
-  protected sessionId?: string;
+  protected sessionId?: UUID;
   protected connected = false;
   protected messageHandler?: (message: JTAGMessage) => void;
   
@@ -127,7 +128,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
   /**
    * Set the session ID for handshake
    */
-  setSessionId(sessionId: string): void {
+  setSessionId(sessionId: UUID): void {
     this.sessionId = sessionId;
   }
 

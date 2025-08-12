@@ -5,9 +5,10 @@
  */
 
 import type { TimerHandle } from '../types/CrossPlatformTypes';
+import type { JTAGPayload } from '../types/JTAGTypes';
 
 export interface PendingRequest {
-  resolve: (result: unknown) => void;
+  resolve: (result: JTAGPayload) => void;
   reject: (error: Error) => void;
   timestamp: number;
   timeout: TimerHandle;
@@ -29,7 +30,7 @@ export class ResponseCorrelator {
   /**
    * Create a new request correlation and return Promise
    */
-  createRequest(correlationId: string, timeoutMs?: number): Promise<unknown> {
+  createRequest(correlationId: string, timeoutMs?: number): Promise<JTAGPayload> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(correlationId);
@@ -50,7 +51,7 @@ export class ResponseCorrelator {
   /**
    * Resolve a pending request with response
    */
-  resolveRequest(correlationId: string, response: unknown): boolean {
+  resolveRequest(correlationId: string, response: JTAGPayload): boolean {
     const pending = this.pendingRequests.get(correlationId);
     if (!pending) {
       console.warn(`⚠️ ResponseCorrelator: No pending request for ${correlationId}`);

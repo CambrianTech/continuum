@@ -134,16 +134,21 @@ export type HealthResponse = HealthPingResponse | HealthErrorResponse;
 // All possible response types (import CommandResponse from specific daemon modules)
 export type JTAGResponsePayload = ConsoleResponse | HealthResponse;
 
-// Type guards for response identification - structural typing
+// Type guards for response identification
+// Note: Error responses from different daemons have identical structure,
+// so we only check for unique success response properties
 export function isConsoleResponse(payload: JTAGResponsePayload): payload is ConsoleResponse {
-  return 'filtered' in payload || 'processed' in payload || 'level' in payload || 
-         (payload.success === false && 'error' in payload && !('pongId' in payload) && !('commandResult' in payload) && !('metadata' in payload) && !('sessions' in payload));
+  // ConsoleSuccessResponse has unique properties: filtered, processed, level
+  return 'filtered' in payload || 'processed' in payload || 'level' in payload;
 }
 
 export function isHealthResponse(payload: JTAGResponsePayload): payload is HealthResponse {
-  return 'pongId' in payload || 'uptime' in payload || 
-         (payload.success === false && 'error' in payload && !('filtered' in payload) && !('commandResult' in payload) && !('metadata' in payload) && !('sessions' in payload));
+  // HealthPingResponse has unique properties: pongId, uptime
+  return 'pongId' in payload || 'uptime' in payload;
 }
+
+// For error responses, we can't distinguish between ConsoleErrorResponse and HealthErrorResponse
+// since they have identical structure. Use context or other means to determine source.
 
 
 // TODO: Import CommandResponse from specific daemon modules

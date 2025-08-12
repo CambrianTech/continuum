@@ -39,6 +39,7 @@ import type { ITransportFactory} from '../../../transports/shared/ITransportFact
 import { TransportFactoryBrowser } from '../../../transports/browser/TransportFactoryBrowser';
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
 import type { JTAGPayload, JTAGContext } from '../../types/JTAGTypes';
+import { ConsoleDaemon } from '../../../../daemons/console-daemon/shared/ConsoleDaemon';
 
 // NOTE: Command types are now dynamically discovered, no need for hardcoded imports
 
@@ -118,8 +119,8 @@ export class JTAGClientBrowser extends JTAGClient {
    */
   protected getCommandCorrelator(): ICommandCorrelator {
     return {
-      waitForResponse: async <TResult extends JTAGPayload>(correlationId: string, timeoutMs?: number): Promise<TResult> => {
-        return await this.responseCorrelator.createRequest(correlationId, timeoutMs) as TResult;
+      waitForResponse: async (correlationId: string, timeoutMs?: number): Promise<JTAGPayload> => {
+        return await this.responseCorrelator.createRequest(correlationId, timeoutMs);
       }
     };
   }
@@ -193,13 +194,20 @@ export class JTAGClientBrowser extends JTAGClient {
    */
   private updateSystemConsoleDaemon(): void {
     const system = (this.connection as LocalConnection).localSystem;
-    if (system && 'daemons' in system) {
-      // Find ConsoleDaemon and set provider to use client session
-      const consoleDaemon = (system as any).daemons?.find((d: any) => d.constructor.name === 'ConsoleDaemonBrowser');
-      if (consoleDaemon && 'setSessionIdProvider' in consoleDaemon) {
-        consoleDaemon.setSessionIdProvider(() => this.sessionId);
+    
+    // Use proper public interface - JTAGSystem.systemDaemons getter
+    if ('systemDaemons' in system) {
+      // Find ConsoleDaemon using proper type checking
+      const consoleDaemon = system.systemDaemons.find(daemon => daemon instanceof ConsoleDaemon);
+      if (consoleDaemon) {
+        // Type assertion is safe here since we verified instanceof ConsoleDaemon
+        (consoleDaemon as ConsoleDaemon).setSessionIdProvider(() => this.sessionId);
         console.log(`🏷️ JTAGClientBrowser: Updated ConsoleDaemon to use client session: ${this.sessionId}`);
+      } else {
+        console.warn(`⚠️ JTAGClientBrowser: No ConsoleDaemon found in local system`);
       }
+    } else {
+      console.warn(`⚠️ JTAGClientBrowser: Local system has no systemDaemons property`);
     }
   }
 
