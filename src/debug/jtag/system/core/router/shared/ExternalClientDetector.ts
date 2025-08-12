@@ -40,14 +40,18 @@ export class ExternalClientDetector {
    * Register external correlation for response routing
    */
   registerExternal(correlationId: string): void {
+    console.log(`🚨 BEFORE ADD: ExternalClientDetector registering ${correlationId}`);
     this.externalCorrelations.add(correlationId);
+    console.log(`🚨 AFTER ADD: ExternalClientDetector registered ${correlationId}, set now has ${this.externalCorrelations.size} items: [${Array.from(this.externalCorrelations).join(', ')}]`);
   }
 
   /**
    * Check if correlation belongs to external client
    */
   isExternal(correlationId: string): boolean {
-    return this.externalCorrelations.has(correlationId);
+    const result = this.externalCorrelations.has(correlationId);
+    console.log(`🔍 ExternalClientDetector: Checking ${correlationId}: hasInSet=${result}, setSize=${this.externalCorrelations.size}, setContents=[${Array.from(this.externalCorrelations).join(', ')}]`);
+    return result;
   }
 
   /**

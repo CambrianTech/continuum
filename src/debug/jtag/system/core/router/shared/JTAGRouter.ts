@@ -539,7 +539,11 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     const resolved = this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
     
     // Check if this response should be routed to an external client
-    if (resolved && this.externalClientDetector.isExternal(message.correlationId)) {
+    const isExternalCorrelation = this.externalClientDetector.isExternal(message.correlationId);
+    console.log(`🔍 ${this.toString()}: External check for ${message.correlationId}: resolved=${resolved}, isExternal=${isExternalCorrelation}`);
+    
+    if (resolved && isExternalCorrelation) {
+      console.log(`📡 ${this.toString()}: Routing external response for ${message.correlationId}`);
       await this.routeExternalResponse(message);
     }
     

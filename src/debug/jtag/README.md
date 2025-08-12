@@ -622,14 +622,66 @@ All logs automatically appear in:
 └── ...                 # Additional log types
 ```
 
+## 🚀 **ExecCommand - Universal Automation Meta-Command**
+
+### **The AI Agent's Primary Tool**
+
+The `exec` command transforms JTAG into a **universal automation platform**. It's the meta-command that can implement any functionality through custom scripts:
+
+```typescript
+// Complete widget validation with visual feedback
+await jtag.commands.exec({
+  code: {
+    type: 'inline',
+    language: 'typescript',
+    source: `
+      // 1. Capture initial state
+      await jtag.commands.screenshot('widget-before.png');
+      
+      // 2. Find and interact with widget
+      const widget = document.querySelector(params.selector);
+      const button = widget.querySelector('button');
+      button.click();
+      
+      // 3. Wait for animation and capture final state
+      await new Promise(resolve => setTimeout(resolve, 500));
+      await jtag.commands.screenshot('widget-after.png');
+      
+      // 4. Comprehensive state analysis
+      return {
+        interaction: 'successful',
+        screenshots: ['widget-before.png', 'widget-after.png'],
+        stateChanges: {
+          classes: widget.className,
+          dimensions: { width: widget.offsetWidth, height: widget.offsetHeight },
+          visible: widget.offsetParent !== null
+        }
+      };
+    `
+  },
+  parameters: { selector: '.my-widget' }
+});
+```
+
+### **Key ExecCommand Features**
+
+1. **Custom Script Execution**: Write TypeScript/JavaScript that runs in browser or server
+2. **JTAG Command Access**: Scripts can call `jtag.commands.screenshot()`, etc. from within
+3. **Visual Feedback Loop**: Take screenshots before/during/after operations  
+4. **Comprehensive Error Handling**: Get detailed error info with context screenshots
+5. **Cross-Context Orchestration**: Coordinate between browser, server, and remote nodes
+6. **Safe Transport**: All code automatically base64 encoded for network transmission
+
 ## 🎯 **Key Benefits**
 
 1. **Zero Configuration**: Just include `<script src="/jtag.js"></script>` and start using
-2. **Automatic Console Interception**: `console.log()` → JTAG logs automatically
-3. **Cross-Context**: Browser logs appear in server log files  
-4. **Transport Automatic**: WebSocket connection handled automatically
-5. **Unified API**: Same `jtag.log()` call works everywhere
-6. **Real-time**: Messages flow automatically between browser and server
+2. **Universal Automation**: ExecCommand enables custom logic for any scenario
+3. **AI Agent Friendly**: Perfect for iterative development with visual validation
+4. **Automatic Console Interception**: `console.log()` → JTAG logs automatically
+5. **Cross-Context**: Browser logs appear in server log files  
+6. **Transport Automatic**: WebSocket connection handled automatically
+7. **Unified API**: Same `jtag.log()` call works everywhere
+8. **Real-time**: Messages flow automatically between browser and server
 
 ## 📦 **Future: NPM Install**
 
