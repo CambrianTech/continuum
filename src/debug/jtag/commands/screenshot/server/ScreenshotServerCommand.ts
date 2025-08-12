@@ -25,6 +25,7 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
     const screenshotParams = params as ScreenshotParams;
     
     console.log(`📸 SERVER: Starting screenshot`);
+    console.log(`🔍 DEBUG: ScreenshotServerCommand received sessionId: ${screenshotParams.sessionId}`);
 
     // Simple check: do we need browser capture?
     if (!screenshotParams.dataUrl) {

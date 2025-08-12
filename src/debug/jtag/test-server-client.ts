@@ -40,13 +40,12 @@ async function testServerClient() {
     console.log('✅ Screenshot command successful:', screenshotResult);
     
     // Test another command to verify routing
-    console.log('📝 Testing log command from server -> browser...');
-    const logResult = await client.commands.log({
-      category: 'SERVER_TO_BROWSER_TEST',
-      message: 'This message was sent from server-side JTAGClient to browser'
+    console.log('🏓 Testing ping command from server -> browser...');
+    const pingResult = await client.commands.ping({
+      message: 'Server-side JTAGClient ping test'
     });
     
-    console.log('✅ Log command successful:', logResult);
+    console.log('✅ Ping command successful:', pingResult);
     
     console.log('🎉 Server-side JTAGClient test completed successfully!');
     

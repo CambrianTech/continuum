@@ -13,7 +13,6 @@ import { SYSTEM_EVENTS } from '../../../events';
 import type { DaemonBase, DaemonEntry } from '../../../../daemons/command-daemon/shared/DaemonBase';
 import { SERVER_DAEMONS } from '../../../../server/generated';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
-import type { UUID } from '../../types/CrossPlatformUUID';
 import { generateUUID } from '../../types/CrossPlatformUUID';
 
 export class JTAGSystemServer extends JTAGSystem {

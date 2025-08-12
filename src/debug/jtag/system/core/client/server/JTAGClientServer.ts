@@ -31,16 +31,39 @@ import type { JTAGPayload, JTAGContext } from '../../types/JTAGTypes';
 import type { UUID } from '../../types/CrossPlatformUUID';
 
 export class JTAGClientServer extends JTAGClient {
+  private _sessionId: UUID;
   
   constructor(context: JTAGContext) {
     super(context);
+    // Initialize with system session bootstrap, will be updated by session daemon
+    this._sessionId = SYSTEM_SCOPES.SYSTEM;
   }
 
   /**
-   * Server always uses system session ID
+   * Get current session ID (updated dynamically by session daemon)
    */
   public get sessionId(): UUID {
-    return '00000000-0000-0000-0000-000000000000' as UUID;
+    return this._sessionId;
+  }
+
+  /**
+   * Update session ID and notify any systems using this client as single source of truth
+   */
+  public setSessionId(sessionId: UUID): void {
+    this._sessionId = sessionId;
+    console.log(`🏷️ JTAGClientServer: Updated session to: ${sessionId}`);
+    
+    // TODO: Update any local system daemons to use client session (like browser does)
+    // if (this.connection instanceof LocalConnection) {
+    //   this.updateSystemConsoleDaemon();
+    // }
+  }
+
+  /**
+   * Override to update server client session (called by base JTAGClient)
+   */
+  protected updateClientSessionStorage(sessionId: UUID): void {
+    this.setSessionId(sessionId);
   }
   
   protected async getLocalSystem(): Promise<JTAGSystem | null> {

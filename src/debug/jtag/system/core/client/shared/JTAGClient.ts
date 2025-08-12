@@ -595,14 +595,15 @@ export interface ICommandCorrelator {
  * Remote connection - transport-based calls to remote JTAG system
  */
 export class RemoteConnection implements JTAGConnection {
-  public readonly sessionId: UUID;
+  public get sessionId(): UUID {
+    return this.client.sessionId; // Dynamic getter - always uses client's current session
+  }
   public readonly context: JTAGContext;
 
   constructor(
     private readonly client: JTAGClient,
     private readonly correlator: ICommandCorrelator
   ) {
-    this.sessionId = client.sessionId;
     this.context = client.context;
   }
 
