@@ -1,59 +1,49 @@
 /**
- * Universal WebSocket Interface - Consistent typing across environments
+ * JTAG WebSocket Interface - Specific typing for our JTAG protocol
  * 
- * Provides type-safe abstraction over browser WebSocket and Node.js ws library.
+ * We control both ends of communication, so we can be very specific
+ * about what we send/receive instead of using generic WebSocket types.
  */
 
-// Universal WebSocket interface that both environments must implement
-export interface UniversalWebSocket {
-  // Core WebSocket methods
+import type { 
+  JTAGWebSocketOpenEvent,
+  JTAGWebSocketMessageEvent,
+  JTAGWebSocketCloseEvent,
+  JTAGWebSocketErrorEvent,
+  JTAGWebSocketReadyState
+} from './JTAGWebSocketTypes';
+
+// JTAG-specific WebSocket interface that both environments must implement
+export interface JTAGUniversalWebSocket {
+  // Core WebSocket methods - only what we need for JTAG
   send(data: string): void;
   close(code?: number, reason?: string): void;
   
-  // WebSocket state
-  readonly readyState: number;
+  // WebSocket state using JTAG constants
+  readonly readyState: JTAGWebSocketReadyState;
   readonly url: string;
   
-  // Consistent event handling - addEventListener pattern
-  addEventListener(type: 'open', listener: (event: WebSocketOpenEvent) => void): void;
-  addEventListener(type: 'message', listener: (event: WebSocketMessageEvent) => void): void;
-  addEventListener(type: 'close', listener: (event: WebSocketCloseEvent) => void): void;
-  addEventListener(type: 'error', listener: (event: WebSocketErrorEvent) => void): void;
+  // JTAG-specific event handling with proper typing
+  addEventListener(type: 'open', listener: (event: JTAGWebSocketOpenEvent) => void): void;
+  addEventListener(type: 'message', listener: (event: JTAGWebSocketMessageEvent) => void): void;
+  addEventListener(type: 'close', listener: (event: JTAGWebSocketCloseEvent) => void): void;
+  addEventListener(type: 'error', listener: (event: JTAGWebSocketErrorEvent) => void): void;
   
-  removeEventListener(type: 'open', listener: (event: WebSocketOpenEvent) => void): void;
-  removeEventListener(type: 'message', listener: (event: WebSocketMessageEvent) => void): void;
-  removeEventListener(type: 'close', listener: (event: WebSocketCloseEvent) => void): void;
-  removeEventListener(type: 'error', listener: (event: WebSocketErrorEvent) => void): void;
+  removeEventListener(type: 'open', listener: (event: JTAGWebSocketOpenEvent) => void): void;
+  removeEventListener(type: 'message', listener: (event: JTAGWebSocketMessageEvent) => void): void;
+  removeEventListener(type: 'close', listener: (event: JTAGWebSocketCloseEvent) => void): void;
+  removeEventListener(type: 'error', listener: (event: JTAGWebSocketErrorEvent) => void): void;
 }
 
-// Universal event interfaces
-export interface WebSocketOpenEvent {
-  type: 'open';
-}
+// Re-export JTAG types for convenience
+export type { 
+  JTAGWebSocketOpenEvent,
+  JTAGWebSocketMessageEvent,
+  JTAGWebSocketCloseEvent,
+  JTAGWebSocketErrorEvent,
+  JTAGWebSocketEventType,
+  JTAGWebSocketReadyState
+} from './JTAGWebSocketTypes';
 
-export interface WebSocketMessageEvent {
-  type: 'message';
-  data: string | Buffer | ArrayBuffer | any; // Allow for different WebSocket data types
-}
-
-export interface WebSocketCloseEvent {
-  type: 'close';
-  code: number;
-  reason: string;
-}
-
-export interface WebSocketErrorEvent {
-  type: 'error';
-  error?: Error;
-  message?: string;
-}
-
-// WebSocket ready states (standard)
-export const WebSocketReadyState = {
-  CONNECTING: 0,
-  OPEN: 1,
-  CLOSING: 2,
-  CLOSED: 3
-} as const;
-
-export type WebSocketReadyStateValue = typeof WebSocketReadyState[keyof typeof WebSocketReadyState];
+// Re-export constants
+export { JTAG_WEBSOCKET_READY_STATE, JTAG_WEBSOCKET_EVENTS } from './JTAGWebSocketTypes';
