@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.710",
+  "version": "1.0.713",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -224,12 +224,6 @@
     "@tests/*": "./dist/tests/*",
     "@widgets/*": "./dist/widgets/*",
     "@templates/*": "./dist/templates/*",
-    "@commandsChat/*": "./dist/commands/chat/*",
-    "@chatGetChatHistory/*": "./dist/commands/chat/get-chat-history/*",
-    "@chatReceiveEvents/*": "./dist/commands/chat/receive-events/*",
-    "@chatRoomEvents/*": "./dist/commands/chat/room-events/*",
-    "@chatSendMessage/*": "./dist/commands/chat/send-message/*",
-    "@chatSendRoomEvent/*": "./dist/commands/chat/send-room-event/*",
     "@commandsFile/*": "./dist/commands/file/*",
     "@fileAppend/*": "./dist/commands/file/append/*",
     "@fileLoad/*": "./dist/commands/file/load/*",
@@ -246,9 +240,9 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-12T03:43:53.816Z",
+    "timestamp": "2025-08-12T05:07:20.799Z",
     "source": ".continuum/generator/path-mappings.json",
-    "pathCount": 32,
+    "pathCount": 26,
     "note": "Generated from clean essential path mappings only"
   }
 }

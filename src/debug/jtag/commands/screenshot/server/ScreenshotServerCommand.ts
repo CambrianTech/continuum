@@ -6,9 +6,9 @@
 
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
-import { JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
 import { type ScreenshotParams, type ScreenshotResult, createScreenshotResult } from '../shared/ScreenshotTypes';
 import { PersistenceError } from '../../../system/core/types/ErrorTypes';
+import type { FileSaveParams, FileSaveResult } from '@commands/file/save/shared/FileSaveTypes';
 
 export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
   
@@ -32,7 +32,8 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
       return await this.remoteExecute(screenshotParams);
     }
     
-    // We have image data → delegate to file save command
+    // We have image data  → delegate to file save command
+    // we may have also called remoteExecute (above) to delegate to the browser and it called back to US via remoteExecute()
     console.log(`💾 SERVER: Saving image data (${screenshotParams.dataUrl.length} bytes)`);
     
     const filename = screenshotParams.filename ?? 'screenshot.png';
@@ -48,22 +49,15 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
       content = `Screenshot captured at ${new Date().toISOString()}\nFilename: ${filename}\n`;
       console.log(`📝 SERVER: Delegating placeholder text save to file command`);
     }
-    
-    // Delegate to file save command via router
-    const saveMessage = JTAGMessageFactory.createRequest(
-      screenshotParams.context,
-      `server/${this.commander.subpath}/screenshot`,
-      `server/${this.commander.subpath}/file/save`,
-      {
-        ...screenshotParams,
-        filepath: filepath,
-        content: content
-      },
-      JTAGMessageFactory.generateCorrelationId()
-    );
-    
-    const saveResult = await this.commander.router.postMessage(saveMessage);
-    
+
+    const saveParams: FileSaveParams = {
+      ...screenshotParams,
+      filepath: filepath,
+      content: content
+    };
+
+    const saveResult: FileSaveResult = await this.remoteExecute(saveParams, 'file/save', this.context.environment);
+
     console.log(`🔍 SERVER: File save router result:`, JSON.stringify(saveResult, null, 2));
     
     if (!saveResult.success) {
@@ -72,7 +66,7 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
     
     return createScreenshotResult(screenshotParams.context, screenshotParams.sessionId, {
       success: true,
-      filepath: filepath,
+      filepath: saveResult.filepath,
       filename: filename,
       options: screenshotParams.options
     });

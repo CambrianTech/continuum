@@ -12,7 +12,7 @@ import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 export interface FileSaveParams extends FileParams {
-  readonly content: string;
+  readonly content: string | Buffer;
   readonly createDirs?: boolean;
 }
 
