@@ -1,10 +1,10 @@
 # WebSocket Transport Issue - Root Cause Analysis & Fix
 
-## 🔍 **PROBLEM IDENTIFIED**
+## 🔍 **PROBLEM IDENTIFIED** ✅ CONFIRMED
 
 **Issue**: Screenshot and exec commands timeout when called from server clients, despite server processing them successfully.
 
-**Root Cause**: Missing WebSocket transport layer for external client response routing.
+**Root Cause**: **COMPLETE BREAKDOWN OF SERVER → BROWSER ROUTING** - WebSocket server receives requests from server clients but fails to route them to browser system, causing ALL cross-context commands to fail.
 
 ## 📋 **SYSTEMATIC INVESTIGATION FINDINGS**
 
@@ -14,20 +14,29 @@ npx tsx test-screenshot.ts
 # Result: 30-second timeout, connection successful but no response received
 ```
 
-### **Step 2: Server Log Analysis** 
-✅ **Messages reach server successfully:**
+### **Step 2: Complete Transport Diagnosis** ✅ COMPLETED
+
+**Server Client Connection:**
+✅ Server clients successfully connect to WebSocket server on port 9001
+✅ WebSocket transport layer working (connection, correlation tracking)
+✅ Server clients can send requests to WebSocket server
+
+**Cross-Context Command Routing:**
+❌ **CRITICAL FAILURE**: Server → Browser routing completely broken
+❌ Server routes to `browser/commands/screenshot` but browser never receives requests
+❌ Browser shows NO incoming `browser/commands/*` requests in logs
+❌ Server client times out waiting for responses from browser (30s timeout)
+
+**Evidence from Logs:**
 ```
-2025-08-12T00:57:54.864Z [SERVER_CONSOLE] 📨 JTAGRouterDynamicServer: Processing message req:client_1754960274863_b32wdigz to server/commands/session/create
-2025-08-12T00:57:54.865Z [SERVER_CONSOLE] ✅ JTAGRouterDynamic: Successfully routed server/commands/session/create via base router
-2025-08-12T00:57:54.865Z [SERVER_CONSOLE] ✅ ResponseCorrelator: Resolved request client_1754960274863_b32wdigz
+SERVER: 📨 Sending request corr_1754268195095_shf5jg1d to browser/commands/screenshot
+SERVER: 🔗 ResponseCorrelator: Created request corr_1754268195095_shf5jg1d
+BROWSER: [NO MATCHING LOGS] - Request never reaches browser system
 ```
 
-✅ **Server creates responses:**
-```  
-2025-08-12T00:57:54.865Z [SERVER_CONSOLE] 📤 JTAGRouterDynamicServer: Created response message - origin: "server/commands/session/create", endpoint: "server", correlationId: client_1754960274863_b32wdigz
-```
-
-❌ **But responses never reach client** - Client times out waiting for response.
+**Session Creation Also Fails:**
+❌ Even basic session/create requests from server clients timeout
+❌ Confirms this is fundamental transport architecture failure, not command-specific
 
 ### **Step 3: Unit Test Confirmation**
 ```bash
@@ -60,26 +69,79 @@ Commands like screenshot follow this flow:
 
 **Current State**: Steps 1-4 work perfectly, Step 5 fails due to missing transport.
 
-## 🛠️ **REMEDY REQUIRED**
+## 🛠️ **SOLUTION ARCHITECTURE**
 
-### **Missing Infrastructure Component**
-Need to implement **WebSocketResponseTransport** that:
+### **Root Problem Analysis**
+The issue is in the **transport bridge architecture**:
 
-1. **Registers with router** as transport for external client responses
-2. **Maintains client connection mapping** (correlationId → WebSocket connection)  
-3. **Sends responses** back through the correct WebSocket connection
-4. **Handles connection cleanup** when clients disconnect
+1. **WebSocket Server System** (port 9001) - Receives server client requests 
+2. **Local Browser System** (embedded in demo page) - Executes browser commands
+3. **Missing Bridge**: No communication path between WebSocket server and local browser
 
-### **Integration Points**
-The router already has the hooks:
-- `ExternalClientDetector` identifies external clients
-- Router creates proper response messages with correlation IDs
-- Error messages show it's looking for WebSocket transport
+**Current State**: Two isolated JTAG systems that can't communicate cross-context.
 
-### **Expected Files to Modify**
-- Router WebSocket server implementation
-- External client detector integration  
-- WebSocket transport registration with router
+### **Fix Required: Transport Bridge Implementation**
+
+#### **Option A: WebSocket Browser Connection** (Recommended)
+Configure browser to connect to WebSocket server instead of running locally:
+
+**Files to Modify:**
+- `examples/test-bench/end-to-end-demo.ts` - Serve browser client that connects to WebSocket
+- Browser initialization script - Use `JTAGClientBrowser.connectRemote()` instead of local
+- Ensure both server clients AND browser connect to same WebSocket server system
+
+**Implementation:**
+```typescript
+// Browser connects to WebSocket server
+const browserClient = await JTAGClientBrowser.connectRemote({
+  serverUrl: 'ws://localhost:9001',
+  sessionId: 'BROWSER_SESSION',
+  transportType: 'websocket'
+});
+```
+
+#### **Option B: HTTP Bridge** (Alternative)
+Create HTTP bridge between WebSocket server and local browser system:
+- WebSocket server forwards `browser/*` requests via HTTP to local browser
+- Local browser sends responses back via HTTP to WebSocket server
+- WebSocket server routes responses back to server clients
+
+### **Testing Strategy**
+
+#### **Step 1: Fix Implementation**
+```bash
+# Modify browser to connect via WebSocket
+npm run system:stop
+# Edit browser initialization
+npm run system:start
+```
+
+#### **Step 2: Validation Tests**
+```bash
+# Test 1: Basic server client connection (should not timeout)
+npx tsx test-routing-diagnosis.ts
+
+# Test 2: Screenshot command (should complete in <5 seconds)  
+npx tsx test-server-screenshot-fix.ts
+
+# Test 3: Cross-context communication verification
+open http://localhost:9002  # Browser should show WebSocket connection status
+```
+
+#### **Step 3: Log Verification**
+After fix, browser logs should show:
+```
+BROWSER: 📨 Processing message req:corr_xxx to browser/commands/screenshot
+BROWSER: 📸 Capturing screenshot...  
+BROWSER: 📤 Sending response back to server client
+```
+
+### **Success Criteria**
+✅ Server clients connect without timeout
+✅ Screenshot commands complete in <5 seconds
+✅ Browser logs show incoming server→browser requests  
+✅ Cross-context bidirectional communication working
+✅ All JTAG commands work from server client context
 
 ## ✅ **SUCCESS CRITERIA**
 

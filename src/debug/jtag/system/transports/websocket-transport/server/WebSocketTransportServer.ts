@@ -7,9 +7,11 @@
 
 import { WebSocketTransportBase, type WebSocketConfig } from '../shared/WebSocketTransportBase';
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
+import { JTAGMessageTypes } from '../../../core/types/JTAGTypes';
 import type { WebSocketServer, WebSocket as WSWebSocket } from 'ws';
 import type { TransportSendResult } from '../../shared/TransportTypes';
 import type { ITransportAdapter } from '../../shared/TransportBase';
+import { WebSocketResponseRouter } from './WebSocketResponseRouter';
 
 // Server-specific WebSocket configuration with typed inheritance
 export interface WebSocketServerConfig extends WebSocketConfig {
@@ -27,6 +29,7 @@ export class WebSocketTransportServer extends WebSocketTransportBase implements 
   private messageHandlers = new Set<(message: JTAGMessage) => void>();
   private sessionHandshakeHandler?: (sessionId: string) => void;
   private serverConfig: WebSocketServerConfig;
+  private responseRouter = new WebSocketResponseRouter();
 
   constructor(config: WebSocketServerConfig) {
     super(config);
@@ -84,6 +87,9 @@ export class WebSocketTransportServer extends WebSocketTransportBase implements 
         this.clients.add(ws);
         const clientId = this.generateClientId('ws');
         
+        // Register client with response router
+        this.responseRouter.registerClient(ws, clientId);
+        
         // Emit CONNECTED event using shared method
         this.emitTransportEvent('CONNECTED', {
           clientId,
@@ -105,6 +111,15 @@ export class WebSocketTransportServer extends WebSocketTransportBase implements 
             
             console.log(`📨 ${this.name}: Received message from client`);
             
+            // Register correlation for request messages so we can route responses back
+            if (JTAGMessageTypes.isRequest(message)) {
+              const correlationId = (message as any).correlationId;
+              if (correlationId) {
+                this.responseRouter.registerCorrelation(correlationId, clientId);
+                console.log(`🔗 WebSocketTransportServer: Registered correlation ${correlationId} for client ${clientId}`);
+              }
+            }
+            
             // Forward to registered message handlers (router handles all processing)
             for (const handler of this.messageHandlers) {
               handler(message);
@@ -120,6 +135,9 @@ export class WebSocketTransportServer extends WebSocketTransportBase implements 
           console.log(`🔌 ${this.name}: Client disconnected`);
           this.clients.delete(ws);
           
+          // Unregister client from response router
+          this.responseRouter.unregisterClient(clientId);
+          
           // Emit DISCONNECTED event using shared method
           this.emitTransportEvent('DISCONNECTED', {
             clientId,
@@ -129,6 +147,10 @@ export class WebSocketTransportServer extends WebSocketTransportBase implements 
         
         ws.on('error', (error: Error) => {
           this.clients.delete(ws);
+          
+          // Unregister client from response router
+          this.responseRouter.unregisterClient(clientId);
+          
           this.handleWebSocketError(error, 'client connection');
         });
       });
@@ -147,6 +169,33 @@ export class WebSocketTransportServer extends WebSocketTransportBase implements 
   }
 
   async send(message: JTAGMessage): Promise<TransportSendResult> {
+    // Check if this is a response that should be routed to a specific client
+    if (JTAGMessageTypes.isResponse(message)) {
+      const correlationId = (message as any).correlationId;
+      
+      // First check: Does this correlation exist in our router?
+      if (correlationId && this.responseRouter.hasCorrelation(correlationId)) {
+        console.log(`🎯 WebSocket Server: Routing response ${correlationId} to specific client`);
+        const success = await this.responseRouter.sendResponse(message);
+        return this.createResult(success, success ? 1 : 0);
+      }
+      
+      // Second check: Is this a server client response that we should try to route?
+      // Server client responses have endpoint "server" but should be sent via WebSocket
+      if (correlationId && correlationId.startsWith('client_')) {
+        console.log(`🔍 WebSocket Server: Attempting to route server client response ${correlationId}`);
+        // Try to send anyway in case correlation was briefly removed
+        const success = await this.responseRouter.sendResponse(message);
+        if (success) {
+          console.log(`✅ WebSocket Server: Successfully sent late response ${correlationId}`);
+          return this.createResult(true, 1);
+        } else {
+          console.log(`⚠️ WebSocket Server: Failed to send response ${correlationId} - client may have disconnected`);
+        }
+      }
+    }
+    
+    // Fallback to broadcast for non-responses or responses without correlation
     console.log(`📤 WebSocket Server: Broadcasting message to ${this.clients.size} clients`);
     
     const messageData = JSON.stringify(message);

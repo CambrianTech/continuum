@@ -5,9 +5,9 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { ScreenshotParams, Html2CanvasCanvas, Html2CanvasOptions, ScreenshotResult } from '../shared/ScreenshotTypes';
-import { createScreenshotResultFromParams, createScreenshotResult } from '../shared/ScreenshotTypes';
+import { createScreenshotResult } from '../shared/ScreenshotTypes';
 import { getGlobalAPI, safeQuerySelector, getViewportDimensions } from '../../../daemons/command-daemon/shared/GlobalUtils';
 
 const DEFAULT_FORMAT = 'png';
@@ -75,7 +75,6 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
       
       // Enrich original params with captured data and metadata
       params.dataUrl = dataUrl;
-      params.filename = params.filename ?? `screenshot-${Date.now()}.png`;
       params.metadata = {
         width: canvas.width,
         height: canvas.height,
@@ -84,27 +83,31 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         format: format,
         captureTime: captureTime
       };
-      
-      // Simple decision: if browser-initiated, send to server for saving
-      if (!params.returnToSource) {
-        console.log(`🔀 BROWSER: Sending to server for saving`);
+
+      if (params.resultType === 'file') {
+        params.filename = params.filename ?? `screenshot-${Date.now()}.${format}`;
+      }
+
+      if (params.resultType === 'file' || params.context.uuid !== this.context.uuid) {
         return await this.remoteExecute(params);
       }
-      
-      // Otherwise create result for calling server
-      console.log(`🔙 BROWSER: Returning data to server`);
-      return createScreenshotResultFromParams(params, {
-        success: true,
-        filepath: ''
-        // filename, options, dataUrl, metadata auto-inherited from params!
-      });
+
+      // Return data directly to caller. it is our own context
+      return createScreenshotResult(
+        params.context,
+        params.sessionId,
+        {
+          success: true,
+          dataUrl: dataUrl,
+          options: params.options,
+          metadata: params.metadata,
+        }
+      );
 
     } catch (error: any) {
       console.error(`❌ BROWSER: Failed:`, error.message);
       return createScreenshotResult(params.context, params.sessionId, {
         success: false,
-        filepath: '',
-        filename: params.filename || `screenshot-error-${Date.now()}.png`,
         error: error.message
       });
     }
