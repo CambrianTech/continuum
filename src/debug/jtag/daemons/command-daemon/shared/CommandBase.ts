@@ -65,17 +65,19 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
   protected async remoteExecute(
     params: TParams, 
     subpath: string = this.subpath,
-    remote: string = this.context.environment === JTAG_ENVIRONMENTS.BROWSER 
+    prefix: string = this.context.environment === JTAG_ENVIRONMENTS.BROWSER 
       ? JTAG_ENVIRONMENTS.SERVER 
       : JTAG_ENVIRONMENTS.BROWSER
   ): Promise<TResult> {
-    
-    console.log(`🔀 ${this.toString()}: Remote executing in ${remote} environment`);
-    
+    const origin = `${this.context.environment}/${this.commander.subpath}/${subpath}`;
+    const endpoint = `${prefix}/${this.commander.subpath}/${subpath}`;
+
+    console.log(`🔀 ${this.toString()}: Remote executing from ${origin} to call ${endpoint}`);
+
     const message = JTAGMessageFactory.createRequest(
       this.context,
-      `${this.context.environment}/${this.commander.subpath}/${subpath}`,
-      `${remote}/${this.commander.subpath}/${subpath}`,
+      origin,
+      endpoint,
       params,
       JTAGMessageFactory.generateCorrelationId()
     );

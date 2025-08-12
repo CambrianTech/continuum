@@ -115,4 +115,24 @@ describe('ExecCommand Browser Execution', () => {
     expect(result.result.testDivCreated).toBe(true);
     expect(result.result.url).toContain('localhost');
   });
+
+  it('should execute simple document title test as requested by user', async () => {
+    console.log('🌐 Testing browser exec - simple document.title test...');
+    
+    const result = await jtagClient.commands.exec({
+      code: {
+        type: 'inline',
+        language: 'javascript',
+        source: 'return document.title'
+      }
+    });
+    
+    console.log('📊 Document title result:', JSON.stringify(result, null, 2));
+    
+    expect(result).toBeDefined();
+    expect(result.success).toBe(true);
+    expect(result.result).toBeDefined();
+    expect(typeof result.result).toBe('string');
+    console.log('✅ SUCCESS: Got document title from browser:', result.result);
+  });
 });

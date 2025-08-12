@@ -4,9 +4,12 @@
  * Common types and interfaces used by both browser and server screenshot implementations.
  */
 
-import { CommandParams, CommandResult, type JTAGContext, createPayload, transformPayload } from '../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext } from '../../../system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+
+export type ResultType = 'file' | 'bytes';
 
 /**
  * Screenshot Command Parameters - interface extending CommandParams
@@ -18,8 +21,7 @@ export interface ScreenshotParams extends CommandParams {
   
   // Additional properties for parametric behavior
   dataUrl?: string;
-  returnToSource?: boolean;
-  returnFormat?: 'file' | 'bytes' | 'download';
+  resultType: ResultType;
   crop?: { x: number; y: number; width: number; height: number };
   metadata?: ScreenshotMetadata;
 }
@@ -30,8 +32,9 @@ export interface ScreenshotParams extends CommandParams {
 export const createScreenshotParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<Partial<ScreenshotParams>, 'context' | 'sessionId'>
-): ScreenshotParams => createPayload(context, sessionId, data);
+  resultType: ResultType = 'file',
+  data: Omit<Partial<ScreenshotParams>, 'context' | 'sessionId' | 'resultType' >
+): ScreenshotParams => createPayload(context, sessionId, { resultType, ...data });
 
 /**
  * HTML2Canvas Configuration Options
@@ -121,7 +124,7 @@ export const createScreenshotResultFromParams = (
 ): ScreenshotResult => transformPayload(params, {
   success: false,
   filepath: '',
-  filename: params.filename || `screenshot-${Date.now()}.png`,
+  filename: params.filename ?? `screenshot-${Date.now()}.png`,
   timestamp: new Date().toISOString(),
   options: params.options,
   metadata: params.metadata,

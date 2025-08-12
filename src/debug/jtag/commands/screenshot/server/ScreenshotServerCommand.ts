@@ -35,7 +35,7 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
     // We have image data → delegate to file save command
     console.log(`💾 SERVER: Saving image data (${screenshotParams.dataUrl.length} bytes)`);
     
-    const filename = screenshotParams.filename || 'screenshot.png';
+    const filename = screenshotParams.filename ?? 'screenshot.png';
     const filepath = `screenshots/${filename}`;
     
     // Convert image data to buffer for file save command
