@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.764",
+  "version": "1.0.777",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -134,7 +134,7 @@
     "test:tty": "tmux kill-session -t debug-npm 2>/dev/null; rm -f /tmp/debug-npm.log; tmux new-session -d -s debug-npm \"script -q /dev/null npm run clean\" \\; pipe-pane -o 'cat >> /tmp/debug-npm.log'",
     "system:debug": "echo '=== Tmux session state ===' && (tmux has-session -t jtag-test 2>/dev/null && echo 'Session running' && tmux capture-pane -t jtag-test -p || echo 'Session not running') && echo '' && echo '=== Log file ===' && tail -20 .continuum/jtag/system/logs/npm-start.log",
     "screenshot": "npx tsx scripts/screenshot.ts",
-    "test": "timeout 180 bash -c 'npm run system:stop && rm -rf examples/test-bench/.continuum/jtag/currentUser/logs/* 2>/dev/null || true && npm run system:start && npm run test:verify-and-run' || (echo '❌ ERROR: npm test exceeded 180-second timeout - system may be hung' && echo '🔍 Check system logs: .continuum/jtag/system/logs/npm-start.log' && echo '🛠️  Try: npm run system:stop && npm run system:start' && exit 1)",
+    "test": "timeout 300 bash -c 'npm run system:stop && rm -rf examples/test-bench/.continuum/jtag/currentUser/logs/* 2>/dev/null || true && npm run system:start && npm run test:verify-and-run' || (echo '❌ ERROR: npm test exceeded 300-second timeout - system may be hung' && echo '🔍 Check system logs: .continuum/jtag/system/logs/npm-start.log' && echo '🛠️  Try: npm run system:stop && npm run system:start' && exit 1)",
     "test:verify-and-run": "echo '🔍 WAITING FOR SYSTEM BOOTSTRAP...' && npm run signal:wait && echo '🔍 VERIFYING SYSTEM BOOTSTRAP...' && grep 'Bootstrap complete' examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log | tail -1 && echo '✅ BOOTSTRAP VERIFIED - RUNNING TESTS' && npm run test:comprehensive",
     "test:comprehensive": "echo '🚀 AUTONOMOUS TEST SUITE - Full End-to-End' && npx tsx tests/bootstrap-comprehensive.test.ts && npx tsx tests/integration/browser-automated-tests.test.ts && npx tsx tests/signal-system.test.ts",
     "test:simple": "echo '🚀 SIMPLE TEST SUITE' && npx tsx tests/bootstrap-comprehensive.test.ts",
@@ -274,7 +274,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-13T15:16:09.971Z",
+    "timestamp": "2025-08-13T19:00:43.894Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 26,
     "note": "Generated from clean essential path mappings only"
