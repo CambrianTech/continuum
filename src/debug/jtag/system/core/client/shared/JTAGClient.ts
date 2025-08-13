@@ -115,6 +115,7 @@ import { createListParams } from '../../../../commands/list/shared/ListTypes';
 import type { BaseResponsePayload, JTAGResponsePayload } from '../../types/ResponseTypes';
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
+import { JTAG_BOOTSTRAP_MESSAGES } from './JTAGClientConstants';
 import type { SessionMetadata } from '../../../../daemons/session-daemon/shared/SessionTypes';
 import type { SessionCreateResult } from '../../../../commands/session/create/shared/SessionCreateTypes';
 /**
@@ -509,7 +510,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     console.log('🔄 JTAGClient: Discovering available commands...');
     const listResult = await client.commands.list();
     
-    console.log(`✅ JTAGClient: Bootstrap complete! Discovered ${listResult.totalCount} commands`);
+    console.log(`✅ JTAGClient: ${JTAG_BOOTSTRAP_MESSAGES.BOOTSTRAP_COMPLETE_PREFIX} ${listResult.totalCount} commands`);
     
     return { 
       client, 

@@ -140,8 +140,9 @@ async function runBrowserBootstrapTests(): Promise<void> {
           
           ws.onopen = () => {
             const testMessage = {
-              type: 'ping',
-              payload: { timestamp: new Date().toISOString(), context: 'client' },
+              endpoint: 'commands/ping',
+              payload: { message: 'Browser integration test ping' },
+              correlationId: 'browser-test-' + Date.now(),
               timestamp: new Date().toISOString()
             };
             

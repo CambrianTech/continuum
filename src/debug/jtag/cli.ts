@@ -6,8 +6,8 @@
  * This is the main entry point that ./jtag forwards to.
  */
 
-import { JTAGClientServer } from './server/JTAGClientServer';
-import type { JTAGClientConnectOptions } from './shared/JTAGClient';
+import { JTAGClientServer } from './system/core/client/server/JTAGClientServer';
+import type { JTAGClientConnectOptions } from './system/core/client/shared/JTAGClient';
 
 async function main() {
   try {
@@ -22,30 +22,71 @@ async function main() {
       process.exit(1);
     }
     
-    const [command, ...params] = commandArgs;
+    const [command, ...rawParams] = commandArgs;
     
-    console.log(`🔌 Connecting to JTAG system...`);
+    // Parse parameters into object format
+    const params: any = {};
+    for (let i = 0; i < rawParams.length; i += 2) {
+      const key = rawParams[i]?.replace(/^--/, '');  // Remove -- prefix
+      const value = rawParams[i + 1];
+      if (key && value !== undefined) {
+        // Fix parameter key-value assignment
+        params[key] = value;
+      }
+    }
     
-    // Connect to the running JTAG system - force remote connection (no local system)
+    // Connect quietly to the running JTAG system
     const clientOptions: JTAGClientConnectOptions = {
-      targetEnvironment: 'server', // Connect TO the server
+      targetEnvironment: 'server', 
       transportType: 'websocket',
       serverUrl: 'ws://localhost:9001',
-      enableFallback: false // CLI must use remote connection (no local system)
+      enableFallback: false 
     };
+    
+    // Suppress verbose connection logs by redirecting console temporarily
+    const originalLog = console.log;
+    const originalWarn = console.warn;
+    console.log = () => {}; // Suppress logs during connection
+    console.warn = () => {}; // Suppress warnings during connection
     
     const { client } = await JTAGClientServer.connect(clientOptions);
     
-    // For now, just log what we would do
-    console.log(`📤 Would execute command: ${command}`);
-    if (params.length > 0) {
-      console.log(`📋 Parameters: ${params.join(', ')}`);
-    }
+    // Restore console logging
+    console.log = originalLog;
+    console.warn = originalWarn;
     
-    // TODO: Implement actual command translation and execution
-    // This is where we'll translate CLI args to proper JTAG command calls
-    console.log('⚠️  CLI command execution not yet implemented');
-    console.log('✅ Connection test successful');
+    // Execute command with timeout for autonomous development
+    try {
+      const commandTimeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error(`Command '${command}' timed out after 10 seconds`)), 10000)
+      );
+      
+      const commandExecution = (client as any).commands[command](params);
+      
+      const result = await Promise.race([commandExecution, commandTimeout]);
+      
+      console.log(`✅ ${command}:`, result.success ? 'SUCCESS' : 'FAILED');
+      
+      // Add timing information for autonomous development 
+      if (result.timestamp) {
+        const startTime = Date.now() - 10000; // Approximate start time
+        const duration = new Date(result.timestamp).getTime() - startTime;
+        console.log(`⏱️ Duration: ${Math.abs(duration)}ms`);
+      }
+      
+      // Show key result data only
+      if (result.filepath) console.log(`📁 File: ${result.filepath}`);
+      if (result.commands) console.log(`📋 Found: ${result.commands.length} commands`);
+      if (result.commandResult?.filepath) console.log(`📁 File: ${result.commandResult.filepath}`);
+      
+      process.exit(result.success ? 0 : 1);
+    } catch (cmdError: any) {
+      console.error(`❌ ${command} failed:`, cmdError.message);
+      if (cmdError.message.includes('timeout')) {
+        console.error('🔍 Debug: Check system logs: npm run signal:errors');
+      }
+      process.exit(1);
+    }
     
   } catch (error) {
     console.error('❌ CLI Error:', error);
