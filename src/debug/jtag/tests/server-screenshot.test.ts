@@ -33,8 +33,8 @@ async function testServerScreenshot(): Promise<boolean> {
     
     const screenshotResult = await jtagClient.commands.screenshot({
       filename: testFilename,
-      context: 'server', // This explicitly requests server-side processing
-      sessionId: 'server-screenshot-test-' + Date.now()
+      context: 'server' // This explicitly requests server-side processing
+      // Note: No custom sessionId - will use currentUser session by default
     });
     
     console.log('📊 Server screenshot result:', JSON.stringify(screenshotResult, null, 2));
