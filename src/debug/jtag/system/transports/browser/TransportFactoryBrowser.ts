@@ -11,6 +11,8 @@ import { TransportFactoryBase } from '../shared/TransportFactoryBase';
 import { BROWSER_ADAPTERS } from '../../../browser/generated';
 import type { AdapterEntry } from '../shared/TransportBase';
 import type { WebSocketBrowserConfig } from '../websocket-transport/browser/WebSocketTransportClientBrowser';
+import type { UDPMulticastConfig } from '../udp-multicast-transport/shared/UDPMulticastTypes';
+import { NodeType, NodeCapability } from '../udp-multicast-transport/shared/UDPMulticastTypes';
 
 export class TransportFactoryBrowser extends TransportFactoryBase {
   
@@ -29,10 +31,15 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
     console.log(`🔍 Browser Factory: Looking for ${config.protocol} transport in registry`);
     
     // Find adapter by protocol in auto-generated registry
-    const adapterEntry = BROWSER_ADAPTERS.find(adapter => 
-      adapter.name.includes(config.protocol) || 
-      adapter.className.toLowerCase().includes(config.protocol)
-    );
+    const adapterEntry = BROWSER_ADAPTERS.find(adapter => {
+      // Check protocol matching - handle both 'websocket' and 'udp-multicast'
+      if (config.protocol === 'udp-multicast') {
+        return adapter.name.includes('udp-multicast') || adapter.className.toLowerCase().includes('udpmulticast');
+      }
+      
+      return adapter.name.includes(config.protocol) || 
+             adapter.className.toLowerCase().includes(config.protocol);
+    });
     
     if (!adapterEntry) {
       console.log(`📋 Available browser adapters: ${BROWSER_ADAPTERS.map(a => a.name).join(', ')}`);
@@ -63,7 +70,7 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
   /**
    * Create adapter-specific configuration from generic TransportConfig
    */
-  private createAdapterConfig(config: TransportConfig, adapterEntry: AdapterEntry): WebSocketBrowserConfig | TransportConfig {
+  private createAdapterConfig(config: TransportConfig, adapterEntry: AdapterEntry): WebSocketBrowserConfig | UDPMulticastConfig | TransportConfig {
     if (config.protocol === 'websocket' && adapterEntry.className === 'WebSocketTransportBrowser') {
       // WebSocketBrowserConfig requires specific format
       const webSocketConfig: WebSocketBrowserConfig = {
@@ -77,6 +84,19 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
         sessionHandshake: true
       };
       return webSocketConfig;
+    }
+    
+    if (config.protocol === 'udp-multicast') {
+      // UDPMulticastConfig for P2P mesh networking - Browser uses WebRTC/WebSocket signalling
+      const udpConfig: Partial<UDPMulticastConfig> & { signallingServer?: string } = {
+        nodeType: NodeType.BROWSER,
+        capabilities: [NodeCapability.SCREENSHOT, NodeCapability.BROWSER_AUTOMATION],
+        multicastPort: config.serverPort ?? 37472, // Different port for browser signalling server
+        unicastPort: (config.serverPort ?? 37472) + 1000, // Offset for unicast
+        // Browser-specific: signalling server URL for WebRTC
+        signallingServer: config.serverUrl || `ws://localhost:${config.serverPort ?? 37472}`
+      };
+      return udpConfig as UDPMulticastConfig;
     }
     
     // For other adapters, pass the config as-is

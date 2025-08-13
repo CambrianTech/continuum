@@ -12,6 +12,8 @@ import { SERVER_ADAPTERS } from '../../../server/generated';
 import type { AdapterEntry } from '../shared/TransportBase';
 import type { WebSocketServerConfig } from '../websocket-transport/server/WebSocketTransportServer';
 import type { WebSocketServerClientConfig } from '../websocket-transport/server/WebSocketTransportClientServer';
+import type { UDPMulticastConfig } from '../udp-multicast-transport/shared/UDPMulticastTypes';
+import { NodeType, NodeCapability } from '../udp-multicast-transport/shared/UDPMulticastTypes';
 
 export class TransportFactoryServer extends TransportFactoryBase {
   
@@ -31,7 +33,11 @@ export class TransportFactoryServer extends TransportFactoryBase {
     
     // Find adapter by protocol AND role in auto-generated registry
     const adapterEntry = SERVER_ADAPTERS.find(adapter => {
-      // Check protocol matching
+      // Check protocol matching - handle both 'websocket' and 'udp-multicast'
+      if (config.protocol === 'udp-multicast') {
+        return adapter.name.includes('udp-multicast') || adapter.className.toLowerCase().includes('udpmulticast');
+      }
+      
       if (!adapter.name.includes(config.protocol) && !adapter.className.toLowerCase().includes(config.protocol)) {
         return false;
       }
@@ -80,7 +86,7 @@ export class TransportFactoryServer extends TransportFactoryBase {
   /**
    * Create adapter-specific configuration from generic TransportConfig
    */
-  private createAdapterConfig(config: TransportConfig, adapterEntry: AdapterEntry): WebSocketServerConfig | WebSocketServerClientConfig | TransportConfig {
+  private createAdapterConfig(config: TransportConfig, adapterEntry: AdapterEntry): WebSocketServerConfig | WebSocketServerClientConfig | UDPMulticastConfig | TransportConfig {
     if (config.protocol === 'websocket') {
       if (adapterEntry.className === 'WebSocketTransportServer') {
         // WebSocketServerConfig requires port
@@ -107,6 +113,19 @@ export class TransportFactoryServer extends TransportFactoryBase {
         };
         return clientConfig;
       }
+    }
+    
+    if (config.protocol === 'udp-multicast') {
+      // UDPMulticastConfig for P2P mesh networking
+      const udpConfig: Partial<UDPMulticastConfig> = {
+        nodeType: NodeType.SERVER,
+        capabilities: [NodeCapability.FILE_OPERATIONS, NodeCapability.SCREENSHOT],
+        multicastPort: config.serverPort ?? 37471,
+        unicastPort: (config.serverPort ?? 37471) + 1000, // Offset for unicast
+        // Override any specific config properties
+        ...config
+      };
+      return udpConfig as UDPMulticastConfig;
     }
     
     // For other adapters, pass the config as-is
