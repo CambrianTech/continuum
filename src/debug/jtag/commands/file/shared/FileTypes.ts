@@ -1,5 +1,4 @@
-// ISSUES: 2 open, last updated 2025-07-25 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
-// TODO: Remove generic constraints - Record<string, any> defeats purpose of strong typing
+// ISSUES: 1 open, last updated 2025-08-13 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 // TODO: Consider splitting into individual command type files to follow ~50 line modular pattern
 
 /**
@@ -39,10 +38,10 @@ export interface FileParams extends CommandParams {
   readonly encoding?: string;
 }
 
-export const createFileParams = <T extends Record<string, any> = {}>(
+export const createFileParams = <T extends Partial<FileParams> = FileParams>(
   context: JTAGContext,
   sessionId: UUID,
-  data: Partial<FileParams & T> & { filepath?: string }
+  data: T & { filepath?: string }
 ): FileParams & T => createPayload(context, sessionId, {
   filepath: data.filepath ?? '',
   encoding: data.encoding ?? 'utf8',
@@ -60,10 +59,10 @@ export interface FileResult extends CommandResult {
   readonly timestamp: string;
 }
 
-export const createFileResult = <T extends Record<string, any> = {}>(
+export const createFileResult = <T extends Partial<FileResult> = FileResult>(
   context: JTAGContext,
   sessionId: UUID,
-  data: Partial<FileResult & T> & { success: boolean; filepath: string }
+  data: T & { success: boolean; filepath: string }
 ): FileResult & T => createPayload(context, sessionId, {
   exists: data.exists ?? false,
   timestamp: data.timestamp ?? new Date().toISOString(),

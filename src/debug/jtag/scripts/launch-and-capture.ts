@@ -3,6 +3,31 @@ import fs from 'fs';
 import path from 'path';
 import { SystemReadySignaler } from './signal-system-ready';
 
+// Strong typing for monitoring configuration
+interface MonitoringConfig {
+  readonly initialPollMs: number;
+  readonly maxPollMs: number;
+  readonly backoffMultiplier: number;
+  readonly maxTimeoutMs: number;
+  readonly fastPollingDuration: number;
+}
+
+// Type-safe monitoring state
+interface MonitoringState {
+  active: boolean;
+  currentPollInterval: number;
+  startTime: number;
+  pollCount: number;
+}
+
+const MONITORING_CONFIG: MonitoringConfig = {
+  initialPollMs: 1000,        // Start fast - 1 second
+  maxPollMs: 5000,           // Max 5 seconds between polls
+  backoffMultiplier: 1.2,    // Gradual slowdown  
+  maxTimeoutMs: 120_000,     // 2 minutes total timeout
+  fastPollingDuration: 15_000 // Fast polling for first 15 seconds
+} as const;
+
 // Prepare paths
 const logDir = path.resolve('.continuum/jtag/system/logs');
 const logFile = path.join(logDir, 'npm-start.log');
@@ -47,9 +72,9 @@ async function launchWithIntelligentMonitoring() {
       monitorSystemReadiness(signaler);
       
       console.log('');
-      console.log('📋 Monitor logs with: npm run logs:npm');
-      console.log('🔍 Check readiness with: npm run signal:check');
-      console.log('🛑 Stop with: npm run system:stop');
+      console.log('📋 Monitor logs: npm run logs:npm');
+      console.log('🔍 Check status: npm run signal:check');
+      console.log('🛑 Stop system: npm run system:stop');
       
     } catch (err) {
       console.error(`⚠️ System started but couldn't read PID file`);
@@ -57,54 +82,97 @@ async function launchWithIntelligentMonitoring() {
   });
 }
 
-async function monitorSystemReadiness(signaler: SystemReadySignaler) {
-  console.log('👀 Monitoring system logs for readiness indicators...');
+async function monitorSystemReadiness(signaler: SystemReadySignaler): Promise<void> {
+  console.log('👀 Monitoring system readiness...');
   
-  let monitoringActive = true;
+  const state: MonitoringState = {
+    active: true,
+    currentPollInterval: MONITORING_CONFIG.initialPollMs,
+    startTime: Date.now(),
+    pollCount: 0
+  };
   
-  // Monitor the log file for readiness indicators
-  const monitorInterval = setInterval(async () => {
-    if (!monitoringActive) {
-      clearInterval(monitorInterval);
-      return;
-    }
+  // Adaptive polling function with exponential backoff
+  const scheduleNextCheck = (): void => {
+    if (!state.active) return;
     
-    try {
-      // Check for bootstrap completion using the actual signal detection function
-      const signal = await signaler.generateReadySignal();
+    const timeoutId: NodeJS.Timeout = setTimeout(async () => {
+      if (!state.active) return;
       
-      if (signal.bootstrapComplete && signal.commandCount > 0) {
-        console.log('✅ Bootstrap completion detected via signal system!');
-        console.log(`📊 Commands discovered: ${signal.commandCount}`);
-        console.log('🎯 System ready signal generated successfully!');
-        console.log('🚀 System is now ready for testing and AI connections!');
-        monitoringActive = false;
-        clearInterval(monitorInterval);
-        process.exit(0);
-      } else {
-        // Still waiting for bootstrap to complete
-        console.log(`⏳ Waiting for bootstrap... (commands: ${signal.commandCount}, bootstrap: ${signal.bootstrapComplete})`);
+      state.pollCount++;
+      const elapsed = Date.now() - state.startTime;
+      
+      try {
+        // Check for bootstrap completion using the actual signal detection function
+        const signal = await signaler.generateReadySignal();
+        
+        if (signal.bootstrapComplete && signal.commandCount > 0) {
+          console.log('✅ Bootstrap completion detected!');
+          console.log(`📊 Commands discovered: ${signal.commandCount}`);
+          console.log(`⚡ Detection took ${Math.round(elapsed / 1000)}s (${state.pollCount} checks)`);
+          console.log('🚀 System is now ready for testing and connections!');
+          state.active = false;
+          process.exit(0);
+        } else {
+          // Only show status every few checks to reduce noise
+          if (state.pollCount % 3 === 1) {
+            console.log(`⏳ Waiting... (commands: ${signal.commandCount}, bootstrap: ${signal.bootstrapComplete})`);
+          }
+          
+          // Adaptive polling: fast during initial period, then slow down
+          if (elapsed < MONITORING_CONFIG.fastPollingDuration) {
+            // Keep fast polling for first 15 seconds
+            state.currentPollInterval = MONITORING_CONFIG.initialPollMs;
+          } else {
+            // Gradual slowdown after fast period
+            state.currentPollInterval = Math.min(
+              state.currentPollInterval * MONITORING_CONFIG.backoffMultiplier,
+              MONITORING_CONFIG.maxPollMs
+            );
+          }
+          
+          scheduleNextCheck();
+        }
+        
+      } catch (error) {
+        // System still starting up - continue monitoring with current interval
+        scheduleNextCheck();
       }
-      
-    } catch (error) {
-      // Silently continue monitoring - system may still be starting up
+    }, state.currentPollInterval);
+    
+    // Store timeout for cleanup if needed
+    if (state.active) {
+      (state as any).timeoutId = timeoutId;
     }
-  }, 3000); // Check every 3 seconds
+  };
   
-  // Stop monitoring after 2 minutes if no signal generated
-  setTimeout(() => {
-    if (monitoringActive) {
-      console.log('⏰ Monitoring timeout - generating final signal check...');
+  // Start monitoring
+  scheduleNextCheck();
+  
+  // Global timeout with proper cleanup
+  const globalTimeout: NodeJS.Timeout = setTimeout((): void => {
+    if (state.active) {
+      console.log(`⏰ Monitoring timeout after ${MONITORING_CONFIG.maxTimeoutMs / 1000}s - generating final signal check...`);
       signaler.generateReadySignal().then(() => {
         console.log('🔄 Final signal generated - check status with: npm run signal:check');
         process.exit(0);
       }).catch(() => {
         console.log('❌ Could not generate final signal');
+        console.log('🔍 Check system logs: .continuum/jtag/system/logs/npm-start.log');
         process.exit(1);
       });
-      monitoringActive = false;
+      state.active = false;
     }
-  }, 120000); // 2 minute timeout
+  }, MONITORING_CONFIG.maxTimeoutMs);
+  
+  // Cleanup on exit
+  process.on('SIGINT', () => {
+    state.active = false;
+    clearTimeout(globalTimeout);
+    if ((state as any).timeoutId) {
+      clearTimeout((state as any).timeoutId);
+    }
+  });
 }
 
 // Run the enhanced launcher

@@ -50,8 +50,7 @@ class SystemReadySignaler {
   private pidFile = path.join(this.signalDir, 'system.pid');
 
   async generateReadySignal(): Promise<SystemReadySignal> {
-    console.log('🚦 Generating system ready signal...');
-
+    // Don't log "Generating" - it's confusing since we're checking, not generating
     try {
       // Ensure signal directory exists
       await fs.mkdir(this.signalDir, { recursive: true });
@@ -65,25 +64,47 @@ class SystemReadySignaler {
       // Write PID file for system tracking
       await this.writePidFile();
       
-      console.log(`✅ System ready signal generated: ${signal.systemHealth}`);
-      console.log(`📊 Bootstrap complete: ${signal.bootstrapComplete}`);
-      console.log(`🔧 Commands discovered: ${signal.commandCount}`);
-      console.log(`🌐 Active ports: ${signal.portsActive.join(', ')}`);
+      // Only log meaningful state changes, not every check
+      const isHealthy = signal.systemHealth === 'healthy';
+      const hasBootstrap = signal.bootstrapComplete;
+      const hasCommands = signal.commandCount > 0;
+      
+      // Only log on first healthy detection or errors
+      if (isHealthy && hasBootstrap && hasCommands) {
+        console.log(`✅ System healthy: ${signal.commandCount} commands ready`);
+        console.log(`🌐 Active ports: ${signal.portsActive.join(', ')}`);
+      } else if (signal.systemHealth === 'error' && signal.errors.length > 0) {
+        // Only log errors once to avoid spam
+        const errorKey = signal.errors.join('|');
+        if (!this.lastErrorKey || this.lastErrorKey !== errorKey) {
+          console.log(`❌ System error: ${signal.errors[0]}`);
+          this.lastErrorKey = errorKey;
+        }
+      }
       
       return signal;
       
     } catch (error: any) {
-      console.error('❌ Failed to generate ready signal:', error.message);
+      console.error('❌ System check failed:', error.message);
       throw error; // Don't exit, let caller handle
     }
   }
 
+  private lastErrorKey?: string;
+
   async checkSystemReady(timeoutMs = 10000): Promise<SystemReadySignal | null> {
-    console.log('🔍 Checking system readiness...');
+    console.log(`🔍 Checking system readiness (timeout: ${timeoutMs}ms)...`);
     
     const startTime = Date.now();
+    let attemptCount = 0;
+    const maxAttempts = Math.max(5, Math.floor(timeoutMs / 2000)); // At least 5 attempts, more for longer timeouts
     
-    while (Date.now() - startTime < timeoutMs) {
+    while (Date.now() - startTime < timeoutMs && attemptCount < maxAttempts) {
+      attemptCount++;
+      const elapsed = Date.now() - startTime;
+      
+      console.log(`🔄 Attempt ${attemptCount}/${maxAttempts} (${elapsed}ms elapsed)`);
+      
       try {
         // Check if signal file exists and is recent
         const stats = await fs.stat(this.readyFile);
@@ -100,22 +121,47 @@ class SystemReadySignaler {
         const signalData = await fs.readFile(this.readyFile, 'utf-8');
         const signal: SystemReadySignal = JSON.parse(signalData);
         
-        if ((signal.systemHealth === 'healthy' || signal.systemHealth === 'degraded') && signal.bootstrapComplete) {
+        console.log(`📊 Signal status: health=${signal.systemHealth}, bootstrap=${signal.bootstrapComplete}, commands=${signal.commandCount}`);
+        
+        // Enhanced readiness check - system must be healthy AND have bootstrap complete
+        if ((signal.systemHealth === 'healthy' || signal.systemHealth === 'degraded') && 
+            signal.bootstrapComplete && 
+            signal.commandCount > 0) {
           console.log('✅ System ready signal confirmed');
           return signal;
+        } else if (signal.systemHealth === 'error') {
+          // If system is in error state, don't keep waiting indefinitely
+          console.log(`❌ System in error state: ${signal.errors?.join(', ')}`);
+          console.log('🔍 Check logs: npm run signal:logs');
+          console.log('🔧 Try restart: npm run system:restart');
+          return signal; // Return error signal so caller can handle
         } else {
-          console.log(`⚠️ System not fully ready: ${signal.systemHealth}, bootstrap: ${signal.bootstrapComplete}`);
+          console.log(`⚠️ System not fully ready: ${signal.systemHealth}, bootstrap: ${signal.bootstrapComplete}, commands: ${signal.commandCount}`);
+          if (signal.autonomousGuidance?.length) {
+            console.log('💡 Guidance:', signal.autonomousGuidance[0]);
+          }
         }
         
       } catch (error) {
-        // Signal file doesn't exist yet, keep waiting
+        // Signal file doesn't exist yet or parsing failed
+        console.log(`⚠️ No valid signal file yet (attempt ${attemptCount})`);
       }
       
-      console.log('⏳ Waiting for system ready signal...');
-      await this.sleep(2000);
+      // Avoid infinite loops with escalating sleep times and max attempts
+      const sleepTime = Math.min(2000 + (attemptCount * 500), 5000); // Start at 2s, escalate to max 5s
+      console.log(`⏳ Waiting ${sleepTime}ms before next check...`);
+      await this.sleep(sleepTime);
     }
     
-    console.log('❌ Timeout waiting for system ready signal');
+    // Timeout or max attempts reached
+    if (attemptCount >= maxAttempts) {
+      console.log(`❌ Max attempts (${maxAttempts}) reached waiting for system ready signal`);
+    } else {
+      console.log(`❌ Timeout (${timeoutMs}ms) waiting for system ready signal`);
+    }
+    
+    console.log('🔍 Check system status: npm run system:debug');
+    console.log('🔧 Try manual restart: npm run system:restart');
     return null;
   }
 
@@ -154,7 +200,7 @@ class SystemReadySignaler {
       metrics.buildStatus = await this.checkBuildStatus();
       
       // Collect any errors found
-      metrics.errors = await this.collectSystemErrors();
+      metrics.errors = await this.collectSystemErrors(metrics.bootstrapComplete, metrics.commandCount);
       
       // Generate autonomous guidance
       metrics.autonomousGuidance = this.generateAutonomousGuidance(metrics);
@@ -226,11 +272,23 @@ class SystemReadySignaler {
     try {
       // Check npm-start.log for TypeScript compilation results
       const startupLog = '.continuum/jtag/system/logs/npm-start.log';
-      const { stdout } = await execAsync(`tail -50 ${startupLog} 2>/dev/null | grep -E "(tsc|build:ts)" | tail -10 || echo ""`);
+      const { stdout } = await execAsync(`tail -100 ${startupLog} 2>/dev/null | grep -E "(tsc|build:ts|esbuild|Error|error|Could not resolve)" | tail -20 || echo ""`);
       
-      if (stdout.includes('error') || stdout.includes('Error')) {
+      // Enhanced error detection for the specific issues we experienced
+      const hasCompilationError = stdout.includes('error') || stdout.includes('Error');
+      const hasResolutionError = stdout.includes('Could not resolve');
+      const hasAliasError = stdout.includes('@commands') && stdout.includes('Could not resolve');
+      const hasBuildFailure = stdout.includes('Build failed') || stdout.includes('npm ERR!');
+      const hasEsbuildError = stdout.includes('esbuild') && (stdout.includes('error') || stdout.includes('Error'));
+      
+      if (hasCompilationError || hasResolutionError || hasAliasError || hasBuildFailure || hasEsbuildError) {
+        console.log('🚨 Compilation failure detected:');
+        if (hasResolutionError) console.log('  - Import resolution failure');
+        if (hasAliasError) console.log('  - Alias path resolution failure');
+        if (hasEsbuildError) console.log('  - ESBuild compilation failure');
+        if (hasBuildFailure) console.log('  - Build process failure');
         return 'failed';
-      } else if (stdout.includes('build:ts') && !stdout.includes('error')) {
+      } else if ((stdout.includes('build:ts') || stdout.includes('Building')) && !hasCompilationError) {
         return 'success';
       }
       return 'unknown';
@@ -277,14 +335,16 @@ class SystemReadySignaler {
     }
   }
 
-  private async collectSystemErrors(): Promise<string[]> {
+  private async collectSystemErrors(bootstrapComplete: boolean, commandCount: number): Promise<string[]> {
     const errors: string[] = [];
     
     try {
-      // Check for tmux session errors
-      const { stdout: tmuxCheck } = await execAsync(`tmux has-session -t jtag-test 2>&1 || echo "tmux session not found"`);
-      if (tmuxCheck.includes('not found')) {
-        errors.push('Tmux session jtag-test not running');
+      // Check for tmux session errors (only if system isn't working via direct process)
+      if (!bootstrapComplete || commandCount === 0) {
+        const { stdout: tmuxCheck } = await execAsync(`tmux has-session -t jtag-test 2>&1 || echo "tmux session not found"`);
+        if (tmuxCheck.includes('not found')) {
+          errors.push('Tmux session jtag-test not running - try: npm run system:start');
+        }
       }
       
       // Check for port conflicts
@@ -317,15 +377,34 @@ class SystemReadySignaler {
     try {
       // Check if TypeScript build completed successfully
       const startupLog = '.continuum/jtag/system/logs/npm-start.log';
-      const { stdout } = await execAsync(`tail -100 ${startupLog} 2>/dev/null | grep -E "(build|tsc|Build)" | tail -10 || echo ""`);
+      const { stdout } = await execAsync(`tail -150 ${startupLog} 2>/dev/null | grep -E "(build|tsc|Build|esbuild|npm run|Error|error|Could not resolve)" | tail -15 || echo ""`);
       
-      if (stdout.includes('error') || stdout.includes('Error')) {
+      // Enhanced failure detection patterns based on our recent experience
+      const hasBuildError = stdout.includes('error') || stdout.includes('Error');
+      const hasResolutionError = stdout.includes('Could not resolve');
+      const hasNpmError = stdout.includes('npm ERR!');
+      const hasEsbuildFailure = stdout.includes('esbuild') && (hasBuildError || hasResolutionError);
+      const hasExitCodeError = stdout.includes('Exit code 1') || stdout.includes('exit 1');
+      
+      // Success indicators
+      const hasBuildSuccess = stdout.includes('✅') && (stdout.includes('build') || stdout.includes('Build'));
+      const hasCompletedBuild = stdout.includes('build:ts') && !hasBuildError;
+      
+      // In-progress indicators
+      const isBuilding = stdout.includes('building') || stdout.includes('Building') || stdout.includes('Compiling');
+      
+      if (hasBuildError || hasResolutionError || hasNpmError || hasEsbuildFailure || hasExitCodeError) {
+        console.log('🚨 Build failure indicators found:');
+        if (hasResolutionError) console.log('  - Import/alias resolution failed');
+        if (hasEsbuildFailure) console.log('  - ESBuild compilation failed');
+        if (hasNpmError || hasExitCodeError) console.log('  - NPM process failed');
         return 'failed';
-      } else if (stdout.includes('✅') && (stdout.includes('build') || stdout.includes('Build'))) {
+      } else if (hasBuildSuccess || hasCompletedBuild) {
         return 'success';
-      } else if (stdout.includes('building') || stdout.includes('Building')) {
+      } else if (isBuilding) {
         return 'in-progress';
       }
+      
       return 'unknown';
     } catch {
       return 'unknown';
@@ -391,6 +470,10 @@ class SystemReadySignaler {
   }
 
   private async writeSignalFile(signal: SystemReadySignal): Promise<void> {
+    // Ensure directory exists before atomic write
+    const dir = path.dirname(this.readyFile);
+    await fs.mkdir(dir, { recursive: true });
+    
     const tempFile = `${this.readyFile}.tmp`;
     await fs.writeFile(tempFile, JSON.stringify(signal, null, 2));
     await fs.rename(tempFile, this.readyFile);

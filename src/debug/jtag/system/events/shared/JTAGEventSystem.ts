@@ -64,18 +64,18 @@ export interface EventStream<T extends JTAGEventName> {
 }
 
 export interface EventsInterface {
-  emit(eventName: string, data?: any): void;
-  on(eventName: string, listener: (data?: any) => void): () => void;
-  waitFor?(eventName: string, timeout?: number): Promise<any>;
+  emit(eventName: string, data?: JTAGEventData[JTAGEventName]): void;
+  on(eventName: string, listener: (data?: JTAGEventData[JTAGEventName]) => void): () => void;
+  waitFor?(eventName: string, timeout?: number): Promise<JTAGEventData[JTAGEventName]>;
 }
 
 export class EventManager {
 
-  public listeners = new Map<string, Array<(data?: any) => void>>();
+  public listeners = new Map<string, Array<(data?: JTAGEventData[JTAGEventName]) => void>>();
 
   get events(): EventsInterface {
       return {
-        emit: (eventName: string, data?: any): void => { // TODO: any is bad
+        emit: (eventName: string, data?: JTAGEventData[JTAGEventName]): void => {
           const listeners = this.listeners.get(eventName) ?? [];
           listeners.forEach(listener => {
             try {
@@ -86,7 +86,7 @@ export class EventManager {
           });
         },
 
-        on: (eventName: string, listener: (data?: any) => void): (() => void) => { // TODO: any is bad
+        on: (eventName: string, listener: (data?: JTAGEventData[JTAGEventName]) => void): (() => void) => {
           if (!this.listeners.has(eventName)) {
             this.listeners.set(eventName, []);
           }
@@ -104,7 +104,7 @@ export class EventManager {
           };
         },
 
-        waitFor: async (eventName: string, timeout: number = 10000): Promise<any> => { // TODO: any is bad
+        waitFor: async (eventName: string, timeout: number = 10000): Promise<JTAGEventData[JTAGEventName]> => {
           return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
               unsubscribe();
@@ -114,7 +114,7 @@ export class EventManager {
             const unsubscribe = this.events.on(eventName, (data) => {
               clearTimeout(timer);
               unsubscribe();
-              resolve(data);
+              resolve(data as JTAGEventData[JTAGEventName]);
             });
           });
         }

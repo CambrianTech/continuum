@@ -320,7 +320,11 @@ export class JTAGRouterDynamic extends JTAGRouter {
       // This handles all the complex routing, correlation, response handling, etc.
       const routerResult = await super.postMessage(message);
       
-      console.log(`✅ JTAGRouterDynamic: Successfully routed ${message.endpoint} via base router`);
+      // Throttle verbose console routing messages to avoid spam
+      const isConsoleRoute = message.endpoint?.includes('console');
+      if (!isConsoleRoute) {
+        console.log(`✅ JTAGRouterDynamic: Successfully routed ${message.endpoint} via base router`);
+      }
       
       // Extract response from RouterResult union type (same pattern as base router)
       if ('response' in routerResult && routerResult.response) {

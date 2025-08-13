@@ -321,12 +321,39 @@ export abstract class ConsoleDaemon extends DaemonBase {
   }
 
   /**
+   * Properly serialize console arguments, especially Error objects
+   * Fixes the critical bug where Error objects serialized to "{}"
+   */
+  private serializeArgument(arg: unknown): string {
+    if (arg instanceof Error) {
+      // Properly serialize Error objects with message and stack
+      const errorInfo = {
+        name: arg.name,
+        message: arg.message,
+        stack: arg.stack
+      };
+      return `${arg.toString()}\n${arg.stack || 'No stack trace available'}`;
+    } else if (typeof arg === 'object' && arg !== null) {
+      try {
+        // Handle regular objects with JSON.stringify
+        return JSON.stringify(arg, null, 2);
+      } catch (error) {
+        // Fallback for circular references or non-serializable objects
+        return `[Object: ${Object.prototype.toString.call(arg)}]`;
+      }
+    } else {
+      // Handle primitives
+      return String(arg);
+    }
+  }
+
+  /**
    * Process raw console call arguments into ConsolePayload
    * Shared logic for parsing and creating payload
    */
   protected processConsoleCall(level: LogLevel, args: unknown[]): void {
     const message = args.map(arg => 
-      typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+      this.serializeArgument(arg)
     ).join(' ');
 
     // Skip only internal daemon messages that cause infinite loops - be surgical!

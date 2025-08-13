@@ -137,7 +137,7 @@ export class JTAGSystemServer extends JTAGSystem {
       version: '1.0.0',
       context,
       timestamp: new Date().toISOString(),
-      components: Array.from(system.daemons.keys())
+      components: system.daemons.map(d => d.name)
     });
     console.log(`🎉 JTAG System: System ready event emitted`);
 
