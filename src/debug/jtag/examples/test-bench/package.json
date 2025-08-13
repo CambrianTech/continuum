@@ -7,9 +7,9 @@
     "port": 9002
   },
   "scripts": {
-    "start": "npm run clean:ports && npm run build && npm run dev",
+    "start": "npm run build && npm run dev",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
-    "clean:ports": "lsof -ti:9002 | xargs kill -9 2>/dev/null || true",
+    "clean:ports": "npx tsx ../../scripts/cleanup-dynamic-ports.ts",
     "clean:modules": "rm -rf node_modules/@continuum 2>/dev/null || true",
     "clean:all": "npm run clean:ports && npm run clean:dist && npm run clean:modules",
     "build": "npm run build:server && npm run build:browser",
@@ -19,7 +19,7 @@
     "dev": "npx tsx src/minimal-server.ts"
   },
   "dependencies": {
-    "@continuum/jtag": "file:../../continuum-jtag-1.0.780.tgz"
+    "@continuum/jtag": "file:../../continuum-jtag-1.0.797.tgz"
   },
   "devDependencies": {
     "esbuild": "^0.19.12",

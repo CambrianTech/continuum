@@ -13,6 +13,7 @@ import type { AdapterEntry } from '../shared/TransportBase';
 import type { WebSocketBrowserConfig } from '../websocket-transport/browser/WebSocketTransportClientBrowser';
 import type { UDPMulticastConfig } from '../udp-multicast-transport/shared/UDPMulticastTypes';
 import { NodeType, NodeCapability } from '../udp-multicast-transport/shared/UDPMulticastTypes';
+import { getSystemConfig } from '../../core/config/SystemConfiguration';
 
 export class TransportFactoryBrowser extends TransportFactoryBase {
   
@@ -57,7 +58,8 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
     // ✅ Type-safe connection - handle different connection patterns
     if (adapter.connect) {
       // New adapter pattern with connect() method (use URL for WebSocket)
-      const connectParam = config.protocol === 'websocket' ? config.serverUrl || `ws://localhost:${config.serverPort || 9001}` : undefined;
+      const systemConfig = getSystemConfig();
+      const connectParam = config.protocol === 'websocket' ? config.serverUrl || systemConfig.getWebSocketUrl() : undefined;
       await adapter.connect(connectParam);
     } else {
       // Legacy transport pattern - already connected in constructor
@@ -71,10 +73,12 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
    * Create adapter-specific configuration from generic TransportConfig
    */
   private createAdapterConfig(config: TransportConfig, adapterEntry: AdapterEntry): WebSocketBrowserConfig | UDPMulticastConfig | TransportConfig {
+    const systemConfig = getSystemConfig();
+    
     if (config.protocol === 'websocket' && adapterEntry.className === 'WebSocketTransportBrowser') {
       // WebSocketBrowserConfig requires specific format
       const webSocketConfig: WebSocketBrowserConfig = {
-        url: config.serverUrl || `ws://localhost:${config.serverPort || 9001}`,
+        url: config.serverUrl || systemConfig.getWebSocketUrl(),
         handler: config.handler,
         eventSystem: config.eventSystem,
         // WebSocket-specific options

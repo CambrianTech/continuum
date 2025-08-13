@@ -12,6 +12,7 @@ import { TransportConfigHelper } from '../shared/TransportConfig';
 import { WebSocketTransportClientBrowser } from '../../transports/websocket-transport/browser/WebSocketTransportClientBrowser';
 // Update the import path below if the actual location is different
 import { HTTPTransport } from '../../transports/http-transport/shared/HTTPTransport';
+import { getSystemConfig } from '../../core/config/SystemConfiguration';
 
 export class TransportFactoryBrowser implements ITransportFactory {
   /**
@@ -52,7 +53,12 @@ export class TransportFactoryBrowser implements ITransportFactory {
     environment: JTAGContext['environment'],
     config: TransportConfig
   ): Promise<JTAGTransport> {
-    const { role, serverPort = 9001, serverUrl, handler } = config;
+    const systemConfig = getSystemConfig();
+    const { role, handler } = config;
+    
+    // Use system configuration for ports and URLs
+    const serverPort = config.serverPort || systemConfig.getWebSocketPort();
+    const serverUrl = config.serverUrl || systemConfig.getWebSocketUrl();
 
     console.log(`🔗 WebSocket Browser Factory: Creating ${role} transport in ${environment} environment`);
 
@@ -75,7 +81,8 @@ export class TransportFactoryBrowser implements ITransportFactory {
    * Create HTTP transport
    */
   private async createHTTPTransport(config: TransportConfig): Promise<JTAGTransport> {
-    const baseUrl = config.serverUrl ?? 'http://localhost:9002';
+    const systemConfig = getSystemConfig();
+    const baseUrl = config.serverUrl ?? systemConfig.getHTTPUrl();
     const transport = new HTTPTransport(baseUrl);
     console.log(`✅ Browser Transport Factory: HTTP transport created`);
     return transport;

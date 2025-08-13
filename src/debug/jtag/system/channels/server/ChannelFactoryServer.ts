@@ -12,6 +12,7 @@ import { TransportConfigHelper } from '../shared/TransportConfig';
 import { WebSocketTransportServer } from '../websocket-transport/server/WebSocketTransportServer';
 import { WebSocketTransportClientServer } from '../websocket-transport/server/WebSocketTransportClientServer';
 import { HTTPTransport } from '../http-transport/shared/HTTPTransport';
+import { getSystemConfig } from '../../core/config/SystemConfiguration';
 
 export class TransportFactoryServer implements ITransportFactory {
   /**
@@ -52,9 +53,14 @@ export class TransportFactoryServer implements ITransportFactory {
     environment: JTAGContext['environment'],
     config: TransportConfig
   ): Promise<JTAGTransport> {
-    const { role, serverPort = 9001, serverUrl, handler, eventSystem } = config;
+    const systemConfig = getSystemConfig();
+    const { role, handler, eventSystem } = config;
+    
+    // Use system configuration for ports and URLs
+    const serverPort = config.serverPort || systemConfig.getWebSocketPort();
+    const serverUrl = config.serverUrl || systemConfig.getWebSocketUrl();
 
-    console.log(`🔗 WebSocket Server Factory: Creating ${role} transport in ${environment} environment`);
+    console.log(`🔗 WebSocket Server Factory: Creating ${role} transport in ${environment} environment (port: ${serverPort})`);
 
     if (role === 'server') {
       if (environment === 'browser') {
@@ -75,7 +81,7 @@ export class TransportFactoryServer implements ITransportFactory {
       }
 
       // Create Node.js WebSocket client for server environment (CLI, server-to-server)
-      const url = serverUrl || `ws://localhost:${serverPort}`;
+      const url = serverUrl;
       
       if (!handler) {
         throw new Error('WebSocket client transport requires handler configuration');
@@ -98,7 +104,8 @@ export class TransportFactoryServer implements ITransportFactory {
    * Create HTTP transport
    */
   private async createHTTPTransport(config: TransportConfig): Promise<JTAGTransport> {
-    const baseUrl = config.serverUrl || 'http://localhost:9002';
+    const systemConfig = getSystemConfig();
+    const baseUrl = config.serverUrl || systemConfig.getHTTPUrl();
     const transport = new HTTPTransport(baseUrl);
     console.log(`✅ Server Transport Factory: HTTP transport created`);
     return transport;

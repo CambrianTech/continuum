@@ -64,13 +64,13 @@ export async function testCommandCrossEnvironment(
     try {
       // Connect to the target environment
       const { jtag } = await import('../../../server-index');
-      const connectionResult = await jtag.connect({ targetEnvironment: environment });
+      const client = await jtag.connect({ targetEnvironment: environment });
       
-      const connectionInfo = connectionResult.client.getConnectionInfo();
+      const connectionInfo = client.getConnectionInfo();
       
       // Execute command in this environment
       const { result, executionTime } = await testClientCommandExecution(
-        connectionResult.client,
+        client,
         config.commandName,
         config.testParams || {},
         config.performanceThresholdMs || 10000

@@ -70,6 +70,54 @@ export class JTAGSystemServer extends JTAGSystem {
   }
 
   /**
+   * Register this JTAG system process in the ProcessRegistry
+   * This prevents false positives during cleanup operations
+   */
+  private async registerSystemProcess(): Promise<void> {
+    try {
+      // Create ProcessRegistryServerCommand directly (same pattern as cleanup script)
+      const { ProcessRegistryServerCommand } = await import('../../../../commands/process-registry/server/ProcessRegistryServerCommand');
+      
+      // Create mock commander for direct command usage
+      const mockCommander = {
+        subpath: 'system-registration',
+        router: null as any,
+        commands: new Map()
+      };
+
+      // Create the process registry server command
+      const processRegistryCommand = new ProcessRegistryServerCommand(this.context, 'process-registry', mockCommander);
+
+      // Register this process 
+      const result = await processRegistryCommand.registerProcess({
+        context: this.context,
+        sessionId: 'system-registration' as any,
+        processType: 'server',
+        description: `JTAG System Server (${this.context.uuid})`,
+        capabilities: [
+          'websocket-server',
+          'command-execution', 
+          'file-operations',
+          'console-logging',
+          'screenshot',
+          'browser-automation'
+        ],
+        ports: [] // Will be auto-detected by command
+      });
+
+      if (result.success) {
+        console.log(`🏷️  JTAG System: Process registered in registry as ${result.processId}`);
+      } else {
+        console.warn(`⚠️  JTAG System: Process registration failed - cleanup may have false positives`);
+        console.warn(`   Error: ${result.error}`);
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.warn(`⚠️  JTAG System: Process registration error: ${errorMsg}`);
+    }
+  }
+
+  /**
    * Connect and auto-wire the server JTAG system
    */
   static async connect(config?: JTAGSystemConfig): Promise<JTAGSystemServer> {
@@ -127,6 +175,9 @@ export class JTAGSystemServer extends JTAGSystem {
     console.log(`🔗 JTAG System: Transport ready event emitted`);
 
     JTAGSystemServer.instance = system;
+
+    // 7. Register this process in the ProcessRegistry to prevent cleanup false positives
+    await system.registerSystemProcess();
     
     console.log(`✅ JTAG System: Connected server successfully`);
     console.log(`   Context UUID: ${context.uuid}`);
