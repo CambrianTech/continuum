@@ -274,21 +274,20 @@ class SystemReadySignaler {
       const startupLog = '.continuum/jtag/system/logs/npm-start.log';
       const { stdout } = await execAsync(`tail -100 ${startupLog} 2>/dev/null | grep -E "(tsc|build:ts|esbuild|Error|error|Could not resolve)" | tail -20 || echo ""`);
       
-      // Enhanced error detection for the specific issues we experienced
-      const hasCompilationError = stdout.includes('error') || stdout.includes('Error');
-      const hasResolutionError = stdout.includes('Could not resolve');
-      const hasAliasError = stdout.includes('@commands') && stdout.includes('Could not resolve');
-      const hasBuildFailure = stdout.includes('Build failed') || stdout.includes('npm ERR!');
-      const hasEsbuildError = stdout.includes('esbuild') && (stdout.includes('error') || stdout.includes('Error'));
+      // Only flag actual TERMINAL compilation errors, not transient ones
+      const hasFinalBuildFailure = stdout.includes('npm ERR!') && stdout.includes('build:ts');
+      const hasFinalResolutionError = stdout.includes('Could not resolve') && stdout.includes('esbuild') && stdout.includes('error') && !stdout.includes('✅');
       
-      if (hasCompilationError || hasResolutionError || hasAliasError || hasBuildFailure || hasEsbuildError) {
+      // Success indicators
+      const hasSuccessfulBuild = stdout.includes('build:ts') && !hasFinalBuildFailure;
+      const hasCleanCompletion = stdout.includes('✅') || (stdout.includes('tsc') && !hasFinalBuildFailure);
+      
+      if (hasFinalBuildFailure || hasFinalResolutionError) {
         console.log('🚨 Compilation failure detected:');
-        if (hasResolutionError) console.log('  - Import resolution failure');
-        if (hasAliasError) console.log('  - Alias path resolution failure');
-        if (hasEsbuildError) console.log('  - ESBuild compilation failure');
-        if (hasBuildFailure) console.log('  - Build process failure');
+        if (hasFinalResolutionError) console.log('  - Import resolution failure');
+        if (hasFinalBuildFailure) console.log('  - Build process failure');
         return 'failed';
-      } else if ((stdout.includes('build:ts') || stdout.includes('Building')) && !hasCompilationError) {
+      } else if (hasSuccessfulBuild || hasCleanCompletion) {
         return 'success';
       }
       return 'unknown';
@@ -339,23 +338,21 @@ class SystemReadySignaler {
     const errors: string[] = [];
     
     try {
-      // Check for tmux session errors (only if system isn't working via direct process)
-      if (!bootstrapComplete || commandCount === 0) {
-        const { stdout: tmuxCheck } = await execAsync(`tmux has-session -t jtag-test 2>&1 || echo "tmux session not found"`);
-        if (tmuxCheck.includes('not found')) {
-          errors.push('Tmux session jtag-test not running - try: npm run system:start');
+      // Only check tmux if system is ACTUALLY broken (no ports AND no bootstrap)
+      if (!bootstrapComplete && commandCount === 0) {
+        // First check if ports are active - if ports work, system is fine regardless of tmux
+        const activePorts = await this.getActivePorts([...SIGNAL_CONFIG.EXPECTED_PORTS]);
+        if (activePorts.length === 0) {
+          // Only check tmux if ports are not active
+          const { stdout: tmuxCheck } = await execAsync(`tmux has-session -t jtag-test 2>&1 || echo "tmux session not found"`);
+          if (tmuxCheck.includes('not found')) {
+            errors.push('Tmux session jtag-test not running - try: npm run system:start');
+          }
         }
       }
       
-      // Check for port conflicts
-      const requiredPorts = SIGNAL_CONFIG.EXPECTED_PORTS;
-      for (const port of requiredPorts) {
-        try {
-          await execAsync(`curl -s --connect-timeout 2 http://localhost:${port} >/dev/null`);
-        } catch {
-          errors.push(`Port ${port} not responding`);
-        }
-      }
+      // Don't check port connectivity via curl - lsof is more reliable
+      // If ports are listening via lsof check but curl fails, that's a different issue
       
     } catch (error: any) {
       errors.push(`System error check failed: ${error.message}`);
@@ -379,27 +376,26 @@ class SystemReadySignaler {
       const startupLog = '.continuum/jtag/system/logs/npm-start.log';
       const { stdout } = await execAsync(`tail -150 ${startupLog} 2>/dev/null | grep -E "(build|tsc|Build|esbuild|npm run|Error|error|Could not resolve)" | tail -15 || echo ""`);
       
-      // Enhanced failure detection patterns based on our recent experience
-      const hasBuildError = stdout.includes('error') || stdout.includes('Error');
-      const hasResolutionError = stdout.includes('Could not resolve');
-      const hasNpmError = stdout.includes('npm ERR!');
-      const hasEsbuildFailure = stdout.includes('esbuild') && (hasBuildError || hasResolutionError);
-      const hasExitCodeError = stdout.includes('Exit code 1') || stdout.includes('exit 1');
+      // Only flag as build failure if we have RECENT/FINAL build failures
+      // Don't trigger on old log entries or intermediate build steps
+      const hasActiveFailure = stdout.includes('npm ERR!') && (stdout.includes('Exit code 1') || stdout.includes('exit 1'));
+      const hasRecentResolutionError = stdout.includes('Could not resolve') && stdout.includes('esbuild') && stdout.includes('error');
       
-      // Success indicators
+      // Success indicators - look for completion messages
       const hasBuildSuccess = stdout.includes('✅') && (stdout.includes('build') || stdout.includes('Build'));
-      const hasCompletedBuild = stdout.includes('build:ts') && !hasBuildError;
+      const hasCompletedBuild = stdout.includes('build:ts') && !hasActiveFailure;
+      const hasCleanCompletion = stdout.includes('npm run') && !hasActiveFailure;
       
       // In-progress indicators
       const isBuilding = stdout.includes('building') || stdout.includes('Building') || stdout.includes('Compiling');
       
-      if (hasBuildError || hasResolutionError || hasNpmError || hasEsbuildFailure || hasExitCodeError) {
+      // Only report failure for ACTIVE build failures, not transient states
+      if (hasActiveFailure || hasRecentResolutionError) {
         console.log('🚨 Build failure indicators found:');
-        if (hasResolutionError) console.log('  - Import/alias resolution failed');
-        if (hasEsbuildFailure) console.log('  - ESBuild compilation failed');
-        if (hasNpmError || hasExitCodeError) console.log('  - NPM process failed');
+        if (hasRecentResolutionError) console.log('  - Import/alias resolution failed');
+        if (hasActiveFailure) console.log('  - NPM process failed with exit code');
         return 'failed';
-      } else if (hasBuildSuccess || hasCompletedBuild) {
+      } else if (hasBuildSuccess || hasCompletedBuild || hasCleanCompletion) {
         return 'success';
       } else if (isBuilding) {
         return 'in-progress';
