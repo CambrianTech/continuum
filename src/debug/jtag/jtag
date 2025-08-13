@@ -1,21 +1,33 @@
 #!/bin/bash
 # JTAG Terminal Portal - Ensures system is running and connects CLI
 
-# Use smart system startup script for consistent behavior
+# Use intelligent signal-based startup for foolproof operation
 if [[ "$*" == *"--restart"* ]]; then
   echo "🔄 Restart requested..."
-  npx tsx scripts/smart-system-startup.ts --force
+  npm run system:stop
+  echo "🚀 Starting system (browser will launch)..."
+  npm run system:start &
+  echo "⏳ Waiting for intelligent system ready signal..."
+  npm run signal:wait
 else
   echo "🔍 Ensuring JTAG system is running..."
-  npx tsx scripts/smart-system-startup.ts
+  # Check if already running first
+  if npm run signal:check >/dev/null 2>&1; then
+    echo "✅ System already ready"
+  else
+    echo "🚀 Starting system (browser will launch)..."
+    npm run system:start &
+    echo "⏳ Waiting for intelligent system ready signal..."
+    npm run signal:wait
+  fi
 fi
 
-# Check if startup was successful
-if [ $? -eq 0 ]; then
+# Verify system is truly ready before CLI execution
+if npm run signal:check >/dev/null 2>&1; then
   echo "✅ JTAG system ready"
   # Forward all args to CLI
   npx tsx cli.ts "$@"
 else
-  echo "❌ Failed to start JTAG system"
+  echo "❌ System not ready - check: npm run signal:errors"
   exit 1
 fi
