@@ -16,7 +16,7 @@ export const jtag = {
     
     const connectionResult = await JTAGClientServer.connectRemote({ 
       targetEnvironment: targetEnv,
-      sessionId: SYSTEM_SCOPES.SYSTEM // System default session
+      sessionId: SYSTEM_SCOPES.UNKNOWN_SESSION // Let session daemon assign currentUser session
     });
     
     console.log(`✅ Server: JTAGClient connected with ${connectionResult.listResult.totalCount} commands`);
