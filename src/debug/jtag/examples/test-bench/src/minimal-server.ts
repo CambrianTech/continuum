@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 // Import unified JTAG system from npm module
 import { jtag, JTAGSystem } from '@continuum/jtag';
+// Process registry functionality now handled via modular command system
 
 // Read port from package.json config
 const packageJson = require('../package.json');
@@ -156,6 +157,9 @@ class MinimalServer {
 
   async start(): Promise<void> {
     console.log('🚀 Starting test-bench demo server...');
+    
+    // Process registration will be handled automatically by the JTAG system
+    console.log('🏷️  Process registration will be handled by JTAG system startup...');
     
     // Start the full JTAG system (this will start WebSocket server on port 9001)
     console.log('🔄 Initializing full JTAG system...');

@@ -113,6 +113,7 @@ import type { ITransportHandler } from '../../../transports';
 import type { ListParams, ListResult, CommandSignature } from '../../../../commands/list/shared/ListTypes';
 import { createListParams } from '../../../../commands/list/shared/ListTypes';
 import type { BaseResponsePayload, JTAGResponsePayload } from '../../types/ResponseTypes';
+import { getSystemConfig } from '../../config/SystemConfiguration';
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import { JTAG_BOOTSTRAP_MESSAGES } from './JTAGClientConstants';
@@ -204,6 +205,13 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   constructor(context: JTAGContext) {
     super('jtag-client', context);
     this.transportId = generateUUID();
+  }
+
+  /**
+   * Get system configuration
+   */
+  protected getSystemConfig() {
+    return getSystemConfig();
   }
   
   /**
@@ -299,8 +307,8 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
         role: 'client',
         eventSystem: this.eventManager.events,
         sessionId: this.sessionId,
-        serverPort: options?.serverPort ?? 9001,
-        serverUrl: options?.serverUrl ?? `ws://localhost:${options?.serverPort ?? 9001}`,
+        serverPort: options?.serverPort ?? this.getSystemConfig().getWebSocketPort(),
+        serverUrl: options?.serverUrl ?? this.getSystemConfig().getWebSocketUrl(),
         fallback: options?.enableFallback ?? true,
         handler: this
       };

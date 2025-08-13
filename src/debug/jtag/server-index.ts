@@ -10,7 +10,7 @@ import { SYSTEM_SCOPES } from './system/core/types/SystemScopes';
 
 export const jtag = {
   // Universal client interface - allows targeting different environments
-  async connect(options?: { targetEnvironment?: 'server' | 'browser' }): Promise<Awaited<ReturnType<typeof JTAGClientServer.connectRemote>>> {
+  async connect(options?: { targetEnvironment?: 'server' | 'browser' }): Promise<JTAGClientServer> {
     const targetEnv = options?.targetEnvironment ?? 'server';
     console.log(`🔌 Server: Connecting via JTAGClientServer (target: ${targetEnv})`);
     
@@ -20,7 +20,9 @@ export const jtag = {
     });
     
     console.log(`✅ Server: JTAGClient connected with ${connectionResult.listResult.totalCount} commands`);
-    return connectionResult;
+    
+    // Return the client with commands interface, not the full connection result
+    return connectionResult.client;
   },
 
   // Legacy: Full system access (for advanced usage)

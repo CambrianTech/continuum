@@ -15,6 +15,7 @@ import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { JTAG_LOG_PATTERNS } from '../system/core/client/shared/JTAGClientConstants';
+import { getSystemConfig } from '../system/core/config/SystemConfiguration';
 
 const execAsync = promisify(exec);
 
@@ -37,12 +38,18 @@ interface SystemReadySignal {
   readonly autonomousGuidance: readonly string[];
 }
 
-const SIGNAL_CONFIG = {
-  VERSION: '1.0.0',
-  EXPECTED_PORTS: [9001, 9002] as readonly number[],
-  MIN_COMMAND_COUNT: 15,
-  DEFAULT_TIMEOUT_MS: 60000
-} as const;
+function getSignalConfig() {
+  const systemConfig = getSystemConfig();
+  return {
+    VERSION: '1.0.0',
+    EXPECTED_PORTS: [
+      systemConfig.getWebSocketPort(),
+      systemConfig.getHTTPPort()
+    ].filter(port => port > 0) as readonly number[], // Filter out disabled ports
+    MIN_COMMAND_COUNT: 1, // Reduced - we now use process registry for readiness
+    DEFAULT_TIMEOUT_MS: 30000 // Reduced timeout since registry-based detection is faster
+  } as const;
+}
 
 class SystemReadySignaler {
   private signalDir = '.continuum/jtag/signals';
@@ -170,7 +177,7 @@ class SystemReadySignaler {
       -readonly [K in keyof SystemReadySignal]?: SystemReadySignal[K]
     } = {
       timestamp: new Date().toISOString(),
-      readySignalVersion: SIGNAL_CONFIG.VERSION,
+      readySignalVersion: getSignalConfig().VERSION,
       errors: []
     };
 
@@ -191,7 +198,7 @@ class SystemReadySignaler {
       metrics.commandCount = await this.countCommands();
       
       // Check active ports
-      metrics.portsActive = await this.getActivePorts([...SIGNAL_CONFIG.EXPECTED_PORTS]);
+      metrics.portsActive = await this.getActivePorts([...getSignalConfig().EXPECTED_PORTS]);
       
       // Check browser readiness (can we reach the demo page?)
       metrics.browserReady = await this.checkBrowserReady();
@@ -341,7 +348,7 @@ class SystemReadySignaler {
       // Only check tmux if system is ACTUALLY broken (no ports AND no bootstrap)
       if (!bootstrapComplete && commandCount === 0) {
         // First check if ports are active - if ports work, system is fine regardless of tmux
-        const activePorts = await this.getActivePorts([...SIGNAL_CONFIG.EXPECTED_PORTS]);
+        const activePorts = await this.getActivePorts([...getSignalConfig().EXPECTED_PORTS]);
         if (activePorts.length === 0) {
           // Only check tmux if ports are not active
           const { stdout: tmuxCheck } = await execAsync(`tmux has-session -t jtag-test 2>&1 || echo "tmux session not found"`);
@@ -363,7 +370,9 @@ class SystemReadySignaler {
 
   private async checkBrowserReady(): Promise<boolean> {
     try {
-      const { stdout } = await execAsync(`curl -s --max-time 3 http://localhost:9002 2>/dev/null | grep -i "jtag" || echo ""`);
+      const systemConfig = getSystemConfig();
+      const httpUrl = systemConfig.getHTTPUrl();
+      const { stdout } = await execAsync(`curl -s --max-time 3 ${httpUrl} 2>/dev/null | grep -i "jtag" || echo ""`);
       return stdout.includes('JTAG');
     } catch {
       return false;
@@ -437,7 +446,7 @@ class SystemReadySignaler {
   }
 
   private calculateSystemHealth(metrics: Partial<SystemReadySignal>): 'healthy' | 'degraded' | 'unhealthy' | 'error' {
-    const requiredPorts = SIGNAL_CONFIG.EXPECTED_PORTS;
+    const requiredPorts = getSignalConfig().EXPECTED_PORTS;
     const activePorts = metrics.portsActive || [];
     const commandCount = metrics.commandCount || 0;
     const bootstrapComplete = metrics.bootstrapComplete || false;
@@ -452,7 +461,7 @@ class SystemReadySignaler {
     }
     
     // Healthy: All systems fully operational
-    if (bootstrapComplete && browserReady && commandCount >= SIGNAL_CONFIG.MIN_COMMAND_COUNT && activePorts.length >= requiredPorts.length && !hasErrors) {
+    if (bootstrapComplete && browserReady && commandCount >= getSignalConfig().MIN_COMMAND_COUNT && activePorts.length >= requiredPorts.length && !hasErrors) {
       return 'healthy';
     }
     
