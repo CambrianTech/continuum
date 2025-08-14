@@ -12,6 +12,17 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import { JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { ChatDaemon, CHAT_EVENTS, type ChatMessage, type ChatCitizen } from '../shared/ChatDaemon';
+import type { 
+  ChatMessageEventData, 
+  ChatCitizenJoinedEventData, 
+  ChatCitizenLeftEventData, 
+  ChatAIResponseEventData,
+  ChatListRoomsResponse,
+  ChatJoinRoomResponse,
+  ChatSendMessageResponse,
+  ChatErrorResponse,
+  ParticipantUpdateData
+} from '../shared/ChatTypes';
 
 export class ChatDaemonBrowser extends ChatDaemon {
   private chatContainer: HTMLElement | null = null;
@@ -40,27 +51,27 @@ export class ChatDaemonBrowser extends ChatDaemon {
    */
   private setupEventListeners(): void {
     // Listen for messages in subscribed rooms
-    this.eventManager.events.on(CHAT_EVENTS.MESSAGE_SENT, (data: any) => {
+    this.eventManager.events.on(CHAT_EVENTS.MESSAGE_SENT, (data: ChatMessageEventData) => {
       if (data.message && this.isSubscribedToRoom(data.message.roomId)) {
         this.displayNewMessage(data.message);
       }
     });
 
     // Listen for citizens joining/leaving
-    this.eventManager.events.on(CHAT_EVENTS.CITIZEN_JOINED, (data: any) => {
+    this.eventManager.events.on(CHAT_EVENTS.CITIZEN_JOINED, (data: ChatCitizenJoinedEventData) => {
       if (this.isSubscribedToRoom(data.roomId)) {
-        this.updateParticipantList(data);
+        this.updateParticipantListFromJoinEvent(data);
       }
     });
 
-    this.eventManager.events.on(CHAT_EVENTS.CITIZEN_LEFT, (data: any) => {
+    this.eventManager.events.on(CHAT_EVENTS.CITIZEN_LEFT, (data: ChatCitizenLeftEventData) => {
       if (this.isSubscribedToRoom(data.roomId)) {
-        this.updateParticipantList(data);
+        this.updateParticipantListFromLeaveEvent(data);
       }
     });
 
     // Listen for AI responses
-    this.eventManager.events.on(CHAT_EVENTS.AI_RESPONSE, (data: any) => {
+    this.eventManager.events.on(CHAT_EVENTS.AI_RESPONSE, (data: ChatAIResponseEventData) => {
       if (data.message && this.isSubscribedToRoom(data.message.roomId)) {
         this.displayAIResponse(data.message);
       }
@@ -345,14 +356,14 @@ export class ChatDaemonBrowser extends ChatDaemon {
         `list-rooms-${Date.now()}`
       );
       const response = await this.router.postMessage(message);
-      const responsePayload = response as any;
+      const responsePayload = response as ChatListRoomsResponse;
 
       const roomSelect = document.getElementById('room-select') as HTMLSelectElement;
       if (roomSelect && responsePayload.success && responsePayload.rooms) {
         // Clear existing options except first
         roomSelect.innerHTML = '<option value="">Select Room...</option>';
         
-        responsePayload.rooms.forEach((room: any) => {
+        responsePayload.rooms.forEach((room) => {
           const option = document.createElement('option');
           option.value = room.roomId;
           option.textContent = `${room.name} (${room.participantCount} participants)`;
@@ -398,7 +409,7 @@ export class ChatDaemonBrowser extends ChatDaemon {
         `join-room-${Date.now()}`
       );
       const response = await this.router.postMessage(message);
-      const responsePayload = response as any;
+      const responsePayload = response as ChatJoinRoomResponse | ChatErrorResponse;
 
       if (responsePayload.success) {
         this.currentRoomId = responsePayload.roomId;
@@ -422,7 +433,7 @@ export class ChatDaemonBrowser extends ChatDaemon {
 
         console.log(`✅ Joined room ${responsePayload.roomName} as ${citizenName}`);
       } else {
-        alert(`Failed to join room: ${responsePayload.error}`);
+        alert(`Failed to join room: ${responsePayload.error || 'Unknown error'}`);
       }
     } catch (error) {
       console.error('Failed to join room:', error);
@@ -459,12 +470,12 @@ export class ChatDaemonBrowser extends ChatDaemon {
         `send-message-${Date.now()}`
       );
       const response = await this.router.postMessage(message);
-      const responsePayload = response as any;
+      const responsePayload = response as ChatSendMessageResponse | ChatErrorResponse;
 
       if (responsePayload.success) {
         messageInput.value = ''; // Clear input
       } else {
-        alert(`Failed to send message: ${responsePayload.error}`);
+        alert(`Failed to send message: ${responsePayload.error || 'Unknown error'}`);
       }
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -538,11 +549,30 @@ export class ChatDaemonBrowser extends ChatDaemon {
   }
 
   /**
-   * Update participant list
+   * Update participant list from join event
    */
-  private updateParticipantList(data: any): void {
-    // For now, just log the change
-    console.log(`👥 Participant update:`, data);
+  private updateParticipantListFromJoinEvent(data: ChatCitizenJoinedEventData): void {
+    console.log(`👥 Participant joined:`, data.citizen.displayName);
+    
+    // TODO: Update actual participant list in UI
+    // This would require tracking participants and updating the display
+  }
+
+  /**
+   * Update participant list from leave event
+   */
+  private updateParticipantListFromLeaveEvent(data: ChatCitizenLeftEventData): void {
+    console.log(`👥 Participant left:`, data.displayName);
+    
+    // TODO: Update actual participant list in UI
+    // This would require tracking participants and updating the display
+  }
+
+  /**
+   * Update participant list with full participant data
+   */
+  private updateParticipantList(data: ParticipantUpdateData): void {
+    console.log(`👥 Participant list update for room ${data.roomId}:`, data.participants);
     
     // TODO: Update actual participant list in UI
     // This would require tracking participants and updating the display

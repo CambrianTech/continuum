@@ -11,6 +11,7 @@
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { ChatDaemon, type ChatCitizen, type ChatMessage, type ChatRoom } from '../shared/ChatDaemon';
+import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
 
 export class ChatDaemonServer extends ChatDaemon {
   private messageStore: Map<string, ChatMessage[]> = new Map();
@@ -354,8 +355,17 @@ export class ChatDaemonServer extends ChatDaemon {
     // Notify all citizens of shutdown
     for (const roomId of this.rooms.keys()) {
       await this.notifyCitizensInRoom(roomId, 'chat.system.shutdown', {
-        message: 'Chat system is shutting down. Thank you for participating!',
-        timestamp: new Date().toISOString(),
+        message: {
+          messageId: generateUUID(),
+          roomId,
+          senderId: this.context.uuid,
+          senderName: 'System',
+          senderType: 'agent' as const,
+          content: 'Chat system is shutting down. Thank you for participating!',
+          timestamp: new Date().toISOString(),
+          messageType: 'system' as const,
+          mentions: []
+        }
       });
     }
     
