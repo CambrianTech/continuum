@@ -12,10 +12,23 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { ChatDaemon, type ChatCitizen, type ChatMessage, type ChatRoom } from '../shared/ChatDaemon';
 import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { DataDaemonServer } from '../../data-daemon/server/DataDaemonServer';
+import { 
+  createDataCreateParams, 
+  createDataReadParams, 
+  createDataListParams,
+  type DataRecord
+} from '../../data-daemon/shared/DataTypes';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export class ChatDaemonServer extends ChatDaemon {
   private messageStore: Map<string, ChatMessage[]> = new Map();
   private persistenceEnabled: boolean = true;
+  
+  // Add missing properties that the legacy code expects
+  private citizens: Map<string, any> = new Map();
+  private rooms: Map<string, any> = new Map();
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
@@ -41,11 +54,51 @@ export class ChatDaemonServer extends ChatDaemon {
    */
   private async loadPersistedState(): Promise<void> {
     try {
-      // TODO: Implement actual persistence (SQLite, filesystem, etc.)
-      // For now, we'll keep everything in memory
-      console.log(`💾 ${this.toString()}: Loaded persisted state (memory-based)`);
+      await this.initializeDefaultRooms();
+      console.log(`💾 ${this.toString()}: Loaded persisted state with default rooms`);
     } catch (error) {
       console.error(`❌ ${this.toString()}: Failed to load persisted state:`, error);
+    }
+  }
+
+  /**
+   * Initialize default chat rooms from JSON file
+   */
+  private async initializeDefaultRooms(): Promise<void> {
+    try {
+      const initialRoomsPath = path.join(process.cwd(), 'data/initial-chat-rooms.json');
+      
+      if (!fs.existsSync(initialRoomsPath)) {
+        console.warn(`⚠️ ${this.toString()}: Initial rooms file not found: ${initialRoomsPath}`);
+        return;
+      }
+
+      const roomsData = fs.readFileSync(initialRoomsPath, 'utf-8');
+      const initialRooms = JSON.parse(roomsData);
+      
+      // Initialize rooms in memory (DataDaemon integration will come later)
+      initialRooms.forEach((roomData: any) => {
+        const room: ChatRoom = {
+          roomId: roomData.roomId,
+          name: roomData.name,
+          description: roomData.description,
+          createdAt: roomData.createdAt,
+          lastActivity: roomData.createdAt,
+          citizenCount: 0,
+          messageCount: 0,
+          isPrivate: roomData.isPrivate || false,
+          participantCount: 0, // Legacy alias
+          category: roomData.category,
+          allowAI: roomData.allowAI,
+          requireModeration: roomData.requireModeration,
+          maxHistoryLength: roomData.maxHistoryLength
+        };
+        this.rooms.set(room.roomId, room);
+      });
+      
+      console.log(`✅ ${this.toString()}: Initialized ${initialRooms.length} default chat rooms`);
+    } catch (error) {
+      console.error(`❌ ${this.toString()}: Failed to initialize default rooms:`, error);
     }
   }
 
@@ -235,7 +288,7 @@ export class ChatDaemonServer extends ChatDaemon {
     if (hasKeyword) return Math.random() < 0.7; // 70% chance for keyword matches
     
     // Check room activity level - respond more in active rooms
-    const recentMessages = room.messageHistory.slice(-5);
+    const recentMessages = room.messageHistory?.slice(-5) || [];
     const isActiveDiscussion = recentMessages.length >= 3;
     
     if (isActiveDiscussion) return Math.random() < 0.2; // 20% chance in active discussions
@@ -370,5 +423,19 @@ export class ChatDaemonServer extends ChatDaemon {
     }
     
     console.log(`✅ ${this.toString()}: Shutdown complete`);
+  }
+  
+  // Missing methods that legacy code expects
+  private notifyCitizensInRoom(roomId: string, eventType: string, data: Record<string, unknown>): void {
+    // TODO: Implement notification logic
+    console.log(`📢 Notifying citizens in room ${roomId} of ${eventType}:`, data);
+  }
+  
+  private getStats(): { roomCount: number; citizenCount: number; totalMessages: number } {
+    return {
+      roomCount: this.rooms.size,
+      citizenCount: this.citizens.size,
+      totalMessages: Array.from(this.messageStore.values()).reduce((sum, msgs) => sum + msgs.length, 0)
+    };
   }
 }
