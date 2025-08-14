@@ -22,6 +22,19 @@ import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatfor
 import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 import { createBaseResponse } from '../../../system/core/types/ResponseTypes';
+import type {
+  ChatJoinRoomPayload,
+  ChatLeaveRoomPayload,
+  ChatSendMessagePayload,
+  ChatGetHistoryPayload,
+  ChatListRoomsPayload,
+  ChatCreateRoomPayload,
+  ChatEventData,
+  ChatCitizenJoinedEventData,
+  ChatCitizenLeftEventData,
+  ChatMessageEventData,
+  ChatAIResponseEventData
+} from './ChatTypes';
 
 /**
  * Chat participant - can be user, agent, or persona
@@ -174,7 +187,7 @@ export abstract class ChatDaemon extends DaemonBase {
    * Citizen joins a room - gets subscribed to room events
    */
   protected async handleJoinRoom(message: JTAGMessage): Promise<BaseResponsePayload> {
-    const payload = message.payload as any;
+    const payload = message.payload as ChatJoinRoomPayload;
     const { roomId, citizenName, citizenType = 'user', aiConfig } = payload;
     
     // Get or create room
@@ -234,7 +247,7 @@ export abstract class ChatDaemon extends DaemonBase {
    * Citizen leaves room - unsubscribed from room events
    */
   protected async handleLeaveRoom(message: JTAGMessage): Promise<BaseResponsePayload> {
-    const payload = message.payload as any;
+    const payload = message.payload as ChatLeaveRoomPayload;
     const { roomId, citizenId } = payload;
     
     const room = this.rooms.get(roomId);
@@ -281,7 +294,7 @@ export abstract class ChatDaemon extends DaemonBase {
    * Send message to room - triggers AI responses if enabled
    */
   protected async handleSendMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
-    const payload = message.payload as any;
+    const payload = message.payload as ChatSendMessagePayload;
     const { roomId, citizenId, content, messageType = 'chat' } = payload;
     
     const room = this.rooms.get(roomId);
@@ -345,7 +358,7 @@ export abstract class ChatDaemon extends DaemonBase {
    * Get chat history for a room
    */
   protected async handleGetHistory(message: JTAGMessage): Promise<BaseResponsePayload> {
-    const payload = message.payload as any;
+    const payload = message.payload as ChatGetHistoryPayload;
     const { roomId, limit = 50, before } = payload;
     
     const room = this.rooms.get(roomId);
@@ -411,7 +424,7 @@ export abstract class ChatDaemon extends DaemonBase {
    * Create new room
    */
   protected async handleCreateRoom(message: JTAGMessage): Promise<BaseResponsePayload> {
-    const payload = message.payload as any;
+    const payload = message.payload as ChatCreateRoomPayload;
     const { name, description, category = 'general', allowAI = true } = payload;
     
     const room = await this.createDefaultRoom(generateUUID(), name, description, category, allowAI);
@@ -443,7 +456,7 @@ export abstract class ChatDaemon extends DaemonBase {
   protected async notifyCitizensInRoom(
     roomId: UUID, 
     eventType: string, 
-    eventData: any, 
+    eventData: ChatCitizenJoinedEventData | ChatCitizenLeftEventData | ChatMessageEventData | ChatAIResponseEventData, 
     excludeCitizens: Set<UUID> = new Set()
   ): Promise<void> {
     const room = this.rooms.get(roomId);
@@ -460,7 +473,7 @@ export abstract class ChatDaemon extends DaemonBase {
   /**
    * Notify individual citizen (context-aware routing)
    */
-  protected async notifyCitizen(citizen: ChatCitizen, eventType: string, eventData: any): Promise<void> {
+  protected async notifyCitizen(citizen: ChatCitizen, eventType: string, eventData: ChatCitizenJoinedEventData | ChatCitizenLeftEventData | ChatMessageEventData | ChatAIResponseEventData): Promise<void> {
     try {
       // Route event to citizen's context (browser/server)
       const targetEndpoint = `${citizen.context.environment}/chat-events/${eventType}`;
