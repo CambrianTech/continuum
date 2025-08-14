@@ -39,7 +39,7 @@ import { type JTAGPayload, JTAGMessageFactory, createPayload } from '../../../sy
 import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { SYSTEM_EVENTS } from '../../../system/events';
-import { TRANSPORT_EVENTS } from '@system/transports/shared/TransportEvents';
+import { TRANSPORT_EVENTS } from '../../../system/transports/shared/TransportEvents';
 import { SYSTEM_SCOPES, globalSessionContext } from '../../../system/core/types/SystemScopes';
 import { CONSOLE_EVENTS } from '../ConsoleEvents';
 import { JTAG_ENDPOINTS } from '../../../system/core/router/shared/JTAGEndpoints';
