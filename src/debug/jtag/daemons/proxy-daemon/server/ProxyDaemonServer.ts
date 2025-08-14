@@ -6,7 +6,7 @@
  */
 
 import fetch from 'node-fetch';
-import { ProxyDaemon, type ProxyRequest, type ProxyResponse } from '@daemonsProxyDaemon/shared/ProxyDaemon';
+import { ProxyDaemon, type ProxyRequest, type ProxyResponse } from '../shared/ProxyDaemon';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 

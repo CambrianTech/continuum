@@ -5,7 +5,7 @@
  * Less relevant since widgets run in browser, but maintains daemon symmetry.
  */
 
-import { WidgetDaemon } from '@daemonsWidgetDaemon/shared/WidgetDaemon';
+import { WidgetDaemon } from '../shared/WidgetDaemon';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 
