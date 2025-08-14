@@ -276,7 +276,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       const targetEnvironment = this.extractEnvironmentForMessage(message);
       
       if (targetEnvironment === this.context.environment) {
-        console.log(`🏠 ${this.toString()}: Routing locally to ${message.endpoint}`);
+        // console.log(`🏠 ${this.toString()}: Routing locally to ${message.endpoint}`); // DISABLED: Causes infinite loop with ConsoleDaemon
         return await this.routeLocally(message) as T;
       } else {
         return await this.routeRemotelyWithQueue(message) as T;
@@ -507,7 +507,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
 
   private async routeLocally(message: JTAGMessage): Promise<LocalRoutingResult> {
     const correlationId = (JTAGMessageTypes.isRequest(message) || JTAGMessageTypes.isResponse(message)) ? message.correlationId : 'none';
-    console.log(`🔍 ${this.toString()}: Routing locally - message type: ${message.messageType}, isRequest: ${JTAGMessageTypes.isRequest(message)}, isResponse: ${JTAGMessageTypes.isResponse(message)}, correlationId: ${correlationId}`);
+    // console.log(`🔍 ${this.toString()}: Routing locally - message type: ${message.messageType}, isRequest: ${JTAGMessageTypes.isRequest(message)}, isResponse: ${JTAGMessageTypes.isResponse(message)}, correlationId: ${correlationId}`); // DISABLED: Causes infinite loop with ConsoleDaemon
     
     // Handle different message types with focused methods
     if (JTAGMessageTypes.isResponse(message)) {
@@ -521,7 +521,8 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     }
     
     // Events - just route to subscriber
-    console.log(`📢 ${this.toString()}: Taking event path for ${correlationId}`);
+    // CRITICAL FIX: Disable console logging that causes infinite loops with ConsoleDaemon
+    // console.log(`📢 ${this.toString()}: Taking event path for ${correlationId}`);
     return await this.routeToSubscriber(message);
   }
 
@@ -634,13 +635,16 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
 
     const { subscriber, matchedEndpoint, matchType } = matchResult;
     
-    console.log(`🎯 ${this.toString()}: Match found - endpoint: ${message.endpoint}, matched: ${matchedEndpoint}, type: ${matchType}, subscriber: ${subscriber.uuid}`);
+    // CRITICAL FIX: Disable console logging that causes infinite loops with ConsoleDaemon
+    // console.log(`🎯 ${this.toString()}: Match found - endpoint: ${message.endpoint}, matched: ${matchedEndpoint}, type: ${matchType}, subscriber: ${subscriber.uuid}`);
     
     if (matchType === HIERARCHICAL_MATCH_TYPE) {
-      console.log(`📋 ${this.toString()}: Using hierarchical routing: ${matchedEndpoint} handling ${message.endpoint}`);
+      // CRITICAL FIX: Disable console logging that causes infinite loops
+      // console.log(`📋 ${this.toString()}: Using hierarchical routing: ${matchedEndpoint} handling ${message.endpoint}`);
     }
 
-    console.log(`🏠 ${this.toString()}: Routing locally to ${message.endpoint} via ${matchedEndpoint}`);
+    // CRITICAL FIX: Disable console logging that causes infinite loops with ConsoleDaemon
+    // console.log(`🏠 ${this.toString()}: Routing locally to ${message.endpoint} via ${matchedEndpoint}`);
     const result = await subscriber.handleMessage(message);
     
     return { success: true, handlerResult: result };

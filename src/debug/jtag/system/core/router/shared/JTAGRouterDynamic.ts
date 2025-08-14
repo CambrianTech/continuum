@@ -165,18 +165,21 @@ export class JTAGRouterDynamic extends JTAGRouter {
    * Handle messages with intelligent dynamic routing logic
    */
   private async handleDynamicMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
-    console.log(`📨 JTAGRouterDynamic: Processing message with intelligent routing: ${message.endpoint}`);
+    // CRITICAL FIX: Disable console logging that causes infinite loops with ConsoleDaemon
+    // console.log(`📨 JTAGRouterDynamic: Processing message with intelligent routing: ${message.endpoint}`);
     
     // CORRELATION FIX: Register external client correlation IDs with both systems
     if (JTAGMessageTypes.isRequest(message) && message.correlationId?.startsWith(CLIENT_CORRELATION_PREFIX)) {
-      console.log(`🔗 ${this.toString()}: Registering external correlation ${message.correlationId}`);
+      // CRITICAL FIX: Disable console logging that causes infinite loops
+      // console.log(`🔗 ${this.toString()}: Registering external correlation ${message.correlationId}`);
       
       // Register with ExternalClientDetector for WebSocket response routing
       this.externalClientDetector.registerExternal(message.correlationId);
       
       // Register external correlation with ResponseCorrelator (don't await - let it resolve later)
       this.responseCorrelator.createRequest(message.correlationId).catch(error => {
-        console.warn(`⚠️ External correlation ${message.correlationId} failed: ${error.message}`);
+        // CRITICAL FIX: Disable console logging that causes infinite loops
+        // console.warn(`⚠️ External correlation ${message.correlationId} failed: ${error.message}`);
       });
     }
     
@@ -214,7 +217,8 @@ export class JTAGRouterDynamic extends JTAGRouter {
   private logRoutingDecision(message: JTAGMessage): void {
     // Only log for non-console messages to avoid feedback loops
     if (!message.endpoint.includes(COMMAND_TYPES.CONSOLE)) {
-      console.log(`🎯 JTAGRouterDynamic: Routing ${message.endpoint}`);
+      // CRITICAL FIX: Disable console logging that causes infinite loops with ConsoleDaemon
+      // console.log(`🎯 JTAGRouterDynamic: Routing ${message.endpoint}`);
     }
   }
 
@@ -313,7 +317,8 @@ export class JTAGRouterDynamic extends JTAGRouter {
    * Delegates to base router's proven postMessage routing logic
    */
   private async routeViaEndpointMatching(message: JTAGMessage): Promise<JTAGResponsePayload> {
-    console.log(`🏠 JTAGRouterDynamic: Routing ${message.endpoint} locally via base router logic`);
+    // CRITICAL FIX: Disable console logging that causes infinite loops with ConsoleDaemon
+    // console.log(`🏠 JTAGRouterDynamic: Routing ${message.endpoint} locally via base router logic`);
     
     try {
       // Use the base router's proven postMessage routing logic

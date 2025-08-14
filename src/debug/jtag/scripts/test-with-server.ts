@@ -24,49 +24,80 @@ const logFile = path.join(logDir, 'test-server.log');
 fs.mkdirSync(logDir, { recursive: true });
 
 async function startServerProcess(): Promise<ServerProcess> {
-  console.log('🚀 Starting JTAG server process for testing...');
+  console.log('🚀 Starting JTAG server in tmux session for persistence...');
   
   return new Promise((resolve, reject) => {
-    const child: ChildProcess = spawn('npm', ['run', 'start:direct'], {
-      detached: false,  // Keep attached for proper control during testing
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        FORCE_COLOR: '1',
-        TERM: 'xterm-256color',
-        CI: ''
-      },
-      cwd: process.cwd()
+    // First, kill any existing tmux session
+    const killSession = spawn('tmux', ['kill-session', '-t', 'jtag-test'], {
+      stdio: 'ignore'
     });
     
-    if (!child.pid) {
-      reject(new Error('Failed to spawn server process'));
-      return;
-    }
-    
-    console.log(`🎯 Server process started with PID: ${child.pid}`);
-    
-    const logStream = fs.createWriteStream(logFile, { flags: 'w' });
-    
-    // Pipe output to log file
-    child.stdout?.pipe(logStream);
-    child.stderr?.pipe(logStream);
-    
-    // Handle server startup
-    const serverProcess: ServerProcess = {
-      child,
-      pid: child.pid,
-      startTime: Date.now()
-    };
-    
-    // Check for server death during startup
-    child.on('exit', (code, signal) => {
-      logStream.end();
-      console.error(`💀 Server process died during startup: code=${code}, signal=${signal}`);
-      reject(new Error(`Server died during startup: ${code}`));
+    killSession.on('close', () => {
+      // Create new tmux session with server
+      const tmuxCmd = [
+        'new-session',
+        '-d',          // detached
+        '-s', 'jtag-test',  // session name
+        'npm', 'run', 'start:direct'  // direct start, no smart detection
+      ];
+      
+      console.log(`🔧 Creating tmux session: tmux ${tmuxCmd.join(' ')}`);
+      
+      const child: ChildProcess = spawn('tmux', tmuxCmd, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          FORCE_COLOR: '1',
+          TERM: 'xterm-256color'
+        },
+        cwd: process.cwd()
+      });
+      
+      const logStream = fs.createWriteStream(logFile, { flags: 'w' });
+      
+      // Pipe output to log file
+      child.stdout?.pipe(logStream);
+      child.stderr?.pipe(logStream);
+      
+      child.on('close', (code) => {
+        logStream.end();
+        
+        if (code === 0) {
+          console.log('✅ Tmux session created successfully');
+          
+          // Get the PID of the process running inside tmux
+          const getPidCmd = spawn('tmux', [
+            'list-panes', '-t', 'jtag-test', '-F', '#{pane_pid}'
+          ], { stdio: ['ignore', 'pipe', 'ignore'] });
+          
+          let pidOutput = '';
+          getPidCmd.stdout?.on('data', (data) => {
+            pidOutput += data.toString();
+          });
+          
+          getPidCmd.on('close', () => {
+            const tmuxPid = parseInt(pidOutput.trim());
+            
+            const serverProcess: ServerProcess = {
+              child: child,  // This is the tmux command, not the actual server
+              pid: tmuxPid,  // PID of process inside tmux
+              startTime: Date.now()
+            };
+            
+            console.log(`🎯 Tmux session 'jtag-test' created with server PID: ${tmuxPid}`);
+            resolve(serverProcess);
+          });
+          
+        } else {
+          reject(new Error(`Failed to create tmux session: exit code ${code}`));
+        }
+      });
+      
+      child.on('error', (error) => {
+        logStream.end();
+        reject(new Error(`Tmux spawn error: ${error.message}`));
+      });
     });
-    
-    resolve(serverProcess);
   });
 }
 
@@ -126,6 +157,7 @@ async function runTests(): Promise<boolean> {
 
 async function main(): Promise<void> {
   let serverProcess: ServerProcess | null = null;
+  let testsSuccessful = false; // Track success for cleanup decision
   const signaler = new SystemReadySignaler();
   
   try {
@@ -147,6 +179,7 @@ async function main(): Promise<void> {
     
     // Run tests
     const testsSucceeded = await runTests();
+    testsSuccessful = testsSucceeded; // Update tracking variable
     
     // Report results
     const result: TestResult = {
@@ -160,6 +193,7 @@ async function main(): Promise<void> {
     
     if (testsSucceeded) {
       console.log('🎉 ALL TESTS PASSED - npm test succeeded!');
+      console.log('🚀 Server left running for development (as intended)');
       process.exit(0);
     } else {
       console.error('💥 TESTS FAILED - npm test failed');
@@ -182,25 +216,25 @@ async function main(): Promise<void> {
     process.exit(1);
     
   } finally {
-    // Clean up server process
-    if (serverProcess?.child) {
-      console.log(`🧹 Cleaning up server process (PID: ${serverProcess.pid})`);
-      
-      try {
-        serverProcess.child.kill('SIGTERM');
-        
-        // Give it 5 seconds to exit gracefully, then force kill
-        setTimeout(() => {
-          if (!serverProcess.child.killed) {
-            console.log('🔨 Force killing server process');
-            serverProcess.child.kill('SIGKILL');
-          }
-        }, 5000);
-        
-      } catch (killError) {
-        console.warn('⚠️ Error killing server process:', killError);
+    // Check if tmux session is actually running
+    const checkTmux = spawn('tmux', ['has-session', '-t', 'jtag-test'], {
+      stdio: 'ignore'
+    });
+    
+    checkTmux.on('close', (code) => {
+      if (code === 0) {
+        console.log(`🚀 Server running in tmux session 'jtag-test' - survives script exit`);
+        console.log(`📋 To check server: tmux attach-session -t jtag-test`);
+        console.log(`📋 To stop server: tmux kill-session -t jtag-test`);
+        console.log(`📋 To view logs: tail -f ${logFile}`);
+      } else {
+        if (!testsSuccessful) {
+          console.log(`🧹 Tests failed - tmux session not running (expected)`);
+        } else {
+          console.log(`⚠️  Tmux session not detected - server may have exited`);
+        }
       }
-    }
+    });
   }
 }
 

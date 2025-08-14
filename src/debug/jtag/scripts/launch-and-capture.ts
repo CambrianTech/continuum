@@ -3,6 +3,29 @@ import fs from 'fs';
 import path from 'path';
 import { SystemReadySignaler } from './signal-system-ready';
 
+// Parse command line arguments for configurable behavior
+interface LaunchConfig {
+  readonly forceRestart: boolean;
+  readonly checkExisting: boolean;
+  readonly mode: 'development' | 'test' | 'production';
+  readonly verbose: boolean;
+  readonly skipHealthCheck: boolean;
+}
+
+function parseArguments(): LaunchConfig {
+  const args = process.argv;
+  
+  return {
+    forceRestart: args.includes('--force') || args.includes('--restart'),
+    checkExisting: !args.includes('--no-check'),
+    mode: args.includes('--test') ? 'test' : args.includes('--production') ? 'production' : 'development',
+    verbose: args.includes('--verbose') || args.includes('-v'),
+    skipHealthCheck: args.includes('--skip-health-check')
+  };
+}
+
+const CONFIG = parseArguments();
+
 // Strong typing for monitoring configuration
 interface MonitoringConfig {
   readonly initialPollMs: number;
@@ -65,10 +88,10 @@ const LAUNCH_CONFIG = {
   LOG_CHUNK_SIZE: 1024
 } as const;
 
-async function launchWithKernelLevelDiagnostics(): Promise<LaunchResult> {
+async function launchWithTmuxPersistence(): Promise<LaunchResult> {
   const signaler = new SystemReadySignaler();
   
-  console.log('🚀 Launching JTAG system with kernel-level process diagnostics...');
+  console.log('🚀 Launching JTAG system with tmux persistence...');
   
   // Clear any old signals first
   await signaler.clearSignals();
@@ -76,155 +99,135 @@ async function launchWithKernelLevelDiagnostics(): Promise<LaunchResult> {
   return new Promise<LaunchResult>((resolve, reject) => {
     const startTime = Date.now();
     
-    // Use spawn() for proper process control instead of exec()
-    const child: ChildProcess = spawn('npm', ['run', 'start:direct'], {
-      detached: true,   // Detach so the process can continue after this script exits
-      stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr
-      env: {
-        ...process.env,
-        FORCE_COLOR: '1',
-        TERM: 'xterm-256color',
-        CI: ''
-      },
-      cwd: process.cwd()
+    // First, kill any existing tmux session
+    const killSession = spawn('tmux', ['kill-session', '-t', 'jtag-test'], {
+      stdio: 'ignore'
     });
     
-    // Unref the child process so this script can exit
-    child.unref();
-    
-    console.log(`🎯 Process spawned with PID: ${child.pid}`);
-    
-    // Create diagnostics object with strong typing
-    const createDiagnostics = (): ProcessDiagnostics => ({
-      pid: child.pid,
-      startTime,
-      command: 'npm',
-      args: ['run', 'start:direct'],
-      cwd: process.cwd(),
-      exitCode: child.exitCode,
-      killed: child.killed,
-      signalCode: child.signalCode
-    });
-    
-    // Set up log file streaming
-    const logStream = fs.createWriteStream(logFile, { flags: 'w' });
-    
-    // Pipe output to log file AND console for diagnostics
-    child.stdout?.on('data', (data: Buffer) => {
-      const text = data.toString();
-      logStream.write(text);
+    killSession.on('close', () => {
+      // Create tmux session with persistent server (like test-with-server.ts)
+      const tmuxCmd = [
+        'new-session',
+        '-d',                    // detached session
+        '-s', 'jtag-test',       // session name
+        'npm', 'run', 'start:direct'  // server command
+      ];
       
-      // Show key progress indicators
-      if (text.includes('smart-build') || text.includes('system:deploy') || text.includes('system:run')) {
-        console.log(`📊 Progress: ${text.trim()}`);
-      }
-    });
-    
-    child.stderr?.on('data', (data: Buffer) => {
-      const text = data.toString();
-      logStream.write(`STDERR: ${text}`);
+      console.log(`🔧 Creating persistent tmux session: tmux ${tmuxCmd.join(' ')}`);
       
-      // Show errors immediately
-      console.error(`🚨 Error: ${text.trim()}`);
-    });
-    
-    // Set up timeout for server startup detection
-    // The npm start process will NOT exit - it's a long-running server
-    // We need to detect when the server is actually running
-    let serverDetectionTimeout: NodeJS.Timeout;
-    let serverStartupDetected = false;
-    
-    const detectServerStartup = () => {
-      serverDetectionTimeout = setTimeout(async () => {
-        if (serverStartupDetected) return;
+      const child: ChildProcess = spawn('tmux', tmuxCmd, {
+        stdio: ['ignore', 'pipe', 'pipe'],  // Capture output from tmux command
+        env: {
+          ...process.env,
+          FORCE_COLOR: '1',
+          TERM: 'xterm-256color'
+        },
+        cwd: process.cwd()
+      });
+      
+      // Set up log file streaming
+      const logStream = fs.createWriteStream(logFile, { flags: 'w' });
+      
+      // Pipe tmux command output to log file
+      child.stdout?.pipe(logStream);
+      child.stderr?.pipe(logStream);
+      
+      child.on('close', (code) => {
+        logStream.end();
         
-        console.log('🔍 Checking if JTAG server is responsive...');
-        
-        try {
-          // Check if the server is actually running by testing readiness
-          const signal = await signaler.generateReadySignal();
+        if (code === 0) {
+          console.log('✅ Tmux session created successfully');
           
-          if (signal.bootstrapComplete && signal.commandCount > 0) {
-            serverStartupDetected = true;
-            clearTimeout(serverDetectionTimeout);
+          // Get the PID of the process running inside tmux session
+          const getPidCmd = spawn('tmux', [
+            'list-panes', '-t', 'jtag-test', '-F', '#{pane_pid}'
+          ], { stdio: ['ignore', 'pipe', 'ignore'] });
+          
+          let pidOutput = '';
+          getPidCmd.stdout?.on('data', (data) => {
+            pidOutput += data.toString();
+          });
+          
+          getPidCmd.on('close', () => {
+            const tmuxPid = parseInt(pidOutput.trim());
             
-            console.log('✅ JTAG server is running and responsive!');
-            console.log(`📊 Commands detected: ${signal.commandCount}`);
+            // Save tmux session PID
+            if (tmuxPid) {
+              fs.writeFileSync(pidFile, tmuxPid.toString());
+              console.log(`📋 Tmux server PID saved to: ${pidFile}`);
+            }
             
-            resolve({
-              success: true,
-              reason: 'launch_success',
-              processId: child.pid,
-              logFile,
-              diagnostics: createDiagnostics()
+            console.log(`🎯 Tmux session 'jtag-test' created with server PID: ${tmuxPid}`);
+            
+            // Create diagnostics object with strong typing
+            const createDiagnostics = (): ProcessDiagnostics => ({
+              pid: tmuxPid,
+              startTime,
+              command: 'tmux',
+              args: tmuxCmd,
+              cwd: process.cwd(),
+              exitCode: 0,  // tmux creation succeeded
+              killed: false,
+              signalCode: null
             });
             
-            // Don't start monitoring - let the main script exit
+            // Set up server readiness detection
+            let serverDetectionTimeout: NodeJS.Timeout;
+            let serverStartupDetected = false;
             
-          } else {
-            console.log('⏳ Server still starting up, checking again in 5s...');
-            detectServerStartup(); // Try again
-          }
+            const detectServerStartup = () => {
+              serverDetectionTimeout = setTimeout(async () => {
+                if (serverStartupDetected) return;
+                
+                console.log('🔍 Checking if JTAG server is responsive in tmux session...');
+                
+                try {
+                  // Check if the server is actually running by testing readiness
+                  const signal = await signaler.generateReadySignal();
+                  
+                  if (signal.bootstrapComplete && signal.commandCount > 0) {
+                    serverStartupDetected = true;
+                    clearTimeout(serverDetectionTimeout);
+                    
+                    console.log('✅ JTAG server is running and responsive in tmux!');
+                    console.log(`📊 Commands detected: ${signal.commandCount}`);
+                    
+                    resolve({
+                      success: true,
+                      reason: 'launch_success',
+                      processId: tmuxPid,
+                      logFile,
+                      diagnostics: createDiagnostics()
+                    });
+                    
+                  } else {
+                    console.log('⏳ Server still starting up in tmux, checking again in 5s...');
+                    detectServerStartup(); // Try again
+                  }
+                  
+                } catch (error) {
+                  console.log('⏳ Server not ready yet, checking again in 5s...');
+                  detectServerStartup(); // Try again
+                }
+                
+              }, 5000); // Check every 5 seconds
+            };
+            
+            // Start checking for server readiness after tmux session is created
+            setTimeout(detectServerStartup, 5000); // Start checking after 5 seconds
+            
+          });
           
-        } catch (error) {
-          console.log('⏳ Server not ready yet, checking again in 5s...');
-          detectServerStartup(); // Try again
+        } else {
+          reject(new Error(`Failed to create tmux session: exit code ${code}`));
         }
-        
-      }, 5000); // Check every 5 seconds
-    };
-    
-    // Start checking for server readiness after initial startup
-    setTimeout(detectServerStartup, 10000); // Start checking after 10 seconds
-    
-    // Handle process completion (this should NOT happen for successful server startup)
-    child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
-      logStream.end();
-      clearTimeout(serverDetectionTimeout);
-      
-      const diagnostics = createDiagnostics();
-      
-      console.log(`📊 Process exited unexpectedly with code: ${code}, signal: ${signal}`);
-      console.log(`🔍 Process diagnostics:`, diagnostics);
-      
-      if (!serverStartupDetected) {
-        // Process exited before server was detected as running - this is a failure
-        console.error(`❌ Server process died before becoming responsive`);
-        
-        resolve({
-          success: false,
-          reason: 'launch_failure', 
-          processId: child.pid,
-          logFile,
-          errorMessage: `Process exited with code ${code}, signal ${signal} before server became responsive`,
-          diagnostics
-        });
-      }
-      // If serverStartupDetected is true, we already resolved successfully
-    });
-    
-    child.on('error', (error: Error) => {
-      logStream.end();
-      
-      const diagnostics = createDiagnostics();
-      
-      console.error(`🚨 Process spawn error:`, error);
-      
-      resolve({
-        success: false,
-        reason: 'process_spawn_error',
-        processId: child.pid,
-        logFile,
-        errorMessage: error.message,
-        diagnostics
       });
-    });
-    
-    // Kill process on SIGINT for clean shutdown
-    process.on('SIGINT', () => {
-      console.log('🛑 Received SIGINT - killing child process...');
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 5000); // Force kill after 5s
+      
+      child.on('error', (error) => {
+        logStream.end();
+        reject(new Error(`Tmux spawn error: ${error.message}`));
+      });
+      
     });
   });
 }
@@ -343,13 +346,148 @@ async function monitorSystemReadiness(signaler: SystemReadySignaler): Promise<vo
   });
 }
 
-// Run the kernel-level diagnostic launcher
+// Smart server health check with robust detection
+async function checkExistingServer(): Promise<{isHealthy: boolean; tmuxRunning: boolean; portsActive: boolean; message: string}> {
+  const signaler = new SystemReadySignaler();
+  
+  // Check tmux session
+  const tmuxRunning = await new Promise<boolean>((resolve) => {
+    const tmuxCheck = spawn('tmux', ['has-session', '-t', 'jtag-test'], { stdio: 'ignore' });
+    tmuxCheck.on('close', (code) => resolve(code === 0));
+  });
+  
+  // Check port availability
+  const portsActive = await new Promise<boolean>((resolve) => {
+    const portCheck = spawn('netstat', ['-an'], { stdio: 'pipe' });
+    let output = '';
+    portCheck.stdout?.on('data', (data) => { output += data.toString(); });
+    portCheck.on('close', () => {
+      const hasPort9001 = output.includes('.9001') && output.includes('LISTEN');
+      const hasPort9002 = output.includes('.9002') && output.includes('LISTEN');
+      resolve(hasPort9001 && hasPort9002);
+    });
+  });
+  
+  // Check system health via signaler (most important check)
+  let systemHealthy = false;
+  let commandCount = 0;
+  try {
+    const signal = await signaler.generateReadySignal();
+    systemHealthy = signal.bootstrapComplete && signal.commandCount > 0;
+    commandCount = signal.commandCount;
+  } catch (error) {
+    systemHealthy = false;
+  }
+  
+  // Server is healthy if system responds properly AND ports are active
+  // Tmux is optional (since direct spawn is also valid)
+  const isHealthy = systemHealthy && portsActive;
+  
+  let message = '';
+  if (isHealthy && tmuxRunning) {
+    message = `✅ JTAG server running and healthy in tmux (${commandCount} commands available)`;
+  } else if (isHealthy && !tmuxRunning) {
+    message = `✅ JTAG server running and healthy (${commandCount} commands available)`;
+  } else if (portsActive && !systemHealthy) {
+    message = '⚠️ JTAG server ports active but not fully responsive';
+  } else if (tmuxRunning && !portsActive) {
+    message = '⚠️ Tmux session exists but ports not active';
+  } else if (portsActive) {
+    message = '⚠️ Ports active but system not responsive';
+  } else {
+    message = '📋 No existing JTAG server detected';
+  }
+  
+  return { isHealthy, tmuxRunning, portsActive, message };
+}
+
+// Mode-specific behavior configurations
+const MODE_BEHAVIORS = {
+  development: {
+    showStatusOnExisting: true,
+    exitOnHealthy: true,
+    showCommands: true,
+    label: 'DEVELOPMENT MODE'
+  },
+  test: {
+    showStatusOnExisting: false,
+    exitOnHealthy: false,
+    showCommands: false,
+    label: 'TEST MODE'
+  },
+  production: {
+    showStatusOnExisting: false,
+    exitOnHealthy: false,
+    showCommands: false,
+    label: 'PRODUCTION MODE'
+  }
+} as const;
+
+// Run the configurable smart launcher
 async function main(): Promise<void> {
   try {
-    console.log('🔍 KERNEL-LEVEL DIAGNOSTIC LAUNCH - npm test debug mode');
-    console.log('📊 This will show exactly where the process hangs');
+    const behavior = MODE_BEHAVIORS[CONFIG.mode];
     
-    const result: LaunchResult = await launchWithKernelLevelDiagnostics();
+    if (CONFIG.verbose) {
+      console.log(`🚀 SMART JTAG LAUNCHER - ${behavior.label}`);
+      console.log(`📊 Config: ${JSON.stringify(CONFIG, null, 2)}`);
+    }
+    
+    // Skip server check if requested or in certain modes
+    if (CONFIG.checkExisting && !CONFIG.skipHealthCheck) {
+      if (CONFIG.verbose) console.log('🔍 Checking for existing server...');
+      
+      const serverStatus = await checkExistingServer();
+      
+      if (CONFIG.verbose || behavior.showStatusOnExisting) {
+        console.log(serverStatus.message);
+      }
+      
+      // Development mode: show status and exit if healthy
+      if (serverStatus.isHealthy && !CONFIG.forceRestart && behavior.exitOnHealthy) {
+        console.log('');
+        console.log('🎯 SERVER STATUS: Running and responsive');
+        console.log('🌐 Demo UI: http://localhost:9002/');
+        console.log('🔌 WebSocket: ws://localhost:9001/');
+        
+        if (behavior.showCommands) {
+          console.log('');
+          console.log('💡 DEVELOPMENT COMMANDS:');
+          console.log('   tmux attach-session -t jtag-test  # Connect to server console');
+          console.log('   npm run restart                    # Force restart server');
+          console.log('   npm test                          # Run tests (uses existing server)');
+          console.log('   tmux kill-session -t jtag-test    # Stop server');
+        }
+        
+        console.log('');
+        console.log('✅ No action needed - server already running perfectly!');
+        process.exit(0);
+      }
+      
+      // Test/Production mode: proceed with restart if unhealthy or force requested
+      if (CONFIG.forceRestart || (serverStatus.tmuxRunning || serverStatus.portsActive)) {
+        const reason = CONFIG.forceRestart ? 'Force restart requested' : 'Server unhealthy, restarting';
+        if (CONFIG.verbose || CONFIG.mode !== 'test') console.log(`🔄 ${reason}...`);
+        
+        // Kill tmux session if exists
+        if (serverStatus.tmuxRunning) {
+          if (CONFIG.verbose) console.log('🧹 Stopping existing tmux session...');
+          await new Promise<void>((resolve) => {
+            const killTmux = spawn('tmux', ['kill-session', '-t', 'jtag-test'], { stdio: 'ignore' });
+            killTmux.on('close', () => resolve());
+          });
+        }
+        
+        // Give ports time to close
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+    
+    if (CONFIG.verbose || CONFIG.mode === 'development') {
+      console.log('🚀 Starting fresh JTAG server...');
+    }
+    
+    const result: LaunchResult = await launchWithTmuxPersistence();
     
     console.log('🎯 Launch Result:');
     console.log(JSON.stringify(result, null, 2));
@@ -358,7 +496,14 @@ async function main(): Promise<void> {
       console.log('✅ System startup completed successfully');
       console.log(`📄 Full logs available at: ${result.logFile}`);
       console.log(`🎯 Background server running with PID: ${result.processId}`);
-      console.log('🚀 Launcher script exiting - background server will continue running');
+      console.log(`📋 PID file: ${pidFile}`);
+      console.log('');
+      console.log('🚀 TMUX PERSISTENCE MODE: Launcher exiting, server continues in tmux session');
+      console.log(`🔗 To connect to server: tmux attach-session -t jtag-test`);
+      console.log(`🛑 To stop server: tmux kill-session -t jtag-test`);
+      console.log(`📊 To check status: tmux has-session -t jtag-test && echo "Running" || echo "Stopped"`);
+      console.log(`📄 To watch logs: tail -f ${result.logFile}`);
+      console.log('');
       
       // Exit this script successfully - the background server continues
       process.exit(0);

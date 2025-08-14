@@ -119,6 +119,8 @@ import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import { JTAG_BOOTSTRAP_MESSAGES } from './JTAGClientConstants';
 import type { SessionMetadata } from '../../../../daemons/session-daemon/shared/SessionTypes';
 import type { SessionCreateResult } from '../../../../commands/session/create/shared/SessionCreateTypes';
+import type { IConnectionBroker, ConnectionParams } from '../../connection-broker/shared/ConnectionBrokerTypes';
+import { ConnectionBroker } from '../../connection-broker/shared/ConnectionBroker';
 /**
  * JTAGClient connection options
  */
@@ -182,6 +184,9 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   protected discoveredCommands: Map<string, CommandSignature> = new Map();
   protected systemInstance?: JTAGSystem;
   protected responseCorrelator: ResponseCorrelator = new ResponseCorrelator(30000);
+  
+  // Connection Broker for intelligent connection management
+  protected connectionBroker?: IConnectionBroker;
   
   // ITransportHandler implementation
   public readonly transportId: UUID;
@@ -298,23 +303,46 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       
       this.connection = this.createLocalConnection();
     } else {
-      // Remote connection setup
+      // Remote connection setup using Connection Broker
       this.connectionMetadata.connectionType = 'remote';
-      this.connectionMetadata.reason = 'No local system available - using transport';
+      this.connectionMetadata.reason = 'No local system available - using Connection Broker';
       
-      const transportConfig: TransportConfig = { 
-        protocol: (options?.transportType ?? 'websocket') as TransportProtocol,
-        role: 'client',
-        eventSystem: this.eventManager.events,
+      console.log('🔗 JTAGClient: Using Connection Broker for intelligent connection management');
+      
+      const broker = await this.getConnectionBroker();
+      
+      // Create connection parameters from client options with proper TypeScript typing
+      const connectionParams: ConnectionParams = {
+        protocols: [
+          (options?.transportType ?? 'websocket') as TransportProtocol,
+          ...(options?.enableFallback ? ['websocket' as TransportProtocol] : []) // Add fallback protocol if enabled
+        ],
+        mode: 'preferred', // Prefer shared connections, fall back to isolated
+        targetEnvironment: this.context.environment,
         sessionId: this.sessionId,
-        serverPort: options?.serverPort ?? this.getSystemConfig().getWebSocketPort(),
-        serverUrl: options?.serverUrl ?? this.getSystemConfig().getWebSocketUrl(),
-        fallback: options?.enableFallback ?? true,
-        handler: this
+        context: this.context,
+        eventSystem: this.eventManager.events, // Required field with proper typing
+        handler: this, // Required field with proper typing
+        server: options?.serverPort || options?.serverUrl ? {
+          port: options.serverPort,
+          name: options.serverUrl?.includes('localhost') ? 'localhost-server' : undefined
+        } : undefined,
+        timeoutMs: options?.timeout ?? 10000,
+        enableFallback: options?.enableFallback ?? true,
+        maxRetries: options?.maxRetries ?? 3,
+        metadata: {
+          clientType: this.context.environment,
+          requestedProtocol: options?.transportType ?? 'websocket'
+        }
       };
 
-      const factory = await this.getTransportFactory();
-      this.systemTransport = await factory.createTransport(this.context.environment, transportConfig);
+      const connectionResult = await broker.connect(connectionParams);
+      
+      this.systemTransport = connectionResult.transport;
+      this.connectionMetadata.reason = `Connected via ${connectionResult.strategy} (${connectionResult.metadata.protocolUsed})`;
+      
+      console.log(`✅ JTAGClient: ${connectionResult.strategy} connection established on port ${connectionResult.server.port}`);
+      
       this.connection = this.createRemoteConnection();
     }
 
@@ -348,9 +376,28 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   }
 
   /**
-   * Get environment-specific transport factory - implemented by JT`AGClientServer/JTAGClientBrowser
+   * Get environment-specific transport factory - implemented by JTAGClientServer/JTAGClientBrowser
    */
   protected abstract getTransportFactory(): Promise<ITransportFactory>;
+
+  /**
+   * Get or create Connection Broker for intelligent connection management
+   * Lazily initialized to avoid circular dependencies
+   */
+  protected async getConnectionBroker(): Promise<IConnectionBroker> {
+    if (!this.connectionBroker) {
+      const factory = await this.getTransportFactory();
+      this.connectionBroker = new ConnectionBroker({
+        portPool: {
+          startPort: this.getSystemConfig().getWebSocketPort(),
+          endPort: this.getSystemConfig().getWebSocketPort() + 99, // Dynamic range from configured base
+          reservedPorts: [],
+          allocationStrategy: 'sequential'
+        }
+      }, factory);
+    }
+    return this.connectionBroker;
+  }
 
   /**
    * Update client-specific session storage - overridden by JTAGClientBrowser for sessionStorage
@@ -546,11 +593,18 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    */
   public async disconnect(): Promise<void> {
     console.log('🔌 JTAGClient: Disconnecting...');
+    
     if (this.systemTransport) {
       await this.systemTransport.disconnect();
       console.log('✅ JTAGClient: Transport disconnected');
     } else {
       console.log('ℹ️ JTAGClient: No transport to disconnect (local connection)');
+    }
+    
+    // Cleanup Connection Broker if we created one
+    if (this.connectionBroker && this.connectionBroker instanceof ConnectionBroker) {
+      await this.connectionBroker.shutdown();
+      console.log('✅ JTAGClient: Connection Broker shut down');
     }
   }
 }

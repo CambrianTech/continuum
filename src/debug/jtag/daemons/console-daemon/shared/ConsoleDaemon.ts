@@ -120,6 +120,30 @@ export abstract class ConsoleDaemon extends DaemonBase {
    * Initialize console daemon - attach to console and listen for system ready
    */
   protected async initialize(): Promise<void> {
+    // CRITICAL FIX: Set exclude patterns to prevent infinite console loops
+    this.filters.excludePatterns = [
+      // Exact patterns from infinite loop logs - prevent console message routing loops
+      '📨 JTAGRouterDynamic: Processing message with intelligent routing: server/console',
+      '🏠 JTAGRouterDynamic: Routing server/console locally via base router logic',
+      '🎯 JTAGRouterDynamicServer[universal-router@server:',
+      '📢 JTAGRouterDynamicServer[universal-router@server:',
+      'Match found - endpoint: server/console, matched: server/console, type: exact',
+      'Taking event path for none',
+      
+      // Additional routing patterns that could cause loops
+      '📨 websocket-server:', '📨 JTAGRouterDynamic:', '🏠 JTAGRouterDynamic',
+      'JTAGRouterDynamicServer[universal-router@server:', '🔍 JTAGRouterDynamicServer[',
+      'Processing message with intelligent routing:', 'Routing locally to server/console',
+      
+      // Console daemon self-referential patterns
+      'ConsoleDaemon: Error processing', '🌊 ConsoleDaemon: Starting queue drain',
+      '🌊 ConsoleDaemon: Draining', '⚠️ ConsoleDaemon: Failed to drain message',
+      
+      // WebSocket transport patterns that could recurse
+      'websocket-server: Received message from client', 'websocket-server: Sending message',
+      'WebSocketTransportServer: Received message', 'WebSocketTransportServer: Sending'
+    ];
+    
     // Attach to console immediately (before JTAG system is ready)
     this.setupConsoleInterception();
     
@@ -360,6 +384,12 @@ export abstract class ConsoleDaemon extends DaemonBase {
     const skipPatterns = [
       // Console daemon self-reference (critical for preventing loops)
       'ConsoleDaemon', '🎧 ConsoleDaemon',
+      
+      // CRITICAL FIX: Exact patterns from infinite loop logs
+      '📨 websocket-server:', '📨 JTAGRouterDynamic:', '🏠 JTAGRouterDynamic',
+      'JTAGRouterDynamicServer[universal-router@server:', '🔍 JTAGRouterDynamicServer[',
+      '📢 JTAGRouterDynamicServer[', '🎯 JTAGRouterDynamicServer[',
+      'Processing message with intelligent routing:', 'Routing locally to server/console',
       
       // Message routing operations (critical for preventing loops) - COMPREHENSIVE
       'JTAGRouter[', 'JTAGMessageQueue[', 'Routing message', 'Routing locally',
