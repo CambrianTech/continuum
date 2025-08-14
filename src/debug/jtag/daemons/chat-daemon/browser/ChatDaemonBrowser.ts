@@ -11,17 +11,12 @@
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import { JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
-import { ChatDaemon, CHAT_EVENTS, type ChatMessage, type ChatCitizen } from '../shared/ChatDaemon';
+import { ChatDaemon, type ChatMessage, type ChatCitizen } from '../shared/ChatDaemon';
 import type { 
-  ChatMessageEventData, 
-  ChatCitizenJoinedEventData, 
-  ChatCitizenLeftEventData, 
-  ChatAIResponseEventData,
   ChatListRoomsResponse,
   ChatJoinRoomResponse,
   ChatSendMessageResponse,
-  ChatErrorResponse,
-  ParticipantUpdateData
+  ChatErrorResponse
 } from '../shared/ChatTypes';
 
 export class ChatDaemonBrowser extends ChatDaemon {
@@ -39,43 +34,8 @@ export class ChatDaemonBrowser extends ChatDaemon {
   protected async initialize(): Promise<void> {
     console.log(`💬 ${this.toString()}: Initializing browser chat daemon`);
     
-    // Set up event listeners for chat events
-    this.setupEventListeners();
-    
     // Initialize UI (will be created by chat widget)
     await this.initializeChatUI();
-  }
-
-  /**
-   * Set up event listeners for real-time updates
-   */
-  private setupEventListeners(): void {
-    // Listen for messages in subscribed rooms
-    this.eventManager.events.on(CHAT_EVENTS.MESSAGE_SENT, (data: ChatMessageEventData) => {
-      if (data.message && this.isSubscribedToRoom(data.message.roomId)) {
-        this.displayNewMessage(data.message);
-      }
-    });
-
-    // Listen for citizens joining/leaving
-    this.eventManager.events.on(CHAT_EVENTS.CITIZEN_JOINED, (data: ChatCitizenJoinedEventData) => {
-      if (this.isSubscribedToRoom(data.roomId)) {
-        this.updateParticipantListFromJoinEvent(data);
-      }
-    });
-
-    this.eventManager.events.on(CHAT_EVENTS.CITIZEN_LEFT, (data: ChatCitizenLeftEventData) => {
-      if (this.isSubscribedToRoom(data.roomId)) {
-        this.updateParticipantListFromLeaveEvent(data);
-      }
-    });
-
-    // Listen for AI responses
-    this.eventManager.events.on(CHAT_EVENTS.AI_RESPONSE, (data: ChatAIResponseEventData) => {
-      if (data.message && this.isSubscribedToRoom(data.message.roomId)) {
-        this.displayAIResponse(data.message);
-      }
-    });
   }
 
   /**
@@ -412,7 +372,7 @@ export class ChatDaemonBrowser extends ChatDaemon {
       const responsePayload = response as ChatJoinRoomResponse | ChatErrorResponse;
 
       if (responsePayload.success) {
-        this.currentRoomId = responsePayload.roomId;
+        this.currentRoomId = responsePayload.roomId || null;
         this.currentCitizenId = responsePayload.citizenId;
         
         // Enable chat input
@@ -549,30 +509,10 @@ export class ChatDaemonBrowser extends ChatDaemon {
   }
 
   /**
-   * Update participant list from join event
+   * Update participant list (simplified version)
    */
-  private updateParticipantListFromJoinEvent(data: ChatCitizenJoinedEventData): void {
-    console.log(`👥 Participant joined:`, data.citizen.displayName);
-    
-    // TODO: Update actual participant list in UI
-    // This would require tracking participants and updating the display
-  }
-
-  /**
-   * Update participant list from leave event
-   */
-  private updateParticipantListFromLeaveEvent(data: ChatCitizenLeftEventData): void {
-    console.log(`👥 Participant left:`, data.displayName);
-    
-    // TODO: Update actual participant list in UI
-    // This would require tracking participants and updating the display
-  }
-
-  /**
-   * Update participant list with full participant data
-   */
-  private updateParticipantList(data: ParticipantUpdateData): void {
-    console.log(`👥 Participant list update for room ${data.roomId}:`, data.participants);
+  private updateParticipantList(participants: ChatCitizen[]): void {
+    console.log(`👥 Participant list update:`, participants);
     
     // TODO: Update actual participant list in UI
     // This would require tracking participants and updating the display
