@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.818",
+  "version": "1.0.821",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -281,7 +281,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-14T03:38:11.362Z",
+    "timestamp": "2025-08-14T05:33:42.251Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 26,
     "note": "Generated from clean essential path mappings only"
