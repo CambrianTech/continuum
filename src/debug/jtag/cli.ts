@@ -8,6 +8,7 @@
 
 import { JTAGClientServer } from './system/core/client/server/JTAGClientServer';
 import type { JTAGClientConnectOptions } from './system/core/client/shared/JTAGClient';
+import { agentDetection } from './system/core/detection/AgentDetectionRegistry';
 
 /**
  * AI-Friendly Help System - For Fresh AIs Learning JTAG
@@ -44,6 +45,8 @@ function displayHelp() {
   console.log('💡 AI COMMAND PATTERNS:');
   console.log('----------------------------------------');
   console.log('• All commands auto-start system if not running');
+  console.log('• Auto-detects your identity (Claude, ChatGPT, Human, CI, etc.)');
+  console.log('• Chat widgets get proper labels and persona info');
   console.log('• Use --filename with timestamps: debug-$(date +%s).png');
   console.log('• Chain commands: ./jtag ping && ./jtag screenshot');  
   console.log('• Check logs after any failures');
@@ -107,12 +110,22 @@ async function main() {
     // Debug: show what parameters we parsed
     console.log(`🔧 DEBUG PARAMS:`, JSON.stringify(params, null, 2));
     
-    // Connect quietly to the running JTAG system
+    // AUTO-DETECTION: Automatically detects Claude, ChatGPT, Human, CI, etc.
+    // Leaving parameters blank results in intelligent agent detection
+    const agentContext = agentDetection.createConnectionContext();
     const clientOptions: JTAGClientConnectOptions = {
       targetEnvironment: 'server', 
       transportType: 'websocket',
       serverUrl: 'ws://localhost:9001',
-      enableFallback: false 
+      enableFallback: false,
+      context: {
+        ...agentContext,
+        cli: {
+          command,
+          args: commandArgs,
+          timestamp: new Date().toISOString()
+        }
+      }
     };
     
     // Suppress verbose connection logs by redirecting console temporarily

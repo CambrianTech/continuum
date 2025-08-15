@@ -133,7 +133,42 @@ export interface JTAGClientConnectOptions {
   readonly enableFallback?: boolean;
   readonly maxRetries?: number;
   readonly retryDelay?: number;
-  readonly sessionId: UUID; // Required session ID - client is authority
+  readonly sessionId?: UUID; // Required session ID - client is authority
+  readonly context?: JTAGConnectionContextInput; // Agent detection context and other metadata
+}
+
+export interface JTAGConnectionContextInput {
+  // Agent detection context
+  agentInfo?: {
+    name: string;
+    type: string;
+    version?: string;
+    confidence: number;
+    metadata?: any;
+    plugin: string;
+    detected: boolean;
+  };
+  adapterType?: string;
+  capabilities?: any;
+  outputPreferences?: {
+    format: string;
+    supportsColors: boolean;
+    maxLength?: number;
+    rateLimit?: {
+      requestsPerMinute: number;
+      tokensPerRequest?: number;
+    };
+  };
+  
+  // CLI context
+  cli?: {
+    command: string;
+    args: string[];
+    timestamp: string;
+  };
+  
+  // Additional context fields
+  [key: string]: any;
 }
 
 /**
