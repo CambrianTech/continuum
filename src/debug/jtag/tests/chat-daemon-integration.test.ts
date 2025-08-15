@@ -13,6 +13,7 @@ import { JTAGClientServer } from '../system/core/client/server/JTAGClientServer'
 import type { JTAGClientConnectOptions } from '../system/core/client/shared/JTAGClient';
 import { TestDisplayRenderer } from '../system/core/cli/TestDisplayRenderer';
 import type { TestSummary, TestFailure } from '../system/core/types/TestSummaryTypes';
+import { AgentDetector, detectAgent, isAI, getOutputFormat, getAgentName } from '../system/core/detection/AgentDetector';
 
 interface ChatTestResult {
   testName: string;
@@ -27,19 +28,29 @@ interface ChatTestResult {
  * Automated Chat Daemon Integration Test Suite
  */
 async function runChatDaemonIntegrationTests(): Promise<void> {
-  console.log('💬 AUTOMATED CHAT DAEMON INTEGRATION TESTS - Running in actual JTAG browser');
+  // Detect who is running the tests
+  const agent = detectAgent();
+  console.log(`💬 AUTOMATED CHAT DAEMON INTEGRATION TESTS`);
+  console.log(`🤖 Detected Agent: ${getAgentName()}`);
+  console.log(`📊 Output Format: ${getOutputFormat()}`);
+  console.log('');
   
   let testCount = 0;
   let passCount = 0;
   const results: ChatTestResult[] = [];
   
   try {
-    // Connect to JTAG system (same pattern as screenshot tests)
+    // Connect to JTAG system with agent detection
+    const agentContext = AgentDetector.createConnectionContext();
     const clientOptions: JTAGClientConnectOptions = {
       targetEnvironment: 'server',
       transportType: 'websocket', 
       serverUrl: 'ws://localhost:9001',
-      enableFallback: false
+      enableFallback: false,
+      context: {
+        ...agentContext,
+        testSuite: 'chat-daemon-integration'
+      }
     };
     
     console.log('🔗 Connecting to JTAG system for chat daemon testing...');
@@ -505,8 +516,10 @@ async function runChatDaemonIntegrationTests(): Promise<void> {
     console.log('🔍 Check browser logs for proof: examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log');
     console.log('💡 Look for "AUTOMATED CHAT TEST" and "CHAT INTEGRATION TEST EVIDENCE" messages');
     
-    // Check if called by AI agent
-    const isAIAgent = process.env.JTAG_OUTPUT_FORMAT === 'ai-friendly';
+    // Use universal agent detector
+    const currentAgent = detectAgent();
+    const outputFormat = currentAgent.outputFormat; 
+    const isAIAgent = currentAgent.type === 'ai';
     
     if (isAIAgent) {
       // AI agents get structured success data
@@ -537,8 +550,10 @@ async function runChatDaemonIntegrationTests(): Promise<void> {
       colorOutput: true 
     }));
     
-    // Check if called by AI agent (via environment variable)
-    const isAIAgent = process.env.JTAG_OUTPUT_FORMAT === 'ai-friendly';
+    // Use universal agent detector
+    const currentAgent = detectAgent();
+    const outputFormat = currentAgent.outputFormat;
+    const isAIAgent = currentAgent.type === 'ai';
     
     if (isAIAgent) {
       // AI agents get pure structured data
