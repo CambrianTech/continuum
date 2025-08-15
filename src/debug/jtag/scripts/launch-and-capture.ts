@@ -105,18 +105,18 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
     });
     
     killSession.on('close', () => {
-      // Create tmux session with persistent server (like test-with-server.ts)
+      // Create tmux session with persistent server and log redirection
       const tmuxCmd = [
         'new-session',
         '-d',                    // detached session
         '-s', 'jtag-test',       // session name
-        'npm', 'run', 'start:direct'  // server command
+        `npm run start:direct 2>&1 | tee ${logFile}`  // server command with log redirection
       ];
       
-      console.log(`🔧 Creating persistent tmux session: tmux ${tmuxCmd.join(' ')}`);
+      console.log(`🔧 Creating persistent tmux session with logging: tmux ${tmuxCmd.join(' ')}`);
       
       const child: ChildProcess = spawn('tmux', tmuxCmd, {
-        stdio: ['ignore', 'pipe', 'pipe'],  // Capture output from tmux command
+        stdio: ['ignore', 'pipe', 'pipe'],  // Capture tmux command output
         env: {
           ...process.env,
           FORCE_COLOR: '1',
@@ -125,10 +125,10 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
         cwd: process.cwd()
       });
       
-      // Set up log file streaming
+      // Set up log file streaming for tmux command output (session creation)
       const logStream = fs.createWriteStream(logFile, { flags: 'w' });
       
-      // Pipe tmux command output to log file
+      // Log tmux session creation output first
       child.stdout?.pipe(logStream);
       child.stderr?.pipe(logStream);
       
