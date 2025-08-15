@@ -111,6 +111,8 @@ export abstract class ConsoleDaemon extends DaemonBase {
   private maxBufferSize = 1000;
   private jtagSystemReady = false;
   private drainInterval?: TimerHandle;
+  private sessionWaitQueue: ConsolePayload[] = [];
+  private queueStartTime = Date.now();
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super('console-daemon', context, router);
@@ -212,6 +214,9 @@ export abstract class ConsoleDaemon extends DaemonBase {
       environment: this.context.environment
     });
     
+    // Start session waiting queue drain for initialization messages
+    this.startSessionWaitQueueDrain();
+    
     // Drain existing buffer immediately
     this.drainQueue();
     
@@ -219,6 +224,62 @@ export abstract class ConsoleDaemon extends DaemonBase {
     this.drainInterval = setInterval(() => {
       this.drainQueue();
     }, 500); // Drain every 500ms
+  }
+
+  /**
+   * Start session wait queue drain for messages queued during initialization
+   */
+  private startSessionWaitQueueDrain(): void {
+    if (this.context.environment === 'server') {
+      return; // Server doesn't need session waiting
+    }
+    
+    // Reset queue start time to when drain actually starts
+    this.queueStartTime = Date.now();
+    
+    // Start periodic check for proper session ID (every 500ms, up to 10 seconds)
+    const sessionCheckInterval = setInterval(() => {
+      const globalSessionId = globalSessionContext.getCurrentSessionId();
+      const currentSessionId = globalSessionId ?? this.getCurrentSessionId();
+      const timeWaiting = Date.now() - this.queueStartTime;
+      
+      // Check if we have proper session ID or timeout reached (10 seconds)
+      const hasProperSession = currentSessionId && 
+        currentSessionId !== SYSTEM_SCOPES.SYSTEM && 
+        currentSessionId !== SYSTEM_SCOPES.UNKNOWN_SESSION;
+      const timeoutReached = timeWaiting > 10000;
+      
+      if (hasProperSession || timeoutReached) {
+        // Update all queued messages with proper session ID before draining
+        if (hasProperSession) {
+          this.sessionWaitQueue = this.sessionWaitQueue.map(message => {
+            if (message.sessionId === SYSTEM_SCOPES.SYSTEM || message.sessionId === SYSTEM_SCOPES.UNKNOWN_SESSION) {
+              return createConsolePayload(this.context, currentSessionId, {
+                level: message.level,
+                component: message.component,
+                message: message.message,
+                timestamp: message.timestamp,
+                data: message.data,
+                stack: message.stack
+              });
+            }
+            return message;
+          });
+        }
+        
+        // Move all session wait queue messages to regular queue for draining
+        this.logBuffer.push(...this.sessionWaitQueue);
+        this.sessionWaitQueue = [];
+        
+        // Stop checking for session
+        clearInterval(sessionCheckInterval);
+      }
+    }, 500);
+    
+    // Stop after 10 seconds regardless
+    setTimeout(() => {
+      clearInterval(sessionCheckInterval);
+    }, 10000);
   }
 
   /**
@@ -431,6 +492,18 @@ export abstract class ConsoleDaemon extends DaemonBase {
       timestamp: new Date().toISOString(),
       stack: level === 'error' ? new Error().stack : undefined
     });
+
+    // BROWSER: Check if this should go to session wait queue during initialization
+    if (this.context.environment === 'browser') {
+      const isSystemOrUnknownSession = effectiveSessionId === SYSTEM_SCOPES.SYSTEM || effectiveSessionId === SYSTEM_SCOPES.UNKNOWN_SESSION;
+      const isInitializationTime = Date.now() - this.queueStartTime < 10000; // Within 10 seconds of startup
+      
+      if (isSystemOrUnknownSession && isInitializationTime) {
+        // Queue for session ID update later
+        this.sessionWaitQueue.push(consolePayload);
+        return; // Don't process immediately, wait for proper session
+      }
+    }
 
     // Only add to buffer if logBuffer exists (daemon fully initialized)
     if (this.logBuffer) {

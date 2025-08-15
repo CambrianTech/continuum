@@ -231,7 +231,7 @@ class SystemReadySignaler {
     try {
       const logPath = 'examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log';
       // Use fixed string pattern to avoid shell escaping issues
-      const { stdout } = await execAsync(`tail -50 ${logPath} | grep -F "Bootstrap complete! Discovered" | grep "commands" 2>/dev/null || echo ""`);
+      const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" ${logPath} | grep "commands" 2>/dev/null || echo ""`);
       return stdout.trim().length > 0;
     } catch {
       return false;
@@ -242,7 +242,7 @@ class SystemReadySignaler {
     try {
       const logPath = 'examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log';
       // Get all bootstrap messages and take the LAST one (most recent)
-      const { stdout } = await execAsync(`tail -50 ${logPath} | grep -F "Bootstrap complete! Discovered" | grep "commands" 2>/dev/null || echo ""`);
+      const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" ${logPath} | grep "commands" 2>/dev/null || echo ""`);
       
       if (!stdout.trim()) {
         return 0;

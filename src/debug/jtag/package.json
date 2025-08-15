@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.828",
+  "version": "1.0.840",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -101,7 +101,7 @@
     }
   },
   "scripts": {
-    "start": "npm run system:start",
+    "start": "npm run smart-build && npm run system:deploy && npm run restart:quick",
     "start:direct": "npm run smart-build && npm run system:deploy && npm run system:run",
     "smart-build": "npx tsx scripts/smart-build.ts",
     "kill": "npx tsx scripts/cleanup-dynamic-ports.ts",
@@ -121,7 +121,9 @@
     "system:start": "tsx scripts/launch-and-capture.ts --verbose",
     "system:start:quiet": "tsx scripts/launch-and-capture.ts",
     "system:start:test": "tsx scripts/launch-and-capture.ts --test --no-check",
-    "restart": "tsx scripts/launch-and-capture.ts --force --verbose",
+    "restart": "npm run smart-build && npm run system:deploy && npm run system:run",
+    "restart:quick": "tsx scripts/launch-and-capture.ts --force --verbose",
+    "restart:logs": "npm run system:run",
     "system:stop": "npx tsx scripts/cleanup-dynamic-ports.ts --force && npm run signal:clear",
     "system:wait": "npm run signal:wait",
     "system:restart": "npm run system:stop && npm run restart",
@@ -134,6 +136,7 @@
     "signal:errors": "echo '❌ Recent errors from signal system:' && cat .continuum/jtag/signals/system-ready.json 2>/dev/null | jq -r '.errors[]?, .nodeErrors[]?' 2>/dev/null || echo 'No signal file found'",
     "logs:npm": "tail -f .continuum/jtag/system/logs/npm-start.log",
     "logs:npm:live": "timeout 30 cat /tmp/jtag-pipe || echo 'No output received'",
+    "logs:current": "tail -f examples/test-bench/.continuum/jtag/currentUser/logs/server.log",
     "test:tty": "tmux kill-session -t debug-npm 2>/dev/null; rm -f /tmp/debug-npm.log; tmux new-session -d -s debug-npm \"script -q /dev/null npm run clean\" \\; pipe-pane -o 'cat >> /tmp/debug-npm.log'",
     "system:debug": "echo '=== Tmux session state ===' && (tmux has-session -t jtag-test 2>/dev/null && echo 'Session running' && tmux capture-pane -t jtag-test -p || echo 'Session not running') && echo '' && echo '=== Log file ===' && tail -20 .continuum/jtag/system/logs/npm-start.log",
     "screenshot": "npx tsx scripts/screenshot.ts",
@@ -284,7 +287,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-14T20:50:03.293Z",
+    "timestamp": "2025-08-15T03:12:55.843Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 26,
     "note": "Generated from clean essential path mappings only"
