@@ -371,7 +371,7 @@ class SystemReadySignaler {
   private async checkBrowserReady(): Promise<boolean> {
     try {
       const systemConfig = getSystemConfig();
-      const httpUrl = systemConfig.getHTTPUrl();
+      const httpUrl = systemConfig.getHTTPBaseUrl();
       const { stdout } = await execAsync(`curl -s --max-time 3 ${httpUrl} 2>/dev/null | grep -i "jtag" || echo ""`);
       return stdout.includes('JTAG');
     } catch {

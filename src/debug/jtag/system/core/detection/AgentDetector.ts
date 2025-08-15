@@ -65,7 +65,7 @@ export class AgentDetector {
       process.env.CLAUDECODE === '1',
       process.env.CLAUDE_CODE_ENTRYPOINT === 'cli',
       process.env.ANTHROPIC_CLI === 'true',
-      this.checkParentProcess('claude')
+      AgentDetector.checkParentProcess('claude')
     ];
     
     const matches = indicators.filter(Boolean).length;
@@ -108,8 +108,8 @@ export class AgentDetector {
       process.env.OPENAI_API_KEY !== undefined,
       process.env.CHATGPT_CLI === 'true',
       process.env.OPENAI_CLI === 'true',
-      this.checkParentProcess('gpt'),
-      this.checkParentProcess('openai')
+      AgentDetector.checkParentProcess('gpt'),
+      AgentDetector.checkParentProcess('openai')
     ];
     
     const matches = indicators.filter(Boolean).length;
@@ -140,7 +140,7 @@ export class AgentDetector {
     const indicators = [
       process.env.GITHUB_COPILOT === 'true',
       process.env.VSCODE_PID !== undefined && process.env.TERM_PROGRAM === 'vscode',
-      this.checkParentProcess('copilot')
+      AgentDetector.checkParentProcess('copilot')
     ];
     
     const matches = indicators.filter(Boolean).length;
