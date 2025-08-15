@@ -12,11 +12,19 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import { JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { ChatDaemon, type ChatMessage, type ChatCitizen } from '../shared/ChatDaemon';
+// TEMPORARILY DISABLED: import { ChatRoomUpdateCommand } from '../commands/ChatRoomUpdateCommand';
 import type { 
   ChatListRoomsResponse,
   ChatJoinRoomResponse,
   ChatSendMessageResponse,
-  ChatErrorResponse
+  ChatErrorResponse,
+  SessionParticipant,
+  ChatRoomUpdateParams,
+  ParticipantCapabilities
+} from '../shared/ChatTypes';
+import { 
+  createChatJoinRoomParams,
+  createChatSendMessageParams
 } from '../shared/ChatTypes';
 
 export class ChatDaemonBrowser extends ChatDaemon {
@@ -284,8 +292,8 @@ export class ChatDaemonBrowser extends ChatDaemon {
       try {
         const message = JTAGMessageFactory.createRequest(
           this.context,
-          'chat',
-          'create-room',
+          'browser/chat',
+          'server/chat/create-room',
           { 
             context: this.context,
             sessionId: this.context.uuid,
@@ -373,7 +381,7 @@ export class ChatDaemonBrowser extends ChatDaemon {
 
       if (responsePayload.success) {
         this.currentRoomId = responsePayload.roomId || null;
-        this.currentCitizenId = responsePayload.citizenId;
+        this.currentCitizenId = responsePayload.citizenId || null;
         
         // Enable chat input
         const messageInput = document.getElementById('message-input') as HTMLInputElement;
