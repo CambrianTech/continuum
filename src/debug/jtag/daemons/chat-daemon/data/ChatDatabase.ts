@@ -335,6 +335,7 @@ export class ChatDatabase {
     const subscribedRooms = roomRows.map(r => r.room_id);
 
     return {
+      participantId: row.citizen_id, // Required by SessionParticipant
       citizenId: row.citizen_id,
       sessionId: row.session_id,
       displayName: row.display_name,
@@ -472,6 +473,7 @@ export class ChatDatabase {
       senderType: row.sender_type,
       content: row.content,
       timestamp: row.timestamp,
+      category: this.mapLegacyTypeToCategory(row.message_type), // Required by ChatMessage
       messageType: row.message_type,
       replyToId: row.reply_to_id,
       mentions: row.mentions ? row.mentions.split(',') : [],
@@ -561,6 +563,18 @@ export class ChatDatabase {
     this.db.close();
     this.isInitialized = false;
     console.log(`🔒 ChatDatabase: Connection closed`);
+  }
+
+  /**
+   * Map legacy message type to universal category
+   */
+  private mapLegacyTypeToCategory(messageType: string): 'chat' | 'system' | 'response' | 'notification' {
+    switch (messageType) {
+      case 'system': return 'system';
+      case 'ai-response': return 'response';
+      case 'notification': return 'notification';
+      default: return 'chat';
+    }
   }
 
   /**
