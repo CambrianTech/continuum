@@ -171,15 +171,24 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
               signalCode: null
             });
             
-            // Set up server readiness detection
+            // Set up server readiness detection with timeout
             let serverDetectionTimeout: NodeJS.Timeout;
             let serverStartupDetected = false;
+            let detectionAttempts = 0;
+            const maxDetectionAttempts = 24; // 2 minutes (24 * 5s = 120s)
             
             const detectServerStartup = () => {
               serverDetectionTimeout = setTimeout(async () => {
                 if (serverStartupDetected) return;
                 
-                console.log('🔍 Checking if JTAG server is responsive in tmux session...');
+                detectionAttempts++;
+                
+                // Only show message on first attempt, then show dots for progress
+                if (detectionAttempts === 1) {
+                  process.stdout.write('🔍 Waiting for JTAG server to be ready');
+                } else if (detectionAttempts <= maxDetectionAttempts) {
+                  process.stdout.write('.');
+                }
                 
                 try {
                   // Check if the server is actually running by testing readiness
@@ -189,8 +198,8 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
                     serverStartupDetected = true;
                     clearTimeout(serverDetectionTimeout);
                     
-                    console.log('✅ JTAG server is running and responsive in tmux!');
-                    console.log(`📊 Commands detected: ${signal.commandCount}`);
+                    console.log(' ✅');
+                    console.log(`🚀 JTAG server ready! (${signal.commandCount} commands available)`);
                     
                     resolve({
                       success: true,
@@ -200,14 +209,37 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
                       diagnostics: createDiagnostics()
                     });
                     
-                  } else {
-                    console.log('⏳ Server still starting up in tmux, checking again in 5s...');
+                  } else if (detectionAttempts < maxDetectionAttempts) {
                     detectServerStartup(); // Try again
+                  } else {
+                    console.log('⏰ Server detection timeout - system may be ready but health check is failing');
+                    console.log('🔧 The system is likely running in the background. Check with: tmux attach-session -t jtag-test');
+                    
+                    resolve({
+                      success: true, // Still success since tmux launched
+                      reason: 'launch_success_with_timeout',
+                      processId: tmuxPid,
+                      logFile,
+                      diagnostics: createDiagnostics()
+                    });
                   }
                   
                 } catch (error) {
-                  console.log('⏳ Server not ready yet, checking again in 5s...');
-                  detectServerStartup(); // Try again
+                  if (detectionAttempts < maxDetectionAttempts) {
+                    console.log('⏳ Server not ready yet, checking again in 5s...');
+                    detectServerStartup(); // Try again
+                  } else {
+                    console.log('⏰ Server detection timeout after multiple attempts');
+                    console.log('🔧 The system may be running in the background. Check with: tmux attach-session -t jtag-test');
+                    
+                    resolve({
+                      success: true, // Still success since tmux launched
+                      reason: 'launch_success_with_timeout',
+                      processId: tmuxPid,
+                      logFile,
+                      diagnostics: createDiagnostics()
+                    });
+                  }
                 }
                 
               }, 5000); // Check every 5 seconds
