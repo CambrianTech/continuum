@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.848",
+  "version": "1.0.853",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -140,11 +140,14 @@
     "test:tty": "tmux kill-session -t debug-npm 2>/dev/null; rm -f /tmp/debug-npm.log; tmux new-session -d -s debug-npm \"script -q /dev/null npm run clean\" \\; pipe-pane -o 'cat >> /tmp/debug-npm.log'",
     "system:debug": "echo '=== Tmux session state ===' && (tmux has-session -t jtag-test 2>/dev/null && echo 'Session running' && tmux capture-pane -t jtag-test -p || echo 'Session not running') && echo '' && echo '=== Log file ===' && tail -20 .continuum/jtag/system/logs/npm-start.log",
     "screenshot": "npx tsx scripts/screenshot.ts",
-    "test": "timeout 300 bash -c 'rm -rf examples/test-bench/.continuum/jtag/currentUser/logs/* 2>/dev/null || true && npm run test:start-and-test' || (echo '❌ ERROR: npm test exceeded 300-second timeout - system may be hung' && echo '🔍 Check system logs: .continuum/jtag/system/logs/npm-start.log' && echo '🛠️  Try: npm run system:stop && npm run system:start' && exit 1)",
+    "test": "timeout 300 bash -c 'rm -rf examples/test-bench/.continuum/jtag/currentUser/logs/* 2>/dev/null || true && npm run test:compiler-check && npm run test:start-and-test' || (echo '❌ ERROR: npm test exceeded 300-second timeout - system may be hung' && echo '🔍 Check system logs: .continuum/jtag/system/logs/npm-start.log' && echo '🛠️  Try: npm run system:stop && npm run system:start' && exit 1)",
+    "test:compiler-check": "echo '🔍 PRE-TEST: TypeScript Compilation Check...' && npx tsc --noEmit --project . && echo '✅ TypeScript compilation passed - proceeding with tests'",
+    "test:compiler-error-detection": "npx tsx tests/compiler-error-detection.test.ts",
     "test:start-and-test": "npx tsx scripts/test-with-server.ts",
     "test:verify-and-run": "echo '🔍 WAITING FOR SYSTEM BOOTSTRAP...' && npm run signal:wait && echo '🔍 VERIFYING SYSTEM BOOTSTRAP...' && grep 'Bootstrap complete' examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log | tail -1 && echo '✅ BOOTSTRAP VERIFIED - RUNNING TESTS' && npm run test:comprehensive",
-    "test:comprehensive": "echo '🚀 AUTONOMOUS TEST SUITE - Full End-to-End' && npx tsx tests/bootstrap-comprehensive.test.ts && npx tsx tests/integration/browser-automated-tests.test.ts && npx tsx tests/server-screenshot.test.ts && npx tsx tests/screenshot-verification.test.ts && npx tsx tests/signal-system.test.ts && npx tsx tests/chat-daemon-integration.test.ts && npx tsx tests/chat-real-data.test.ts",
+    "test:comprehensive": "echo '🚀 AUTONOMOUS TEST SUITE - Full End-to-End' && npm run test:compiler-error-detection && npx tsx tests/bootstrap-comprehensive.test.ts && npx tsx tests/integration/browser-automated-tests.test.ts && npx tsx tests/server-screenshot.test.ts && npx tsx tests/screenshot-verification.test.ts && npx tsx tests/signal-system.test.ts && npx tsx tests/chat-daemon-integration.test.ts && npx tsx tests/chat-real-data.test.ts",
     "test:simple": "echo '🚀 SIMPLE TEST SUITE' && npx tsx tests/bootstrap-comprehensive.test.ts",
+    "test:precommit": "echo '🔍 PRECOMMIT VALIDATION - Fast & Essential' && npm run test:compiler-check && npm run system:stop 2>/dev/null && npm run system:start:test && npm run signal:wait && npx tsx tests/bootstrap-comprehensive.test.ts && npx tsx tests/server-screenshot.test.ts && echo '✅ PRECOMMIT VALIDATION PASSED'",
     "test:unit": "echo '🧪 Unit Tests (needs import path fixes)' && echo 'TODO: Fix unit test imports'",
     "test:integration": "echo '🔗 Integration Tests: Transport & Cross-Context Commands' && npm run test:transport && npm run test:cross-context && npm run test:routing",
     "test:e2e": "echo '🎯 End-to-End Tests (needs system running first: npm run system:start)' && npm run test:server-client",
@@ -197,6 +200,7 @@
     "test:p2p-discovery": "echo '🔍 Testing P2P node discovery only' && JTAG_P2P_TEST_TYPE=discovery npx tsx tests/integration/p2p-mesh-networking.test.ts",
     "test:p2p-routing": "echo '📡 Testing P2P message routing only' && JTAG_P2P_TEST_TYPE=routing npx tsx tests/integration/p2p-mesh-networking.test.ts",
     "test:chat-integration": "echo '💬 Testing chat daemon integration (runs IN JTAG browser)' && npm run system:ensure && npx tsx tests/chat-daemon-integration.test.ts",
+    "test:chat-integration:ai": "echo '🤖 Chat integration tests - AI format' && JTAG_OUTPUT_FORMAT=ai-friendly npm run test:chat-integration",
     "test:chat-load": "echo '📊 Testing chat real data load scenarios (runs IN JTAG browser)' && npm run system:ensure && npx tsx tests/chat-real-data.test.ts",
     "test:chat-tdd": "echo '🧪 TDD Chat daemon tests (Red → Green → Refactor)' && npm run system:ensure && npx tsx tests/chat-daemon-tdd.test.ts",
     "test:legacy:comprehensive-transport": "npx tsx tests/integration/transport/comprehensive-transport-test.ts",
@@ -287,7 +291,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-15T15:39:23.762Z",
+    "timestamp": "2025-08-15T17:51:30.472Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 26,
     "note": "Generated from clean essential path mappings only"

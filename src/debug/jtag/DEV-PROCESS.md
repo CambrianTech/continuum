@@ -3,6 +3,34 @@
 
 ---
 
+## 🤖 **FRESH AI QUICK START** *(30 seconds to productivity)*
+
+**Step 1: Get oriented**
+```bash
+./jtag help                    # Your complete command reference
+npm run agent                  # Your development control room
+```
+
+**Step 2: Check system health**
+```bash
+npm run agent:quick            # Instant health check
+```
+
+**Step 3: Check for problems**
+```bash
+tail -20 examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-error.log
+```
+
+**Step 4: Take a screenshot (proves everything works)**
+```bash
+./jtag screenshot --filename=first-test-$(date +%s).png
+```
+
+**🎯 If all four work: You're autonomous! Continue with normal development.**  
+**❌ If any fail: Use `npm run agent:fix` or check the detailed guides below.**
+
+---
+
 ## 📋 **TABLE OF CONTENTS**
 
 ### **🚀 QUICK START**
@@ -32,6 +60,13 @@
 
 ### **If you're a new AI session, start here:**
 
+**🤖 NEW: AI Command Center (Your Best Friend!)**
+```bash
+./jtag help                    # Complete AI-friendly command guide
+npm run agent                  # Your autonomous development dashboard
+npm run agent:quick            # Instant system status
+```
+
 **Step 1: Verify the system works**
 ```bash
 npm test
@@ -44,14 +79,56 @@ npm test
 # Expected: ✅ screenshot: SUCCESS
 ```
 
-**Step 3: Check integration evidence**
+**Step 3: Check integration evidence (NEW: AI-optimized paths)**
 ```bash
+# EASY WAY (uses currentUser symlink):
+tail -20 examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-error.log
+
+# OR traditional way:
 grep "AUTOMATED TEST\|PROOF\|INTEGRATION" examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log
 # Expected: Multiple lines showing browser test execution
 ```
 
 **✅ If all three work: You're ready for autonomous development**  
 **❌ If any fail: Go to [AUTONOMOUS DEBUGGING](#autonomous-debugging)**
+
+---
+
+## 🤖 **AI AUTONOMY FEATURES** *(NEW - August 2025)*
+
+### **🎯 Your AI Command Center**
+The system now provides AI-optimized tools for completely autonomous development:
+
+**🚨 ERROR LOGS (Check These FIRST!):**
+```bash
+# NEW: Dedicated error logs with currentUser symlinks (AI-friendly!)
+tail -20 examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-error.log
+tail -20 examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-error.json
+```
+
+**📊 AI Dashboard (Your Control Room):**
+```bash
+npm run agent                  # Full dashboard with everything you need
+npm run agent:quick            # Instant status check  
+npm run agent:fix              # Auto-fix common issues
+```
+
+**💡 AI-Optimized Bash Commands (Copy & Paste Ready):**
+```bash
+# The dashboard shows you these exact commands - no memorization needed!
+tail -50 examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log
+grep -i error examples/test-bench/.continuum/jtag/currentUser/logs/*.log
+ls -la examples/test-bench/.continuum/jtag/currentUser/logs/
+```
+
+**🔧 JTAG Help System:**
+```bash
+./jtag help                    # Complete command reference for AIs
+./jtag list                    # All available commands
+./jtag ping                    # Quick system health check
+```
+
+**🎯 Key Breakthrough**: No more hard-to-remember paths! The `currentUser` symlink gives you direct access to all logs and files for the active session.
 
 ---
 
@@ -98,6 +175,14 @@ const result = await client.commands.exec({
 
 ## 🛠️ **ESSENTIAL COMMANDS**
 
+### **🤖 NEW: AI-First Commands**
+```bash
+./jtag help                 # 🆕 Complete AI command reference (START HERE!)
+npm run agent               # 🆕 AI autonomous development dashboard  
+npm run agent:quick         # 🆕 Instant system status for AIs
+npm run agent:fix           # 🆕 Auto-fix common issues
+```
+
 ### **System Management**
 ```bash
 npm test                    # Full autonomous test suite
@@ -106,11 +191,14 @@ npm run system:stop        # Clean shutdown
 npm run signal:wait        # Wait for system readiness
 ```
 
-### **Immediate Debugging**
+### **Immediate Debugging (AI-Optimized)**
 ```bash
 ./jtag screenshot --querySelector body --filename debug-$(date +%s).png  # Visual validation (creates real PNG files)
 ./jtag ping                 # Basic connectivity test (shows actual JSON response)
 npm run logs:npm           # Monitor startup logs
+
+# 🆕 NEW: AI-friendly error checking (use currentUser symlinks!)
+tail -20 examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-error.log
 ```
 
 ### **AI Code Execution (VERIFIED WORKING)**
@@ -125,16 +213,23 @@ npm run logs:npm           # Monitor startup logs
 ./jtag compile-typescript --code "const msg: string = 'AI compiled this!'; console.log(msg);"
 ```
 
-### **Evidence Gathering**
+### **Evidence Gathering (AI-Optimized with currentUser symlinks)**
 ```bash
+# 🚨 ERRORS FIRST! (NEW: Easy-to-access error logs)
+tail -20 examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-error.log
+tail -20 examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-error.json
+
 # System status
 grep "Bootstrap complete" examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log
 
 # Integration proof
 grep "AUTOMATED TEST\|PROOF" examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log
 
-# Error analysis
-tail -50 examples/test-bench/.continuum/jtag/sessions/*/logs/server-console-log.log | grep -i error
+# Error analysis (all logs in one place!)
+grep -i error examples/test-bench/.continuum/jtag/currentUser/logs/*.log
+
+# 🆕 AI TIP: Use the dashboard for pre-made commands
+npm run agent                # Shows you all these commands ready to copy-paste!
 ```
 
 ---

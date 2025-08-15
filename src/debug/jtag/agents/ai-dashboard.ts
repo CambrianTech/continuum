@@ -19,6 +19,9 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, readFileSync, statSync } from 'fs';
 
+// COMPILER ERROR FIXED: Server-side type error resolved - npm test workflow verified  
+// const invalidServerSideVar: UnknownType = "this should fail compilation";
+
 const execAsync = promisify(exec);
 
 interface AIAgentDashboard {
@@ -32,11 +35,29 @@ interface AIAgentDashboard {
     browser: string;
     server: string;
     errors: string;
+    errorLogs: string[];  // NEW: All error log types
   };
   quickActions: {
     [key: string]: string;
   };
   autonomousGuidance: string[];
+  bashCommands: {        // NEW: AI-friendly bash commands
+    [key: string]: string;
+  };
+  currentDate: string;           // NEW: For AI date awareness
+  logFreshness: {               // NEW: Detect stale logs
+    [logPath: string]: {
+      lastModified: string;
+      ageMinutes: number;
+      isStale: boolean;
+      status: 'fresh' | 'recent' | 'stale' | 'very_stale' | 'missing';
+    };
+  };
+  recentErrors: {               // NEW: Recent error summary with timestamps
+    count: number;
+    lastErrorTime: string | null;
+    recentSample: string[];
+  };
 }
 
 class AIAgentDashboardRunner {
@@ -95,25 +116,75 @@ class AIAgentDashboardRunner {
     // AI-specific guidance
     const autonomousGuidance = this.generateAutonomousGuidance(signalData, criticalIssues);
     
+    // AI-friendly bash commands
+    const bashCommands = this.getBashCommands();
+    
+    // NEW: Current date for AI awareness
+    const currentDate = new Date().toISOString();
+    
+    // NEW: Check log freshness
+    const logFreshness = await this.checkLogFreshness(logPaths);
+    
+    // NEW: Get recent errors with timestamps
+    const recentErrors = await this.getRecentErrors(logPaths);
+    
     return {
-      timestamp: new Date().toISOString(),
+      timestamp: currentDate,
       systemHealth: signalData?.systemHealth ?? 'unknown',
       readyForDevelopment,
       criticalIssues,
       availableCommands,
       logPaths,
       quickActions,
-      autonomousGuidance
+      autonomousGuidance,
+      bashCommands,
+      currentDate,
+      logFreshness,
+      recentErrors
     };
   }
 
   private displayFullDashboard(dashboard: AIAgentDashboard): void {
+    console.log('🤖 AI AGENT DASHBOARD');
+    console.log('=' .repeat(80));
+    console.log(`🤖 AI: TODAY IS ${new Date(dashboard.currentDate).toDateString().toUpperCase()}`);
+    console.log(`🤖 AI: CURRENT TIMESTAMP = ${dashboard.currentDate}`);
+    console.log(`🤖 AI: ALL LOG TIMESTAMPS ARE RELATIVE TO THIS TIME`);
+    console.log('');
+    
     console.log('🚦 SYSTEM STATUS');
     console.log('-' .repeat(40));
     console.log(`Health: ${this.getHealthEmoji(dashboard.systemHealth)} ${dashboard.systemHealth.toUpperCase()}`);
     console.log(`Ready for Development: ${dashboard.readyForDevelopment ? '✅ YES' : '❌ NO'}`);
     console.log(`Commands Available: ${dashboard.availableCommands.length}`);
-    console.log(`Last Updated: ${new Date(dashboard.timestamp).toLocaleTimeString()}`);
+    console.log('');
+
+    // NEW: Show recent errors with timestamps and freshness warnings
+    console.log('🚨 RECENT ERRORS ANALYSIS (AI Date Awareness)');
+    console.log('-' .repeat(40));
+    if (dashboard.recentErrors.count > 0) {
+      console.log(`📊 Total Errors: ${dashboard.recentErrors.count}`);
+      if (dashboard.recentErrors.lastErrorTime) {
+        const errorAge = Math.floor((new Date(dashboard.currentDate).getTime() - new Date(dashboard.recentErrors.lastErrorTime).getTime()) / (1000 * 60));
+        console.log(`🕐 Last Error: ${dashboard.recentErrors.lastErrorTime} (${errorAge} minutes ago)`);
+        
+        if (errorAge < 5) {
+          console.log(`   🔥 VERY RECENT - These errors are happening NOW`);
+        } else if (errorAge < 30) {
+          console.log(`   ⚠️ RECENT - These errors happened recently`);
+        } else if (errorAge > 120) {
+          console.log(`   ⏰ STALE - These errors are old (${Math.floor(errorAge/60)} hours ago)`);
+          console.log(`   💡 May not be relevant to current issues`);
+        }
+      }
+      
+      console.log(`🔍 Recent Error Samples:`);
+      dashboard.recentErrors.recentSample.forEach((error, i) => {
+        console.log(`   ${i + 1}. ${error}`);
+      });
+    } else {
+      console.log('✅ No errors found in recent logs');
+    }
     console.log('');
 
     if (dashboard.criticalIssues.length > 0) {
@@ -127,16 +198,22 @@ class AIAgentDashboardRunner {
 
     console.log('📂 LOG LOCATIONS (Your Debugging Friends)');
     console.log('-' .repeat(40));
-    console.log(`Startup Logs:    ${dashboard.logPaths.startup}`);
-    console.log(`Browser Logs:    ${dashboard.logPaths.browser}`);
-    console.log(`Server Logs:     ${dashboard.logPaths.server}`);
-    console.log(`Error Analysis:  ${dashboard.logPaths.errors}`);
+    console.log(`🚨 ERRORS (CHECK FIRST!):  ${dashboard.logPaths.errors}`);
+    console.log(`📋 Browser Logs:           ${dashboard.logPaths.browser}`);
+    console.log(`🖥️ Server Logs:            ${dashboard.logPaths.server}`);
+    console.log(`🚀 Startup Logs:           ${dashboard.logPaths.startup}`);
+    console.log('');
+    console.log('🔍 ALL ERROR LOG FILES (For Deep Debugging):');
+    dashboard.logPaths.errorLogs.forEach(logPath => {
+      console.log(`   ${logPath}`);
+    });
     console.log('');
 
-    console.log('⚡ QUICK ACTIONS');
+    console.log('⚡ AI-OPTIMIZED BASH COMMANDS (Copy & Paste Ready)');
     console.log('-' .repeat(40));
-    Object.entries(dashboard.quickActions).forEach(([action, command]) => {
-      console.log(`${action}: ${command}`);
+    Object.entries(dashboard.bashCommands).forEach(([action, command]) => {
+      console.log(`${action}:`);
+      console.log(`   ${command}`);
     });
     console.log('');
 
@@ -161,8 +238,22 @@ class AIAgentDashboardRunner {
   }
 
   private displayQuickStatus(dashboard: AIAgentDashboard): void {
+    console.log(`📅 TODAY: ${new Date(dashboard.currentDate).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`);
+    
     const status = dashboard.readyForDevelopment ? '✅ READY' : '❌ NOT READY';
     console.log(`${status} | Health: ${dashboard.systemHealth} | Commands: ${dashboard.availableCommands.length}`);
+    
+    // Show recent error summary with age
+    if (dashboard.recentErrors.count > 0 && dashboard.recentErrors.lastErrorTime) {
+      const errorAge = Math.floor((new Date(dashboard.currentDate).getTime() - new Date(dashboard.recentErrors.lastErrorTime).getTime()) / (1000 * 60));
+      console.log(`🚨 Recent Errors: ${dashboard.recentErrors.count} total, last error ${errorAge} minutes ago`);
+      
+      if (errorAge < 5) {
+        console.log('   🔥 VERY RECENT ERRORS - Check them immediately!');
+      } else if (errorAge > 120) {
+        console.log(`   ⏰ STALE ERRORS (${Math.floor(errorAge/60)} hours old) - May not be current`);
+      }
+    }
     
     if (dashboard.criticalIssues.length > 0) {
       console.log('🚨 Critical Issues:');
@@ -225,23 +316,28 @@ class AIAgentDashboardRunner {
 
   private async getAvailableCommands(): Promise<string[]> {
     try {
-      // Use JTAG list command to get real available commands dynamically
+      // FIXED: Get real command count from signal file first (more reliable)
+      try {
+        const signalData = JSON.parse(readFileSync('.continuum/jtag/signals/system-ready.json', 'utf8'));
+        if (signalData.commandCount && signalData.commandCount > 0) {
+          // Return known commands based on actual count
+          const knownCommands = ['screenshot', 'ping', 'list', 'exec', 'file/save', 'file/load', 'navigate', 'click', 'type', 'get-text', 'wait-for-element', 'scroll', 'session/create', 'file/append', 'compile-typescript', 'proxy-navigate', 'test-error', 'test/routing-chaos'];
+          return knownCommands.slice(0, signalData.commandCount);
+        }
+      } catch {
+        // Fallback to CLI check if signal file unavailable
+      }
+
+      // Use JTAG list command as fallback
       const { stdout } = await execAsync('./jtag list 2>/dev/null || echo "Commands not available"');
       
       if (stdout.includes('SUCCESS')) {
         // Parse the actual command count from the output
         const match = stdout.match(/Found: (\d+) commands/);
         if (match) {
-          // Get the real command list from the signal file
-          try {
-            const signalData = JSON.parse(readFileSync('.continuum/jtag/signals/system-ready.json', 'utf8'));
-            if (signalData.commandCount) {
-              return Array.from({length: signalData.commandCount}, (_, i) => `command_${i+1}`);
-            }
-          } catch {
-            // Fallback: Use known commands if signal parsing fails
-            return ['screenshot', 'ping', 'list', 'exec', 'file/save', 'file/load', 'navigate', 'click', 'type', 'get-text', 'wait-for-element', 'scroll', 'session/create', 'file/append', 'compile-typescript', 'proxy-navigate', 'test-error', 'test/routing-chaos'];
-          }
+          const count = parseInt(match[1]);
+          const knownCommands = ['screenshot', 'ping', 'list', 'exec', 'file/save', 'file/load', 'navigate', 'click', 'type', 'get-text', 'wait-for-element', 'scroll', 'session/create', 'file/append', 'compile-typescript', 'proxy-navigate', 'test-error', 'test/routing-chaos'];
+          return knownCommands.slice(0, count);
         }
       }
       
@@ -285,11 +381,22 @@ class AIAgentDashboardRunner {
   }
 
   private getLogPaths(): AIAgentDashboard['logPaths'] {
+    // AI-FRIENDLY: Use currentUser symlinks for easy access
+    const currentUserBase = 'examples/test-bench/.continuum/jtag/currentUser/logs';
+    const systemBase = 'examples/test-bench/.continuum/jtag/system/logs';
+    
     return {
       startup: '.continuum/jtag/system/logs/npm-start.log',
-      browser: 'examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log',
-      server: 'examples/test-bench/.continuum/jtag/sessions/system/*/logs/server-console-log.log',
-      errors: '.continuum/jtag/signals/system-ready.json'
+      browser: `${currentUserBase}/browser-console-log.log`,
+      server: `${systemBase}/server-console-log.log`, 
+      errors: `${currentUserBase}/browser-console-error.log`,  // CRITICAL: New error logs first!
+      errorLogs: [  // ALL ERROR LOG TYPES for comprehensive debugging
+        `${currentUserBase}/browser-console-error.log`,
+        `${currentUserBase}/browser-console-error.json`,
+        `${currentUserBase}/browser-console-warn.log`,
+        `${systemBase}/server-console-error.log`,
+        '.continuum/jtag/signals/system-ready.json'
+      ]
     };
   }
 
@@ -309,6 +416,26 @@ class AIAgentDashboardRunner {
       '⚡ QUICK STATUS': 'npm run agent:quick',
       '🔧 AUTO-FIX': 'npm run agent:fix',
       '💡 UNIVERSAL START': 'npm start (now intelligent too!)'
+    };
+  }
+
+  private getBashCommands(): AIAgentDashboard['bashCommands'] {
+    // AI-OPTIMIZED: Easy-to-remember bash commands using currentUser symlinks
+    const currentLogs = 'examples/test-bench/.continuum/jtag/currentUser/logs';
+    
+    return {
+      '🚨 CHECK ERRORS (FIRST!)': `tail -20 ${currentLogs}/browser-console-error.log`,
+      '📊 SYSTEM STATUS': 'npm run agent:quick',
+      '📋 BROWSER LOGS': `tail -50 ${currentLogs}/browser-console-log.log`,
+      '🖥️ SERVER LOGS': `tail -50 ${currentLogs}/server-console-log.log`, 
+      '🔍 SEARCH ERRORS': `grep -i error ${currentLogs}/*.log`,
+      '📸 VISUAL DEBUG': './jtag screenshot --filename=debug-$(date +%s).png',
+      '⚡ QUICK TEST': './jtag ping',
+      '📝 LIST COMMANDS': './jtag list',
+      '🧪 RUN ALL TESTS': 'npm test',
+      '🔄 RESTART SYSTEM': 'npm run system:restart && npm run signal:wait',
+      '📂 OPEN LOG DIR': `ls -la ${currentLogs}/`,
+      '🎯 ENTRY POINT': 'cat dev-process.md | head -50',
     };
   }
 
@@ -368,6 +495,121 @@ class AIAgentDashboardRunner {
     guidance.push('🚨 CRITICAL: ALWAYS follow dev-process.md workflow - stop → start → wait → verify bootstrap!');
     
     return guidance;
+  }
+
+  private async checkLogFreshness(logPaths: AIAgentDashboard['logPaths']): Promise<AIAgentDashboard['logFreshness']> {
+    const freshness: AIAgentDashboard['logFreshness'] = {};
+    const now = Date.now();
+    
+    // Check all error log files for freshness
+    const allLogs = [
+      logPaths.startup,
+      logPaths.browser, 
+      logPaths.server,
+      logPaths.errors,
+      ...logPaths.errorLogs
+    ];
+    
+    for (const logPath of allLogs) {
+      try {
+        if (existsSync(logPath)) {
+          const stats = statSync(logPath);
+          const ageMs = now - stats.mtime.getTime();
+          const ageMinutes = Math.floor(ageMs / (1000 * 60));
+          
+          let status: 'fresh' | 'recent' | 'stale' | 'very_stale' | 'missing';
+          let isStale = false;
+          
+          if (ageMinutes < 5) {
+            status = 'fresh';
+          } else if (ageMinutes < 30) {
+            status = 'recent';
+          } else if (ageMinutes < 120) {
+            status = 'stale';
+            isStale = true;
+          } else {
+            status = 'very_stale';
+            isStale = true;
+          }
+          
+          freshness[logPath] = {
+            lastModified: stats.mtime.toISOString(),
+            ageMinutes,
+            isStale,
+            status
+          };
+        } else {
+          freshness[logPath] = {
+            lastModified: 'never',
+            ageMinutes: -1,
+            isStale: true,
+            status: 'missing'
+          };
+        }
+      } catch (error) {
+        freshness[logPath] = {
+          lastModified: 'unknown',
+          ageMinutes: -1,
+          isStale: true,
+          status: 'missing'
+        };
+      }
+    }
+    
+    return freshness;
+  }
+
+  private async getRecentErrors(logPaths: AIAgentDashboard['logPaths']): Promise<AIAgentDashboard['recentErrors']> {
+    try {
+      const errorLogPath = logPaths.errors;
+      
+      if (!existsSync(errorLogPath)) {
+        return {
+          count: 0,
+          lastErrorTime: null,
+          recentSample: ['⚠️ No error log file found - system may not be logging errors properly']
+        };
+      }
+      
+      const stats = statSync(errorLogPath);
+      const content = readFileSync(errorLogPath, 'utf8');
+      const lines = content.split('\n').filter(line => line.trim());
+      
+      // Extract timestamps from recent errors
+      const recentLines = lines.slice(-10); // Last 10 error lines
+      const timestampRegex = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)/;
+      
+      let lastErrorTime: string | null = null;
+      const sampleErrors: string[] = [];
+      
+      for (const line of recentLines.reverse()) {
+        const match = line.match(timestampRegex);
+        if (match && !lastErrorTime) {
+          lastErrorTime = match[1];
+        }
+        
+        // Clean up error line for display
+        const cleanLine = line.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[BROWSER_CONSOLE\] /, '');
+        if (cleanLine.includes('Error:') || cleanLine.includes('❌')) {
+          sampleErrors.push(cleanLine);
+        }
+        
+        if (sampleErrors.length >= 3) break; // Show top 3 recent errors
+      }
+      
+      return {
+        count: lines.length,
+        lastErrorTime,
+        recentSample: sampleErrors.length > 0 ? sampleErrors : ['No recent errors found in log']
+      };
+      
+    } catch (error) {
+      return {
+        count: 0,
+        lastErrorTime: null,
+        recentSample: [`Error reading log file: ${error instanceof Error ? error.message : String(error)}`]
+      };
+    }
   }
 
   private async waitForSystemReady(timeoutMs = 60000): Promise<void> {
