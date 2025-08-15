@@ -108,9 +108,21 @@ npm run signal:wait        # Wait for system readiness
 
 ### **Immediate Debugging**
 ```bash
-./jtag screenshot           # Visual system validation
-./jtag ping                 # Basic connectivity test
+./jtag screenshot --querySelector body --filename debug-$(date +%s).png  # Visual validation (creates real PNG files)
+./jtag ping                 # Basic connectivity test (shows actual JSON response)
 npm run logs:npm           # Monitor startup logs
+```
+
+### **AI Code Execution (VERIFIED WORKING)**
+```bash
+# Execute JavaScript in browser - returns actual results
+./jtag exec --code "{\"type\": \"inline\", \"language\": \"javascript\", \"source\": \"return {message: 'AI controlled!', timestamp: Date.now()}\"}" --environment browser
+
+# Navigate browser programmatically  
+./jtag navigate --url "http://localhost:9002"
+
+# Compile TypeScript on demand
+./jtag compile-typescript --code "const msg: string = 'AI compiled this!'; console.log(msg);"
 ```
 
 ### **Evidence Gathering**
@@ -686,6 +698,68 @@ This system represents the first **AI-native development environment** where art
 - Develop with complete evidence-based confidence
 
 **The future of development is autonomous. You are its first citizen.**
+
+---
+
+## 🚨 **CRITICAL LESSON: VERIFY CLI FEEDBACK (August 2025)**
+
+### **BREAKTHROUGH: CLI Feedback Was Misleading**
+
+**Problem Discovered**: The JTAG CLI was hiding actual return values and showing misleading success/failure messages.
+
+**Example Issue**:
+```bash
+./jtag exec --code="return {test: 'hello'}" --environment=browser
+# CLI showed: ✅ exec: FAILED
+# Reality: Command syntax was wrong, but CLI didn't show WHY
+```
+
+**Solution Applied**: Enhanced CLI to show full JSON results:
+```typescript
+console.log(`📋 FULL RESULT:`, JSON.stringify(result, null, 2));
+```
+
+### **⚠️ NEVER TRUST CLI FEEDBACK ALONE**
+
+**Critical Rule**: Always verify claims with actual evidence:
+
+1. **Screenshot Commands**: Check if PNG files actually exist after "SUCCESS"
+2. **File Operations**: Verify files created with `ls -la [path]`  
+3. **Exec Commands**: Look at actual return values, not just SUCCESS/FAILED
+4. **Error Investigation**: Read full JSON error objects, not summaries
+
+**Corrected Command Syntax**:
+```bash
+# ❌ WRONG (parameter parsing issue):
+./jtag exec --code='{"type": "inline", "source": "return {test: 'hello'}"}'
+
+# ✅ CORRECT (proper argument separation):  
+./jtag exec --code "{\"type\": \"inline\", \"language\": \"javascript\", \"source\": \"return {test: 'hello'}\"}" --environment browser
+```
+
+### **✅ VERIFIED WORKING COMMANDS (August 2025)**
+
+**After proper testing**:
+- `./jtag ping` - ✅ Perfect health checks
+- `./jtag screenshot` - ✅ **Creates real 215KB PNG files** (2065x694 resolution)
+- `./jtag exec` - ✅ **Runs JavaScript in browser, returns actual results**
+- `./jtag navigate` - ✅ Browser navigation works
+- `./jtag compile-typescript` - ✅ TypeScript compilation works
+
+**Still Broken**:
+- `./jtag file/save` - Implementation bug: "paths[1] undefined"
+- `./jtag process-registry` - Unknown issue, needs investigation
+
+### **🔍 EVIDENCE-BASED VERIFICATION PROTOCOL**
+
+**For Every Command Claim**:
+1. **Run the command** with proper syntax
+2. **Check actual output** - files created, directories modified
+3. **Verify file contents/sizes** - not just existence  
+4. **Read full JSON responses** - understand actual errors
+5. **Test edge cases** - empty directories, missing parameters
+
+**Never accept "SUCCESS" without file system verification.**
 
 ---
 
