@@ -8,7 +8,7 @@
 
 import { JTAGClientServer } from './system/core/client/server/JTAGClientServer';
 import type { JTAGClientConnectOptions } from './system/core/client/shared/JTAGClient';
-import { agentDetection } from './system/core/detection/AgentDetectionRegistry';
+import { EntryPointAdapter } from './system/core/entry-points/EntryPointAdapter';
 
 /**
  * AI-Friendly Help System - For Fresh AIs Learning JTAG
@@ -107,12 +107,26 @@ async function main() {
       }
     }
     
-    // Debug: show what parameters we parsed
-    console.log(`🔧 DEBUG PARAMS:`, JSON.stringify(params, null, 2));
+    // INTELLIGENT ENTRY POINT: Adapts behavior based on detected agent type
+    const entryPoint = new EntryPointAdapter({
+      verbose: params.verbose,
+      quiet: params.quiet,
+      format: params.format || 'auto',
+      showAgentInfo: !params.quiet
+    });
+
+    // Get agent context and behavior
+    const agentContext = entryPoint.getAgentContext();
+    const behavior = entryPoint.getBehavior();
+
+    // Show debug params if verbose mode
+    if (behavior.logLevel === 'verbose') {
+      console.log(`🔧 DEBUG PARAMS:`, JSON.stringify(params, null, 2));
+    }
+
+    // Log agent detection based on intelligent behavior
+    entryPoint.logAgentDetection();
     
-    // AUTO-DETECTION: Automatically detects Claude, ChatGPT, Human, CI, etc.
-    // Leaving parameters blank results in intelligent agent detection
-    const agentContext = agentDetection.createConnectionContext();
     const clientOptions: JTAGClientConnectOptions = {
       targetEnvironment: 'server', 
       transportType: 'websocket',
@@ -128,11 +142,13 @@ async function main() {
       }
     };
     
-    // Suppress verbose connection logs by redirecting console temporarily
+    // Conditionally suppress verbose connection logs based on agent behavior
     const originalLog = console.log;
     const originalWarn = console.warn;
-    console.log = () => {}; // Suppress logs during connection
-    console.warn = () => {}; // Suppress warnings during connection
+    if (!entryPoint.shouldShowVerboseLogs()) {
+      console.log = () => {}; // Suppress logs during connection for AI agents
+      console.warn = () => {}; // Suppress warnings during connection for AI agents  
+    }
     
     const { client } = await JTAGClientServer.connect(clientOptions);
     
@@ -150,30 +166,8 @@ async function main() {
       
       const result = await Promise.race([commandExecution, commandTimeout]);
       
-      // Show the actual result first for debugging
-      console.log(`📋 FULL RESULT:`, JSON.stringify(result, null, 2));
-      
-      console.log(`✅ ${command}:`, result?.success ? 'SUCCESS' : 'FAILED');
-      
-      // Show any error messages
-      if (result?.error) {
-        console.log(`❌ Error: ${result.error}`);
-      }
-      if (result?.errorMessage) {
-        console.log(`❌ Error Message: ${result.errorMessage}`);
-      }
-      
-      // Add timing information for autonomous development 
-      if (result?.timestamp) {
-        const startTime = Date.now() - 10000; // Approximate start time
-        const duration = new Date(result.timestamp).getTime() - startTime;
-        console.log(`⏱️ Duration: ${Math.abs(duration)}ms`);
-      }
-      
-      // Show key result data only
-      if (result?.filepath) console.log(`📁 File: ${result.filepath}`);
-      if (result?.commands) console.log(`📋 Found: ${result.commands.length} commands`);
-      if (result?.commandResult?.filepath) console.log(`📁 File: ${result.commandResult.filepath}`);
+      // Use intelligent output formatting based on agent type
+      console.log(entryPoint.formatOutput(result));
       
       process.exit(result?.success ? 0 : 1);
     } catch (cmdError: any) {
