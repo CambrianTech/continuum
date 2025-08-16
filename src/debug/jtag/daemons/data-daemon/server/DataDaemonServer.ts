@@ -39,9 +39,8 @@ export class DataDaemonServer extends DataDaemonBase {
       }
     };
     
-    // Initialize with FileStorageAdapter
-    const fileAdapter = new FileStorageAdapter();
-    this.dataDaemon = new DataDaemon(fileAdapter, storageConfig);
+    // Initialize DataDaemon with factory-based approach
+    this.dataDaemon = new DataDaemon(storageConfig);
   }
   
   /**

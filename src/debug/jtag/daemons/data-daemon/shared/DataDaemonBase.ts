@@ -119,9 +119,9 @@ export abstract class DataDaemonBase extends DaemonBase {
    */
   protected createDataContext(source: string = 'data-daemon'): DataOperationContext {
     return {
-      source,
+      sessionId: this.context.uuid,
       timestamp: new Date().toISOString(),
-      namespace: this.context.uuid,
+      source,
       consistency: 'strong'
     };
   }

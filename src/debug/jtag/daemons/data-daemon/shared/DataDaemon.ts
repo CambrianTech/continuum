@@ -20,6 +20,7 @@ import type {
   CollectionStats,
   StorageOperation 
 } from './DataStorageAdapter';
+import { StorageAdapterFactory } from './StorageAdapterFactory';
 
 /**
  * Storage Strategy Configuration
@@ -42,9 +43,9 @@ export interface StorageStrategyConfig {
  * Data Operation Context
  */
 export interface DataOperationContext {
-  readonly source: string;
+  readonly sessionId: UUID;
   readonly timestamp: string;
-  readonly namespace: string;
+  readonly source: string;
   readonly transactionId?: UUID;
   readonly consistency?: 'eventual' | 'strong' | 'session';
 }
@@ -58,11 +59,21 @@ export interface DataOperationContext {
 export class DataDaemon {
   private adapter: DataStorageAdapter;
   private config: StorageStrategyConfig;
+  private factory: StorageAdapterFactory;
   private isInitialized: boolean = false;
   
-  constructor(adapter: DataStorageAdapter, config: StorageStrategyConfig) {
-    this.adapter = adapter;
+  constructor(config: StorageStrategyConfig, factory?: StorageAdapterFactory) {
     this.config = config;
+    this.factory = factory || new StorageAdapterFactory();
+    
+    // Create adapter via factory
+    const adapterConfig: StorageAdapterConfig = {
+      type: this.config.backend as any,
+      namespace: this.config.namespace,
+      options: this.config.options
+    };
+    
+    this.adapter = this.factory.createAdapter(adapterConfig);
   }
   
   /**
@@ -95,6 +106,12 @@ export class DataDaemon {
     id?: UUID
   ): Promise<StorageResult<DataRecord<T>>> {
     await this.ensureInitialized();
+    
+    // Validate context and data
+    const validationResult = this.validateOperation(collection, data, context);
+    if (!validationResult.success) {
+      return validationResult as StorageResult<DataRecord<T>>;
+    }
     
     const record: DataRecord<T> = {
       id: id || this.generateId(),
@@ -198,13 +215,20 @@ export class DataDaemon {
   }
   
   /**
-   * Shutdown daemon and close storage connections
+   * Close daemon and storage connections
    */
-  async shutdown(): Promise<void> {
+  async close(): Promise<void> {
     if (this.isInitialized) {
       await this.adapter.close();
       this.isInitialized = false;
     }
+  }
+  
+  /**
+   * Shutdown daemon (alias for close)
+   */
+  async shutdown(): Promise<void> {
+    await this.close();
   }
   
   /**
@@ -221,6 +245,41 @@ export class DataDaemon {
    */
   private generateId(): UUID {
     return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}` as UUID;
+  }
+  
+  /**
+   * Validate operation parameters
+   */
+  private validateOperation(collection: string, data: any, context: DataOperationContext): StorageResult<any> {
+    if (!collection || collection.trim() === '') {
+      return {
+        success: false,
+        error: 'Collection name is required and cannot be empty'
+      };
+    }
+    
+    if (data === undefined || data === null) {
+      return {
+        success: false,
+        error: 'Data is required and cannot be null or undefined'
+      };
+    }
+    
+    if (!context.sessionId || context.sessionId.trim() === '') {
+      return {
+        success: false,
+        error: 'DataOperationContext.sessionId is required'
+      };
+    }
+    
+    if (!context.timestamp) {
+      return {
+        success: false,
+        error: 'DataOperationContext.timestamp is required'
+      };
+    }
+    
+    return { success: true, data: null };
   }
 }
 
