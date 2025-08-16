@@ -1,6 +1,23 @@
-# Data Daemon Architecture - Universal Storage Orchestrator
+# DataDaemon - Universal Storage Orchestrator
 
-**Mission**: Heavy abstraction for organizational data with pluggable storage strategies supporting both SQL and NoSQL paradigms through unified interface.
+## **🎯 Mission**
+Heavy abstraction for organizational data with pluggable storage strategies supporting both SQL and NoSQL paradigms through unified interface with automatic backend selection.
+
+## **🏗️ Architecture Pattern**
+Follows the **Sparse Override Pattern** with 85% shared logic:
+
+```
+daemons/data-daemon/
+├── shared/
+│   ├── DataDaemon.ts            # Universal interface (85% of logic)
+│   ├── DataDaemonBase.ts        # Abstract base implementation
+│   └── DataTypes.ts             # Shared types and contracts
+├── browser/
+│   └── DataDaemonBrowser.ts     # UI integration (5%)
+├── server/
+│   └── DataDaemonServer.ts      # Storage operations (10%)
+└── README.md                    # This documentation
+```
 
 ## 🏗️ **Architecture Philosophy**
 
