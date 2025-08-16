@@ -35,98 +35,34 @@ export class DataDaemonBrowser extends DataDaemonBase {
    */
   
   protected async handleCreate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>> {
-    const message = JTAGMessageFactory.createRequest(
-      this.context,
-      'browser',
-      'server/data',
-      payload,
-      `data_create_${Date.now()}`
-    );
-    const response = await this.router.postMessage(message);
-    return response as StorageResult<DataRecord<any>>;
+    return await this.router.routeToServer<StorageResult<DataRecord<any>>>('data', payload, payload.sessionId);
   }
   
   protected async handleRead(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>> {
-    const message = JTAGMessageFactory.createRequest(
-      this.context,
-      'browser',
-      'server/data',
-      payload,
-      `data_read_${Date.now()}`
-    );
-    const response = await this.router.postMessage(message);
-    return response as StorageResult<DataRecord<any>>;
+    return await this.router.routeToServer<StorageResult<DataRecord<any>>>('data', payload, payload.sessionId);
   }
   
   protected async handleQuery(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>[]>> {
-    const message = JTAGMessageFactory.createRequest(
-      this.context,
-      'browser',
-      'server/data',
-      payload,
-      `data_query_${Date.now()}`
-    );
-    const response = await this.router.postMessage(message);
-    return response as StorageResult<DataRecord<any>[]>;
+    return await this.router.routeToServer<StorageResult<DataRecord<any>[]>>('data', payload, payload.sessionId);
   }
   
   protected async handleUpdate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>> {
-    const message = JTAGMessageFactory.createRequest(
-      this.context,
-      'browser',
-      'server/data',
-      payload,
-      `data_update_${Date.now()}`
-    );
-    const response = await this.router.postMessage(message);
-    return response as StorageResult<DataRecord<any>>;
+    return await this.router.routeToServer<StorageResult<DataRecord<any>>>('data', payload, payload.sessionId);
   }
   
   protected async handleDelete(payload: DataOperationPayload): Promise<StorageResult<boolean>> {
-    const message = JTAGMessageFactory.createRequest(
-      this.context,
-      'browser',
-      'server/data',
-      payload,
-      `data_delete_${Date.now()}`
-    );
-    const response = await this.router.postMessage(message);
-    return response as StorageResult<boolean>;
+    return await this.router.routeToServer<StorageResult<boolean>>('data', payload, payload.sessionId);
   }
   
   protected async handleListCollections(payload: DataOperationPayload): Promise<StorageResult<string[]>> {
-    const message = JTAGMessageFactory.createRequest(
-      this.context,
-      'browser',
-      'server/data',
-      payload,
-      `data_list_${Date.now()}`
-    );
-    const response = await this.router.postMessage(message);
-    return response as StorageResult<string[]>;
+    return await this.router.routeToServer<StorageResult<string[]>>('data', payload, payload.sessionId);
   }
   
   protected async handleGetStats(payload: DataOperationPayload): Promise<StorageResult<any>> {
-    const message = JTAGMessageFactory.createRequest(
-      this.context,
-      'browser',
-      'server/data',
-      payload,
-      `data_stats_${Date.now()}`
-    );
-    const response = await this.router.postMessage(message);
-    return response as StorageResult<any>;
+    return await this.router.routeToServer<StorageResult<any>>('data', payload, payload.sessionId);
   }
   
   protected async handleBatch(payload: DataOperationPayload): Promise<StorageResult<any[]>> {
-    const message = JTAGMessageFactory.createRequest(
-      this.context,
-      'browser',
-      'server/data',
-      payload,
-      `data_batch_${Date.now()}`
-    );
-    const response = await this.router.postMessage(message);
-    return response as StorageResult<any[]>;
+    return await this.router.routeToServer<StorageResult<any[]>>('data', payload, payload.sessionId);
   }
 }
