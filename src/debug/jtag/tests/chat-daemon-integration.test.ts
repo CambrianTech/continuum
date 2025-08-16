@@ -70,17 +70,18 @@ async function runChatDaemonIntegrationTests(): Promise<void> {
             console.log('🚀 AUTOMATED CHAT TEST: Testing database room creation');
             
             try {
-              // Import the server-side modules (this runs on server via WebSocket routing)
-              const { createChatDataService } = require('./daemons/chat-daemon/data/ChatDataService');
-              const { generateUUID } = require('./system/core/types/CrossPlatformUUID');
+              // Test database via data daemon commands (proper browser-server separation)
+              console.log('🗄️ Testing data daemon create operation...');
               
-              // Create test data service
-              const dataService = createChatDataService('test');
-              await dataService.initialize();
+              // Use available JTAG system reference (this is browser context)
+              const jtag = window.jtagSystem;
+              if (!jtag) {
+                throw new Error('JTAG system not available');
+              }
               
-              // Create test room
-              const roomId = generateUUID();
-              const room = await dataService.createRoom({
+              // Create test room data
+              const roomId = crypto.randomUUID();
+              const room = {
                 roomId,
                 name: 'Automated Test Room',
                 description: 'Created by automated test',
@@ -91,13 +92,24 @@ async function runChatDaemonIntegrationTests(): Promise<void> {
                 maxHistoryLength: 100,
                 createdAt: new Date().toISOString(),
                 lastActivity: new Date().toISOString()
+              };
+              
+              // Test via data daemon command (browser → server communication)
+              const createResult = await jtag.router.sendMessage({
+                origin: jtag.context.uuid,
+                correlationId: 'test-' + Date.now(),
+                endpoint: 'data/create',
+                payload: {
+                  context: jtag.context,
+                  sessionId: jtag.sessionId,
+                  collection: 'chat-rooms',
+                  id: roomId,
+                  data: room
+                }
               });
               
-              console.log('✅ AUTOMATED CHAT TEST: Room created successfully');
-              console.log('📊 CHAT DATABASE TEST: Room data:', { roomId: room.roomId, name: room.name });
-              
-              // Cleanup
-              await dataService.close();
+              console.log('✅ AUTOMATED CHAT TEST: Room creation command sent');
+              console.log('📊 CHAT DATABASE TEST: Result:', createResult);
               
               return { 
                 testName: 'databaseRoomCreation', 

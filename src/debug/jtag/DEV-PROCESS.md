@@ -257,6 +257,13 @@ grep "🎯 PROOF.*EXECUTED\|✅ INTEGRATION.*EVIDENCE" examples/test-bench/.cont
 # Must show actual test execution in browser
 ```
 
+**☐ Data System Verification (NEW - Database Foundation)**
+```bash
+./jtag data/create --collection test --data '{"test": "value"}' --format json
+./jtag data/list --collection test --format json
+# MUST show: JSON record with id, collection, data, timestamps, version
+```
+
 ---
 
 ## 🧠 **AUTONOMOUS DEBUGGING**
@@ -298,6 +305,150 @@ grep "your-command.*Starting execution" examples/test-bench/.continuum/jtag/curr
 
 # 3B. Response correlation
 grep "your-correlation-id.*response" examples/test-bench/.continuum/jtag/sessions/*/logs/server-console-log.log
+```
+
+---
+
+## 🤖 **AI-SPECIFIC DEBUGGING & LOG SCRIPTS**
+
+### **AI Development Log Scripts (CRITICAL FOR CLAUDE)**
+
+**Essential AI Log Commands (Copy-Paste Ready):**
+```bash
+# 🤖 AI-Optimized Log Dashboard (YOUR BEST FRIEND)
+npm run logs:ai              # AI-friendly filtered log stream with recent events
+npm run logs:dashboard       # Full interactive log dashboard in tmux
+npm run logs:status          # Check log dashboard status
+
+# 🚨 Critical Error Analysis (CHECK THESE FIRST)
+npm run logs:current         # Live server logs (tail -f currentUser/server.log)
+npm run logs:npm             # Live system startup logs
+tail -20 examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-error.log
+
+# 📊 Agent Development Dashboard
+npm run agent                # Complete AI control room with system diagnostics
+npm run agent:quick          # Instant health check for autonomous development
+npm run agent:fix            # Auto-fix common issues
+```
+
+### **Data System Debugging (Database Foundation)**
+
+**Test the Data Layer You Built:**
+```bash
+# Create data records (JSON parsing works perfectly now)
+./jtag data/create --collection test-rooms --data '{"name":"Debug Room","description":"CLI test"}'
+
+# List data with full JSON output
+./jtag data/list --collection test-rooms --format json
+
+# Read specific records 
+./jtag data/read --collection test-rooms --id [UUID-from-create]
+```
+
+**Data Storage Structure (Session-Based):**
+```bash
+# All data follows session isolation pattern
+examples/test-bench/.continuum/jtag/sessions/user/[SESSION_ID]/data/[COLLECTION]/[ID].json
+
+# Example record structure:
+{
+  "id": "uuid-generated-or-provided",
+  "collection": "collection-name", 
+  "data": {...actual-data...},
+  "createdAt": "2025-08-16T18:03:43.424Z",
+  "updatedAt": "2025-08-16T18:03:43.424Z",
+  "version": 1
+}
+```
+
+### **AI Development Workflow Pattern (WORKING)**
+
+**1. Check System Health:**
+```bash
+npm run agent:quick           # Instant diagnostics
+./jtag ping                   # Basic connectivity
+```
+
+**2. Visual Validation:**
+```bash
+./jtag screenshot --filename=debug-$(date +%s).png
+# Creates real PNG files in currentUser/screenshots/
+```
+
+**3. Log Analysis:**
+```bash
+npm run logs:ai               # AI-filtered recent events
+tail -20 examples/test-bench/.continuum/jtag/currentUser/logs/server-console-log.log
+```
+
+**4. Test Database Commands:**
+```bash
+./jtag data/create --collection debug --data '{"timestamp": "'$(date)'", "test": true}'
+./jtag data/list --collection debug --format json
+```
+
+**5. Verify With Evidence:**
+```bash
+# Check actual files created
+ls -la examples/test-bench/.continuum/jtag/currentUser/screenshots/
+ls -la examples/test-bench/.continuum/jtag/sessions/user/*/data/*/
+```
+
+### **CLI Parameter Parsing (FIXED)**
+
+**Working Parameter Formats:**
+```bash
+# Both formats work perfectly:
+./jtag command --key=value --flag
+./jtag command --key value --flag
+
+# JSON data parsing works:
+./jtag data/create --collection test --data '{"complex": {"nested": "value"}}'
+```
+
+**From CLI to Server Command Flow:**
+```
+CLI → cli.ts → JTAGClientServer → WebSocket → CommandDaemonServer → [Command]ServerCommand
+```
+
+### **AI Logging Infrastructure (BUILT FOR CLAUDE)**
+
+**Intelligent Log Dashboard System:**
+The system provides agent-aware logging with automatic AI vs Human detection:
+
+```bash
+# 🤖 AI-Specific Scripts (Structured output for AI consumption)
+npm run logs:ai              # Filtered event stream with categorized recent events
+npm run logs:status          # Dashboard status and tmux session info
+npm run logs:attach          # Quick attach to existing log dashboard
+
+# 👤 Human-Specific Scripts (Interactive tmux interface)
+npm run logs:dashboard       # Full interactive dashboard with window switching
+npm run logs:human           # Force human-friendly interface
+npm run logs:setup           # Initialize dashboard infrastructure
+```
+
+**Agent Detection & Adaptive Behavior:**
+- **Claude Detection**: Structured JSON output, filtered recent events
+- **Human Detection**: Interactive tmux session with window switching
+- **CI Detection**: Silent/minimal output for automated systems
+
+**Log Categories for AI Analysis:**
+- **completion**: Successful operations (✅ messages)
+- **error**: Failed operations and exceptions (❌ messages)  
+- **build**: Compilation and deployment status
+- **actionable**: Events requiring immediate attention
+
+**AI Log Analysis Pattern:**
+```typescript
+// The log dashboard identifies:
+interface LogEvent {
+  timestamp: string;
+  source: 'npm' | 'browser' | 'server' | 'system';
+  level: 'info' | 'warn' | 'error' | 'debug';
+  message: string;
+  category?: 'completion' | 'error' | 'build' | 'actionable';
+}
 ```
 
 ---

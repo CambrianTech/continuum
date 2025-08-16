@@ -89,21 +89,55 @@ async function main() {
     
     // Parse parameters into object format
     const params: any = {};
-    for (let i = 0; i < rawParams.length; i += 2) {
-      const key = rawParams[i]?.replace(/^--/, '');  // Remove -- prefix
-      const value = rawParams[i + 1];
-      if (key && value !== undefined) {
-        // Try to parse JSON values, fall back to string
-        let parsedValue = value;
-        if (value.startsWith('{') || value.startsWith('[')) {
-          try {
-            parsedValue = JSON.parse(value);
-          } catch (e) {
-            // Keep as string if JSON parsing fails
-            parsedValue = value;
+    let i = 0;
+    while (i < rawParams.length) {
+      const arg = rawParams[i];
+      if (arg?.startsWith('--')) {
+        const argWithoutDashes = arg.replace(/^--/, '');
+        
+        // Handle --key=value format
+        if (argWithoutDashes.includes('=')) {
+          const [key, ...valueParts] = argWithoutDashes.split('=');
+          const value = valueParts.join('='); // Handle values that contain =
+          
+          // Try to parse JSON values, fall back to string
+          let parsedValue = value;
+          if (value.startsWith('{') || value.startsWith('[')) {
+            try {
+              parsedValue = JSON.parse(value);
+            } catch (e) {
+              // Keep as string if JSON parsing fails
+              parsedValue = value;
+            }
+          }
+          params[key] = parsedValue;
+          i++;
+        } 
+        // Handle --key value format
+        else {
+          const key = argWithoutDashes;
+          const value = rawParams[i + 1];
+          if (value !== undefined && !value.startsWith('--')) {
+            // Try to parse JSON values, fall back to string
+            let parsedValue = value;
+            if (value.startsWith('{') || value.startsWith('[')) {
+              try {
+                parsedValue = JSON.parse(value);
+              } catch (e) {
+                // Keep as string if JSON parsing fails
+                parsedValue = value;
+              }
+            }
+            params[key] = parsedValue;
+            i += 2;
+          } else {
+            // Boolean flag
+            params[key] = true;
+            i++;
           }
         }
-        params[key] = parsedValue;
+      } else {
+        i++;
       }
     }
     
