@@ -82,16 +82,7 @@ export class ChatSendMessageCommand extends CommandBase<ChatSendMessageParams, C
       
       return createChatSendMessageResultFromParams(params, {
         success: false,
-        error: {
-          message: error instanceof Error ? error.message : 'Unknown error',
-          type: 'processing' as const,
-          name: 'MessageSendError',
-          timestamp: new Date().toISOString(),
-          toJSON: () => ({ 
-            message: error instanceof Error ? error.message : 'Unknown error', 
- 
-          })
-        }
+        error: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }

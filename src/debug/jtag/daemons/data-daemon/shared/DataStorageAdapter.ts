@@ -49,6 +49,18 @@ export interface StorageQuery {
 }
 
 /**
+ * Storage Adapter Capabilities
+ */
+export interface StorageCapabilities {
+  readonly supportsTransactions: boolean;
+  readonly supportsIndexing: boolean;
+  readonly supportsFullTextSearch: boolean;
+  readonly supportsReplication: boolean;
+  readonly maxRecordSize: number;
+  readonly concurrentConnections: number;
+}
+
+/**
  * Storage Operation Result
  */
 export interface StorageResult<T = any> {

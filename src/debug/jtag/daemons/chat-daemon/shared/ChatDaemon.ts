@@ -74,14 +74,7 @@ export const createChatErrorResponse = (
   return createPayload(context, sessionId, {
     success: false,
     timestamp: new Date().toISOString(),
-    error: {
-      message: error,
-      code: 'GENERIC_ERROR',
-      type: 'generic' as const,
-      name: 'ChatError',
-      timestamp: new Date().toISOString(),
-      toJSON: () => ({ message: error, code: 'GENERIC_ERROR' })
-    },
+    error: error,
     rooms: [],
     totalCount: 0
   }) as ChatResult;

@@ -102,16 +102,7 @@ export class ChatJoinRoomCommand extends CommandBase<ChatJoinRoomParams, ChatJoi
       
       return createChatJoinRoomResultFromParams(params, {
         success: false,
-        error: {
-          message: error instanceof Error ? error.message : 'Unknown error',
-          type: 'processing' as const,
-          name: 'RoomJoinError',
-          timestamp: new Date().toISOString(),
-          toJSON: () => ({ 
-            message: error instanceof Error ? error.message : 'Unknown error', 
-            code: 'ROOM_JOIN_ERROR' 
-          })
-        }
+        error: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }

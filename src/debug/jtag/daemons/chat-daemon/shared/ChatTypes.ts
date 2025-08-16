@@ -1,14 +1,13 @@
 /**
- * Chat Daemon - Shared Types
+ * Chat System - Shared Types & Constants
  * 
- * Following ScreenshotTypes pattern: factory functions, inheritance, strong typing
- * Complete type definitions for chat operations with zero 'any' usage
+ * Universal participant-agnostic chat foundation using data daemon for persistence.
+ * Strong typing with constants prevents runtime errors.
  */
 
-import type { JTAGPayload, JTAGContext } from '../../../system/core/types/JTAGTypes';
+import { JTAGPayload, JTAGContext } from '../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../system/core/types/JTAGTypes';
-import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import type { JTAGError } from '../../../system/core/types/ErrorTypes';
+import { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 // ============================================================================
 // UNIVERSAL PARTICIPANT TYPES - PARTICIPANT-AGNOSTIC ARCHITECTURE
@@ -366,7 +365,7 @@ export interface ChatCreateRoomResult extends JTAGPayload {
   readonly roomId: UUID;
   readonly room: ChatRoom;
   readonly timestamp: string;
-  readonly error?: JTAGError;
+  readonly error?: string;
 }
 
 /**
@@ -379,7 +378,7 @@ export interface ChatJoinRoomResult extends JTAGPayload {
   readonly recentMessages: readonly ChatMessage[];
   readonly participantList: readonly SessionParticipant[];
   readonly timestamp: string;
-  readonly error?: JTAGError;
+  readonly error?: string;
   
   // Legacy compatibility aliases
   readonly citizenId?: UUID; // Alias for participantId
@@ -394,7 +393,7 @@ export interface ChatSendMessageResult extends JTAGPayload {
   readonly messageId: UUID;
   readonly message: ChatMessage;
   readonly timestamp: string;
-  readonly error?: JTAGError;
+  readonly error?: string;
 }
 
 export interface ChatGetHistoryResult extends JTAGPayload {
@@ -404,7 +403,7 @@ export interface ChatGetHistoryResult extends JTAGPayload {
   readonly totalCount: number;
   readonly hasMore: boolean;
   readonly timestamp: string;
-  readonly error?: JTAGError;
+  readonly error?: string;
 }
 
 export interface ChatListRoomsResult extends JTAGPayload {
@@ -412,7 +411,7 @@ export interface ChatListRoomsResult extends JTAGPayload {
   readonly rooms: readonly ChatRoom[];
   readonly totalCount: number;
   readonly timestamp: string;
-  readonly error?: JTAGError;
+  readonly error?: string;
 }
 
 /**
@@ -423,7 +422,7 @@ export interface ChatLeaveRoomResult extends JTAGPayload {
   readonly roomId: UUID;
   readonly participantId: UUID;
   readonly timestamp: string;
-  readonly error?: JTAGError;
+  readonly error?: string;
   
   // Legacy compatibility
   readonly citizenId?: UUID; // Alias for participantId
@@ -659,7 +658,7 @@ export interface ChatRoomUpdateResult extends JTAGPayload {
   readonly roomId: UUID;
   readonly updateType: RoomUpdateType;
   readonly timestamp: string;
-  readonly error?: JTAGError;
+  readonly error?: string;
 }
 
 /**
