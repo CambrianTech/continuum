@@ -25,7 +25,7 @@ export class DataDaemonServer extends DataDaemonBase {
     // Create storage configuration - file-based by default
     const storageConfig: StorageStrategyConfig = {
       strategy: 'file',
-      backend: 'json',
+      backend: 'file',
       namespace: context.uuid, // Use context UUID as namespace
       options: {
         basePath: '.continuum/jtag/data'
