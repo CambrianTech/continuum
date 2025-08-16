@@ -20,7 +20,7 @@ import type {
   CollectionStats,
   StorageOperation 
 } from './DataStorageAdapter';
-import { StorageAdapterFactory } from './StorageAdapterFactory';
+import { DefaultStorageAdapterFactory } from '../server/StorageAdapterFactory';
 
 /**
  * Storage Strategy Configuration
@@ -59,16 +59,16 @@ export interface DataOperationContext {
 export class DataDaemon {
   private adapter: DataStorageAdapter;
   private config: StorageStrategyConfig;
-  private factory: StorageAdapterFactory;
+  private factory: DefaultStorageAdapterFactory;
   private isInitialized: boolean = false;
   
-  constructor(config: StorageStrategyConfig, factory?: StorageAdapterFactory) {
+  constructor(config: StorageStrategyConfig, factory?: DefaultStorageAdapterFactory) {
     this.config = config;
-    this.factory = factory || new StorageAdapterFactory();
+    this.factory = factory || new DefaultStorageAdapterFactory();
     
     // Create adapter via factory
     const adapterConfig: StorageAdapterConfig = {
-      type: this.config.backend as any,
+      type: this.config.strategy as any,
       namespace: this.config.namespace,
       options: this.config.options
     };

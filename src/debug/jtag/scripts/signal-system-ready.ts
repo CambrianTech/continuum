@@ -345,8 +345,17 @@ class SystemReadySignaler {
     const errors: string[] = [];
     
     try {
-      // Only check tmux if system is ACTUALLY broken (no ports AND no bootstrap)
+      // CRITICAL: Check server console errors for daemon creation failures
       if (!bootstrapComplete && commandCount === 0) {
+        // Check server console error logs for daemon creation failures
+        const serverErrorLog = 'examples/test-bench/.continuum/jtag/system/logs/server-console-error.log';
+        const { stdout: daemonErrors } = await execAsync(`tail -20 ${serverErrorLog} 2>/dev/null | grep "Failed to create.*daemon\\|Unknown storage adapter type" | tail -3 || echo ""`);
+        
+        if (daemonErrors.trim()) {
+          errors.push('🚨 DAEMON CREATION FAILED:');
+          errors.push(...daemonErrors.split('\n').filter(line => line.trim()).map(line => `   ${line.split('] ')[1] || line}`));
+        }
+        
         // First check if ports are active - if ports work, system is fine regardless of tmux
         const activePorts = await this.getActivePorts([...getSignalConfig().EXPECTED_PORTS]);
         if (activePorts.length === 0) {
