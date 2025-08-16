@@ -1,6 +1,23 @@
-# AI Provider Daemon Architecture
+# AIProviderDaemon - Pluggable AI Integration
 
-**Pluggable AI API Integration for Persona System**
+## **🎯 Mission**
+Provider-agnostic AI API access for persona system, creating unified interface for all AI services through pluggable adapters with automatic provider selection and cost management.
+
+## **🏗️ Architecture Pattern**
+Follows the **Sparse Override Pattern** with 85% shared logic:
+
+```
+daemons/ai-provider-daemon/
+├── shared/
+│   ├── AIProviderDaemon.ts      # Universal interface (85% of logic)
+│   ├── AIProviderBase.ts        # Abstract base implementation
+│   └── AIProviderTypes.ts       # Shared types and contracts
+├── browser/
+│   └── AIProviderBrowser.ts     # UI integration (5%)
+├── server/
+│   └── AIProviderServer.ts      # API orchestration (10%)
+└── README.md                    # This documentation
+```
 
 ## 🎯 **Core Principle: Provider Agnostic**
 

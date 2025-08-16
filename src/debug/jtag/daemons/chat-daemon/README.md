@@ -1,6 +1,25 @@
-# Chat Daemon - Universal Communication Substrate
+# ChatDaemon - Universal Communication Substrate
 
-## 🎯 **ARCHITECTURAL VISION**
+## **🎯 Mission**
+Universal communication substrate enabling any intelligence (human, AI, persona, LoRA model) to participate in chat rooms through the same interface with room-scoped event distribution and storage-backed history.
+
+## **🏗️ Architecture Pattern**
+Follows the **Sparse Override Pattern** with 85% shared logic:
+
+```
+daemons/chat-daemon/
+├── shared/
+│   ├── ChatDaemon.ts            # Universal interface (85% of logic)
+│   ├── ChatDaemonBase.ts        # Abstract base implementation
+│   └── ChatTypes.ts             # Shared types and contracts
+├── browser/
+│   └── ChatDaemonBrowser.ts     # UI event integration (5%)
+├── server/
+│   └── ChatDaemonServer.ts      # Event distribution and storage (10%)
+└── README.md                    # This documentation
+```
+
+## **🎯 ARCHITECTURAL VISION**
 
 **Universal Communication Bus**: Any intelligence (human, AI, persona, LoRA model) can participate in chat rooms through the same interface. No special handling for participant types.
 

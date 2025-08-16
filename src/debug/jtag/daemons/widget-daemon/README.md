@@ -1,4 +1,23 @@
-# WidgetDaemon - JTAG Widget System Integration
+# WidgetDaemon - Widget System Integration
+
+## **🎯 Mission**
+Bridge between widgets and JTAG command routing system, providing clean interface for widgets to execute commands through powerful JTAG routing while maintaining simple `executeCommand()` API.
+
+## **🏗️ Architecture Pattern**
+Follows the **Sparse Override Pattern** with 85% shared logic:
+
+```
+daemons/widget-daemon/
+├── shared/
+│   ├── WidgetDaemon.ts          # Universal interface (85% of logic)
+│   ├── WidgetDaemonBase.ts      # Abstract base implementation
+│   └── WidgetTypes.ts           # Shared types and contracts
+├── browser/
+│   └── WidgetDaemonBrowser.ts   # DOM integration (10%)
+├── server/
+│   └── WidgetDaemonServer.ts    # Command orchestration (5%)
+└── README.md                    # This documentation
+```
 
 ## 🎯 Purpose
 
