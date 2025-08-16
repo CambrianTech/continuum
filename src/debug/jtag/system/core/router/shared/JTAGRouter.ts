@@ -817,6 +817,95 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     }
   }
 
+  /**
+   * ROUTER COORDINATION HELPERS - Standardized Daemon Communication
+   * 
+   * These methods provide clean, type-safe coordination between daemons
+   * and eliminate manual message construction patterns.
+   */
+
+  /**
+   * Route to server daemon with automatic message construction
+   */
+  async routeToServer<T>(daemon: string, payload: any, sessionId?: UUID): Promise<T> {
+    const message = JTAGMessageFactory.createRequest(
+      this.context,
+      'browser',
+      `server/${daemon}`,
+      { ...payload, sessionId: sessionId ?? this.context.uuid },
+      JTAGMessageFactory.generateCorrelationId()
+    );
+    
+    const result = await this.postMessage(message);
+    if ('response' in result && result.response) {
+      return result.response as T;
+    }
+    throw new Error(`No response received for ${daemon} operation`);
+  }
+
+  /**
+   * Route to browser daemon with automatic message construction
+   */
+  async routeToBrowser<T>(daemon: string, payload: any, sessionId?: UUID): Promise<T> {
+    const message = JTAGMessageFactory.createRequest(
+      this.context,
+      'server',
+      `browser/${daemon}`,
+      { ...payload, sessionId: sessionId ?? this.context.uuid },
+      JTAGMessageFactory.generateCorrelationId()
+    );
+    
+    const result = await this.postMessage(message);
+    if ('response' in result && result.response) {
+      return result.response as T;
+    }
+    throw new Error(`No response received for ${daemon} operation`);
+  }
+
+  /**
+   * Route to daemon in current environment
+   */
+  async routeToDaemon<T>(daemonName: string, payload: any, sessionId?: UUID): Promise<T> {
+    const daemon = this.getSubscriber(`${daemonName}-daemon`);
+    if (!daemon) {
+      throw new Error(`Daemon '${daemonName}' not available`);
+    }
+
+    const message = JTAGMessageFactory.createRequest(
+      this.context,
+      `${this.context.environment}/${daemonName}-daemon`,
+      `${daemonName}-daemon`,
+      { ...payload, sessionId: sessionId ?? this.context.uuid },
+      JTAGMessageFactory.generateCorrelationId()
+    );
+    
+    const result = await daemon.handleMessage(message);
+    return result as T;
+  }
+
+  /**
+   * Check if daemon is available
+   */
+  isDaemonAvailable(daemonName: string): boolean {
+    return this.getSubscriber(`${daemonName}-daemon`) !== null;
+  }
+
+  /**
+   * Get daemon instance with type safety
+   */
+  getDaemon<T extends MessageSubscriber>(daemonName: string): T | null {
+    return this.getSubscriber(`${daemonName}-daemon`) as T | null;
+  }
+
+  /**
+   * List all available daemons
+   */
+  listAvailableDaemons(): string[] {
+    return this.endpointMatcher.getEndpoints()
+      .filter(endpoint => endpoint.endsWith('-daemon'))
+      .map(endpoint => endpoint.replace('-daemon', ''));
+  }
+
   async shutdown(): Promise<void> {
     console.log(`🔄 ${this.toString()}: Shutting down with cleanup...`);
     
