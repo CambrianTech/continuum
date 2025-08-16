@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.864",
+  "version": "1.0.883",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -101,7 +101,8 @@
     }
   },
   "scripts": {
-    "start": "npm run smart-build && npm run system:deploy && npm run restart:quick",
+    "start": "npm run smart-build && npm run system:deploy && npm run restart:quick && sleep 3 && npx tsx scripts/safe-dashboard-launch.ts",
+    "start:no-dashboard": "npm run smart-build && npm run system:deploy && npm run restart:quick",
     "start:direct": "npm run smart-build && npm run system:deploy && npm run system:run",
     "smart-build": "npx tsx scripts/smart-build.ts",
     "kill": "npx tsx scripts/cleanup-dynamic-ports.ts",
@@ -134,6 +135,13 @@
     "signal:clear": "npx tsx scripts/signal-system-ready.ts --clear",
     "signal:logs": "echo '📋 System startup logs:' && cat .continuum/jtag/system/logs/npm-start.log 2>/dev/null | tail -50 || echo 'No startup logs found'",
     "signal:errors": "echo '❌ Recent errors from signal system:' && cat .continuum/jtag/signals/system-ready.json 2>/dev/null | jq -r '.errors[]?, .nodeErrors[]?' 2>/dev/null || echo 'No signal file found'",
+    "logs:setup": "npx tsx scripts/log-dashboard.ts --setup",
+    "logs:dashboard": "npx tsx scripts/log-dashboard.ts",
+    "logs:ai": "npx tsx scripts/log-dashboard.ts --ai",
+    "logs:human": "npx tsx scripts/log-dashboard.ts --human",
+    "logs:attach": "npx tsx scripts/log-dashboard.ts --attach",
+    "logs:status": "npx tsx scripts/log-dashboard.ts --status",
+    "logs:stop": "npx tsx scripts/log-dashboard.ts --stop",
     "logs:npm": "tail -f .continuum/jtag/system/logs/npm-start.log",
     "logs:npm:live": "timeout 30 cat /tmp/jtag-pipe || echo 'No output received'",
     "logs:current": "tail -f examples/test-bench/.continuum/jtag/currentUser/logs/server.log",
@@ -292,7 +300,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-15T22:04:17.690Z",
+    "timestamp": "2025-08-16T16:32:48.974Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 26,
     "note": "Generated from clean essential path mappings only"

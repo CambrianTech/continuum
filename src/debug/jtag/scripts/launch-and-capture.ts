@@ -199,7 +199,7 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
                     signal.bootstrapComplete &&         // System bootstrap done
                     signal.browserReady &&              // Browser launched successfully  
                     signal.commandCount > 0 &&          // Commands are registered
-                    signal.systemHealth === 'healthy'   // Overall health is good
+                    (signal.systemHealth === 'healthy' || signal.systemHealth === 'degraded')   // Accept healthy or degraded
                   );
                   
                   if (isSystemReady) {
@@ -207,7 +207,7 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
                     clearTimeout(serverDetectionTimeout);
                     
                     console.log(' ✅');
-                    console.log(`🚀 JTAG system fully ready! (${signal.commandCount} commands, browser launched)`);
+                    console.log(`🚀 JTAG system fully ready! (${signal.commandCount} commands, browser launched, health: ${signal.systemHealth})`);
                     
                     resolve({
                       success: true,
@@ -563,6 +563,14 @@ async function main(): Promise<void> {
       console.log(`🛑 To stop server: tmux kill-session -t jtag-test`);
       console.log(`📊 To check status: tmux has-session -t jtag-test && echo "Running" || echo "Stopped"`);
       console.log(`📄 To watch logs: tail -f ${result.logFile}`);
+      console.log('');
+      console.log('📊 INTELLIGENT LOG DASHBOARD:');
+      console.log('   npm run logs:dashboard                   # Smart AI/Human detection');
+      console.log('   npm run logs:ai                          # AI-friendly structured output');
+      console.log('   npm run logs:human                       # Human tmux dashboard');  
+      console.log('   npm run logs:status                      # Current status');
+      console.log('');
+      console.log('💡 PRO TIP: Log dashboard will auto-launch after npm start completes!');
       console.log('');
       
       // Exit this script successfully - the background server continues

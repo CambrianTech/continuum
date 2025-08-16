@@ -176,7 +176,7 @@ class MinimalServer {
       this.server.listen(PORT, () => {
         console.log(`✅ HTTP demo server running at http://localhost:${PORT}`);
         
-        // Launch browser automatically with error handling
+        // Launch browser automatically with error handling (delay for server stabilization)
         setTimeout(() => {
           try {
             const { exec } = require('child_process');
@@ -194,7 +194,7 @@ class MinimalServer {
             console.error('   ❌ Browser launch setup failed:', errorMsg);
             console.log(`   👉 Manually open: http://localhost:${PORT}`);
           }
-        }, 1000);
+        }, 3000); // 3 seconds to let server fully stabilize
         
         resolve();
       });
