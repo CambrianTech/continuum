@@ -372,8 +372,29 @@ class SystemReadySignaler {
     try {
       const systemConfig = getSystemConfig();
       const httpUrl = systemConfig.getHTTPBaseUrl();
-      const { stdout } = await execAsync(`curl -s --max-time 3 ${httpUrl} 2>/dev/null | grep -i "jtag" || echo ""`);
-      return stdout.includes('JTAG');
+      
+      // Try multiple times with increasing timeouts for browser warmup
+      const attempts = [
+        { timeout: 3, name: 'quick' },
+        { timeout: 8, name: 'patient' },
+        { timeout: 15, name: 'generous' }
+      ];
+      
+      for (const attempt of attempts) {
+        try {
+          const { stdout } = await execAsync(`curl -s --max-time ${attempt.timeout} ${httpUrl} 2>/dev/null | grep -i "jtag" || echo ""`);
+          if (stdout.includes('JTAG')) {
+            return true;
+          }
+        } catch {
+          // Continue to next attempt
+        }
+        
+        // Small delay between attempts to let browser stabilize
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      
+      return false;
     } catch {
       return false;
     }
@@ -425,7 +446,7 @@ class SystemReadySignaler {
     }
     
     if (!metrics.browserReady) {
-      guidance.push('🌐 BROWSER: Demo page not responding - check browser launch');
+      guidance.push('🌐 BROWSER: Starting up - demo page loading...');
     }
     
     if (metrics.buildStatus === 'failed') {
