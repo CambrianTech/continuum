@@ -82,6 +82,18 @@
       "@templates/*": [
         "templates/*"
       ],
+      "@commandsChat": [
+        "commands/chat"
+      ],
+      "@commandsChat/*": [
+        "commands/chat/*"
+      ],
+      "@chatSendMessage": [
+        "commands/chat/send-message"
+      ],
+      "@chatSendMessage/*": [
+        "commands/chat/send-message/*"
+      ],
       "@commandsFile": [
         "commands/file"
       ],
@@ -207,9 +219,9 @@
     "pathCount": 228
   },
   "_pathsGenerated": {
-    "timestamp": "2025-08-17T08:51:47.938Z",
+    "timestamp": "2025-08-17T14:59:37.916Z",
     "source": ".continuum/generator/path-mappings.json",
-    "pathCount": 52,
+    "pathCount": 56,
     "note": "Auto-generated from essential path mappings only"
   }
 }
