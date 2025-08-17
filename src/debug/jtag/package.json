@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.955",
+  "version": "1.0.958",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "config": {
     "port": 9001,
@@ -285,6 +285,8 @@
     "@tests/*": "./dist/tests/*",
     "@widgets/*": "./dist/widgets/*",
     "@templates/*": "./dist/templates/*",
+    "@commandsChat/*": "./dist/commands/chat/*",
+    "@chatSendMessage/*": "./dist/commands/chat/send-message/*",
     "@commandsFile/*": "./dist/commands/file/*",
     "@fileAppend/*": "./dist/commands/file/append/*",
     "@fileLoad/*": "./dist/commands/file/load/*",
@@ -301,9 +303,9 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-17T08:51:48.587Z",
+    "timestamp": "2025-08-17T14:59:38.535Z",
     "source": ".continuum/generator/path-mappings.json",
-    "pathCount": 26,
+    "pathCount": 28,
     "note": "Generated from clean essential path mappings only"
   }
 }
