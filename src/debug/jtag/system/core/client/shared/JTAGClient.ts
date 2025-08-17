@@ -255,6 +255,21 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   }
   
   /**
+   * Provide router access for scoped event system
+   * Works with both local and remote connections
+   */
+  protected getRouter(): any {
+    // For local connections, get router from system instance
+    if (this.systemInstance) {
+      return (this.systemInstance as any).router;
+    }
+    
+    // For remote connections, events are handled via transport
+    // Return null - scoped events will fall back to basic event manager
+    return null;
+  }
+  
+  /**
    * Get connection information for diagnostics and testing
    */
   public getConnectionInfo(): {
@@ -408,6 +423,9 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     }
 
     await this.discoverCommands();
+    
+    // Initialize scoped event system now that connection is established
+    this.initializeScopedEvents();
   }
 
   /**

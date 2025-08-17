@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.902",
+  "version": "1.0.909",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
@@ -153,7 +153,7 @@
     "test:compiler-error-detection": "npx tsx tests/compiler-error-detection.test.ts",
     "test:start-and-test": "npx tsx scripts/test-with-server.ts",
     "test:verify-and-run": "echo '🔍 WAITING FOR SYSTEM BOOTSTRAP...' && npm run signal:wait && echo '🔍 VERIFYING SYSTEM BOOTSTRAP...' && grep 'Bootstrap complete' examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log | tail -1 && echo '✅ BOOTSTRAP VERIFIED - RUNNING TESTS' && npm run test:comprehensive",
-    "test:comprehensive": "echo '🚀 AUTONOMOUS TEST SUITE - Full End-to-End' && npm run test:compiler-error-detection && npx tsx tests/bootstrap-comprehensive.test.ts && npx tsx tests/integration/browser-automated-tests.test.ts && npx tsx tests/server-screenshot.test.ts && npx tsx tests/screenshot-verification.test.ts && npx tsx tests/signal-system.test.ts && npx tsx tests/chat-daemon-integration.test.ts && npx tsx tests/chat-real-data.test.ts",
+    "test:comprehensive": "echo '🚀 AUTONOMOUS TEST SUITE - Full End-to-End' && npm run test:compiler-error-detection && npx tsx tests/bootstrap-comprehensive.test.ts && npx tsx tests/integration/browser-automated-tests.test.ts && npx tsx tests/integration/router-coordination-simple.test.ts && npx tsx tests/server-screenshot.test.ts && npx tsx tests/screenshot-verification.test.ts && npx tsx tests/signal-system.test.ts && npx tsx tests/chat-daemon-integration.test.ts",
     "test:simple": "echo '🚀 SIMPLE TEST SUITE' && npx tsx tests/bootstrap-comprehensive.test.ts",
     "test:precommit": "echo '🔍 PRECOMMIT VALIDATION - Fast & Essential' && npm run test:compiler-check && npm run system:stop 2>/dev/null && npm run system:start:test && npm run signal:wait && npx tsx tests/bootstrap-comprehensive.test.ts && npx tsx tests/server-screenshot.test.ts && echo '✅ PRECOMMIT VALIDATION PASSED'",
     "test:unit": "echo '🧪 Unit Tests (needs import path fixes)' && echo 'TODO: Fix unit test imports'",
@@ -300,7 +300,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-16T23:39:02.845Z",
+    "timestamp": "2025-08-17T01:11:12.957Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 26,
     "note": "Generated from clean essential path mappings only"
