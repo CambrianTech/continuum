@@ -107,7 +107,65 @@ export interface ScreenshotOptions {
   directCapture?: boolean;    // Use direct element capture instead of body crop
   preserveShadows?: boolean;  // Enable shadow-preserving capture strategy
   
+  // Multi-resolution options
+  resolutions?: ScreenshotResolution[];  // Generate multiple resolution variants
+  presets?: ScreenshotPreset[];          // Use predefined resolution presets
+  
   html2canvasOptions?: Html2CanvasOptions;
+}
+
+/**
+ * Screenshot Resolution Configuration
+ */
+export interface ScreenshotResolution {
+  width: number;
+  height: number;
+  scale?: number;
+  suffix?: string;  // Filename suffix (e.g., 'mobile', 'desktop', '4k')
+}
+
+/**
+ * Common Screenshot Presets  
+ */
+export type ScreenshotPreset = 
+  | 'mobile'      // 375x667 (iPhone)
+  | 'tablet'      // 768x1024 (iPad)  
+  | 'desktop'     // 1920x1080 (FHD)
+  | '4k'          // 3840x2160 (4K)
+  | 'ultrawide'   // 3440x1440 (21:9)
+  | 'thumbnail'   // 300x200 (Preview)
+  | 'social'      // 1200x630 (Social media);
+
+/**
+ * Resolution Preset Definitions
+ */
+export const RESOLUTION_PRESETS: Record<ScreenshotPreset, ScreenshotResolution> = {
+  mobile: { width: 375, height: 667, suffix: 'mobile' },
+  tablet: { width: 768, height: 1024, suffix: 'tablet' },
+  desktop: { width: 1920, height: 1080, suffix: 'desktop' },
+  '4k': { width: 3840, height: 2160, suffix: '4k' },
+  ultrawide: { width: 3440, height: 1440, suffix: 'ultrawide' },
+  thumbnail: { width: 300, height: 200, suffix: 'thumb', scale: 0.25 },
+  social: { width: 1200, height: 630, suffix: 'social' }
+};
+
+/**
+ * Utility function to expand presets into resolution configurations
+ */
+export function expandPresets(presets: ScreenshotPreset[]): ScreenshotResolution[] {
+  return presets.map(preset => RESOLUTION_PRESETS[preset]);
+}
+
+/**
+ * Generate filename with resolution suffix
+ */
+export function generateFilenameWithResolution(
+  baseFilename: string, 
+  resolution: ScreenshotResolution
+): string {
+  const name = baseFilename.replace(/\.[^.]+$/, ''); // Remove extension
+  const ext = baseFilename.match(/\.[^.]+$/)?.[0] || '.png';
+  return resolution.suffix ? `${name}-${resolution.suffix}${ext}` : baseFilename;
 }
 
 /**
@@ -220,4 +278,9 @@ export interface ScreenshotMetadata {
   cropped?: boolean;
   cropCoordinates?: { x: number; y: number; width: number; height: number };
   compressed?: boolean; // If quality was reduced for file size
+  
+  // Multi-resolution metadata
+  multiResolution?: boolean;
+  resolutionCount?: number;
+  successfulCaptures?: number;
 }
