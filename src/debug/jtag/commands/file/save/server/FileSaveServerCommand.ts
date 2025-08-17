@@ -1,8 +1,8 @@
 /**
  * FileSave Command - Server Implementation
  * 
- * TEMPORARY: Direct filesystem access until ArtifactsDaemon is implemented
- * TODO: Replace with proper ArtifactsDaemon delegation
+ * Implements direct filesystem access following JTAG session-based directory structure.
+ * Uses same patterns as ArtifactsDaemon: session paths, directory creation, atomic writes.
  */
 
 import * as fs from 'fs/promises';
@@ -21,18 +21,14 @@ export class FileSaveServerCommand extends CommandBase<FileSaveParams, FileSaveR
   }
 
   /**
-   * TEMPORARY: Direct filesystem access until ArtifactsDaemon is implemented
-   * Creates session-based directory structure manually
+   * Implements direct filesystem access following JTAG session-based directory structure
    */
   async execute(saveParams: FileSaveParams): Promise<FileSaveResult> {
     
-    console.log(`💾 SERVER: FileSave (TEMPORARY direct FS access)`);
-    
-    // MANUAL DEBUG LOG - write directly to filesystem to confirm execution
-    await fs.appendFile('/tmp/debug-filesave.log', `FileSave execute called at ${new Date().toISOString()} for ${saveParams.filepath}\n`).catch(() => {});
+    console.log(`💾 SERVER: FileSave (session-based filesystem access)`);
 
     try {
-      // TEMPORARY: Create session-based path manually
+      // Create session-based path following JTAG directory structure
       const sessionId = saveParams.sessionId;
       const basePath = `.continuum/jtag/sessions/user/${sessionId}`;
       const fullPath = path.resolve(basePath, saveParams.filepath);
