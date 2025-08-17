@@ -416,6 +416,18 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
    * Handle event messages (fire-and-forget: console logs, notifications, etc.)
    */
   private async handleEventMessage(message: JTAGMessage): Promise<EventResult> {
+    // Try local routing first (like handleRequestMessage does for commands)
+    const matchResult = this.endpointMatcher.match(message.endpoint);
+    if (matchResult) {
+      try {
+        await matchResult.subscriber.handleMessage(message);
+        return { success: true, delivered: true, local: true };
+      } catch (error) {
+        console.warn(`⚠️ ${this.toString()}: Local event handler failed, trying cross-context:`, error);
+        // Fall through to cross-context routing
+      }
+    }
+
     // Determine priority based on message content
     const priority = RouterUtilities.determinePriority(message);
     
