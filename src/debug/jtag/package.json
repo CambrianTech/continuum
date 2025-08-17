@@ -1,7 +1,19 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.909",
+  "version": "1.0.913",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
+  "config": {
+    "port": 9001,
+    "rootPath": "../../../.continuum/jtag",
+    "logsPath": "../../../.continuum/jtag/logs",
+    "screenshotsPath": "../../../.continuum/jtag/screenshots",
+    "browser": {
+      "headless": false,
+      "devtools": true,
+      "width": 1200,
+      "height": 800
+    }
+  },
   "main": "dist/server-index.js",
   "browser": "dist/browser-index.js",
   "types": "dist/server-index.d.ts",
@@ -33,18 +45,6 @@
   "homepage": "https://github.com/continuum/jtag#readme",
   "publishConfig": {
     "access": "public"
-  },
-  "config": {
-    "port": 9001,
-    "rootPath": "../../../.continuum/jtag",
-    "logsPath": "../../../.continuum/jtag/logs",
-    "screenshotsPath": "../../../.continuum/jtag/screenshots",
-    "browser": {
-      "headless": false,
-      "devtools": true,
-      "width": 1200,
-      "height": 800
-    }
   },
   "structureGenerator": {
     "directories": {
@@ -300,7 +300,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-17T01:11:12.957Z",
+    "timestamp": "2025-08-17T01:57:19.016Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 26,
     "note": "Generated from clean essential path mappings only"
