@@ -97,30 +97,14 @@ export class ChatDaemonBrowser extends DaemonBase {
 
   /**
    * Set up UI event listeners for chat interactions
+   * TEMPORARILY DISABLED to prevent infinite loops with ChatWidget
    */
   private setupUIEventListeners(): void {
-    // Listen for message send events
-    document.addEventListener('chat:send-message', async (event: any) => {
-      const { roomId, content, mentions } = event.detail;
-      await this.delegateToServer('send_message', {
-        roomId,
-        content,
-        mentions: mentions || [],
-        category: 'chat'
-      });
-    });
-
-    // Listen for room join events
-    document.addEventListener('chat:join-room', async (event: any) => {
-      const { roomId, participantName, capabilities } = event.detail;
-      await this.delegateToServer('join_room', {
-        roomId,
-        participantName,
-        capabilities
-      });
-    });
-
-    console.log('💬 ChatDaemonBrowser: UI event listeners set up');
+    // TODO: Re-enable these listeners with proper loop prevention
+    // Currently disabled because ChatWidget triggers these events,
+    // causing infinite delegation loops
+    
+    console.log('💬 ChatDaemonBrowser: Event listeners disabled (preventing widget loops)');
   }
 
   /**

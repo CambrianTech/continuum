@@ -161,6 +161,12 @@ async function main() {
     // Log agent detection based on intelligent behavior
     entryPoint.logAgentDetection();
     
+    // Add environment routing parameter for exec commands
+    if (command === 'exec' && params.environment) {
+      // Keep environment param for routing within the system
+      // Don't delete it - let the system route to the appropriate exec command
+    }
+    
     const clientOptions: JTAGClientConnectOptions = {
       targetEnvironment: 'server', 
       transportType: 'websocket',
@@ -195,6 +201,28 @@ async function main() {
       const commandTimeout = new Promise((_, reject) => 
         setTimeout(() => reject(new Error(`Command '${command}' timed out after 10 seconds`)), 10000)
       );
+      
+      // Special parameter transformation for exec command
+      if (command === 'exec') {
+        // Transform CLI params to ExecCommandParams structure
+        if (params.file) {
+          // File-based execution
+          params.code = {
+            type: 'file',
+            path: params.file
+          };
+          delete params.file;
+        } else if (params.code && typeof params.code === 'string') {
+          // Inline code execution
+          params.code = {
+            type: 'inline',
+            language: params.language || 'javascript',
+            source: params.code
+          };
+        }
+        // Clean up CLI-specific params
+        delete params.language;
+      }
       
       const commandExecution = (client as any).commands[command](params);
       
