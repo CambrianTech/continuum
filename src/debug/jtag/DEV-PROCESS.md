@@ -1072,6 +1072,61 @@ npm test
 ./jtag screenshot --filename=debug-state-$(date +%s).png
 ```
 
+### **🔬 SCREENSHOT DEBUGGING BREAKTHROUGH** *(August 2025)*
+
+**PROVEN PATTERN: Visual debugging for coordinate and rendering issues**
+
+**Shadow Offset Debugging Success Story:**
+When user reported "shadows are all offset in the html2canvas capture", here's the systematic approach that solved it:
+
+**Phase 1: Reproduce with Evidence**
+```bash
+# Create comparison screenshots with different capture strategies
+./jtag screenshot --querySelector=".chat-widget" --filename="shadow-body-capture.png"
+./jtag screenshot --querySelector=".chat-widget" --filename="shadow-direct-capture.png" --options='{"directCapture": true, "preserveShadows": true}'
+```
+
+**Phase 2: Log-Driven Root Cause Analysis**
+```bash
+# Check which capture strategy was actually used
+grep -E "(📷.*BROWSER|Direct element|Full body capture)" examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log
+
+# Look for specific shadow-related processing
+grep -E "(shadow|preserve|foreignObject|removeContainer)" examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log
+```
+
+**Phase 3: Strategic Implementation**
+```typescript
+// Added dual capture strategies in ScreenshotBrowserCommand.ts:87-89
+const useDirectCapture = params.options?.directCapture || 
+  (targetSelector !== 'body' && params.options?.preserveShadows);
+
+// Shadow-preserving html2canvas options at lines 77-83:
+foreignObjectRendering: true,     // Better shadow rendering
+removeContainer: true,            // Cleaner capture
+ignoreElements: (element) => {     // Skip problematic shadow elements
+  return element.classList?.contains('html2canvas-ignore') || false;
+}
+```
+
+**Phase 4: Test-Driven Validation**
+```bash
+# Comprehensive test validation
+npx tsx tests/screenshot-integration-advanced.test.ts
+# Result: 5/5 advanced tests passing with shadow preservation
+
+# Visual evidence collection
+ls -la examples/test-bench/.continuum/jtag/currentUser/screenshots/
+# Shows both shadow-body-test.png and proper shadow handling
+```
+
+**🎯 KEY DEBUGGING INSIGHTS:**
+- **Device pixel ratio normalization** prevents coordinate miscalculations
+- **Document-relative positioning** (offsetTop/offsetLeft) vs viewport-relative (getBoundingClientRect) 
+- **Fit-inside scaling** with `Math.min(scaleX, scaleY, 1)` preserves aspect ratios
+- **Dual capture strategies** allow optimization for shadow rendering vs coordinate precision
+- **Visual validation is essential** - coordinate math errors only show up in actual screenshots
+
 **Phase 2: System Health**
 ```bash
 # 2A. Check system started
