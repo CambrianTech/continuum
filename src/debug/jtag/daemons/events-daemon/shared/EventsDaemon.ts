@@ -13,7 +13,7 @@ import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import { createBaseResponse, type BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 
 /**
- * Event bridge message payload
+ * Event bridge message payload with proper typing
  */
 export interface EventBridgePayload extends JTAGPayload {
   type: 'event-bridge';
@@ -23,7 +23,7 @@ export interface EventBridgePayload extends JTAGPayload {
     sessionId?: string;
   };
   eventName: string;
-  data: any;
+  data: any; // Must be any for spread operations
   originSessionId: UUID;
   timestamp: string;
 }

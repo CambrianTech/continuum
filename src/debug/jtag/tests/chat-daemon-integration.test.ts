@@ -18,7 +18,7 @@ import { AgentDetector, detectAgent, isAI, getOutputFormat, getAgentName } from 
 interface ChatTestResult {
   testName: string;
   success: boolean;
-  details: any;
+  details: unknown;
   error?: string;
 }
 
