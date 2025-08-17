@@ -25,8 +25,15 @@ export interface EventBridgePayload extends JTAGPayload {
     sessionId?: string;
   };
   eventName: string;
-  data: any; // Must be any for spread operations
+  data: {
+    message?: unknown;
+    _bridged?: boolean;
+    _originalContext?: string;
+    _bridgeTimestamp?: string;
+    [key: string]: unknown;
+  };
   originSessionId: UUID;
+  originContextUUID?: UUID; // Track originating context for recursion prevention
   timestamp: string;
 }
 
@@ -90,22 +97,37 @@ export abstract class EventsDaemon extends DaemonBase {
       console.log(`🌉 EventsDaemon: Received bridged event from ${payload.originSessionId}`);
       console.log(`   Event: ${payload.eventName}`);
       console.log(`   Scope: ${payload.scope.type}${payload.scope.id ? `:${payload.scope.id}` : ''}`);
+      console.log(`   Current context: ${this.context.environment}/${this.context.uuid}`);
+      console.log(`   Origin context: ${payload.originContextUUID}`);
       
-      // Re-emit the event in this context with bridge metadata
-      const bridgedData = {
-        ...payload.data,
-        _bridged: true,
-        _originalContext: payload.originSessionId,
-        _bridgeTimestamp: payload.timestamp
-      };
+      // Check if we're the origin context - if so, skip local emission but still route cross-environment
+      const isOriginContext = payload.originContextUUID && payload.originContextUUID === this.context.uuid;
       
-      // Emit to local event system
-      this.eventManager.events.emit(payload.eventName, bridgedData);
+      if (isOriginContext) {
+        console.log(`🔄 EventsDaemon: Origin context - skipping local emission, routing to other environments`);
+      } else {
+        // Re-emit the event in this context with bridge metadata
+        const bridgedData = {
+          ...payload.data,
+          _bridged: true,
+          _originalContext: payload.originSessionId,
+          _bridgeTimestamp: payload.timestamp
+        };
+        
+        // Emit to local event system
+        this.eventManager.events.emit(payload.eventName, bridgedData);
+        console.log(`✨ EventsDaemon: Bridged event '${payload.eventName}' to local context`);
+      }
       
-      // ALSO route to other environments (cross-environment bridging)
-      await this.routeToOtherEnvironments(payload);
+      // Always route to other environments if this is NOT already a bridged event
+      // Check if event is already bridged to prevent infinite recursion
+      if (!payload.data._bridged) {
+        await this.routeToOtherEnvironments(payload);
+      } else {
+        console.log(`🔄 EventsDaemon: Skipping re-bridge of already bridged event '${payload.eventName}'`);
+      }
       
-      console.log(`✨ EventsDaemon: Bridged event '${payload.eventName}' to local context`);
+      console.log(`✨ EventsDaemon: Processed event '${payload.eventName}' ${isOriginContext ? '(origin context)' : '(bridged locally)'}`);
       
       return createBaseResponse(true, message.context, payload.sessionId, {
         bridged: true,
@@ -129,12 +151,13 @@ export abstract class EventsDaemon extends DaemonBase {
       const targetEnvironments = this.context.environment === 'server' ? ['browser'] : ['server'];
       
       for (const targetEnv of targetEnvironments) {
-        // Create cross-environment event message
+        // CRITICAL FIX: Route to SPECIFIC environment context, not local environment
+        // Use targetEnv prefix to ensure cross-process routing via transport
         const crossEnvMessage = JTAGMessageFactory.createEvent(
           this.context,
           'events-daemon',
-          `${targetEnv}/events/${EVENT_ENDPOINTS.BRIDGE}`,
-          payload as any
+          `${targetEnv}/events/${EVENT_ENDPOINTS.BRIDGE}`, // Route to events daemon in target environment with environment prefix
+          payload
         );
         
         // Route to other environment via router's transport
