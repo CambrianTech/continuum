@@ -7,6 +7,7 @@
 
 import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
 import type { JTAGMessage, JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import { JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
@@ -101,6 +102,9 @@ export abstract class EventsDaemon extends DaemonBase {
       // Emit to local event system
       this.eventManager.events.emit(payload.eventName, bridgedData);
       
+      // ALSO route to other environments (cross-environment bridging)
+      await this.routeToOtherEnvironments(payload);
+      
       console.log(`✨ EventsDaemon: Bridged event '${payload.eventName}' to local context`);
       
       return createBaseResponse(true, message.context, payload.sessionId, {
@@ -113,6 +117,38 @@ export abstract class EventsDaemon extends DaemonBase {
       const errorMsg = error instanceof Error ? error.message : String(error);
       console.error(`❌ EventsDaemon: Event bridge failed: ${errorMsg}`);
       return createBaseResponse(false, message.context, payload.sessionId, {}) as EventBridgeResponse;
+    }
+  }
+
+  /**
+   * Route event to other environments (cross-environment bridging)
+   */
+  private async routeToOtherEnvironments(payload: EventBridgePayload): Promise<void> {
+    try {
+      // Determine target environments (opposite of current)
+      const targetEnvironments = this.context.environment === 'server' ? ['browser'] : ['server'];
+      
+      for (const targetEnv of targetEnvironments) {
+        // Create cross-environment event message
+        const crossEnvMessage = JTAGMessageFactory.createEvent(
+          this.context,
+          'events-daemon',
+          `${targetEnv}/events/${EVENT_ENDPOINTS.BRIDGE}`,
+          payload as any
+        );
+        
+        // Route to other environment via router's transport
+        try {
+          console.log(`🌉 EventsDaemon: Attempting to route event '${payload.eventName}' to ${targetEnv} with endpoint: ${crossEnvMessage.endpoint}`);
+          const result = await this.router.postMessage(crossEnvMessage);
+          console.log(`🌉 EventsDaemon: Router result for ${targetEnv}:`, result);
+          console.log(`🌉 EventsDaemon: Routed event '${payload.eventName}' to ${targetEnv} environment`);
+        } catch (routingError) {
+          console.warn(`⚠️ EventsDaemon: Failed to route event to ${targetEnv}:`, routingError);
+        }
+      }
+    } catch (error) {
+      console.error(`❌ EventsDaemon: Cross-environment routing failed:`, error);
     }
   }
 
