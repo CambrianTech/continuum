@@ -53,7 +53,7 @@ async function runChatDaemonTddTests(): Promise<void> {
             
             try {
               // Test that chat daemon endpoint exists in router
-              const router = window.jtagSystem?.router;
+              const router = window.jtag?.router;
               if (!router) {
                 console.log('❌ TDD TEST: No JTAG router available');
                 return { testName: 'basicCommunication', success: false, error: 'No router' };

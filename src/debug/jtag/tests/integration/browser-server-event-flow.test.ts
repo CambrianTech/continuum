@@ -59,7 +59,7 @@ async function testBrowserToServerEventFlow() {
                 
                 try {
                   // Get JTAG system instance to emit event
-                  const jtagSystem = window.jtagSystem;
+                  const jtagSystem = window.jtag;
                   if (!jtagSystem) {
                     console.error('❌ BROWSER: JTAG system not available');
                     return;

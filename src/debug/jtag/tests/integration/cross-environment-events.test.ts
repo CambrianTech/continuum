@@ -32,7 +32,7 @@ async function testCrossEnvironmentEventRouting() {
             
             try {
               // Get JTAG system instance
-              const jtagSystem = window.jtagSystem;
+              const jtagSystem = window.jtag;
               if (!jtagSystem || !jtagSystem.eventManager) {
                 return { success: false, error: 'JTAG system not available' };
               }
