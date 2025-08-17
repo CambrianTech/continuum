@@ -49,6 +49,10 @@ if (isBrowser) {
       jtagClient = connectionResult.client;
       jtagConnected = true;
       
+      // Set up global window.jtag for backwards compatibility with tests
+      (window as any).jtag = jtagClient;
+      console.log('🌐 JTAG Demo: window.jtag global established');
+      
       console.log('✅ JTAG Demo: JTAG Client connected successfully');
     } catch (error) {
       console.error('❌ JTAG Demo: Failed to connect to JTAG Client:', error);

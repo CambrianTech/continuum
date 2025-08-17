@@ -115,6 +115,13 @@ export abstract class JTAGSystem extends JTAGBase {
     return this.config.version.fallback;
   }
 
+  /**
+   * Provide router access for scoped event system
+   */
+  protected getRouter(): JTAGRouter {
+    return this.router;
+  }
+
   //This SHOULD BE the only initialize/setup method in ANY JTAGBase class, make the others protected and call from here
   protected override async initialize(): Promise<void> {
     // // Initialize router with provided configuration
@@ -185,6 +192,10 @@ export abstract class JTAGSystem extends JTAGBase {
 
     try {      
       this.updateConsoleDaemonSessionId();
+      
+      // Initialize scoped event system now that router and session are ready
+      this.initializeScopedEvents();
+      
       console.log(`✅ ${this.toString()}: Session connected - ${this.sessionId} (context: ${this.context.uuid})`);
     } catch (error) {
       console.error(`❌ ${this.toString()}: Error connecting session:`, error);
