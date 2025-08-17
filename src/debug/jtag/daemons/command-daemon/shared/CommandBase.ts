@@ -12,6 +12,17 @@ import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { isRequestResult } from '../../../system/core/router/shared/RouterTypes';
 
+/**
+ * Router result structure for better type safety
+ */
+interface RouterResult {
+  success: boolean;
+  handlerResult?: {
+    commandResult?: unknown;
+  } | unknown;
+  response?: unknown;
+}
+
 export interface CommandEntry {
   name: string;
   className: string;
@@ -105,16 +116,19 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
     console.log(`🔄 ${this.toString()}: Remote execution result:`, JSON.stringify(routerResult, null, 2));
     
     // Extract the actual command result from the router response
-    if (routerResult.success) {
-      const handlerResult = (routerResult as any).handlerResult;
-      if (handlerResult) {
+    const typedResult = routerResult as RouterResult;
+    if (typedResult.success) {
+      const handlerResult = typedResult.handlerResult;
+      if (handlerResult && typeof handlerResult === 'object' && 'commandResult' in handlerResult) {
         // The actual command result is in handlerResult.commandResult for cross-context calls
         const commandResult = handlerResult.commandResult || handlerResult;
         return commandResult as unknown as TResult;
+      } else if (handlerResult) {
+        return handlerResult as unknown as TResult;
       }
       
       // Fallback to legacy response structure
-      const response = (routerResult as any).response;
+      const response = typedResult.response;
       if (response) {
         return response as unknown as TResult;
       }

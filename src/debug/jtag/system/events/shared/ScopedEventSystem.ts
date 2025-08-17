@@ -37,7 +37,7 @@ export interface ScopedEventSubscription {
   id: UUID;
   eventName: string;
   scope: EventScope;
-  listener: (data?: any) => void;
+  listener: (data?: unknown) => void;
   createdAt: Date;
   lastTriggered?: Date;
   triggerCount: number;
@@ -154,11 +154,11 @@ export class ScopedEventSystem {
    */
   private createScopedEventsInterface(scope: EventScope): EventsInterface {
     return {
-      emit: (eventName: string, data?: any) => {
+      emit: (eventName: string, data?: unknown) => {
         this.emitScopedEvent(scope, eventName, data);
       },
       
-      on: (eventName: string, listener: (data?: any) => void): (() => void) => {
+      on: (eventName: string, listener: (data?: unknown) => void): (() => void) => {
         return this.subscribeScopedEvent(scope, eventName, listener);
       },
       
@@ -174,7 +174,7 @@ export class ScopedEventSystem {
   private subscribeScopedEvent(
     scope: EventScope,
     eventName: string,
-    listener: (data?: any) => void
+    listener: (data?: unknown) => void
   ): () => void {
     const subscription: ScopedEventSubscription = {
       id: generateUUID(),
@@ -196,7 +196,7 @@ export class ScopedEventSystem {
     this.scopeSubscriptions.get(scopeKey)!.add(subscription.id);
     
     // Create wrapped listener that checks scope before triggering
-    const wrappedListener = (data?: any) => {
+    const wrappedListener = (data?: unknown) => {
       if (this.shouldReceiveEvent(scope, eventName, data)) {
         subscription.lastTriggered = new Date();
         subscription.triggerCount++;
