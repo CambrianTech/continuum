@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JTAG Widget System Demo</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f1419;
+            color: #e0e6ed;
+        }
+        
+        .app-container {
+            display: flex;
+            height: 100vh;
+        }
+        
+        .widget-area {
+            flex: 1;
+            padding: 20px;
+        }
+        
+        h1 {
+            color: #00d4ff;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <div class="widget-area">
+            <h1>🎭 JTAG Widget System</h1>
+            <p>Widgets are self-contained web components with CSS, HTML, and logic all inside the widget module.</p>
+            
+            <!-- Chat widget - self-contained with shadow DOM -->
+            <chat-widget></chat-widget>
+        </div>
+    </div>
+
+    <!-- Load JTAG system and widgets -->
+    <script type="module" src="/dist/browser-index.js"></script>
+</body>
+</html>

@@ -10,6 +10,7 @@ import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, statSync } from 'fs';
 import { join } from 'path';
+import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
 
 const execAsync = promisify(exec);
 
@@ -94,8 +95,9 @@ class SmartSystemStartup {
   async runGentleStart(background: boolean = false): Promise<void> {
     console.log(`🚀 Starting JTAG system gently (no force stop)...`);
     
-    // Create the log directory path (relative to current working directory)
-    const logDir = 'examples/test-bench/.continuum/jtag/sessions/system/00000000-0000-0000-0000-000000000000/logs';
+    // Create the log directory path (single source of truth)
+    const workingDir = WorkingDirConfig.getWorkingDir();
+    const logDir = WorkingDirConfig.getLogsPath();
     const logFile = `${logDir}/server-node-output.log`;
     
     // Ensure log directory exists
@@ -108,7 +110,7 @@ class SmartSystemStartup {
       'npm run version:bump', 
       'npm pack',
       'npx tsx scripts/update-test-bench.ts',
-      `cd examples/test-bench && (npm install && npm start) 2>&1 | tee ../../${logFile}`
+      `cd ${workingDir} && (npm install && npm start) 2>&1 | tee ../../${logFile}`
     ].join(' && ');
     
     console.log(`🔄 Using tmux for gentle startup...`);

@@ -44,6 +44,7 @@
  * SUPPORTED MODULE TYPES:
  * - daemons/        - Background services (health, console, session, etc.)
  * - commands/       - User-invokable actions (screenshot, file operations, etc.)  
+ * - widgets/        - Web component UI elements (chat, sidebar, training, etc.)
  * - channels/       - Communication infrastructure (routing, factories)
  * - adapters/       - Protocol implementations (websocket, http, mesh, etc.)
  * - ai-hooks/       - AI capability interfaces (MPC, federated learning)
@@ -222,6 +223,26 @@ const STRUCTURE_CONFIG: GeneratorConfig = {
     supportedEnvironments: ['{env}'] // Current environment
   }`
       }
+    },
+    
+    {
+      name: 'widget',
+      pluralName: 'widgets',
+      typeScriptTypeName: 'WidgetEntry',
+      patterns: ['widgets/*/*Widget.ts'],
+      nameExtraction: {
+        type: 'regex',
+        pattern: '^(.+?)Widget$'  // Extract widget name, removing Widget suffix
+      },
+      registryTemplate: {
+        arrayName: '{ENV}_WIDGETS',
+        entryTemplate: `{
+    name: '{name}',
+    className: '{className}',
+    widgetClass: {className},
+    tagName: '{name}'.toLowerCase() + '-widget'
+  }`
+      }
     }
   ],
   
@@ -229,11 +250,12 @@ const STRUCTURE_CONFIG: GeneratorConfig = {
     {
       environment: 'browser',
       outputFile: 'browser/generated.ts',
-      entryTypes: ['daemon', 'command', 'adapter'],
+      entryTypes: ['daemon', 'command', 'adapter', 'widget'],
       typeImports: {
         'DaemonEntry': 'daemons/command-daemon/shared/DaemonBase',
         'CommandEntry': 'daemons/command-daemon/shared/CommandBase',
-        'AdapterEntry': 'system/transports/shared/TransportBase'
+        'AdapterEntry': 'system/transports/shared/TransportBase',
+        'WidgetEntry': 'widgets/shared/WidgetBase'
       }
     },
     
@@ -328,6 +350,12 @@ class StructureGenerator {
    */
   private getPatternsForEnvironment(entryType: EntryTypeDefinition, environment: Environment): string[] {
     const envSuffix = environment.charAt(0).toUpperCase() + environment.slice(1);
+    
+    // Special case: widgets are browser-only components
+    if (entryType.name === 'widget' && environment === 'browser') {
+      return entryType.patterns; // Return all widget patterns for browser
+    }
+    
     return entryType.patterns.filter(pattern => 
       pattern.includes(`/${environment}/`) || pattern.includes(`*${envSuffix}.ts`)
     );
