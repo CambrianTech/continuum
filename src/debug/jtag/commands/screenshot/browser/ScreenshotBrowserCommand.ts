@@ -6,8 +6,9 @@
 
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
-import type { ScreenshotParams, Html2CanvasCanvas, Html2CanvasOptions, ScreenshotResult } from '../shared/ScreenshotTypes';
-import { createScreenshotResult } from '../shared/ScreenshotTypes';
+import type { ScreenshotParams, Html2CanvasCanvas, Html2CanvasOptions, ScreenshotResult, ScreenshotResolution } from '../shared/ScreenshotTypes';
+import { createScreenshotResult, expandPresets, generateFilenameWithResolution, RESOLUTION_PRESETS } from '../shared/ScreenshotTypes';
+import { EnhancementError } from '../../../system/core/types/ErrorTypes';
 import { getGlobalAPI, getViewportDimensions } from '../../../daemons/command-daemon/shared/GlobalUtils';
 import { 
   smartQuerySelector, 
@@ -26,10 +27,90 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
   }
   
   /**
+   * Multi-resolution screenshot capture
+   */
+  async captureAtResolution(
+    params: ScreenshotParams, 
+    resolution: ScreenshotResolution
+  ): Promise<ScreenshotResult> {
+    // Create resolution-specific params
+    const resolutionParams = {
+      ...params,
+      width: resolution.width,
+      height: resolution.height,
+      scale: resolution.scale || params.scale,
+      filename: params.filename ? generateFilenameWithResolution(params.filename, resolution) : undefined
+    };
+    
+    return await this.executeSingleCapture(resolutionParams);
+  }
+
+  /**
    * Browser capture with advanced coordinate-based cropping
    * BREAKTHROUGH: Full body capture + element coordinate cropping (more reliable than html2canvas element capture)
    */
   async execute(params: ScreenshotParams): Promise<ScreenshotResult> {
+    console.log(`🔍 BROWSER: Checking multi-resolution conditions:`);
+    console.log(`   resolutions: ${params.options?.resolutions?.length || 0}`);
+    console.log(`   presets: ${params.options?.presets?.length || 0}`);
+    
+    // Handle multi-resolution capture
+    if (params.options?.resolutions?.length || params.options?.presets?.length) {
+      console.log(`📐 BROWSER: Multi-resolution path selected`);
+      return await this.executeMultiResolution(params);
+    }
+    
+    console.log(`📸 BROWSER: Single capture path selected`);
+    return await this.executeSingleCapture(params);
+  }
+  
+  /**
+   * Execute multi-resolution capture
+   */
+  async executeMultiResolution(params: ScreenshotParams): Promise<ScreenshotResult> {
+    console.log(`📐 BROWSER: Multi-resolution capture requested`);
+    
+    // Combine custom resolutions and presets
+    const customResolutions = params.options?.resolutions || [];
+    const presetResolutions = params.options?.presets ? expandPresets(params.options.presets) : [];
+    const allResolutions = [...customResolutions, ...presetResolutions];
+    
+    console.log(`📐 BROWSER: Capturing ${allResolutions.length} resolutions`);
+    
+    const results: ScreenshotResult[] = [];
+    let firstResult: ScreenshotResult | null = null;
+    
+    for (const resolution of allResolutions) {
+      console.log(`📐 BROWSER: Capturing ${resolution.width}x${resolution.height} (${resolution.suffix || 'custom'})`);
+      const result = await this.captureAtResolution(params, resolution);
+      results.push(result);
+      
+      // Use first successful result as primary return
+      if (!firstResult && result.success) {
+        firstResult = result;
+      }
+    }
+    
+    // Return the first successful result with metadata about all captures
+    if (firstResult) {
+      firstResult.metadata = {
+        ...firstResult.metadata,
+        multiResolution: true,
+        resolutionCount: allResolutions.length,
+        successfulCaptures: results.filter(r => r.success).length
+      };
+    }
+    
+    return firstResult || createScreenshotResult(params.context, params.sessionId, {
+      success: false,
+      error: new EnhancementError('multi-resolution', 'All resolution captures failed')
+    });
+  }
+
+  /**
+   * Single capture execution (original logic)
+   */
+  async executeSingleCapture(params: ScreenshotParams): Promise<ScreenshotResult> {
     console.log(`📸 BROWSER: Capturing screenshot`);
     console.log(`🔍 DEBUG: ScreenshotBrowserCommand.execute() CALLED with sessionId: ${params.sessionId}`);
     console.log(`🔍 DEBUG: Full params:`, JSON.stringify(params, null, 2));
@@ -264,7 +345,7 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
       console.error(`❌ BROWSER: Failed:`, error.message);
       return createScreenshotResult(params.context, params.sessionId, {
         success: false,
-        error: error.message
+        error: new EnhancementError('screenshot-capture', error.message || 'Screenshot capture failed')
       });
     }
   }

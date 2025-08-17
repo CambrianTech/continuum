@@ -224,6 +224,27 @@ async function main() {
         delete params.language;
       }
       
+      // Special parameter transformation for screenshot command
+      if (command === 'screenshot') {
+        // Convert comma-separated presets to array
+        if (params.presets && typeof params.presets === 'string') {
+          params.options = params.options || {};
+          params.options.presets = params.presets.split(',').map((p: string) => p.trim());
+          delete params.presets;
+        }
+        
+        // Convert comma-separated resolutions to array (if provided as JSON string)
+        if (params.resolutions && typeof params.resolutions === 'string') {
+          try {
+            params.options = params.options || {};
+            params.options.resolutions = JSON.parse(params.resolutions);
+            delete params.resolutions;
+          } catch (e) {
+            console.warn(`⚠️ Invalid resolutions JSON: ${params.resolutions}`);
+          }
+        }
+      }
+      
       const commandExecution = (client as any).commands[command](params);
       
       const result = await Promise.race([commandExecution, commandTimeout]);
