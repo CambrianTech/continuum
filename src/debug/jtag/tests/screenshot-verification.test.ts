@@ -25,7 +25,7 @@ async function verifyScreenshotEndToEnd(): Promise<ScreenshotVerificationResult>
   const result: ScreenshotVerificationResult = {
     success: false,
     screenshotsSaved: 0,
-    expectedScreenshots: 1, // At minimum, we expect the browser-demo-test.png
+    expectedScreenshots: 2, // Chat widget before/after screenshots
     missingScreenshots: [],
     fileSizeErrors: [],
     details: []
@@ -92,9 +92,10 @@ async function verifyScreenshotEndToEnd(): Promise<ScreenshotVerificationResult>
       }
     }
     
-    // 4. Expected screenshots check
+    // 4. Expected screenshots check - accept chat widget before/after screenshots
     const expectedScreenshots = [
-      'browser-demo-test.png' // From the browser integration test
+      'chat-widget-before-test.png',  // From browser integration test (before state)
+      'chat-widget-after-test.png'    // From browser integration test (after state)
     ];
     
     for (const expected of expectedScreenshots) {

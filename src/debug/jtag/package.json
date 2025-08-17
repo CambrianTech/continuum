@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.913",
+  "version": "1.0.924",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "config": {
     "port": 9001,
@@ -210,6 +210,7 @@
     "test:chat-integration": "echo '💬 Testing chat daemon integration (runs IN JTAG browser)' && npm run system:ensure && npx tsx tests/chat-daemon-integration.test.ts",
     "test:chat-integration:ai": "echo '🤖 Chat integration tests - AI format' && JTAG_OUTPUT_FORMAT=ai-friendly npm run test:chat-integration",
     "test:chat-load": "echo '📊 Testing chat real data load scenarios (runs IN JTAG browser)' && npm run system:ensure && npx tsx tests/chat-real-data.test.ts",
+    "test:chat-widget": "echo '💬 Testing chat widget updates (clean, no spam)' && npm run system:ensure && npx tsx tests/chat-widget-simple.test.ts",
     "test:chat-tdd": "echo '🧪 TDD Chat daemon tests (Red → Green → Refactor)' && npm run system:ensure && npx tsx tests/chat-daemon-tdd.test.ts",
     "test:legacy:comprehensive-transport": "npx tsx tests/integration/transport/comprehensive-transport-test.ts",
     "test:legacy:browser-server-commands": "npx tsx tests/integration/transport/browser-server-commands.test.ts",
@@ -300,7 +301,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-17T01:57:19.016Z",
+    "timestamp": "2025-08-17T03:19:05.278Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 26,
     "note": "Generated from clean essential path mappings only"

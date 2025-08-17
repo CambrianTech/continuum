@@ -34,13 +34,15 @@ export class ExecBrowserCommand extends CommandBase<ExecCommandParams, ExecComma
       
       console.log(`✅ BROWSER EXEC: Success - result:`, result);
       
-      // Add result to params and route back to server (like screenshot does)
+      // Add result to params and metadata
       params.result = result;
       params.executedAt = Date.now();
       params.executedIn = 'browser';
       
-      console.log(`🔀 BROWSER EXEC: Sending result back to server`);
-      return await this.remoteExecute(params);
+      // EXEC COMMANDS NEVER DELEGATE - execute locally in whatever environment they're called
+      // This prevents infinite loops where browser exec triggers server exec which triggers browser exec
+      console.log(`✅ BROWSER EXEC: Completed locally - no delegation`);
+      return createExecSuccessResult(result, 'browser', params, Date.now());
     } else {
       return createExecErrorResult('validation', 'Browser exec: unsupported code type', 'browser', params, Date.now());
     }

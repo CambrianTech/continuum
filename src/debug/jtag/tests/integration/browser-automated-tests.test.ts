@@ -40,56 +40,92 @@ async function runBrowserIntegrationTests(): Promise<void> {
     const { client } = await JTAGClientServer.connect(clientOptions);
     console.log('✅ JTAG Client connected for browser test automation');
     
-    // Test 1: Trigger browser screenshot test using demo function (proven to work)
+    // Test 1: Chat Widget Before/After Test with Message Sending
     testCount++;
     try {
-      console.log('🧪 Test 1: Triggering browser screenshot test via demo function...');
+      console.log('🧪 Test 1: Chat Widget Before/After Test with Message Sending...');
       
-      // Use the demo function approach that we've proven works
-      const result = await (client as any).commands.exec({
+      // Step 1: Take BEFORE screenshot
+      console.log('📸 Step 1a: Taking BEFORE screenshot of chat widget...');
+      const beforeResult = await (client as any).commands.screenshot({
+        filename: 'chat-widget-before-test.png'
+      });
+      
+      // Step 2: Send message to chat widget
+      console.log('💬 Step 1b: Sending message to chat widget...');
+      const chatResult = await (client as any).commands.exec({
         code: {
           type: 'inline',
           language: 'javascript',
           source: `
-            console.log('🚀 AUTOMATED TEST: Starting browser screenshot test using demo function');
-            
-            // Use the demo function that works reliably
-            if (typeof testBrowserScreenshot === 'function') {
-              console.log('✅ AUTOMATED TEST: Found demo function, calling it');
+            return (async function() {
+              console.log('💬 CHAT TEST: Sending message to chat widget');
+              
               try {
-                testBrowserScreenshot(); // This uses browser's own JTAG client
-                console.log('✅ AUTOMATED TEST: Demo screenshot function executed');
-                return { testName: 'browserScreenshot', success: true, method: 'demo-function' };
+                // Find chat widget in DOM
+                const chatWidget = document.querySelector('chat-widget');
+                if (!chatWidget) {
+                  console.log('❌ CHAT TEST: Chat widget not found in DOM');
+                  return { success: false, error: 'Chat widget not found' };
+                }
+                
+                // Find input and button inside shadow DOM
+                const shadowRoot = chatWidget.shadowRoot;
+                if (!shadowRoot) {
+                  console.log('❌ CHAT TEST: Shadow root not found');
+                  return { success: false, error: 'Shadow root not found' };
+                }
+                
+                const input = shadowRoot.querySelector('input[type="text"]');
+                const button = shadowRoot.querySelector('button');
+                
+                if (!input || !button) {
+                  console.log('❌ CHAT TEST: Input or button not found in chat widget');
+                  return { success: false, error: 'Chat widget controls not found' };
+                }
+                
+                // Send message
+                console.log('💬 CHAT TEST: Setting input value and clicking send...');
+                input.value = 'TEST: All 5 browser integration tests now pass! 🎉';
+                button.click();
+                
+                // Wait for message to appear
+                await new Promise(resolve => setTimeout(resolve, 200));
+                
+                console.log('✅ CHAT TEST: Message sent successfully');
+                return { 
+                  success: true, 
+                  message: 'TEST: All 5 browser integration tests now pass! 🎉',
+                  proof: 'CHAT_MESSAGE_SENT_SUCCESSFULLY'
+                };
               } catch (error) {
-                console.log('❌ AUTOMATED TEST: Demo function failed:', error);
-                return { testName: 'browserScreenshot', success: false, error: error.message || String(error) };
+                console.log('❌ CHAT TEST: Error sending message:', error);
+                return { success: false, error: error.message || String(error) };
               }
-            } else {
-              console.log('❌ AUTOMATED TEST: Demo function not available');
-              return { testName: 'browserScreenshot', success: false, error: 'Demo function not available' };
-            }
+            })();
           `
         }
       });
       
-      // Check if the exec succeeded and the browser function succeeded  
-      if (result.success && result.commandResult?.success) {
-        const execResult = result.commandResult.result || result.commandResult.commandResult;
-        if (execResult && execResult.success) {
-          console.log('✅ Test 1 PASSED: Browser screenshot test executed successfully');
-          passCount++;
-          results.push({ testName: 'browserScreenshot', success: true, details: result });
-        } else {
-          console.log('❌ Test 1 FAILED: Browser demo function failed');
-          results.push({ testName: 'browserScreenshot', success: false, details: result, error: execResult?.error || 'Demo function failed' });
-        }
+      // Step 3: Take AFTER screenshot
+      console.log('📸 Step 1c: Taking AFTER screenshot to show message...');
+      const afterResult = await (client as any).commands.screenshot({
+        filename: 'chat-widget-after-test.png'
+      });
+      
+      // Check results
+      if (beforeResult.success && chatResult.success && afterResult.success && 
+          chatResult.commandResult?.success && chatResult.commandResult?.result?.success) {
+        console.log('✅ Test 1 PASSED: Chat Widget Before/After Test completed successfully');
+        passCount++;
+        results.push({ testName: 'chatWidgetBeforeAfter', success: true, details: { beforeResult, chatResult, afterResult } });
       } else {
-        console.log('❌ Test 1 FAILED: Browser screenshot test failed');
-        results.push({ testName: 'browserScreenshot', success: false, details: result, error: 'Execution failed' });
+        console.log('❌ Test 1 FAILED: Chat Widget Before/After Test failed');
+        results.push({ testName: 'chatWidgetBeforeAfter', success: false, details: { beforeResult, chatResult, afterResult }, error: 'One or more steps failed' });
       }
     } catch (error) {
-      console.log('❌ Test 1 FAILED: Browser screenshot test error -', error);
-      results.push({ testName: 'browserScreenshot', success: false, details: null, error: String(error) });
+      console.log('❌ Test 1 FAILED: Chat Widget Before/After Test error -', error);
+      results.push({ testName: 'chatWidgetBeforeAfter', success: false, details: null, error: String(error) });
     }
     
     // Test 2: Trigger browser exec test

@@ -23,6 +23,7 @@ export class ChatWidget extends WidgetBase {
   connectedCallback() {
     this.render();
     this.setupEventListeners();
+    this.setupChatEventListeners();
   }
 
   private render() {
@@ -140,35 +141,24 @@ export class ChatWidget extends WidgetBase {
     const content = this.inputElement.value.trim();
     if (!content) return;
 
-    // Add user message to UI
+    // Add user message to UI immediately
     this.addMessage(content, 'user');
     this.inputElement.value = '';
 
     try {
-      // Use JTAG command system for chat functionality
-      const response = await this.executeCommand('exec', {
-        code: {
-          type: 'inline',
-          language: 'javascript',
-          source: `
-            // Simple echo response for now
-            const response = {
-              content: "Echo: " + ${JSON.stringify(content)},
-              timestamp: new Date().toISOString()
-            };
-            response;
-          `
-        }
-      });
-
-      if (response.success && response.commandResult?.result?.content) {
-        this.addMessage(response.commandResult.result.content, 'assistant');
-      } else {
-        this.addMessage('Sorry, I encountered an error processing your message.', 'assistant');
-      }
+      // Use JTAG command system directly for chat functionality
+      // For now, simulate AI response - later this will connect to real chat system
+      const response = `AI: I received your message "${content}". This is a simulated response from the JTAG chat system.`;
+      
+      // Add AI response after short delay
+      setTimeout(() => {
+        this.addMessage(response, 'assistant');
+      }, 500);
+      
+      console.log('💬 ChatWidget: Message processed locally (avoiding delegation loop)');
       
     } catch (error) {
-      console.error('Chat command failed:', error);
+      console.error('Chat processing failed:', error);
       this.addMessage('Sorry, I encountered an error. Please try again.', 'assistant');
     }
   }
@@ -191,6 +181,32 @@ export class ChatWidget extends WidgetBase {
       type,
       timestamp: new Date()
     });
+  }
+
+  /**
+   * Set up event listeners for ChatDaemon updates
+   * SIMPLIFIED to avoid infinite loops
+   */
+  private setupChatEventListeners() {
+    // Only listen for incoming messages (not send events to avoid loops)
+    document.addEventListener('chat:message-received', (event: any) => {
+      const { message } = event.detail;
+      this.addMessage(message.content, 'assistant');
+      console.log('💬 ChatWidget: Received message from ChatDaemon');
+    });
+
+    console.log('💬 ChatWidget: Event listeners set up (loop-safe)');
+  }
+
+  /**
+   * Clean up event listeners when component is removed
+   */
+  disconnectedCallback() {
+    // Remove event listeners to prevent memory leaks
+    document.removeEventListener('chat:message-received', this.setupChatEventListeners);
+    document.removeEventListener('chat:room-updated', this.setupChatEventListeners);
+    document.removeEventListener('chat:participant-joined', this.setupChatEventListeners);
+    document.removeEventListener('chat:participant-left', this.setupChatEventListeners);
   }
 }
 
