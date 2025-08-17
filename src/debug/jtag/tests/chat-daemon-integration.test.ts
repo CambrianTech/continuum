@@ -181,7 +181,8 @@ async function runChatDaemonIntegrationTests(): Promise<void> {
       });
       
       if (result.success && result.commandResult?.success) {
-        const execResult = result.commandResult.result || result.commandResult.commandResult;
+        // Exec results are in commandResult.result (the return value from the executed function)
+        const execResult = result.commandResult.result;
         if (execResult && execResult.success) {
           console.log('✅ Test 3 PASSED: Strong typing system validated');
           passCount++;
@@ -242,7 +243,8 @@ async function runChatDaemonIntegrationTests(): Promise<void> {
       });
       
       if (result.success && result.commandResult?.success) {
-        const execResult = result.commandResult.result || result.commandResult.commandResult;
+        // Exec results are in commandResult.result (the return value from the executed function)
+        const execResult = result.commandResult.result;
         if (execResult && execResult.success) {
           console.log('✅ Test 4 PASSED: Event system integration validated');
           passCount++;

@@ -8,7 +8,13 @@ import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemo
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { ScreenshotParams, Html2CanvasCanvas, Html2CanvasOptions, ScreenshotResult } from '../shared/ScreenshotTypes';
 import { createScreenshotResult } from '../shared/ScreenshotTypes';
-import { getGlobalAPI, safeQuerySelector, getViewportDimensions } from '../../../daemons/command-daemon/shared/GlobalUtils';
+import { getGlobalAPI, getViewportDimensions } from '../../../daemons/command-daemon/shared/GlobalUtils';
+import { 
+  smartQuerySelector, 
+  calculateCropCoordinates, 
+  constrainCropToCanvas,
+  getElementDisplayName 
+} from '../shared/browser-utils/BrowserElementUtils';
 
 const DEFAULT_FORMAT = 'png';
 const DEFAULT_QUALITY = 0.9;
@@ -20,8 +26,8 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
   }
   
   /**
-   * Browser does ONE thing: capture screenshot with html2canvas
-   * Then either returns data OR delegates to server for saving
+   * Browser capture with advanced coordinate-based cropping
+   * BREAKTHROUGH: Full body capture + element coordinate cropping (more reliable than html2canvas element capture)
    */
   async execute(params: ScreenshotParams): Promise<ScreenshotResult> {
     console.log(`📸 BROWSER: Capturing screenshot`);
@@ -35,66 +41,193 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         throw new Error('html2canvas not available');
       }
 
-      // Get target element safely
-      const targetElement = params.selector 
-        ? safeQuerySelector(params.selector)
-        : safeQuerySelector('body');
+      const startTime = Date.now();
+      
+      // ADVANCED TARGETING: Use querySelector (modern) or selector (legacy)
+      const targetSelector = params.querySelector || params.selector || 'body';
+      const targetElement = targetSelector === 'body' 
+        ? document.body 
+        : smartQuerySelector(targetSelector);
         
       if (!targetElement) {
-        throw new Error(`Element not found: ${params.selector ?? 'body'}`);
+        throw new Error(`Element not found: ${targetSelector}`);
       }
 
-      // Build html2canvas options with viewport dimensions
-      const startTime = Date.now();
-      const viewport = getViewportDimensions();
+      // Use modular element utilities for accurate bounds and coordinates
+      const elementName = params.elementName || getElementDisplayName(targetElement);
+      console.log(`🎯 BROWSER: Targeting element '${elementName}'`);
+
+      // TEST: Try html2canvas direct element capture instead of coordinate cropping
+      const scale = params.scale || params.options?.scale || 1;
+      
+      // CRITICAL FIX: Device pixel ratio normalization for consistent scaling
+      const devicePixelRatio = window.devicePixelRatio || 1;
+      console.log(`🖥️ BROWSER: Device pixel ratio: ${devicePixelRatio}, user scale: ${scale}`);
+      
+      // Force html2canvas to use device pixel ratio 1 for consistent scaling
       const captureOptions: Html2CanvasOptions = {
-        height: viewport.height,
-        width: viewport.width,
+        scale: scale / devicePixelRatio, // Normalize for DPR
         scrollX: 0,
         scrollY: 0,
         useCORS: true,
+        allowTaint: true,
+        logging: false,
+        backgroundColor: params.options?.backgroundColor,
         ...params.options?.html2canvasOptions
       };
 
-      // Apply specific options if provided
-      if (params.options) {
-        if (params.options.width) captureOptions.width = params.options.width;
-        if (params.options.height) captureOptions.height = params.options.height;
-        if (params.options.scale) captureOptions.scale = params.options.scale;
-        if (params.options.backgroundColor) captureOptions.backgroundColor = params.options.backgroundColor;
-      }
-
-      console.log(`📷 BROWSER: Capturing ${params.selector ?? 'body'}`);
-      const canvas: Html2CanvasCanvas = await html2canvas(targetElement, captureOptions);
+      // BACK TO ORIGINAL APPROACH: Always capture full body, then crop coordinates
+      console.log(`📷 BROWSER: Capturing full body at scale ${scale}`);
+      const canvas = await html2canvas(document.body, captureOptions) as HTMLCanvasElement;
       
-      // Convert with specified format and quality
-      const format = params.options?.format ?? DEFAULT_FORMAT;
-      const quality = params.options?.quality ?? DEFAULT_QUALITY;
-      const dataUrl = canvas.toDataURL(`image/${format}`, quality);
+      console.log(`📐 BROWSER: Canvas dimensions: ${canvas.width}x${canvas.height}`);
+      
+      // Calculate actual scaling factor from viewport to canvas (accounting for DPR)
+      const viewport = getViewportDimensions();
+      const actualScaleFactor = canvas.width / viewport.width;
+      console.log(`📏 BROWSER: Canvas ${canvas.width}x${canvas.height}, viewport ${viewport.width}x${viewport.height}, scale factor: ${actualScaleFactor}`);
+      
+      // Use coordinate-based cropping for all elements (not body)
+      let finalCanvas = canvas;
+      const needsCropping = targetSelector !== 'body' || params.cropX !== undefined || params.cropY !== undefined;
+      
+      // Declare crop variables outside the block for metadata access
+      let cropX: number = 0, cropY: number = 0, cropWidth: number = canvas.width, cropHeight: number = canvas.height;
+      
+      if (needsCropping) {
+        
+        if (targetSelector !== 'body') {
+          // For elements: Calculate coordinates from full body canvas
+          // Use the actual canvas-to-viewport scale factor directly
+          const cropCoords = calculateCropCoordinates(targetElement, document.body, actualScaleFactor, true);
+          const constrainedCrop = constrainCropToCanvas(cropCoords, canvas.width, canvas.height);
+          
+          cropX = constrainedCrop.x;
+          cropY = constrainedCrop.y;
+          cropWidth = constrainedCrop.width;
+          cropHeight = constrainedCrop.height;
+          
+          console.log(`📏 BROWSER: Element coordinates: ${cropX},${cropY} ${cropWidth}x${cropHeight}`);
+        } else {
+          // For body with custom crop params
+          cropX = (params.cropX || 0) * actualScaleFactor;
+          cropY = (params.cropY || 0) * actualScaleFactor;
+          cropWidth = (params.cropWidth || canvas.width) * actualScaleFactor;
+          cropHeight = (params.cropHeight || canvas.height) * actualScaleFactor;
+        }
+        
+        const croppedCanvas = document.createElement('canvas');
+        const croppedCtx = croppedCanvas.getContext('2d')!;
+        
+        croppedCanvas.width = cropWidth;
+        croppedCanvas.height = cropHeight;
+        
+        croppedCtx.drawImage(
+          canvas,
+          cropX, cropY, cropWidth, cropHeight,
+          0, 0, cropWidth, cropHeight
+        );
+        
+        finalCanvas = croppedCanvas;
+        console.log(`✂️ BROWSER: Cropped from full body: ${cropX},${cropY} ${cropWidth}x${cropHeight}`);
+      }
+      
+      // SCALING: Fit-inside behavior with aspect ratio preservation
+      let targetWidth = finalCanvas.width;
+      let targetHeight = finalCanvas.height;
+      
+      // Calculate scale factor to fit inside max dimensions while preserving aspect ratio
+      if (params.width || params.height) {
+        const maxWidth = params.width || finalCanvas.width;
+        const maxHeight = params.height || finalCanvas.height;
+        
+        const scaleX = maxWidth / finalCanvas.width;
+        const scaleY = maxHeight / finalCanvas.height;
+        
+        // Use the smaller scale factor to fit inside (preserve aspect ratio)
+        const scaleFactor = Math.min(scaleX, scaleY, 1); // Don't scale up
+        
+        targetWidth = Math.round(finalCanvas.width * scaleFactor);
+        targetHeight = Math.round(finalCanvas.height * scaleFactor);
+        
+        console.log(`📏 BROWSER: Fit-inside scaling: ${finalCanvas.width}x${finalCanvas.height} → ${targetWidth}x${targetHeight} (scale: ${scaleFactor.toFixed(3)})`);
+      }
+      
+      // Apply scaling if different from capture size
+      if (targetWidth !== finalCanvas.width || targetHeight !== finalCanvas.height) {
+        const scaledCanvas = document.createElement('canvas');
+        const scaledCtx = scaledCanvas.getContext('2d')!;
+        
+        scaledCanvas.width = targetWidth;
+        scaledCanvas.height = targetHeight;
+        
+        scaledCtx.drawImage(finalCanvas as HTMLCanvasElement, 0, 0, targetWidth, targetHeight);
+        finalCanvas = scaledCanvas;
+        
+        console.log(`🔄 BROWSER: Scaled to ${targetWidth}x${targetHeight}`);
+      }
+      
+      // QUALITY CONTROL: Convert with quality adjustment for file size limits
+      const format = params.format || params.options?.format || DEFAULT_FORMAT;
+      let quality = params.quality || params.options?.quality || DEFAULT_QUALITY;
+      let dataUrl: string;
+      let compressed = false;
+      
+      do {
+        dataUrl = format === 'png' ? 
+          finalCanvas.toDataURL('image/png') : 
+          finalCanvas.toDataURL(`image/${format}`, quality);
+        
+        // Check file size if maxFileSize specified
+        if (params.maxFileSize) {
+          const estimatedSize = (dataUrl.length * 3) / 4; // Base64 to bytes estimate
+          if (estimatedSize > params.maxFileSize && quality > 0.1) {
+            quality -= 0.1;
+            compressed = true;
+            console.log(`📉 BROWSER: Reducing quality to ${quality} for file size limit`);
+            continue;
+          }
+        }
+        break;
+      } while (true);
       
       const captureTime = Date.now() - startTime;
-      console.log(`✅ BROWSER: Captured (${canvas.width}x${canvas.height}) in ${captureTime}ms`);
+      console.log(`✅ BROWSER: Captured (${finalCanvas.width}x${finalCanvas.height}) in ${captureTime}ms`);
       
-      // Enrich original params with captured data and metadata
+      // Enrich params with advanced metadata
       params.dataUrl = dataUrl;
       params.metadata = {
-        width: canvas.width,
-        height: canvas.height,
+        originalWidth: canvas.width,
+        originalHeight: canvas.height,
+        width: finalCanvas.width,
+        height: finalCanvas.height,
+        fileSizeBytes: Math.floor((dataUrl.length * 3) / 4),
         size: dataUrl.length,
-        selector: params.selector,
+        selector: targetSelector,
+        elementName: elementName,
         format: format,
-        captureTime: captureTime
+        captureTime: captureTime,
+        scale: scale,
+        quality: quality,
+        cropped: needsCropping,
+        cropCoordinates: needsCropping ? { x: cropX, y: cropY, width: cropWidth, height: cropHeight } : undefined,
+        compressed: compressed
       };
 
-      if (params.resultType === 'file') {
-        params.filename = params.filename ?? `screenshot-${Date.now()}.${format}`;
+      if (params.resultType === 'file' || params.destination === 'file' || params.destination === 'both') {
+        params.filename = params.filename ?? `screenshot-${elementName}-${Date.now()}.${format}`;
       }
 
-      if (params.resultType === 'file' || params.context.uuid !== this.context.uuid) {
+      // For file output or cross-context, delegate to server
+      if (params.resultType === 'file' || params.destination === 'file' || params.destination === 'both' || 
+          params.context.uuid !== this.context.uuid) {
         return await this.remoteExecute(params);
       }
 
-      // Return data directly to caller. it is our own context
+      // Return bytes directly to caller (same context)
+      const base64Data = dataUrl.replace(/^data:image\/[a-z]+;base64,/, '');
+      const bytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+      
       return createScreenshotResult(
         params.context,
         params.sessionId,
@@ -103,6 +236,8 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
           dataUrl: dataUrl,
           options: params.options,
           metadata: params.metadata,
+          // Include bytes for 'bytes' or 'both' destinations
+          bytes: (params.destination === 'bytes' || params.destination === 'both') ? bytes : undefined
         }
       );
 

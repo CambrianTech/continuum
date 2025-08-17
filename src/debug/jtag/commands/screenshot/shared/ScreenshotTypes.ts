@@ -9,20 +9,40 @@ import { createPayload, transformPayload } from '../../../system/core/types/JTAG
 import type { JTAGError } from '../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
-export type ResultType = 'file' | 'bytes';
+export type ResultType = 'file' | 'bytes' | 'both';
+export type ScreenshotFormat = 'png' | 'jpeg' | 'webp';
+export type ScreenshotDestination = 'file' | 'bytes' | 'both';
 
 /**
- * Screenshot Command Parameters - interface extending CommandParams
+ * Screenshot Command Parameters - Enhanced with advanced features
  */
 export interface ScreenshotParams extends CommandParams {
   filename?: string;
   selector?: string;
+  querySelector?: string; // Modern querySelector API
+  elementName?: string;   // For debugging/logging
   options?: ScreenshotOptions;
   
-  // Additional properties for parametric behavior
-  dataUrl?: string;
+  // Advanced targeting and cropping
+  cropX?: number;
+  cropY?: number; 
+  cropWidth?: number;
+  cropHeight?: number;
+  
+  // Scaling and resolution
+  width?: number;
+  height?: number;
+  scale?: number;
+  quality?: number;
+  maxFileSize?: number;
+  
+  // Output control
+  format?: ScreenshotFormat;
+  destination?: ScreenshotDestination;
   resultType: ResultType;
-  crop?: { x: number; y: number; width: number; height: number };
+  
+  // Internal properties
+  dataUrl?: string;
   metadata?: ScreenshotMetadata;
 }
 
@@ -61,8 +81,9 @@ export interface Html2CanvasOptions {
 
 /**
  * HTML2Canvas Result Canvas Interface
+ * Extends HTMLCanvasElement interface for proper type compatibility
  */
-export interface Html2CanvasCanvas {
+export interface Html2CanvasCanvas extends HTMLCanvasElement {
   width: number;
   height: number;
   toDataURL(type?: string, quality?: number): string;
@@ -96,6 +117,7 @@ export interface ScreenshotResult extends CommandResult {
   error?: JTAGError;
   metadata?: ScreenshotMetadata;
   dataUrl?: string; // Browser-captured image data
+  bytes?: Uint8Array; // Raw image bytes for 'bytes' or 'both' destinations
 }
 
 /**
@@ -167,14 +189,30 @@ export const createScreenshotResponse = (
 });
 
 /**
- * Screenshot Metadata
+ * Screenshot Metadata - Enhanced with coordinate and scaling info
  */
 export interface ScreenshotMetadata {
+  // Original capture dimensions
+  originalWidth?: number;
+  originalHeight?: number;
+  
+  // Final output dimensions 
   width?: number;
   height?: number;
+  
+  // File and processing info
   size?: number;
+  fileSizeBytes?: number;
   selector?: string;
+  elementName?: string;
   format?: string;
   captureTime?: number; // Time taken to capture in ms
   globalPath?: string; // Server-side file path
+  
+  // Coordinate and scaling metadata
+  scale?: number;
+  quality?: number;
+  cropped?: boolean;
+  cropCoordinates?: { x: number; y: number; width: number; height: number };
+  compressed?: boolean; // If quality was reduced for file size
 }
