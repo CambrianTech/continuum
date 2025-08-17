@@ -38,3 +38,4 @@ export const jtag = {
 // Direct export for advanced usage
 export { JTAGSystemBrowser };
 export * from './system/core/types/JTAGTypes';
+export * from './commands/screenshot/shared/browser-utils/BrowserElementUtils';
