@@ -23,8 +23,8 @@ async function testCrossEnvironmentEventBridge() {
   
   try {
     // 1. Connect to test-bench system WebSocket
-    console.log('🔗 Connecting to test-bench WebSocket server (port 9002)...');
-    ws = new WebSocket('ws://localhost:9002');
+    console.log('🔗 Connecting to test-bench WebSocket server (port 9001)...');
+    ws = new WebSocket('ws://localhost:9001');
     
     await new Promise((resolve, reject) => {
       ws!.on('open', resolve);
