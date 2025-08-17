@@ -110,6 +110,17 @@ function constrainCropToCanvas(
   };
 }
 
+// Simple test assertions for coordinate calculation
+function expect(actual: any) {
+  return {
+    toBe: (expected: any) => {
+      if (actual !== expected) {
+        throw new Error(`Expected ${expected}, got ${actual}`);
+      }
+    }
+  };
+}
+
 // Test functions with simple assertions
 function testBasicCoordinateCalculation() {
     const result = calculateCropCoordinates(
@@ -129,9 +140,9 @@ function testBasicCoordinateCalculation() {
     expect(result.width).toBe(400); // original width, no overflow
     expect(result.height).toBe(300); // original height, no overflow
     expect(result.scale).toBe(1.0);
-  });
+}
 
-  test('coordinate calculation with 2x scaling', () => {
+function testCoordinateCalculationWith2xScaling() {
     const result = calculateCropCoordinates(
       mockElement.getBoundingClientRect() as DOMRect,
       mockBodyElement.getBoundingClientRect() as DOMRect,
@@ -149,9 +160,9 @@ function testBasicCoordinateCalculation() {
     expect(result.width).toBe(800);
     expect(result.height).toBe(600);
     expect(result.scale).toBe(2.0);
-  });
+}
 
-  test('coordinate calculation with overflow content', () => {
+function testCoordinateCalculationWithOverflow() {
     const result = calculateCropCoordinates(
       mockElement.getBoundingClientRect() as DOMRect,
       mockBodyElement.getBoundingClientRect() as DOMRect,
@@ -170,7 +181,7 @@ function testBasicCoordinateCalculation() {
     expect(result.height).toBe(350); // scrollHeight
   });
 
-  test('constraint to canvas boundaries', () => {
+function testConstraintToCanvasBoundaries() {
     const oversizedCrop: CropCoordinates = {
       x: 1000,
       y: 600,

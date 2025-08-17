@@ -73,12 +73,30 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         allowTaint: true,
         logging: false,
         backgroundColor: params.options?.backgroundColor,
+        // Improved shadow and effect rendering
+        foreignObjectRendering: true,
+        removeContainer: true,
+        ignoreElements: (element) => {
+          // Skip problematic elements that cause shadow offset
+          return element.classList?.contains('html2canvas-ignore') || false;
+        },
         ...params.options?.html2canvasOptions
       };
 
-      // BACK TO ORIGINAL APPROACH: Always capture full body, then crop coordinates
-      console.log(`📷 BROWSER: Capturing full body at scale ${scale}`);
-      const canvas = await html2canvas(document.body, captureOptions) as HTMLCanvasElement;
+      // CAPTURE STRATEGY: Choose between full body crop vs direct element capture
+      // For shadow-heavy elements, direct capture may render shadows better
+      const useDirectCapture = params.options?.directCapture || 
+        (targetSelector !== 'body' && params.options?.preserveShadows);
+      
+      let canvas: HTMLCanvasElement;
+      
+      if (useDirectCapture && targetSelector !== 'body') {
+        console.log(`📷 BROWSER: Direct element capture for better shadow rendering`);
+        canvas = await html2canvas(targetElement, captureOptions) as HTMLCanvasElement;
+      } else {
+        console.log(`📷 BROWSER: Full body capture at scale ${scale}`);
+        canvas = await html2canvas(document.body, captureOptions) as HTMLCanvasElement;
+      }
       
       console.log(`📐 BROWSER: Canvas dimensions: ${canvas.width}x${canvas.height}`);
       
@@ -87,9 +105,9 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
       const actualScaleFactor = canvas.width / viewport.width;
       console.log(`📏 BROWSER: Canvas ${canvas.width}x${canvas.height}, viewport ${viewport.width}x${viewport.height}, scale factor: ${actualScaleFactor}`);
       
-      // Use coordinate-based cropping for all elements (not body)
+      // CROPPING LOGIC: Handle both direct capture and body crop strategies
       let finalCanvas = canvas;
-      const needsCropping = targetSelector !== 'body' || params.cropX !== undefined || params.cropY !== undefined;
+      const needsCropping = !useDirectCapture && (targetSelector !== 'body' || params.cropX !== undefined || params.cropY !== undefined);
       
       // Declare crop variables outside the block for metadata access
       let cropX: number = 0, cropY: number = 0, cropWidth: number = canvas.width, cropHeight: number = canvas.height;
@@ -98,7 +116,6 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         
         if (targetSelector !== 'body') {
           // For elements: Calculate coordinates from full body canvas
-          // Use the actual canvas-to-viewport scale factor directly
           const cropCoords = calculateCropCoordinates(targetElement, document.body, actualScaleFactor, true);
           const constrainedCrop = constrainCropToCanvas(cropCoords, canvas.width, canvas.height);
           
@@ -130,6 +147,8 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         
         finalCanvas = croppedCanvas;
         console.log(`✂️ BROWSER: Cropped from full body: ${cropX},${cropY} ${cropWidth}x${cropHeight}`);
+      } else if (useDirectCapture) {
+        console.log(`📷 BROWSER: Using direct element capture (shadows preserved)`);
       }
       
       // SCALING: Fit-inside behavior with aspect ratio preservation

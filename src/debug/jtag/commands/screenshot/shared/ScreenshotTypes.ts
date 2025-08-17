@@ -102,6 +102,11 @@ export interface ScreenshotOptions {
   delay?: number;
   scale?: number;
   backgroundColor?: string;
+  
+  // Capture strategy options
+  directCapture?: boolean;    // Use direct element capture instead of body crop
+  preserveShadows?: boolean;  // Enable shadow-preserving capture strategy
+  
   html2canvasOptions?: Html2CanvasOptions;
 }
 
