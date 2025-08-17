@@ -11,6 +11,7 @@ import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import { createBaseResponse, type BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
+import { EVENT_ENDPOINTS } from './EventEndpoints';
 
 /**
  * Event bridge message payload with proper typing
@@ -62,11 +63,19 @@ export abstract class EventsDaemon extends DaemonBase {
    * Handle event bridge messages from other contexts
    */
   async handleMessage(message: JTAGMessage): Promise<EventBridgeResponse> {
-    if (message.endpoint === 'event-bridge') {
+    // Normalize endpoint by removing daemon prefix
+    const endpoint = message.endpoint.replace('events/', '');
+    
+    if (endpoint === EVENT_ENDPOINTS.BRIDGE) {
       return await this.handleEventBridge(message);
     }
     
+    if (endpoint === EVENT_ENDPOINTS.STATS) {
+      return await this.getBridgeStats();
+    }
+    
     const errorMsg = `Unknown endpoint: ${message.endpoint}`;
+    console.error(`❌ EventsDaemon: ${errorMsg}`);
     return createBaseResponse(false, message.context, message.payload.sessionId, {}) as EventBridgeResponse;
   }
 

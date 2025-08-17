@@ -20,6 +20,7 @@ export interface EventResult {
   deduplicated?: boolean;
   willRetry?: boolean;
   priority?: string;
+  local?: boolean;
 }
 
 // Local routing result

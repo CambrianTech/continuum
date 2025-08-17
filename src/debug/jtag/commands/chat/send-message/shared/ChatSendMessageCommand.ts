@@ -142,10 +142,12 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
         timestamp: message.timestamp
       };
       
+      const { EVENT_ENDPOINTS } = await import('../../../../daemons/events-daemon/shared/EventEndpoints');
+      
       const eventMessage = JTAGMessageFactory.createEvent(
         this.context,
         'chat-send-message',
-        'events/event-bridge',
+        `events/${EVENT_ENDPOINTS.BRIDGE}`,
         eventPayload as any
       );
       
