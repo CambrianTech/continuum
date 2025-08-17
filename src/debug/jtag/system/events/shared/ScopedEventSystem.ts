@@ -376,7 +376,7 @@ export class EventBridge {
         // Route via existing transport system using proper message factory
         const eventMessage = JTAGMessageFactory.createEvent(
           { environment: 'server', uuid: generateUUID() },
-          'scoped-event-system',
+          'EventsDaemon',
           'event-bridge',
           bridgeMessage
         );
