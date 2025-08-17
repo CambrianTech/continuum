@@ -15,4 +15,12 @@ export class ChatSendMessageBrowserCommand extends ChatSendMessageCommand {
   protected getEnvironmentLabel(): string {
     return 'BROWSER';
   }
+
+  /**
+   * Browser-specific event emission (no-op - events handled server-side)
+   */
+  protected async emitMessageEvent(message: any): Promise<void> {
+    // Browser doesn't emit events - server handles event emission
+    console.log(`🌐 BROWSER: Message ${message.messageId} will emit events server-side`);
+  }
 }

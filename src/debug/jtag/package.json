@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.980",
+  "version": "1.0.1003",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "config": {
     "port": 9001,
@@ -153,7 +153,7 @@
     "test:compiler-error-detection": "npx tsx tests/compiler-error-detection.test.ts",
     "test:start-and-test": "npx tsx scripts/test-with-server.ts",
     "test:verify-and-run": "echo '🔍 WAITING FOR SYSTEM BOOTSTRAP...' && npm run signal:wait && echo '🔍 VERIFYING SYSTEM BOOTSTRAP...' && grep 'Bootstrap complete' examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log | tail -1 && echo '✅ BOOTSTRAP VERIFIED - RUNNING TESTS' && npm run test:comprehensive",
-    "test:comprehensive": "echo '🚀 AUTONOMOUS TEST SUITE - Full End-to-End' && npm run test:compiler-error-detection && npx tsx tests/bootstrap-comprehensive.test.ts && npx tsx tests/integration/browser-automated-tests.test.ts && npx tsx tests/integration/router-coordination-simple.test.ts && npx tsx tests/server-screenshot.test.ts && npx tsx tests/screenshot-verification.test.ts && npx tsx tests/screenshot-integration-advanced.test.ts && npx tsx tests/signal-system.test.ts && npx tsx tests/chat-daemon-integration.test.ts && npx tsx tests/unit/router-broadcast.test.ts && npx tsx tests/unit/room-scoped-event-routing.test.ts && npx tsx tests/unit/events-daemon-unit.test.ts && npx tsx tests/integration/server-browser-event-flow.test.ts && npx tsx tests/integration/browser-server-event-flow.test.ts && npx tsx tests/integration/chat-widget-room-events.test.ts",
+    "test:comprehensive": "echo '🚀 AUTONOMOUS TEST SUITE - Full End-to-End' && npm run test:compiler-error-detection && npx tsx tests/bootstrap-comprehensive.test.ts && npx tsx tests/integration/browser-automated-tests.test.ts && npx tsx tests/integration/router-coordination-simple.test.ts && npx tsx tests/server-screenshot.test.ts && npx tsx tests/screenshot-verification.test.ts && npx tsx tests/screenshot-integration-advanced.test.ts && npx tsx tests/signal-system.test.ts && npx tsx tests/chat-daemon-integration.test.ts && npx tsx tests/unit/router-broadcast.test.ts && npx tsx tests/unit/room-scoped-event-routing.test.ts && npx tsx tests/unit/events-daemon-unit.test.ts && npx tsx tests/integration/server-browser-event-flow.test.ts && npx tsx tests/integration/browser-server-event-flow.test.ts && npx tsx tests/integration/chat-widget-room-events.test.ts && npx tsx tests/integration/cross-environment-events-working.test.ts",
     "test:simple": "echo '🚀 SIMPLE TEST SUITE' && npx tsx tests/bootstrap-comprehensive.test.ts",
     "test:precommit": "echo '🔍 PRECOMMIT VALIDATION - Fast & Essential' && npm run test:compiler-check && npm run system:stop 2>/dev/null && npm run system:start:test && npm run signal:wait && npx tsx tests/bootstrap-comprehensive.test.ts && npx tsx tests/server-screenshot.test.ts && echo '✅ PRECOMMIT VALIDATION PASSED'",
     "test:unit": "echo '🧪 Unit Tests (needs import path fixes)' && echo 'TODO: Fix unit test imports'",
@@ -303,7 +303,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-17T19:31:34.673Z",
+    "timestamp": "2025-08-17T22:09:26.355Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 28,
     "note": "Generated from clean essential path mappings only"

@@ -49,7 +49,7 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
       // 2. Store message via DataDaemon
       await this.storeMessage(message, chatParams.sessionId);
       
-      // 3. Emit event for widgets and other listeners
+      // 3. Emit event for widgets and other listeners (server-specific)
       await this.emitMessageEvent(message);
       
       const duration = Date.now() - startTime;
@@ -123,42 +123,9 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
   }
 
   /**
-   * Emit message event for widgets and listeners  
+   * Emit message event for widgets and listeners (abstract - implemented per environment)
    */
-  private async emitMessageEvent(message: any): Promise<void> {
-    try {
-      // Use JTAGMessageFactory to create proper event message
-      const { JTAGMessageFactory } = await import('../../../../system/core/types/JTAGTypes');
-      
-      const eventPayload = {
-        eventName: 'chat-message-sent',
-        data: { message },
-        scope: {
-          type: 'room',
-          id: message.roomId,
-          sessionId: message.senderId
-        },
-        originSessionId: message.senderId,
-        timestamp: message.timestamp
-      };
-      
-      const { EVENT_ENDPOINTS } = await import('../../../../daemons/events-daemon/shared/EventEndpoints');
-      
-      const eventMessage = JTAGMessageFactory.createEvent(
-        this.context,
-        'chat-send-message',
-        `events/${EVENT_ENDPOINTS.BRIDGE}`,
-        eventPayload as any
-      );
-      
-      await this.commander.router.postMessage(eventMessage);
-      console.log(`📨 Emitted chat-message-sent event for message ${message.messageId}`);
-      
-    } catch (error) {
-      console.error(`❌ Failed to emit message event:`, error);
-      // Don't fail the entire operation if event emission fails
-    }
-  }
+  protected abstract emitMessageEvent(message: any): Promise<void>;
 
   /**
    * Get environment label for logging
