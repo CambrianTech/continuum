@@ -285,7 +285,7 @@ class BrowserAutomationTester {
     
     try {
       // Import JTAG for server-side testing
-      const { jtag } = await import('../../index');
+      const { jtag } = await import('../../server-index');
       
       // Test server-side UUID generation
       const serverUUID = jtag.getUUID();
@@ -350,6 +350,9 @@ class BrowserAutomationTester {
     try {
       // Test browser-side UUID via page evaluation
       const browserUUID = await this.page.evaluate(() => {
+        if (!window.jtag || typeof window.jtag.getUUID !== 'function') {
+          throw new Error('window.jtag.getUUID is not available');
+        }
         return window.jtag.getUUID();
       });
       
@@ -364,6 +367,9 @@ class BrowserAutomationTester {
       
       // Test browser-side logging
       await this.page.evaluate(() => {
+        if (!window.jtag || typeof window.jtag.log !== 'function') {
+          throw new Error('window.jtag.log is not available');
+        }
         window.jtag.log('BROWSER_TEST', 'Browser-side logging test', { 
           testType: 'browser-automation',
           userAgent: navigator.userAgent.substring(0, 50),
@@ -377,6 +383,9 @@ class BrowserAutomationTester {
       
       // Test browser-side exec
       const browserExecResult = await this.page.evaluate(async () => {
+        if (!window.jtag || typeof window.jtag.exec !== 'function') {
+          throw new Error('window.jtag.exec is not available');
+        }
         return await window.jtag.exec('2 + 2');
       });
       
@@ -390,6 +399,9 @@ class BrowserAutomationTester {
       
       // Test browser-side screenshot
       const browserScreenshotResult = await this.page.evaluate(async () => {
+        if (!window.jtag || typeof window.jtag.screenshot !== 'function') {
+          throw new Error('window.jtag.screenshot is not available');
+        }
         return await window.jtag.screenshot('browser-automation-test', {
           width: 800,
           height: 600
@@ -435,7 +447,7 @@ class BrowserAutomationTester {
       console.log('   ✅ Browser → Server communication: PASSED');
       
       // Test server → browser communication via shared UUID verification
-      const { jtag } = await import('../../index');
+      const { jtag } = await import('../../server-index');
       const serverUUID = jtag.getUUID();
       
       const browserCanAccessServerUUID = await this.page.evaluate(async (uuid: string) => {
@@ -466,7 +478,7 @@ class BrowserAutomationTester {
     
     try {
       // Server-side exec tests
-      const { jtag } = await import('../../index');
+      const { jtag } = await import('../../server-index');
       
       const serverExecTests = [
         'Date.now()',

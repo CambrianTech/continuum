@@ -71,7 +71,7 @@ run_profile_tests() {
             
             # Browser integration
             run_test "WebSocket Connection" "npx tsx tests/integration/browser-automated-tests.test.ts" "Browser Integration"
-            run_test "Browser Automation" "npx tsx tests/layer-6-end-to-end/browser-automation.test.ts" "Browser Integration"
+            run_test "Browser Automation" "npx tsx tests/layer-6-browser-integration/minimal-pure-jtag.test.ts" "Browser Integration"
             
             # Chat & messaging
             run_test "Chat Message Send" "npx tsx tests/chat-daemon-integration.test.ts" "Chat & Messaging"
