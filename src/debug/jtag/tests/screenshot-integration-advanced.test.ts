@@ -20,6 +20,7 @@ import type { JTAGClientConnectOptions } from '../system/core/client/shared/JTAG
 import { TestDisplayRenderer } from '../system/core/cli/TestDisplayRenderer';
 import type { TestSummary, TestFailure } from '../system/core/types/TestSummaryTypes';
 import { AgentDetector, detectAgent, getOutputFormat, getAgentName } from '../system/core/detection/AgentDetector';
+import { autoSpawnTest } from '../utils/TestAutoSpawn';
 
 interface ScreenshotTestResult {
   testName: string;
@@ -449,8 +450,5 @@ async function runAdvancedScreenshotTests(): Promise<void> {
   process.exit(passCount === testCount ? 0 : 1);
 }
 
-// Run the advanced screenshot integration tests
-runAdvancedScreenshotTests().catch(error => {
-  console.error('💥 Advanced screenshot test runner error:', error);
-  process.exit(1);
-});
+// Run the advanced screenshot integration tests with auto-spawn capability
+autoSpawnTest(runAdvancedScreenshotTests);
