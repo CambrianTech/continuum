@@ -37,17 +37,20 @@ async function testCrossEnvironmentEventRouting() {
                 return { success: false, error: 'JTAG system not available' };
               }
               
-              // Setup listener for chat message events
+              // Setup DOM event listener (correct widget API)
               let eventReceived = false;
-              const chatMessageListener = (eventData) => {
+              const domEventListener = (event) => {
                 eventReceived = true;
-                console.log('📨 BROWSER EVENT RECEIVED: Chat message from server!');
-                console.log('📊 Event data:', JSON.stringify(eventData, null, 2));
+                console.log('📨 BROWSER DOM EVENT RECEIVED: Chat message from server!');
+                console.log('📊 Event detail:', JSON.stringify(event.detail, null, 2));
+                
+                // Update global counter for test check
+                window.crossEnvEventCount = (window.crossEnvEventCount || 0) + 1;
                 
                 // Create visible proof element
                 const proofElement = document.createElement('div');
                 proofElement.id = 'cross-env-event-proof';
-                proofElement.textContent = 'CHAT MESSAGE RECEIVED: ' + (eventData.message || eventData.content || 'No message');
+                proofElement.textContent = 'CHAT MESSAGE RECEIVED: ' + (event.detail?.message?.content || event.detail?.message || 'No message');
                 proofElement.style.cssText = \`
                   position: fixed;
                   top: 50px;
@@ -67,8 +70,8 @@ async function testCrossEnvironmentEventRouting() {
                 document.body.appendChild(proofElement);
               };
               
-              // Listen to chat message events that should be bridged
-              jtagSystem.eventManager.events.on('chat-message-sent', chatMessageListener);
+              // Listen to DOM events (how widgets actually receive events)
+              document.addEventListener('chat:message-received', domEventListener);
               
               console.log('✅ BROWSER: Cross-environment event listener registered');
               return { 

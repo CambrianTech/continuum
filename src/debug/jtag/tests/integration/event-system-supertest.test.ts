@@ -54,36 +54,45 @@ async function runEventSystemSupertest() {
 }
 
 async function testBasicEventFlow(client: any) {
-  // Setup event listener in browser with proper timing
+  // Setup DOM event listener (correct widget API) 
   const setupResult = await client.commands.exec({
     code: {
       type: 'inline',
       language: 'javascript',
       source: `
         return (async function() {
-          console.log('🔍 Setting up event listener - checking jtag availability');
-          console.log('window.jtag available:', !!window.jtag);
-          console.log('window.jtag.eventManager available:', !!window.jtag?.eventManager);
+          console.log('🔍 SUPERTEST: Setting up DOM event listener (widget API)');
           
-          if (!window.jtag?.eventManager) {
-            console.error('❌ No eventManager found!');
-            return { success: false, error: 'No eventManager' };
-          }
+          window.basicTestState = { 
+            domEventsReceived: 0, 
+            jtagEventsReceived: 0,
+            lastEvent: null 
+          };
           
-          window.basicTestState = { eventsReceived: 0, lastEvent: null };
-          
-          window.jtag.eventManager.events.on('chat-message-sent', (data) => {
-            window.basicTestState.eventsReceived++;
-            window.basicTestState.lastEvent = data;
-            console.log('✅ SUPERTEST EVENT RECEIVED!', { 
-              count: window.basicTestState.eventsReceived,
-              data: data 
+          // Listen to DOM events (how widgets actually receive events)
+          document.addEventListener('chat:message-received', (event) => {
+            window.basicTestState.domEventsReceived++;
+            window.basicTestState.lastEvent = event.detail;
+            console.log('🎯 SUPERTEST DOM EVENT RECEIVED!', { 
+              count: window.basicTestState.domEventsReceived,
+              detail: event.detail 
             });
           });
           
-          console.log('✅ Event listener registered successfully');
+          // Also listen to JTAG events for comparison
+          if (window.jtag?.eventManager) {
+            window.jtag.eventManager.events.on('chat-message-sent', (data) => {
+              window.basicTestState.jtagEventsReceived++;
+              console.log('📊 SUPERTEST JTAG EVENT RECEIVED!', { 
+                count: window.basicTestState.jtagEventsReceived,
+                data: data 
+              });
+            });
+          }
           
-          // Wait a moment to ensure listener is fully registered
+          console.log('✅ SUPERTEST: Both DOM and JTAG listeners registered');
+          
+          // Wait a moment to ensure listeners are fully registered
           await new Promise(resolve => setTimeout(resolve, 100));
           
           return { success: true, listenerSetup: true };
@@ -110,7 +119,7 @@ async function testBasicEventFlow(client: any) {
   // Wait longer for event propagation
   await new Promise(resolve => setTimeout(resolve, 1000));
   
-  // Verify event was received
+  // Verify events were received
   const result = await client.commands.exec({
     code: {
       type: 'inline',
@@ -121,8 +130,9 @@ async function testBasicEventFlow(client: any) {
           console.log('🔍 SUPERTEST: basicTestState:', window.basicTestState);
           
           return {
-            success: window.basicTestState?.eventsReceived >= 1,
-            eventsReceived: window.basicTestState?.eventsReceived || 0,
+            success: window.basicTestState?.domEventsReceived >= 1,
+            domEventsReceived: window.basicTestState?.domEventsReceived || 0,
+            jtagEventsReceived: window.basicTestState?.jtagEventsReceived || 0,
             lastEvent: window.basicTestState?.lastEvent || null
           };
         })();
@@ -140,17 +150,18 @@ async function testBasicEventFlow(client: any) {
 }
 
 async function testDeduplication(client: any) {
-  // Test that events don't create infinite loops
+  // Test that events don't create infinite loops using DOM events
   await client.commands.exec({
     code: {
       type: 'inline', 
       language: 'javascript',
       source: `
         return (async function() {
-          window.dedupTestState = { totalEvents: 0 };
+          window.dedupTestState = { totalDOMEvents: 0 };
           
-          window.jtag.eventManager.events.on('chat-message-sent', (data) => {
-            window.dedupTestState.totalEvents++;
+          document.addEventListener('chat:message-received', (event) => {
+            window.dedupTestState.totalDOMEvents++;
+            console.log('🎯 DEDUP DOM EVENT:', window.dedupTestState.totalDOMEvents);
           });
           
           return { success: true, dedupSetup: true };
@@ -174,8 +185,8 @@ async function testDeduplication(client: any) {
       source: `
         return (async function() {
           return {
-            success: window.dedupTestState.totalEvents <= 2, // At most 1 original + 1 bridged
-            totalEvents: window.dedupTestState.totalEvents
+            success: window.dedupTestState.totalDOMEvents <= 2, // At most 1 original + 1 bridged
+            totalDOMEvents: window.dedupTestState.totalDOMEvents
           };
         })();
       `
@@ -185,14 +196,14 @@ async function testDeduplication(client: any) {
   console.log('📊 Deduplication:', result.commandResult.result);
   
   if (!result.commandResult.result.success) {
-    throw new Error(`Deduplication failed - got ${result.commandResult.result.totalEvents} events`);
+    throw new Error(`Deduplication failed - got ${result.commandResult.result.totalDOMEvents} events`);
   }
   
   console.log('✅ Test 2 PASSED: Event deduplication working');
 }
 
 async function testPerformance(client: any) {
-  // Test rapid event delivery
+  // Test rapid DOM event delivery
   await client.commands.exec({
     code: {
       type: 'inline',
@@ -200,12 +211,13 @@ async function testPerformance(client: any) {
       source: `
         return (async function() {
           window.perfTestState = { 
-            eventsReceived: 0,
+            domEventsReceived: 0,
             startTime: Date.now()
           };
           
-          window.jtag.eventManager.events.on('chat-message-sent', (data) => {
-            window.perfTestState.eventsReceived++;
+          document.addEventListener('chat:message-received', (event) => {
+            window.perfTestState.domEventsReceived++;
+            console.log('🏎️ PERF DOM EVENT:', window.perfTestState.domEventsReceived);
           });
           
           return { success: true, perfSetup: true };
@@ -236,8 +248,8 @@ async function testPerformance(client: any) {
           const totalTime = endTime - window.perfTestState.startTime;
           
           return {
-            success: window.perfTestState.eventsReceived >= ${rapidCount},
-            eventsReceived: window.perfTestState.eventsReceived,
+            success: window.perfTestState.domEventsReceived >= ${rapidCount},
+            domEventsReceived: window.perfTestState.domEventsReceived,
             expectedEvents: ${rapidCount},
             totalTimeMs: totalTime
           };
@@ -249,7 +261,7 @@ async function testPerformance(client: any) {
   console.log('📊 Performance:', result.commandResult.result);
   
   if (!result.commandResult.result.success) {
-    throw new Error(`Performance test failed - only ${result.commandResult.result.eventsReceived}/${rapidCount} events`);
+    throw new Error(`Performance test failed - only ${result.commandResult.result.domEventsReceived}/${rapidCount} events`);
   }
   
   console.log('✅ Test 3 PASSED: Event performance acceptable');

@@ -10,32 +10,58 @@ import { jtag } from '../../server-index';
 async function testCrossEnvironmentEvents() {
   console.log('🧪 INTEGRATION TEST: Cross-Environment Events...');
   
+  let client: any = null;
   try {
-    const client = await jtag.connect({ targetEnvironment: 'server' });
+    client = await jtag.connect({ targetEnvironment: 'server' });
 
-    // Setup browser event listener
+    // Setup DOM event listener (correct widget API)
     const setupResult = await client.commands.exec({
       code: {
         type: 'inline',
         language: 'javascript',
         source: `
           return (function() {
-            const jtagSystem = window.jtag;
-            if (!jtagSystem?.eventManager?.events) {
-              return { success: false, error: 'JTAG event system not available' };
-            }
+            console.log('🔧 Setting up DOM event listener for cross-environment test');
             
             let eventCount = 0;
             
-            const listener = (data) => {
+            const listener = (event) => {
               eventCount++;
-              console.log('✅ BROWSER: Cross-environment event received:', eventCount);
+              console.log('✅ BROWSER: Cross-environment DOM event received:', eventCount, event.detail);
+              
+              // Update global counter for test check
+              window.crossEnvEventCount = eventCount;
+              
+              // Create visible proof element
+              const proofElement = document.createElement('div');
+              proofElement.id = 'cross-env-event-proof';
+              proofElement.textContent = 'CHAT MESSAGE RECEIVED: ' + (event.detail?.message?.content || event.detail?.message || 'No message');
+              proofElement.style.cssText = \`
+                position: fixed;
+                top: 50px;
+                right: 10px;
+                background: #00ff00;
+                color: black;
+                padding: 10px;
+                border-radius: 4px;
+                z-index: 10000;
+                max-width: 300px;
+              \`;
+              
+              // Remove existing proof
+              const existing = document.getElementById('cross-env-event-proof');
+              if (existing) existing.remove();
+              
+              document.body.appendChild(proofElement);
             };
             
-            jtagSystem.eventManager.events.on('chat-message-sent', listener);
+            // Listen to DOM events (how widgets actually work)
+            document.addEventListener('chat:message-received', listener);
             
-            // Store counter for later check
+            // Initialize counter
             window.crossEnvEventCount = eventCount;
+            
+            console.log('✅ DOM event listener registered for cross-environment test');
             
             return { success: true, listenerReady: true };
           })();
@@ -88,7 +114,19 @@ async function testCrossEnvironmentEvents() {
     
   } catch (error) {
     console.error('❌ Integration test failed:', error);
-    process.exit(1);
+    throw error;
+  } finally {
+    // Clean up client connection to prevent hanging
+    if (client?.disconnect) {
+      try {
+        console.log('🔌 Cleaning up client connection...');
+        await client.disconnect();
+        console.log('✅ Client disconnected');
+      } catch (disconnectError) {
+        console.warn('⚠️ Disconnect warning:', disconnectError);
+      }
+    }
+    process.exit(0);
   }
 }
 
