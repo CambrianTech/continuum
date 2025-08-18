@@ -77,7 +77,8 @@ import type { ITransportHandler } from '../../../transports';
 import type { ListParams, ListResult, CommandSignature } from '../../../../commands/list/shared/ListTypes';
 import { createListParams } from '../../../../commands/list/shared/ListTypes';
 import type { BaseResponsePayload, JTAGResponsePayload } from '../../types/ResponseTypes';
-import { getSystemConfig } from '../../config/SystemConfiguration';
+import { getServerConfigFromContext, createServerContext, createTestContext } from '../../context/SecureJTAGContext';
+import { isTestEnvironment } from '../../../shared/BrowserSafeConfig';
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import { JTAG_BOOTSTRAP_MESSAGES } from './JTAGClientConstants';
@@ -207,10 +208,15 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   }
 
   /**
-   * Get system configuration
+   * Get secure server configuration from context
+   * Only server contexts have access to server configuration
    */
-  protected getSystemConfig() {
-    return getSystemConfig();
+  protected getServerConfigFromContext() {
+    try {
+      return getServerConfigFromContext(this.context);
+    } catch (error) {
+      throw new Error(`Cannot access server configuration: ${error}`);
+    }
   }
   
   /**
@@ -401,8 +407,8 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       const factory = await this.getTransportFactory();
       this.connectionBroker = new ConnectionBroker({
         portPool: {
-          startPort: this.getSystemConfig().getWebSocketPort(),
-          endPort: this.getSystemConfig().getWebSocketPort() + 99, // Dynamic range from configured base
+          startPort: this.getServerConfigFromContext().server.port,
+          endPort: this.getServerConfigFromContext().server.port + 99, // Dynamic range from configured base
           reservedPorts: [],
           allocationStrategy: 'sequential'
         }
@@ -564,13 +570,18 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * 🔄 BOOTSTRAP PATTERN: Returns list result for CLI integration
    */
   static async connect<T extends JTAGClient>(this: new (context: JTAGContext) => T, options?: JTAGClientConnectOptions): Promise<JTAGClientConnectionResult & { client: T }> {
-    // Create context with proper system UUID (separate from sessionId)
-    const context: JTAGContext = {
-      uuid: generateUUID(), // System context identifier - separate from session
-      environment: options?.targetEnvironment ?? 'server'
-    };
+    // Create secure context based on environment
+    const environment = options?.targetEnvironment ?? 'server';
+    const context = isTestEnvironment() ? createTestContext() : createServerContext();
+    
+    // Override environment if explicitly requested
+    if (environment !== context.environment) {
+      // For now, we'll create a new context with the requested environment
+      // TODO: Add createClientContext for browser environments
+      console.warn(`⚠️ JTAGClient: Requested ${environment} but using ${context.environment} context`);
+    }
 
-    console.log(`🔄 JTAGClient: Connecting to ${context.environment} system with UNKNOWN_SESSION bootstrap...`);
+    console.log(`🔄 JTAGClient: Connecting to ${context.environment} system with secure configuration...`);
     
     const client = new this(context);
     await client.initialize(options);

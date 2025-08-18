@@ -22,13 +22,14 @@ async function testMinimalWorkingChat(): Promise<boolean> {
     console.log('Goal: Get basic 2-user chat working without complications');
     
     const roomId = `test-room-${Date.now()}`;
+    const serverUrl = 'ws://localhost:9001'; // Test-specific URL
     
     // Connect User 1 (Server)
     console.log('👤 Connecting User1...');
     const { client: user1Client } = await JTAGClientServer.connect({
       targetEnvironment: 'server',
       transportType: 'websocket',
-      serverUrl: 'ws://localhost:9001',
+      serverUrl,
       context: { displayName: 'TestUser1' }
     });
     users.push({ client: user1Client, name: 'TestUser1' });
@@ -39,7 +40,7 @@ async function testMinimalWorkingChat(): Promise<boolean> {
     const { client: user2Client } = await JTAGClientServer.connect({
       targetEnvironment: 'server',
       transportType: 'websocket', 
-      serverUrl: 'ws://localhost:9001',
+      serverUrl,
       context: { displayName: 'TestUser2' }
     });
     users.push({ client: user2Client, name: 'TestUser2' });

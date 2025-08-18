@@ -222,17 +222,22 @@ export class RoomEventSystem {
     const deliveryPromises = subscribedSessions.map(async (sessionId) => {
       try {
         // Create proper event payload
+        // Import secure context creation
+        const { createServerContext } = require('../../../system/core/context/SecureJTAGContext');
+        const payloadContext = createServerContext();
+        const eventContext = createServerContext();
+        
         const eventPayload = {
           eventType,
           eventData,
           roomId,
           targetSessionId: sessionId,
-          context: { environment: 'server' as const, uuid: generateUUID() },
+          context: payloadContext,
           sessionId: generateUUID() // System message session
         };
         
         const eventMessage = JTAGMessageFactory.createEvent(
-          { environment: 'server', uuid: generateUUID() },
+          eventContext,
           'room-event-system',
           'chat/room-event',
           eventPayload

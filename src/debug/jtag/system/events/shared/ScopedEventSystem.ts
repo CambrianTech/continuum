@@ -368,14 +368,21 @@ export class EventBridge {
           data,
           originSessionId: this.sessionId,
           timestamp: new Date().toISOString(),
-          // Required JTAGPayload fields
-          context: { environment: 'server' as const, uuid: generateUUID() },
+          // Required JTAGPayload fields  
+          context: (() => {
+            const { createServerContext } = require('../../core/context/SecureJTAGContext');
+            return createServerContext();
+          })(),
           sessionId: this.sessionId
         };
         
         // Route via existing transport system using proper message factory
+        // Import secure context creation
+        const { createServerContext } = require('../../core/context/SecureJTAGContext');
+        const eventContext = createServerContext();
+        
         const eventMessage = JTAGMessageFactory.createEvent(
-          { environment: 'server', uuid: generateUUID() },
+          eventContext,
           'EventsDaemon',
           'event-bridge',
           bridgeMessage

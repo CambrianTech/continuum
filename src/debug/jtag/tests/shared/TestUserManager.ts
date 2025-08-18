@@ -7,6 +7,9 @@
 
 import { JTAGClientServer } from '../../system/core/client/server/JTAGClientServer';
 import type { JTAGClient } from '../../system/core/client/shared/JTAGClient';
+import type { JTAGTestConfiguration } from '../../system/shared/SecureConfigTypes';
+import { buildServerUrl } from '../../system/shared/SecureConfigTypes';
+import { getDefaultTestConfig } from '../../system/shared/BrowserSafeConfig';
 
 export interface TestUser {
   client: JTAGClient;
@@ -27,7 +30,11 @@ export interface TestUserConfig {
  */
 export class TestUserManager {
   private users: Map<string, TestUser> = new Map();
-  private serverUrl = 'ws://localhost:9001';
+  private config: JTAGTestConfiguration;
+
+  constructor(config?: JTAGTestConfiguration) {
+    this.config = config || getDefaultTestConfig();
+  }
 
   /**
    * Connect a user with proper typing
@@ -38,7 +45,7 @@ export class TestUserManager {
     const { client } = await JTAGClientServer.connect({
       targetEnvironment: config.environment === 'browser' ? 'server' : 'server', // Control via server for now
       transportType: 'websocket',
-      serverUrl: this.serverUrl,
+      serverUrl: buildServerUrl(this.config), // Just use typed config.server.port etc.
       context: {
         displayName: config.name,
         role: config.role,
