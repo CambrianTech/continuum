@@ -30,16 +30,16 @@ export interface EventData {
 }
 
 /**
- * Event scope definition for targeting
+ * Event scope definition for targeting - required fields prevent failures
  */
 export interface EventScopeDefinition {
   type: EventScope;
-  id?: string;        // Room ID, user ID, etc.
-  sessionId?: string; // Session UUID for targeting
+  id: string;        // Required - Room ID, user ID, etc.
+  sessionId: string; // Required - Session UUID for targeting
 }
 
 /**
- * Event bridge message payload - strongly typed
+ * Event bridge message payload - strongly typed with required fields
  */
 export interface EventBridgePayload extends JTAGPayload {
   type: 'event-bridge';
@@ -47,23 +47,23 @@ export interface EventBridgePayload extends JTAGPayload {
   eventName: string;
   data: EventData;
   originSessionId: UUID;
-  originContextUUID?: UUID;
+  originContextUUID: UUID; // Required - no optional context
   timestamp: string;
 }
 
 /**
- * Event bridge response payload
+ * Event bridge response payload - required fields prevent failures
  */
 export interface EventBridgeResponse extends BaseResponsePayload {
-  bridged?: boolean;
-  eventName?: string;
-  scope?: string;
-  routedEnvironments?: string[];
-  processingTimeMs?: number;
+  bridged: boolean;           // Required - must indicate success/failure
+  eventName: string;          // Required - must specify event
+  scope: string;              // Required - must specify scope
+  routedEnvironments: string[]; // Required - must list where routed
+  processingTimeMs: number;   // Required - performance tracking
 }
 
 /**
- * Chat-specific event payloads
+ * Chat-specific event payloads - required fields prevent failures
  */
 export interface ChatMessageEventData extends EventData {
   messageId: string;
@@ -71,7 +71,7 @@ export interface ChatMessageEventData extends EventData {
   senderName: string;
   message: string;
   timestamp: string;
-  metadata?: Record<string, unknown>;
+  metadata: Record<string, unknown>; // Required - no optional metadata
 }
 
 export interface ChatParticipantEventData extends EventData {
