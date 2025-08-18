@@ -33,9 +33,9 @@ export class DefaultPriorityStrategy implements IMessagePriorityStrategy {
       return MessagePriority.HIGH;
     }
 
-    // Events get high priority for immediate cross-environment delivery
+    // Events get critical priority for immediate cross-environment delivery (bypass health checks)
     if (message.endpoint.includes('events')) {
-      return MessagePriority.HIGH;
+      return MessagePriority.CRITICAL;
     }
 
     // All console messages get high priority for immediate delivery

@@ -71,8 +71,14 @@ export abstract class EventsDaemon extends DaemonBase {
    * Handle event bridge messages from other contexts
    */
   async handleMessage(message: JTAGMessage): Promise<EventBridgeResponse> {
-    // Normalize endpoint by removing daemon prefix
-    const endpoint = message.endpoint.replace('events/', '');
+    // Normalize endpoint by removing environment prefix and daemon prefix
+    let endpoint = message.endpoint;
+    
+    // Remove environment prefix (browser/, server/) if present
+    endpoint = endpoint.replace(/^(browser|server)\//, '');
+    
+    // Remove daemon prefix (events/) if present
+    endpoint = endpoint.replace('events/', '');
     
     if (endpoint === EVENT_ENDPOINTS.BRIDGE) {
       return await this.handleEventBridge(message);
