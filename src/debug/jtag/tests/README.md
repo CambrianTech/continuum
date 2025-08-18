@@ -1,6 +1,114 @@
-# JTAG Testing System - Middle-Out Layer Architecture
+# JTAG Test Classification System
 
-## 🧅 Layer-Based Testing Structure
+**Autonomous Development with Zero Friction**
+
+This system organizes all JTAG tests by **what** they test (Category), **how** they test (Level), and **why** they matter (Importance) for autonomous AI development.
+
+## 🎯 **Core Philosophy**
+
+**Screenshots, logging, router, and events are SACRED** - if any break, JTAG debugging becomes useless. This system prevents that from ever happening through intelligent test classification.
+
+## 📊 **Test Categories** (What Component)
+
+### 🚨 **BLOCKER Categories** (Commit-blocking if broken)
+- **`transport`** - WebSocket connections, message transport
+- **`messaging`** - Message correlation, routing, request/response  
+- **`routing`** - Command routing, daemon communication
+- **`session`** - Session management, state tracking
+
+### 📸 **CRITICAL Categories** (Push-blocking if broken) 
+- **`screenshot`** - Visual debugging, querySelector, capture
+- **`commands`** - Command discovery, execution, validation
+- **`exec`** - JavaScript execution in browser, result capture
+- **`data`** - Database operations, CRUD, persistence
+
+### 📈 **HIGH Categories** (CI-blocking if broken)
+- **`chat`** - Multi-user messaging, rooms, history
+- **`events`** - Real-time events, cross-context routing
+- **`widgets`** - UI components, lifecycle, state
+
+### 📊 **MEDIUM/LOW Categories** (Quality/optimization)
+- **`health`** - Monitoring, logging, console capture
+- **`performance`** - Speed, memory, optimization
+- **`security`** - Validation, XSS protection
+- **`compatibility`** - Cross-browser support
+
+## 🏗️ **Test Levels** (How Complex)
+
+- **`foundation`** - Core types, utilities, infrastructure
+- **`unit`** - Individual components in isolation
+- **`integration`** - Component interactions, cross-module
+- **`system`** - Full system with all components running
+- **`e2e`** - Complete user workflows, UI interactions
+
+## ⚡ **Importance Hierarchy** (Git Impact)
+
+- **`BLOCKER`** - Blocks commits (nothing works)
+- **`CRITICAL`** - Blocks pushes (core features broken)  
+- **`HIGH`** - Blocks CI (enhanced features broken)
+- **`MEDIUM`** - Quality gates (performance/monitoring)
+- **`LOW`** - Polish (edge cases, optimizations)
+- **`EXPERIMENTAL`** - Future features (never blocks)
+
+## 🎮 **Usage Commands**
+
+### **By Importance** (Git Hook Ready)
+```bash
+npm run test:blocker        # 🚨 Blocks commits (15s)
+npm run test:critical       # 📸 Blocks pushes (2min) 
+npm run test:core-debugging # Both BLOCKER + CRITICAL
+npm run test:high           # 📈 Enhanced features
+```
+
+### **By Category** (Feature Focused)
+```bash
+npm run test:transport      # 🔗 WebSocket, routing, messaging
+npm run test:screenshots    # 📸 Visual debugging
+npm run test:chat           # 💬 Multi-user collaboration  
+npm run test:events         # 📡 Real-time events
+npm run test:routing        # 🔀 Command routing
+npm run test:logging        # 📝 Console capture
+```
+
+### **By Level** (Architecture Focused)
+```bash
+npm run test:foundation     # 🏛️ Core infrastructure
+npm run test:unit           # 🧪 Individual components
+npm run test:integration    # 🔗 Component interactions
+npm run test:system         # 🏗️ Full system validation
+npm run test:e2e            # 🎯 End-to-end workflows
+```
+
+## 🎯 **Test-Driven Development for Chat & Personas**
+
+### **Chat System TDD Workflow**
+```bash
+# 1. RED: Write failing chat tests
+npm run test:chat           # Should fail initially
+
+# 2. GREEN: Implement minimal chat functionality
+npm run test:transport      # Ensure messaging foundation works
+npm run test:events         # Ensure real-time delivery works
+npm run test:chat           # Should pass now
+
+# 3. REFACTOR: Optimize while maintaining tests
+npm run test:core-debugging # Full validation
+```
+
+### **Realistic Personas TDD** 
+```bash
+# Build from transport up to AI integration
+npm run test:transport      # WebSocket foundation
+npm run test:data           # Database persistence  
+npm run test:chat           # Multi-user messaging
+# → Then integrate OpenAI/Anthropic APIs with real data
+```
+
+---
+
+# Legacy Layer-Based Testing (Being Migrated)
+
+## 🧅 Layer-Based Testing Structure (OLD SYSTEM)
 
 Following the middle-out testing methodology, JTAG tests are organized by validation layers that must pass in sequence:
 
