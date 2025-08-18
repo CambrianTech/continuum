@@ -439,9 +439,13 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       return { success: true, deduplicated: true };
     }
 
-    // For critical messages, attempt immediate delivery if healthy
+    // For critical messages, attempt immediate delivery regardless of health (critical = always deliver)
+    // For high priority messages, attempt immediate delivery if healthy
     const health = this.healthManager.getHealth();
-    if (priority <= MessagePriority.HIGH && health.isHealthy) {
+    const shouldDeliverImmediately = priority === MessagePriority.CRITICAL || 
+                                     (priority === MessagePriority.HIGH && health.isHealthy);
+    
+    if (shouldDeliverImmediately) {
       try {
         const crossContextTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
         if (!crossContextTransport) {

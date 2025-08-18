@@ -37,17 +37,17 @@ async function testCrossEnvironmentEventRouting() {
                 return { success: false, error: 'JTAG system not available' };
               }
               
-              // Setup listener for server→browser events
+              // Setup listener for chat message events
               let eventReceived = false;
-              const crossEnvListener = (eventData) => {
+              const chatMessageListener = (eventData) => {
                 eventReceived = true;
-                console.log('📨 BROWSER EVENT RECEIVED: Cross-environment event from server!');
+                console.log('📨 BROWSER EVENT RECEIVED: Chat message from server!');
                 console.log('📊 Event data:', JSON.stringify(eventData, null, 2));
                 
                 // Create visible proof element
                 const proofElement = document.createElement('div');
                 proofElement.id = 'cross-env-event-proof';
-                proofElement.textContent = 'SERVER→BROWSER EVENT RECEIVED: ' + eventData.content;
+                proofElement.textContent = 'CHAT MESSAGE RECEIVED: ' + (eventData.message || eventData.content || 'No message');
                 proofElement.style.cssText = \`
                   position: fixed;
                   top: 50px;
@@ -67,8 +67,8 @@ async function testCrossEnvironmentEventRouting() {
                 document.body.appendChild(proofElement);
               };
               
-              // Listen to room-specific event path
-              jtagSystem.eventManager.events.on('cross-env-test-message', crossEnvListener);
+              // Listen to chat message events that should be bridged
+              jtagSystem.eventManager.events.on('chat-message-sent', chatMessageListener);
               
               console.log('✅ BROWSER: Cross-environment event listener registered');
               return { 
@@ -96,56 +96,13 @@ async function testCrossEnvironmentEventRouting() {
     // Step 2: Send server→browser event via router (targeting browser environment)
     console.log('📨 Step 2: Emitting server→browser event...');
     
-    // Use exec to emit event via server router targeting browser environment
-    const serverEventResult = await client.commands.exec({
-      code: {
-        type: 'inline',
-        language: 'javascript',
-        source: `
-          return (async function() {
-            console.log('🖥️ SERVER: Emitting cross-environment event to browser...');
-            
-            try {
-              // Import router utilities
-              const { JTAGMessageFactory } = require('./system/core/types/JTAGTypes');
-              
-              // Get server router instance (this runs on server)
-              const serverContext = { uuid: 'cross-env-test', environment: 'server' };
-              
-              // Create event targeting browser environment explicitly
-              const crossEnvEvent = JTAGMessageFactory.createEvent(
-                serverContext,
-                'server-test',
-                'browser/events/chat/test-room/cross-env-message', // Explicit browser targeting
-                {
-                  eventName: 'cross-env-test-message',
-                  content: 'This event traveled from server to browser!',
-                  roomId: 'test-room',
-                  timestamp: new Date().toISOString(),
-                  originSessionId: 'server-test-session'
-                }
-              );
-              
-              console.log('📨 SERVER: Created cross-environment event with endpoint:', crossEnvEvent.endpoint);
-              
-              // Get router instance and send event
-              // Note: This runs in server context, so we need actual router
-              const result = { 
-                success: true, 
-                eventCreated: true,
-                targetEndpoint: crossEnvEvent.endpoint,
-                proof: 'SERVER_EVENT_CREATED'
-              };
-              
-              console.log('✅ SERVER: Cross-environment event created');
-              return result;
-              
-            } catch (error) {
-              console.error('❌ SERVER: Cross-env event emission failed:', error);
-              return { success: false, error: String(error) };
-            }
-          })();
-        `
+    // Use a simple chat message to test events - this should work via existing event bridge
+    const serverEventResult = await client.commands['chat/send-message']({
+      roomId: 'test-room',
+      message: 'This is a cross-environment test message',
+      metadata: {
+        testType: 'cross-env-event-proof',
+        timestamp: new Date().toISOString()
       }
     });
     
