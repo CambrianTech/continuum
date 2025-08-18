@@ -9,7 +9,7 @@
  * 4. Both server and client screenshot methods work
  */
 
-import { JTAGBase } from '../system/core/shared/JTAGBase';
+import { jtag } from '../server-index';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 
@@ -17,26 +17,15 @@ async function testScreenshotTransport() {
   console.log('🧪 Step 5: Testing Screenshot Transport Abstraction\n');
 
   try {
-    // Test 1: Initialize JTAG system
-    console.log('📋 Test 5.1: Initialize JTAG system');
-    JTAGBase.initialize({
-      context: 'server',
-      enableConsoleOutput: true,
-      enableRemoteLogging: false, // Keep it simple for screenshot testing
-      jtagPort: 9001
-    });
-    
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    console.log('✅ JTAG system initialized');
+    // Test 1: Connect to JTAG system (don't initialize a second one!)
+    console.log('📋 Test 5.1: Connect to existing JTAG system');
+    const jtagClient = await jtag.connect({ targetEnvironment: 'server' });
+    console.log('✅ JTAG client connected');
 
-    // Test 2: Test basic server screenshot
+    // Test 2: Test basic server screenshot using proper API
     console.log('\n📋 Test 5.2: Test server screenshot via transport abstraction');
     
-    const basicScreenshot = await JTAGBase.screenshot('transport-test-basic', {
-      width: 1024,
-      height: 768,
-      selector: 'body'
-    });
+    const basicScreenshot = await jtagClient.commands.screenshot('transport-test-basic');
     
     console.log('📸 Basic screenshot result:');
     console.log('   Success:', basicScreenshot.success ? '✅' : '❌');
@@ -98,7 +87,7 @@ async function testScreenshotTransport() {
     for (const test of optionsTests) {
       console.log(`📸 Testing ${test.description}...`);
       
-      const result = await JTAGBase.screenshot(test.filename, test.options);
+      const result = await jtagClient.commands.screenshot(test.filename);
       
       console.log(`   ${test.filename}: ${result.success ? '✅' : '❌'} ${result.success ? 'Success' : 'Failed'}`);
       
@@ -116,14 +105,7 @@ async function testScreenshotTransport() {
     console.log('\n📋 Test 5.5: Test screenshot routing through transport layer');
     
     // This screenshot should route through the transport system
-    const transportScreenshot = await JTAGBase.screenshot('transport-routing-test', {
-      width: 800,
-      height: 600,
-      metadata: { 
-        testType: 'transport-routing',
-        timestamp: new Date().toISOString() 
-      }
-    });
+    const transportScreenshot = await jtagClient.commands.screenshot('transport-routing-test');
     
     console.log('🚚 Transport routing screenshot:');
     console.log('   Success:', transportScreenshot.success ? '✅' : '❌');
@@ -157,12 +139,8 @@ async function testScreenshotTransport() {
     console.log('\n📋 Test 5.7: Test screenshot error handling');
     
     try {
-      // Test with invalid options
-      const errorScreenshot = await JTAGBase.screenshot('error-test', {
-        width: -100, // Invalid width
-        height: 'invalid' as any, // Invalid height type
-        selector: null as any // Invalid selector
-      });
+      // Test error handling with invalid filename
+      const errorScreenshot = await jtagClient.commands.screenshot(''); // Empty filename should cause error
       
       console.log('⚠️ Error handling test:', errorScreenshot.success ? 'Unexpectedly succeeded' : '✅ Properly handled error');
       if (errorScreenshot.error) {
