@@ -1,0 +1,222 @@
+#!/bin/bash
+
+# Modular Categorized Test Runner
+# Can be used by any test command to get consistent categorized output
+# Usage: ./scripts/run-categorized-tests.sh [profile] [additional_args...]
+#
+# Profiles: 
+#   - comprehensive: All tests (default)
+#   - integration: Integration tests only
+#   - unit: Unit tests only  
+#   - chat: Chat-related tests only
+#   - screenshots: Screenshot tests only
+#   - transport: Transport tests only
+#   - events: Event system tests only
+#   - blocker: Blocker-level tests only
+#   - critical: Critical tests only
+
+PROFILE="${1:-comprehensive}"
+shift  # Remove profile from args, pass rest to test functions
+
+# Remove set -e so we can continue after failures and aggregate results
+SIMPLE_MODE=false
+
+echo "🚀 CATEGORIZED TEST SUITE - Profile: $PROFILE"
+echo "═══════════════════════════════════════════════════════════════════════════════"
+
+# Initialize result tracking
+declare -i TOTAL_TESTS=0
+declare -i PASSED_TESTS=0
+declare -i FAILED_TESTS=0
+declare -a FAILED_TEST_NAMES=()
+
+# Initialize temp file for category tracking using .continuum pattern
+mkdir -p .continuum/tests
+> .continuum/tests/test_results.tmp
+
+# Function to run test and track results by category
+run_test() {
+    local test_name="$1"
+    local test_command="$2"  
+    local category="$3"
+    
+    echo "▶️  Running: $test_name [$category]"
+    ((TOTAL_TESTS++))
+    
+    if eval "$test_command" &>/dev/null; then
+        echo "✅ PASSED: $test_name"
+        ((PASSED_TESTS++))
+        echo "$category|PASS|$test_name" >> .continuum/tests/test_results.tmp
+    else
+        echo "❌ FAILED: $test_name"
+        ((FAILED_TESTS++))
+        FAILED_TEST_NAMES+=("$test_name")
+        echo "$category|FAIL|$test_name" >> .continuum/tests/test_results.tmp
+    fi
+    echo ""
+}
+
+# Profile-specific test selection
+run_profile_tests() {
+    case "$PROFILE" in
+        "comprehensive")
+            # Compiler checks first
+            run_test "TypeScript Compilation" "npx tsc --noEmit --project ." "Compiler & Build"
+            run_test "Import Resolution" "npx tsx tests/compiler-error-detection.test.ts" "Compiler & Build"
+            
+            # Core system tests
+            run_test "Bootstrap Detection" "npx tsx tests/bootstrap-comprehensive.test.ts" "Core System"  
+            run_test "System Signals" "npx tsx tests/signal-system.test.ts" "Core System"
+            run_test "Router Coordination" "npx tsx tests/integration/router-coordination-simple.test.ts" "Core System"
+            
+            # Browser integration
+            run_test "WebSocket Connection" "npx tsx tests/integration/browser-automated-tests.test.ts" "Browser Integration"
+            run_test "Browser Automation" "npx tsx tests/layer-6-end-to-end/browser-automation.test.ts" "Browser Integration"
+            
+            # Chat & messaging
+            run_test "Chat Message Send" "npx tsx tests/chat-daemon-integration.test.ts" "Chat & Messaging"
+            run_test "Multi-user Chat" "npx tsx tests/integration/simple-multiuser-chat.test.ts" "Chat & Messaging"
+            
+            # Unit tests
+            run_test "Event Routing Unit" "npx tsx tests/unit/router-broadcast.test.ts" "Unit Tests"
+            run_test "Router Broadcast Unit" "npx tsx tests/unit/room-scoped-event-routing.test.ts" "Unit Tests"
+            
+            # Screenshots & visual
+            run_test "Screenshot Capture" "npx tsx tests/server-screenshot.test.ts" "Screenshots & Visual"
+            ;;
+            
+        "integration")
+            run_test "Browser Integration" "npx tsx tests/integration/browser-automated-tests.test.ts" "Integration Tests"
+            run_test "Server-Client Integration" "npx tsx tests/integration/server-client-integration.test.ts" "Integration Tests"
+            run_test "Router Coordination" "npx tsx tests/integration/router-coordination-simple.test.ts" "Integration Tests"
+            run_test "Cross-Context Commands" "npx tsx tests/integration/transport/browser-server-commands.test.ts" "Integration Tests"
+            ;;
+            
+        "unit")
+            run_test "Event Routing" "npx tsx tests/unit/router-broadcast.test.ts" "Unit Tests"
+            run_test "Room Scoped Events" "npx tsx tests/unit/room-scoped-event-routing.test.ts" "Unit Tests"
+            run_test "Events Daemon" "npx tsx tests/unit/events-daemon-unit.test.ts" "Unit Tests"
+            ;;
+            
+        "chat")
+            run_test "Chat Daemon Integration" "npx tsx tests/chat-daemon-integration.test.ts" "Chat Tests"
+            run_test "Chat Widget Simple" "npx tsx tests/chat-widget-simple.test.ts" "Chat Tests"
+            run_test "Chat TDD" "npx tsx tests/chat-daemon-tdd.test.ts" "Chat Tests"
+            run_test "Multi-user Chat" "npx tsx tests/integration/simple-multiuser-chat.test.ts" "Chat Tests"
+            ;;
+            
+        "screenshots")
+            run_test "Server Screenshot" "npx tsx tests/server-screenshot.test.ts" "Screenshot Tests"
+            run_test "Screenshot Verification" "npx tsx tests/screenshot-verification.test.ts" "Screenshot Tests"
+            run_test "Screenshot Advanced" "npx tsx tests/screenshot-integration-advanced.test.ts" "Screenshot Tests"
+            ;;
+            
+        "transport")
+            run_test "WebSocket Transport" "npx tsx tests/layer-3-transport/browser-websocket.test.ts" "Transport Tests"
+            run_test "Cross-Context Commands" "npx tsx tests/integration/transport/browser-server-commands.test.ts" "Transport Tests"
+            run_test "Transport Flexibility" "npx tsx tests/integration/transport/transport-flexibility.test.ts" "Transport Tests"
+            ;;
+            
+        "events")
+            run_test "Server-Browser Events" "npx tsx tests/integration/server-browser-event-flow.test.ts" "Event Tests"
+            run_test "Browser-Server Events" "npx tsx tests/integration/browser-server-event-flow.test.ts" "Event Tests"
+            run_test "Cross-Environment Events" "npx tsx tests/integration/cross-environment-events-working.test.ts" "Event Tests"
+            ;;
+            
+        "blocker")
+            run_test "System Bootstrap" "npx tsx tests/bootstrap-comprehensive.test.ts" "Blocker Tests"
+            run_test "TypeScript Compilation" "npx tsc --noEmit --project ." "Blocker Tests"
+            ;;
+            
+        "critical") 
+            run_test "Browser Integration" "npx tsx tests/integration/browser-automated-tests.test.ts" "Critical Tests"
+            run_test "Router Coordination" "npx tsx tests/integration/router-coordination-simple.test.ts" "Critical Tests"
+            run_test "Screenshot System" "npx tsx tests/server-screenshot.test.ts" "Critical Tests"
+            ;;
+            
+        *)
+            echo "❌ Unknown profile: $PROFILE"
+            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, transport, events, blocker, critical"
+            exit 1
+            ;;
+    esac
+}
+
+# Run the selected profile tests
+run_profile_tests "$@"
+
+# COMPREHENSIVE SUMMARY WITH CATEGORY BREAKDOWN
+echo "═══════════════════════════════════════════════════════════════════════════════"
+echo "🎯 TEST RESULTS - Profile: $PROFILE"
+echo "═══════════════════════════════════════════════════════════════════════════════"
+echo "📊 Overall Summary:"
+echo "   Total Tests: $TOTAL_TESTS"
+echo "   ✅ Passed: $PASSED_TESTS"
+echo "   ❌ Failed: $FAILED_TESTS"
+
+if [ $TOTAL_TESTS -gt 0 ]; then
+    echo "   📈 Success Rate: $(( PASSED_TESTS * 100 / TOTAL_TESTS ))%"
+else
+    echo "   📈 Success Rate: N/A (no tests run)"
+fi
+echo ""
+
+# Show category breakdown first
+echo "📋 Results by Category:"
+if [ -f .continuum/tests/test_results.tmp ]; then
+    # Get unique categories from results file - use while loop to handle spaces in names
+    cut -d'|' -f1 .continuum/tests/test_results.tmp | sort -u | while read -r category; do
+        total=$(grep "^$category|" .continuum/tests/test_results.tmp | wc -l | tr -d ' ')
+        passed=$(grep "^$category|PASS|" .continuum/tests/test_results.tmp | wc -l | tr -d ' ')
+        failed=$(grep "^$category|FAIL|" .continuum/tests/test_results.tmp | wc -l | tr -d ' ')
+        
+        if [ $total -gt 0 ]; then
+            rate=$(( passed * 100 / total ))
+            printf "   %-30s %2d/%2d tests (%3d%%) " "$category:" $passed $total $rate
+            if [ $failed -eq 0 ]; then
+                echo "✅ All passing"
+            else
+                echo "❌ $failed failed"
+            fi
+        fi
+    done
+else
+    echo "   ⚠️  No results file found - categories not tracked"
+fi
+echo ""
+
+# Show detailed failures if any
+if [ $FAILED_TESTS -gt 0 ]; then
+    echo "❌ DETAILED FAILURE BREAKDOWN:"
+    if [ -f .continuum/tests/test_results.tmp ]; then
+        categories=$(cut -d'|' -f1 .continuum/tests/test_results.tmp | sort -u)
+        for category in $categories; do
+            failed_tests=$(grep "^$category|FAIL|" .continuum/tests/test_results.tmp | cut -d'|' -f3)
+            if [ ! -z "$failed_tests" ]; then
+                failed_count=$(echo "$failed_tests" | wc -l | tr -d ' ')
+                echo "   🔴 $category ($failed_count failed):"
+                echo "$failed_tests" | sed 's/^/      • /'
+                echo ""
+            fi
+        done
+    fi
+    
+    echo "🔍 Recommended Next Steps:"
+    echo "   1. Run specific failing tests with detailed output"
+    echo "   2. Check system logs: .continuum/jtag/system/logs/"
+    echo "   3. Verify system health: npm run agent:quick"
+    echo "   4. Use profile-specific commands for focused testing"
+    echo ""
+    
+    # Keep temp file for debugging if needed
+    echo "🔍 Full results available in: .continuum/tests/test_results.tmp"
+    exit 1
+else
+    echo "🎉 ALL TESTS PASSED!"
+    echo "✅ Profile '$PROFILE' is fully functional"
+    echo ""
+    echo "🚀 System ready for autonomous development"
+    
+    # Clean up temp file after successful run
+    rm -f .continuum/tests/test_results.tmp
+fi
