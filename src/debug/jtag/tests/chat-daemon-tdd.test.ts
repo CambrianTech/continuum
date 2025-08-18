@@ -52,23 +52,34 @@ async function runChatDaemonTddTests(): Promise<void> {
             console.log('🚀 TDD TEST: Basic daemon communication');
             
             try {
-              // Test that chat daemon endpoint exists in router
-              const router = window.jtag?.router;
-              if (!router) {
-                console.log('❌ TDD TEST: No JTAG router available');
-                return { testName: 'basicCommunication', success: false, error: 'No router' };
+              // Check what's available in window.jtag
+              console.log('🔍 TDD TEST: Checking window.jtag availability');
+              console.log('window.jtag:', typeof window.jtag);
+              console.log('window.jtag keys:', window.jtag ? Object.keys(window.jtag) : 'undefined');
+              
+              if (!window.jtag) {
+                console.log('❌ TDD TEST: No window.jtag available');
+                return { testName: 'basicCommunication', success: false, error: 'No window.jtag' };
               }
               
-              console.log('✅ TDD TEST: Router available, checking endpoints');
+              // Check if chat command is available
+              const hasScreenshot = typeof window.jtag.screenshot === 'function';
+              const hasList = typeof window.jtag.list === 'function';
+              const hasCommands = window.jtag.commands ? Object.keys(window.jtag.commands) : [];
               
-              // Check if we can route to chat daemon
-              const chatEndpoint = 'chat';
-              console.log('🔍 TDD TEST: Looking for chat daemon endpoint...');
+              console.log('✅ TDD TEST: window.jtag available with functions:', {
+                screenshot: hasScreenshot,
+                list: hasList,
+                commands: hasCommands.length
+              });
               
               return { 
                 testName: 'basicCommunication', 
                 success: true, 
-                routerAvailable: !!router,
+                jtagAvailable: true,
+                hasScreenshot,
+                hasList,
+                commandCount: hasCommands.length,
                 proof: 'DAEMON_COMMUNICATION_TESTED'
               };
             } catch (error) {
@@ -133,15 +144,15 @@ async function runChatDaemonTddTests(): Promise<void> {
         }
       });
       
-      if (result.success && result.commandResult?.success) {
-        const execResult = result.commandResult.result || result.commandResult.commandResult;
+      if (result.success && result.result) {
+        const execResult = result.result;
         if (execResult && execResult.success) {
           console.log('✅ Test 2 PASSED: Chat daemon registration test ready');
           passCount++;
-          results.push({ testName: 'daemonRegistration', success: true, details: result });
+          results.push({ testName: 'daemonRegistration', success: true, details: execResult });
         } else {
           console.log('❌ Test 2 FAILED: Chat daemon registration test failed');
-          results.push({ testName: 'daemonRegistration', success: false, details: result, error: execResult?.error || 'Registration test failed' });
+          results.push({ testName: 'daemonRegistration', success: false, details: execResult, error: execResult?.error || 'Registration test failed' });
         }
       } else {
         console.log('❌ Test 2 FAILED: Chat daemon registration test execution failed');

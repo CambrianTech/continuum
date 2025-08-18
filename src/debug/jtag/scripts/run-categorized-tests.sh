@@ -69,20 +69,36 @@ run_profile_tests() {
             run_test "System Signals" "npx tsx tests/signal-system.test.ts" "Core System"
             run_test "Router Coordination" "npx tsx tests/integration/router-coordination-simple.test.ts" "Core System"
             
-            # Browser integration
+            # Browser integration (no widget tests in comprehensive to avoid navigation issues)
             run_test "WebSocket Connection" "npx tsx tests/integration/browser-automated-tests.test.ts" "Browser Integration"
             run_test "Browser Automation" "npx tsx tests/layer-6-browser-integration/minimal-pure-jtag.test.ts" "Browser Integration"
             
             # Chat & messaging
             run_test "Chat Message Send" "npx tsx tests/chat-daemon-integration.test.ts" "Chat & Messaging"
+            run_test "Chat Widget Simple" "npx tsx tests/chat-widget-simple.test.ts" "Chat & Messaging"
+            run_test "Chat TDD" "npx tsx tests/chat-daemon-tdd.test.ts" "Chat & Messaging"
             run_test "Multi-user Chat" "npx tsx tests/integration/simple-multiuser-chat.test.ts" "Chat & Messaging"
             
             # Unit tests
             run_test "Event Routing Unit" "npx tsx tests/unit/router-broadcast.test.ts" "Unit Tests"
             run_test "Router Broadcast Unit" "npx tsx tests/unit/room-scoped-event-routing.test.ts" "Unit Tests"
+            run_test "Events Daemon Unit" "npx tsx tests/unit/events-daemon-unit.test.ts" "Unit Tests"
             
             # Screenshots & visual
             run_test "Screenshot Capture" "npx tsx tests/server-screenshot.test.ts" "Screenshots & Visual"
+            run_test "Screenshot Verification" "npx tsx tests/screenshot-verification.test.ts" "Screenshots & Visual"
+            run_test "Screenshot Advanced" "npx tsx tests/screenshot-integration-advanced.test.ts" "Screenshots & Visual"
+            run_test "Screenshot Transport" "npx tsx tests/screenshot-transport-test.ts" "Screenshots & Visual"
+            
+            # Transport layer - some may have WebSocket issues, kept separate for debugging
+            run_test "WebSocket Transport" "npx tsx tests/layer-3-transport/browser-websocket.test.ts" "Transport Tests"
+            run_test "Cross-Context Commands" "npx tsx tests/integration/transport/browser-server-commands.test.ts" "Transport Tests"  
+            # run_test "Transport Flexibility" "npx tsx tests/integration/transport/transport-flexibility.test.ts" "Transport Tests"  # Still may hang
+            
+            # Event system
+            run_test "Server-Browser Events" "npx tsx tests/integration/server-browser-event-flow.test.ts" "Event Tests"
+            run_test "Browser-Server Events" "npx tsx tests/integration/browser-server-event-flow.test.ts" "Event Tests" 
+            run_test "Cross-Environment Events" "npx tsx tests/integration/cross-environment-events-working.test.ts" "Event Tests"
             ;;
             
         "integration")
@@ -134,9 +150,14 @@ run_profile_tests() {
             run_test "Screenshot System" "npx tsx tests/server-screenshot.test.ts" "Critical Tests"
             ;;
             
+        "widgets")
+            run_test "Clean Widget Test" "npx tsx tests/layer-6-browser-integration/clean-widget-test.ts" "Widget Tests"
+            run_test "Widget Foundation" "npx tsx tests/layer-6-browser-integration/simplified-widget-demo.test.ts" "Widget Tests"
+            ;;
+            
         *)
             echo "❌ Unknown profile: $PROFILE"
-            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, transport, events, blocker, critical"
+            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, transport, events, blocker, critical, widgets"
             exit 1
             ;;
     esac
