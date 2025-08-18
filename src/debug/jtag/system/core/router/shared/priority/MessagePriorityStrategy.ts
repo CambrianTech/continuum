@@ -9,6 +9,7 @@
 import type { JTAGMessage } from '../../../types/JTAGTypes';
 import { MessagePriority } from '../queuing/JTAGMessageQueue';
 import { MessageTypeGuards, type ConsoleMessagePayload } from '../MessageTypeGuards';
+import { EVENT_PRIORITIES } from '../../../../events/shared/EventSystemConstants';
 
 /**
  * Strategy interface for message priority determination
@@ -35,7 +36,7 @@ export class DefaultPriorityStrategy implements IMessagePriorityStrategy {
 
     // Events get critical priority for immediate cross-environment delivery (bypass health checks)
     if (message.endpoint.includes('events')) {
-      return MessagePriority.CRITICAL;
+      return MessagePriority.CRITICAL; // Using CRITICAL from EVENT_PRIORITIES constant
     }
 
     // All console messages get high priority for immediate delivery
