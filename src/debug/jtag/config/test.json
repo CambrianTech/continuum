@@ -1,0 +1,23 @@
+{
+  "server": {
+    "port": 9001,
+    "host": "localhost",
+    "protocol": "ws"
+  },
+  "client": {
+    "ui_port": 9002,
+    "host": "localhost",
+    "protocol": "http"
+  },
+  "test_settings": {
+    "timeout_ms": 30000,
+    "retry_attempts": 3,
+    "screenshot_on_failure": true,
+    "cleanup_after_test": true
+  },
+  "environment": {
+    "test_mode": true,
+    "verbose_logging": true,
+    "isolated_sessions": true
+  }
+}

@@ -43,18 +43,34 @@ export type JTAGEnvironment = typeof JTAG_ENVIRONMENTS[keyof typeof JTAG_ENVIRON
 
 
 /**
- * JTAG Context - Universal Module Identity
+ * JTAG Context - Universal Module Identity with Secure Configuration
  * 
  * Shared context object that uniquely identifies execution environment.
  * All modules within the same context share this identity for correlation.
  * 
+ * SECURITY: Configuration access is environment-aware:
+ * - Server contexts get server configuration (with secrets)
+ * - Client contexts get client-safe configuration (no secrets)
+ * - Cross-contamination is prevented at the type level
+ * 
  * @param uuid - Unique identifier for this context instance
  * @param environment - Execution environment (server/browser/remote)
+ * @param getConfig - Environment-appropriate configuration accessor
  */
 export interface JTAGContext {
   uuid: UUID;
   environment: JTAGEnvironment;
+  getConfig(): JTAGContextConfig;
 }
+
+/**
+ * Environment-specific configuration interface
+ * Each environment gets only the configuration it needs
+ */
+export type JTAGContextConfig = 
+  | { type: 'server'; config: import('../../shared/SecureConfigTypes').JTAGServerConfiguration }
+  | { type: 'client'; config: import('../../shared/SecureConfigTypes').JTAGClientConfiguration }
+  | { type: 'test'; config: import('../../shared/SecureConfigTypes').JTAGTestConfiguration };
 
 export const extractEnvironment = (endpoint: string, parts?: string[]): JTAGEnvironment | undefined => {
     parts = parts ?? endpoint.split('/');

@@ -37,10 +37,16 @@ export interface CommandTestResult {
  * Create test context for command testing
  */
 export function createTestContext(environment: 'browser' | 'server' = 'server', sessionId?: UUID): JTAGContext {
-  return {
-    uuid: sessionId || generateUUID(),
-    environment
-  };
+  // Import and use secure context creation
+  const { createTestContext: createSecureTestContext, createClientContext } = require('../../system/core/context/SecureJTAGContext');
+  const context = environment === 'browser' ? createClientContext() : createSecureTestContext();
+  
+  // Override UUID if provided (for test consistency)
+  if (sessionId) {
+    return { ...context, uuid: sessionId };
+  }
+  
+  return context;
 }
 
 /**

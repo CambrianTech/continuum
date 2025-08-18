@@ -284,8 +284,13 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
   }
 
   private async getActiveProcesses(): Promise<ProcessRegistryEntry[]> {
+    // Import secure context creation
+    const { createServerContext } = require('../../../system/core/context/SecureJTAGContext');
+    const context = createServerContext();
+    context.uuid = 'internal-process-registry'; // Override for consistency
+    
     const result = await this.listProcesses({
-      context: { environment: 'server', uuid: 'internal-process-registry' },
+      context,
       sessionId: 'internal' as any,
       includeStale: false
     });

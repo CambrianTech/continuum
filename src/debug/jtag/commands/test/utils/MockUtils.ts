@@ -16,10 +16,9 @@ import type { ListResult, CommandSignature } from '../../list/shared/ListTypes';
  * Mock JTAG Context for testing
  */
 export function createMockContext(environment: 'browser' | 'server' = 'server'): JTAGContext {
-  return {
-    uuid: generateUUID(),
-    environment
-  };
+  // Import and use secure context creation
+  const { createTestContext, createClientContext } = require('../../system/core/context/SecureJTAGContext');
+  return environment === 'browser' ? createClientContext() : createTestContext();
 }
 
 /**
