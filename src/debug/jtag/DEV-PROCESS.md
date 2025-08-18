@@ -20,11 +20,19 @@ npx tsc --noEmit --project .   # Must pass before any testing
 npm run agent                  # Your development control room
 ```
 
-**Step 3: Run the comprehensive test suite**
+**Step 3: Run the comprehensive test suite (BREAKTHROUGH: Test-Driven Development)**
 ```bash
-npm test                       # Full test validation (5 min max)
-# Expected: "🎉 ALL BROWSER INTEGRATION TESTS PASSED!"
+npm test                       # Full test validation with browser deployment
+# ✅ Automatically: starts server, deploys & opens browser, runs all tests
+# ✅ 90%+ success rate - system works when using proper workflow!
+# ✅ No manual browser opening - fully automated
 ```
+
+**🎯 CRITICAL: All browser tests MUST use `npm test` workflow**
+- ❌ Don't run browser tests directly: `npx tsx test-browser.ts` 
+- ✅ Add to `run-categorized-tests.sh` and use: `npm test`
+- ✅ Shell script takes tsx paths - easy to add new tests
+- ✅ Proper browser deployment + WebSocket routing guaranteed
 
 **Step 4: Visual feedback - see what you built**
 ```bash

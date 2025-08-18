@@ -16,6 +16,7 @@
 #   - critical: Critical tests only
 
 PROFILE="${1:-comprehensive}"
+TEST_FILE="$2"
 shift  # Remove profile from args, pass rest to test functions
 
 # Remove set -e so we can continue after failures and aggregate results
@@ -90,8 +91,8 @@ run_profile_tests() {
             run_test "Screenshot Advanced" "npx tsx tests/screenshot-integration-advanced.test.ts" "Screenshots & Visual"
             run_test "Screenshot Transport" "npx tsx tests/screenshot-transport-test.ts" "Screenshots & Visual"
             
-            # Transport layer - some may have WebSocket issues, kept separate for debugging
-            run_test "WebSocket Transport" "npx tsx tests/layer-3-transport/browser-websocket.test.ts" "Transport Tests"
+            # Transport layer - these tests require full browser deployment via npm test
+            # run_test "WebSocket Transport" "npx tsx tests/layer-3-transport/browser-websocket.test.ts" "Transport Tests"  # File doesn't exist
             run_test "Cross-Context Commands" "npx tsx tests/integration/transport/browser-server-commands.test.ts" "Transport Tests"  
             # run_test "Transport Flexibility" "npx tsx tests/integration/transport/transport-flexibility.test.ts" "Transport Tests"  # Still may hang
             
@@ -155,9 +156,19 @@ run_profile_tests() {
             run_test "Widget Foundation" "npx tsx tests/layer-6-browser-integration/simplified-widget-demo.test.ts" "Widget Tests"
             ;;
             
+        "single-test")
+            # Single test runner - pass test file as second argument
+            if [ -n "$TEST_FILE" ]; then
+                run_test "Single Test" "npx tsx $TEST_FILE" "Single Test"
+            else
+                echo "❌ Usage: ./scripts/run-categorized-tests.sh single-test path/to/test.ts"
+                exit 1
+            fi
+            ;;
+            
         *)
             echo "❌ Unknown profile: $PROFILE"
-            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, transport, events, blocker, critical, widgets"
+            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, transport, events, blocker, critical, widgets, single-test"
             exit 1
             ;;
     esac
