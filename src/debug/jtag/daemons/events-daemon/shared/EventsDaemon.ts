@@ -13,6 +13,13 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import { createBaseResponse, type BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 import { EVENT_ENDPOINTS } from './EventEndpoints';
+import { 
+  EventRoutingUtils, 
+  EVENT_METADATA_KEYS, 
+  EVENT_SCOPES,
+  type EventScope,
+  type EventEndpoint 
+} from '../../../system/events/shared/EventSystemConstants';
 
 /**
  * Event bridge message payload with proper typing
@@ -20,16 +27,17 @@ import { EVENT_ENDPOINTS } from './EventEndpoints';
 export interface EventBridgePayload extends JTAGPayload {
   type: 'event-bridge';
   scope: {
-    type: 'system' | 'room' | 'user' | 'global';
+    type: EventScope;
     id?: string;
     sessionId?: string;
   };
   eventName: string;
   data: {
     message?: unknown;
-    _bridged?: boolean;
-    _originalContext?: string;
-    _bridgeTimestamp?: string;
+    [EVENT_METADATA_KEYS.BRIDGED]?: boolean;
+    [EVENT_METADATA_KEYS.ORIGINAL_CONTEXT]?: string;
+    [EVENT_METADATA_KEYS.BRIDGE_TIMESTAMP]?: string;
+    [EVENT_METADATA_KEYS.BRIDGE_HOP_COUNT]?: number;
     [key: string]: unknown;
   };
   originSessionId: UUID;
@@ -71,14 +79,8 @@ export abstract class EventsDaemon extends DaemonBase {
    * Handle event bridge messages from other contexts
    */
   async handleMessage(message: JTAGMessage): Promise<EventBridgeResponse> {
-    // Normalize endpoint by removing environment prefix and daemon prefix
-    let endpoint = message.endpoint;
-    
-    // Remove environment prefix (browser/, server/) if present
-    endpoint = endpoint.replace(/^(browser|server)\//, '');
-    
-    // Remove daemon prefix (events/) if present
-    endpoint = endpoint.replace('events/', '');
+    // Normalize endpoint using shared utility
+    const endpoint = EventRoutingUtils.normalizeEndpoint(message.endpoint);
     
     if (endpoint === EVENT_ENDPOINTS.BRIDGE) {
       return await this.handleEventBridge(message);
@@ -112,13 +114,12 @@ export abstract class EventsDaemon extends DaemonBase {
       if (isOriginContext) {
         console.log(`🔄 EventsDaemon: Origin context - skipping local emission, routing to other environments`);
       } else {
-        // Re-emit the event in this context with bridge metadata
-        const bridgedData = {
-          ...payload.data,
-          _bridged: true,
-          _originalContext: payload.originSessionId,
-          _bridgeTimestamp: payload.timestamp
-        };
+        // Re-emit the event in this context with bridge metadata using shared constants
+        const bridgedData = EventRoutingUtils.addBridgeMetadata(
+          payload.data,
+          payload.originSessionId,
+          payload.timestamp
+        );
         
         // Emit to local event system
         this.eventManager.events.emit(payload.eventName, bridgedData);
@@ -126,8 +127,8 @@ export abstract class EventsDaemon extends DaemonBase {
       }
       
       // Always route to other environments if this is NOT already a bridged event
-      // Check if event is already bridged to prevent infinite recursion
-      if (!payload.data._bridged) {
+      // Check if event is already bridged to prevent infinite recursion using shared utility
+      if (!EventRoutingUtils.isEventBridged(payload.data)) {
         await this.routeToOtherEnvironments(payload);
       } else {
         console.log(`🔄 EventsDaemon: Skipping re-bridge of already bridged event '${payload.eventName}'`);
@@ -157,12 +158,16 @@ export abstract class EventsDaemon extends DaemonBase {
       const targetEnvironments = this.context.environment === 'server' ? ['browser'] : ['server'];
       
       for (const targetEnv of targetEnvironments) {
-        // CRITICAL FIX: Route to SPECIFIC environment context, not local environment
-        // Use targetEnv prefix to ensure cross-process routing via transport
+        // Create cross-environment message using shared utility
+        const crossEnvEndpoint = EventRoutingUtils.createCrossEnvEndpoint(
+          targetEnv as any, 
+          EVENT_ENDPOINTS.BRIDGE
+        );
+        
         const crossEnvMessage = JTAGMessageFactory.createEvent(
           this.context,
           'events-daemon',
-          `${targetEnv}/events/${EVENT_ENDPOINTS.BRIDGE}`, // Route to events daemon in target environment with environment prefix
+          crossEnvEndpoint,
           payload
         );
         
