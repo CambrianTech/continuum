@@ -8,6 +8,7 @@
 import { TransportBase } from '../../shared/TransportBase';
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import type { EventsInterface } from '../../../events';
 import { TRANSPORT_EVENTS } from '../../shared/TransportEvents';
 import type { TransportSendResult } from '@system/transports/shared';
 import type { 
@@ -142,7 +143,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
   /**
    * Set event system for transport events
    */
-  setEventSystem(eventSystem: any): void {
+  setEventSystem(eventSystem: EventsInterface): void {
     this.eventSystem = eventSystem;
   }
 
@@ -172,13 +173,14 @@ export abstract class WebSocketTransportClient extends TransportBase {
    * Handle session handshake message - can be overridden by implementations
    */
   protected handleSessionHandshake(message: any): void {
-    console.log(`🤝 ${this.name}: Received session handshake with sessionId: ${message.payload?.sessionId}`);
+    const payload = message.payload as Record<string, unknown> | undefined;
+    console.log(`🤝 ${this.name}: Received session handshake with sessionId: ${payload?.sessionId}`);
   }
 
   /**
    * Send message through WebSocket with error handling - handles both regular messages and handshakes
    */
-  protected sendWebSocketMessage(socket: JTAGUniversalWebSocket, message: JTAGMessage | any): void {
+  protected sendWebSocketMessage(socket: JTAGUniversalWebSocket, message: any): void {
     if (!socket || socket.readyState !== JTAG_WEBSOCKET_READY_STATE.OPEN) {
       throw new Error(`WebSocket not ready (readyState: ${socket?.readyState})`);
     }
@@ -190,7 +192,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
   /**
    * Parse incoming WebSocket message with cross-platform compatibility
    */
-  protected parseWebSocketMessage(data: any): any {
+  protected parseWebSocketMessage(data: unknown): any {
     try {
       let messageStr: string;
       

@@ -6,6 +6,7 @@
  */
 
 import { WidgetBase } from '../shared/WidgetBase';
+import type { ChatMessageEventData } from '../../daemons/chat-daemon/shared/ChatTypes';
 
 export class ChatWidget extends WidgetBase {
   private messages: Array<{id: string, content: string, type: 'user' | 'assistant', timestamp: Date}> = [];
@@ -189,8 +190,9 @@ export class ChatWidget extends WidgetBase {
    */
   private setupChatEventListeners() {
     // Only listen for incoming messages (not send events to avoid loops)
-    document.addEventListener('chat:message-received', (event: any) => {
-      const { message } = event.detail;
+    document.addEventListener('chat:message-received', (event: Event) => {
+      const customEvent = event as CustomEvent<ChatMessageEventData>;
+      const { message } = customEvent.detail;
       this.addMessage(message.content, 'assistant');
       console.log('💬 ChatWidget: Received message from ChatDaemon');
     });

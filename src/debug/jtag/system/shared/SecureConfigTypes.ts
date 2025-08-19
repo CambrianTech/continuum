@@ -109,16 +109,26 @@ export function buildClientUrl(config: { client: Pick<ClientConfig, 'protocol' |
 }
 
 // Security validation
-export function validateServerConfig(config: any): config is JTAGServerConfiguration {
-  return config && 
-         typeof config.server?.port === 'number' &&
-         typeof config.server?.host === 'string' &&
-         ['ws', 'wss'].includes(config.server?.protocol);
+export function validateServerConfig(config: unknown): config is JTAGServerConfiguration {
+  return !!(
+    config &&
+    typeof config === 'object' &&
+    config !== null &&
+    'server' in config &&
+    typeof (config as any).server?.port === 'number' &&
+    typeof (config as any).server?.host === 'string' &&
+    ['ws', 'wss'].includes((config as any).server?.protocol)
+  );
 }
 
-export function validateClientConfig(config: any): config is JTAGClientConfiguration {
-  return config && 
-         typeof config.client?.ui_port === 'number' &&
-         typeof config.client?.host === 'string' &&
-         ['http', 'https'].includes(config.client?.protocol);
+export function validateClientConfig(config: unknown): config is JTAGClientConfiguration {
+  return !!(
+    config &&
+    typeof config === 'object' &&
+    config !== null &&
+    'client' in config &&
+    typeof (config as any).client?.ui_port === 'number' &&
+    typeof (config as any).client?.host === 'string' &&
+    ['http', 'https'].includes((config as any).client?.protocol)
+  );
 }
