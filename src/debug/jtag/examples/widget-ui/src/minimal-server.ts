@@ -10,9 +10,9 @@ import * as fs from 'fs';
 import { jtag, JTAGSystem } from '@continuum/jtag';
 // Process registry functionality now handled via modular command system
 
-// Read port from package.json config
+// Read port from package.json config  
 const packageJson = require('../package.json');
-const PORT = packageJson.config?.port || 9002;
+const PORT = packageJson.config?.port || 9003;
 
 class MinimalServer {
   private server: http.Server;
@@ -156,7 +156,7 @@ class MinimalServer {
   }
 
   async start(): Promise<void> {
-    console.log('🚀 Starting test-bench demo server...');
+    console.log('🚀 Starting widget-ui demo server...');
     
     // Process registration will be handled automatically by the JTAG system
     console.log('🏷️  Process registration will be handled by JTAG system startup...');
@@ -168,8 +168,8 @@ class MinimalServer {
     
     // Test console logging to verify ConsoleDaemon works
     console.log('🧪 Testing console logging through ConsoleDaemon...');
-    console.warn('This is a test warning from test-bench');
-    console.error('This is a test error from test-bench');
+    console.warn('This is a test warning from widget-ui');
+    console.error('This is a test error from widget-ui');
     
     return new Promise((resolve, reject) => {
       this.server.on('error', reject);
