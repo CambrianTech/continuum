@@ -45,7 +45,22 @@ SIMPLE_MODE=false
 echo "🚀 CATEGORIZED TEST SUITE - Profile: $PROFILE"
 echo "═══════════════════════════════════════════════════════════════════════════════"
 
-# Handle browser deployment if needed
+# Handle build requirements if needed
+if [ "$JTAG_FORCE_BUILD" = "true" ]; then
+    echo "🔨 FORCED BUILD: Source code changes detected - rebuilding first..."
+    echo "📋 Running: npm run smart-build (intelligent incremental build)"
+    
+    if npm run smart-build; then
+        echo "✅ Smart build completed successfully"
+    else
+        echo "❌ FATAL: Smart build failed"
+        echo "🔍 Check build logs for TypeScript/generation errors"
+        exit 1
+    fi
+    echo ""
+fi
+
+# Handle browser deployment if needed  
 if [ "$DEPLOY_BROWSER" = "true" ]; then
     echo "🌐 BROWSER DEPLOYMENT: Required for profile '$PROFILE'"
     echo "🔍 Checking if system is ready..."

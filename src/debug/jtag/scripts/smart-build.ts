@@ -166,7 +166,7 @@ function smartClean(rebuildsNeeded: BuildCheck[]): void {
   }
 }
 
-function smartBuild(): void {
+async function smartBuild(): Promise<void> {
   console.log('🧠 Smart build analysis...\n');
   
   const checks: BuildCheck[] = [
@@ -211,10 +211,20 @@ function smartBuild(): void {
   }
   
   console.log('\n🎉 Smart build complete!');
+  
+  // Store version information for build detection
+  try {
+    const { BuildVersionDetector } = await import('../utils/BuildVersionDetector');
+    const detector = new BuildVersionDetector();
+    const sourceHash = await detector.calculateSourceHash();
+    await detector.storeSystemVersion(sourceHash);
+  } catch (error) {
+    console.warn('⚠️ Failed to store build version:', error.message);
+  }
 }
 
 if (require.main === module) {
-  smartBuild();
+  smartBuild().catch(console.error);
 }
 
 export { smartBuild };

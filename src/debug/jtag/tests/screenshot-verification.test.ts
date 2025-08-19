@@ -9,6 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { withHangBreaker } from '../utils/AggressiveHangBreaker';
 
 interface ScreenshotVerificationResult {
   success: boolean;
@@ -176,8 +177,12 @@ async function main() {
 }
 
 if (require.main === module) {
-  main().catch(error => {
-    console.error('💥 Screenshot verification test crashed:', error);
-    process.exit(1);
-  });
+  withHangBreaker('Screenshot Verification Test', main, 30000) // 30 second limit
+    .then(() => {
+      // Success handled in main()
+    })
+    .catch(error => {
+      console.error('💥 Screenshot verification test crashed:', error.message);
+      process.exit(1);
+    });
 }
