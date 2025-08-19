@@ -1,10 +1,10 @@
 {
-  "name": "@continuum/jtag-test-bench",
+  "name": "@continuum/jtag-widget-ui",
   "version": "1.0.464",
-  "description": "JTAG Test Bench - Standalone Example App",
+  "description": "JTAG Widget UI - Standalone Widget Development Environment",
   "main": "dist/index.js",
   "config": {
-    "port": 9002
+    "port": 9003
   },
   "scripts": {
     "start": "npm run build && npm run dev",
@@ -19,7 +19,7 @@
     "dev": "npx tsx src/minimal-server.ts"
   },
   "dependencies": {
-    "@continuum/jtag": "file:../../continuum-jtag-1.0.909.tgz"
+    "@continuum/jtag": "file:../../continuum-jtag-1.0.1052.tgz"
   },
   "devDependencies": {
     "esbuild": "^0.19.12",

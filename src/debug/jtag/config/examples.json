@@ -1,0 +1,59 @@
+{
+  "active_example": "test-bench",
+  "examples": {
+    "test-bench": {
+      "name": "JTAG Test Bench",
+      "description": "Full-featured testing environment with comprehensive UI",
+      "ports": {
+        "http_server": 9002,
+        "websocket_server": 9001
+      },
+      "paths": {
+        "directory": "examples/test-bench",
+        "html_file": "public/demo.html",
+        "build_output": "dist"
+      },
+      "features": {
+        "browser_automation": true,
+        "screenshot_testing": true,
+        "chat_integration": true,
+        "widget_testing": false,
+        "auto_launch_browser": true
+      }
+    },
+    "widget-ui": {
+      "name": "JTAG Widget Development UI",
+      "description": "Focused widget development environment",
+      "ports": {
+        "http_server": 9003,
+        "websocket_server": 9001
+      },
+      "paths": {
+        "directory": "examples/widget-ui",
+        "html_file": "index.html",
+        "build_output": "dist"
+      },
+      "features": {
+        "browser_automation": false,
+        "screenshot_testing": false,
+        "chat_integration": true,
+        "widget_testing": true,
+        "auto_launch_browser": true
+      }
+    }
+  },
+  "common": {
+    "websocket_connection": {
+      "host": "localhost",
+      "protocol": "ws",
+      "reconnect_attempts": 3,
+      "timeout_ms": 5000
+    },
+    "build_settings": {
+      "target": "ES2020",
+      "format": "esm",
+      "minify": false,
+      "sourcemap": true
+    }
+  }
+}
