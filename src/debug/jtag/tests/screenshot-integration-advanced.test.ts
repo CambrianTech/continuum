@@ -21,6 +21,8 @@ import { TestDisplayRenderer } from '../system/core/cli/TestDisplayRenderer';
 import type { TestSummary, TestFailure } from '../system/core/types/TestSummaryTypes';
 import { AgentDetector, detectAgent, getOutputFormat, getAgentName } from '../system/core/detection/AgentDetector';
 import { autoSpawnTest } from '../utils/TestAutoSpawn';
+import { withHangBreaker } from '../utils/AggressiveHangBreaker';
+import { withImmediateKill } from '../utils/ImmediateHangKiller';
 
 interface ScreenshotTestResult {
   testName: string;
@@ -450,5 +452,12 @@ async function runAdvancedScreenshotTests(): Promise<void> {
   process.exit(passCount === testCount ? 0 : 1);
 }
 
-// Run the advanced screenshot integration tests with auto-spawn capability
-autoSpawnTest(runAdvancedScreenshotTests);
+// Run with IMMEDIATE HANG KILLER - GUARANTEES NO HANGS
+withImmediateKill('Screenshot Integration Advanced', runAdvancedScreenshotTests, 30000) // 30 second FORCE KILL
+  .then(() => {
+    console.log('✅ Screenshot integration tests completed');
+  })
+  .catch(error => {
+    console.error('❌ Screenshot integration tests failed:', error.message);
+    process.exit(1);
+  });

@@ -12,6 +12,9 @@
 import { jtag } from '../server-index';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
+import { withAutoSpawn } from '../utils/TestAutoSpawn';
+import { withHangBreaker } from '../utils/AggressiveHangBreaker';
+import { withImmediateKill } from '../utils/ImmediateHangKiller';
 
 async function testScreenshotTransport() {
   console.log('🧪 Step 5: Testing Screenshot Transport Abstraction\n');
@@ -167,11 +170,13 @@ async function testScreenshotTransport() {
   }
 }
 
-// Run the test
-testScreenshotTransport().then(success => {
-  console.log('\n' + (success ? '🎉 Screenshot transport test PASSED' : '❌ Screenshot transport test FAILED'));
-  process.exit(success ? 0 : 1);
-}).catch(error => {
-  console.error('💥 Screenshot transport test crashed:', error);
-  process.exit(1);
-});
+// Run with IMMEDIATE HANG KILLER - GUARANTEES NO HANGS
+withImmediateKill('Screenshot Transport Test', testScreenshotTransport, 25000) // 25 second FORCE KILL
+  .then(success => {
+    console.log('\n' + (success ? '🎉 Screenshot transport test PASSED' : '❌ Screenshot transport test FAILED'));
+    process.exit(success ? 0 : 1);
+  })
+  .catch(error => {
+    console.error('💥 Screenshot transport test failed:', error.message);
+    process.exit(1);
+  });
