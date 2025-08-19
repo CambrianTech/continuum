@@ -119,7 +119,7 @@ export class EventTestUtils {
   /**
    * Validates event data structure
    */
-  static validateChatEvent(eventData: any): eventData is ChatMessageEventData {
+  static validateChatEvent(eventData: unknown): eventData is ChatMessageEventData {
     return !!(
       eventData &&
       typeof eventData === 'object' &&

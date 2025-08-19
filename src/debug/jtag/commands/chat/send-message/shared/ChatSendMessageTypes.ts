@@ -21,9 +21,8 @@ export interface ChatSendMessageParams extends CommandParams {
  * Result of sending a chat message
  */
 export interface ChatSendMessageResult extends CommandResult {
-  readonly success: boolean;
+  readonly success?: boolean;
   readonly messageId?: UUID;
-  readonly timestamp?: string;
   readonly message?: {
     messageId: UUID;
     roomId: UUID;
@@ -42,9 +41,9 @@ export function createChatSendMessageResult(
   result: Partial<ChatSendMessageResult>
 ): ChatSendMessageResult {
   return {
-    success: true,
     context: params.context,
     sessionId: params.sessionId,
+    success: true,
     ...result
   };
 }
@@ -57,9 +56,9 @@ export function createChatSendMessageError(
   error: string
 ): ChatSendMessageResult {
   return {
-    success: false,
     context: params.context,
     sessionId: params.sessionId,
+    success: false,
     error
   };
 }

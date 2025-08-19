@@ -26,6 +26,7 @@
  */
 
 import { type UUID } from './CrossPlatformUUID';
+import type { BaseResponsePayload } from './ResponseTypes';
 
 /**
  * JTAG Environment Constants
@@ -404,6 +405,7 @@ export interface CommandParams extends JTAGPayload {
  */
 export interface CommandResult extends JTAGPayload {
   // Base command results - specific commands add specific fields
+  // Note: Some commands extend BaseResponsePayload for standardized success/timestamp
 }
 
 /**

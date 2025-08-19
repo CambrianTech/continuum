@@ -6,7 +6,8 @@
  */
 
 import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
-import type { JTAGMessage, JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGMessage, JTAGContext, CommandParams, CommandResult } from '../../../system/core/types/JTAGTypes';
+import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 import { JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
@@ -21,7 +22,7 @@ export abstract class WidgetDaemon extends DaemonBase {
   /**
    * Execute command from widget - routes through JTAG CommandDaemon
    */
-  async executeCommand(command: string, params: any = {}): Promise<any> {
+  async executeCommand(command: string, params: Omit<CommandParams, 'context' | 'sessionId'> = {}): Promise<CommandResult> {
     try {
       // Create command payload with session ID
       const payload = {
@@ -40,7 +41,14 @@ export abstract class WidgetDaemon extends DaemonBase {
       );
 
       // Route through JTAG router to CommandDaemon
-      return await this.router.postMessage(message);
+      const result = await this.router.postMessage(message);
+      
+      // Ensure the result has the required CommandResult fields
+      return {
+        context: this.context,
+        sessionId: SYSTEM_SCOPES.SYSTEM,
+        ...result
+      } as CommandResult;
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -48,8 +56,10 @@ export abstract class WidgetDaemon extends DaemonBase {
       
       return {
         success: false,
-        error: errorMessage
-      };
+        error: errorMessage,
+        context: this.context,
+        sessionId: SYSTEM_SCOPES.SYSTEM
+      } as CommandResult;
     }
   }
 
@@ -63,8 +73,13 @@ export abstract class WidgetDaemon extends DaemonBase {
   /**
    * Handle incoming JTAG messages (minimal - widgets don't receive messages)
    */
-  async handleMessage(message: JTAGMessage): Promise<any> {
+  async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     console.log(`WidgetDaemon: Received message to ${message.endpoint}`);
-    return { success: true, message: 'WidgetDaemon received message' };
+    return {
+      success: true,
+      timestamp: new Date().toISOString(),
+      context: this.context,
+      sessionId: SYSTEM_SCOPES.SYSTEM
+    };
   }
 }

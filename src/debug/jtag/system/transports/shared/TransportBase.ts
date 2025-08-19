@@ -22,12 +22,12 @@ export interface ITransportAdapter {
   // Universal lifecycle - matches existing JTAGTransport interface
   connect?(url?: string): Promise<void>;   // Optional, existing transports use different connection patterns
   disconnect(): Promise<void>;
-  send(message: any): Promise<any>;
+  send(message: JTAGMessage): Promise<TransportSendResult>;
   isConnected(): boolean;
   
   // Optional capabilities
-  setMessageHandler?(handler: (message: any) => void): void;
-  getHealth?(): any;
+  setMessageHandler?(handler: (message: JTAGMessage) => void): void;
+  getHealth?(): Record<string, unknown>;
 }
 
 /**

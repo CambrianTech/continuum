@@ -4,6 +4,18 @@
  * Follows the same pattern as DaemonBase and CommandBase for consistent auto-discovery.
  */
 
+import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
+
+// Extend Window interface to include widgetDaemon
+declare global {
+  interface Window {
+    widgetDaemon?: {
+      executeCommand(command: string, params: Omit<CommandParams, 'context' | 'sessionId'>): Promise<CommandResult>;
+      isConnected(): boolean;
+    };
+  }
+}
+
 /**
  * Widget Entry - Auto-discovered by structure generator
  */
@@ -45,8 +57,8 @@ export abstract class WidgetBase extends HTMLElement {
   /**
    * Execute command via WidgetDaemon
    */
-  protected async executeCommand(command: string, params: any = {}): Promise<any> {
-    const widgetDaemon = (window as any).widgetDaemon;
+  protected async executeCommand(command: string, params: Omit<CommandParams, 'context' | 'sessionId'> = {}): Promise<CommandResult> {
+    const widgetDaemon = window.widgetDaemon;
     if (!widgetDaemon) {
       throw new Error('WidgetDaemon not available - ensure JTAG system is running');
     }

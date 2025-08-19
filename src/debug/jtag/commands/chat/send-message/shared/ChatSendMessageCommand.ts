@@ -57,7 +57,6 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
 
       return createChatSendMessageResult(chatParams, {
         messageId,
-        timestamp,
         message: {
           messageId,
           roomId: chatParams.roomId,

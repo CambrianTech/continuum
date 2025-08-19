@@ -316,7 +316,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-19T04:18:18.390Z",
+    "timestamp": "2025-08-19T04:54:22.735Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 28,
     "note": "Generated from clean essential path mappings only"
