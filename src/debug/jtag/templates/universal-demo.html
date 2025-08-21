@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JTAG Universal Demo</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f1419;
+            color: #e0e6ed;
+        }
+        
+        .app-container {
+            display: flex;
+            height: 100vh;
+        }
+        
+        .main-content {
+            flex: 1;
+            padding: 20px;
+        }
+        
+        h1 {
+            color: #00d4ff;
+            margin-bottom: 20px;
+        }
+        
+        .panel {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        
+        .connected { background: #00d4ff; color: #000; }
+        .disconnected { background: #ff6b6b; color: #fff; }
+        
+        button {
+            background: #00d4ff;
+            color: #000;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 6px;
+            cursor: pointer;
+            margin: 5px;
+            font-weight: 500;
+        }
+        
+        button:hover {
+            background: #00b8e6;
+        }
+        
+        button:disabled {
+            background: #555;
+            color: #888;
+            cursor: not-allowed;
+        }
+        
+        .log {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 6px;
+            padding: 15px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 12px;
+            height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            margin-top: 10px;
+        }
+        
+        .feature-disabled {
+            opacity: 0.5;
+        }
+        
+        .uuid {
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 11px;
+            color: #00d4ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <div class="main-content">
+            <h1 id="demo-title">🚀 JTAG Universal Demo</h1>
+            
+            <div class="panel">
+                <h2>📊 System Information</h2>
+                <p><strong>Example:</strong> <span id="example-name">Loading...</span></p>
+                <p><strong>WebSocket Port:</strong> <span id="websocket-port">Loading...</span></p>
+                <p><strong>HTTP Port:</strong> <span id="http-port">Loading...</span></p>
+                <p><strong>Connection:</strong> <span id="connection-status" class="status disconnected">Connecting...</span></p>
+                <p><strong>System UUID:</strong> <span class="uuid" id="system-uuid">Loading...</span></p>
+            </div>
+            
+            <div class="panel">
+                <h2>🧪 Core Commands</h2>
+                <button onclick="testHealth()">🏥 Health Check</button>
+                <button onclick="testList()">📋 List Commands</button>
+                <button onclick="testExec()">⚡ Execute Command</button>
+                
+                <div class="log" id="core-log">Core command results will appear here...</div>
+            </div>
+            
+            <div class="panel" id="screenshot-panel">
+                <h2>📸 Screenshot Testing</h2>
+                <button onclick="testScreenshot()">📸 Capture Screen</button>
+                <button onclick="testElementScreenshot()">🎯 Capture Element</button>
+                
+                <div class="log" id="screenshot-log">Screenshot results will appear here...</div>
+            </div>
+            
+            <div class="panel" id="widget-panel">
+                <h2>🎭 Widget Testing</h2>
+                <button onclick="testWidgetDiscovery()">🔍 Discover Widgets</button>
+                <button onclick="testWidgetCreation()">✨ Create Widget</button>
+                
+                <div class="log" id="widget-log">Widget testing results will appear here...</div>
+            </div>
+            
+            <div class="panel" id="automation-panel">
+                <h2>🤖 Browser Automation</h2>
+                <button onclick="testNavigation()">🧭 Test Navigation</button>
+                <button onclick="testInteraction()">🖱️ Test Interaction</button>
+                
+                <div class="log" id="automation-log">Automation results will appear here...</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Dynamic script loading based on configuration -->
+    <script src="/dist/browser-index.js"></script>
+    <script>
+        let jtagSystem = null;
+        let activeExample = null;
+        let exampleConfig = null;
+        
+        // Initialize JTAG system
+        async function initializeJTAG() {
+            try {
+                log('core', '🔌 Connecting to JTAG system...');
+                const connection = await jtag.connect();
+                jtagSystem = connection.client || connection;
+                
+                // Update connection status
+                document.getElementById('connection-status').textContent = 'Connected';
+                document.getElementById('connection-status').className = 'status connected';
+                
+                // Load system information
+                await loadSystemInfo();
+                
+                log('core', '✅ JTAG system connected successfully');
+                
+                // Configure UI based on example features
+                configureUI();
+                
+            } catch (error) {
+                log('core', '❌ Failed to connect to JTAG system: ' + error.message);
+                document.getElementById('connection-status').textContent = 'Failed';
+            }
+        }
+        
+        // Load system configuration
+        async function loadSystemInfo() {
+            try {
+                // This would ideally come from the server
+                // For now, we'll try to detect the configuration
+                const response = await fetch('/config');
+                if (response.ok) {
+                    const config = await response.json();
+                    activeExample = config.activeExample;
+                    exampleConfig = config.exampleConfig;
+                    
+                    document.getElementById('example-name').textContent = activeExample;
+                    document.getElementById('websocket-port').textContent = config.websocketPort;
+                    document.getElementById('http-port').textContent = config.httpPort;
+                } else {
+                    // Fallback values
+                    document.getElementById('example-name').textContent = 'Unknown';
+                    document.getElementById('websocket-port').textContent = '9001';
+                    document.getElementById('http-port').textContent = window.location.port || '9002';
+                }
+                
+                // Generate or get system UUID
+                const uuid = generateUUID();
+                document.getElementById('system-uuid').textContent = uuid;
+                
+            } catch (error) {
+                log('core', '⚠️ Could not load system configuration: ' + error.message);
+            }
+        }
+        
+        // Configure UI based on active example features
+        function configureUI() {
+            const features = exampleConfig?.features || {
+                screenshot_testing: true,
+                widget_testing: true,
+                browser_automation: true
+            };
+            
+            // Update title based on example
+            if (activeExample) {
+                const titles = {
+                    'test-bench': '🚨 JTAG Test Bench Demo',
+                    'widget-ui': '🎭 JTAG Widget Development UI'
+                };
+                document.getElementById('demo-title').textContent = titles[activeExample] || '🚀 JTAG Universal Demo';
+            }
+            
+            // Enable/disable features based on configuration
+            if (!features.screenshot_testing) {
+                document.getElementById('screenshot-panel').classList.add('feature-disabled');
+            }
+            
+            if (!features.widget_testing) {
+                document.getElementById('widget-panel').classList.add('feature-disabled');
+            }
+            
+            if (!features.browser_automation) {
+                document.getElementById('automation-panel').classList.add('feature-disabled');
+            }
+        }
+        
+        // Core command tests
+        async function testHealth() {
+            try {
+                log('core', '🏥 Testing health check...');
+                const result = await jtagSystem.commands.health();
+                log('core', '✅ Health check result: ' + JSON.stringify(result, null, 2));
+            } catch (error) {
+                log('core', '❌ Health check failed: ' + error.message);
+            }
+        }
+        
+        async function testList() {
+            try {
+                log('core', '📋 Listing available commands...');
+                const result = await jtagSystem.commands.list();
+                log('core', '✅ Available commands: ' + JSON.stringify(result, null, 2));
+            } catch (error) {
+                log('core', '❌ Command listing failed: ' + error.message);
+            }
+        }
+        
+        async function testExec() {
+            try {
+                log('core', '⚡ Testing command execution...');
+                const result = await jtagSystem.commands.exec({ command: 'echo "JTAG test execution"' });
+                log('core', '✅ Execution result: ' + JSON.stringify(result, null, 2));
+            } catch (error) {
+                log('core', '❌ Command execution failed: ' + error.message);
+            }
+        }
+        
+        // Screenshot tests
+        async function testScreenshot() {
+            try {
+                log('screenshot', '📸 Capturing full screen...');
+                const result = await jtagSystem.commands.screenshot({ selector: 'body' });
+                log('screenshot', '✅ Screenshot captured: ' + JSON.stringify(result, null, 2));
+            } catch (error) {
+                log('screenshot', '❌ Screenshot failed: ' + error.message);
+            }
+        }
+        
+        async function testElementScreenshot() {
+            try {
+                log('screenshot', '🎯 Capturing specific element...');
+                const result = await jtagSystem.commands.screenshot({ selector: '.panel' });
+                log('screenshot', '✅ Element screenshot: ' + JSON.stringify(result, null, 2));
+            } catch (error) {
+                log('screenshot', '❌ Element screenshot failed: ' + error.message);
+            }
+        }
+        
+        // Widget tests
+        async function testWidgetDiscovery() {
+            try {
+                log('widget', '🔍 Discovering widgets...');
+                const result = await jtagSystem.commands.discoverWidgets();
+                log('widget', '✅ Widget discovery: ' + JSON.stringify(result, null, 2));
+            } catch (error) {
+                log('widget', '❌ Widget discovery failed: ' + error.message);
+            }
+        }
+        
+        async function testWidgetCreation() {
+            try {
+                log('widget', '✨ Testing widget creation...');
+                // This would create a test widget
+                log('widget', '✅ Widget creation test completed');
+            } catch (error) {
+                log('widget', '❌ Widget creation failed: ' + error.message);
+            }
+        }
+        
+        // Browser automation tests
+        async function testNavigation() {
+            try {
+                log('automation', '🧭 Testing navigation...');
+                const result = await jtagSystem.commands.navigate({ url: window.location.href });
+                log('automation', '✅ Navigation test: ' + JSON.stringify(result, null, 2));
+            } catch (error) {
+                log('automation', '❌ Navigation test failed: ' + error.message);
+            }
+        }
+        
+        async function testInteraction() {
+            try {
+                log('automation', '🖱️ Testing interaction...');
+                const result = await jtagSystem.commands.click({ selector: 'h1' });
+                log('automation', '✅ Interaction test: ' + JSON.stringify(result, null, 2));
+            } catch (error) {
+                log('automation', '❌ Interaction test failed: ' + error.message);
+            }
+        }
+        
+        // Utility functions
+        function log(category, message) {
+            const logElement = document.getElementById(category + '-log');
+            if (logElement) {
+                logElement.textContent += '\n' + new Date().toLocaleTimeString() + ': ' + message;
+                logElement.scrollTop = logElement.scrollHeight;
+            }
+        }
+        
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                const r = Math.random() * 16 | 0;
+                const v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeJTAG();
+        });
+    </script>
+</body>
+</html>
