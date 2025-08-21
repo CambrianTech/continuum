@@ -102,30 +102,54 @@ async function startServerProcess(): Promise<ServerProcess> {
 }
 
 async function waitForServerReady(signaler: SystemReadySignaler): Promise<boolean> {
-  console.log('⏳ Waiting for server to be ready...');
+  console.log('⏳ Waiting for COMPLETE server system to be ready...');
+  console.log('🔍 Checking: WebSocket server (9001) + HTTP server (9002) + Bootstrap');
   
   const maxAttempts = 30; // 30 attempts x 2s = 60s timeout
+  const requiredPorts = [9001, 9002]; // WebSocket + HTTP servers
   
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const signal = await signaler.generateReadySignal();
       
-      if (signal.bootstrapComplete && signal.commandCount > 0) {
-        console.log(`✅ Server is ready! (${signal.commandCount} commands, attempt ${attempt})`);
+      // Check all requirements
+      const hasBootstrap = signal.bootstrapComplete;
+      const hasCommands = signal.commandCount > 0;
+      const hasAllPorts = requiredPorts.every(port => 
+        signal.portsActive && signal.portsActive.includes(port)
+      );
+      const isHealthy = signal.systemHealth === 'healthy';
+      
+      console.log(`⏳ Attempt ${attempt}/${maxAttempts}:`);
+      console.log(`   Bootstrap: ${hasBootstrap ? '✅' : '❌'}`);
+      console.log(`   Commands: ${hasCommands ? '✅' : '❌'} (${signal.commandCount})`);
+      console.log(`   WebSocket (9001): ${signal.portsActive?.includes(9001) ? '✅' : '❌'}`);
+      console.log(`   HTTP (9002): ${signal.portsActive?.includes(9002) ? '✅' : '❌'}`);
+      console.log(`   Health: ${signal.systemHealth}`);
+      
+      if (hasBootstrap && hasCommands && hasAllPorts && isHealthy) {
+        console.log(`✅ COMPLETE server system ready! (${signal.commandCount} commands, ${signal.portsActive?.length} ports active)`);
+        console.log(`🌐 Active ports: ${signal.portsActive?.join(', ')}`);
         return true;
       }
       
-      console.log(`⏳ Attempt ${attempt}/${maxAttempts}: bootstrap=${signal.bootstrapComplete}, commands=${signal.commandCount}`);
+      // Show what's missing
+      if (!hasAllPorts) {
+        const activePorts = signal.portsActive || [];
+        const missingPorts = requiredPorts.filter(port => !activePorts.includes(port));
+        console.log(`   ⚠️ Missing critical ports: ${missingPorts.join(', ')}`);
+      }
       
     } catch (error) {
-      console.log(`⏳ Attempt ${attempt}/${maxAttempts}: Server not responding yet`);
+      console.log(`⏳ Attempt ${attempt}/${maxAttempts}: Server system not responding yet`);
     }
     
     // Wait 2 seconds before next attempt
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
   
-  console.error('❌ Timeout waiting for server to be ready');
+  console.error('❌ Timeout waiting for COMPLETE server system to be ready');
+  console.error('🔍 System needs: Bootstrap ✓ + Commands ✓ + WebSocket(9001) ✓ + HTTP(9002) ✓ + Healthy ✓');
   return false;
 }
 
