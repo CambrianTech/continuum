@@ -36,7 +36,9 @@ class MinimalServer {
       console.log(`📥 ${method} ${url}`);
 
       if (url === '/') {
-        this.serveFile(res, 'public/demo.html', 'text/html');
+        this.serveUniversalDemo(res);
+      } else if (url === '/config') {
+        this.serveConfiguration(res);
       } else if (url === '/demo.css') {
         this.serveFile(res, 'public/demo.css', 'text/css');
       } else if (url.startsWith('/dist/')) {
@@ -91,6 +93,87 @@ class MinimalServer {
     } catch (error) {
       console.error(`❌ Failed to serve ${filename}:`, error);
       this.serve404(res);
+    }
+  }
+
+  /**
+   * Serve universal demo HTML that adapts to any example configuration
+   */
+  private serveUniversalDemo(res: http.ServerResponse): void {
+    try {
+      const templatePath = path.join(__dirname, '../../templates/universal-demo.html');
+      
+      if (fs.existsSync(templatePath)) {
+        const content = fs.readFileSync(templatePath, 'utf8');
+        res.writeHead(200, { 
+          'Content-Type': 'text/html',
+          'Cache-Control': 'no-cache, no-store, must-revalidate'
+        });
+        res.end(content);
+      } else {
+        // Fallback to local demo.html or index.html
+        if (fs.existsSync('public/demo.html')) {
+          this.serveFile(res, 'public/demo.html', 'text/html');
+        } else if (fs.existsSync('index.html')) {
+          this.serveFile(res, 'index.html', 'text/html');
+        } else {
+          this.serve404(res);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Failed to serve universal demo:', error.message);
+      this.serve404(res);
+    }
+  }
+
+  /**
+   * Serve dynamic configuration based on examples.json
+   */
+  private serveConfiguration(res: http.ServerResponse): void {
+    try {
+      // Import configuration functions
+      const { getActiveExampleName, getActivePorts } = require('../../system/shared/ExampleConfig');
+      
+      const activeExample = getActiveExampleName();
+      const activePorts = getActivePorts();
+      
+      const config = {
+        activeExample,
+        websocketPort: activePorts.websocket_server,
+        httpPort: activePorts.http_server,
+        exampleConfig: {
+          features: {
+            screenshot_testing: activeExample === 'test-bench',
+            widget_testing: activeExample === 'widget-ui', 
+            browser_automation: activeExample === 'test-bench'
+          }
+        }
+      };
+      
+      res.writeHead(200, { 
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
+      });
+      res.end(JSON.stringify(config, null, 2));
+      
+    } catch (error) {
+      console.error('❌ Failed to serve configuration:', error.message);
+      // Return fallback configuration
+      const fallbackConfig = {
+        activeExample: 'unknown',
+        websocketPort: 9001,
+        httpPort: PORT,
+        exampleConfig: {
+          features: {
+            screenshot_testing: true,
+            widget_testing: true,
+            browser_automation: true
+          }
+        }
+      };
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(fallbackConfig, null, 2));
     }
   }
 
