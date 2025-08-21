@@ -34,7 +34,7 @@ async function verifyScreenshotEndToEnd(): Promise<ScreenshotVerificationResult>
   
   try {
     // 1. Find current user session directory
-    const currentUserPath = 'examples/test-bench/.continuum/jtag/currentUser';
+    const currentUserPath = '.continuum/jtag/currentUser';
     
     let sessionPath: string;
     try {
@@ -51,7 +51,7 @@ async function verifyScreenshotEndToEnd(): Promise<ScreenshotVerificationResult>
       }
     } catch (error) {
       // Fallback: find latest session
-      const sessionsDir = 'examples/test-bench/.continuum/jtag/sessions/user';
+      const sessionsDir = '.continuum/jtag/sessions/user';
       const sessions = fs.readdirSync(sessionsDir);
       if (sessions.length === 0) {
         throw new Error('No user sessions found');

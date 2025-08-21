@@ -62,7 +62,10 @@ class ExampleConfigManager {
         }
 
         this.configCache = config;
-        console.log(`📋 Examples configuration loaded (active: ${config.active_example})`);
+        // Only log in verbose mode to prevent script path parsing issues
+        if (process.env.JTAG_VERBOSE) {
+          console.log(`📋 Examples configuration loaded (active: ${config.active_example})`);
+        }
       } catch (error) {
         throw new Error(`Failed to load examples configuration: ${error}`);
       }

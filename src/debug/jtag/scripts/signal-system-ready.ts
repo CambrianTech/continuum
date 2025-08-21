@@ -229,7 +229,7 @@ class SystemReadySignaler {
 
   private async checkBootstrap(): Promise<boolean> {
     try {
-      const logPath = 'examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log';
+      const logPath = '.continuum/jtag/currentUser/logs/browser-console-log.log';
       // Use fixed string pattern to avoid shell escaping issues
       const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" ${logPath} | grep "commands" 2>/dev/null || echo ""`);
       return stdout.trim().length > 0;
@@ -240,7 +240,7 @@ class SystemReadySignaler {
 
   private async countCommands(): Promise<number> {
     try {
-      const logPath = 'examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log';
+      const logPath = '.continuum/jtag/currentUser/logs/browser-console-log.log';
       // Get all bootstrap messages and take the LAST one (most recent)
       const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" ${logPath} | grep "commands" 2>/dev/null || echo ""`);
       
@@ -316,7 +316,7 @@ class SystemReadySignaler {
       }
       
       // Check server console logs for runtime errors
-      const serverLog = 'examples/test-bench/.continuum/jtag/sessions/system/*/logs/server-console-log.log';
+      const serverLog = '.continuum/jtag/sessions/system/*/logs/server-console-log.log';
       const { stdout: serverErrors } = await execAsync(`tail -50 ${serverLog} 2>/dev/null | grep -i "error" | tail -5 || echo ""`);
       
       if (serverErrors.trim()) {
@@ -348,7 +348,7 @@ class SystemReadySignaler {
       // CRITICAL: Check server console errors for daemon creation failures
       if (!bootstrapComplete && commandCount === 0) {
         // Check server console error logs for daemon creation failures
-        const serverErrorLog = 'examples/test-bench/.continuum/jtag/system/logs/server-console-error.log';
+        const serverErrorLog = '.continuum/jtag/system/logs/server-console-error.log';
         const { stdout: daemonErrors } = await execAsync(`tail -20 ${serverErrorLog} 2>/dev/null | grep "Failed to create.*daemon\\|Unknown storage adapter type" | tail -3 || echo ""`);
         
         if (daemonErrors.trim()) {

@@ -3,50 +3,42 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JTAG End-to-End Demo</title>
+    <title>⚡ Continuum Widget UI</title>
     <link rel="stylesheet" href="/demo.css">
 </head>
 <body>
-    <h1>🚨 JTAG End-to-End Demo</h1>
-    
-    <div class="container">
-        <div class="panel server-panel">
-            <h2>🖥️ Server-Side JTAG</h2>
-            <p><strong>Server UUID:</strong> <span class="uuid" id="server-uuid">Loading...</span></p>
-            <p><strong>JTAG Port:</strong> <span id="jtag-port">9001</span></p>
-            <p><strong>Status:</strong> <span class="status connected">Running</span></p>
-            
-            <button onclick="testServerLogging()">Test Server Logging</button>
-            <button onclick="testServerExec()">Test Server Exec</button>
-            <button onclick="testServerScreenshot()">Test Server Screenshot</button>
-            
-            <div id="server-log" class="log">Server logs will appear here...</div>
-        </div>
+    <div class="cyberpunk-container">
+        <header class="cyber-header">
+            <h1 class="cyber-title">⚡ Continuum Widget UI</h1>
+            <div class="status-bar">
+                <span class="status-indicator">Status:</span>
+                <span id="connection-status" class="status disconnected">Initializing...</span>
+            </div>
+        </header>
         
-        <div class="panel browser-panel">
-            <h2>🌐 Browser-Side JTAG</h2>
-            <p><strong>Browser UUID:</strong> <span class="uuid" id="browser-uuid">Loading...</span></p>
-            <p><strong>Connection:</strong> <span id="connection-status" class="status disconnected">Connecting...</span></p>
+        <main class="widget-layout">
+            <!-- Screenshot Widget -->
+            <section class="widget-panel screenshot-widget">
+                <div class="widget-header">
+                    <h2 class="widget-title">📸 Screenshot Widget</h2>
+                </div>
+                <div class="widget-controls">
+                    <button class="cyber-btn primary" onclick="takeScreenshot()">Capture Screen</button>
+                    <button class="cyber-btn secondary" onclick="clearWidgetLog()">Clear Log</button>
+                </div>
+                <div id="widget-log" class="widget-log">Screenshot widget ready...</div>
+            </section>
             
-            <button onclick="testBrowserLogging()">Test Browser Logging</button>
-            <button onclick="testBrowserExec()">Test Browser Exec</button>
-            <button onclick="testBrowserScreenshot()">Test Browser Screenshot</button>
-            
-            <div id="browser-log" class="log">Browser logs will appear here...</div>
-        </div>
-    </div>
-    
-    <div class="panel" style="margin-top: 20px;">
-        <h2>🔄 Cross-Context Communication</h2>
-        <button onclick="testCrossContext()">Test Browser ↔ Server Communication</button>
-        <button onclick="clearAllLogs()">Clear All Logs</button>
-        
-        <div id="cross-context-log" class="log">Cross-context test results will appear here...</div>
-    </div>
-
-    <div class="panel" style="margin-top: 20px;">
-        <h2>💬 Chat System Test</h2>
-        <chat-widget></chat-widget>
+            <!-- Chat Widget -->
+            <section class="widget-panel chat-widget">
+                <div class="widget-header">
+                    <h2 class="widget-title">💬 Chat Interface</h2>
+                </div>
+                <div class="chat-container">
+                    <chat-widget></chat-widget>
+                </div>
+            </section>
+        </main>
     </div>
 
     <!-- Load html2canvas for screenshot functionality -->

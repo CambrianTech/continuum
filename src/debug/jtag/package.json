@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1053",
+  "version": "1.0.1066",
   "description": "Production-grade universal debugging system. One import = console routing + WebSocket logging + screenshot capture. Zero config, works everywhere.",
   "config": {
     "port": 9001,
@@ -117,7 +117,7 @@
     "version:bump": "npm version patch --no-git-tag-version",
     "prepack": "npm run paths:clean && npx tsx scripts/create-import-map.ts",
     "pack": "npm run version:bump && npm pack",
-    "system:run": "cd examples/test-bench && npm start",
+    "system:run": "npx tsx scripts/launch-active-example.ts",
     "system:deploy": "npx tsx scripts/smart-deploy.ts",
     "system:start": "tsx scripts/launch-and-capture.ts --verbose",
     "system:start:quiet": "tsx scripts/launch-and-capture.ts",
@@ -144,15 +144,15 @@
     "logs:stop": "npx tsx scripts/log-dashboard.ts --stop",
     "logs:npm": "tail -f .continuum/jtag/system/logs/npm-start.log",
     "logs:npm:live": "timeout 30 cat /tmp/jtag-pipe || echo 'No output received'",
-    "logs:current": "tail -f examples/test-bench/.continuum/jtag/currentUser/logs/server.log",
+    "logs:current": "tail -f $(npx tsx scripts/get-active-example-logs.ts)",
     "test:tty": "tmux kill-session -t debug-npm 2>/dev/null; rm -f /tmp/debug-npm.log; tmux new-session -d -s debug-npm \"script -q /dev/null npm run clean\" \\; pipe-pane -o 'cat >> /tmp/debug-npm.log'",
     "system:debug": "echo '=== Tmux session state ===' && (tmux has-session -t jtag-test 2>/dev/null && echo 'Session running' && tmux capture-pane -t jtag-test -p || echo 'Session not running') && echo '' && echo '=== Log file ===' && tail -20 .continuum/jtag/system/logs/npm-start.log",
     "screenshot": "npx tsx scripts/screenshot.ts",
-    "test": "timeout 300 bash -c 'rm -rf examples/test-bench/.continuum/jtag/currentUser/logs/* 2>/dev/null || true && npm run test:compiler-check && npm run test:start-and-test' || (echo '❌ ERROR: npm test exceeded 300-second timeout - system may be hung' && echo '🔍 Check system logs: .continuum/jtag/system/logs/npm-start.log' && echo '🛠️  Try: npm run system:stop && npm run system:start' && exit 1)",
+    "test": "timeout 300 bash -c './scripts/safe-test-cleanup.sh && npm run test:compiler-check && npm run test:start-and-test' || (echo '❌ ERROR: npm test exceeded 300-second timeout - system may be hung' && echo '🔍 Check system logs: .continuum/jtag/system/logs/npm-start.log' && echo '🛠️  Try: npm run system:stop && npm run system:start' && exit 1)",
     "test:compiler-check": "echo '🔍 PRE-TEST: TypeScript Compilation Check...' && npx tsc --noEmit --project . && echo '✅ TypeScript compilation passed - proceeding with tests'",
     "test:compiler-error-detection": "npx tsx tests/compiler-error-detection.test.ts",
     "test:start-and-test": "npx tsx scripts/test-with-server.ts",
-    "test:verify-and-run": "echo '🔍 WAITING FOR SYSTEM BOOTSTRAP...' && npm run signal:wait && echo '🔍 VERIFYING SYSTEM BOOTSTRAP...' && grep 'Bootstrap complete' examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log | tail -1 && echo '✅ BOOTSTRAP VERIFIED - RUNNING TESTS' && npm run test:comprehensive",
+    "test:verify-and-run": "echo '🔍 WAITING FOR SYSTEM BOOTSTRAP...' && npm run signal:wait && echo '🔍 VERIFYING SYSTEM BOOTSTRAP...' && ACTIVE_LOG_DIR=$(npx tsx scripts/get-active-example-logs.ts | sed 's/server.log/browser-console-log.log/') && if [ -n \"$ACTIVE_LOG_DIR\" ] && [[ \"$ACTIVE_LOG_DIR\" == *\"examples/\"*\"/logs/\"* ]]; then grep 'Bootstrap complete' $ACTIVE_LOG_DIR | tail -1; else echo \"SAFETY: Invalid log path: $ACTIVE_LOG_DIR\"; exit 1; fi && echo '✅ BOOTSTRAP VERIFIED - RUNNING TESTS' && npm run test:comprehensive",
     "test:comprehensive": "./scripts/run-categorized-tests.sh comprehensive",
     "test:simple": "echo '🚀 SIMPLE TEST SUITE' && npx tsx tests/bootstrap-comprehensive.test.ts",
     "test:precommit": "npx tsx scripts/test-profiles.ts pre-commit",
@@ -316,7 +316,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-19T16:12:47.154Z",
+    "timestamp": "2025-08-21T21:03:49.323Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 28,
     "note": "Generated from clean essential path mappings only"
