@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { SystemReadySignaler } from './signal-system-ready';
+import { getActivePorts } from '../system/shared/ExampleConfig';
 
 // Strong typing for server management
 interface ServerProcess {
@@ -102,9 +103,22 @@ async function startServerProcess(): Promise<ServerProcess> {
 }
 
 async function waitForServerReady(signaler: SystemReadySignaler): Promise<boolean> {
-  // Use hardcoded ports for test reliability (test-bench configuration)
-  const wsPort = 9001;
-  const httpPort = 9002;
+  // Get ports from examples.json ONLY
+  let wsPort: number;
+  let httpPort: number;
+  
+  try {
+    const activePorts = getActivePorts();
+    wsPort = activePorts.websocket_server;
+    httpPort = activePorts.http_server;
+    console.log(`🔧 Using ports from examples.json: WebSocket=${wsPort}, HTTP=${httpPort}`);
+  } catch (error) {
+    console.error('❌ CRITICAL FAILURE: Cannot load port configuration from examples.json!');
+    console.error('❌ Error:', error.message);
+    console.error('❌ This is a FATAL error - examples.json configuration system is broken!');
+    console.error('❌ Expected: examples.json should contain port configuration for active example');
+    throw new Error(`Port configuration failure: ${error.message}`);
+  }
   
   console.log('⏳ Waiting for COMPLETE server system to be ready...');
   console.log(`🔍 Checking: WebSocket server (${wsPort}) + HTTP server (${httpPort}) + Bootstrap`);
