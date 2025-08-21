@@ -102,11 +102,15 @@ async function startServerProcess(): Promise<ServerProcess> {
 }
 
 async function waitForServerReady(signaler: SystemReadySignaler): Promise<boolean> {
+  // Use hardcoded ports for test reliability (test-bench configuration)
+  const wsPort = 9001;
+  const httpPort = 9002;
+  
   console.log('⏳ Waiting for COMPLETE server system to be ready...');
-  console.log('🔍 Checking: WebSocket server (9001) + HTTP server (9002) + Bootstrap');
+  console.log(`🔍 Checking: WebSocket server (${wsPort}) + HTTP server (${httpPort}) + Bootstrap`);
   
   const maxAttempts = 30; // 30 attempts x 2s = 60s timeout
-  const requiredPorts = [9001, 9002]; // WebSocket + HTTP servers
+  const requiredPorts = [wsPort, httpPort]; // WebSocket + HTTP servers
   
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -123,8 +127,8 @@ async function waitForServerReady(signaler: SystemReadySignaler): Promise<boolea
       console.log(`⏳ Attempt ${attempt}/${maxAttempts}:`);
       console.log(`   Bootstrap: ${hasBootstrap ? '✅' : '❌'}`);
       console.log(`   Commands: ${hasCommands ? '✅' : '❌'} (${signal.commandCount})`);
-      console.log(`   WebSocket (9001): ${signal.portsActive?.includes(9001) ? '✅' : '❌'}`);
-      console.log(`   HTTP (9002): ${signal.portsActive?.includes(9002) ? '✅' : '❌'}`);
+      console.log(`   WebSocket (${wsPort}): ${signal.portsActive?.includes(wsPort) ? '✅' : '❌'}`);
+      console.log(`   HTTP (${httpPort}): ${signal.portsActive?.includes(httpPort) ? '✅' : '❌'}`);
       console.log(`   Health: ${signal.systemHealth}`);
       
       if (hasBootstrap && hasCommands && hasAllPorts && isHealthy) {
@@ -149,7 +153,7 @@ async function waitForServerReady(signaler: SystemReadySignaler): Promise<boolea
   }
   
   console.error('❌ Timeout waiting for COMPLETE server system to be ready');
-  console.error('🔍 System needs: Bootstrap ✓ + Commands ✓ + WebSocket(9001) ✓ + HTTP(9002) ✓ + Healthy ✓');
+  console.error(`🔍 System needs: Bootstrap ✓ + Commands ✓ + WebSocket(${wsPort}) ✓ + HTTP(${httpPort}) ✓ + Healthy ✓`);
   return false;
 }
 
