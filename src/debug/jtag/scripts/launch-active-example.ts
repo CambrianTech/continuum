@@ -8,7 +8,7 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import { JTAGSystemServer } from '../system/core/system/server/JTAGSystemServer';
-import { getActiveExampleName, getActiveExamplePath } from '../system/shared/ExampleConfig';
+import { getActiveExampleName, getActiveExamplePath, getActivePorts } from '../system/shared/ExampleConfig';
 
 let jtagServer: any = null;
 let exampleServer: ChildProcess | null = null;
@@ -18,10 +18,22 @@ async function launchActiveExample() {
   try {
     console.log('🚀 Starting complete JTAG system with active example...');
     
+    // Get port configuration from examples.json ONLY
+    let activePorts;
+    try {
+      activePorts = getActivePorts();
+      console.log(`🔧 Using ports from examples.json: WebSocket=${activePorts.websocket_server}, HTTP=${activePorts.http_server}`);
+    } catch (error) {
+      console.error('❌ CRITICAL FAILURE: Cannot load port configuration from examples.json!');
+      console.error('❌ Error:', error.message);
+      console.error('❌ This is a FATAL error - examples.json configuration system is broken!');
+      throw new Error(`Port configuration failure: ${error.message}`);
+    }
+    
     // 1. Start the JTAG WebSocket server system first
     console.log('🔌 Starting JTAG WebSocket Server System...');
     jtagServer = await JTAGSystemServer.connect();
-    console.log('✅ JTAG WebSocket Server running on port 9001');
+    console.log(`✅ JTAG WebSocket Server running on port ${activePorts.websocket_server}`);
     
     // 2. Start the active example HTTP server
     const activeExampleName = getActiveExampleName();
@@ -49,8 +61,8 @@ async function launchActiveExample() {
     });
     
     console.log('✅ Complete JTAG system started successfully');
-    console.log('🔌 JTAG WebSocket Server: ws://localhost:9001');
-    console.log(`🌐 ${activeExampleName} HTTP Server: http://localhost:${activeExampleName === 'test-bench' ? '9002' : '9003'}`);
+    console.log(`🔌 JTAG WebSocket Server: ws://localhost:${activePorts.websocket_server}`);
+    console.log(`🌐 ${activeExampleName} HTTP Server: http://localhost:${activePorts.http_server}`);
     
     // Setup cleanup handlers
     process.on('SIGINT', () => {
