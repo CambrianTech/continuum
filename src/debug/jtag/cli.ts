@@ -14,55 +14,54 @@ import { EntryPointAdapter } from './system/core/entry-points/EntryPointAdapter'
  * AI-Friendly Help System - For Fresh AIs Learning JTAG
  */
 function displayHelp() {
-  console.log('🤖 JTAG COMMAND HELP - AI Autonomous Development System');
+  console.log('🤖 JTAG - Global Debugging CLI for Any Node.js Project');
   console.log('=' .repeat(80));
-  console.log('🎯 Mission: Universal debugging and automation for AI-driven development');
+  console.log('🎯 Install once globally, use anywhere in any project directory');
+  console.log('📦 Installation: npm install -g @continuum/jtag');
   console.log('');
   
-  console.log('📋 CORE COMMANDS (Copy & Paste Ready):');
+  console.log('📋 CORE COMMANDS (Works from any directory):');
   console.log('----------------------------------------');
-  console.log('📸 SCREENSHOT:   ./jtag screenshot --querySelector="body" --filename="debug.png"');
-  console.log('⚡ PING TEST:    ./jtag ping');
-  console.log('📝 LIST ALL:     ./jtag list');
-  console.log('🔧 EXECUTE JS:   ./jtag exec --code="return {test: \'success\'}" --environment="browser"');
-  console.log('🌐 NAVIGATE:     ./jtag navigate --url="http://localhost:9002"');
-  console.log('🖱️ CLICK:        ./jtag click --selector="button.submit"');
-  console.log('⌨️ TYPE:         ./jtag type --text="AI input" --selector="input"');
-  console.log('📄 FILE SAVE:    ./jtag file/save --path="output.txt" --content="AI generated"');
-  console.log('📖 GET TEXT:     ./jtag get-text --selector="div.content"');
-  console.log('⏳ WAIT:         ./jtag wait-for-element --selector="div.loaded"');
+  console.log('📸 SCREENSHOT:   jtag screenshot --querySelector="body" --filename="debug.png"');
+  console.log('⚡ PING TEST:    jtag ping');
+  console.log('📝 LIST ALL:     jtag list');
+  console.log('🔧 EXECUTE JS:   jtag exec --code="return {test: \'success\'}" --environment="browser"');
+  console.log('🌐 NAVIGATE:     jtag navigate --url="http://localhost:9002"');
+  console.log('🖱️ CLICK:        jtag click --selector="button.submit"');
+  console.log('⌨️ TYPE:         jtag type --text="Hello world" --selector="input"');
+  console.log('📄 FILE SAVE:    jtag file/save --path="output.txt" --content="Generated content"');
+  console.log('📖 GET TEXT:     jtag get-text --selector="div.content"');
+  console.log('⏳ WAIT:         jtag wait-for-element --selector="div.loaded"');
   console.log('');
   
-  console.log('🚨 AI DEVELOPMENT WORKFLOW (AUTONOMOUS):');
+  console.log('🚨 AI DEVELOPMENT WORKFLOW:');
   console.log('----------------------------------------');
-  console.log('1. 🔍 CHECK STATUS:       npm run agent:quick');
-  console.log('2. 📸 VISUAL DEBUG:       ./jtag screenshot --filename=debug-$(date +%s).png');
-  console.log('3. 🧪 RUN TESTS:          npm test');
-  console.log('4. 📋 CHECK ERRORS:       tail -20 examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-error.log');
-  console.log('5. 🔄 RESTART IF NEEDED:  npm run system:restart');
+  console.log('1. 📍 cd /your/project/directory');
+  console.log('2. 📸 jtag screenshot --filename=debug-$(date +%s).png');
+  console.log('3. 🔍 jtag ping  # Check system health');
+  console.log('4. 📋 ls -la .continuum/jtag/currentUser/logs/  # Check logs');
+  console.log('5. 🔄 jtag --restart  # Restart if needed');
   console.log('');
   
-  console.log('💡 AI COMMAND PATTERNS:');
+  console.log('💡 GLOBAL CLI PATTERNS:');
   console.log('----------------------------------------');
-  console.log('• All commands auto-start system if not running');
-  console.log('• Auto-detects your identity (Claude, ChatGPT, Human, CI, etc.)');
-  console.log('• Chat widgets get proper labels and persona info');
+  console.log('• Works from ANY directory after global install');
+  console.log('• Creates .continuum/jtag/ in current working directory');
+  console.log('• Auto-starts system as needed (browser opens automatically)');
+  console.log('• Screenshots saved to .continuum/jtag/currentUser/screenshots/');
+  console.log('• Logs saved to .continuum/jtag/currentUser/logs/');
   console.log('• Use --filename with timestamps: debug-$(date +%s).png');
-  console.log('• Chain commands: ./jtag ping && ./jtag screenshot');  
-  console.log('• Check logs after any failures');
-  console.log('• Use npm run agent for comprehensive status');
   console.log('');
   
-  console.log('🔗 AI RESOURCES:');
+  console.log('🔗 GETTING STARTED:');
   console.log('----------------------------------------');
-  console.log('📚 Complete Guide:  cat dev-process.md');
-  console.log('🎯 AI Dashboard:     npm run agent');  
-  console.log('📊 Quick Status:     npm run agent:quick');
-  console.log('🔧 Auto-Fix:         npm run agent:fix');
-  console.log('📋 Error Logs:       ls -la examples/test-bench/.continuum/jtag/currentUser/logs/');
+  console.log('📦 npm install -g @continuum/jtag');
+  console.log('📍 cd /your/project');
+  console.log('📸 jtag screenshot  # System auto-starts, browser opens');
+  console.log('🎉 Debug screenshots saved to .continuum/jtag/currentUser/screenshots/');
   console.log('');
   
-  console.log('🚀 PERFECT FOR AI: No mysteries, clear errors, autonomous debugging!');
+  console.log('🚀 LIKE CLAUDE CODE: Install once globally, use everywhere!');
 }
 
 async function main() {

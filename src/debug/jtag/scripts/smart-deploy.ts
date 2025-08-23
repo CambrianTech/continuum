@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import { execSync } from 'child_process';
+import { getActiveExample } from '../system/shared/ExampleConfig';
 
 function getVersionInfo() {
   const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
@@ -14,47 +15,52 @@ function getVersionInfo() {
   return { version, tarballName };
 }
 
-function updateTestBenchDependency(tarballName: string): void {
-  const testBenchPath = 'examples/test-bench/package.json';
-  if (!fs.existsSync(testBenchPath)) {
-    console.log('❌ Test-bench not found');
+function updateActiveExampleDependency(tarballName: string): void {
+  const activeExample = getActiveExample();
+  const examplePath = `${activeExample.paths.directory}/package.json`;
+  
+  if (!fs.existsSync(examplePath)) {
+    console.log(`❌ Active example ${activeExample.name} not found at ${examplePath}`);
     process.exit(1);
   }
   
-  const testBench = JSON.parse(fs.readFileSync(testBenchPath, 'utf8'));
-  const currentDep = testBench.dependencies?.['@continuum/jtag'];
+  const packageJson = JSON.parse(fs.readFileSync(examplePath, 'utf8'));
+  const currentDep = packageJson.dependencies?.['@continuum/jtag'];
   const expectedDep = `file:../../${tarballName}`;
   
   if (currentDep === expectedDep) {
-    console.log('✅ Test-bench already up-to-date');
+    console.log(`✅ ${activeExample.name} already up-to-date`);
     return;
   }
   
-  if (!testBench.dependencies) testBench.dependencies = {};
-  testBench.dependencies['@continuum/jtag'] = expectedDep;
+  if (!packageJson.dependencies) packageJson.dependencies = {};
+  packageJson.dependencies['@continuum/jtag'] = expectedDep;
   
-  fs.writeFileSync(testBenchPath, JSON.stringify(testBench, null, 2) + '\n');
-  console.log(`✅ Updated test-bench to use ${tarballName}`);
+  fs.writeFileSync(examplePath, JSON.stringify(packageJson, null, 2) + '\n');
+  console.log(`✅ Updated ${activeExample.name} to use ${tarballName}`);
 }
 
 function trySmartInstall(): boolean {
   console.log('📥 Trying smart install...');
   
+  const activeExample = getActiveExample();
+  const exampleDir = activeExample.paths.directory;
+  
   // Only clean the specific JTAG module
-  const jtagPath = 'examples/test-bench/node_modules/@continuum/jtag';
+  const jtagPath = `${exampleDir}/node_modules/@continuum/jtag`;
   if (fs.existsSync(jtagPath)) {
     fs.rmSync(jtagPath, { recursive: true, force: true });
   }
   
   try {
     execSync('npm install', { 
-      cwd: 'examples/test-bench',
+      cwd: exampleDir,
       stdio: 'pipe'
     });
-    console.log('✅ Smart install successful');
+    console.log(`✅ Smart install successful for ${activeExample.name}`);
     return true;
   } catch (error) {
-    console.log('⚠️  Smart install failed, trying full clean...');
+    console.log(`⚠️  Smart install failed for ${activeExample.name}, trying full clean...`);
     return false;
   }
 }
@@ -62,10 +68,13 @@ function trySmartInstall(): boolean {
 function doFullCleanInstall(): void {
   console.log('🧹 Full clean install...');
   
+  const activeExample = getActiveExample();
+  const exampleDir = activeExample.paths.directory;
+  
   // Remove everything
   const cleanPaths = [
-    'examples/test-bench/node_modules',
-    'examples/test-bench/package-lock.json'
+    `${exampleDir}/node_modules`,
+    `${exampleDir}/package-lock.json`
   ];
   
   for (const cleanPath of cleanPaths) {
@@ -75,10 +84,10 @@ function doFullCleanInstall(): void {
   }
   
   execSync('npm install', { 
-    cwd: 'examples/test-bench',
+    cwd: exampleDir,
     stdio: 'inherit'
   });
-  console.log('✅ Full clean install complete');
+  console.log(`✅ Full clean install complete for ${activeExample.name}`);
 }
 
 function smartDeploy(): void {
@@ -93,7 +102,7 @@ function smartDeploy(): void {
   
   console.log(`📦 Version: ${version}`);
   
-  updateTestBenchDependency(tarballName);
+  updateActiveExampleDependency(tarballName);
   
   // Try smart first, fallback to full clean
   if (!trySmartInstall()) {

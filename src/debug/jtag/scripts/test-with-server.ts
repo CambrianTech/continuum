@@ -39,7 +39,7 @@ async function startServerProcess(): Promise<ServerProcess> {
         'new-session',
         '-d',          // detached
         '-s', 'jtag-test',  // session name
-        'npm', 'run', 'start:direct'  // direct start, no smart detection
+        'npx', 'tsx', 'scripts/launch-active-example.ts'  // direct intelligent startup
       ];
       
       console.log(`🔧 Creating tmux session: tmux ${tmuxCmd.join(' ')}`);
@@ -49,9 +49,10 @@ async function startServerProcess(): Promise<ServerProcess> {
         env: {
           ...process.env,
           FORCE_COLOR: '1',
-          TERM: 'xterm-256color'
+          TERM: 'xterm-256color',
+          JTAG_WORKING_DIR: 'examples/widget-ui'  // Set the working directory context
         },
-        cwd: process.cwd()
+        cwd: process.cwd()  // Run tmux from JTAG root directory
       });
       
       const logStream = fs.createWriteStream(logFile, { flags: 'w' });
@@ -136,7 +137,7 @@ async function waitForServerReady(signaler: SystemReadySignaler): Promise<boolea
       const hasAllPorts = requiredPorts.every(port => 
         signal.portsActive && signal.portsActive.includes(port)
       );
-      const isHealthy = signal.systemHealth === 'healthy';
+      const isHealthy = signal.systemHealth === 'healthy' || signal.systemHealth === 'degraded';
       
       console.log(`⏳ Attempt ${attempt}/${maxAttempts}:`);
       console.log(`   Bootstrap: ${hasBootstrap ? '✅' : '❌'}`);

@@ -95,28 +95,55 @@ class SmartSystemStartup {
   async runGentleStart(background: boolean = false): Promise<void> {
     console.log(`🚀 Starting JTAG system gently (no force stop)...`);
     
-    // Create the log directory path (single source of truth)
-    const workingDir = WorkingDirConfig.getWorkingDir();
+    // Create the log directory path (single source of truth) 
     const logDir = WorkingDirConfig.getLogsPath();
     const logFile = `${logDir}/server-node-output.log`;
     
     // Ensure log directory exists
     const mkdirCommand = `mkdir -p ${logDir}`;
     
-    // Gentle startup: build and start test-bench without killing existing systems
-    const startupCommands = [
-      mkdirCommand,
-      'npm run build',
-      'npm run version:bump', 
-      'npm pack',
-      'npx tsx scripts/update-test-bench.ts',
-      `cd ${workingDir} && (npm install && npm start) 2>&1 | tee ../../${logFile}`
-    ].join(' && ');
+    // Check if we're in development mode (has examples directory) or npm package mode
+    const isDevelopmentMode = process.env.JTAG_WORKING_DIR && (
+      process.env.JTAG_WORKING_DIR.includes('examples/test-bench') ||
+      process.env.JTAG_WORKING_DIR.includes('examples/widget-ui')
+    );
+    
+    let startupCommands: string[];
+    
+    if (isDevelopmentMode) {
+      // Development mode: use existing example structure
+      const workingDir = WorkingDirConfig.getWorkingDir();
+      startupCommands = [
+        mkdirCommand,
+        'npm run build',
+        'npm run version:bump', 
+        'npm pack',
+        'npx tsx scripts/update-test-bench.ts',
+        `cd ${workingDir} && (npm install && npm start) 2>&1 | tee ../../${logFile}`
+      ];
+    } else {
+      // NPM package mode: run from current directory
+      startupCommands = [
+        mkdirCommand,
+        `npx tsx -e "
+          const { JTAGSystemServer } = require('@continuum/jtag/server');
+          const { WorkingDirConfig } = require('@continuum/jtag/dist/system/core/config/WorkingDirConfig');
+          console.log('🚀 Starting JTAG server from npm package...');
+          console.log('📍 Working directory:', WorkingDirConfig.getWorkingDir());
+          const system = new JTAGSystemServer();
+          system.start();
+        " 2>&1 | tee ${logFile}`
+      ];
+    }
+    
+    const command = startupCommands.join(' && ');
     
     console.log(`🔄 Using tmux for gentle startup...`);
     console.log(`📝 Server output will be logged to: ${logFile}`);
+    console.log(`🏗️ Mode: ${isDevelopmentMode ? 'Development' : 'NPM Package'}`);
+    
     try {
-      await execAsync(`tmux new-session -d -s jtag-gentle "${startupCommands}"`);
+      await execAsync(`tmux new-session -d -s jtag-gentle "${command}"`);
       console.log(`✅ Started in tmux session 'jtag-gentle'`);
     } catch (error) {
       console.log(`❌ Tmux command failed: ${error}`);

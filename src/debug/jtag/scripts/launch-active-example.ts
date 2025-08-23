@@ -9,25 +9,64 @@
 import { spawn, ChildProcess } from 'child_process';
 import { JTAGSystemServer } from '../system/core/system/server/JTAGSystemServer';
 import { getActiveExampleName, getActiveExamplePath, getActivePorts } from '../system/shared/ExampleConfig';
+import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
+import { ProcessCoordinator } from '../system/core/process/ProcessCoordinator';
 
 let jtagServer: any = null;
 let exampleServer: ChildProcess | null = null;
 let keepAliveTimer: NodeJS.Timeout | null = null;
 
 async function launchActiveExample() {
+  const coordinator = ProcessCoordinator.getInstance();
+  let lock: any = null;
+
   try {
-    console.log('🚀 Starting complete JTAG system with active example...');
+    console.log('🚀 Intelligent JTAG system startup...');
     
-    // Get port configuration from examples.json ONLY
+    // Get active example configuration from examples.json ONLY
     let activePorts;
+    let activeExamplePath;
     try {
       activePorts = getActivePorts();
-      console.log(`🔧 Using ports from examples.json: WebSocket=${activePorts.websocket_server}, HTTP=${activePorts.http_server}`);
+      activeExamplePath = getActiveExamplePath();
+      console.log(`🔧 Target ports: WebSocket=${activePorts.websocket_server}, HTTP=${activePorts.http_server}`);
+      console.log(`📁 Active example path: ${activeExamplePath}`);
     } catch (error) {
-      console.error('❌ CRITICAL FAILURE: Cannot load port configuration from examples.json!');
+      console.error('❌ CRITICAL FAILURE: Cannot load configuration from examples.json!');
       console.error('❌ Error:', error.message);
-      console.error('❌ This is a FATAL error - examples.json configuration system is broken!');
-      throw new Error(`Port configuration failure: ${error.message}`);
+      throw new Error(`Configuration failure: ${error.message}`);
+    }
+    
+    // Set context for per-project .continuum isolation
+    const activeExample = getActiveExampleName();
+    const workingDir = `examples/${activeExample}`;
+    WorkingDirConfig.setWorkingDir(workingDir);
+    console.log(`🎯 Context switched to: ${workingDir}`);
+
+    // Acquire startup lock
+    lock = await coordinator.acquireStartupLock(workingDir);
+    
+    // Plan intelligent startup
+    const targetPorts = [activePorts.websocket_server, activePorts.http_server];
+    const plan = await coordinator.planStartup(workingDir, targetPorts);
+    
+    console.log(`🧠 Startup plan: ${plan.type}`);
+    
+    if (plan.type === 'reuse_existing') {
+      console.log(`✅ Reusing existing healthy server (PID: ${plan.process.pid})`);
+      console.log(`🌐 Active ports: ${plan.process.ports.join(', ')}`);
+      return; // Server already running and healthy
+    }
+    
+    if (plan.type === 'graceful_handoff') {
+      console.log(`🔄 Graceful handoff from context '${plan.from.context}' to '${workingDir}'`);
+      // For now, kill old and start fresh (can improve later)
+      try {
+        process.kill(plan.from.pid, 'SIGTERM');
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for graceful shutdown
+      } catch (error) {
+        console.warn(`⚠️ Failed to gracefully stop old process: ${error}`);
+      }
     }
     
     // 1. Start the JTAG WebSocket server system first
@@ -35,9 +74,17 @@ async function launchActiveExample() {
     jtagServer = await JTAGSystemServer.connect();
     console.log(`✅ JTAG WebSocket Server running on port ${activePorts.websocket_server}`);
     
-    // 2. Start the active example HTTP server
+    // Save process state for intelligent detection
+    await coordinator.saveProcessState({
+      pid: process.pid,
+      ports: targetPorts,
+      context: workingDir,
+      startTime: new Date(),
+      healthStatus: 'healthy'
+    });
+    
+    // 2. Start the active example HTTP server  
     const activeExampleName = getActiveExampleName();
-    const activeExamplePath = getActiveExamplePath();
     
     console.log(`🌐 Starting ${activeExampleName} HTTP server...`);
     console.log(`📂 Example path: ${activeExamplePath}`);
@@ -90,6 +137,11 @@ async function launchActiveExample() {
     console.error('❌ Failed to launch complete JTAG system:', errorMsg);
     cleanup();
     process.exit(1);
+  } finally {
+    // Always release the startup lock
+    if (lock) {
+      await lock.release();
+    }
   }
 }
 

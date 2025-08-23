@@ -1,8 +1,40 @@
-# JTAG - Universal Transport & Debugging System
+# Continuum - AI-Human Collaboration Platform
 
-## 🚨 **Emergency Debugging When Everything Is Broken**
+## 🚀 **Universal AI-Human Bridge & Development Ecosystem**
 
-JTAG is a **production-grade universal debugging system** with **transport-agnostic architecture** that works with WebSocket, HTTP, REST, MCP, and any transport mechanism.
+Continuum is the **universal AI-human collaboration platform** that operates seamlessly across any project. Like Docker Desktop for containers, Continuum Desktop provides a **unified portal** for AI agents, debugging, and development tools that works from anywhere.
+
+### **🎯 Global Installation, Local Context**
+
+```bash
+# Install once globally
+npm install -g @continuum/jtag
+
+# Works from ANY project directory
+cd ~/my-react-app/
+jtag screenshot           # Auto-creates my-react-app/.continuum/
+continuum                 # Opens universal desktop portal
+
+cd ~/my-python-api/
+jtag ping                 # Auto-creates my-python-api/.continuum/
+continuum                 # Same portal, different project context
+```
+
+## 🏗️ **Architecture: Global CLI + Per-Project Context**
+
+**Global System** (`~/.continuum/`):
+- User identity, API keys, preferences
+- AI consciousness and memory across projects
+- Universal desktop portal and mesh network connections
+
+**Per-Project Context** (`<project>/.continuum/`):
+- Project-specific debugging, sessions, logs
+- Local AI agent customizations
+- Isolated state per repository
+
+## 🚨 **JTAG - Emergency Debugging When Everything Is Broken**
+
+JTAG is the **production-grade universal debugging system** with **transport-agnostic architecture** that works with WebSocket, HTTP, REST, MCP, and any transport mechanism.
 
 ## 🎯 **BREAKTHROUGH: Build-Time Auto-Discovery Architecture**
 
@@ -1762,6 +1794,74 @@ window.addEventListener('jtag:version_mismatch', (event) => {
   }
 });
 ```
+
+## 📁 **.continuum Directory Architecture**
+
+JTAG uses a **dual-layer .continuum directory structure** for global and per-project isolation:
+
+### **Global State (`$HOME/.continuum/`)**
+```
+~/.continuum/
+├── api-keys/           # User credentials across all projects
+├── shared/             # AI consciousness & pen pal content  
+├── agents/             # Global agent configurations
+├── mesh/               # Network & community connections
+└── preferences.json    # Global user settings
+```
+
+### **Per-Project State (`<project>/.continuum/`)**
+```
+my-project/.continuum/
+├── jtag/                    # Project-specific debugging
+│   ├── sessions/           # Debug sessions & context
+│   │   ├── system/         # Server-side session data
+│   │   └── user/           # Client-side session data
+│   ├── logs/               # System & application logs
+│   ├── screenshots/        # Debug screenshots
+│   ├── signals/            # Health & status signals
+│   └── currentUser -> sessions/user/[latest]  # Symlink to active session
+├── context.json            # Project metadata
+└── agents/local/           # Project-specific agent customizations
+```
+
+## 🛠️ **Development Strategy & Examples**
+
+### **Examples = Testing Ground for Global Deployment**
+
+Our `examples/` directories **simulate real per-project usage** to test the global CLI architecture:
+
+```
+examples/
+├── test-bench/.continuum/    # Full debugging/testing environment
+└── widget-ui/.continuum/     # UI development → Future Continuum Desktop
+```
+
+**Development Phases:**
+
+1. **Build Examples** (Current): Perfect per-project isolation and context switching
+2. **Widget-UI → Continuum Desktop**: Polish widget-ui into universal portal with projects widget, chat interface, and multi-project management  
+3. **Global Deployment**: `npm install -g @continuum/jtag` works from any directory
+
+### **Widget-UI = Future Continuum Desktop**
+
+The `examples/widget-ui/` is our **UI development playground** that will become the universal Continuum Desktop:
+- **Projects Widget**: Multi-project management (like Docker containers list)
+- **Rich Chat Interface**: AI collaboration across all projects
+- **Universal Command Palette**: Debug, build, deploy from anywhere
+- **Context Switching**: Seamlessly work across multiple repositories
+
+### **Examples Directory Structure**
+```
+examples/test-bench/.continuum/     # Full debugging features testing
+examples/widget-ui/.continuum/      # Desktop portal development
+```
+
+### **Key Benefits**
+- 🏠 **Global Continuity**: API keys, AI state persist across all projects
+- 🎯 **Project Isolation**: Each repo gets isolated debugging sessions & logs
+- 🔄 **Easy Switching**: `cd project && jtag screenshot` automatically uses project context
+- 🧹 **Clean Repos**: Add `.continuum/` to `.gitignore` - debugging state stays local
+- 📦 **Global Install**: `npm install -g @continuum/jtag` works from any directory
 
 **JTAG: Universal debugging that works when everything else is broken.** 🚨  
 **Now with build-time auto-discovery architecture and constructor dependency injection.** 🎯  
