@@ -39,7 +39,7 @@ export class UDPMulticastTransportServer extends UDPMulticastTransportBase {
           // Join multicast group
           socket.addMembership(this.config.multicastAddress);
           socket.setMulticastTTL(this.config.ttl);
-          socket.setMulticastLoopback(false); // Don't receive our own messages
+          socket.setMulticastLoopback(true); // Enable loopback for localhost testing (nodes filter their own messages)
           
           console.log(`✅ UDP Server: Multicast socket ready (TTL: ${this.config.ttl})`);
           resolve();
