@@ -104,8 +104,9 @@ class SystemReadySignaler {
       
       return signal;
       
-    } catch (error: any) {
-      console.error('❌ System check failed:', error.message);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('❌ System check failed:', errorMessage);
       throw error; // Don't exit, let caller handle
     }
   }
