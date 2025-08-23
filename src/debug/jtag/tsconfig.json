@@ -58,6 +58,12 @@
       "@commands/*": [
         "commands/*"
       ],
+      "@shared": [
+        "shared"
+      ],
+      "@shared/*": [
+        "shared/*"
+      ],
       "@scripts": [
         "scripts"
       ],
@@ -222,9 +228,9 @@
     "pathCount": 228
   },
   "_pathsGenerated": {
-    "timestamp": "2025-08-23T22:28:55.517Z",
+    "timestamp": "2025-08-23T22:48:29.767Z",
     "source": ".continuum/generator/path-mappings.json",
-    "pathCount": 56,
+    "pathCount": 58,
     "note": "Auto-generated from essential path mappings only"
   }
 }

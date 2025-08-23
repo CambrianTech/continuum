@@ -7,52 +7,23 @@
  * calculation functions with mock DOM elements and validates real crop coordinates.
  */
 
-// Mock DOM environment for testing coordinate calculations
-const mockDOMRect = (x: number, y: number, width: number, height: number): DOMRect => ({
-  x, y, width, height,
-  left: x, top: y, right: x + width, bottom: y + height,
-  toJSON: () => ({ x, y, width, height, left: x, top: y, right: x + width, bottom: y + height })
-});
-
-const mockElement = (bounds: DOMRect, scrollWidth?: number, scrollHeight?: number): Element => ({
-  getBoundingClientRect: () => bounds,
-  scrollWidth: scrollWidth || bounds.width,
-  scrollHeight: scrollHeight || bounds.height,
-  tagName: 'DIV',
-  className: 'test-element',
-  classList: { length: 1, 0: 'test-element' },
-  id: ''
-} as any);
-
-// Mock browser environment
-global.window = {
-  getComputedStyle: () => ({
-    position: 'static',
-    display: 'block'
-  })
-} as any;
-
-global.document = {
-  body: mockElement(mockDOMRect(0, 0, 1200, 800)),
-  querySelector: (selector: string) => {
-    if (selector === 'chat-widget') {
-      const widget = mockElement(mockDOMRect(300, 200, 600, 400));
-      (widget as any).tagName = 'CHAT-WIDGET';
-      (widget as any).classList = { length: 1, 0: 'chat-widget' };
-      return widget;
-    }
-    return null;
-  }
-} as any;
+import { 
+  createMockDOMRect, 
+  createMockElement, 
+  withMockBrowser,
+  validateCoordinates,
+  COMMON_WIDGET_SCENARIOS 
+} from '../../shared/test-utils/DOMTestUtils';
 
 /**
- * Test Suite for Crop Logic Math Validation
+ * Test Suite for Crop Logic Math Validation - Refactored with shared utilities
  */
 async function testCropLogicMath(): Promise<void> {
-  console.log('🧮 CROP LOGIC MATH VALIDATION');
-  console.log('==============================');
-  console.log('Testing actual coordinate calculations, not just file creation');
-  console.log();
+  return withMockBrowser(async () => {
+    console.log('🧮 CROP LOGIC MATH VALIDATION');
+    console.log('==============================');
+    console.log('Testing actual coordinate calculations, not just file creation');
+    console.log();
 
   let testsPassed = 0;
   let totalTests = 0;
@@ -134,20 +105,22 @@ async function testCropLogicMath(): Promise<void> {
     smartQuerySelector = (selector: string) => global.document.querySelector(selector);
   }
 
-  // Test 1: Basic coordinate calculation for chat widget
+  // Test 1: Basic coordinate calculation for chat widget (using shared utilities)
   totalTests++;
   console.log('📐 Test 1: Chat widget coordinate calculation');
   try {
-    const chatWidget = mockElement(mockDOMRect(300, 200, 600, 400));
-    const bodyElement = mockElement(mockDOMRect(0, 0, 1200, 800));
+    const chatWidget = createMockElement(createMockDOMRect(300, 200, 600, 400));
+    const bodyElement = createMockElement(createMockDOMRect(0, 0, 1200, 800));
     
-    const coords = calculateCropCoordinates(chatWidget, bodyElement, 1.0, false);
+    const coords = calculateCropCoordinates(chatWidget as any, bodyElement as any, 1.0, false);
+    const expected = { x: 300, y: 200, width: 600, height: 400 };
     
-    if (coords.x === 300 && coords.y === 200 && coords.width === 600 && coords.height === 400) {
+    const validation = validateCoordinates(coords, expected);
+    if (validation.valid) {
       console.log('✅ PASS: Chat widget coordinates (300,200,600x400)');
       testsPassed++;
     } else {
-      console.log(`❌ FAIL: Expected (300,200,600x400), got (${coords.x},${coords.y},${coords.width}x${coords.height})`);
+      console.log(`❌ FAIL: ${validation.error}`);
     }
   } catch (error) {
     console.log(`❌ FAIL: Test 1 error - ${error}`);
@@ -157,16 +130,18 @@ async function testCropLogicMath(): Promise<void> {
   totalTests++;
   console.log('📐 Test 2: 2x scaling calculation');
   try {
-    const widget = mockElement(mockDOMRect(100, 100, 400, 300));
-    const body = mockElement(mockDOMRect(0, 0, 800, 600));
+    const widget = createMockElement(createMockDOMRect(100, 100, 400, 300));
+    const body = createMockElement(createMockDOMRect(0, 0, 800, 600));
     
-    const coords = calculateCropCoordinates(widget, body, 2.0, false);
+    const coords = calculateCropCoordinates(widget as any, body as any, 2.0, false);
+    const expected = { x: 200, y: 200, width: 800, height: 600 };
     
-    if (coords.x === 200 && coords.y === 200 && coords.width === 800 && coords.height === 600) {
+    const validation = validateCoordinates(coords, expected);
+    if (validation.valid) {
       console.log('✅ PASS: 2x scaling (100,100,400x300) → (200,200,800x600)');
       testsPassed++;
     } else {
-      console.log(`❌ FAIL: Expected (200,200,800x600), got (${coords.x},${coords.y},${coords.width}x${coords.height})`);
+      console.log(`❌ FAIL: ${validation.error}`);
     }
   } catch (error) {
     console.log(`❌ FAIL: Test 2 error - ${error}`);
@@ -176,20 +151,22 @@ async function testCropLogicMath(): Promise<void> {
   totalTests++;
   console.log('📐 Test 3: Overflow content handling');
   try {
-    const scrollingWidget = mockElement(
-      mockDOMRect(200, 100, 400, 300),  // Visual bounds
+    const scrollingWidget = createMockElement(
+      createMockDOMRect(200, 100, 400, 300),  // Visual bounds
       400,  // Same width
       500   // Taller content due to overflow
     );
-    const body = mockElement(mockDOMRect(0, 0, 800, 600));
+    const body = createMockElement(createMockDOMRect(0, 0, 800, 600));
     
-    const coords = calculateCropCoordinates(scrollingWidget, body, 1.0, true);
+    const coords = calculateCropCoordinates(scrollingWidget as any, body as any, 1.0, true);
+    const expected = { x: 200, y: 100, width: 400, height: 500 };
     
-    if (coords.x === 200 && coords.y === 100 && coords.width === 400 && coords.height === 500) {
+    const validation = validateCoordinates(coords, expected);
+    if (validation.valid) {
       console.log('✅ PASS: Overflow content (300px visual → 500px with overflow)');
       testsPassed++;
     } else {
-      console.log(`❌ FAIL: Expected height 500 (overflow), got ${coords.height}`);
+      console.log(`❌ FAIL: ${validation.error}`);
     }
   } catch (error) {
     console.log(`❌ FAIL: Test 3 error - ${error}`);
@@ -247,13 +224,13 @@ async function testCropLogicMath(): Promise<void> {
   totalTests++;
   console.log('📐 Test 6: Element bounds overflow threshold');
   try {
-    const element = mockElement(
-      mockDOMRect(10, 20, 200, 150),
+    const element = createMockElement(
+      createMockDOMRect(10, 20, 200, 150),
       205,  // scrollWidth only 5px larger (under 10px threshold)
       155   // scrollHeight only 5px larger
     );
     
-    const bounds = getElementBounds(element, true);
+    const bounds = getElementBounds(element as any, true);
     
     if (bounds.width === 200 && bounds.height === 150 && bounds.hasOverflow === false) {
       console.log('✅ PASS: Minor scroll differences ignored (5px < 10px threshold)');
@@ -302,6 +279,7 @@ async function testCropLogicMath(): Promise<void> {
     console.log('⚠️  CROP CALCULATIONS NEED FIXING!');
     console.log('Some coordinate math is incorrect and may cause wrong crops');
   }
+  }); // End withMockBrowser
 }
 
 // Integration test pattern for actual screenshot validation
