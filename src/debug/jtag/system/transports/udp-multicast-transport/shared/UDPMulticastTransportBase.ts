@@ -221,12 +221,15 @@ export abstract class UDPMulticastTransportBase extends TransportBase implements
    */
   protected handleIncomingUDPMessage(messageBuffer: Buffer, remoteInfo: { address: string; port: number }): void {
     try {
+      console.log(`📨 P2P Transport: Received message from ${remoteInfo.address}:${remoteInfo.port} (${messageBuffer.length} bytes)`);
       const message = this.deserializeMessage(messageBuffer);
       this.updateStats('rx', messageBuffer.length);
       
       if (message.magic === PROTOCOL_MAGIC.DISCOVERY) {
+        console.log(`🔍 P2P Discovery: Processing discovery message type ${(message.payload as any).type}`);
         this.handleDiscoveryMessage(message.payload as DiscoveryMessage);
       } else if (message.magic === PROTOCOL_MAGIC.P2P_MESSAGE) {
+        console.log(`📬 P2P Message: Processing P2P command message`);
         this.handleP2PMessage(message.payload as P2PMessage);
       }
       
@@ -295,7 +298,9 @@ export abstract class UDPMulticastTransportBase extends TransportBase implements
     };
 
     const messageBuffer = this.serializeMessage(PROTOCOL_MAGIC.DISCOVERY, announcement);
+    console.log(`📡 P2P Discovery: Broadcasting announcement from ${this.config.nodeId.substring(0, 8)} (${messageBuffer.length} bytes)`);
     await this.sendMulticastMessage(messageBuffer);
+    console.log(`✅ P2P Discovery: Announcement sent successfully`);
   }
 
   /**
