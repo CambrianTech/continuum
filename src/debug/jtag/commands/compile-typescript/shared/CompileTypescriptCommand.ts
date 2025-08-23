@@ -34,5 +34,5 @@ export abstract class CompileTypescriptCommand extends CommandBase<CompileTypesc
     });
   }
 
-  abstract execute(params: CompileTypescriptParams): Promise<CompileTypescriptResult>;
+  abstract override execute(params: CompileTypescriptParams): Promise<CompileTypescriptResult>;
 }

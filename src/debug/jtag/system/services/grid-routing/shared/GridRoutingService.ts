@@ -31,8 +31,7 @@ import type {
   GridResult,
   GridEventType,
   GridEvent,
-  ExecutionContext,
-  GRID_ROUTING_DEFAULTS
+  ExecutionContext
 } from './GridRoutingTypes';
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
@@ -50,6 +49,11 @@ export abstract class GridRoutingService {
   protected pendingMessages: Map<UUID, PendingMessage> = new Map();
   protected eventHandlers: Map<GridEventType, Set<(event: GridEvent) => void>> = new Map();
   protected initialized = false;
+  
+  // Timer references for proper cleanup
+  private announceTimer?: NodeJS.Timeout;
+  private heartbeatTimer?: NodeJS.Timeout;
+  private routingUpdateTimer?: NodeJS.Timeout;
   
   constructor(
     protected config: GridRoutingConfig,
@@ -83,7 +87,7 @@ export abstract class GridRoutingService {
       console.log(`✅ Grid Routing: Service initialized`);
       
       this.emitEvent({
-        type: GridEventType.NODE_JOINED,
+        type: 'node-joined' as GridEventType,
         timestamp: new Date().toISOString(),
         nodeId: this.localNode.identity.nodeId,
         data: this.localNode
@@ -302,6 +306,20 @@ export abstract class GridRoutingService {
   async cleanup(): Promise<void> {
     console.log(`🧹 Grid Routing: Cleaning up service for node ${this.config.nodeId.substring(0, 8)}`);
     
+    // CRITICAL: Clear all timers FIRST to prevent post-cleanup errors
+    if (this.announceTimer) {
+      clearInterval(this.announceTimer);
+      this.announceTimer = undefined;
+    }
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+    if (this.routingUpdateTimer) {
+      clearInterval(this.routingUpdateTimer);
+      this.routingUpdateTimer = undefined;
+    }
+    
     // Send goodbye message
     await this.sendGoodbyeMessage();
     
@@ -327,11 +345,11 @@ export abstract class GridRoutingService {
     
     const announcement: NodeAnnounceMessage = {
       messageId: this.generateMessageId(),
-      type: GridMessageType.NODE_ANNOUNCE,
+      type: 'node-announce' as GridMessageType,
       sourceNodeId: this.localNode.identity.nodeId,
       timestamp: new Date().toISOString(),
-      ttl: GRID_ROUTING_DEFAULTS.MAX_TTL,
-      priority: GRID_ROUTING_DEFAULTS.DEFAULT_PRIORITY,
+      ttl: 16,  // MAX_TTL
+      priority: 5,  // DEFAULT_PRIORITY
       payload: {
         node: this.localNode,
         routingTable: Array.from(this.routingTable.values())
@@ -349,19 +367,19 @@ export abstract class GridRoutingService {
     console.log(`📨 Grid Routing: Received ${message.type} from node ${message.sourceNodeId.substring(0, 8)}`);
     
     switch (message.type) {
-      case GridMessageType.NODE_ANNOUNCE:
+      case 'node-announce':
         await this.handleNodeAnnouncement(message as NodeAnnounceMessage);
         break;
         
-      case GridMessageType.NODE_HEARTBEAT:
+      case 'node-heartbeat':
         await this.handleNodeHeartbeat(message as NodeHeartbeatMessage);
         break;
         
-      case GridMessageType.ROUTING_UPDATE:
+      case 'routing-update':
         await this.handleRoutingUpdate(message as RoutingUpdateMessage);
         break;
         
-      case GridMessageType.FORWARD_MESSAGE:
+      case 'forward-message':
         // Dumb pipe - forward payload without understanding it
         await this.forwardMessage(message as ForwardMessage);
         break;
@@ -371,7 +389,7 @@ export abstract class GridRoutingService {
     }
     
     this.emitEvent({
-      type: GridEventType.MESSAGE_RECEIVED,
+      type: 'message-received' as GridEventType,
       timestamp: new Date().toISOString(),
       nodeId: message.sourceNodeId,
       data: message
@@ -426,7 +444,7 @@ export abstract class GridRoutingService {
     }
     
     this.emitEvent({
-      type: GridEventType.NODE_JOINED,
+      type: 'node-joined' as GridEventType,
       timestamp: new Date().toISOString(),
       nodeId,
       data: node
@@ -514,7 +532,7 @@ export abstract class GridRoutingService {
       this.routingTable.set(update.targetNodeId, newRoute);
       
       this.emitEvent({
-        type: GridEventType.ROUTE_DISCOVERED,
+        type: 'route-discovered' as GridEventType,
         timestamp: new Date().toISOString(),
         nodeId: update.targetNodeId,
         data: newRoute
@@ -542,7 +560,7 @@ export abstract class GridRoutingService {
       console.log(`🗺️ Grid Routing: Removed route to ${nodeId.substring(0, 8)}`);
       
       this.emitEvent({
-        type: GridEventType.ROUTE_LOST,
+        type: 'route-lost' as GridEventType,
         timestamp: new Date().toISOString(),
         nodeId,
         data: undefined
@@ -584,7 +602,7 @@ export abstract class GridRoutingService {
       message,
       route,
       sentAt: new Date().toISOString(),
-      timeoutMs: GRID_ROUTING_DEFAULTS.MESSAGE_TIMEOUT
+      timeoutMs: 30000  // MESSAGE_TIMEOUT
     };
     
     this.pendingMessages.set(message.messageId, pending);
@@ -597,21 +615,21 @@ export abstract class GridRoutingService {
 
   private startPeriodicProcesses(): void {
     // Periodic node announcements
-    setInterval(() => {
+    this.announceTimer = setInterval(() => {
       this.announceNode().catch(error => {
         console.error('❌ Grid Routing: Failed to send announcement:', error);
       });
     }, this.config.announceInterval);
     
     // Periodic heartbeats
-    setInterval(() => {
+    this.heartbeatTimer = setInterval(() => {
       this.sendHeartbeat().catch(error => {
         console.error('❌ Grid Routing: Failed to send heartbeat:', error);
       });
     }, this.config.heartbeatInterval);
     
     // Periodic routing updates
-    setInterval(() => {
+    this.routingUpdateTimer = setInterval(() => {
       this.sendRoutingUpdate().catch(error => {
         console.error('❌ Grid Routing: Failed to send routing update:', error);
       });
@@ -621,11 +639,11 @@ export abstract class GridRoutingService {
   private async sendHeartbeat(): Promise<void> {
     const heartbeat: NodeHeartbeatMessage = {
       messageId: this.generateMessageId(),
-      type: GridMessageType.NODE_HEARTBEAT,
+      type: 'node-heartbeat' as GridMessageType,
       sourceNodeId: this.localNode.identity.nodeId,
       timestamp: new Date().toISOString(),
-      ttl: GRID_ROUTING_DEFAULTS.MAX_TTL,
-      priority: GRID_ROUTING_DEFAULTS.DEFAULT_PRIORITY,
+      ttl: 16,  // MAX_TTL
+      priority: 5,  // DEFAULT_PRIORITY
       payload: {
         status: this.localNode.status,
         routingUpdates: []
@@ -638,11 +656,11 @@ export abstract class GridRoutingService {
   private async sendRoutingUpdate(): Promise<void> {
     const routingUpdate: RoutingUpdateMessage = {
       messageId: this.generateMessageId(),
-      type: GridMessageType.ROUTING_UPDATE,
+      type: 'routing-update' as GridMessageType,
       sourceNodeId: this.localNode.identity.nodeId,
       timestamp: new Date().toISOString(),
-      ttl: GRID_ROUTING_DEFAULTS.MAX_TTL,
-      priority: GRID_ROUTING_DEFAULTS.DEFAULT_PRIORITY,
+      ttl: 16,  // MAX_TTL
+      priority: 5,  // DEFAULT_PRIORITY
       payload: {
         updates: Array.from(this.routingTable.values()),
         removals: [],
@@ -660,8 +678,18 @@ export abstract class GridRoutingService {
 
   private initializeEventHandlers(): void {
     // Initialize event handler sets for all event types
-    for (const eventType of Object.values(GridEventType)) {
-      this.eventHandlers.set(eventType, new Set());
+    const eventTypes = [
+      'node-joined',
+      'node-left', 
+      'route-discovered',
+      'route-lost',
+      'message-received',
+      'command-executed',
+      'topology-changed'
+    ] as const;
+    
+    for (const eventType of eventTypes) {
+      this.eventHandlers.set(eventType as GridEventType, new Set());
     }
   }
 

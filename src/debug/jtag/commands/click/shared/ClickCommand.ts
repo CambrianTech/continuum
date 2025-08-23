@@ -34,5 +34,5 @@ export abstract class ClickCommand extends CommandBase<ClickParams, ClickResult>
     });
   }
 
-  abstract execute(params: ClickParams): Promise<ClickResult>;
+  abstract override execute(params: ClickParams): Promise<ClickResult>;
 }

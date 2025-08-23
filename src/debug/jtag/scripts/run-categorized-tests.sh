@@ -14,6 +14,7 @@
 #   - events: Event system tests only
 #   - blocker: Blocker-level tests only
 #   - critical: Critical tests only
+#   - performance: Grid P2P performance tests with microsecond precision
 #
 # Browser Deployment Options:
 #   - Set JTAG_DEPLOY_BROWSER=true to ensure browser deployment before tests
@@ -174,6 +175,13 @@ run_profile_tests() {
             run_test "Cross-Context Commands" "npx tsx tests/integration/transport/browser-server-commands.test.ts" "Transport Tests"  
             # run_test "Transport Flexibility" "npx tsx tests/integration/transport/transport-flexibility.test.ts" "Transport Tests"  # Still may hang
             
+            # Grid P2P Performance Tests - Advanced testing with microsecond precision  
+            run_test "Grid Transport Foundation" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/grid-transport-foundation.test.ts" "Grid Performance"
+            run_test "Grid Routing Backbone" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/grid-routing-backbone.test.ts" "Grid Performance"
+            run_test "Grid Distributed Chat Commands" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/integration/grid-distributed-chat-commands.test.ts" "Grid Performance"
+            run_test "Grid Events All Layers" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/integration/grid-events-all-layers.test.ts" "Grid Performance"
+            run_test "Grid Advanced Performance Analysis" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/integration/grid-advanced-performance-analysis.test.ts" "Grid Performance"
+            
             # Event system
             run_test "Server-Browser Events" "npx tsx tests/integration/server-browser-event-flow.test.ts" "Event Tests"
             run_test "Browser-Server Events" "npx tsx tests/integration/browser-server-event-flow.test.ts" "Event Tests" 
@@ -210,6 +218,13 @@ run_profile_tests() {
             run_test "Transport Diagnostic" "npx tsx tests/transport-diagnostic.test.ts" "Transport Tests"
             run_test "Cross-Context Commands" "npx tsx tests/integration/transport/browser-server-commands.test.ts" "Transport Tests"
             # run_test "Transport Flexibility" "npx tsx tests/integration/transport/transport-flexibility.test.ts" "Transport Tests"  # Still may hang
+            
+            # Grid P2P Performance Tests
+            run_test "Grid Transport Foundation" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/grid-transport-foundation.test.ts" "Grid Performance"
+            run_test "Grid Routing Backbone" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/grid-routing-backbone.test.ts" "Grid Performance"
+            run_test "Grid Distributed Chat Commands" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/integration/grid-distributed-chat-commands.test.ts" "Grid Performance"
+            run_test "Grid Events All Layers" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/integration/grid-events-all-layers.test.ts" "Grid Performance"
+            run_test "Grid Advanced Performance Analysis" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/integration/grid-advanced-performance-analysis.test.ts" "Grid Performance"
             ;;
             
         "events")
@@ -234,6 +249,15 @@ run_profile_tests() {
             run_test "Widget Foundation" "npx tsx tests/layer-6-browser-integration/simplified-widget-demo.test.ts" "Widget Tests"
             ;;
             
+        "performance")
+            # Grid P2P Performance Testing Suite - Microsecond precision measurements
+            run_test "Grid Transport Foundation" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/grid-transport-foundation.test.ts" "Grid Performance"
+            run_test "Grid Routing Backbone" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/grid-routing-backbone.test.ts" "Grid Performance"  
+            run_test "Grid Distributed Chat Commands" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/integration/grid-distributed-chat-commands.test.ts" "Grid Performance"
+            run_test "Grid Events All Layers" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/integration/grid-events-all-layers.test.ts" "Grid Performance"
+            run_test "Grid Advanced Performance Analysis" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/integration/grid-advanced-performance-analysis.test.ts" "Grid Performance"
+            ;;
+            
         "single-test")
             # Single test runner - pass test file as second argument
             if [ -n "$TEST_FILE" ]; then
@@ -246,7 +270,7 @@ run_profile_tests() {
             
         *)
             echo "❌ Unknown profile: $PROFILE"
-            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, transport, events, blocker, critical, widgets, single-test"
+            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, transport, events, blocker, critical, widgets, performance, single-test"
             exit 1
             ;;
     esac

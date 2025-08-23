@@ -517,6 +517,13 @@ export abstract class UDPMulticastTransportBase extends TransportBase implements
   }
 
   /**
+   * Get transport configuration
+   */
+  getConfig(): UDPMulticastConfig {
+    return this.config;
+  }
+
+  /**
    * Environment-specific implementations
    */
   protected abstract getHostname(): string;
