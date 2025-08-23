@@ -78,30 +78,20 @@ export function calculateCropCoordinates(
     throw new Error('calculateCropCoordinates only available in browser environment');
   }
   
-  // Get element dimensions from getBoundingClientRect for size
+  // Get element and body dimensions
   const elementRect = element.getBoundingClientRect();
+  const bodyRect = bodyElement.getBoundingClientRect();
   
-  // CRITICAL FIX: Use offsetTop/offsetLeft for document-relative positioning
-  // getBoundingClientRect gives viewport position, but html2canvas captures full document
-  const htmlElement = element as HTMLElement;
-  const documentX = htmlElement.offsetLeft || 0;
-  const documentY = htmlElement.offsetTop || 0;
+  // Calculate element position relative to body
+  const relativeX = Math.max(0, (elementRect.left - bodyRect.left) * scale);
+  const relativeY = Math.max(0, (elementRect.top - bodyRect.top) * scale);
   
-  // Use scroll dimensions for overflow content
-  const elementScrollWidth = htmlElement.scrollWidth || elementRect.width;
-  const elementScrollHeight = htmlElement.scrollHeight || elementRect.height;
+  // Get element dimensions with overflow consideration
+  const elementBounds = getElementBounds(element, includeOverflow);
+  const relativeWidth = elementBounds.width * scale;
+  const relativeHeight = elementBounds.height * scale;
   
-  // Determine actual element dimensions (visual bounds vs full content)
-  const actualWidth = includeOverflow ? Math.max(elementRect.width, elementScrollWidth) : elementRect.width;
-  const actualHeight = includeOverflow ? Math.max(elementRect.height, elementScrollHeight) : elementRect.height;
-  
-  // Use document-relative coordinates for accurate canvas positioning
-  const relativeX = Math.max(0, documentX * scale);
-  const relativeY = Math.max(0, documentY * scale);
-  const relativeWidth = actualWidth * scale;
-  const relativeHeight = actualHeight * scale;
-  
-  console.log(`📐 ElementUtils: Element ${getElementDisplayName(element)} - viewport: ${elementRect.left},${elementRect.top}, document: ${documentX},${documentY}, size: ${actualWidth}x${actualHeight}`);
+  console.log(`📐 ElementUtils: Element ${getElementDisplayName(element)} - viewport: ${elementRect.left},${elementRect.top}, relative to body: ${relativeX/scale},${relativeY/scale}, size: ${elementBounds.width}x${elementBounds.height}`);
   console.log(`📐 ElementUtils: Final crop: ${relativeX},${relativeY} ${relativeWidth}x${relativeHeight} @ scale ${scale}`);
   
   return {
@@ -121,17 +111,33 @@ export function constrainCropToCanvas(
   canvasWidth: number,
   canvasHeight: number
 ): CropCoordinates {
-  const constrainedWidth = Math.min(crop.width, canvasWidth - crop.x);
-  const constrainedHeight = Math.min(crop.height, canvasHeight - crop.y);
+  // Calculate the actual visible area when crop extends outside canvas
+  const cropEndX = crop.x + crop.width;
+  const cropEndY = crop.y + crop.height;
   
-  if (constrainedWidth !== crop.width || constrainedHeight !== crop.height) {
-    console.log(`⚠️ ElementUtils: Constrained crop from ${crop.width}x${crop.height} to ${constrainedWidth}x${constrainedHeight} to fit canvas`);
+  // Clamp start coordinates to canvas bounds
+  const constrainedStartX = Math.max(0, crop.x);
+  const constrainedStartY = Math.max(0, crop.y);
+  
+  // Clamp end coordinates to canvas bounds  
+  const constrainedEndX = Math.min(canvasWidth, cropEndX);
+  const constrainedEndY = Math.min(canvasHeight, cropEndY);
+  
+  // Calculate dimensions of visible area
+  const constrainedWidth = Math.max(1, constrainedEndX - constrainedStartX);
+  const constrainedHeight = Math.max(1, constrainedEndY - constrainedStartY);
+  
+  if (constrainedStartX !== crop.x || constrainedStartY !== crop.y || 
+      constrainedWidth !== crop.width || constrainedHeight !== crop.height) {
+    console.log(`⚠️ ElementUtils: Constrained crop from (${crop.x},${crop.y},${crop.width}x${crop.height}) to (${constrainedStartX},${constrainedStartY},${constrainedWidth}x${constrainedHeight}) to fit canvas`);
   }
   
   return {
-    ...crop,
+    x: constrainedStartX,
+    y: constrainedStartY,
     width: constrainedWidth,
-    height: constrainedHeight
+    height: constrainedHeight,
+    scale: crop.scale
   };
 }
 
@@ -140,8 +146,8 @@ export function constrainCropToCanvas(
  */
 export function getElementDisplayName(element: Element): string {
   if (element.id) return `#${element.id}`;
-  if (element.classList.length > 0) return `.${element.classList[0]}`;
-  return element.tagName.toLowerCase();
+  if (element.classList && element.classList.length > 0) return `.${element.classList[0]}`;
+  return element.tagName?.toLowerCase() || 'unknown';
 }
 
 /**
