@@ -87,6 +87,12 @@ export abstract class UDPMulticastTransportBase extends TransportBase implements
    * Initialize P2P transport
    */
   async initialize(): Promise<void> {
+    // Check if already initialized
+    if (this.connected) {
+      console.log(`⚡ P2P Transport: Already initialized for ${this.config.nodeType} node ${this.config.nodeId.substring(0, 8)}`);
+      return;
+    }
+    
     console.log(`🚀 P2P Transport: Starting mesh networking for ${this.config.nodeType}`);
     
     try {
