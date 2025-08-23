@@ -13,6 +13,7 @@ import type { FileSaveParams, FileSaveResult } from '../shared/FileSaveTypes';
 import { createFileSaveResult } from '../shared/FileSaveTypes';
 import { PersistenceError } from '../../../../system/core/types/ErrorTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import { WorkingDirConfig } from '../../../../system/core/config/WorkingDirConfig';
 
 export class FileSaveServerCommand extends CommandBase<FileSaveParams, FileSaveResult> {
   
@@ -29,8 +30,10 @@ export class FileSaveServerCommand extends CommandBase<FileSaveParams, FileSaveR
 
     try {
       // Create session-based path following JTAG directory structure
+      // Use WorkingDirConfig to respect per-project .continuum isolation
       const sessionId = saveParams.sessionId;
-      const basePath = `.continuum/jtag/sessions/user/${sessionId}`;
+      const continuumPath = WorkingDirConfig.getContinuumPath();
+      const basePath = path.join(continuumPath, 'jtag', 'sessions', 'user', sessionId);
       const fullPath = path.resolve(basePath, saveParams.filepath);
       
       console.log(`📝 SERVER: Saving to session path: ${fullPath}`);

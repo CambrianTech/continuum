@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { SystemReadySignaler } from './signal-system-ready';
 import { getActivePorts } from '../system/shared/ExampleConfig';
+import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
 
 // Strong typing for server management
 interface ServerProcess {
@@ -18,7 +19,8 @@ interface TestResult {
   readonly errorMessage?: string;
 }
 
-const logDir = path.resolve('.continuum/jtag/system/logs');
+// Use WorkingDirConfig for per-project isolation
+const logDir = path.join(WorkingDirConfig.getContinuumPath(), 'jtag', 'system', 'logs');
 const logFile = path.join(logDir, 'test-server.log');
 
 // Ensure directory exists
@@ -206,6 +208,15 @@ async function runTests(): Promise<boolean> {
 async function main(): Promise<void> {
   let serverProcess: ServerProcess | null = null;
   let testsSuccessful = false; // Track success for cleanup decision
+  
+  // Set up proper working directory context for per-project isolation
+  // This ensures SystemReadySignaler uses the same context as the running system
+  const { getActiveExampleName } = await import('../system/shared/ExampleConfig');
+  const activeExample = getActiveExampleName();
+  const workingDir = `examples/${activeExample}`;
+  WorkingDirConfig.setWorkingDir(workingDir);
+  console.log(`🎯 Test context set to: ${workingDir}`);
+  
   const signaler = new SystemReadySignaler();
   
   try {

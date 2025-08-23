@@ -11,10 +11,12 @@ import { JTAGSystemServer } from '../system/core/system/server/JTAGSystemServer'
 import { getActiveExampleName, getActiveExamplePath, getActivePorts } from '../system/shared/ExampleConfig';
 import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
 import { ProcessCoordinator } from '../system/core/process/ProcessCoordinator';
+import { SystemReadySignaler } from './signal-system-ready';
 
 let jtagServer: any = null;
 let exampleServer: ChildProcess | null = null;
 let keepAliveTimer: NodeJS.Timeout | null = null;
+let signaler: SystemReadySignaler | null = null;
 
 async function launchActiveExample() {
   const coordinator = ProcessCoordinator.getInstance();
@@ -107,6 +109,27 @@ async function launchActiveExample() {
       process.exit(code || 0);
     });
     
+    // 3. Start the system health monitoring
+    console.log('🔍 Starting system health monitoring...');
+    signaler = new SystemReadySignaler();
+    // Start continuous monitoring in background
+    const monitoringLoop = async () => {
+      try {
+        const signal = await signaler.generateReadySignal();
+        // Signal is automatically written to file by generateReadySignal()
+      } catch (error) {
+        console.error('⚠️ Health monitoring error:', error.message);
+      }
+    };
+    
+    // Initial signal generation
+    await monitoringLoop();
+    
+    // Set up periodic monitoring every 30 seconds
+    const monitoringInterval = setInterval(monitoringLoop, 30000);
+    keepAliveTimer = monitoringInterval; // Reuse existing cleanup mechanism
+    console.log('✅ System health monitoring started');
+    
     console.log('✅ Complete JTAG system started successfully');
     console.log(`🔌 JTAG WebSocket Server: ws://localhost:${activePorts.websocket_server}`);
     console.log(`🌐 ${activeExampleName} HTTP Server: http://localhost:${activePorts.http_server}`);
@@ -127,10 +150,7 @@ async function launchActiveExample() {
     // Keep running - prevent Node.js from exiting
     console.log('📡 Complete JTAG system running - press Ctrl+C to stop both servers');
     
-    // Keep the process alive with a simple timer
-    keepAliveTimer = setInterval(() => {
-      // Just keep the process alive - no actual work needed
-    }, 30000); // Every 30 seconds
+    // Process kept alive by the monitoring interval above
     
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -155,6 +175,11 @@ function cleanup() {
     console.log('🛑 Stopping example server...');
     exampleServer.kill('SIGTERM');
     exampleServer = null;
+  }
+  
+  if (signaler) {
+    console.log('🛑 Stopping system health monitoring...');
+    signaler = null;
   }
   
   if (jtagServer) {
