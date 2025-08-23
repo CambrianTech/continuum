@@ -67,9 +67,12 @@ async function testGridTransportFoundation(): Promise<void> {
     const topology2 = transport2.getNetworkTopology();
     
     console.log(`🗺️ Node 1 topology: ${Object.keys(topology1.nodes).length} nodes`);
+    console.log(`   Node 1 sees nodes:`, Object.keys(topology1.nodes));
     console.log(`🗺️ Node 2 topology: ${Object.keys(topology2.nodes).length} nodes`);
+    console.log(`   Node 2 sees nodes:`, Object.keys(topology2.nodes));
     
-    if (Object.keys(topology1.nodes).length < 2 || Object.keys(topology2.nodes).length < 2) {
+    // Each node should see exactly 1 other node in a 2-node setup (they don't count themselves)
+    if (Object.keys(topology1.nodes).length < 1 || Object.keys(topology2.nodes).length < 1) {
       throw new Error(`Nodes did not discover each other properly`);
     }
     
@@ -104,10 +107,10 @@ async function testGridTransportFoundation(): Promise<void> {
     console.log(`🗺️ Final mesh - Node 2: ${Object.keys(finalTopology2.nodes).length} nodes`);
     console.log(`🗺️ Final mesh - Node 3: ${Object.keys(finalTopology3.nodes).length} nodes`);
     
-    // Verify all nodes discovered each other
-    if (Object.keys(finalTopology1.nodes).length < 3 || 
-        Object.keys(finalTopology2.nodes).length < 3 || 
-        Object.keys(finalTopology3.nodes).length < 3) {
+    // Verify all nodes discovered each other - each should see 2 others in a 3-node setup
+    if (Object.keys(finalTopology1.nodes).length < 2 || 
+        Object.keys(finalTopology2.nodes).length < 2 || 
+        Object.keys(finalTopology3.nodes).length < 2) {
       console.log(`⚠️ Not all nodes discovered each other (may need more time)`);
     } else {
       console.log(`✅ Complete 3-node mesh formed successfully`);
@@ -161,12 +164,12 @@ async function testGridTransportFoundation(): Promise<void> {
     console.log('4. Create unified JTAGClient interface');
     console.log('5. Test cross-server persona collaboration substrate');
     
-    process.exit(0);
+    return; // Success - return instead of process.exit(0)
     
   } catch (error: any) {
     console.error('💥 Grid transport foundation test failed:', error.message);
     console.error('Stack trace:', error.stack);
-    process.exit(1);
+    throw error; // Throw instead of process.exit(1)
   } finally {
     // Cleanup all transports
     console.log('\n🧹 Cleaning up transports...');

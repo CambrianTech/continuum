@@ -180,6 +180,9 @@
       ]
     },
     "strict": true,
+    "noImplicitAny": true,
+    "noImplicitReturns": true,
+    "noImplicitThis": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
@@ -219,7 +222,7 @@
     "pathCount": 228
   },
   "_pathsGenerated": {
-    "timestamp": "2025-08-23T18:57:13.384Z",
+    "timestamp": "2025-08-23T19:59:38.945Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 56,
     "note": "Auto-generated from essential path mappings only"
