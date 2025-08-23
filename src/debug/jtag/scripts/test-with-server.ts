@@ -137,7 +137,7 @@ async function waitForServerReady(signaler: SystemReadySignaler): Promise<boolea
       const hasAllPorts = requiredPorts.every(port => 
         signal.portsActive && signal.portsActive.includes(port)
       );
-      const isHealthy = signal.systemHealth === 'healthy' || signal.systemHealth === 'degraded';
+      const isHealthy = signal.systemHealth === 'healthy';
       
       console.log(`⏳ Attempt ${attempt}/${maxAttempts}:`);
       console.log(`   Bootstrap: ${hasBootstrap ? '✅' : '❌'}`);
@@ -145,6 +145,11 @@ async function waitForServerReady(signaler: SystemReadySignaler): Promise<boolea
       console.log(`   WebSocket (${wsPort}): ${signal.portsActive?.includes(wsPort) ? '✅' : '❌'}`);
       console.log(`   HTTP (${httpPort}): ${signal.portsActive?.includes(httpPort) ? '✅' : '❌'}`);
       console.log(`   Health: ${signal.systemHealth}`);
+      
+      // Show node errors if we have them so we're not debugging blind
+      if (signal.nodeErrors && signal.nodeErrors.length > 0) {
+        console.log(`   ⚠️ Node errors: ${signal.nodeErrors.slice(0, 2).join('; ')}`);
+      }
       
       if (hasBootstrap && hasCommands && hasAllPorts && isHealthy) {
         console.log(`✅ COMPLETE server system ready! (${signal.commandCount} commands, ${signal.portsActive?.length} ports active)`);
