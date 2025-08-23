@@ -24,6 +24,9 @@ import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
 import { createPayload } from '../../../system/core/types/JTAGTypes';
 import { type JTAGMessage } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { WorkingDirConfig } from '../../../system/core/config/WorkingDirConfig';
+import fs from 'fs/promises';
+import path from 'path';
 
 const createSessionErrorResponse = (
   error: string,
@@ -46,7 +49,88 @@ export class SessionDaemonServer extends SessionDaemon {
     super(context, router);
   }
 
-    /**
+  /**
+   * Get the sessions metadata file path for the current working directory context
+   */
+  private getSessionsMetadataPath(): string {
+    const continuumPath = WorkingDirConfig.getContinuumPath();
+    return path.join(continuumPath, 'jtag', 'sessions', 'metadata.json');
+  }
+
+  /**
+   * Ensure session directories exist for the current working directory context
+   */
+  private async ensureSessionDirectories(): Promise<void> {
+    const continuumPath = WorkingDirConfig.getContinuumPath();
+    const sessionDir = path.join(continuumPath, 'jtag', 'sessions');
+    const logsDir = path.join(continuumPath, 'jtag', 'logs');
+    const screenshotsDir = path.join(continuumPath, 'jtag', 'screenshots');
+    const signalsDir = path.join(continuumPath, 'jtag', 'signals');
+    
+    await Promise.all([
+      fs.mkdir(sessionDir, { recursive: true }),
+      fs.mkdir(logsDir, { recursive: true }),
+      fs.mkdir(screenshotsDir, { recursive: true }),
+      fs.mkdir(signalsDir, { recursive: true })
+    ]);
+  }
+
+  /**
+   * Load sessions from per-project metadata file
+   */
+  private async loadSessionsFromFile(): Promise<void> {
+    try {
+      const metadataPath = this.getSessionsMetadataPath();
+      const metadataContent = await fs.readFile(metadataPath, 'utf-8');
+      const metadata = JSON.parse(metadataContent);
+      
+      if (metadata.sessions && Array.isArray(metadata.sessions)) {
+        this.sessions = metadata.sessions.map((session: any) => ({
+          ...session,
+          created: new Date(session.created),
+          lastActive: new Date(session.lastActive)
+        }));
+        console.log(`📖 ${this.toString()}: Loaded ${this.sessions.length} sessions from ${metadataPath}`);
+      }
+    } catch (error) {
+      // File doesn't exist or is invalid, start with empty sessions
+      console.log(`📝 ${this.toString()}: No existing session metadata found, starting fresh`);
+      this.sessions = [];
+    }
+  }
+
+  /**
+   * Save sessions to per-project metadata file
+   */
+  private async saveSessionsToFile(): Promise<void> {
+    try {
+      await this.ensureSessionDirectories();
+      const metadataPath = this.getSessionsMetadataPath();
+      
+      const metadata = {
+        projectContext: WorkingDirConfig.getWorkingDir(),
+        sessions: this.sessions,
+        lastUpdated: new Date().toISOString(),
+        version: '1.0.0'
+      };
+      
+      await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2));
+      console.log(`💾 ${this.toString()}: Saved ${this.sessions.length} sessions to ${metadataPath}`);
+    } catch (error) {
+      console.error(`❌ ${this.toString()}: Failed to save session metadata:`, error);
+    }
+  }
+
+  /**
+   * Initialize session daemon server with per-project session loading
+   */
+  protected async initialize(): Promise<void> {
+    await super.initialize();
+    await this.loadSessionsFromFile();
+    console.log(`🏷️ ${this.toString()}: Session daemon server initialized with per-project persistence`);
+  }
+
+  /**
    * Extract session operation from endpoint path (similar to CommandDaemon.extractCommand)
    */
   private extractOperation(endpoint: string): SessionOperation {
@@ -136,6 +220,9 @@ export class SessionDaemonServer extends SessionDaemon {
       console.log(`✅ ${this.toString()}: New session created:`, newSession);
 
       this.sessions.push(newSession);
+      
+      // Persist session to per-project metadata file
+      await this.saveSessionsToFile();
 
       return createPayload(params.context, params.sessionId, {
         success: true,

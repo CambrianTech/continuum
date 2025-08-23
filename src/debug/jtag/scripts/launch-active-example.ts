@@ -10,17 +10,17 @@ import { spawn, ChildProcess } from 'child_process';
 import { JTAGSystemServer } from '../system/core/system/server/JTAGSystemServer';
 import { getActiveExampleName, getActiveExamplePath, getActivePorts } from '../system/shared/ExampleConfig';
 import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
-import { ProcessCoordinator } from '../system/core/process/ProcessCoordinator';
+import { ProcessCoordinator, ProcessLock } from '../system/core/process/ProcessCoordinator';
 import { SystemReadySignaler } from './signal-system-ready';
 
-let jtagServer: any = null;
+let jtagServer: JTAGSystemServer | null = null;
 let exampleServer: ChildProcess | null = null;
 let keepAliveTimer: NodeJS.Timeout | null = null;
 let signaler: SystemReadySignaler | null = null;
 
-async function launchActiveExample() {
+async function launchActiveExample(): Promise<void> {
   const coordinator = ProcessCoordinator.getInstance();
-  let lock: any = null;
+  let lock: ProcessLock | null = null;
 
   try {
     console.log('🚀 Intelligent JTAG system startup...');

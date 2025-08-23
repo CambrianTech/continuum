@@ -108,3 +108,58 @@ export type JTAGResult<T, E extends JTAGError = JTAGError> =
  */
 export type ErrorContext<T extends Record<string, unknown>> = Required<Pick<T, keyof T>>;
 export type SerializableError = Pick<JTAGError, 'type' | 'message' | 'timestamp'>;
+
+/**
+ * Type-safe error conversion utilities
+ */
+export interface TypedErrorInfo {
+  readonly message: string;
+  readonly name: string;
+  readonly stack?: string;
+}
+
+/**
+ * Converts unknown error to typed error info, ensuring type safety
+ * Use this instead of 'any' in catch blocks
+ */
+export function createTypedErrorInfo(error: unknown): TypedErrorInfo {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      name: error.name,
+      stack: error.stack
+    };
+  }
+  
+  if (typeof error === 'string') {
+    return {
+      message: error,
+      name: 'StringError'
+    };
+  }
+  
+  if (typeof error === 'object' && error !== null) {
+    const obj = error as Record<string, unknown>;
+    return {
+      message: String(obj.message || '[Object Error]'),
+      name: String(obj.name || 'ObjectError')
+    };
+  }
+  
+  return {
+    message: String(error),
+    name: 'UnknownError'
+  };
+}
+
+/**
+ * Safe error message extraction that never throws
+ * Use this in catch blocks instead of error.message
+ */
+export function getErrorMessage(error: unknown): string {
+  try {
+    return createTypedErrorInfo(error).message;
+  } catch {
+    return '[Error while processing error]';
+  }
+}

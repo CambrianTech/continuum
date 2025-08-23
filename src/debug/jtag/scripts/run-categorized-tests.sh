@@ -145,6 +145,7 @@ run_profile_tests() {
             # Core system tests
             run_test "Bootstrap Detection" "npx tsx tests/bootstrap-comprehensive.test.ts" "Core System"  
             run_test "System Signals" "npx tsx tests/signal-system.test.ts" "Core System"
+            run_test "SystemReadySignaler Integration" "npx tsx tests/system-ready-signaler-integration.test.ts" "Core System"
             run_test "Router Coordination" "npx tsx tests/integration/router-coordination-simple.test.ts" "Core System"
             
             # Browser integration (no widget tests in comprehensive to avoid navigation issues)
