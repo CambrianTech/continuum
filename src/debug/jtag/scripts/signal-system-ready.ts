@@ -16,6 +16,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { JTAG_LOG_PATTERNS } from '../system/core/client/shared/JTAGClientConstants';
 import { getSystemConfig } from '../system/core/config/SystemConfiguration';
+import { getActivePorts } from '../system/shared/ExampleConfig';
 
 const execAsync = promisify(exec);
 
@@ -39,12 +40,13 @@ interface SystemReadySignal {
 }
 
 function getSignalConfig() {
-  const systemConfig = getSystemConfig();
+  // Use ExampleConfig ports instead of SystemConfiguration for consistency
+  const activePorts = getActivePorts();
   return {
     VERSION: '1.0.0',
     EXPECTED_PORTS: [
-      systemConfig.getWebSocketPort(),
-      systemConfig.getHTTPPort()
+      activePorts.websocket_server,
+      activePorts.http_server
     ].filter(port => port > 0) as readonly number[], // Filter out disabled ports
     MIN_COMMAND_COUNT: 1, // Reduced - we now use process registry for readiness
     DEFAULT_TIMEOUT_MS: 30000 // Reduced timeout since registry-based detection is faster
@@ -379,8 +381,9 @@ class SystemReadySignaler {
 
   private async checkBrowserReady(): Promise<boolean> {
     try {
-      const systemConfig = getSystemConfig();
-      const httpUrl = systemConfig.getHTTPBaseUrl();
+      // Use ExampleConfig HTTP port for consistency with actual server
+      const activePorts = getActivePorts();
+      const httpUrl = `http://localhost:${activePorts.http_server}`;
       
       // Try multiple times with increasing timeouts for browser warmup
       const attempts = [
@@ -391,8 +394,8 @@ class SystemReadySignaler {
       
       for (const attempt of attempts) {
         try {
-          const { stdout } = await execAsync(`curl -s --max-time ${attempt.timeout} ${httpUrl} 2>/dev/null | grep -i "jtag" || echo ""`);
-          if (stdout.includes('JTAG')) {
+          const { stdout } = await execAsync(`curl -s --max-time ${attempt.timeout} ${httpUrl} 2>/dev/null | grep -i "continuum" || echo ""`);
+          if (stdout.includes('Continuum')) {
             return true;
           }
         } catch {

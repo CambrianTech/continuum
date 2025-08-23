@@ -1,39 +1,38 @@
 /**
  * Working Directory Configuration - Single Source of Truth
  * 
- * Configures where JTAG creates .continuum directories and serves content.
- * Switch between test-bench, widget-ui, or any other directory from one place.
+ * Creates .continuum directories relative to consumer's working directory.
+ * Works when installed as npm package or used in development.
  */
 
+import { resolve } from 'path';
+
 export class WorkingDirConfig {
-  private static readonly DEFAULT_DIR = 'examples/test-bench';
-  
   /**
    * Get the current working directory for JTAG operations
-   * Priority: env var > package.json config > default
+   * Uses consumer's working directory (where they run the command)
+   * This makes it work properly when installed as npm package
    */
   static getWorkingDir(): string {
+    // If explicitly set via env var, use that
     if (process.env.JTAG_WORKING_DIR) {
-      return process.env.JTAG_WORKING_DIR;
+      return resolve(process.env.JTAG_WORKING_DIR);
     }
     
-    try {
-      const packageJson = require('../../../package.json');
-      return packageJson.config?.workingDir || this.DEFAULT_DIR;
-    } catch {
-      return this.DEFAULT_DIR;
-    }
+    // For npm package usage: use consumer's working directory
+    // For development: can be overridden with JTAG_WORKING_DIR
+    return process.cwd();
   }
   
   /**
    * Set working directory programmatically
    */
   static setWorkingDir(dir: string): void {
-    process.env.JTAG_WORKING_DIR = dir;
+    process.env.JTAG_WORKING_DIR = resolve(dir);
   }
   
   /**
-   * Get .continuum base path for current working directory
+   * Get .continuum base path (always relative to working directory)
    */
   static getContinuumPath(): string {
     return `${this.getWorkingDir()}/.continuum`;
@@ -54,16 +53,23 @@ export class WorkingDirConfig {
   }
   
   /**
-   * Switch to widget-ui mode
+   * Get screenshots path
    */
-  static useWidgetUI(): void {
-    this.setWorkingDir('examples/widget-ui');
+  static getScreenshotsPath(): string {
+    return `${this.getContinuumPath()}/jtag/currentUser/screenshots`;
   }
   
   /**
-   * Switch to test-bench mode (default)
+   * Development mode: Switch to test-bench example 
    */
   static useTestBench(): void {
     this.setWorkingDir('examples/test-bench');
+  }
+  
+  /**
+   * Development mode: Switch to widget-ui example
+   */
+  static useWidgetUI(): void {
+    this.setWorkingDir('examples/widget-ui');
   }
 }

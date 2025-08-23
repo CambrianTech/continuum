@@ -107,7 +107,13 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       
     } catch (error: unknown) {
       // Don't fail the whole operation if symlink creation fails - this is non-critical
-      // Only warn once to avoid log spam
+      // Special handling for EEXIST - this is normal and expected
+      if (error instanceof Error && error.message.includes('EEXIST: file already exists')) {
+        // Symlink already exists - this is fine, no need to report
+        return;
+      }
+      
+      // Only warn once for other errors to avoid log spam
       if (!this.symlinkWarningShown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         this.originalConsole.warn(`ConsoleDaemon: Symlink creation failed (non-critical):`, errorMessage);
@@ -151,7 +157,13 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       
     } catch (error: unknown) {
       // Don't fail the whole operation if symlink creation fails - this is non-critical
-      // Only warn once to avoid log spam
+      // Special handling for EEXIST - this is normal and expected
+      if (error instanceof Error && error.message.includes('EEXIST: file already exists')) {
+        // Symlink already exists - this is fine, no need to report
+        return;
+      }
+      
+      // Only warn once for other errors to avoid log spam
       if (!this.currentUserSymlinkWarningShown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         this.originalConsole.warn(`ConsoleDaemon: CurrentUser symlink creation failed (non-critical):`, errorMessage);

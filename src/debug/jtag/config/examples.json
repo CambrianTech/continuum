@@ -1,5 +1,5 @@
 {
-  "active_example": "test-bench",
+  "active_example": "widget-ui",
   "examples": {
     "test-bench": {
       "name": "JTAG Test Bench",
