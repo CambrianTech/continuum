@@ -17,6 +17,7 @@ import { promisify } from 'util';
 import { JTAG_LOG_PATTERNS } from '../system/core/client/shared/JTAGClientConstants';
 import { getSystemConfig } from '../system/core/config/SystemConfiguration';
 import { getActivePorts } from '../system/shared/ExampleConfig';
+import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
 
 const execAsync = promisify(exec);
 
@@ -54,9 +55,19 @@ function getSignalConfig() {
 }
 
 class SystemReadySignaler {
-  private signalDir = '.continuum/jtag/signals';
-  private readyFile = path.join(this.signalDir, 'system-ready.json');
-  private pidFile = path.join(this.signalDir, 'system.pid');
+  private get signalDir(): string {
+    // Use WorkingDirConfig for per-project isolation
+    const continuumPath = WorkingDirConfig.getContinuumPath();
+    return path.join(continuumPath, 'jtag', 'signals');
+  }
+  
+  private get readyFile(): string {
+    return path.join(this.signalDir, 'system-ready.json');
+  }
+  
+  private get pidFile(): string {
+    return path.join(this.signalDir, 'system.pid');
+  }
 
   async generateReadySignal(): Promise<SystemReadySignal> {
     // Don't log "Generating" - it's confusing since we're checking, not generating
@@ -231,9 +242,11 @@ class SystemReadySignaler {
 
   private async checkBootstrap(): Promise<boolean> {
     try {
-      const logPath = '.continuum/jtag/currentUser/logs/browser-console-log.log';
+      // Use WorkingDirConfig for per-project isolation
+      const continuumPath = WorkingDirConfig.getContinuumPath();
+      const logPath = path.join(continuumPath, 'jtag', 'currentUser', 'logs', 'browser-console-log.log');
       // Use fixed string pattern to avoid shell escaping issues
-      const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" ${logPath} | grep "commands" 2>/dev/null || echo ""`);
+      const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" "${logPath}" | grep "commands" 2>/dev/null || echo ""`);
       return stdout.trim().length > 0;
     } catch {
       return false;
@@ -242,9 +255,11 @@ class SystemReadySignaler {
 
   private async countCommands(): Promise<number> {
     try {
-      const logPath = '.continuum/jtag/currentUser/logs/browser-console-log.log';
+      // Use WorkingDirConfig for per-project isolation
+      const continuumPath = WorkingDirConfig.getContinuumPath();
+      const logPath = path.join(continuumPath, 'jtag', 'currentUser', 'logs', 'browser-console-log.log');
       // Get all bootstrap messages and take the LAST one (most recent)
-      const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" ${logPath} | grep "commands" 2>/dev/null || echo ""`);
+      const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" "${logPath}" | grep "commands" 2>/dev/null || echo ""`);
       
       if (!stdout.trim()) {
         return 0;
@@ -280,8 +295,9 @@ class SystemReadySignaler {
   private async checkCompilation(): Promise<'success' | 'failed' | 'unknown'> {
     try {
       // Check npm-start.log for TypeScript compilation results
-      const startupLog = '.continuum/jtag/system/logs/npm-start.log';
-      const { stdout } = await execAsync(`tail -100 ${startupLog} 2>/dev/null | grep -E "(tsc|build:ts|esbuild|Error|error|Could not resolve)" | tail -20 || echo ""`);
+      const continuumPath = WorkingDirConfig.getContinuumPath();
+      const startupLog = path.join(continuumPath, 'jtag', 'system', 'logs', 'npm-start.log');
+      const { stdout } = await execAsync(`tail -100 "${startupLog}" 2>/dev/null | grep -E "(tsc|build:ts|esbuild|Error|error|Could not resolve)" | tail -20 || echo ""`);
       
       // Only flag actual TERMINAL compilation errors, not transient ones
       const hasFinalBuildFailure = stdout.includes('npm ERR!') && stdout.includes('build:ts');
@@ -310,7 +326,8 @@ class SystemReadySignaler {
     
     try {
       // Check system startup logs for node errors
-      const startupLog = '.continuum/jtag/system/logs/npm-start.log';
+      const continuumPath = WorkingDirConfig.getContinuumPath();
+      const startupLog = path.join(continuumPath, 'jtag', 'system', 'logs', 'npm-start.log');
       const { stdout } = await execAsync(`tail -100 ${startupLog} 2>/dev/null | grep -i -E "(error|exception|failed|cannot|unable)" | tail -10 || echo ""`);
       
       if (stdout.trim()) {
@@ -318,7 +335,7 @@ class SystemReadySignaler {
       }
       
       // Check server console logs for runtime errors
-      const serverLog = '.continuum/jtag/sessions/system/*/logs/server-console-log.log';
+      const serverLog = path.join(continuumPath, 'jtag', 'sessions', 'system', '*', 'logs', 'server-console-log.log');
       const { stdout: serverErrors } = await execAsync(`tail -50 ${serverLog} 2>/dev/null | grep -i "error" | tail -5 || echo ""`);
       
       if (serverErrors.trim()) {
@@ -335,8 +352,9 @@ class SystemReadySignaler {
   private async captureStartupLogs(): Promise<string> {
     try {
       // Capture recent startup logs for diagnostic purposes
-      const startupLog = '.continuum/jtag/system/logs/npm-start.log';
-      const { stdout } = await execAsync(`tail -50 ${startupLog} 2>/dev/null || echo "No startup logs found"`);
+      const continuumPath = WorkingDirConfig.getContinuumPath();
+      const startupLog = path.join(continuumPath, 'jtag', 'system', 'logs', 'npm-start.log');
+      const { stdout } = await execAsync(`tail -50 "${startupLog}" 2>/dev/null || echo "No startup logs found"`);
       return stdout;
     } catch (error: any) {
       return `Error capturing startup logs: ${error.message}`;
@@ -350,7 +368,8 @@ class SystemReadySignaler {
       // CRITICAL: Check server console errors for daemon creation failures
       if (!bootstrapComplete && commandCount === 0) {
         // Check server console error logs for daemon creation failures
-        const serverErrorLog = '.continuum/jtag/system/logs/server-console-error.log';
+        const continuumPath = WorkingDirConfig.getContinuumPath();
+        const serverErrorLog = path.join(continuumPath, 'jtag', 'system', 'logs', 'server-console-error.log');
         const { stdout: daemonErrors } = await execAsync(`tail -20 ${serverErrorLog} 2>/dev/null | grep "Failed to create.*daemon\\|Unknown storage adapter type" | tail -3 || echo ""`);
         
         if (daemonErrors.trim()) {

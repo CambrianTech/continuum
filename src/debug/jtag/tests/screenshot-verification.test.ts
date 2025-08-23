@@ -10,6 +10,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { withHangBreaker } from '../utils/AggressiveHangBreaker';
+import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
 
 interface ScreenshotVerificationResult {
   success: boolean;
@@ -33,32 +34,108 @@ async function verifyScreenshotEndToEnd(): Promise<ScreenshotVerificationResult>
   };
   
   try {
-    // 1. Find current user session directory
-    const currentUserPath = '.continuum/jtag/currentUser';
+    // 1. Find session directory with screenshots (support test sequencing)
+    const continuumPath = WorkingDirConfig.getContinuumPath();
+    const sessionsDir = path.join(continuumPath, 'jtag', 'sessions', 'user');
     
     let sessionPath: string;
-    try {
-      const stats = fs.lstatSync(currentUserPath);
-      if (stats.isSymbolicLink()) {
-        sessionPath = fs.readlinkSync(currentUserPath);
-        // Convert relative path to absolute
-        if (!path.isAbsolute(sessionPath)) {
-          sessionPath = path.resolve(path.dirname(currentUserPath), sessionPath);
-        }
-        result.details.push(`✅ Found current session via symlink: ${sessionPath}`);
+    
+    // Check if specific session ID is requested (for test sequencing)
+    const forcedSessionId = process.env.FORCE_SESSION_ID;
+    if (forcedSessionId) {
+      sessionPath = path.join(sessionsDir, forcedSessionId);
+      if (fs.existsSync(sessionPath)) {
+        result.details.push(`✅ Using forced session: ${sessionPath}`);
       } else {
-        throw new Error('currentUser is not a symlink');
+        throw new Error(`Forced session ${forcedSessionId} not found`);
       }
-    } catch (error) {
-      // Fallback: find latest session
-      const sessionsDir = '.continuum/jtag/sessions/user';
-      const sessions = fs.readdirSync(sessionsDir);
-      if (sessions.length === 0) {
-        throw new Error('No user sessions found');
+    } else {
+      // Try currentUser symlink first, but fall back if screenshots missing
+      const currentUserPath = path.join(continuumPath, 'jtag', 'currentUser');
+      let needsFallback = false;
+      
+      try {
+        const stats = fs.lstatSync(currentUserPath);
+        if (stats.isSymbolicLink()) {
+          sessionPath = fs.readlinkSync(currentUserPath);
+          // Convert relative path to absolute
+          if (!path.isAbsolute(sessionPath)) {
+            sessionPath = path.resolve(path.dirname(currentUserPath), sessionPath);
+          }
+          
+          // Check if expected screenshots exist in this session
+          const screenshotsPath = path.join(sessionPath, 'screenshots');
+          if (fs.existsSync(screenshotsPath)) {
+            const screenshots = fs.readdirSync(screenshotsPath).filter(f => f.endsWith('.png'));
+            const hasExpectedScreenshots = screenshots.includes('chat-widget-before-test.png') && 
+                                         screenshots.includes('chat-widget-after-test.png');
+            
+            if (hasExpectedScreenshots) {
+              result.details.push(`✅ Found current session with expected screenshots: ${sessionPath}`);
+            } else {
+              result.details.push(`⚠️ Current session lacks expected screenshots (${screenshots.length} found), will search other sessions`);
+              needsFallback = true;
+            }
+          } else {
+            result.details.push(`⚠️ Current session has no screenshots directory, will search other sessions`);
+            needsFallback = true;
+          }
+        } else {
+          throw new Error('currentUser is not a symlink');
+        }
+      } catch (error) {
+        needsFallback = true;
       }
-      // Get the most recent session
-      sessionPath = path.join(sessionsDir, sessions[sessions.length - 1]);
-      result.details.push(`⚠️ Using latest session (fallback): ${sessionPath}`);
+      
+      if (needsFallback) {
+        // Fallback: Find the session with the most screenshots (for test sequencing)
+        result.details.push(`⚠️ CurrentUser symlink failed, searching for session with screenshots...`);
+        
+        const sessions = fs.readdirSync(sessionsDir).filter(session => {
+          try {
+            const screenshotsPath = path.join(sessionsDir, session, 'screenshots');
+            return fs.existsSync(screenshotsPath);
+          } catch {
+            return false;
+          }
+        });
+        
+        if (sessions.length === 0) {
+          throw new Error('No user sessions with screenshots found');
+        }
+        
+        // Find session with expected screenshots
+        let bestSession = '';
+        let bestScreenshotCount = 0;
+        
+        for (const session of sessions) {
+          const screenshotsPath = path.join(sessionsDir, session, 'screenshots');
+          try {
+            const screenshots = fs.readdirSync(screenshotsPath).filter(f => f.endsWith('.png'));
+            const hasExpectedScreenshots = screenshots.includes('chat-widget-before-test.png') && 
+                                         screenshots.includes('chat-widget-after-test.png');
+            
+            if (hasExpectedScreenshots || screenshots.length > bestScreenshotCount) {
+              bestSession = session;
+              bestScreenshotCount = screenshots.length;
+              
+              if (hasExpectedScreenshots) {
+                result.details.push(`✅ Found session with expected screenshots: ${session}`);
+                break;
+              }
+            }
+          } catch {
+            // Skip sessions with invalid screenshot directories
+          }
+        }
+        
+        if (!bestSession) {
+          throw new Error('No sessions with screenshots found');
+        }
+        
+        sessionPath = path.join(sessionsDir, bestSession);
+        result.details.push(`⚠️ Using session with screenshots (fallback): ${sessionPath}`);
+      }
     }
     
     // 2. Check screenshots directory
