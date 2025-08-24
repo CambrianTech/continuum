@@ -4,6 +4,7 @@ import path from 'path';
 import { SystemReadySignaler } from './signal-system-ready';
 import { getActivePorts } from '../system/shared/ExampleConfig';
 import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
+import { TmuxSessionManager } from '../system/shared/TmuxSessionManager';
 
 // Strong typing for server management
 interface ServerProcess {
@@ -29,9 +30,13 @@ fs.mkdirSync(logDir, { recursive: true });
 async function startServerProcess(): Promise<ServerProcess> {
   console.log('🚀 Starting JTAG server in tmux session for persistence...');
   
+  // Generate unique session name based on working directory
+  const sessionName = TmuxSessionManager.getSessionName();
+  console.log(`📋 Session name: ${sessionName} (workdir-specific to prevent conflicts)`);
+  
   return new Promise((resolve, reject) => {
     // First, kill any existing tmux session
-    const killSession = spawn('tmux', ['kill-session', '-t', 'jtag-test'], {
+    const killSession = spawn('tmux', ['kill-session', '-t', sessionName], {
       stdio: 'ignore'
     });
     
@@ -40,7 +45,7 @@ async function startServerProcess(): Promise<ServerProcess> {
       const tmuxCmd = [
         'new-session',
         '-d',          // detached
-        '-s', 'jtag-test',  // session name
+        '-s', sessionName,  // workdir-specific session name
         'npx', 'tsx', 'scripts/launch-active-example.ts'  // direct intelligent startup
       ];
       
@@ -71,7 +76,7 @@ async function startServerProcess(): Promise<ServerProcess> {
           
           // Get the PID of the process running inside tmux
           const getPidCmd = spawn('tmux', [
-            'list-panes', '-t', 'jtag-test', '-F', '#{pane_pid}'
+            'list-panes', '-t', sessionName, '-F', '#{pane_pid}'
           ], { stdio: ['ignore', 'pipe', 'ignore'] });
           
           let pidOutput = '';
@@ -88,7 +93,7 @@ async function startServerProcess(): Promise<ServerProcess> {
               startTime: Date.now()
             };
             
-            console.log(`🎯 Tmux session 'jtag-test' created with server PID: ${tmuxPid}`);
+            console.log(`🎯 Tmux session '${sessionName}' created with server PID: ${tmuxPid}`);
             resolve(serverProcess);
           });
           
@@ -282,16 +287,19 @@ async function main(): Promise<void> {
     process.exit(1);
     
   } finally {
+    // Generate session name for cleanup (needs to match what was used above)
+    const sessionName = TmuxSessionManager.getSessionName();
+    
     // Check if tmux session is actually running
-    const checkTmux = spawn('tmux', ['has-session', '-t', 'jtag-test'], {
+    const checkTmux = spawn('tmux', ['has-session', '-t', sessionName], {
       stdio: 'ignore'
     });
     
     checkTmux.on('close', (code) => {
       if (code === 0) {
-        console.log(`🚀 Server running in tmux session 'jtag-test' - survives script exit`);
-        console.log(`📋 To check server: tmux attach-session -t jtag-test`);
-        console.log(`📋 To stop server: tmux kill-session -t jtag-test`);
+        console.log(`🚀 Server running in tmux session '${sessionName}' - survives script exit`);
+        console.log(`📋 To check server: tmux attach-session -t ${sessionName}`);
+        console.log(`📋 To stop server: tmux kill-session -t ${sessionName}`);
         console.log(`📋 To view logs: tail -f ${logFile}`);
       } else {
         if (!testsSuccessful) {

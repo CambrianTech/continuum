@@ -2,6 +2,7 @@ import { exec, spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { SystemReadySignaler } from './signal-system-ready';
+import { TmuxSessionManager } from '../system/shared/TmuxSessionManager';
 
 // Parse command line arguments for configurable behavior
 interface LaunchConfig {
@@ -93,6 +94,10 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
   
   console.log('🚀 Launching JTAG system with tmux persistence...');
   
+  // Generate unique session name based on working directory
+  const sessionName = TmuxSessionManager.getSessionName();
+  console.log(`📋 Session name: ${sessionName} (workdir-specific to prevent conflicts)`);
+  
   // Clear any old signals first
   await signaler.clearSignals();
   
@@ -100,7 +105,7 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
     const startTime = Date.now();
     
     // First, kill any existing tmux session
-    const killSession = spawn('tmux', ['kill-session', '-t', 'jtag-test'], {
+    const killSession = spawn('tmux', ['kill-session', '-t', sessionName], {
       stdio: 'ignore'
     });
     
@@ -109,7 +114,7 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
       const tmuxCmd = [
         'new-session',
         '-d',                    // detached session
-        '-s', 'jtag-test',       // session name
+        '-s', sessionName,       // workdir-specific session name
         `npm run start:direct 2>&1 | tee ${logFile}`  // server command with log redirection
       ];
       
@@ -140,7 +145,7 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
           
           // Get the PID of the process running inside tmux session
           const getPidCmd = spawn('tmux', [
-            'list-panes', '-t', 'jtag-test', '-F', '#{pane_pid}'
+            'list-panes', '-t', sessionName, '-F', '#{pane_pid}'
           ], { stdio: ['ignore', 'pipe', 'ignore'] });
           
           let pidOutput = '';
@@ -157,7 +162,7 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
               console.log(`📋 Tmux server PID saved to: ${pidFile}`);
             }
             
-            console.log(`🎯 Tmux session 'jtag-test' created with server PID: ${tmuxPid}`);
+            console.log(`🎯 Tmux session '${sessionName}' created with server PID: ${tmuxPid}`);
             
             // Create diagnostics object with strong typing
             const createDiagnostics = (): ProcessDiagnostics => ({
@@ -236,7 +241,7 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
                     if (signal.autonomousGuidance?.length) {
                       console.log(`💡 Issue: ${signal.autonomousGuidance[0]}`);
                     }
-                    console.log('🔧 The system is running but not ready. Check: tmux attach-session -t jtag-test');
+                    console.log(`🔧 The system is running but not ready. Check: tmux attach-session -t ${sessionName}`);
                     
                     resolve({
                       success: false, // Changed to false - system not fully ready
@@ -257,7 +262,7 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
                   } else {
                     console.log('\n⏰ Server detection timeout after multiple attempts');  
                     console.log(`💥 Final Error: ${error instanceof Error ? error.message : String(error)}`);
-                    console.log('🔧 The system may be running in the background. Check: tmux attach-session -t jtag-test');
+                    console.log(`🔧 The system may be running in the background. Check: tmux attach-session -t ${sessionName}`);
                     
                     resolve({
                       success: false, // Changed to false - system not ready
@@ -409,10 +414,11 @@ async function monitorSystemReadiness(signaler: SystemReadySignaler): Promise<vo
 // Smart server health check with robust detection
 async function checkExistingServer(): Promise<{isHealthy: boolean; tmuxRunning: boolean; portsActive: boolean; message: string}> {
   const signaler = new SystemReadySignaler();
+  const sessionName = TmuxSessionManager.getSessionName();
   
   // Check tmux session
   const tmuxRunning = await new Promise<boolean>((resolve) => {
-    const tmuxCheck = spawn('tmux', ['has-session', '-t', 'jtag-test'], { stdio: 'ignore' });
+    const tmuxCheck = spawn('tmux', ['has-session', '-t', sessionName], { stdio: 'ignore' });
     tmuxCheck.on('close', (code) => resolve(code === 0));
   });
   
@@ -487,6 +493,7 @@ const MODE_BEHAVIORS = {
 async function main(): Promise<void> {
   try {
     const behavior = MODE_BEHAVIORS[CONFIG.mode];
+    const sessionName = TmuxSessionManager.getSessionName(); // Generate session name for this workdir
     
     if (CONFIG.verbose) {
       console.log(`🚀 SMART JTAG LAUNCHER - ${behavior.label}`);
@@ -513,10 +520,10 @@ async function main(): Promise<void> {
         if (behavior.showCommands) {
           console.log('');
           console.log('💡 DEVELOPMENT COMMANDS:');
-          console.log('   tmux attach-session -t jtag-test  # Connect to server console');
+          console.log(`   tmux attach-session -t ${sessionName}  # Connect to server console`);
           console.log('   npm run restart                    # Force restart server');
           console.log('   npm test                          # Run tests (uses existing server)');
-          console.log('   tmux kill-session -t jtag-test    # Stop server');
+          console.log(`   tmux kill-session -t ${sessionName}    # Stop server`);
         }
         
         console.log('');
@@ -533,7 +540,7 @@ async function main(): Promise<void> {
         if (serverStatus.tmuxRunning) {
           if (CONFIG.verbose) console.log('🧹 Stopping existing tmux session...');
           await new Promise<void>((resolve) => {
-            const killTmux = spawn('tmux', ['kill-session', '-t', 'jtag-test'], { stdio: 'ignore' });
+            const killTmux = spawn('tmux', ['kill-session', '-t', sessionName], { stdio: 'ignore' });
             killTmux.on('close', () => resolve());
           });
         }
@@ -559,9 +566,9 @@ async function main(): Promise<void> {
       console.log(`📋 PID file: ${pidFile}`);
       console.log('');
       console.log('🚀 TMUX PERSISTENCE MODE: Launcher exiting, server continues in tmux session');
-      console.log(`🔗 To connect to server: tmux attach-session -t jtag-test`);
-      console.log(`🛑 To stop server: tmux kill-session -t jtag-test`);
-      console.log(`📊 To check status: tmux has-session -t jtag-test && echo "Running" || echo "Stopped"`);
+      console.log(`🔗 To connect to server: tmux attach-session -t ${sessionName}`);
+      console.log(`🛑 To stop server: tmux kill-session -t ${sessionName}`);
+      console.log(`📊 To check status: tmux has-session -t ${sessionName} && echo "Running" || echo "Stopped"`);
       console.log(`📄 To watch logs: tail -f ${result.logFile}`);
       console.log('');
       console.log('📊 INTELLIGENT LOG DASHBOARD:');
