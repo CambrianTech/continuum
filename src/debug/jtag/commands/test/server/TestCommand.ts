@@ -54,11 +54,20 @@ export class TestServerCommand extends TestCommand {
         command
       });
       
-    } catch (error: any) {
+    } catch (error: unknown) {
       const duration = Date.now() - startTime;
-      const output = (error.stdout ?? '') + (error.stderr ?? '');
       
-      if (error.code === 'ETIMEDOUT') {
+      // Type-safe error handling for exec errors
+      interface ExecError extends Error {
+        stdout?: string;
+        stderr?: string;
+        code?: string;
+      }
+      
+      const execError = error as ExecError;
+      const output = (execError.stdout ?? '') + (execError.stderr ?? '');
+      
+      if (execError.code === 'ETIMEDOUT') {
         console.error(`❌ TIMEOUT: Test failed to complete within ${params.timeout ?? 300000}ms - test cancelled`);
       } else {
         console.error(`❌ SERVER: Test failed (${duration}ms)`);

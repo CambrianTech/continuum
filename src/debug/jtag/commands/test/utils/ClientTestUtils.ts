@@ -7,6 +7,7 @@
 
 import type { JTAGClient, JTAGClientConnectOptions, JTAGClientConnectionResult } from '../../../system/core/client/shared/JTAGClient';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 import type { ListResult } from '../../list/shared/ListTypes';
 
@@ -21,6 +22,14 @@ export interface ConnectionTestScenario {
   shouldSucceed?: boolean;
   expectedError?: string;
   minimumCommands?: number;
+}
+
+/**
+ * Interface for client classes that have static connect method
+ */
+export interface JTAGClientClass {
+  new (context: JTAGContext): JTAGClient;
+  connect: (options?: JTAGClientConnectOptions) => Promise<JTAGClientConnectionResult>;
 }
 
 /**
@@ -41,7 +50,7 @@ export interface ConnectionTestResult {
  * Test client connection with full validation
  */
 export async function testClientConnection(
-  clientClass: new (context: any) => JTAGClient,
+  clientClass: JTAGClientClass,
   scenario: ConnectionTestScenario
 ): Promise<ConnectionTestResult> {
   const startTime = Date.now();
@@ -50,7 +59,7 @@ export async function testClientConnection(
     console.log(`🧪 Testing scenario: ${scenario.name}`);
     
     // Connect using the client class
-    const connectionResult = await (clientClass as any).connect(scenario.options);
+    const connectionResult = await clientClass.connect(scenario.options);
     
     // Validate connection result structure
     validateConnectionResult(connectionResult, scenario.name);
@@ -119,26 +128,30 @@ export async function testClientConnection(
  * Validate connection result has required structure
  */
 export function validateConnectionResult(
-  result: any, 
+  result: unknown, 
   scenarioName: string = 'connection test'
 ): asserts result is JTAGClientConnectionResult {
   if (!result || typeof result !== 'object') {
     throw new Error(`${scenarioName}: Connection result must be an object`);
   }
   
-  if (!result.client) {
+  const typedResult = result as Record<string, unknown>;
+  
+  if (!typedResult.client || typeof typedResult.client !== 'object') {
     throw new Error(`${scenarioName}: Connection result must have 'client' property`);
   }
   
-  if (typeof result.client.getConnectionInfo !== 'function') {
+  const client = typedResult.client as Record<string, unknown>;
+  if (typeof client.getConnectionInfo !== 'function') {
     throw new Error(`${scenarioName}: Client must have getConnectionInfo() method`);
   }
   
-  if (!result.listResult) {
+  if (!typedResult.listResult || typeof typedResult.listResult !== 'object') {
     throw new Error(`${scenarioName}: Connection result must have 'listResult' property`);
   }
   
-  if (typeof result.listResult.totalCount !== 'number') {
+  const listResult = typedResult.listResult as Record<string, unknown>;
+  if (typeof listResult.totalCount !== 'number') {
     throw new Error(`${scenarioName}: listResult must have 'totalCount' number`);
   }
 }
@@ -147,7 +160,7 @@ export function validateConnectionResult(
  * Test bootstrap session handling
  */
 export async function testBootstrapSessionHandling(
-  clientClass: new (context: any) => JTAGClient,
+  clientClass: JTAGClientClass,
   options?: JTAGClientConnectOptions
 ): Promise<{
   initialSessionId: UUID;
@@ -157,7 +170,7 @@ export async function testBootstrapSessionHandling(
 }> {
   console.log('🏷️ Testing bootstrap session handling...');
   
-  const connectionResult = await (clientClass as any).connect(options);
+  const connectionResult = await clientClass.connect(options);
   const connectionInfo = connectionResult.client.getConnectionInfo();
   
   // Check if we started with UNKNOWN_SESSION (deadbeef)
@@ -175,10 +188,10 @@ export async function testBootstrapSessionHandling(
 /**
  * Test command execution through client
  */
-export async function testClientCommandExecution<TResult = any>(
+export async function testClientCommandExecution<TResult extends JTAGPayload = JTAGPayload>(
   client: JTAGClient,
   commandName: string,
-  params: any = {},
+  params: JTAGPayload,
   timeoutMs: number = 10000
 ): Promise<{ result: TResult; executionTime: number }> {
   console.log(`⚡ Testing command execution: ${commandName}`);
@@ -190,8 +203,8 @@ export async function testClientCommandExecution<TResult = any>(
       reject(new Error(`Command '${commandName}' timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     
-    // Execute command through client
-    (client.commands as any)[commandName](params)
+    // Execute command through client - properly typed dynamic command access
+    ((client.commands as any)[commandName](params) as Promise<TResult>)
       .then((result: TResult) => {
         clearTimeout(timer);
         const executionTime = Date.now() - startTime;
@@ -208,7 +221,7 @@ export async function testClientCommandExecution<TResult = any>(
  * Test multiple connection scenarios in batch
  */
 export async function testConnectionScenarios(
-  clientClass: new (context: any) => JTAGClient,
+  clientClass: JTAGClientClass,
   scenarios: ConnectionTestScenario[]
 ): Promise<ConnectionTestResult[]> {
   const results: ConnectionTestResult[] = [];

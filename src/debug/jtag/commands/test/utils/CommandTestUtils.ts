@@ -19,7 +19,7 @@ export interface TestEnvironmentInfo {
   nodeVersion?: string;
   userAgent?: string;
   platform: string;
-  [key: string]: any;
+  [key: string]: string | number | boolean | undefined;
 }
 
 /**
@@ -27,7 +27,7 @@ export interface TestEnvironmentInfo {
  */
 export interface CommandTestResult {
   success: boolean;
-  data?: any;
+  data?: unknown;
   error?: string;
   executionTime?: number;
   environment?: TestEnvironmentInfo;
@@ -67,19 +67,21 @@ export function createTestPayload<T>(
 /**
  * Validate command result structure
  */
-export function validateCommandResult(result: any, expectedFields: string[] = []): boolean {
+export function validateCommandResult(result: unknown, expectedFields: string[] = []): boolean {
   if (!result || typeof result !== 'object') {
     return false;
   }
 
+  const typedResult = result as Record<string, unknown>;
+  
   // All command results should have success field
-  if (typeof result.success !== 'boolean') {
+  if (typeof typedResult.success !== 'boolean') {
     return false;
   }
 
   // Check for expected fields
   for (const field of expectedFields) {
-    if (!(field in result)) {
+    if (!(field in typedResult)) {
       return false;
     }
   }
@@ -90,16 +92,18 @@ export function validateCommandResult(result: any, expectedFields: string[] = []
 /**
  * Validate environment info structure
  */
-export function validateEnvironmentInfo(envInfo: any): envInfo is TestEnvironmentInfo {
+export function validateEnvironmentInfo(envInfo: unknown): envInfo is TestEnvironmentInfo {
   if (!envInfo || typeof envInfo !== 'object') {
     return false;
   }
 
+  const typedEnvInfo = envInfo as Record<string, unknown>;
+
   return (
-    typeof envInfo.type === 'string' &&
-    ['browser', 'server'].includes(envInfo.type) &&
-    typeof envInfo.timestamp === 'string' &&
-    typeof envInfo.platform === 'string'
+    typeof typedEnvInfo.type === 'string' &&
+    ['browser', 'server'].includes(typedEnvInfo.type) &&
+    typeof typedEnvInfo.timestamp === 'string' &&
+    typeof typedEnvInfo.platform === 'string'
   );
 }
 
@@ -152,23 +156,33 @@ export async function testCommandWithTimeout<TResult>(
  * Assert command result matches expected structure
  */
 export function assertCommandResult(
-  result: any, 
+  result: unknown, 
   expected: Partial<CommandTestResult>,
   testName: string = 'command test'
 ): void {
-  if (expected.success !== undefined && result.success !== expected.success) {
-    throw new Error(`${testName}: Expected success=${expected.success}, got ${result.success}`);
+  // Type guard for result
+  if (!result || typeof result !== 'object') {
+    throw new Error(`${testName}: Result is not a valid object`);
   }
 
-  if (expected.error && (!result.error || !result.error.includes(expected.error))) {
-    throw new Error(`${testName}: Expected error containing "${expected.error}", got "${result.error}"`);
+  const typedResult = result as Record<string, unknown>;
+
+  if (expected.success !== undefined && typedResult.success !== expected.success) {
+    throw new Error(`${testName}: Expected success=${expected.success}, got ${typedResult.success}`);
   }
 
-  if (expected.data && JSON.stringify(result.data) !== JSON.stringify(expected.data)) {
-    throw new Error(`${testName}: Data mismatch. Expected: ${JSON.stringify(expected.data)}, got: ${JSON.stringify(result.data)}`);
+  if (expected.error && (
+    typeof typedResult.error !== 'string' || 
+    !typedResult.error.includes(expected.error)
+  )) {
+    throw new Error(`${testName}: Expected error containing "${expected.error}", got "${typedResult.error}"`);
   }
 
-  if (expected.environment && !validateEnvironmentInfo(result.environment)) {
+  if (expected.data && JSON.stringify(typedResult.data) !== JSON.stringify(expected.data)) {
+    throw new Error(`${testName}: Data mismatch. Expected: ${JSON.stringify(expected.data)}, got: ${JSON.stringify(typedResult.data)}`);
+  }
+
+  if (expected.environment && !validateEnvironmentInfo(typedResult.environment)) {
     throw new Error(`${testName}: Invalid environment info structure`);
   }
 }
@@ -177,7 +191,7 @@ export function assertCommandResult(
  * Test error handling scenarios
  */
 export async function testCommandErrorHandling<TParams extends JTAGPayload>(
-  commandFn: (params: TParams) => Promise<any>,
+  commandFn: (params: TParams) => Promise<unknown>,
   invalidParams: TParams[],
   expectedErrors: string[]
 ): Promise<void> {

@@ -7,6 +7,7 @@
 
 import type { JTAGClient, JTAGClientConnectOptions } from '../../../system/core/client/shared/JTAGClient';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import { 
   testClientCommandExecution,
   testClientConnection,
@@ -76,18 +77,25 @@ export async function testCommandCrossEnvironment(
         config.performanceThresholdMs || 10000
       );
       
+      // Type guard for result validation - JTAGPayload with additional properties
+      if (!result || typeof result !== 'object') {
+        throw new Error(`Invalid result type from ${environment}: expected object`);
+      }
+      
+      const typedResult = result as JTAGPayload & Record<string, unknown>;
+      
       // Validate result if fields specified
       if (config.expectedFields) {
         for (const field of config.expectedFields) {
-          if (!(field in result)) {
+          if (!(field in typedResult)) {
             throw new Error(`Missing expected field '${field}' in ${environment} result`);
           }
         }
       }
       
       // Validate environment data if requested
-      if (config.validateEnvironmentData && result.environment) {
-        validateEnvironmentSpecificData(result.environment, environment);
+      if (config.validateEnvironmentData && typedResult.environment) {
+        validateEnvironmentSpecificData(typedResult.environment, environment);
       }
       
       results.push({

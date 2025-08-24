@@ -31,13 +31,14 @@ export class TestBrowserCommand extends TestCommand {
       
       return await this.remoteExecute(params);
 
-    } catch (error: any) {
-      console.error(`❌ BROWSER: Test execution delegation failed:`, error.message);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ BROWSER: Test execution delegation failed:`, errorMessage);
       const testError = error instanceof Error ? new NetworkError('server', error.message, { cause: error }) : new NetworkError('server', String(error));
       
       return createTestResult(params.context, params.sessionId, {
         success: false,
-        output: `Browser delegation failed: ${error.message}`,
+        output: `Browser delegation failed: ${errorMessage}`,
         duration: 0,
         command: params.file ? `npx tsx ${params.file}` : 'npm test',
         error: testError

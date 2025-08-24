@@ -44,7 +44,7 @@ export interface JTAGSystemConfiguration {
  */
 export class SystemConfiguration {
   private static _instance: SystemConfiguration | null = null;
-  private config: JTAGSystemConfiguration;
+  private readonly config: JTAGSystemConfiguration;
 
   private constructor(config: JTAGSystemConfiguration) {
     this.config = config;
@@ -149,12 +149,12 @@ export class SystemConfiguration {
   /**
    * Get UDP multicast configuration
    */
-  getUDPConfig(): { port: number; address: string; unicastPort: number } {
+  getUDPConfig(): { readonly port: number; readonly address: string; readonly unicastPort: number } {
     return {
       port: this.config.transport.udp.multicastPort,
       address: this.config.transport.udp.multicastAddress,
       unicastPort: this.config.transport.udp.unicastPort
-    };
+    } as const;
   }
 
   /**
@@ -181,15 +181,22 @@ export class SystemConfiguration {
   /**
    * Get node capabilities
    */
-  getCapabilities(): string[] {
+  getCapabilities(): readonly string[] {
     return this.config.instance.capabilities;
   }
 
   /**
-   * Update configuration (for testing)
+   * Update configuration (for testing) - creates new instance
    */
   updateConfig(updates: Partial<JTAGSystemConfiguration>): void {
-    this.config = { ...this.config, ...updates };
+    // Create new configuration object - cannot mutate readonly config
+    const newConfig: JTAGSystemConfiguration = { 
+      ...this.config, 
+      ...updates 
+    };
+    
+    // Replace with new instance (for testing only)
+    (this as any).config = newConfig;
   }
 
   /**
