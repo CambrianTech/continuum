@@ -17,9 +17,9 @@ import type {
   TestExecutionResult,
   TestMetrics
 } from './MultiInstanceTestTypes';
-import { SystemReadySignaler } from '../../scripts/signaling/server/SystemReadySignaler';
-import { WorkingDirConfig } from '../../system/core/config/WorkingDirConfig';
-import { TmuxSessionManager } from '../../system/shared/TmuxSessionManager';
+import { SystemReadySignaler } from '../../../scripts/signaling/server/SystemReadySignaler';
+import { WorkingDirConfig } from '../../../system/core/config/WorkingDirConfig';
+import { TmuxSessionManager } from '../../../system/shared/TmuxSessionManager';
 
 export class MultiInstanceTestRunner {
   private runningInstances: Map<string, ContinuumInstance> = new Map();
@@ -127,14 +127,14 @@ export class MultiInstanceTestRunner {
       'new-session',
       '-d',
       '-s', sessionName,
-      'npm run start:direct'
+      'npm start'  // Use standard start script available in all examples
     ];
     
     return new Promise((resolve, reject) => {
       const tmuxProcess = spawn('tmux', tmuxCmd, {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: environment,
-        cwd: process.cwd()
+        cwd: config.workingDir  // Use instance-specific working directory
       });
       
       let processOutput = '';
@@ -205,7 +205,7 @@ export class MultiInstanceTestRunner {
     
     const healthCheckPromises: Promise<void>[] = [];
     
-    for (const [instanceId, instance] of this.runningInstances) {
+    for (const [instanceId, instance] of Array.from(this.runningInstances.entries())) {
       const healthCheckPromise = this.waitForInstanceHealthy(instanceId, instance);
       healthCheckPromises.push(healthCheckPromise);
     }
@@ -354,7 +354,7 @@ export class MultiInstanceTestRunner {
     
     console.log(`🧹 Cleaning up ${this.runningInstances.size} instances...`);
     
-    for (const [instanceId, instance] of this.runningInstances) {
+    for (const [instanceId, instance] of Array.from(this.runningInstances.entries())) {
       try {
         console.log(`🧹 Stopping instance: ${instanceId} (${instance.sessionName})`);
         
@@ -453,14 +453,14 @@ export class MultiInstanceTestRunner {
 
   private async collectFinalResults(): Promise<void> {
     // Collect final status from all instances
-    for (const [instanceId, instance] of this.runningInstances) {
+    for (const [instanceId, instance] of Array.from(this.runningInstances.entries())) {
       try {
         WorkingDirConfig.setWorkingDir(instance.config.workingDir);
         const finalSignal = await instance.signaler.generateReadySignal();
         
         const result = this.testResults.instanceResults[instanceId];
         result.finalStatus = finalSignal.systemHealth;
-        result.ports = finalSignal.portsActive;
+        result.ports = [...finalSignal.portsActive]; // Create mutable copy
         
       } catch (error) {
         this.testResults.instanceResults[instanceId].errors.push(`Failed to collect final status: ${error}`);

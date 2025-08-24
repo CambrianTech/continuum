@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1104",
+  "version": "1.0.1106",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "port": 9001,
@@ -176,9 +176,9 @@
     "test:ci-pr": "npx tsx scripts/test-profiles.ts ci-pr",
     "test:ci-main": "npx tsx scripts/test-profiles.ts ci-main",
     "test:experimental": "npx tsx scripts/test-profiles.ts experimental",
-    "test:multi-instance": "npx tsx scripts/test-multi-instance.ts",
-    "test:grid-p2p": "npx tsx scripts/test-multi-instance.ts --config=grid-p2p",
-    "test:dual-instance": "npx tsx scripts/test-multi-instance.ts --instances=test-bench,widget-ui",
+    "dev:multi-instance": "npx tsx dev-tools/grid-testing/multi-instance-runner.ts",
+    "dev:grid-p2p": "npx tsx dev-tools/grid-testing/multi-instance-runner.ts --config=grid-p2p",
+    "dev:dual-instance": "npx tsx dev-tools/grid-testing/multi-instance-runner.ts --instances=test-bench,widget-ui",
     "test:core-debugging": "npx tsx scripts/register-classified-tests.ts blocker && npx tsx scripts/register-classified-tests.ts critical",
     "test:blocker": "./scripts/run-categorized-tests.sh blocker",
     "test:critical": "./scripts/run-categorized-tests.sh critical",
@@ -343,7 +343,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-24T06:22:09.694Z",
+    "timestamp": "2025-08-24T06:41:18.253Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 29,
     "note": "Generated from clean essential path mappings only"

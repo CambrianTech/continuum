@@ -27,6 +27,7 @@ export class SystemReadySignaler {
   private hasWaitedForBrowser = false;
   private lastNotReadyLog = 0;
   private lastProgressSignal?: SystemReadySignal;
+  private lastErrorKey?: string;
 
   constructor() {
     const milestoneConfig = getDefaultMilestoneConfig();
@@ -41,17 +42,35 @@ export class SystemReadySignaler {
   }
   
   private get readyFile(): string {
-    return path.join(this.signalDir, 'system-ready.json');
+    const instanceId = this.getInstanceIdentifier();
+    return path.join(this.signalDir, `system-ready-${instanceId}.json`);
   }
   
   private get pidFile(): string {
-    return path.join(this.signalDir, 'system.pid');
+    const instanceId = this.getInstanceIdentifier();
+    return path.join(this.signalDir, `system-${instanceId}.pid`);
+  }
+  
+  private getInstanceIdentifier(): string {
+    // Use instance ID from multi-instance runner if available
+    const instanceId = process.env.JTAG_INSTANCE_ID;
+    if (instanceId) {
+      return instanceId;
+    }
+    
+    // Fall back to port-based identification for backward compatibility
+    const websocketPort = process.env.JTAG_WEBSOCKET_PORT || 
+                          process.env.JTAG_EXAMPLE_WEBSOCKET_PORT || '9000';
+    return `port-${websocketPort}`;
   }
 
   async generateReadySignal(): Promise<SystemReadySignal> {
     try {
       // Ensure signal directory exists
       await fs.mkdir(this.signalDir, { recursive: true });
+
+      // Clear any stale signal files for this instance
+      await this.clearStaleSignals();
 
       // Gather system readiness metrics
       const signal = await this.metricsCollector.collectSystemMetrics();
@@ -64,15 +83,16 @@ export class SystemReadySignaler {
       
       // Only log meaningful state changes, not every check
       const readinessCheck = this.progressCalculator.isSystemReady(signal);
+      const instanceId = this.getInstanceIdentifier();
       
       if (readinessCheck.fullyHealthy) {
-        console.log(`✅ System healthy: ${signal.commandCount} commands ready`);
-        console.log(`🌐 Active ports: ${signal.portsActive.join(', ')}`);
+        console.log(`✅ [${instanceId}] System healthy: ${signal.commandCount} commands ready`);
+        console.log(`🌐 [${instanceId}] Active ports: ${signal.portsActive.join(', ')}`);
       } else if (readinessCheck.hasErrors && signal.errors.length > 0) {
         // Only log errors once to avoid spam
         const errorKey = signal.errors.join('|');
         if (!this.lastErrorKey || this.lastErrorKey !== errorKey) {
-          console.log(`❌ System error: ${signal.errors[0]}`);
+          console.log(`❌ [${instanceId}] System error: ${signal.errors[0]}`);
           this.lastErrorKey = errorKey;
         }
       }
@@ -363,5 +383,20 @@ export class SystemReadySignaler {
       generatorPid: signalRaw.generatorPid || process.pid, // Use current PID if missing
       consumerPids: signalRaw.consumerPids || []           // Empty array if missing
     } as SystemReadySignal;
+  }
+
+  // Clear stale signal files for this specific instance
+  private async clearStaleSignals(): Promise<void> {
+    try {
+      // Remove instance-specific signal files if they exist
+      await fs.unlink(this.readyFile).catch(() => {});
+      await fs.unlink(this.pidFile).catch(() => {});
+      
+      const instanceId = this.getInstanceIdentifier();
+      console.log(`🧹 [${instanceId}] Cleared stale signals`);
+    } catch (error) {
+      // Non-fatal - just log and continue
+      console.log(`⚠️ Could not clear stale signals: ${error}`);
+    }
   }
 }
