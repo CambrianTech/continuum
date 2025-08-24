@@ -34,7 +34,9 @@ export class SystemMetricsCollector {
       buildStatus: 'unknown',
       autonomousGuidance: [],
       compilationStatus: 'unknown',
-      systemHealth: 'unhealthy'
+      systemHealth: 'unhealthy',
+      generatorPid: process.pid,       // Mark who generated this signal
+      consumerPids: []                 // Empty array for tracking consumers
     };
 
     try {

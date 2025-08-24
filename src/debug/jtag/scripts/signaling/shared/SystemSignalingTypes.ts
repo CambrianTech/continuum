@@ -22,6 +22,8 @@ export interface SystemReadySignal {
   readonly browserReady: boolean;
   readonly buildStatus: BuildStatus;
   readonly autonomousGuidance: readonly string[];
+  readonly generatorPid: number;        // PID of the process that generated this signal
+  readonly consumerPids: readonly number[];  // PIDs of processes that have consumed this signal
 }
 
 // Configurable milestone system for flexible progress tracking
