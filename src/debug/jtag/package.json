@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1108",
+  "version": "1.0.1111",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "port": 9001,
@@ -113,7 +113,8 @@
     }
   },
   "scripts": {
-    "start": "npm run build && npm run start-continuum-with-browser",
+    "system:ensure": "npm run signal:check || (npm run system:start && npm run signal:wait)",
+    "start": "npx tsx scripts/system-startup.ts",
     "start:no-dashboard": "npm run smart-build && npm run system:deploy && npm run restart:quick",
     "start:direct": "npm run smart-build && npm run system:deploy && npm run system:run",
     "smart-build": "npx tsx scripts/smart-build.ts",
@@ -141,7 +142,6 @@
     "system:stop": "npx tsx scripts/cleanup-dynamic-ports.ts --force && npm run signal:clear",
     "system:wait": "npm run signal:wait",
     "system:restart": "npm run system:stop && npm run restart",
-    "system:ensure": "npm run signal:check || (npm run system:start && npm run signal:wait)",
     "signal:ready": "npx tsx scripts/signal-system-ready.ts",
     "signal:check": "npx tsx scripts/signal-system-ready.ts --check",
     "signal:wait": "npx tsx scripts/signal-system-ready.ts --check",
@@ -161,7 +161,7 @@
     "test:tty": "tmux kill-session -t debug-npm 2>/dev/null; rm -f /tmp/debug-npm.log; tmux new-session -d -s debug-npm \"script -q /dev/null npm run clean\" \\; pipe-pane -o 'cat >> /tmp/debug-npm.log'",
     "system:debug": "echo '=== Tmux session state ===' && (tmux has-session -t jtag-test 2>/dev/null && echo 'Session running' && tmux capture-pane -t jtag-test -p || echo 'Session not running') && echo '' && echo '=== Log file ===' && tail -20 .continuum/jtag/system/logs/npm-start.log",
     "screenshot": "npx tsx scripts/screenshot.ts",
-    "test": "timeout 300 bash -c './scripts/safe-test-cleanup.sh && npm run test:compiler-check && npm run test:global-cli && npm run test:process-coordinator && npm run test:session-isolation && npm run test:load && (npm run test:start-and-test || echo \"⚠️ System integration tests skipped - run npm start first for full testing\")' || (echo '❌ ERROR: npm test exceeded 300-second timeout - system may be hung' && echo '🔍 Check system logs: .continuum/jtag/system/logs/npm-start.log' && echo '🛠️  Try: npm run system:stop && npm run system:start' && exit 1)",
+    "test": "timeout 300 bash -c 'npm run system:ensure && ./scripts/safe-test-cleanup.sh && npm run test:compiler-check && npm run test:global-cli && npm run test:process-coordinator && npm run test:session-isolation && npm run test:load && npm run test:start-and-test' || (echo '❌ ERROR: npm test exceeded 300-second timeout - system may be hung' && echo '🔍 Check system logs: .continuum/jtag/system/logs/npm-start.log' && echo '🛠️  Try: npm run system:stop && npm run system:start' && exit 1)",
     "test:compiler-check": "echo '🔍 PRE-TEST: TypeScript Compilation Check...' && npx tsc --noEmit --project . && echo '✅ TypeScript compilation passed - proceeding with tests'",
     "test:global-cli": "echo '📦 GLOBAL CLI: Testing global installation workflow...' && npx tsx tests/global-cli-installation.test.ts && echo '✅ Global CLI installation tests passed'",
     "test:process-coordinator": "echo '🔄 PROCESS COORDINATOR: Testing context switching and handoffs...' && npx tsx tests/process-coordinator-context-switching.test.ts && echo '✅ Process coordinator tests passed'",
@@ -344,7 +344,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-24T09:22:32.968Z",
+    "timestamp": "2025-08-24T15:31:05.512Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 29,
     "note": "Generated from clean essential path mappings only"
