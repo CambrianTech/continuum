@@ -95,13 +95,19 @@ export abstract class WebSocketTransportClient extends TransportBase {
 
     // Connection closed - consistent addEventListener pattern
     socket.addEventListener('close', (event: JTAGWebSocketCloseEvent) => {
-      console.log(`🔌 ${this.name || 'websocket'}: Connection closed (code: ${event.code})`);
       this.connected = false;
+      
+      // Provide better timeout labeling for connection issues
+      if (event.code === 1006) {
+        console.log(`❌ TIMEOUT: ${this.name || 'websocket'} connection failed to establish or was abnormally closed (code: ${event.code}) - connection cancelled`);
+      } else {
+        console.log(`🔌 ${this.name || 'websocket'}: Connection closed (code: ${event.code})`);
+      }
       
       // Emit DISCONNECTED event
       this.emitTransportEvent('DISCONNECTED', {
         clientId,
-        reason: 'connection_closed',
+        reason: event.code === 1006 ? 'connection_timeout' : 'connection_closed',
         code: event.code
       });
     });
