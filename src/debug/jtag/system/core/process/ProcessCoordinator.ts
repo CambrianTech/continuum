@@ -135,6 +135,57 @@ export class ProcessCoordinator {
         } catch (error) {
           // Lock file creation failed, someone else got it
         }
+      } else {
+        // Intelligent stale lock detection and recovery
+        try {
+          const existingLock = JSON.parse(readFileSync(this.lockFile, 'utf8'));
+          const lockAge = Date.now() - new Date(existingLock.acquiredAt).getTime();
+          const lockingProcessPidMatch = existingLock.acquiredBy.match(/ProcessCoordinator-(\d+)/);
+          
+          // Multi-layered stale lock detection
+          let isStaleLock = false;
+          let staleReason = '';
+          
+          // Check 1: Lock age (older than 5 minutes is suspicious)
+          if (lockAge > 5 * 60 * 1000) {
+            isStaleLock = true;
+            staleReason = `age=${Math.round(lockAge/1000)}s`;
+          }
+          
+          // Check 2: Process existence (most reliable)
+          if (lockingProcessPidMatch && !isStaleLock) {
+            const lockingPid = parseInt(lockingProcessPidMatch[1], 10);
+            try {
+              process.kill(lockingPid, 0); // Signal 0 just checks if process exists
+              console.log(`⏳ ProcessCoordinator: Valid lock held by running process ${lockingPid} (${lockingProcessPidMatch}), waiting...`);
+            } catch (error) {
+              isStaleLock = true;
+              staleReason = `dead_process=${lockingPid}`;
+            }
+          }
+          
+          // Check 3: Lock format validation
+          if (!existingLock.lockId || !existingLock.acquiredBy || !existingLock.acquiredAt) {
+            isStaleLock = true;
+            staleReason = 'malformed_lock';
+          }
+          
+          if (isStaleLock) {
+            console.warn(`🧹 ProcessCoordinator: Removing stale lock (${staleReason}) from: ${existingLock.acquiredBy || 'unknown'}`);
+            unlinkSync(this.lockFile);
+            continue; // Immediately try to acquire lock on next iteration
+          }
+          
+        } catch (error) {
+          // Failed to read/parse lock file - treat as corrupted and remove
+          console.warn(`🧹 ProcessCoordinator: Removing corrupted lock file: ${error.message}`);
+          try {
+            unlinkSync(this.lockFile);
+            continue; // Immediately try to acquire lock on next iteration  
+          } catch (unlinkError) {
+            console.error(`❌ ProcessCoordinator: Failed to remove corrupted lock: ${unlinkError.message}`);
+          }
+        }
       }
 
       // Wait and retry

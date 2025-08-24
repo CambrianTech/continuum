@@ -45,7 +45,7 @@ export function createMockCommandSignature(
         description: 'Test success status'
       },
       data: {
-        type: 'any',
+        type: 'object',
         description: 'Test result data'
       }
     }
@@ -95,7 +95,7 @@ export function createMockCommandsInterface(): CommandsInterface {
   for (const commandName of mockCommands) {
     commandsMap.set(commandName, {
       name: commandName,
-      execute: async (params: any) => ({
+      execute: async (params: JTAGPayload) => ({
         success: true,
         data: `Mock result for ${commandName}`,
         timestamp: new Date().toISOString(),
@@ -134,7 +134,7 @@ export class MockJTAGSystem {
           throw new Error(`Mock command '${commandName}' not found`);
         }
         
-        return async (params: any) => {
+        return async (params: JTAGPayload) => {
           return await command.execute({
             ...params,
             context: params?.context || this.context,
@@ -156,7 +156,7 @@ export class MockJTAGSystem {
 export class MockJTAGClient {
   public readonly sessionId: UUID;
   public readonly context: JTAGContext;
-  private mockCommands: Map<string, any> = new Map();
+  private mockCommands: Map<string, (params?: Record<string, unknown>) => unknown> = new Map();
   
   constructor(context?: JTAGContext) {
     this.context = context || createMockContext();
@@ -174,8 +174,17 @@ export class MockJTAGClient {
     }));
   }
   
-  addMockCommand(name: string, implementation: (params?: any) => any): void {
+  addMockCommand(name: string, implementation: (params?: Record<string, unknown>) => unknown): void {
     this.mockCommands.set(name, implementation);
+  }
+  
+  // Direct list method for compatibility
+  async list(): Promise<ListResult> {
+    const listImpl = this.mockCommands.get('list');
+    if (!listImpl) {
+      throw new Error('Mock list command not configured');
+    }
+    return listImpl() as ListResult;
   }
   
   get commands() {
@@ -183,7 +192,7 @@ export class MockJTAGClient {
     
     return new Proxy({}, {
       get: (target, commandName: string) => {
-        return async (params?: any) => {
+        return async (params?: Record<string, unknown>) => {
           const mockImpl = self.mockCommands.get(commandName);
           if (!mockImpl) {
             throw new Error(`Mock command '${commandName}' not implemented`);
@@ -212,7 +221,7 @@ export class MockJTAGClient {
   
   static async connect(): Promise<{ client: MockJTAGClient; listResult: ListResult }> {
     const client = new MockJTAGClient();
-    const listResult = await (client as any).list();
+    const listResult = await client.list();
     
     return { client, listResult };
   }

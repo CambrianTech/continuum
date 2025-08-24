@@ -20,7 +20,7 @@ export interface CommandPackageConfig {
     testScenarios?: Array<{
       name: string;
       description: string;
-      params: any;
+      params: Record<string, unknown>;
     }>;
   };
 }
