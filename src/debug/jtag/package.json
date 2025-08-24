@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1106",
+  "version": "1.0.1108",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "port": 9001,
@@ -113,11 +113,11 @@
     }
   },
   "scripts": {
-    "start": "npm run smart-build && npm run system:deploy && npm run restart:quick && sleep 3 && npx tsx scripts/safe-dashboard-launch.ts",
+    "start": "npm run build && npm run start-continuum-with-browser",
     "start:no-dashboard": "npm run smart-build && npm run system:deploy && npm run restart:quick",
     "start:direct": "npm run smart-build && npm run system:deploy && npm run system:run",
     "smart-build": "npx tsx scripts/smart-build.ts",
-    "kill": "npx tsx scripts/cleanup-dynamic-ports.ts",
+    "stop": "npx tsx scripts/cleanup-dynamic-ports.ts",
     "clean": "rm -rf dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
     "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
@@ -130,6 +130,7 @@
     "prepack": "npm run paths:clean && npx tsx scripts/create-import-map.ts",
     "pack": "npm run version:bump && npm pack",
     "system:run": "npx tsx scripts/launch-active-example.ts",
+    "start-continuum-with-browser": "npx tsx scripts/launch-active-example.ts",
     "system:deploy": "npx tsx scripts/smart-deploy.ts",
     "system:start": "tsx scripts/launch-and-capture.ts --verbose",
     "system:start:quiet": "tsx scripts/launch-and-capture.ts",
@@ -343,7 +344,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-24T06:41:18.253Z",
+    "timestamp": "2025-08-24T09:22:32.968Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 29,
     "note": "Generated from clean essential path mappings only"

@@ -134,6 +134,20 @@ async function launchActiveExample(): Promise<void> {
     console.log(`🔌 JTAG WebSocket Server: ws://localhost:${activePorts.websocket_server}`);
     console.log(`🌐 ${activeExampleName} HTTP Server: http://localhost:${activePorts.http_server}`);
     
+    // 4. Open the browser to the CONTINUUM interface
+    console.log('🌐 Opening CONTINUUM browser interface...');
+    const browserUrl = `http://localhost:${activePorts.http_server}`;
+    try {
+      spawn('open', [browserUrl], { 
+        detached: true, 
+        stdio: 'ignore' 
+      }).unref();
+      console.log(`✅ Browser opened: ${browserUrl}`);
+    } catch (error) {
+      console.warn(`⚠️ Failed to auto-open browser: ${error.message}`);
+      console.log(`👉 Manually open: ${browserUrl}`);
+    }
+    
     // Setup cleanup handlers
     process.on('SIGINT', () => {
       console.log('\n⚡ Shutting down complete JTAG system...');

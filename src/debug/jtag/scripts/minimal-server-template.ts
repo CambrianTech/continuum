@@ -192,54 +192,8 @@ class MinimalServer {
       this.server.listen(PORT, () => {
         console.log(`✅ HTTP server running at http://localhost:${PORT}`);
         
-        // Launch browser automatically
-        setTimeout(() => {
-          try {
-            const { exec } = require('child_process');
-            const url = `http://localhost:${PORT}`;
-            
-            // Try multiple browser launch methods
-            const browserCommands = [
-              `open "${url}"`,                           // macOS default
-              `xdg-open "${url}"`,                      // Linux default
-              `start "" "${url}"`,                      // Windows default
-              `google-chrome "${url}"`,                // Direct Chrome
-              `firefox "${url}"`,                      // Direct Firefox
-              `safari "${url}"`                        // Direct Safari
-            ];
-            
-            let attempts = 0;
-            const tryLaunch = () => {
-              if (attempts >= browserCommands.length) {
-                console.log('   ❌ CRITICAL: Could not auto-launch browser with any method');
-                console.log(`   👉 MANUAL ACTION REQUIRED: Open ${url} in your browser`);
-                console.log('   📋 This is a major failure - system needs browser interaction');
-                return;
-              }
-              
-              const command = browserCommands[attempts];
-              console.log(`   🔍 Attempting browser launch method ${attempts + 1}: ${command}`);
-              
-              exec(command, { timeout: 5000 }, (error: any) => {
-                if (error) {
-                  console.log(`   ⚠️ Method ${attempts + 1} failed: ${error.message}`);
-                  attempts++;
-                  tryLaunch();
-                } else {
-                  console.log('   🚀 Browser launched automatically');
-                  console.log(`   🌐 Opening: ${url}`);
-                }
-              });
-            };
-            
-            tryLaunch();
-            
-          } catch (launchError) {
-            console.log('   ❌ CRITICAL: Browser launch system failure');
-            console.log(`   👉 MANUAL ACTION REQUIRED: Open http://localhost:${PORT} in your browser`);
-            console.log('   📋 This is a major failure - system needs browser interaction');
-          }
-        }, 1000);
+        // Browser launch handled by main JTAG system - no duplicate launch needed
+        console.log(`   🌐 Access at: http://localhost:${PORT} (browser auto-opened by JTAG system)`);
         
         resolve();
       });
