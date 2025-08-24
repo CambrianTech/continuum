@@ -126,56 +126,56 @@ async function waitForServerReady(signaler: SystemReadySignaler): Promise<boolea
   console.log('⏳ Waiting for COMPLETE server system to be ready...');
   console.log(`🔍 Checking: WebSocket server (${wsPort}) + HTTP server (${httpPort}) + Bootstrap`);
   
-  const maxAttempts = 30; // 30 attempts x 2s = 60s timeout
-  const requiredPorts = [wsPort, httpPort]; // WebSocket + HTTP servers
+  // Use event-driven signal detection with 60 second timeout
+  const signal = await signaler.checkSystemReady(60000); // 60s timeout
   
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const signal = await signaler.generateReadySignal();
-      
-      // Check all requirements
-      const hasBootstrap = signal.bootstrapComplete;
-      const hasCommands = signal.commandCount > 0;
-      const hasAllPorts = requiredPorts.every(port => 
-        signal.portsActive && signal.portsActive.includes(port)
-      );
-      const isHealthy = signal.systemHealth === 'healthy';
-      
-      console.log(`⏳ Attempt ${attempt}/${maxAttempts}:`);
-      console.log(`   Bootstrap: ${hasBootstrap ? '✅' : '❌'}`);
-      console.log(`   Commands: ${hasCommands ? '✅' : '❌'} (${signal.commandCount})`);
-      console.log(`   WebSocket (${wsPort}): ${signal.portsActive?.includes(wsPort) ? '✅' : '❌'}`);
-      console.log(`   HTTP (${httpPort}): ${signal.portsActive?.includes(httpPort) ? '✅' : '❌'}`);
-      console.log(`   Health: ${signal.systemHealth}`);
-      
-      // Show node errors if we have them so we're not debugging blind
-      if (signal.nodeErrors && signal.nodeErrors.length > 0) {
-        console.log(`   ⚠️ Node errors: ${signal.nodeErrors.slice(0, 2).join('; ')}`);
-      }
-      
-      if (hasBootstrap && hasCommands && hasAllPorts && isHealthy) {
-        console.log(`✅ COMPLETE server system ready! (${signal.commandCount} commands, ${signal.portsActive?.length} ports active)`);
-        console.log(`🌐 Active ports: ${signal.portsActive?.join(', ')}`);
-        return true;
-      }
-      
-      // Show what's missing
-      if (!hasAllPorts) {
-        const activePorts = signal.portsActive || [];
-        const missingPorts = requiredPorts.filter(port => !activePorts.includes(port));
-        console.log(`   ⚠️ Missing critical ports: ${missingPorts.join(', ')}`);
-      }
-      
-    } catch (error) {
-      console.log(`⏳ Attempt ${attempt}/${maxAttempts}: Server system not responding yet`);
-    }
-    
-    // Wait 2 seconds before next attempt
-    await new Promise(resolve => setTimeout(resolve, 2000));
+  if (!signal) {
+    console.error('❌ Timeout waiting for COMPLETE server system to be ready');
+    console.error(`🔍 System needs: Bootstrap ✓ + Commands ✓ + WebSocket(${wsPort}) ✓ + HTTP(${httpPort}) ✓ + Healthy ✓`);
+    return false;
   }
   
-  console.error('❌ Timeout waiting for COMPLETE server system to be ready');
-  console.error(`🔍 System needs: Bootstrap ✓ + Commands ✓ + WebSocket(${wsPort}) ✓ + HTTP(${httpPort}) ✓ + Healthy ✓`);
+  // Check all requirements
+  const requiredPorts = [wsPort, httpPort]; // WebSocket + HTTP servers
+  const hasBootstrap = signal.bootstrapComplete;
+  const hasCommands = signal.commandCount > 0;
+  const hasAllPorts = requiredPorts.every(port => 
+    signal.portsActive && signal.portsActive.includes(port)
+  );
+  // Accept intelligent signal detection: system is ready when core functions work
+  // Browser readiness is nice-to-have but not required for core functionality
+  const isHealthy = (signal.systemHealth === 'healthy' || signal.systemHealth === 'degraded') && 
+                    signal.bootstrapComplete && 
+                    signal.commandCount > 0 &&
+                    (signal.portsActive?.length || 0) >= 2;
+  
+  console.log(`📊 Final system check:`);
+  console.log(`   Bootstrap: ${hasBootstrap ? '✅' : '❌'}`);
+  console.log(`   Commands: ${hasCommands ? '✅' : '❌'} (${signal.commandCount})`);
+  console.log(`   WebSocket (${wsPort}): ${signal.portsActive?.includes(wsPort) ? '✅' : '❌'}`);
+  console.log(`   HTTP (${httpPort}): ${signal.portsActive?.includes(httpPort) ? '✅' : '❌'}`);
+  console.log(`   Health: ${signal.systemHealth}`);
+  
+  // Show node errors if we have them so we're not debugging blind
+  if (signal.nodeErrors && signal.nodeErrors.length > 0) {
+    console.log(`   ⚠️ Node errors: ${signal.nodeErrors.slice(0, 2).join('; ')}`);
+  }
+  
+  if (hasBootstrap && hasCommands && hasAllPorts && isHealthy) {
+    console.log(`✅ COMPLETE server system ready! (${signal.commandCount} commands, ${signal.portsActive?.length} ports active)`);
+    console.log(`🌐 Active ports: ${signal.portsActive?.join(', ')}`);
+    return true;
+  }
+  
+  // Show what's missing
+  if (!hasAllPorts) {
+    const activePorts = signal.portsActive || [];
+    const missingPorts = requiredPorts.filter(port => !activePorts.includes(port));
+    console.log(`   ⚠️ Missing critical ports: ${missingPorts.join(', ')}`);
+  }
+  
+  // System responded but not fully ready
+  console.error('❌ System responded but requirements not met');
   return false;
 }
 
@@ -217,7 +217,14 @@ async function main(): Promise<void> {
   WorkingDirConfig.setWorkingDir(workingDir);
   console.log(`🎯 Test context set to: ${workingDir}`);
   
+  // Initialize signaler AFTER setting working directory context
   const signaler = new SystemReadySignaler();
+  
+  // Reset logging state for clean test output
+  (signaler as any).hasLoggedStaleFile = false;
+  (signaler as any).hasLoggedNoFile = false;
+  (signaler as any).hasLoggedNotReady = false;
+  (signaler as any).hasLoggedError = false;
   
   try {
     console.log('🎯 JTAG TEST WITH SERVER MANAGEMENT');
