@@ -125,7 +125,7 @@ export class WorkerPoolManager {
       const timeout = setTimeout(() => {
         this.pendingTasks.delete(taskId);
         this.metrics.timeoutRate = (this.metrics.timeoutRate + 1) / Math.max(this.metrics.tasksCompleted + 1, 1);
-        reject(new Error(`Task ${taskId} timed out after ${task.timeout || this.config.taskTimeout}ms`));
+        reject(new Error(`❌ TIMEOUT: Worker pool task ${taskId} failed to complete within ${task.timeout || this.config.taskTimeout}ms - task cancelled`));
       }, task.timeout || this.config.taskTimeout);
       
       // Register pending task

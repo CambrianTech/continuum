@@ -103,7 +103,7 @@ export class EventTestUtils {
     console.log(`🧪 ${testName}...`);
     
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`Test timeout: ${testName}`)), timeoutMs);
+      setTimeout(() => reject(new Error(`❌ TIMEOUT: Event test '${testName}' failed to complete within ${timeoutMs}ms - test cancelled`)), timeoutMs);
     });
     
     try {

@@ -73,7 +73,7 @@ export class NavigateBrowserCommand extends NavigateCommand {
         if (document.querySelector(selector)) {
           resolve();
         } else if (Date.now() - startTime > timeout) {
-          reject(new Error(`Element ${selector} not found within ${timeout}ms`));
+          reject(new Error(`❌ TIMEOUT: Element selector '${selector}' not found within ${timeout}ms - navigation cancelled`));
         } else {
           setTimeout(check, 100);
         }

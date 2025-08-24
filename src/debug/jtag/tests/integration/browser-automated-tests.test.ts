@@ -142,14 +142,19 @@ async function runBrowserIntegrationTests(): Promise<void> {
             
             // Test exec functionality directly 
             try {
-              // Simple JavaScript execution test
+              // Browser-specific JavaScript execution test with DOM references
               const testValue = Math.random();
               const result = testValue * 2;
-              console.log('✅ AUTOMATED TEST: Browser exec test completed - basic JavaScript execution works');
+              const browserInfo = {
+                userAgent: navigator.userAgent,
+                location: window.location.href,
+                timestamp: new Date().toISOString()
+              };
+              console.log('✅ AUTOMATED TEST: Browser exec test completed - DOM access working', browserInfo);
               return { 
                 testName: 'browserExec', 
                 success: true, 
-                result: { testValue, result, proof: 'BROWSER_EXEC_WORKING' }
+                result: { testValue, result, browserInfo, proof: 'BROWSER_EXEC_WORKING' }
               };
             } catch (error) {
               console.log('❌ AUTOMATED TEST: Browser exec test error:', error);
@@ -194,7 +199,9 @@ async function runBrowserIntegrationTests(): Promise<void> {
                 executedInBrowser: true,
                 timestamp: new Date().toISOString(),
                 userAgent: navigator.userAgent,
-                location: window.location.href
+                location: window.location.href,
+                documentTitle: document.title,
+                windowWidth: window.innerWidth
               };
               
               console.log('✅ AUTOMATED TEST: Cross-context communication working');

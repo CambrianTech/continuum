@@ -229,7 +229,7 @@ export class TransportTestRunner<TTransport extends JTAGTransport = JTAGTranspor
   private createTimeoutPromise<T>(timeout: number): Promise<T> {
     return new Promise((_, reject) => {
       setTimeout(() => {
-        reject(new Error(`Test timed out after ${timeout}ms`));
+        reject(new Error(`❌ TIMEOUT: Transport test framework failed to complete within ${timeout}ms - test cancelled`));
       }, timeout);
     });
   }
