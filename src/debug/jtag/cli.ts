@@ -9,6 +9,7 @@
 import { JTAGClientServer } from './system/core/client/server/JTAGClientServer';
 import type { JTAGClientConnectOptions } from './system/core/client/shared/JTAGClient';
 import { EntryPointAdapter } from './system/core/entry-points/EntryPointAdapter';
+import { systemOrchestrator } from './system/orchestration/SystemOrchestrator';
 
 /**
  * AI-Friendly Help System - For Fresh AIs Learning JTAG
@@ -180,6 +181,34 @@ async function main() {
         }
       }
     };
+    
+    // MILESTONE-BASED ORCHESTRATION: Ensure system is ready before connecting
+    if (!entryPoint.shouldShowVerboseLogs()) {
+      console.log('🎯 Ensuring system ready for CLI command execution...');
+    }
+    
+    try {
+      // Use milestone orchestration for CLI command execution
+      // This ensures server is ready before attempting client connection
+      const systemState = await systemOrchestrator.orchestrate('cli-command', {
+        verbose: behavior.logLevel === 'verbose',
+        skipBrowser: true, // CLI doesn't need browser for most commands
+        timeoutMs: 30000   // Shorter timeout for CLI responsiveness
+      });
+      
+      if (!systemState.success) {
+        console.error(`❌ Failed to prepare system for CLI command: ${systemState.error}`);
+        process.exit(1);
+      }
+      
+      if (behavior.logLevel === 'verbose') {
+        console.log(`✅ System ready: ${systemState.completedMilestones.join(' → ')}`);
+      }
+    } catch (orchestrationError: any) {
+      console.error(`❌ System orchestration failed: ${orchestrationError.message}`);
+      console.error('💡 Try: npm run system:start');
+      process.exit(1);
+    }
     
     // Conditionally suppress verbose connection logs based on agent behavior
     const originalLog = console.log;

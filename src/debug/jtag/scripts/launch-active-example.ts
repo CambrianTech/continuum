@@ -2,205 +2,75 @@
 /**
  * Launch Active Example Script
  * 
- * Starts BOTH the JTAG WebSocket server system AND the active example HTTP server
- * This ensures both services are running for proper JTAG functionality
+ * MIGRATED TO MILESTONE-BASED ORCHESTRATION
+ * 
+ * Uses SystemOrchestrator to ensure proper milestone execution order.
+ * CRITICAL FIX: Browser now opens ONLY after SERVER_READY milestone.
  */
 
-import { spawn, ChildProcess } from 'child_process';
-import { JTAGSystemServer } from '../system/core/system/server/JTAGSystemServer';
-import { getActiveExampleName, getActiveExamplePath, getActivePorts } from '../system/shared/ExampleConfig';
+import { systemOrchestrator } from '../system/orchestration/SystemOrchestrator';
+import { getActiveExampleName } from '../system/shared/ExampleConfig';
 import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
-import { ProcessCoordinator, ProcessLock } from '../system/core/process/ProcessCoordinator';
-import { SystemReadySignaler } from './signal-system-ready';
-
-let jtagServer: JTAGSystemServer | null = null;
-let exampleServer: ChildProcess | null = null;
-let keepAliveTimer: NodeJS.Timeout | null = null;
-let signaler: SystemReadySignaler | null = null;
 
 async function launchActiveExample(): Promise<void> {
-  const coordinator = ProcessCoordinator.getInstance();
-  let lock: ProcessLock | null = null;
-
   try {
-    console.log('🚀 Intelligent JTAG system startup...');
+    console.log('🚀 MILESTONE-BASED JTAG SYSTEM STARTUP');
     
-    // Get active example configuration from examples.json ONLY
-    let activePorts;
-    let activeExamplePath;
-    try {
-      activePorts = getActivePorts();
-      activeExamplePath = getActiveExamplePath();
-      console.log(`🔧 Target ports: WebSocket=${activePorts.websocket_server}, HTTP=${activePorts.http_server}`);
-      console.log(`📁 Active example path: ${activeExamplePath}`);
-    } catch (error) {
-      console.error('❌ CRITICAL FAILURE: Cannot load configuration from examples.json!');
-      console.error('❌ Error:', error.message);
-      throw new Error(`Configuration failure: ${error.message}`);
-    }
-    
-    // Set context for per-project .continuum isolation
+    // Set up working directory context  
     const activeExample = getActiveExampleName();
     const workingDir = `examples/${activeExample}`;
-    WorkingDirConfig.setWorkingDir(workingDir);
-    console.log(`🎯 Context switched to: ${workingDir}`);
-
-    // Acquire startup lock
-    lock = await coordinator.acquireStartupLock(workingDir);
     
-    // Plan intelligent startup
-    const targetPorts = [activePorts.websocket_server, activePorts.http_server];
-    const plan = await coordinator.planStartup(workingDir, targetPorts);
-    
-    console.log(`🧠 Startup plan: ${plan.type}`);
-    
-    if (plan.type === 'reuse_existing') {
-      console.log(`✅ Reusing existing healthy server (PID: ${plan.process.pid})`);
-      console.log(`🌐 Active ports: ${plan.process.ports.join(', ')}`);
-      return; // Server already running and healthy
-    }
-    
-    if (plan.type === 'graceful_handoff') {
-      console.log(`🔄 Graceful handoff from context '${plan.from.context}' to '${workingDir}'`);
-      // For now, kill old and start fresh (can improve later)
-      try {
-        process.kill(plan.from.pid, 'SIGTERM');
-        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for graceful shutdown
-      } catch (error) {
-        console.warn(`⚠️ Failed to gracefully stop old process: ${error}`);
-      }
-    }
-    
-    // 1. Start the JTAG WebSocket server system first
-    console.log('🔌 Starting JTAG WebSocket Server System...');
-    jtagServer = await JTAGSystemServer.connect();
-    console.log(`✅ JTAG WebSocket Server running on port ${activePorts.websocket_server}`);
-    
-    // Save process state for intelligent detection
-    await coordinator.saveProcessState({
-      pid: process.pid,
-      ports: targetPorts,
-      context: workingDir,
-      startTime: new Date(),
-      healthStatus: 'healthy'
+    // Use milestone-based orchestration for 'system-start' entry point
+    // This ensures proper milestone order: BUILD → SERVER → BROWSER → SYSTEM
+    const systemState = await systemOrchestrator.orchestrate('system-start', {
+      workingDir,
+      verbose: true,
+      browserUrl: undefined // Use default from configuration
     });
     
-    // 2. Start the active example HTTP server  
-    const activeExampleName = getActiveExampleName();
-    
-    console.log(`🌐 Starting ${activeExampleName} HTTP server...`);
-    console.log(`📂 Example path: ${activeExamplePath}`);
-    
-    exampleServer = spawn('npm', ['start'], {
-      cwd: activeExamplePath,
-      stdio: 'inherit',
-      shell: true
-    });
-    
-    exampleServer.on('error', (error) => {
-      console.error(`❌ Failed to launch ${activeExampleName}:`, error.message);
-      cleanup();
+    if (!systemState.success) {
+      console.error(`❌ System startup failed at milestone: ${systemState.failedMilestone}`);
+      console.error(`❌ Error: ${systemState.error}`);
       process.exit(1);
-    });
-    
-    exampleServer.on('exit', (code) => {
-      console.log(`📋 ${activeExampleName} exited with code ${code}`);
-      cleanup();
-      process.exit(code || 0);
-    });
-    
-    // 3. Start the system health monitoring
-    console.log('🔍 Starting system health monitoring...');
-    signaler = new SystemReadySignaler();
-    // Start continuous monitoring in background
-    const monitoringLoop = async () => {
-      try {
-        const signal = await signaler.generateReadySignal();
-        // Signal is automatically written to file by generateReadySignal()
-      } catch (error) {
-        console.error('⚠️ Health monitoring error:', error.message);
-      }
-    };
-    
-    // Initial signal generation
-    await monitoringLoop();
-    
-    // Set up periodic monitoring every 30 seconds
-    const monitoringInterval = setInterval(monitoringLoop, 30000);
-    keepAliveTimer = monitoringInterval; // Reuse existing cleanup mechanism
-    console.log('✅ System health monitoring started');
-    
-    console.log('✅ Complete JTAG system started successfully');
-    console.log(`🔌 JTAG WebSocket Server: ws://localhost:${activePorts.websocket_server}`);
-    console.log(`🌐 ${activeExampleName} HTTP Server: http://localhost:${activePorts.http_server}`);
-    
-    // 4. Open the browser to the CONTINUUM interface
-    console.log('🌐 Opening CONTINUUM browser interface...');
-    const browserUrl = `http://localhost:${activePorts.http_server}`;
-    try {
-      spawn('open', [browserUrl], { 
-        detached: true, 
-        stdio: 'ignore' 
-      }).unref();
-      console.log(`✅ Browser opened: ${browserUrl}`);
-    } catch (error) {
-      console.warn(`⚠️ Failed to auto-open browser: ${error.message}`);
-      console.log(`👉 Manually open: ${browserUrl}`);
     }
     
-    // Setup cleanup handlers
+    console.log('🎉 Complete JTAG system started successfully via milestone orchestration');
+    console.log(`✅ Milestones completed: ${systemState.completedMilestones.join(' → ')}`);
+    
+    if (systemState.browserOpened) {
+      console.log('🌐 Browser interface is ready for interaction');
+    }
+    
+    // Setup cleanup handlers for graceful shutdown
     process.on('SIGINT', () => {
-      console.log('\n⚡ Shutting down complete JTAG system...');
+      console.log('\n⚡ Shutting down milestone-based JTAG system...');
       cleanup();
       process.exit(0);
     });
     
     process.on('SIGTERM', () => {
-      console.log('\n⚡ Terminating complete JTAG system...');
+      console.log('\n⚡ Terminating milestone-based JTAG system...');
       cleanup();
       process.exit(0);
     });
     
     // Keep running - prevent Node.js from exiting
-    console.log('📡 Complete JTAG system running - press Ctrl+C to stop both servers');
+    console.log('📡 Milestone-based JTAG system running - press Ctrl+C to stop');
     
-    // Process kept alive by the monitoring interval above
+    // Keep process alive (orchestrator manages the actual server processes)
+    await new Promise(() => {}); // Infinite wait
     
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    console.error('❌ Failed to launch complete JTAG system:', errorMsg);
+    console.error('❌ Failed to launch milestone-based JTAG system:', errorMsg);
     cleanup();
     process.exit(1);
-  } finally {
-    // Always release the startup lock
-    if (lock) {
-      await lock.release();
-    }
   }
 }
 
 function cleanup() {
-  if (keepAliveTimer) {
-    clearInterval(keepAliveTimer);
-    keepAliveTimer = null;
-  }
-  
-  if (exampleServer) {
-    console.log('🛑 Stopping example server...');
-    exampleServer.kill('SIGTERM');
-    exampleServer = null;
-  }
-  
-  if (signaler) {
-    console.log('🛑 Stopping system health monitoring...');
-    signaler = null;
-  }
-  
-  if (jtagServer) {
-    console.log('🛑 Stopping JTAG server...');
-    // TODO: Add proper server cleanup if available
-    jtagServer = null;
-  }
+  console.log('🧹 Cleaning up milestone-based system...');
+  systemOrchestrator.cleanup().catch(console.error);
 }
 
 // Run the launcher
