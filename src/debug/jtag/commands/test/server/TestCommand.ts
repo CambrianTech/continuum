@@ -1,7 +1,9 @@
 // ISSUES: 0 open, last updated 2025-08-24 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 
 /**
- * Test Command - Run existing tests
+ * Test Command - Server Implementation
+ * 
+ * Server can execute tests directly using Node.js child process
  * 
  * Usage:
  *   ./jtag test                           # Run npm test (full suite)
@@ -10,29 +12,30 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { type TestParams, type TestResult, createTestResult } from '../shared/TestTypes';
+import { TestCommand } from '../shared/TestCommand';
 
 const execAsync = promisify(exec);
 
-export class TestCommand {
-  constructor(private context: any, private subpath: string, private commander: any) {}
+export class TestServerCommand extends TestCommand {
   
-  async execute(params: any = {}) {
+  async execute(params: TestParams): Promise<TestResult> {
     const startTime = Date.now();
     
     // Determine what to run
     let command: string;
-    if (params.file || (params._ && params._[0])) {
-      const testFile = params.file ?? params._[0];
+    if (params.file || (params._ && params._?.length > 0)) {
+      const testFile = params.file ?? params._?.[0];
       command = `npx tsx ${testFile}`;
-      console.log(`🧪 Running test file: ${testFile}`);
+      console.log(`🧪 SERVER: Running test file: ${testFile}`);
     } else {
       command = 'npm test';
-      console.log('🧪 Running full test suite...');
+      console.log('🧪 SERVER: Running full test suite...');
     }
     
     try {
       const timeout = params.timeout ?? 300000; // 5 minutes
-      console.log(`⚡ Executing: ${command}`);
+      console.log(`⚡ SERVER: Executing: ${command}`);
       
       const { stdout, stderr } = await execAsync(command, {
         timeout,
@@ -42,14 +45,14 @@ export class TestCommand {
       const duration = Date.now() - startTime;
       const output = stdout + (stderr ? '\n' + stderr : '');
       
-      console.log(`✅ Test completed in ${duration}ms`);
+      console.log(`✅ SERVER: Test completed in ${duration}ms`);
       
-      return {
+      return createTestResult(params.context, params.sessionId, {
         success: true,
         output,
         duration,
         command
-      };
+      });
       
     } catch (error: any) {
       const duration = Date.now() - startTime;
@@ -58,15 +61,17 @@ export class TestCommand {
       if (error.code === 'ETIMEDOUT') {
         console.error(`❌ TIMEOUT: Test failed to complete within ${params.timeout ?? 300000}ms - test cancelled`);
       } else {
-        console.error(`❌ Test failed (${duration}ms)`);
+        console.error(`❌ SERVER: Test failed (${duration}ms)`);
       }
       
-      return {
+      return createTestResult(params.context, params.sessionId, {
         success: false,
         output,
         duration,
-        command
-      };
+        command,
+        error: error instanceof Error ? error : new Error(String(error))
+      });
     }
   }
 }
+

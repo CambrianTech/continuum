@@ -34,13 +34,13 @@ Continuum is a **Genomic Mesh Organism** - a distributed biological computing sy
 cd src/debug/jtag
 npm run system:start     # Launch Grid system with browser portal
 
-# Test Grid transport foundation 
+# Universal testing - works from anywhere
+./jtag test               # Run full npm test suite  
+./jtag test my-test.ts    # Run specific test file
+
+# Grid architecture validation
 npx tsx tests/grid-transport-foundation.test.ts
-
-# Test Grid P2P routing backbone
 npx tsx tests/grid-routing-backbone.test.ts
-
-# Run comprehensive Grid validation
 JTAG_WORKING_DIR="examples/test-bench" npm test
 
 # Future: Global installation for location-transparent Grid access
@@ -87,7 +87,85 @@ jtag screenshot --remote=laptop-node  # Execute on any Grid node
 4. Create SQL genomic database with cosine similarity searches
 5. Package for global NPM distribution
 
-### **🧪 Testing & Validation**
+### **🧪 Universal Testing Infrastructure**
+
+**🎯 The Foundation of Fast Iteration**: Universal testing access from anywhere enables rapid development cycles.
+
+#### **JTAG Test Command - Run Tests from Anywhere** ✅
+
+```bash
+# Zero parameters → Full npm test suite
+./jtag test                           # Runs entire test suite
+./jtag test my-test.ts               # Runs specific test file  
+./jtag test tests/integration/       # Runs test directory
+
+# Works from ANY environment:
+client.commands.test({})             # AI personas can run tests
+jtag.test({ _: ['specific.test.ts'] }) # Browser widgets can test
+./jtag test --timeout 600000         # CLI with custom timeout
+```
+
+**🔄 The Beautiful Iteration Loop:**
+```
+Make Change → ./jtag test → See Results → Iterate
+     ↑                                      ↓
+Fix Issues ←─ Debug Problems ←─ Find Issues
+```
+
+**🚀 Why This Matters:**
+- **AI personas can validate their own changes** with `client.commands.test()`
+- **Browser widgets can self-test** without CLI access
+- **Server processes can validate** during deployment  
+- **Universal interface** - same command works everywhere
+- **Robust error handling** - test failures return `TestResult`, don't throw
+
+**📈 Development Strategy - Universal Testing Enables Fast Iteration:**
+1. **✅ Phase 1 Complete**: Make testing universal and friction-free
+2. **🚀 Phase 2 Now Possible**: Rapid iteration on system improvements
+   - Fix system startup race conditions → test fixes immediately
+   - Improve WebSocket reliability → validate with `./jtag test`  
+   - Speed up command execution → benchmark performance
+   - Debug launcher conflicts → catch regressions with tests
+3. **⚡ Result**: Instant feedback loop from any environment accelerates development
+
+**🏃‍♂️ Performance-Driven Optimization Loop:**
+```bash
+# Measure baseline performance
+./jtag test --performance                 # Get timing metrics
+./jtag screenshot --benchmark            # Command execution speed
+
+# Check session logs for performance data
+tail -f .continuum/jtag/currentUser/logs/server.log | grep "⏱️\|📊\|🚀"
+
+# Optimize based on metrics → test immediately → repeat
+```
+
+**📊 Performance Logging Integration:**
+- **Command duration tracking** - Every `./jtag test` shows execution time
+- **WebSocket connection speed** - Monitor transport performance  
+- **Session log analysis** - Real-time performance insights
+- **Benchmark comparisons** - Before/after optimization metrics
+
+**🔍 Session Log Speed Debugging:**
+```bash
+# Convenient symlinks for current session debugging
+ls .continuum/jtag/currentUser/logs/     # All current session logs
+ls .continuum/jtag/system/logs/          # System-wide logs
+
+# Real-time debugging during test execution  
+tail -f .continuum/jtag/currentUser/logs/server.log & ./jtag test
+
+# Performance pattern analysis
+grep -E "✅.*ms|❌.*timeout|⏱️.*Duration" .continuum/jtag/currentUser/logs/server.log
+```
+
+**⚡ The Speed Advantage:**
+1. **Immediate feedback** - No waiting for log aggregation
+2. **Session isolation** - Current work separated from historical noise
+3. **Performance correlation** - Connect slow tests to specific bottlenecks
+4. **Real-time monitoring** - Watch optimization improvements live
+
+#### **Grid Architecture Testing**
 
 ```bash
 # Test UDP transport foundation (proven working)
