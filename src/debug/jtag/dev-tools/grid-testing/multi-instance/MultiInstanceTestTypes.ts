@@ -5,7 +5,7 @@
  * in parallel - essential for Grid P2P backbone integration tests.
  */
 
-import type { ExamplePortConfiguration } from '../../system/shared/ExampleConfigTypes';
+import type { ExamplePortConfiguration } from '../../../system/shared/ExampleConfigTypes';
 
 // Multi-instance test configuration
 export interface MultiInstanceTestConfig {
@@ -114,47 +114,47 @@ export interface PersonaConfig {
 export interface MultiInstanceTestResult {
   readonly configId: string;
   readonly startTime: string;
-  readonly endTime: string;
-  readonly duration: number;
-  readonly success: boolean;
+  endTime: string;              // Mutable - updated during execution
+  duration: number;             // Mutable - updated during execution
+  success: boolean;             // Mutable - updated during execution
   readonly instanceResults: Record<string, InstanceTestResult>;
   readonly testResults: Record<string, TestExecutionResult>;
-  readonly errors: readonly string[];
-  readonly warnings: readonly string[];
-  readonly metrics: TestMetrics;
+  errors: string[];             // Mutable - errors added during execution
+  warnings: string[];           // Mutable - warnings added during execution
+  metrics: TestMetrics;         // Mutable - metrics updated during execution
 }
 
 // Results for individual instance
 export interface InstanceTestResult {
   readonly instanceId: string;
-  readonly healthy: boolean;
-  readonly startupTime: number;
-  readonly finalStatus: 'healthy' | 'degraded' | 'unhealthy' | 'error';
-  readonly ports: readonly number[];
+  healthy: boolean;                                                    // Mutable
+  startupTime: number;                                                 // Mutable
+  finalStatus: 'healthy' | 'degraded' | 'unhealthy' | 'error';       // Mutable
+  ports: number[];                                                     // Mutable
   readonly tmuxSession: string;
   readonly processId: number;
-  readonly errors: readonly string[];
+  errors: string[];                                                    // Mutable
 }
 
 // Results for individual test
 export interface TestExecutionResult {
   readonly testName: string;
-  readonly success: boolean;
-  readonly duration: number;
-  readonly error?: string;
-  readonly metrics?: Record<string, number>;
+  success: boolean;             // Mutable
+  duration: number;             // Mutable
+  error?: string;               // Mutable
+  metrics?: Record<string, number>; // Mutable
 }
 
 // Test metrics
 export interface TestMetrics {
   readonly totalInstances: number;
-  readonly healthyInstances: number;
+  healthyInstances: number;     // Mutable
   readonly totalTests: number;
-  readonly passedTests: number;
-  readonly averageStartupTime: number;
-  readonly peakMemoryUsage: number;
-  readonly messageLatency?: number; // For P2P tests
-  readonly throughput?: number;     // Messages/second
+  passedTests: number;          // Mutable
+  averageStartupTime: number;   // Mutable
+  peakMemoryUsage: number;      // Mutable
+  messageLatency?: number;      // Mutable - For P2P tests
+  throughput?: number;          // Mutable - Messages/second
 }
 
 // Pre-defined test configurations for common scenarios

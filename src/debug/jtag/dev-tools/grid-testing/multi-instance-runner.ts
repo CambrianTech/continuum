@@ -16,9 +16,9 @@ import type {
   ContinuumInstanceConfig,
   InstanceEnvironment,
   InstanceFeatures
-} from '../tests/multi-instance/MultiInstanceTestTypes';
-import { MultiInstanceTestRunner } from '../tests/multi-instance/MultiInstanceTestRunner';
-import type { ExamplePortConfiguration } from '../system/shared/ExampleConfigTypes';
+} from './multi-instance/MultiInstanceTestTypes';
+import { MultiInstanceTestRunner } from './multi-instance/MultiInstanceTestRunner';
+import type { ExamplePortConfiguration } from '../../system/shared/ExampleConfigTypes';
 
 // Command line argument parsing
 interface TestArgs {
@@ -70,7 +70,7 @@ function parseArguments(): TestArgs {
 async function loadPreDefinedConfig(name: string): Promise<MultiInstanceTestConfig> {
   switch (name) {
     case 'grid-p2p':
-      const { GRID_P2P_TEST_CONFIG } = await import('../tests/multi-instance/MultiInstanceTestTypes');
+      const { GRID_P2P_TEST_CONFIG } = await import('./multi-instance/MultiInstanceTestTypes');
       return GRID_P2P_TEST_CONFIG;
       
     default:

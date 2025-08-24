@@ -59,8 +59,8 @@ async function testPerProjectIsolation(): Promise<TestResult> {
     details.push(`   Timestamp: ${projectSignal.timestamp}`);
     
     // Test 3: Verify different signal files are created
-    const defaultPath = path.resolve('.continuum/jtag/signals/system-ready.json');
-    const projectPath = path.resolve(`${workingDir}/.continuum/jtag/signals/system-ready.json`);
+    const defaultPath = path.resolve('.continuum/jtag/signals/system-ready-port-9000.json');
+    const projectPath = path.resolve(`${workingDir}/.continuum/jtag/signals/system-ready-port-9000.json`);
     
     details.push(`📂 Default signal path: ${defaultPath}`);
     details.push(`📂 Project signal path: ${projectPath}`);
@@ -237,7 +237,7 @@ async function testSignalFileOperations(): Promise<TestResult> {
     
     // Test 3: Verify signal file exists
     const continuumPath = WorkingDirConfig.getContinuumPath();
-    const signalFile = path.join(continuumPath, 'jtag', 'signals', 'system-ready.json');
+    const signalFile = path.join(continuumPath, 'jtag', 'signals', 'system-ready-port-9000.json');
     
     try {
       const fileContent = await fs.readFile(signalFile, 'utf-8');
