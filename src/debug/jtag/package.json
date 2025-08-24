@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1111",
+  "version": "1.0.1114",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "port": 9001,
@@ -113,7 +113,7 @@
     }
   },
   "scripts": {
-    "system:ensure": "npm run signal:check || (npm run system:start && npm run signal:wait)",
+    "system:ensure": "npm run signal:check || npm start",
     "start": "npx tsx scripts/system-startup.ts",
     "start:no-dashboard": "npm run smart-build && npm run system:deploy && npm run restart:quick",
     "start:direct": "npm run smart-build && npm run system:deploy && npm run system:run",
@@ -344,7 +344,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-24T15:31:05.512Z",
+    "timestamp": "2025-08-24T16:22:20.640Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 29,
     "note": "Generated from clean essential path mappings only"

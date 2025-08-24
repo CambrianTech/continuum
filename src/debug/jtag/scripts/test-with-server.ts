@@ -41,8 +41,8 @@ async function main(): Promise<void> {
     console.log('🎯 JTAG TEST WITH SERVER MANAGEMENT');
     console.log('📋 This will start server, run tests, then clean up');
     
-    // Start the system using shared startup logic
-    await startSystem();
+    // Start the system using shared startup logic for testing
+    await startSystem('npm-test');
     
     // Run tests
     const testsSucceeded = await runTests();
