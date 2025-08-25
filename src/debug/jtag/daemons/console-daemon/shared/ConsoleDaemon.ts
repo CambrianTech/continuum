@@ -108,7 +108,7 @@ export abstract class ConsoleDaemon extends DaemonBase {
   };
   private filters: ConsoleFilter = { excludePatterns: [] };
   private logBuffer: ConsolePayload[] = [];
-  private maxBufferSize = 1000;
+  private maxBufferSize = 5000; // INCREASED: Prevent Grid test lockups with massive console output
   private jtagSystemReady = false;
   private drainInterval?: TimerHandle;
   private sessionWaitQueue: ConsolePayload[] = [];

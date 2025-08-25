@@ -166,41 +166,53 @@ export class SystemMetricsCollector {
 
   private async checkBrowserReady(): Promise<boolean> {
     try {
-      // Use ExampleConfig HTTP port for consistency with actual server
+      // TIMEOUT ELIMINATION: Replace cascading curl timeouts with native HTTP client
+      // This eliminates the progressive timeout pattern (1s, 2s, 4s, 6s) and external process overhead
+      
       const activePorts = getActivePorts();
       const httpUrl = `http://localhost:${activePorts.http_server}`;
       
-      // Startup-aware browser readiness check
-      // If ports are active and bootstrap complete, be more patient for initial startup
-      const portsActive = await this.getActivePorts([activePorts.websocket_server, activePorts.http_server]);
-      const isSystemStarting = portsActive.length >= 2; // Both WebSocket and HTTP ports active
+      // Use native HTTP client instead of external curl command
+      const http = await import('http');
       
-      const attempts = isSystemStarting ? [
-        { timeout: 1, name: 'instant' },
-        { timeout: 2, name: 'quick' },
-        { timeout: 4, name: 'patient' },     // More patient during startup
-        { timeout: 6, name: 'startup' }      // Extra attempt for startup phase
-      ] : [
-        { timeout: 1, name: 'instant' },
-        { timeout: 2, name: 'quick' }        // Faster when system is already up
-      ];
-      
-      for (const attempt of attempts) {
-        try {
-          const { stdout } = await execAsync(`curl -s --max-time ${attempt.timeout} ${httpUrl} 2>/dev/null | grep -i "continuum" || echo ""`);
-          if (stdout.includes('Continuum')) {
-            return true;
+      return new Promise<boolean>((resolve) => {
+        // Single fast request instead of multiple cascading timeouts
+        const req = http.request(httpUrl, {
+          method: 'GET',
+          timeout: 1000, // Single 1-second timeout instead of cascading 1s+2s+4s+6s
+          headers: {
+            'User-Agent': 'JTAG-SystemMetricsCollector/1.0'
           }
-        } catch {
-          // Continue to next attempt
-        }
+        }, (res) => {
+          let data = '';
+          res.on('data', (chunk) => {
+            data += chunk;
+          });
+          
+          res.on('end', () => {
+            // Check for Continuum in response (same logic, but no external process)
+            const isReady = data.toLowerCase().includes('continuum');
+            if (isReady) {
+              console.log('✅ Browser readiness confirmed via native HTTP (no curl cascading timeouts)');
+            }
+            resolve(isReady);
+          });
+        });
         
-        // Minimal delay between attempts (C++ style responsiveness)
-        await new Promise(resolve => setTimeout(resolve, 20)); // 20ms like signal handling
-      }
+        req.on('error', () => {
+          resolve(false);
+        });
+        
+        req.on('timeout', () => {
+          req.destroy();
+          resolve(false);
+        });
+        
+        req.end();
+      });
       
-      return false;
-    } catch {
+    } catch (error) {
+      console.log(`⚠️ Native HTTP browser check failed: ${error}`);
       return false;
     }
   }

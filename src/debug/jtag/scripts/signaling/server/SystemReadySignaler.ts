@@ -69,7 +69,7 @@ export class SystemReadySignaler {
       // Ensure signal directory exists
       await fs.mkdir(this.signalDir, { recursive: true });
 
-      // Clear any stale signal files for this instance
+      // AUTOMATIC STALE SIGNAL CLEARING: Always clear before generating new signals
       await this.clearStaleSignals();
 
       // Gather system readiness metrics
@@ -139,11 +139,19 @@ export class SystemReadySignaler {
           const stats = await fs.stat(this.readyFile);
           const ageMs = Date.now() - stats.mtimeMs;
           
-          // File age check: reject stale signals (older than 2 minutes)
+          // File age check: automatically clear stale signals (older than 2 minutes)
           if (ageMs > 120000) {
             if (!this.hasLoggedStaleFile) {
-              console.log(`⚠️ Signal file is stale (${Math.round(ageMs / 1000)}s old), waiting for fresh signal...`);
+              console.log(`🧹 Signal file is stale (${Math.round(ageMs / 1000)}s old), automatically clearing...`);
               this.hasLoggedStaleFile = true;
+              
+              // AUTOMATIC STALE SIGNAL CLEARING: Clear stale file immediately
+              try {
+                await this.clearSignals();
+                console.log(`✅ Stale signal cleared automatically`);
+              } catch (clearError) {
+                console.log(`⚠️ Could not clear stale signal: ${clearError}`);
+              }
             }
             return false;
           }
@@ -171,10 +179,13 @@ export class SystemReadySignaler {
           const readinessCheck = this.progressCalculator.isSystemReady(signal);
           
           if (readinessCheck.fullyHealthy) {
-            // System is fully healthy - resolve immediately
+            // System is fully healthy - resolve immediately and clear signal
             console.log('✅ System fully healthy - resolving immediately');
             const progress = this.progressCalculator.calculateProgress(signal);
             console.log(`📊 Status: health=${signal.systemHealth}, commands=${signal.commandCount}, ports=${signal.portsActive?.length || 0}, browser=${signal.browserReady}`);
+            
+            // Note: Signal will be cleared by the generator process after all consumers finish
+            
             resolveOnce(signal);
             return true;
           } else if (readinessCheck.functionallyReady) {
@@ -193,6 +204,9 @@ export class SystemReadySignaler {
               console.log('✅ System ready (degraded but functional) - resolving after browser warmup');
               const progress = this.progressCalculator.calculateProgress(signal);
               console.log(`📊 Status: health=${signal.systemHealth}, commands=${signal.commandCount}, ports=${signal.portsActive?.length || 0}, browser=${signal.browserReady}`);
+              
+              // Note: Signal will be cleared by the generator process after all consumers finish
+              
               resolveOnce(signal);
               return true;
             }
@@ -388,12 +402,27 @@ export class SystemReadySignaler {
   // Clear stale signal files for this specific instance
   private async clearStaleSignals(): Promise<void> {
     try {
+      const instanceId = this.getInstanceIdentifier();
+      
+      // Check if current signals are stale before clearing
+      let isStale = false;
+      try {
+        const stats = await fs.stat(this.readyFile);
+        const ageMs = Date.now() - stats.mtimeMs;
+        isStale = ageMs > 120000; // Older than 2 minutes
+      } catch {
+        // File doesn't exist - not stale
+      }
+
       // Remove instance-specific signal files if they exist
       await fs.unlink(this.readyFile).catch(() => {});
       await fs.unlink(this.pidFile).catch(() => {});
       
-      const instanceId = this.getInstanceIdentifier();
-      console.log(`🧹 [${instanceId}] Cleared stale signals`);
+      if (isStale) {
+        console.log(`🧹 [${instanceId}] Cleared stale signals (auto-cleanup)`);
+      } else {
+        console.log(`🧹 [${instanceId}] Cleared signals for fresh generation`);
+      }
     } catch (error) {
       // Non-fatal - just log and continue
       console.log(`⚠️ Could not clear stale signals: ${error}`);

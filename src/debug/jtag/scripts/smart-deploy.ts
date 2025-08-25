@@ -53,14 +53,21 @@ function trySmartInstall(): boolean {
   }
   
   try {
+    console.log('🔄 Running npm install (this may take 10-15 seconds)...');
     execSync('npm install', { 
       cwd: exampleDir,
-      stdio: 'pipe'
+      stdio: 'inherit', // Show output to prevent timeout confusion
+      timeout: 45000 // 45 second timeout for npm install
     });
     console.log(`✅ Smart install successful for ${activeExample.name}`);
     return true;
-  } catch (error) {
-    console.log(`⚠️  Smart install failed for ${activeExample.name}, trying full clean...`);
+  } catch (error: any) {
+    if (error.signal === 'SIGTERM') {
+      console.log(`⚠️  Smart install was terminated (probably by timeout) for ${activeExample.name}`);
+    } else {
+      console.log(`⚠️  Smart install failed for ${activeExample.name}: ${error.message}`);
+    }
+    console.log('🔄 Trying full clean install...');
     return false;
   }
 }

@@ -576,62 +576,64 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   /**
-   * Simple port connectivity check
+   * Clean modular port checking with strong types
    */
   private async checkPortReady(port: number): Promise<boolean> {
-    return new Promise((resolve) => {
-      const { createConnection } = require('net');
-      const socket = createConnection(port, 'localhost');
-      
-      socket.on('connect', () => {
-        socket.destroy();
-        resolve(true);
-      });
-      
-      socket.on('error', () => {
-        resolve(false);
-      });
-      
-      // Timeout after 2 seconds
-      setTimeout(() => {
-        socket.destroy();
-        resolve(false);
-      }, 2000);
-    });
+    const { PortChecker, PortCheckResult } = await import('../core/ports/PortChecker');
+    const checker = new PortChecker();
+    
+    const status = await checker.checkPortNumber(port);
+    
+    if (status.isActive && status.result === PortCheckResult.ACTIVE) {
+      console.log(`✅ Port ${port} is active (${status.method})`);
+    } else if (status.result === PortCheckResult.ERROR) {
+      console.log(`⚠️ Port ${port} check error (${status.method}): ${status.error}`);
+    } else {
+      console.log(`⚠️ Port ${port} not active (${status.method})`);
+    }
+    
+    return status.isActive && status.result === PortCheckResult.ACTIVE;
   }
 
   /**
-   * Simple HTTP health check for server
+   * Signal-based server health check (replaces HTTP polling with timeouts)
+   * 
+   * TIMEOUT ELIMINATION: This replaces the 2-second HTTP timeout polling
+   * with comprehensive signal-based health detection from the signal system.
    */
   private async checkServerHealth(port: number): Promise<boolean> {
-    return new Promise((resolve) => {
-      try {
-        const http = require('http');
-        const req = http.request({
-          hostname: 'localhost',
-          port: port,
-          path: '/',
-          method: 'GET',
-          timeout: 2000
-        }, (res: any) => {
-          // Any response means server is healthy
-          resolve(res.statusCode >= 200 && res.statusCode < 500);
-        });
+    try {
+      // Use the existing signal system for comprehensive health checking
+      const { SystemReadySignaler } = await import('../../scripts/signaling/server/SystemReadySignaler');
+      const signaler = new SystemReadySignaler();
+      
+      // Fast event-driven health check (500ms max)
+      const signal = await signaler.checkSystemReady(500);
+      
+      if (signal) {
+        // Use comprehensive signal-based health instead of primitive HTTP polling
+        const isHealthy = signal.systemHealth === 'healthy';
+        const hasPort = signal.portsActive?.includes(port) || false;
+        const hasCommands = signal.commandCount > 0;
+        const browserReady = signal.browserReady;
         
-        req.on('error', () => {
-          resolve(false);
-        });
-        
-        req.on('timeout', () => {
-          req.destroy();
-          resolve(false);
-        });
-        
-        req.end();
-      } catch (error) {
-        resolve(false);
+        if (isHealthy && hasPort && hasCommands) {
+          console.log(`✅ Server health confirmed via signal: ${signal.commandCount} commands, browser: ${browserReady} (no HTTP polling)`);
+          return true;
+        } else {
+          console.log(`⚠️ Server health degraded - health: ${signal.systemHealth}, port: ${hasPort}, commands: ${signal.commandCount}`);
+          return false;
+        }
       }
-    });
+      
+      // No signal found - server is not healthy
+      console.log(`⚠️ Server health check failed for port ${port} - no signal detected`);
+      return false;
+      
+    } catch (error) {
+      console.log(`⚠️ Signal-based health check failed for port ${port}: ${error}`);
+      return false;
+    }
   }
 
   /**

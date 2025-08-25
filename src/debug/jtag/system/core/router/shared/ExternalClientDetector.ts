@@ -8,8 +8,16 @@
 import type { JTAGMessage } from '../../types/JTAGTypes';
 import { JTAGMessageTypes } from '../../types/JTAGTypes';
 
+interface CorrelationEntry {
+  id: string;
+  timestamp: number;
+}
+
 export class ExternalClientDetector {
   private readonly externalCorrelations = new Set<string>();
+  private readonly correlationTimestamps = new Map<string, number>();
+  private readonly TTL_MS = 5 * 60 * 1000; // 5 minutes TTL
+  private cleanupTimer?: NodeJS.Timeout;
 
   /**
    * Detect if message comes from external WebSocket client
@@ -48,9 +56,16 @@ export class ExternalClientDetector {
    * Register external correlation for response routing
    */
   registerExternal(correlationId: string): void {
-    console.log(`🚨 BEFORE ADD: ExternalClientDetector registering ${correlationId}`);
+    const timestamp = Date.now();
+    
+    console.log(`🔗 ExternalClientDetector: Registering ${correlationId}`);
     this.externalCorrelations.add(correlationId);
-    console.log(`🚨 AFTER ADD: ExternalClientDetector registered ${correlationId}, set now has ${this.externalCorrelations.size} items: [${Array.from(this.externalCorrelations).join(', ')}]`);
+    this.correlationTimestamps.set(correlationId, timestamp);
+    
+    console.log(`📊 ExternalClientDetector: Registered ${correlationId}, set now has ${this.externalCorrelations.size} items`);
+    
+    // Start intelligent cleanup if not already running
+    this.startAutomaticCleanup();
   }
 
   /**
@@ -58,7 +73,6 @@ export class ExternalClientDetector {
    */
   isExternal(correlationId: string): boolean {
     const result = this.externalCorrelations.has(correlationId);
-    console.log(`🔍 ExternalClientDetector: Checking ${correlationId}: hasInSet=${result}, setSize=${this.externalCorrelations.size}, setContents=[${Array.from(this.externalCorrelations).join(', ')}]`);
     return result;
   }
 
@@ -66,7 +80,72 @@ export class ExternalClientDetector {
    * Clean up completed correlations
    */
   removeCorrelation(correlationId: string): void {
-    this.externalCorrelations.delete(correlationId);
+    const removed = this.externalCorrelations.delete(correlationId);
+    this.correlationTimestamps.delete(correlationId);
+    
+    if (removed) {
+      console.log(`🧹 ExternalClientDetector: Cleaned up ${correlationId}, set now has ${this.externalCorrelations.size} items`);
+    }
+  }
+  
+  /**
+   * INTELLIGENCE: Automatic cleanup of stale correlations
+   */
+  private startAutomaticCleanup(): void {
+    if (this.cleanupTimer) return; // Already running
+    
+    console.log('🤖 ExternalClientDetector: Starting intelligent auto-cleanup');
+    
+    this.cleanupTimer = setInterval(() => {
+      this.cleanupStaleCorrelations();
+    }, 30000); // Clean up every 30 seconds
+  }
+  
+  /**
+   * INTELLIGENCE: Remove correlations older than TTL
+   */
+  private cleanupStaleCorrelations(): void {
+    const now = Date.now();
+    const staleIds: string[] = [];
+    
+    // Find stale correlations
+    for (const [id, timestamp] of this.correlationTimestamps) {
+      if (now - timestamp > this.TTL_MS) {
+        staleIds.push(id);
+      }
+    }
+    
+    // Remove stale correlations
+    if (staleIds.length > 0) {
+      console.log(`🧹 ExternalClientDetector: Auto-cleaning ${staleIds.length} stale correlations`);
+      
+      for (const id of staleIds) {
+        this.externalCorrelations.delete(id);
+        this.correlationTimestamps.delete(id);
+      }
+      
+      console.log(`📊 ExternalClientDetector: After cleanup: ${this.externalCorrelations.size} active correlations`);
+    }
+    
+    // Stop timer if no correlations left
+    if (this.externalCorrelations.size === 0 && this.cleanupTimer) {
+      console.log('🛑 ExternalClientDetector: Stopping auto-cleanup (no correlations)');
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = undefined;
+    }
+  }
+  
+  /**
+   * Manual cleanup for shutdown
+   */
+  cleanup(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = undefined;
+    }
+    this.externalCorrelations.clear();
+    this.correlationTimestamps.clear();
+    console.log('🧹 ExternalClientDetector: Manual cleanup completed');
   }
 
   /**

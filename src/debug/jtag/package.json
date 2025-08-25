@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1119",
+  "version": "1.0.1139",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "port": 9001,
@@ -161,7 +161,7 @@
     "test:tty": "tmux kill-session -t debug-npm 2>/dev/null; rm -f /tmp/debug-npm.log; tmux new-session -d -s debug-npm \"script -q /dev/null npm run clean\" \\; pipe-pane -o 'cat >> /tmp/debug-npm.log'",
     "system:debug": "echo '=== Tmux session state ===' && (tmux has-session -t jtag-test 2>/dev/null && echo 'Session running' && tmux capture-pane -t jtag-test -p || echo 'Session not running') && echo '' && echo '=== Log file ===' && tail -20 .continuum/jtag/system/logs/npm-start.log",
     "screenshot": "npx tsx scripts/screenshot.ts",
-    "test": "npx tsx scripts/test-runner.ts",
+    "test": "npx tsx scripts/intelligent-test-runner.ts",
     "test:compiler-check": "echo '🔍 PRE-TEST: TypeScript Compilation Check...' && npx tsc --noEmit --project . && echo '✅ TypeScript compilation passed - proceeding with tests'",
     "test:global-cli": "echo '📦 GLOBAL CLI: Testing global installation workflow...' && npx tsx tests/global-cli-installation.test.ts && echo '✅ Global CLI installation tests passed'",
     "test:process-coordinator": "echo '🔄 PROCESS COORDINATOR: Testing context switching and handoffs...' && npx tsx tests/process-coordinator-context-switching.test.ts && echo '✅ Process coordinator tests passed'",
@@ -344,7 +344,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-25T19:06:37.556Z",
+    "timestamp": "2025-08-25T23:03:22.711Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 29,
     "note": "Generated from clean essential path mappings only"
