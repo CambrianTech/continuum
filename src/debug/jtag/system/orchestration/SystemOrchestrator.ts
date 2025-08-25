@@ -74,7 +74,7 @@ export class SystemOrchestrator extends EventEmitter {
     this.currentEntryPoint = entryPoint;
     
     try {
-      console.log(`🎯 ORCHESTRATING: ${entryPoint}`);
+      console.log(`🎯 ORCHESTRATING: ${entryPoint}${options.testMode ? ' (TEST MODE)' : ''}`);
       
       // 1. Determine required milestones for this entry point
       const requiredMilestones = this.getRequiredMilestones(entryPoint);
@@ -99,11 +99,19 @@ export class SystemOrchestrator extends EventEmitter {
           await this.ensureBrowserOpened(options);
         }
         
-        return {
+        const finalState = {
           success: true,
           completedMilestones: requiredMilestones,
           browserOpened: requiredMilestones.includes(SYSTEM_MILESTONES.BROWSER_READY)
         };
+        
+        // TEST MODE: Generate signal and let caller handle exit
+        if (options.testMode) {
+          console.log('🧪 Test mode - generating final system ready signal');
+          await this.signaler.generateReadySignal();
+        }
+        
+        return finalState;
       }
       
       console.log(`🔄 Missing milestones: ${missingMilestones.join(' → ')}`);
@@ -125,6 +133,13 @@ export class SystemOrchestrator extends EventEmitter {
       // 6. Verify final system state
       const finalState = await this.verifySystemState(requiredMilestones);
       console.log('🎉 Orchestration complete');
+      
+      // TEST MODE: Generate final signal after successful orchestration
+      if (options.testMode) {
+        console.log('🧪 Test mode - generating final system ready signal');
+        await this.signaler.generateReadySignal();
+        console.log('📡 Final system signal generated - ready for testing');
+      }
       
       return finalState;
       

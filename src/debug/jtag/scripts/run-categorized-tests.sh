@@ -122,16 +122,26 @@ run_test() {
     echo "▶️  Running: $test_name [$category]"
     ((TOTAL_TESTS++))
     
-    if eval "$test_command" &>/dev/null; then
+    # Capture both stdout and stderr for error reporting
+    local temp_output="/tmp/test_output_$$_$(date +%s).log"
+    if eval "$test_command" >"$temp_output" 2>&1; then
         echo "✅ PASSED: $test_name"
         ((PASSED_TESTS++))
         echo "$category|PASS|$test_name" >> .continuum/tests/test_results.tmp
     else
         echo "❌ FAILED: $test_name"
+        echo "💥 ERROR DETAILS:"
+        # Show last 10 lines of error output for debugging
+        if [ -f "$temp_output" ]; then
+            tail -10 "$temp_output" | sed 's/^/   /'
+            echo ""
+        fi
         ((FAILED_TESTS++))
         FAILED_TEST_NAMES+=("$test_name")
         echo "$category|FAIL|$test_name" >> .continuum/tests/test_results.tmp
     fi
+    # Cleanup temp file
+    rm -f "$temp_output"
     echo ""
 }
 
