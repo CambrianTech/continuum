@@ -120,7 +120,8 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
               return; // Don't forward handshake messages to regular handlers
             }
             
-            console.log(`📨 ${this.name}: Received message from client`);
+            // Removed verbose per-message logging to prevent console buffer overflow
+            // when browser sends high-frequency updates (1000+ msgs can crash system)
             
             // Register correlation for request messages so we can route responses back
             if (JTAGMessageTypes.isRequest(message)) {

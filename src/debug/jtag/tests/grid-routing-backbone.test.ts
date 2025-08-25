@@ -77,7 +77,7 @@ async function testGridRoutingBackbone(): Promise<void> {
     
     // Wait for node discovery
     console.log(`⏳ Waiting for node discovery...`);
-    await sleep(2000); // Allow time for announcements and discovery
+    await sleep(600); // OPTIMIZED: reduced from 2s to 600ms for local testing
     
     // Verify nodes discovered each other
     const topology1 = gridService1.getTopology();
@@ -157,7 +157,7 @@ async function testGridRoutingBackbone(): Promise<void> {
         command: 'ping',
         args: { test: true },
         executionContext: {
-          timeout: 30000,
+          timeout: 3000, // OPTIMIZED: reduced from 30s to 3s for local testing
           retryCount: 0,
           permissions: ['basic']
         },
@@ -174,8 +174,8 @@ async function testGridRoutingBackbone(): Promise<void> {
       console.log(`✅ Message sent successfully`);
     }
     
-    // Wait for message delivery
-    await sleep(1000);
+    // Wait for message delivery (OPTIMIZED: reduced from 1s to 200ms for local testing)
+    await sleep(200);
     
     console.log(`📨 Messages received by node 2: ${messagesReceived}`);
     // Note: We expect this to fail currently since command execution isn't implemented
@@ -207,7 +207,7 @@ async function testGridRoutingBackbone(): Promise<void> {
     
     // Wait for mesh formation
     console.log(`⏳ Waiting for 3-node mesh formation...`);
-    await sleep(3000);
+    await sleep(800); // OPTIMIZED: reduced from 3s to 800ms for local testing
     
     // Check final topology
     const finalTopology1 = gridService1.getTopology();
@@ -243,7 +243,7 @@ async function testGridRoutingBackbone(): Promise<void> {
         command: 'broadcast-test',
         args: { message: 'Hello Grid!' },
         executionContext: {
-          timeout: 30000,
+          timeout: 3000, // OPTIMIZED: reduced from 30s to 3s for local testing
           retryCount: 0,
           permissions: ['basic']
         },
@@ -260,7 +260,7 @@ async function testGridRoutingBackbone(): Promise<void> {
       console.log(`✅ Broadcast sent successfully`);
     }
     
-    await sleep(500);
+    await sleep(100); // OPTIMIZED: reduced from 500ms to 100ms for local testing
     
     console.log(`✅ TEST 5 COMPLETED: Broadcast capabilities tested`);
     console.log();

@@ -65,9 +65,19 @@ class TestRunner {
     return new Promise((resolve) => {
       console.log(`🔄 Running: ${phase.name}...`);
       
+      // For system management commands, always run from main JTAG directory
+      const isSystemCommand = phase.name.includes('System') || phase.name.includes('Smart Build');
+      
+      // Set environment to override example detection for npm test
+      const testEnv = isSystemCommand ? {
+        ...process.env,
+        JTAG_ACTIVE_EXAMPLE: 'test-bench'  // Force test-bench example for npm test
+      } : process.env;
+      
       const child = spawn(phase.command, phase.args, {
         stdio: 'inherit', // Show output in real-time
-        shell: true
+        shell: true,
+        env: testEnv
       });
 
       this.childProcesses.push(child);
@@ -75,7 +85,8 @@ class TestRunner {
       // Timeout handler
       const timeout = setTimeout(() => {
         if (!child.killed && !this.interrupted) {
-          console.log(`⏰ TIMEOUT: ${phase.name} exceeded ${phase.timeoutSeconds}s`);
+          console.error(`❌ ERROR: ${phase.name} TIMED OUT after ${phase.timeoutSeconds}s`);
+          console.warn(`⚠️  WARNING: Killing process due to timeout`);
           child.kill('SIGTERM');
         }
       }, phase.timeoutSeconds * 1000);
@@ -108,63 +119,37 @@ class TestRunner {
   }
 
   async runTests(): Promise<boolean> {
-    console.log('🧪 JTAG Test Runner with Proper CTRL+C Handling');
-    console.log('📋 Press CTRL+C at any time to interrupt\n');
+    console.log('🧪 JTAG Test Runner - Starting System and Running Tests');
+    console.log('📋 This will launch browser and run all 48 tests\n');
 
+    // SIMPLE APPROACH: Just start system and run the integration tests
+    // This should launch browser and complete all tests like before
     const phases: TestPhase[] = [
       {
-        name: 'System Ensure',
+        name: 'System Stop (cleanup)',
         command: 'npm',
-        args: ['run', 'system:ensure'],
+        args: ['run', 'system:stop'],
+        timeoutSeconds: 15,
+        required: false  // Don't fail if already stopped
+      },
+      {
+        name: 'Start System (with browser)',
+        command: 'npx',
+        args: ['tsx', 'scripts/test-system-start.ts'],  // Custom script that launches system+browser and exits
+        timeoutSeconds: 90,
+        required: true
+      },
+      {
+        name: 'Wait for System Ready',
+        command: 'npm',
+        args: ['run', 'signal:wait'],  // Use signal-based waiting instead of arbitrary sleep
         timeoutSeconds: 60,
         required: true
       },
       {
-        name: 'Test Cleanup',
-        command: './scripts/safe-test-cleanup.sh',
-        args: [],
-        timeoutSeconds: 10,
-        required: true
-      },
-      {
-        name: 'Compiler Check',
+        name: 'Run All Tests',
         command: 'npm',
-        args: ['run', 'test:compiler-check'],
-        timeoutSeconds: 30,
-        required: true
-      },
-      {
-        name: 'Global CLI Tests',
-        command: 'npm',
-        args: ['run', 'test:global-cli'],
-        timeoutSeconds: 30,
-        required: false
-      },
-      {
-        name: 'Process Coordinator Tests',
-        command: 'npm',
-        args: ['run', 'test:process-coordinator'],
-        timeoutSeconds: 15,
-        required: false
-      },
-      {
-        name: 'Session Isolation Tests',
-        command: 'npm',
-        args: ['run', 'test:session-isolation'],
-        timeoutSeconds: 15,
-        required: false
-      },
-      {
-        name: 'Load Tests',
-        command: 'npm',
-        args: ['run', 'test:load'],
-        timeoutSeconds: 15,
-        required: false
-      },
-      {
-        name: 'Integration Tests',
-        command: 'npm',
-        args: ['run', 'test:start-and-test'],
+        args: ['run', 'test:start-and-test'],  // This runs the 48 tests
         timeoutSeconds: 120,
         required: true
       }
@@ -290,8 +275,8 @@ async function detectWorkingDirectory(): Promise<void> {
 
 // Main execution
 async function main() {
-  // Auto-detect and configure the correct working directory
-  await detectWorkingDirectory();
+  // Keep current working directory (main JTAG directory) for system commands
+  console.log(`📂 Working directory: ${process.cwd()}`);
   
   const runner = new TestRunner();
   

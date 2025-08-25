@@ -34,15 +34,34 @@ async function runTests(): Promise<boolean> {
   });
 }
 
+async function checkSystemReady(): Promise<boolean> {
+  try {
+    const { SystemReadySignaler } = await import('./signaling/server/SystemReadySignaler');
+    const signaler = new SystemReadySignaler();
+    const signal = await signaler.checkSystemReady(1000); // 1 second check
+    return signal?.systemHealth === 'healthy' && signal?.commandCount > 0;
+  } catch (error) {
+    return false;
+  }
+}
+
 async function main(): Promise<void> {
   let testsSuccessful = false; // Track success for cleanup decision
   
   try {
     console.log('🎯 JTAG TEST WITH SERVER MANAGEMENT');
-    console.log('📋 This will start server, run tests, then clean up');
+    console.log('📋 This will check for existing system or start fresh, run tests, then clean up');
     
-    // Start the system using shared startup logic for testing
-    await startSystem('npm-test');
+    // Check if system is already running (likely from npm test System Ensure phase)
+    const systemAlreadyRunning = await checkSystemReady();
+    
+    if (systemAlreadyRunning) {
+      console.log('✅ System already running and healthy - reusing existing system');
+    } else {
+      console.log('🚀 No healthy system detected - starting fresh system');
+      // Start the system using shared startup logic for testing
+      await startSystem('npm-test');
+    }
     
     // Run tests
     const testsSucceeded = await runTests();

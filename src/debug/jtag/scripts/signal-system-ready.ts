@@ -41,10 +41,20 @@ async function main() {
   try {
     if (args.includes('--check')) {
       // Fast check for autonomous testing - only 5 seconds
-      const signal = await signaler.checkSystemReady(5000);
+      const signal = await signaler.checkSystemReady(30000);
       if (signal) {
         console.log('✅ System is ready');
         console.log(JSON.stringify(signal, null, 2));
+        
+        // Signal will be cleared on next system start or by the generator process
+        
+        // TIMEOUT ELIMINATION: Force exit to prevent hanging on background resources
+        // This prevents npm test from hanging after successful signal check
+        setTimeout(() => {
+          console.error('⚠️ Forcing exit - background resources preventing clean exit');
+          process.exit(0);
+        }, 1000); // Give 1 second for output to flush, then force exit
+        
         process.exit(0);
       } else {
         console.log('❌ System is not ready');

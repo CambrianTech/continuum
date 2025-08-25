@@ -631,8 +631,15 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     try {
       await webSocketTransport.send(message);
       console.log(`✅ ${this.toString()}: External response sent via WebSocket for ${message.correlationId}`);
+      
+      // INTELLIGENCE: Clean up external correlation after successful response
+      this.externalClientDetector.removeCorrelation(message.correlationId);
+      console.log(`🧹 ${this.toString()}: Cleaned up external correlation ${message.correlationId}`);
     } catch (error) {
       console.error(`❌ ${this.toString()}: Failed to send external response ${message.correlationId}:`, error);
+      // Still clean up on error to prevent memory leaks
+      this.externalClientDetector.removeCorrelation(message.correlationId);
+      console.log(`🧹 ${this.toString()}: Cleaned up external correlation ${message.correlationId} (after error)`);
     }
   }
 

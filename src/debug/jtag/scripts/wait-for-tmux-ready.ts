@@ -30,13 +30,34 @@ interface SystemReadinessCheck {
 
 /**
  * Check if tmux session is running and active
+ * Now supports dynamic session names (jtag-test-bench-*, jtag-widget-ui-*)
  */
-async function checkTmuxSession(): Promise<boolean> {
+async function checkTmuxSession(): Promise<{ running: boolean; sessionName?: string }> {
   try {
-    const { stdout } = await execAsync('tmux has-session -t jtag-test 2>/dev/null');
-    return true;
+    // First try exact match for backward compatibility
+    const { stdout: exactMatch } = await execAsync('tmux has-session -t jtag-test 2>/dev/null');
+    return { running: true, sessionName: 'jtag-test' };
   } catch {
-    return false;
+    // Then try dynamic session name matching
+    try {
+      const { stdout: sessions } = await execAsync('tmux list-sessions -F "#{session_name}" 2>/dev/null');
+      const sessionLines = sessions.split('\n').filter(line => line.trim());
+      
+      // Look for JTAG sessions (test-bench or widget-ui)
+      const jtagSession = sessionLines.find(name => 
+        name.startsWith('jtag-test-bench-') || 
+        name.startsWith('jtag-widget-ui-') ||
+        name === 'jtag-test'
+      );
+      
+      if (jtagSession) {
+        return { running: true, sessionName: jtagSession };
+      }
+    } catch {
+      // No tmux server running
+    }
+    
+    return { running: false };
   }
 }
 
@@ -65,15 +86,16 @@ async function checkBrowserInterface(httpPort: number): Promise<boolean> {
 }
 
 /**
- * Check for system failures and crashes
+ * Check for system failures and crashes using dynamic session name
  */
-async function checkSystemFailures(): Promise<{ failures: string[]; systemCrashed: boolean }> {
+async function checkSystemFailures(sessionName?: string): Promise<{ failures: string[]; systemCrashed: boolean }> {
   const failures: string[] = [];
   let systemCrashed = false;
   
   try {
-    // Check tmux session output for critical errors
-    const { stdout: tmuxOutput } = await execAsync('tmux capture-pane -t jtag-test -p 2>/dev/null || echo ""');
+    // Check tmux session output for critical errors (using dynamic session name)
+    const tmuxCmd = sessionName ? `tmux capture-pane -t ${sessionName} -p` : 'echo "No session"';
+    const { stdout: tmuxOutput } = await execAsync(`${tmuxCmd} 2>/dev/null || echo ""`);
     
     if (tmuxOutput.includes('ERROR') || tmuxOutput.includes('EADDRINUSE')) {
       failures.push('Port conflict detected in tmux session');
@@ -112,33 +134,37 @@ async function checkSystemFailures(): Promise<{ failures: string[]; systemCrashe
 /**
  * Perform comprehensive system readiness check
  */
-async function checkSystemReadiness(): Promise<SystemReadinessCheck> {
+async function checkSystemReadiness(): Promise<SystemReadinessCheck & { sessionName?: string }> {
   const activePorts = getActivePorts();
   const websocketPort = activePorts.websocket_server;
   const httpPort = activePorts.http_server;
   
-  const [tmuxRunning, websocketActive, httpActive, browserReady, failureCheck] = await Promise.all([
-    checkTmuxSession(),
+  const tmuxCheck = await checkTmuxSession();
+  
+  const [websocketActive, httpActive, browserReady, failureCheck] = await Promise.all([
     checkPort(websocketPort),
     checkPort(httpPort),
     checkBrowserInterface(httpPort),
-    checkSystemFailures()
+    checkSystemFailures(tmuxCheck.sessionName)
   ]);
   
   const errors: string[] = [];
-  if (!tmuxRunning) errors.push(`Tmux session 'jtag-test' not running`);
+  if (!tmuxCheck.running) {
+    errors.push(`Tmux session not running (looking for jtag-test-bench-* or jtag-widget-ui-*)`);
+  }
   if (!websocketActive) errors.push(`WebSocket server not active on port ${websocketPort}`);
   if (!httpActive) errors.push(`HTTP server not active on port ${httpPort}`);
   if (!browserReady) errors.push(`Browser interface not responding on http://localhost:${httpPort}`);
   
   return {
-    tmuxRunning,
+    tmuxRunning: tmuxCheck.running,
     websocketActive, 
     httpActive,
     browserReady,
     errors,
     failures: failureCheck.failures,
-    systemCrashed: failureCheck.systemCrashed
+    systemCrashed: failureCheck.systemCrashed,
+    sessionName: tmuxCheck.sessionName
   };
 }
 
@@ -175,14 +201,17 @@ async function waitForSystemReady(timeoutSeconds: number = 45): Promise<void> {
     if (readiness.errors.length !== lastErrorCount) {
       if (readiness.errors.length === 0) {
         console.log('✅ System fully ready - all dependencies satisfied');
-        console.log(`  ✅ Tmux session: ${readiness.tmuxRunning ? 'running' : 'not running'}`);
-        console.log(`  ✅ WebSocket server: ${readiness.websocketActive ? 'active' : 'inactive'}`);
-        console.log(`  ✅ HTTP server: ${readiness.httpActive ? 'active' : 'inactive'}`);
-        console.log(`  ✅ Browser interface: ${readiness.browserReady ? 'ready' : 'not ready'}`);
+        console.log(`  ✅ Tmux session: ${readiness.sessionName || 'running'}`);
+        console.log(`  ✅ WebSocket server: active on port ${getActivePorts().websocket_server}`);
+        console.log(`  ✅ HTTP server: active on port ${getActivePorts().http_server}`);
+        console.log(`  ✅ Browser interface: responding`);
         return;
       } else {
         console.log(`⏳ Waiting for ${readiness.errors.length} dependencies:`);
         readiness.errors.forEach(error => console.log(`  - ${error}`));
+        if (readiness.sessionName) {
+          console.log(`  ℹ️ Found session: ${readiness.sessionName}`);
+        }
       }
       lastErrorCount = readiness.errors.length;
     }

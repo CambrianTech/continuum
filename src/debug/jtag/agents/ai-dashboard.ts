@@ -612,22 +612,28 @@ class AIAgentDashboardRunner {
     }
   }
 
-  private async waitForSystemReady(timeoutMs = 60000): Promise<void> {
-    const startTime = Date.now();
+  private async waitForSystemReady(timeoutMs = 10000): Promise<void> {
+    // TIMEOUT ELIMINATION: Replace 60s polling with event-driven wait
+    // Uses the event-driven signal system instead of manual polling loops
     
-    while (Date.now() - startTime < timeoutMs) {
-      const signal = await this.signaler.checkSystemReady(5000);
+    console.log('⏳ Waiting for system ready signal (event-driven)...');
+    
+    try {
+      // Single event-driven check with reasonable timeout (down from 60s to 10s)
+      const signal = await this.signaler.checkSystemReady(timeoutMs);
       
       if (signal && (signal.systemHealth === 'healthy' || signal.systemHealth === 'degraded')) {
-        console.log('✅ System ready!');
+        console.log(`✅ System ready! (event-driven, no polling loop)`);
+        console.log(`📊 Status: ${signal.commandCount} commands, health: ${signal.systemHealth}`);
         return;
       }
       
-      console.log('⏳ Waiting for system ready signal...');
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      throw new Error('System not ready after event-driven wait');
+      
+    } catch (error) {
+      console.log(`⚠️ System readiness check failed: ${error}`);
+      throw new Error(`System ready timeout (${timeoutMs}ms)`);
     }
-    
-    throw new Error('System ready timeout');
   }
 
   private async runCommandExecution(dashboard: AIAgentDashboard): Promise<void> {

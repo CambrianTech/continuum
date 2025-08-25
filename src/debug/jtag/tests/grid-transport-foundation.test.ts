@@ -58,11 +58,30 @@ async function testGridTransportFoundation(): Promise<void> {
     console.log('📋 TEST 2: NODE DISCOVERY');
     console.log('==========================');
     
-    // Wait for discovery process
-    console.log(`⏳ Waiting for node discovery...`);
-    await sleep(8000);
+    // EVENT-DRIVEN discovery detection (OPTIMIZED: intelligent polling instead of fixed delay)
+    console.log(`⏳ Waiting for node discovery with event-driven detection...`);
     
-    // Check discovered nodes
+    let discovery1 = false, discovery2 = false;
+    const maxWaitMs = 3000; // Maximum wait time
+    const pollIntervalMs = 100; // Check every 100ms
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < maxWaitMs && (!discovery1 || !discovery2)) {
+      await sleep(pollIntervalMs);
+      
+      const topology1 = transport1.getNetworkTopology();
+      const topology2 = transport2.getNetworkTopology();
+      
+      discovery1 = Object.keys(topology1.nodes).length >= 1;
+      discovery2 = Object.keys(topology2.nodes).length >= 1;
+      
+      if (discovery1 && discovery2) {
+        console.log(`✅ Mutual discovery completed in ${Date.now() - startTime}ms`);
+        break;
+      }
+    }
+    
+    // Final check and status report
     const topology1 = transport1.getNetworkTopology();
     const topology2 = transport2.getNetworkTopology();
     
@@ -73,7 +92,7 @@ async function testGridTransportFoundation(): Promise<void> {
     
     // Each node should see exactly 1 other node in a 2-node setup (they don't count themselves)
     if (Object.keys(topology1.nodes).length < 1 || Object.keys(topology2.nodes).length < 1) {
-      throw new Error(`Nodes did not discover each other properly`);
+      throw new Error(`Nodes did not discover each other properly after ${Date.now() - startTime}ms`);
     }
     
     console.log(`✅ TEST 2 PASSED: Node discovery working`);
@@ -94,11 +113,31 @@ async function testGridTransportFoundation(): Promise<void> {
     await transport3.initialize();
     console.log(`✅ Transport node 3 initialized successfully`);
     
-    // Wait for mesh formation
-    console.log(`⏳ Waiting for 3-node mesh formation...`);
-    await sleep(10000);
+    // EVENT-DRIVEN 3-node mesh detection (OPTIMIZED: intelligent polling instead of fixed delay)
+    console.log(`⏳ Waiting for 3-node mesh formation with event-driven detection...`);
     
-    // Check final mesh topology
+    let mesh1 = false, mesh2 = false, mesh3 = false;
+    const maxMeshWaitMs = 5000; // Maximum wait time for 3-node mesh
+    const meshStartTime = Date.now();
+    
+    while (Date.now() - meshStartTime < maxMeshWaitMs && (!mesh1 || !mesh2 || !mesh3)) {
+      await sleep(pollIntervalMs);
+      
+      const topology1 = transport1.getNetworkTopology();
+      const topology2 = transport2.getNetworkTopology();
+      const topology3 = transport3.getNetworkTopology();
+      
+      mesh1 = Object.keys(topology1.nodes).length >= 2;
+      mesh2 = Object.keys(topology2.nodes).length >= 2;
+      mesh3 = Object.keys(topology3.nodes).length >= 2;
+      
+      if (mesh1 && mesh2 && mesh3) {
+        console.log(`✅ Complete 3-node mesh formed in ${Date.now() - meshStartTime}ms`);
+        break;
+      }
+    }
+    
+    // Final mesh topology check
     const finalTopology1 = transport1.getNetworkTopology();
     const finalTopology2 = transport2.getNetworkTopology();
     const finalTopology3 = transport3.getNetworkTopology();
@@ -111,7 +150,7 @@ async function testGridTransportFoundation(): Promise<void> {
     if (Object.keys(finalTopology1.nodes).length < 2 || 
         Object.keys(finalTopology2.nodes).length < 2 || 
         Object.keys(finalTopology3.nodes).length < 2) {
-      console.log(`⚠️ Not all nodes discovered each other (may need more time)`);
+      console.log(`⚠️ Not all nodes discovered each other after ${Date.now() - meshStartTime}ms (may need more time)`);
     } else {
       console.log(`✅ Complete 3-node mesh formed successfully`);
     }
