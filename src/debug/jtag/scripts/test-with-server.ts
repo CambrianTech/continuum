@@ -87,7 +87,8 @@ async function main(): Promise<void> {
     if (testsSucceeded) {
       console.log('🎉 ALL TESTS PASSED - npm test succeeded!');
       console.log('🚀 Server left running for development (as intended)');
-      process.exit(0);
+      console.log('📡 Use Ctrl+C to stop the server, or run ./jtag commands in another terminal');
+      // Don't exit - let the keep-alive logic in system-startup.ts keep servers running
     } else {
       console.error('💥 TESTS FAILED - npm test failed');
       process.exit(1);
