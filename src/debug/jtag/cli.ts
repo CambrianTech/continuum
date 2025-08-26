@@ -182,32 +182,9 @@ async function main() {
       }
     };
     
-    // MILESTONE-BASED ORCHESTRATION: Ensure system is ready before connecting
-    if (!entryPoint.shouldShowVerboseLogs()) {
-      console.log('🎯 Ensuring system ready for CLI command execution...');
-    }
-    
-    try {
-      // Use milestone orchestration for CLI command execution
-      // This ensures server is ready before attempting client connection
-      const systemState = await systemOrchestrator.orchestrate('cli-command', {
-        verbose: behavior.logLevel === 'verbose',
-        skipBrowser: true, // CLI doesn't need browser for most commands
-        timeoutMs: 30000   // Shorter timeout for CLI responsiveness
-      });
-      
-      if (!systemState.success) {
-        console.error(`❌ Failed to prepare system for CLI command: ${systemState.error}`);
-        process.exit(1);
-      }
-      
-      if (behavior.logLevel === 'verbose') {
-        console.log(`✅ System ready: ${systemState.completedMilestones.join(' → ')}`);
-      }
-    } catch (orchestrationError: any) {
-      console.error(`❌ System orchestration failed: ${orchestrationError.message}`);
-      console.error('💡 Try: npm run system:start');
-      process.exit(1);
+    // Pure client - no server startup, just connect to existing server
+    if (behavior.logLevel === 'verbose') {
+      console.log('🔗 CLI connecting to existing server...');
     }
     
     // Conditionally suppress verbose connection logs based on agent behavior

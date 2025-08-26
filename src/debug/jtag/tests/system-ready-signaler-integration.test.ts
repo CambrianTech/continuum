@@ -171,15 +171,14 @@ async function testWorkingDirectoryContextSwitching(): Promise<TestResult> {
     const testBenchPath = WorkingDirConfig.getContinuumPath();
     details.push(`🎯 Switched to test-bench: ${testBenchPath}`);
     
-    // Test 2: Switch to widget-ui context  
-    const activeExample = getActiveExampleName();
-    WorkingDirConfig.setWorkingDir(`examples/${activeExample}`);
+    // Test 2: Switch to widget-ui context (always use different example)
+    WorkingDirConfig.setWorkingDir('examples/widget-ui');
     const widgetUiPath = WorkingDirConfig.getContinuumPath();
-    details.push(`🎯 Switched to ${activeExample}: ${widgetUiPath}`);
+    details.push(`🎯 Switched to widget-ui: ${widgetUiPath}`);
     
     // Test 3: Verify paths are different
     if (testBenchPath === widgetUiPath) {
-      throw new Error(`Expected different paths for test-bench and ${activeExample}, but both resolved to: ${testBenchPath}`);
+      throw new Error(`Expected different paths for test-bench and widget-ui, but both resolved to: ${testBenchPath}`);
     }
     
     details.push(`✅ Context switching produces different paths`);
@@ -188,20 +187,11 @@ async function testWorkingDirectoryContextSwitching(): Promise<TestResult> {
     const signaler = new SystemReadySignaler();
     const signal = await signaler.generateReadySignal();
     
-    // Check if ports match active example configuration
-    const activePorts = getActivePorts();
-    const expectedPorts = [activePorts.websocket_server, activePorts.http_server].filter(port => port > 0);
-    
-    const portsMatch = expectedPorts.every(port => signal.portsActive.includes(port));
-    if (portsMatch) {
-      details.push(`✅ Signal respects active example port configuration`);
-      details.push(`   Expected ports: [${expectedPorts.join(', ')}]`);
-      details.push(`   Actual ports: [${signal.portsActive.join(', ')}]`);
-    } else {
-      details.push(`⚠️ Port configuration mismatch (may be expected if system not running)`);
-      details.push(`   Expected ports: [${expectedPorts.join(', ')}]`);
-      details.push(`   Actual ports: [${signal.portsActive.join(', ')}]`);
-    }
+    // Since we switched to widget-ui context, verify signaler generates correctly
+    // (We don't check specific ports since the test is about context switching, not port validation)
+    details.push(`✅ Signal generated successfully in widget-ui context`);
+    details.push(`   Timestamp: ${signal.timestamp}`);
+    details.push(`   Active ports: [${signal.portsActive.join(', ')}]`);
     
     return {
       success: true,

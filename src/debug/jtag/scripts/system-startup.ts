@@ -7,8 +7,9 @@
 
 import { systemOrchestrator } from '../system/orchestration/SystemOrchestrator';
 import { getActiveExampleName } from '../system/shared/ExampleConfig';
+import type { EntryPointType } from '../system/orchestration/SystemMilestones';
 
-export async function startSystem(entryPoint: string = 'npm-start'): Promise<void> {
+export async function startSystem(entryPoint: EntryPointType = 'npm-start'): Promise<void> {
   console.log(`🎯 SOLID MILESTONE-BASED JTAG SYSTEM STARTUP (${entryPoint.toUpperCase()})`);
   console.log(`🎯 Ensuring bulletproof startup coordination for flawless npm test execution`);
   
@@ -23,7 +24,7 @@ export async function startSystem(entryPoint: string = 'npm-start'): Promise<voi
     
     // Use milestone-based orchestration with robust error handling
     // This ensures proper milestone order and fixes browser timing
-    const systemState = await systemOrchestrator.orchestrate(entryPoint as any, {
+    const systemState = await systemOrchestrator.orchestrate(entryPoint, {
       workingDir,
       verbose: true,
       skipBrowser: entryPoint === 'npm-test' ? false : false, // Both npm-start and npm-test need browser
@@ -52,16 +53,34 @@ export async function startSystem(entryPoint: string = 'npm-start'): Promise<voi
     console.log(`🎉 SOLID MILESTONE-BASED system startup complete (${entryPoint})!`);
     console.log(`✅ ALL MILESTONES COMPLETED: ${systemState.completedMilestones.join(' → ')}`);
     console.log(`✅ Bootstrap coordination: SOLID AND VERIFIED`);
-    console.log(`✅ Server running in background: READY FOR FLAWLESS npm test`);
+    console.log('🚀 Server running - keeping process alive');
     
     if (systemState.browserOpened) {
-      console.log('🌐 Browser interface: OPENED AND VERIFIED READY');
+      console.log('🌐 Browser interface opened and ready for interaction');
     }
     
     // Final verification that all systems are actually ready
     // TEMPORARILY DISABLED: Signal generation needs fixing, but system is actually working
     // await verifySystemReadiness(entryPoint);
     console.log('🎉 SYSTEM STARTUP COMPLETE - All milestones verified and system is ready!');
+    
+    // Keep the process alive so servers stay running
+    console.log('📡 System ready - press Ctrl+C to stop');
+    
+    // Set up graceful shutdown handling for all signals
+    const shutdown = () => {
+      console.log('\n🛑 Shutting down system...');
+      process.exit(0);
+    };
+    
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+    process.on('SIGHUP', shutdown);
+    
+    // Keep process alive indefinitely with heartbeat
+    const keepAliveInterval = setInterval(() => {
+      // Silent heartbeat every 30 seconds to keep process alive
+    }, 30000);
     
   } catch (error) {
     console.error('💥 MILESTONE-BASED SYSTEM STARTUP CATASTROPHIC FAILURE:', error instanceof Error ? error.message : error);
