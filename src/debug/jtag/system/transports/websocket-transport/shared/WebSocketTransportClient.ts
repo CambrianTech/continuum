@@ -302,8 +302,8 @@ export abstract class WebSocketTransportClient extends TransportBase {
    * Send message via WebSocket - shared client implementation
    */
   async send(message: JTAGMessage): Promise<TransportSendResult> {
-    console.log(`📤 ${this.name}: Sending message to server`);
-    
+    // console.debug(`📤 ${this.name}: Sending message to server`);
+
     if (!this.socket) {
       throw new Error('WebSocket not connected');
     }
@@ -322,7 +322,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
    */
   async disconnect(): Promise<void> {
     if (this.socket) {
-      console.log(`🔌 ${this.name}: Disconnecting`);
+      console.debug(`🔌 ${this.name}: Disconnecting`);
       this.socket.close();
       this.socket = undefined;
       this.connected = false;

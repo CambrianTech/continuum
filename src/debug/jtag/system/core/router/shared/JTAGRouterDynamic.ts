@@ -107,7 +107,7 @@ export class JTAGRouterDynamic extends JTAGRouter {
     super(context, config);
     // All initialization is now handled by JTAGRouter constructor
     // Dynamic strategy is automatically selected based on configuration
-    console.log(`🚀 JTAGRouterDynamic[${context.environment}]: Initialized via JTAGRouter constructor with dynamic capabilities`);
+    console.debug(`🚀 JTAGRouterDynamic[${context.environment}]: Initialized via JTAGRouter constructor with dynamic capabilities`);
   }
 
   /**
@@ -116,14 +116,14 @@ export class JTAGRouterDynamic extends JTAGRouter {
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
     
-    console.log(`🔧 ${this.toString()}: Initializing dynamic router with P2P discovery...`);
+    console.debug(`🔧 ${this.toString()}: Initializing dynamic router with P2P discovery...`);
     
     // Initialize dynamic transport strategy
     await this.initializeTransport();
     
     this.isInitialized = true;
-    console.log(`✅ ${this.toString()}: Dynamic initialization complete`);
-    
+    console.debug(`✅ ${this.toString()}: Dynamic initialization complete`);
+
     // Log enhanced status
     this.logEnhancedStatus();
   }
@@ -132,13 +132,13 @@ export class JTAGRouterDynamic extends JTAGRouter {
    * Initialize transport using dynamic strategy
    */
   async initializeTransport(_config?: Partial<TransportConfig>): Promise<void> {
-    console.log(`🔗 ${this.toString()}: Initializing dynamic transport system...`);
-    
+    console.debug(`🔗 ${this.toString()}: Initializing dynamic transport system...`);
+
     // Create transport configuration (same pattern as JTAGRouter)
     const transportConfig: TransportConfig = { 
       protocol: this.config.transport.preferred,
       role: this.config.transport.role,
-      sessionId: this.config.sessionId!,
+      sessionId: this.config.sessionId,
       serverPort: this.config.transport.serverPort,
       serverUrl: this.config.transport.serverUrl,
       fallback: this.config.transport.fallback,
@@ -166,12 +166,12 @@ export class JTAGRouterDynamic extends JTAGRouter {
    */
   private async handleDynamicMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
     // CRITICAL FIX: Disable console logging that causes infinite loops with ConsoleDaemon
-    // console.log(`📨 JTAGRouterDynamic: Processing message with intelligent routing: ${message.endpoint}`);
+    // console.debug(`📨 JTAGRouterDynamic: Processing message with intelligent routing: ${message.endpoint}`);
     
     // CORRELATION FIX: Register external client correlation IDs with both systems
     if (JTAGMessageTypes.isRequest(message) && message.correlationId?.startsWith(CLIENT_CORRELATION_PREFIX)) {
       // CRITICAL FIX: Disable console logging that causes infinite loops
-      // console.log(`🔗 ${this.toString()}: Registering external correlation ${message.correlationId}`);
+      // console.debug(`🔗 ${this.toString()}: Registering external correlation ${message.correlationId}`);
       
       // Register with ExternalClientDetector for WebSocket response routing
       this.externalClientDetector.registerExternal(message.correlationId);
@@ -239,7 +239,7 @@ export class JTAGRouterDynamic extends JTAGRouter {
     const shouldUseP2P = hasRemoteTarget || (isP2PAvailable && benefitsFromP2P);
     
     if (shouldUseP2P) {
-      console.log(`🌐 JTAGRouterDynamic: Routing ${message.endpoint} via P2P network`);
+      console.debug(`🌐 JTAGRouterDynamic: Routing ${message.endpoint} via P2P network`);
     }
     
     return shouldUseP2P;
@@ -249,8 +249,8 @@ export class JTAGRouterDynamic extends JTAGRouter {
    * Route message via P2P network
    */
   private async routeViaP2P(message: JTAGMessage): Promise<JTAGResponsePayload> {
-    console.log(`🔗 JTAGRouterDynamic: P2P routing for ${message.endpoint}`);
-    
+    console.debug(`🔗 JTAGRouterDynamic: P2P routing for ${message.endpoint}`);
+
     // Delegate to DynamicTransportStrategy's P2P capabilities
     // This would use UDP multicast discovery and routing
     
@@ -318,8 +318,8 @@ export class JTAGRouterDynamic extends JTAGRouter {
    */
   private async routeViaEndpointMatching(message: JTAGMessage): Promise<JTAGResponsePayload> {
     // CRITICAL FIX: Disable console logging that causes infinite loops with ConsoleDaemon
-    // console.log(`🏠 JTAGRouterDynamic: Routing ${message.endpoint} locally via base router logic`);
-    
+    // console.debug(`🏠 JTAGRouterDynamic: Routing ${message.endpoint} locally via base router logic`);
+
     try {
       // Use the base router's proven postMessage routing logic
       // This handles all the complex routing, correlation, response handling, etc.
@@ -328,12 +328,12 @@ export class JTAGRouterDynamic extends JTAGRouter {
       // Throttle verbose console routing messages to avoid spam
       const isConsoleRoute = message.endpoint?.includes('console');
       if (!isConsoleRoute) {
-        console.log(`✅ JTAGRouterDynamic: Successfully routed ${message.endpoint} via base router`);
+        console.debug(`✅ JTAGRouterDynamic: Successfully routed ${message.endpoint} via base router`);
       }
       
       // Extract response from RouterResult union type (same pattern as base router)
       if ('response' in routerResult && routerResult.response) {
-        return routerResult.response as JTAGResponsePayload;
+        return routerResult.response;
       }
       
       // Fallback: Create proper BaseResponsePayload for successful routing
@@ -361,8 +361,8 @@ export class JTAGRouterDynamic extends JTAGRouter {
    * Smart retry with fallback transport
    */
   private async routeWithFallback(message: JTAGMessage): Promise<JTAGResponsePayload> {
-    console.log(`🔄 JTAGRouterDynamic: Attempting fallback routing for ${message.endpoint}`);
-    
+    console.debug(`🔄 JTAGRouterDynamic: Attempting fallback routing for ${message.endpoint}`);
+
     // TODO: Implement smart fallback logic
     // - Try different transport
     // - Reduce message priority
@@ -414,24 +414,24 @@ export class JTAGRouterDynamic extends JTAGRouter {
    */
   private logEnhancedStatus(): void {
     const status = this.dynamicStatus;
-    console.log(`📊 ${this.toString()}: Enhanced Status Report`);
-    console.log(`   Environment: ${status.environment}`);
-    console.log(`   Transports: ${status.transportCount} active`);
-    console.log(`   P2P Enabled: ${status.p2pEnabled}`);
-    console.log(`   Discovery: ${JSON.stringify(status.discovery)}`);
+    console.debug(`📊 ${this.toString()}: Enhanced Status Report`);
+    console.debug(`   Environment: ${status.environment}`);
+    console.debug(`   Transports: ${status.transportCount} active`);
+    console.debug(`   P2P Enabled: ${status.p2pEnabled}`);
+    console.debug(`   Discovery: ${JSON.stringify(status.discovery)}`);
   }
 
   /**
    * Shutdown dynamic router
    */
   async shutdown(): Promise<void> {
-    console.log(`🔄 ${this.toString()}: Shutting down dynamic router...`);
-    
+    console.debug(`🔄 ${this.toString()}: Shutting down dynamic router...`);
+
     // Shutdown dynamic transport strategy
     await this.transportStrategy.shutdownAllTransports();
     
     this.isInitialized = false;
-    console.log(`✅ ${this.toString()}: Dynamic shutdown complete`);
+    console.debug(`✅ ${this.toString()}: Dynamic shutdown complete`);
   }
 
   // getTransportStatus() inherited from JTAGRouter ✅
@@ -442,8 +442,8 @@ export class JTAGRouterDynamic extends JTAGRouter {
    * This is the key integration point that activates all our dynamic routing capabilities
    */
   async handleTransportMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
-    console.log(`🎯 JTAGRouterDynamic: Transport message received - routing with intelligence`);
-    
+    // console.debug(`🎯 JTAGRouterDynamic: Transport message received - routing with intelligence`);
+
     // Use our intelligent dynamic routing instead of base router logic
     return await this.handleDynamicMessage(message);
   }

@@ -195,7 +195,46 @@ async function main() {
       console.warn = () => {}; // Suppress warnings during connection for AI agents  
     }
     
-    const { client } = await JTAGClientServer.connect(clientOptions);
+    let client;
+    try {
+      const result = await JTAGClientServer.connect(clientOptions);
+      client = result.client;
+    } catch (connectionError: any) {
+      // Restore console logging first
+      console.log = originalLog;
+      console.warn = originalWarn;
+      
+      // Clean error message for connection failures - VERY OBVIOUS FOR AI/USERS
+      console.error('');
+      console.error('═'.repeat(80));
+      console.error('❌ JTAG SYSTEM NOT RUNNING');
+      console.error('═'.repeat(80));
+      console.error('');
+      
+      if (connectionError.message?.includes('ECONNREFUSED') || 
+          connectionError.message?.includes('connect') ||
+          connectionError.code === 'ECONNREFUSED') {
+        console.error('🔍 PROBLEM: No JTAG system is currently running');
+        console.error('');
+        console.error('✅ IMMEDIATE ACTION FOR AI:');
+        console.error('   1. Run: npm start');
+        console.error('   2. Wait 60 seconds (build takes time)');  
+        console.error('   3. Try your command again');
+        console.error('');
+        console.error('⚠️  CRITICAL: Do NOT monitor build status or check logs');
+        console.error('   Just run npm start, wait 60 seconds, then retry');
+        console.error('');
+        console.error('🤖 AI WORKFLOW:');
+        console.error('   npm start → wait 60s → ./jtag [your-command]');
+        console.error('');
+        console.error('📊 Human developers: Check "npm run signal:check" for status');
+      } else {
+        console.error(`🔍 Connection error: ${connectionError.message}`);
+      }
+      console.error('');
+      console.error('═'.repeat(80));
+      process.exit(1);
+    }
     
     // Restore console logging
     console.log = originalLog;
