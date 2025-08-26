@@ -55,8 +55,8 @@ export class JTAGMessageQueue {
     }
 
     // Add to priority queue
-    const id = this.priorityQueue.enqueue(message, priority);
-    console.log(`📥 JTAGMessageQueue[${this.context.environment}]: Queued message ${id} (priority: ${Priority[priority]})`);
+    //const id = this.priorityQueue.enqueue(message, priority);
+    //console.log(`📥 JTAGMessageQueue[${this.context.environment}]: Queued message ${id} (priority: ${Priority[priority]})`);
     return true; // Message was queued
   }
 

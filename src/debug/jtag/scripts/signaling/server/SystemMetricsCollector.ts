@@ -84,23 +84,75 @@ export class SystemMetricsCollector {
 
   private async checkBootstrap(): Promise<boolean> {
     try {
+      // BOOTSTRAP COMPLETION REQUIRES ALL CRITICAL SYSTEMS READY:
+      // 1. WebSocket server (9001) - checked via bootstrap logs
+      // 2. HTTP server (9002) - checked via actual HTTP request
+      // 3. System services running - checked via process registry
+      // 4. Session management active - checked via session metadata
+      
+      console.log('🔍 Bootstrap milestone check: Starting comprehensive readiness verification...');
+      
+      // Step 1: Check WebSocket server bootstrap completion via logs
+      const webSocketReady = await this.checkWebSocketBootstrap();
+      if (!webSocketReady) {
+        console.log('❌ Bootstrap milestone: WebSocket server not ready yet');
+        return false;
+      }
+      console.log('✅ Bootstrap milestone: WebSocket server ready');
+      
+      // Step 2: Check HTTP server readiness via actual request
+      const httpReady = await this.checkHTTPServerReady();
+      if (!httpReady) {
+        console.log('❌ Bootstrap milestone: HTTP server not ready yet');
+        return false;
+      }
+      console.log('✅ Bootstrap milestone: HTTP server ready');
+      
+      // Step 3: Verify system services are running
+      const servicesReady = await this.checkSystemServices();
+      if (!servicesReady) {
+        console.log('❌ Bootstrap milestone: System services not ready yet');
+        return false;
+      }
+      console.log('✅ Bootstrap milestone: System services ready');
+      
+      // Step 4: Verify session management is active
+      const sessionReady = await this.checkSessionManagement();
+      if (!sessionReady) {
+        console.log('❌ Bootstrap milestone: Session management not ready yet');
+        return false;
+      }
+      console.log('✅ Bootstrap milestone: Session management ready');
+      
+      console.log('🎉 Bootstrap milestones: ALL SYSTEMS READY - Bootstrap completion confirmed!');
+      return true;
+    } catch (error) {
+      console.log(`💥 Bootstrap milestone check failed: ${error}`);
+      return false;
+    }
+  }
+
+  private async checkWebSocketBootstrap(): Promise<boolean> {
+    try {
       // Use WorkingDirConfig for per-project isolation
       const continuumPath = WorkingDirConfig.getContinuumPath();
       
       // Self-healing: Try multiple log locations in order of preference
-      const logLocations = [
+      const logPatterns = [
         // 1. Try currentUser logs first (symlinked to active user session)
         path.join(continuumPath, 'jtag', 'currentUser', 'logs', 'browser-console-log.log'),
-        // 2. Fallback to system session logs (where bootstrap actually happens)
-        path.join(continuumPath, 'jtag', 'sessions', 'system', '*', 'logs', 'browser-console-log.log'),
-        // 3. Fallback to any user session logs
-        path.join(continuumPath, 'jtag', 'sessions', 'user', '*', 'logs', 'browser-console-log.log')
+        // 2. Fallback to system session logs (use shell glob expansion)
+        `"${continuumPath}/jtag/sessions/system/*/logs/browser-console-log.log"`,
+        // 3. Fallback to any user session logs (use shell glob expansion)
+        `"${continuumPath}/jtag/sessions/user/*/logs/browser-console-log.log"`
       ];
       
-      for (const logLocation of logLocations) {
+      for (const logPattern of logPatterns) {
         try {
-          const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" ${logLocation} 2>/dev/null | grep "commands" || echo ""`);
+          // Use shell expansion for glob patterns
+          const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" ${logPattern} 2>/dev/null | grep "commands" || echo ""`);
           if (stdout.trim().length > 0) {
+            console.log(`✅ Bootstrap check: Found WebSocket bootstrap in ${logPattern}`);
             return true;
           }
         } catch {
@@ -108,8 +160,98 @@ export class SystemMetricsCollector {
         }
       }
       
+      console.log('🔍 Bootstrap check: WebSocket bootstrap logs not found');
       return false;
     } catch {
+      return false;
+    }
+  }
+
+  private async checkHTTPServerReady(): Promise<boolean> {
+    try {
+      const activePorts = await getActivePorts();
+      const httpUrl = `http://localhost:${activePorts.http_server}`;
+      
+      // Use native HTTP client for fast readiness check
+      const http = await import('http');
+      
+      return new Promise<boolean>((resolve) => {
+        const req = http.request(httpUrl, {
+          method: 'GET',
+          timeout: 2000, // Slightly longer timeout for bootstrap check
+          headers: {
+            'User-Agent': 'JTAG-BootstrapChecker/1.0'
+          }
+        }, (res) => {
+          // Any successful response means HTTP server is ready
+          resolve(res.statusCode !== undefined && res.statusCode < 500);
+        });
+        
+        req.on('error', () => {
+          resolve(false);
+        });
+        
+        req.on('timeout', () => {
+          req.destroy();
+          resolve(false);
+        });
+        
+        req.end();
+      });
+      
+    } catch (error) {
+      console.log(`⚠️ HTTP server readiness check failed: ${error}`);
+      return false;
+    }
+  }
+
+  private async checkSystemServices(): Promise<boolean> {
+    try {
+      // NO STATE NEEDED: Just look at what processes are actually running
+      const wsPortCheck = await execAsync(`lsof -ti:9001 2>/dev/null | head -1 || echo ""`);
+      const httpPortCheck = await execAsync(`lsof -ti:9002 2>/dev/null | head -1 || echo ""`);
+      
+      const wsProcessRunning = wsPortCheck.stdout.trim().length > 0;
+      const httpProcessRunning = httpPortCheck.stdout.trim().length > 0;
+      
+      if (!wsProcessRunning) {
+        console.log('⚠️ System services check: WebSocket server not running on port 9001');
+        return false;
+      }
+      
+      if (!httpProcessRunning) {
+        console.log('⚠️ System services check: HTTP server not running on port 9002');
+        return false;
+      }
+      
+      console.log('✅ System services check: Both servers running on expected ports');
+      return true;
+      
+    } catch (error) {
+      console.log(`⚠️ System services readiness check failed: ${error}`);
+      return false;
+    }
+  }
+
+  private async checkSessionManagement(): Promise<boolean> {
+    try {
+      // NO STATE NEEDED: Just look at what session files actually exist
+      const continuumPath = WorkingDirConfig.getContinuumPath();
+      const sessionMetadataPath = path.join(continuumPath, 'jtag', 'sessions', 'metadata.json');
+      
+      // Verify session metadata exists and is valid
+      const { stdout } = await execAsync(`test -f "${sessionMetadataPath}" && cat "${sessionMetadataPath}" | grep -q "sessions" && echo "SESSION_OK" || echo "SESSION_MISSING"`);
+      
+      if (stdout.trim() !== 'SESSION_OK') {
+        console.log('⚠️ Session management check: Session metadata not found or invalid');
+        return false;
+      }
+      
+      console.log('✅ Session management check: Session metadata exists and valid');
+      return true;
+      
+    } catch (error) {
+      console.log(`⚠️ Session management readiness check failed: ${error}`);
       return false;
     }
   }
@@ -119,20 +261,20 @@ export class SystemMetricsCollector {
       // Use WorkingDirConfig for per-project isolation
       const continuumPath = WorkingDirConfig.getContinuumPath();
       
-      // Self-healing: Try multiple log locations in order of preference
-      const logLocations = [
+      // Self-healing: Try multiple log locations in order of preference  
+      const logPatterns = [
         // 1. Try currentUser logs first (symlinked to active user session)
         path.join(continuumPath, 'jtag', 'currentUser', 'logs', 'browser-console-log.log'),
-        // 2. Fallback to system session logs (where bootstrap actually happens)
-        path.join(continuumPath, 'jtag', 'sessions', 'system', '*', 'logs', 'browser-console-log.log'),
-        // 3. Fallback to any user session logs
-        path.join(continuumPath, 'jtag', 'sessions', 'user', '*', 'logs', 'browser-console-log.log')
+        // 2. Fallback to system session logs (use shell glob expansion)
+        `"${continuumPath}/jtag/sessions/system/*/logs/browser-console-log.log"`,
+        // 3. Fallback to any user session logs (use shell glob expansion)
+        `"${continuumPath}/jtag/sessions/user/*/logs/browser-console-log.log"`
       ];
       
-      for (const logLocation of logLocations) {
+      for (const logPattern of logPatterns) {
         try {
           // Get all bootstrap messages and take the LAST one (most recent)
-          const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" ${logLocation} 2>/dev/null | grep "commands" || echo ""`);
+          const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" ${logPattern} 2>/dev/null | grep "commands" || echo ""`);
           
           if (stdout.trim()) {
             // Split lines and get the last match

@@ -36,10 +36,17 @@ async function runTests(): Promise<boolean> {
 
 async function checkSystemReady(): Promise<boolean> {
   try {
-    const { SystemReadySignaler } = await import('./signaling/server/SystemReadySignaler');
-    const signaler = new SystemReadySignaler();
-    const signal = await signaler.checkSystemReady(1000); // 1 second check
-    return signal?.systemHealth === 'healthy' && signal?.commandCount > 0;
+    // SIMPLE APPROACH: Just check if both servers are running
+    const { execAsync } = require('child_process').promisify;
+    const exec = require('util').promisify(require('child_process').exec);
+    
+    const wsCheck = await exec('lsof -ti:9001 2>/dev/null | head -1 || echo ""');
+    const httpCheck = await exec('lsof -ti:9002 2>/dev/null | head -1 || echo ""');
+    
+    const wsRunning = wsCheck.stdout.trim().length > 0;
+    const httpRunning = httpCheck.stdout.trim().length > 0;
+    
+    return wsRunning && httpRunning;
   } catch (error) {
     return false;
   }

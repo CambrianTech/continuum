@@ -485,14 +485,28 @@ export class SystemOrchestrator extends EventEmitter {
     const { getActiveExamplePath } = await import('../shared/ExampleConfig');
     const activeExamplePath = getActiveExamplePath();
     
+    console.log(`🎯 Starting npm start in: ${activeExamplePath}`);
+    
     this.serverProcess = spawn('npm', ['start'], {
       cwd: activeExamplePath,
-      stdio: 'inherit',
+      stdio: ['ignore', 'pipe', 'pipe'], // Capture stdout/stderr
       shell: true
+    });
+    
+    this.serverProcess.stdout?.on('data', (data) => {
+      console.log(`📄 HTTP Server: ${data.toString().trim()}`);
+    });
+    
+    this.serverProcess.stderr?.on('data', (data) => {
+      console.log(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
     });
     
     this.serverProcess.on('error', (error) => {
       console.error(`❌ Server process failed: ${error.message}`);
+    });
+    
+    this.serverProcess.on('exit', (code, signal) => {
+      console.log(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
     });
     
     await milestoneEmitter.completeMilestone(

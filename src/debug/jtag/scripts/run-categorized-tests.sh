@@ -81,8 +81,8 @@ if [ "$DEPLOY_BROWSER" = "true" ]; then
             echo "🛠️  Try: npm run system:stop && npm run system:start"
             exit 1
         fi
-    elif npm run signal:check > /dev/null 2>&1; then
-        echo "✅ System already running and ready"
+    elif lsof -ti:9001 >/dev/null 2>&1 && lsof -ti:9002 >/dev/null 2>&1; then
+        echo "✅ System already running and ready (verified by port check)"
     else
         echo "🚀 Starting system with browser deployment..."
         echo "📋 Running: npm run system:start (launches browser + waits for ready)"

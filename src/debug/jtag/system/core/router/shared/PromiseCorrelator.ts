@@ -81,12 +81,12 @@ export class PromiseCorrelator implements IPromiseCorrelator {
       // Send the request
       await this.sendRequestMessage(message);
       
-      console.log(`📤 PromiseCorrelator: Request sent, awaiting response...`);
+      //console.debug(`📤 PromiseCorrelator: Request sent, awaiting response...`);
       
       // Wait for correlated response
       const response = await responsePromise;
       
-      console.log(`✅ PromiseCorrelator: Response received for ${message.correlationId}`);
+      //console.debug(`✅ PromiseCorrelator: Response received for ${message.correlationId}`);
       
       // Clean up pending request
       this.pendingRequests.delete(message.correlationId);
