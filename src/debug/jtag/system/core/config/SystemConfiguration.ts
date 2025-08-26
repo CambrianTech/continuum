@@ -236,7 +236,7 @@ export class SystemConfiguration {
   }
 
   /**
-   * Get default configuration with fallback to package.json config
+   * Get default configuration with dynamic port assignment integration
    */
   static getDefaultConfig(): JTAGInstanceConfig {
     // Try environment first
@@ -245,16 +245,27 @@ export class SystemConfiguration {
       return envConfig;
     }
 
-    // Fallback to package.json config (server environments only)
+    // Try to get ports from running example's package.json
     if (typeof require !== 'undefined' && typeof process !== 'undefined') {
       try {
-        const pkg = require('../../../../../../package.json');
+        // First try the current working directory (might be in an example)
+        let pkg;
+        try {
+          pkg = require(process.cwd() + '/package.json');
+        } catch {
+          // Fall back to main package.json
+          pkg = require('../../../../../../package.json');
+        }
+        
+        const httpPort = pkg.config?.port || 9002;  
+        const wsPort = httpPort - 1; // WebSocket is HTTP port - 1
+        
         return {
           nodeId: 'default-node',
-          wsPort: pkg.config?.port || 9001,
-          httpPort: (pkg.config?.port || 9001) + 1,
+          wsPort: wsPort,
+          httpPort: httpPort,
           multicastPort: 37471,
-          unicastPort: 0,
+          unicastPort: wsPort + 1000,
           nodeType: 'server',
           capabilities: ['screenshot', 'file-operations']
         };

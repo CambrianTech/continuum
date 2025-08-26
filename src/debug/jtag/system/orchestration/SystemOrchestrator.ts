@@ -474,7 +474,7 @@ export class SystemOrchestrator extends EventEmitter {
     // Start the server using the existing launch-active-example script
     // but WITHOUT the premature browser opening
     const { getActivePorts } = await import('../shared/ExampleConfig');
-    const activePorts = getActivePorts();
+    const activePorts = await getActivePorts();
     
     // Import and start the JTAG system server
     const { JTAGSystemServer } = await import('../core/system/server/JTAGSystemServer');
@@ -553,7 +553,7 @@ export class SystemOrchestrator extends EventEmitter {
     // SIMPLIFIED READINESS CHECK: Check port availability directly
     // This avoids complex signaling system issues while ensuring servers are actually ready
     const { getActivePorts } = await import('../shared/ExampleConfig');
-    const activePorts = getActivePorts();
+    const activePorts = await getActivePorts();
     
     const maxRetries = 30; // 30 seconds max wait
     let attempt = 0;
@@ -667,7 +667,7 @@ export class SystemOrchestrator extends EventEmitter {
     console.log('🌐 Launching browser...');
     
     // CRITICAL FIX: Browser only launches AFTER server ready milestone
-    const browserUrl = options.browserUrl || this.getDefaultBrowserUrl();
+    const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
     
     try {
       spawn('open', [browserUrl], { 
@@ -794,7 +794,7 @@ export class SystemOrchestrator extends EventEmitter {
     
     console.log('🌐 Ensuring browser is opened...');
     
-    const browserUrl = options.browserUrl || this.getDefaultBrowserUrl();
+    const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
     
     try {
       spawn('open', [browserUrl], { 
@@ -811,10 +811,10 @@ export class SystemOrchestrator extends EventEmitter {
   /**
    * Get default browser URL based on configuration
    */
-  private getDefaultBrowserUrl(): string {
+  private async getDefaultBrowserUrl(): Promise<string> {
     try {
       const { getActivePorts } = require('../shared/ExampleConfig');
-      const activePorts = getActivePorts();
+      const activePorts = await getActivePorts();
       return `http://localhost:${activePorts.http_server}`;
     } catch (error) {
       console.warn('⚠️ Could not get active ports, using default');
