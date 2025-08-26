@@ -403,7 +403,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       
       // Await the correlated response
       const response = await responsePromise as JTAGResponsePayload;
-      console.log(`✅ ${this.toString()}: Response received for ${message.correlationId}`);
+      //console.debug(`✅ ${this.toString()}: Response received for ${message.correlationId}`);
       return { success: true, resolved: true, response };
 
     } catch (error) {
@@ -511,7 +511,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     for (const queuedItem of messages) {
       try {
         await crossContextTransport.send(queuedItem.item);
-        console.log(`✅ ${this.toString()}: Delivered queued message ${queuedItem.id}`);
+        //console.log(`✅ ${this.toString()}: Delivered queued message ${queuedItem.id}`);
       } catch (error) {
         console.warn(`❌ ${this.toString()}: Failed to deliver ${queuedItem.id}`, error);
         failedMessages.push(queuedItem);
@@ -602,10 +602,10 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     
     // Create and send response for request messages
     if (result.success && result.handlerResult) {
-      console.log(`✅ ${this.toString()}: Creating response for ${message.correlationId}`);
+      //console.debug(`✅ ${this.toString()}: Creating response for ${message.correlationId}`);
       await this.createAndSendResponse(message, result.handlerResult);
     } else {
-      console.log(`⚠️ ${this.toString()}: No response created for ${message.correlationId} - success=${result.success}, handlerResult=${!!result.handlerResult}`);
+      console.warn(`⚠️ ${this.toString()}: No response created for ${message.correlationId} - success=${result.success}, handlerResult=${!!result.handlerResult}`);
     }
     
     return result;
