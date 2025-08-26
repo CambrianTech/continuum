@@ -1,0 +1,18 @@
+{
+  "extends": [
+    "@typescript-eslint/recommended"
+  ],
+  "parser": "@typescript-eslint/parser",
+  "plugins": [
+    "@typescript-eslint"
+  ],
+  "rules": {
+    "@typescript-eslint/no-floating-promises": "error",
+    "@typescript-eslint/no-misused-promises": "error",
+    "@typescript-eslint/require-await": "warn",
+    "@typescript-eslint/await-thenable": "error"
+  },
+  "parserOptions": {
+    "project": "./tsconfig.json"
+  }
+}

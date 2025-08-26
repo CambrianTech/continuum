@@ -58,10 +58,19 @@ export class SystemReadySignaler {
       return instanceId;
     }
     
-    // Fall back to port-based identification for backward compatibility
-    const websocketPort = process.env.JTAG_WEBSOCKET_PORT || 
-                          process.env.JTAG_EXAMPLE_WEBSOCKET_PORT || '9000';
-    return `port-${websocketPort}`;
+    // Use the dynamic port configuration system
+    try {
+      // Import the getActivePorts function dynamically
+      const { getActivePortsSync } = require('../../system/shared/ExampleConfig');
+      const ports = getActivePortsSync();
+      const websocketPort = ports.websocket_server || 9001;
+      return `port-${websocketPort}`;
+    } catch (error) {
+      // Fall back to port-based identification if dynamic config fails
+      const websocketPort = process.env.JTAG_WEBSOCKET_PORT || 
+                            process.env.JTAG_EXAMPLE_WEBSOCKET_PORT || '9001';
+      return `port-${websocketPort}`;
+    }
   }
 
   async generateReadySignal(): Promise<SystemReadySignal> {

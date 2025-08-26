@@ -9,14 +9,16 @@
  * 1. Force cleanup ALL existing systems (any example)
  * 2. Handle versioning conflicts automatically 
  * 3. Wait for ports to be released properly
- * 4. Start clean test-bench environment
+ * 4. Start clean active example environment (from examples.json)
  */
 
 import { spawn } from 'child_process';
+import { getActiveExampleName } from '../system/shared/ExampleConfig';
 
 async function runIntelligentTest(): Promise<boolean> {
+  const activeExample = getActiveExampleName();
   console.log('🧠 INTELLIGENT TEST RUNNER: Handling cross-example switching');
-  console.log('📋 Solving widget-ui→test-bench port conflicts automatically');
+  console.log(`📋 Using active example: ${activeExample} (from examples.json)`);
   
   // INTELLIGENCE: Step 1 - Force cleanup ALL existing systems
   console.log('\n🧹 STEP 1: Force cleanup of all existing JTAG systems (any example)');
@@ -68,7 +70,7 @@ async function runIntelligentTest(): Promise<boolean> {
   }
   
   // INTELLIGENCE: Step 3 - Start test system with smart environment
-  console.log('\n🚀 STEP 3: Starting test-bench system with intelligent configuration');
+  console.log('\n🚀 STEP 3: Starting active example system with intelligent configuration');
   
   return new Promise<boolean>((resolve) => {
     const testProcess = spawn('npm', ['run', 'test:start-and-test'], {
@@ -76,7 +78,7 @@ async function runIntelligentTest(): Promise<boolean> {
       shell: true,
       env: {
         ...process.env,
-        JTAG_ACTIVE_EXAMPLE: 'test-bench',     // Force test-bench example
+        // Use active_example from examples.json instead of hardcoding 'test-bench'
         JTAG_FORCE_RESTART: 'true',           // Force restart to handle version conflicts
         JTAG_IGNORE_EXISTING: 'true'         // Ignore any existing systems
       }

@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1139",
+  "version": "1.0.1143",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "port": 9001,
@@ -296,6 +296,9 @@
     "@types/node": "^22.15.29",
     "@types/node-fetch": "^2.6.12",
     "@types/ws": "^8.18.1",
+    "@typescript-eslint/eslint-plugin": "^8.41.0",
+    "@typescript-eslint/parser": "^8.41.0",
+    "eslint": "^9.34.0",
     "glob": "^11.0.3",
     "jest": "^29.5.0",
     "node-fetch": "^3.3.2",
@@ -344,7 +347,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-25T23:43:33.256Z",
+    "timestamp": "2025-08-26T01:36:08.620Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 29,
     "note": "Generated from clean essential path mappings only"

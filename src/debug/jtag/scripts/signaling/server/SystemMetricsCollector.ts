@@ -169,7 +169,7 @@ export class SystemMetricsCollector {
       // TIMEOUT ELIMINATION: Replace cascading curl timeouts with native HTTP client
       // This eliminates the progressive timeout pattern (1s, 2s, 4s, 6s) and external process overhead
       
-      const activePorts = getActivePorts();
+      const activePorts = await getActivePorts();
       const httpUrl = `http://localhost:${activePorts.http_server}`;
       
       // Use native HTTP client instead of external curl command

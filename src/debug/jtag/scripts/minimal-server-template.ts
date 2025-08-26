@@ -38,7 +38,13 @@ class MinimalServer {
       if (url === '/') {
         this.serveUniversalDemo(res);
       } else if (url === '/config') {
-        this.serveConfiguration(res);
+        this.serveConfiguration(res).catch(error => {
+          console.error('❌ Configuration request failed:', error);
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Configuration error' }));
+          }
+        });
       } else if (url === '/demo.css') {
         this.serveFile(res, 'public/demo.css', 'text/css');
       } else if (url.startsWith('/dist/')) {
@@ -129,13 +135,13 @@ class MinimalServer {
   /**
    * Serve dynamic configuration based on examples.json
    */
-  private serveConfiguration(res: http.ServerResponse): void {
+  private async serveConfiguration(res: http.ServerResponse): Promise<void> {
     try {
       // Import configuration functions
       const { getActiveExampleName, getActivePorts } = require('../../system/shared/ExampleConfig');
       
       const activeExample = getActiveExampleName();
-      const activePorts = getActivePorts();
+      const activePorts = await getActivePorts(); // Await the async function
       
       const config = {
         activeExample,
