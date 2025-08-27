@@ -84,6 +84,22 @@ async function main(): Promise<void> {
     console.log('🎯 TEST RESULTS:');
     console.log(JSON.stringify(result, null, 2));
     
+    // Generate comprehensive test report
+    console.log('\n📄 Generating comprehensive test report...');
+    try {
+      const reportChild = spawn('npm', ['run', 'test:report'], {
+        stdio: 'inherit',
+        cwd: process.cwd()
+      });
+
+      await new Promise<void>((resolve) => {
+        reportChild.on('exit', () => resolve());
+        reportChild.on('error', () => resolve()); // Continue even if report fails
+      });
+    } catch (error) {
+      console.warn('⚠️ Report generation failed (test results still valid):', error);
+    }
+
     if (testsSucceeded) {
       console.log('🎉 ALL TESTS PASSED - npm test succeeded!');
       console.log('🚀 Server left running for development (as intended)');
