@@ -179,6 +179,8 @@ run_profile_tests() {
             run_test "Screenshot Verification" "npx tsx tests/screenshot-verification.test.ts" "Screenshots & Visual"
             run_test "Screenshot Advanced" "npx tsx tests/screenshot-integration-advanced.test.ts" "Screenshots & Visual"
             run_test "Screenshot Transport" "npx tsx tests/screenshot-transport-test.ts" "Screenshots & Visual"
+            run_test "Coordinate Calculation Unit" "npx tsx commands/screenshot/test/unit/CoordinateCalculation.test.ts" "Screenshots & Visual"
+            run_test "Coordinate Validation" "npx tsx commands/screenshot/test/validation/SimpleCoordinateValidator.ts" "Screenshots & Visual"
             
             # Transport layer - these tests require full browser deployment via npm test
             # run_test "WebSocket Transport" "npx tsx tests/layer-3-transport/browser-websocket.test.ts" "Transport Tests"  # File doesn't exist
@@ -211,6 +213,7 @@ run_profile_tests() {
             run_test "Event Routing" "npx tsx tests/unit/router-broadcast.test.ts" "Unit Tests"
             run_test "Room Scoped Events" "npx tsx tests/unit/room-scoped-event-routing.test.ts" "Unit Tests"
             run_test "Events Daemon" "npx tsx tests/unit/events-daemon-unit.test.ts" "Unit Tests"
+            run_test "Coordinate Calculation Unit" "npx tsx commands/screenshot/test/unit/CoordinateCalculation.test.ts" "Unit Tests"
             ;;
             
         "chat")
@@ -224,6 +227,8 @@ run_profile_tests() {
             run_test "Server Screenshot" "npx tsx tests/server-screenshot.test.ts" "Screenshot Tests"
             run_test "Screenshot Verification" "npx tsx tests/screenshot-verification.test.ts" "Screenshot Tests"
             run_test "Screenshot Advanced" "npx tsx tests/screenshot-integration-advanced.test.ts" "Screenshot Tests"
+            run_test "Coordinate Calculation Unit" "npx tsx commands/screenshot/test/unit/CoordinateCalculation.test.ts" "Screenshot Tests"
+            run_test "Coordinate Validation" "npx tsx commands/screenshot/test/validation/SimpleCoordinateValidator.ts" "Screenshot Tests"
             ;;
             
         "transport")
