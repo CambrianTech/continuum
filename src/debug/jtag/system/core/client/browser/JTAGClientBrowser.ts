@@ -173,7 +173,7 @@ export class JTAGClientBrowser extends JTAGClient {
    * Get browser-specific transport factory
    */
   protected async getTransportFactory(): Promise<ITransportFactory> {
-    return new TransportFactoryBrowser();
+    return new TransportFactoryBrowser(this.context);
   }
 
   /**

@@ -20,11 +20,14 @@ import type {
   ProcessRegistryEntry
 } from '../shared/ProcessRegistryTypes';
 import { 
+  PROCESS_REGISTRY_PORTS, 
+  DEFAULT_NODE_IDS 
+} from '../shared/ProcessRegistryTypes';
+import { 
   validateRegisterProcessParams,
   getProcessCapabilities,
   generateProcessId
 } from '../shared/ProcessRegistryCommand';
-import { getSystemConfig } from '../../../system/core/config/SystemConfiguration';
 
 interface ProcessRegistryState {
   registryVersion: string;
@@ -64,21 +67,21 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
       // Generate unique process ID
       const processId = generateProcessId();
       
-      // Get system configuration for ports
-      const systemConfig = getSystemConfig();
+      // Get system configuration for ports from context
+      const instanceConfig = this.context.config.instance;
       const ports = params.ports && params.ports.length > 0 
         ? params.ports 
         : [
-            systemConfig.getWebSocketPort(),
-            systemConfig.getHTTPPort(),
-            systemConfig.getUDPConfig().port,
-            systemConfig.getUDPConfig().unicastPort
+            instanceConfig.ports.websocket_server,
+            instanceConfig.ports.http_server,
+            PROCESS_REGISTRY_PORTS.DEFAULT_MULTICAST_PORT,
+            PROCESS_REGISTRY_PORTS.DEFAULT_MULTICAST_PORT + PROCESS_REGISTRY_PORTS.DEFAULT_UNICAST_PORT_OFFSET
           ].filter(port => port > 0);
 
       // Create registry entry
       const entry: ProcessRegistryEntry = {
         processId,
-        nodeId: systemConfig.getNodeId(),
+        nodeId: DEFAULT_NODE_IDS.DEFAULT_NODE,
         pid: process.pid,
         ports,
         startTime: Date.now(),
@@ -203,13 +206,13 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
         }
       }
 
-      // Handle non-JTAG processes on target ports
-      const systemConfig = getSystemConfig();
+      // Handle non-JTAG processes on target ports  
+      const instanceConfig = this.context.config.instance;
       const targetPorts = params.targetPorts || [
-        systemConfig.getWebSocketPort(),
-        systemConfig.getHTTPPort(),
-        systemConfig.getUDPConfig().port,        // Include multicast port for clean test isolation
-        systemConfig.getUDPConfig().unicastPort
+        instanceConfig.ports.websocket_server,
+        instanceConfig.ports.http_server,
+        PROCESS_REGISTRY_PORTS.DEFAULT_MULTICAST_PORT,  // Include multicast port for clean test isolation
+        PROCESS_REGISTRY_PORTS.DEFAULT_MULTICAST_PORT + PROCESS_REGISTRY_PORTS.DEFAULT_UNICAST_PORT_OFFSET  // unicast port
       ].filter(port => port > 0);
 
       if (params.forceAll) {
@@ -285,9 +288,10 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
 
   private async getActiveProcesses(): Promise<ProcessRegistryEntry[]> {
     // Import secure context creation
+    const { createJTAGConfig } = require('../../../system/shared/BrowserSafeConfig');
     const { createServerContext } = require('../../../system/core/context/SecureJTAGContext');
-    const context = createServerContext();
-    context.uuid = 'internal-process-registry'; // Override for consistency
+    const jtagConfig = createJTAGConfig();
+    const context = createServerContext(jtagConfig, 'internal-process-registry');
     
     const result = await this.listProcesses({
       context,

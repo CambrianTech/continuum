@@ -3,12 +3,16 @@
  * 
  * This module provides configuration defaults that work in both browser and server environments.
  * It contains no file system operations or Node.js-specific code.
+ * Integrates with centralized examples.json configuration.
  */
 
 import type { 
   JTAGServerConfiguration,
   JTAGClientConfiguration, 
-  JTAGTestConfiguration
+  JTAGTestConfiguration,
+  JTAGConfig,
+  InstanceConfiguration,
+  InstanceConfigData
 } from './SecureConfigTypes';
 
 /**
@@ -18,45 +22,137 @@ export const isBrowser = typeof window !== 'undefined' && typeof document !== 'u
 export const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
 /**
- * Get environment variable safely (works in both browser and Node.js)
+ * Load active instance configuration from centralized instances.json
+ * Called once when JTAGContext is created - returns full typed config  
+ * NO ENVIRONMENT VARIABLES - API level only uses config files and context.config
+ * NO FALLBACKS - Browser gets same config as server from examples.json
  */
-function getEnvVar(name: string, defaultValue: string): string {
-  if (typeof process !== 'undefined' && process.env) {
-    return process.env[name] || defaultValue;
+export function loadInstanceConfigForContext(): InstanceConfiguration {
+  // Server context - load from instances.json (temporarily still examples.json)
+  if (isNode) {
+    const fs = eval('require')('fs');
+    const path = eval('require')('path');
+    const configPath = path.join(__dirname, '../../config/examples.json'); // TODO: rename to instances.json
+    const configData: InstanceConfigData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    
+    const activeInstanceName = configData.active_instance || (configData as any).active_example; // backwards compatibility
+    const instancesData = configData.instances || (configData as any).examples; // backwards compatibility
+    const activeInstance = instancesData[activeInstanceName];
+    
+    if (!activeInstance) {
+      throw new Error(`Active instance '${activeInstanceName}' not found in config`);
+    }
+
+    // Map old structure to new structure - NO environment variable overrides in API
+    const instanceConfig: InstanceConfiguration = {
+      name: activeInstance.name,
+      description: activeInstance.description,
+      ports: activeInstance.ports,
+      paths: activeInstance.paths,
+      capabilities: (activeInstance as any).features || activeInstance.capabilities
+    };
+
+    console.log(`📋 BrowserSafeConfig: Loaded active instance: ${instanceConfig.name} (HTTP: ${instanceConfig.ports.http_server}, WS: ${instanceConfig.ports.websocket_server})`);
+    return instanceConfig;
   }
-  return defaultValue;
+
+  // Browser context - MUST get same config as server, NO FALLBACKS
+  if (isBrowser) {
+    // Browser must use same config as server - extract from window location or error
+    const currentPort = window.location.port;
+    
+    // Since browser is served from HTTP server, we know the HTTP port
+    // Derive WebSocket port from HTTP port based on examples.json structure
+    let httpPort: number;
+    let wsPort: number;
+    let configName: string;
+    let capabilities: any;
+    
+    if (currentPort === '9002') {
+      // test-bench configuration
+      httpPort = 9002;
+      wsPort = 9001;
+      configName = 'JTAG Test Bench';
+      capabilities = {
+        browser_automation: true,
+        screenshot_testing: true,
+        chat_integration: true,
+        widget_testing: false,
+        auto_launch_browser: true
+      };
+    } else if (currentPort === '9003') {
+      // widget-ui configuration  
+      httpPort = 9003;
+      wsPort = 9004;
+      configName = 'JTAG Widget Development UI';
+      capabilities = {
+        browser_automation: false,
+        screenshot_testing: false,
+        chat_integration: true,
+        widget_testing: true,
+        auto_launch_browser: true
+      };
+    } else {
+      // ERROR: Browser can't determine config - this is intentional failure
+      throw new Error(`Browser cannot determine configuration from port ${currentPort}. Server must serve browser from correct configured port (9002 or 9003).`);
+    }
+
+    const instanceConfig: InstanceConfiguration = {
+      name: configName,
+      description: 'Browser environment - same config as server',
+      ports: { http_server: httpPort, websocket_server: wsPort },
+      paths: { 
+        directory: currentPort === '9002' ? 'examples/test-bench' : 'examples/widget-ui',
+        html_file: currentPort === '9002' ? 'public/demo.html' : 'index.html',
+        build_output: 'dist'
+      },
+      capabilities
+    };
+
+    console.log(`📋 BrowserSafeConfig: Browser derived config from port ${currentPort}: ${instanceConfig.name} (HTTP: ${instanceConfig.ports.http_server}, WS: ${instanceConfig.ports.websocket_server})`);
+    return instanceConfig;
+  }
+
+  // NO FALLBACKS - if we get here, something is wrong
+  throw new Error('loadInstanceConfigForContext: Cannot determine environment (not Node.js or browser)');
 }
 
 /**
- * Get environment variable as integer safely
+ * Create complete JTAGConfig for context - Android-style configuration
  */
-function getEnvInt(name: string, defaultValue: number): number {
-  const value = getEnvVar(name, defaultValue.toString());
-  const parsed = parseInt(value, 10);
-  return isNaN(parsed) ? defaultValue : parsed;
+export function createJTAGConfig(): JTAGConfig {
+  const instance = loadInstanceConfigForContext();
+  
+  return {
+    instance,
+    server: getDefaultServerConfig(instance),
+    client: getDefaultClientConfig(instance),
+    test: getDefaultTestConfig(instance)
+  };
 }
 
 /**
- * Browser-safe server configuration defaults
+ * Browser-safe server configuration using instance config  
+ * NO ENVIRONMENT VARIABLES - API level only uses context.config
  */
-export function getDefaultServerConfig(): JTAGServerConfiguration {
+export function getDefaultServerConfig(instance: InstanceConfiguration): JTAGServerConfiguration {
   return {
     server: {
-      port: getEnvInt('JTAG_SERVER_PORT', 9001),
-      host: getEnvVar('JTAG_SERVER_HOST', 'localhost'),
+      port: instance.ports.websocket_server,
+      host: 'localhost',
       protocol: 'ws',
-      bind_interface: getEnvVar('JTAG_BIND_INTERFACE', '127.0.0.1'),
+      bind_interface: '127.0.0.1',
       max_connections: 100,
       enable_cors: false
     },
     paths: {
-      logs: '.continuum/jtag/logs',
-      screenshots: '.continuum/jtag/screenshots',
-      data_directory: '.continuum/jtag/data',
-      pid_file: '.continuum/jtag/server.pid'
+      logs: `.continuum/jtag/logs`,
+      screenshots: `.continuum/jtag/screenshots`,
+      data_directory: `.continuum/jtag/data`,
+      pid_file: `.continuum/jtag/server.pid`
     },
     security: {
-      enable_authentication: getEnvVar('JTAG_AUTH_ENABLED', 'false') === 'true',
+      enable_authentication: false,
       session_timeout_ms: 3600000,
       rate_limiting: {
         enabled: false,
@@ -71,20 +167,20 @@ export function getDefaultServerConfig(): JTAGServerConfiguration {
 }
 
 /**
- * Browser-safe client configuration defaults
+ * Browser-safe client configuration using instance config
  */
-export function getDefaultClientConfig(): JTAGClientConfiguration {
+export function getDefaultClientConfig(instance: InstanceConfiguration): JTAGClientConfiguration {
   return {
     client: {
-      ui_port: getEnvInt('JTAG_UI_PORT', 9002),
-      host: getEnvVar('JTAG_CLIENT_HOST', 'localhost'),
+      ui_port: instance.ports.http_server,
+      host: 'localhost',
       protocol: 'http',
       auto_connect: true,
       reconnect_attempts: 3
     },
     browser: {
       headless: false,
-      devtools: true,
+      devtools: instance.capabilities.browser_automation,
       width: 1200,
       height: 800,
       user_agent: 'JTAG-TestBrowser/1.0'
@@ -98,24 +194,25 @@ export function getDefaultClientConfig(): JTAGClientConfiguration {
 }
 
 /**
- * Browser-safe test configuration defaults
+ * Browser-safe test configuration using instance config
+ * NO ENVIRONMENT VARIABLES - API level only uses context.config
  */
-export function getDefaultTestConfig(): JTAGTestConfiguration {
+export function getDefaultTestConfig(instance: InstanceConfiguration): JTAGTestConfiguration {
   return {
     server: {
-      port: getEnvInt('JTAG_TEST_SERVER_PORT', getEnvInt('JTAG_SERVER_PORT', 9001)),
-      host: getEnvVar('JTAG_SERVER_HOST', 'localhost'),
+      port: instance.ports.websocket_server,
+      host: 'localhost',
       protocol: 'ws'
     },
     client: {
-      ui_port: getEnvInt('JTAG_UI_PORT', 9002),
-      host: getEnvVar('JTAG_CLIENT_HOST', 'localhost'),
+      ui_port: instance.ports.http_server,
+      host: 'localhost',
       protocol: 'http'
     },
     test_settings: {
       timeout_ms: 30000,
       retry_attempts: 3,
-      screenshot_on_failure: true,
+      screenshot_on_failure: instance.capabilities.screenshot_testing,
       cleanup_after_test: true
     },
     environment: {
@@ -124,6 +221,22 @@ export function getDefaultTestConfig(): JTAGTestConfiguration {
       isolated_sessions: true
     }
   };
+}
+
+// Backward compatibility functions - deprecated
+export function getDefaultServerConfigLegacy(): JTAGServerConfiguration {
+  const instance = loadInstanceConfigForContext();
+  return getDefaultServerConfig(instance);
+}
+
+export function getDefaultClientConfigLegacy(): JTAGClientConfiguration {
+  const instance = loadInstanceConfigForContext();
+  return getDefaultClientConfig(instance);
+}
+
+export function getDefaultTestConfigLegacy(): JTAGTestConfiguration {
+  const instance = loadInstanceConfigForContext();
+  return getDefaultTestConfig(instance);
 }
 
 /**

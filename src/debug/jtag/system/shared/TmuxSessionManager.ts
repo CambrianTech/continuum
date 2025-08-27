@@ -6,7 +6,6 @@
  */
 
 import { WorkingDirConfig } from '../core/config/WorkingDirConfig';
-import { getActiveExampleName } from './ExampleConfig';
 
 export class TmuxSessionManager {
   
@@ -17,7 +16,7 @@ export class TmuxSessionManager {
   static getSessionName(): string {
     try {
       const workingDir = WorkingDirConfig.getWorkingDir();
-      const exampleName = getActiveExampleName();
+      const exampleName = this.getActiveInstanceName();
       
       // Create a short, unique identifier based on the working directory path
       const pathHash = this.createShortHash(workingDir);
@@ -96,5 +95,23 @@ export class TmuxSessionManager {
   private static extractBaseName(workdir: string): string {
     const parts = workdir.split('/').filter(p => p.length > 0);
     return parts[parts.length - 1] || 'unknown';
+  }
+
+  /**
+   * Get active instance name directly from config file
+   * Used by infrastructure scripts that don't have JTAGContext
+   */
+  private static getActiveInstanceName(): string {
+    try {
+      const fs = eval('require')('fs');
+      const path = eval('require')('path');
+      const configPath = path.join(__dirname, '../../config/examples.json');
+      const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      
+      return configData.active_instance || configData.active_example || 'unknown';
+    } catch (error) {
+      console.warn(`⚠️ TmuxSessionManager: Failed to load active instance name: ${(error as Error).message}`);
+      return 'unknown';
+    }
   }
 }

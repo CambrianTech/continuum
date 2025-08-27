@@ -11,62 +11,82 @@
 import { generateUUID, type UUID } from '../types/CrossPlatformUUID';
 import type { JTAGContext, JTAGEnvironment, JTAGContextConfig } from '../types/JTAGTypes';
 import { 
-  getDefaultServerConfig, 
-  getDefaultClientConfig, 
-  getDefaultTestConfig, 
   isTestEnvironment 
 } from '../../shared/BrowserSafeConfig';
+import type { 
+  JTAGConfig, 
+  JTAGServerConfiguration, 
+  JTAGClientConfiguration, 
+  JTAGTestConfiguration,
+  InstanceConfiguration
+} from '../../shared/SecureConfigTypes';
+import { 
+  validateServerConfig, 
+  validateClientConfig, 
+  validateJTAGConfig 
+} from '../../shared/SecureConfigTypes';
 
 /**
- * Create a server-side JTAG context with full server configuration access
- * SERVER ONLY - contains sensitive configuration data
+ * Create a server-side JTAG context with validated configuration
  */
-export function createServerContext(uuid?: UUID): JTAGContext {
+export function createServerContext(config: JTAGConfig, uuid?: UUID): JTAGContext {
+  // Validate config at runtime
+  if (!validateJTAGConfig(config)) {
+    throw new Error('Invalid JTAG configuration provided to createServerContext');
+  }
+
   return {
     uuid: uuid || generateUUID(),
     environment: 'server',
+    config,
     getConfig(): JTAGContextConfig {
-      const config = isTestEnvironment() ? 
-        getDefaultTestConfig() : 
-        getDefaultServerConfig();
-      
       return {
-        type: isTestEnvironment() ? 'test' : 'server',
-        config: config as any
+        type: 'server',
+        config: config.server
       };
     }
   };
 }
 
 /**
- * Create a client-side JTAG context with client-safe configuration only
- * CLIENT SAFE - no sensitive server data exposed
+ * Create a client-side JTAG context with validated configuration
  */
-export function createClientContext(uuid?: UUID): JTAGContext {
+export function createClientContext(config: JTAGConfig, uuid?: UUID): JTAGContext {
+  // Validate config at runtime
+  if (!validateJTAGConfig(config)) {
+    throw new Error('Invalid JTAG configuration provided to createClientContext');
+  }
+
   return {
     uuid: uuid || generateUUID(),
     environment: 'browser',
+    config,
     getConfig(): JTAGContextConfig {
       return {
         type: 'client',
-        config: getDefaultClientConfig()
+        config: config.client
       };
     }
   };
 }
 
 /**
- * Create a test JTAG context with test-specific configuration
- * TEST ONLY - isolated test configuration
+ * Create a test JTAG context with validated configuration
  */
-export function createTestContext(uuid?: UUID): JTAGContext {
+export function createTestContext(config: JTAGConfig, uuid?: UUID): JTAGContext {
+  // Validate config at runtime
+  if (!validateJTAGConfig(config)) {
+    throw new Error('Invalid JTAG configuration provided to createTestContext');
+  }
+
   return {
     uuid: uuid || generateUUID(),
-    environment: 'server', // Tests run in server environment but with test config
+    environment: 'server',
+    config,
     getConfig(): JTAGContextConfig {
       return {
         type: 'test',
-        config: getDefaultTestConfig()
+        config: config.test!
       };
     }
   };

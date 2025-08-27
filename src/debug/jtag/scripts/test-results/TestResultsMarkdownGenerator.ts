@@ -619,18 +619,35 @@ export class TestResultsMarkdownGenerator {
     sections.push(`| **Sessions Created** | ${result.systemInfo.totalSessionsCreated} |`);
     sections.push(``);
 
-    // Category Breakdown
+    // Category Breakdown - Match original format exactly
     if (result.categories.length > 0) {
-      sections.push(`## 🏷️ Test Categories`);
-      sections.push(``);
-      sections.push(`| Category | Passed/Total | Success Rate | Status |`);
-      sections.push(`|----------|--------------|--------------|--------|`);
+      sections.push(`📋 Results by Category:`);
       
-      for (const category of result.categories) {
-        const status = category.successRate === 100 ? '✅ All Passing' : 
-                      category.successRate > 0 ? '⚠️ Partial' : '❌ All Failed';
-        sections.push(`| **${category.category}** | ${category.passed}/${category.total} | ${category.successRate}% | ${status} |`);
+      for (const categoryData of result.categories) {
+        const passed = categoryData.passed;
+        const total = categoryData.total;
+        const successRate = categoryData.successRate;
+        const failedCount = total - passed;
+        
+        // Format exactly like: "   Chat & Messaging:               3/ 4 tests ( 75%) ❌ 1 failed"
+        const statusIcon = successRate === 100 ? '✅' : '❌';
+        const statusText = successRate === 100 ? 'All passing' : `${failedCount} failed`;
+        
+        // Use proper spacing to align the output
+        const categoryPadded = `   ${categoryData.category}:`.padEnd(35, ' ');
+        const testsPadded = `${passed}/ ${total} tests`.padEnd(12, ' ');
+        const ratePadded = `(${successRate.toString().padStart(3, ' ')}%)`;
+        
+        sections.push(`${categoryPadded}${testsPadded} ${ratePadded} ${statusIcon} ${statusText}`);
       }
+      
+      sections.push(``);
+      sections.push(`❌ DETAILED FAILURE BREAKDOWN:`);
+      sections.push(`🔍 Recommended Next Steps:`);
+      sections.push(`   1. Run specific failing tests with detailed output`);
+      sections.push(`   2. Check system logs: .continuum/jtag/system/logs/`);
+      sections.push(`   3. Verify system health: npm run agent:quick`);
+      sections.push(`   4. Use profile-specific commands for focused testing`);
       sections.push(``);
     }
 

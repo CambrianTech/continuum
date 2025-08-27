@@ -1,5 +1,36 @@
 # CLAUDE - MIDDLE-OUT ARCHITECTURE
 
+## **🚨🚨🚨 CRITICAL ARCHITECTURE - NEVER FORGET 🚨🚨🚨**
+
+### **JTAG SERVER ARCHITECTURE**
+1. **SERVER RUNS FROM EXAMPLE INSTANCE** - Server launches from "test-bench" or "widget-ui" directory
+2. **INSTANCE HOSTS WEBSITE + WEBSOCKET** - Example hosts website at configured port (9002) AND opens WebSocket (9001)
+3. **ALL TESTS CONNECT TO THIS INSTANCE** - Tests don't start their own server, they connect to the running instance
+4. **INTEGRATION TESTS NEED BROWSER + SERVER** - All integration tests work across browser/server environments
+5. **NEVER ASSUME YOU DON'T NEED BROWSER** - Almost everything needs the full browser+server environment
+
+### **COMMANDS THAT START THE SYSTEM**
+- **`npm start`** - Starts instance server + opens browser (for development)
+- **`npm test`** - Starts instance server + opens browser + runs all tests
+- **Individual test files** - Connect to existing running instance (will fail if no server)
+
+### **CLIENT CONNECTION PATTERN**
+- **Your client connects TO the instance server** - Not the other way around
+- **WebSocket connection** - Client → ws://localhost:9001 (instance's WebSocket)
+- **HTTP connection** - Browser loads from http://localhost:9002 (instance's website)
+- **Cross-environment testing** - Browser client + Server client both talk to same instance
+
+### **WHEN TESTS FAIL**
+- **First check: Is browser opening?** - If no browser, the system didn't start properly
+- **Second check: Are both ports active?** - WebSocket (9001) + HTTP (9002) must both be running
+- **Third check: What instance is running?** - test-bench vs widget-ui have different capabilities
+- **Never run individual integration tests** - They need the full instance environment
+
+### **IF CONFUSED ABOUT WHAT TO RUN**
+- **Development**: `npm start` (starts system, opens browser, leaves running)
+- **Testing**: `npm test` (starts system, opens browser, runs tests, shows results)  
+- **Debugging specific test**: Run `npm test` first, then examine the logs/sessions
+
 ## **🚨🚨🚨 CRITICAL: JTAG SYSTEM STARTUP & TESTING WORKFLOW 🚨🚨🚨**
 
 **📋 CORRECT WORKFLOW FOR DEVELOPMENT & TESTING:**

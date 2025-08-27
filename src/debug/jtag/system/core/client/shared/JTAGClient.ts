@@ -573,9 +573,11 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * 🔄 BOOTSTRAP PATTERN: Returns list result for CLI integration
    */
   static async connect<T extends JTAGClient>(this: new (context: JTAGContext) => T, options?: JTAGClientConnectOptions): Promise<JTAGClientConnectionResult & { client: T }> {
-    // Create secure context based on environment
+    // Create secure context based on environment with proper config
     const environment = options?.targetEnvironment ?? 'server';
-    const context = isTestEnvironment() ? createTestContext() : createServerContext();
+    const { createJTAGConfig } = await import('../../../shared/BrowserSafeConfig');
+    const jtagConfig = createJTAGConfig();
+    const context = isTestEnvironment() ? createTestContext(jtagConfig) : createServerContext(jtagConfig);
     
     // Override environment if explicitly requested
     if (environment !== context.environment) {

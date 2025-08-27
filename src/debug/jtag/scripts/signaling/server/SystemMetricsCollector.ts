@@ -12,7 +12,6 @@ import { promisify } from 'util';
 import { SystemReadySignal, SystemHealth, BuildStatus } from '../shared/SystemSignalingTypes';
 import { getSignalConfig } from '../shared/MilestoneConfiguration';
 import { JTAG_LOG_PATTERNS } from '../../../system/core/client/shared/JTAGClientConstants';
-import { getActivePorts } from '../../../system/shared/ExampleConfig';
 import { WorkingDirConfig } from '../../../system/core/config/WorkingDirConfig';
 
 const execAsync = promisify(exec);
@@ -85,8 +84,8 @@ export class SystemMetricsCollector {
   private async checkBootstrap(): Promise<boolean> {
     try {
       // BOOTSTRAP COMPLETION REQUIRES ALL CRITICAL SYSTEMS READY:
-      // 1. WebSocket server (9001) - checked via bootstrap logs
-      // 2. HTTP server (9002) - checked via actual HTTP request
+      // 1. WebSocket server - checked via bootstrap logs (dynamic port from config)
+      // 2. HTTP server - checked via actual HTTP request (dynamic port from config)
       // 3. System services running - checked via process registry
       // 4. Session management active - checked via session metadata
       
@@ -169,7 +168,7 @@ export class SystemMetricsCollector {
 
   private async checkHTTPServerReady(): Promise<boolean> {
     try {
-      const activePorts = await getActivePorts();
+      const activePorts = this.getActiveInstancePorts();
       const httpUrl = `http://localhost:${activePorts.http_server}`;
       
       // Use native HTTP client for fast readiness check
@@ -207,20 +206,25 @@ export class SystemMetricsCollector {
 
   private async checkSystemServices(): Promise<boolean> {
     try {
+      // Get dynamic ports from active configuration
+      const activePorts = this.getActiveInstancePorts();
+      const wsPort = activePorts.websocket_server;
+      const httpPort = activePorts.http_server;
+      
       // NO STATE NEEDED: Just look at what processes are actually running
-      const wsPortCheck = await execAsync(`lsof -ti:9001 2>/dev/null | head -1 || echo ""`);
-      const httpPortCheck = await execAsync(`lsof -ti:9002 2>/dev/null | head -1 || echo ""`);
+      const wsPortCheck = await execAsync(`lsof -ti:${wsPort} 2>/dev/null | head -1 || echo ""`);
+      const httpPortCheck = await execAsync(`lsof -ti:${httpPort} 2>/dev/null | head -1 || echo ""`);
       
       const wsProcessRunning = wsPortCheck.stdout.trim().length > 0;
       const httpProcessRunning = httpPortCheck.stdout.trim().length > 0;
       
       if (!wsProcessRunning) {
-        console.log('⚠️ System services check: WebSocket server not running on port 9001');
+        console.log(`⚠️ System services check: WebSocket server not running on port ${wsPort}`);
         return false;
       }
       
       if (!httpProcessRunning) {
-        console.log('⚠️ System services check: HTTP server not running on port 9002');
+        console.log(`⚠️ System services check: HTTP server not running on port ${httpPort}`);
         return false;
       }
       
@@ -311,7 +315,7 @@ export class SystemMetricsCollector {
       // TIMEOUT ELIMINATION: Replace cascading curl timeouts with native HTTP client
       // This eliminates the progressive timeout pattern (1s, 2s, 4s, 6s) and external process overhead
       
-      const activePorts = await getActivePorts();
+      const activePorts = this.getActiveInstancePorts();
       const httpUrl = `http://localhost:${activePorts.http_server}`;
       
       // Use native HTTP client instead of external curl command
@@ -486,5 +490,32 @@ export class SystemMetricsCollector {
     }
 
     return 'unhealthy';
+  }
+
+  /**
+   * Get active instance ports directly from config file
+   * Used by infrastructure scripts that don't have JTAGContext
+   */
+  private getActiveInstancePorts(): { http_server: number; websocket_server: number } {
+    try {
+      const fs = eval('require')('fs');
+      const path = eval('require')('path');
+      const configPath = path.join(__dirname, '../../../config/examples.json');
+      const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      
+      const activeInstanceName = configData.active_instance || configData.active_example;
+      const instancesData = configData.instances || configData.examples;
+      const activeInstance = instancesData[activeInstanceName];
+      
+      if (!activeInstance) {
+        throw new Error(`Active instance '${activeInstanceName}' not found in config`);
+      }
+
+      return activeInstance.ports;
+    } catch (error) {
+      console.warn(`⚠️ SystemMetricsCollector: Failed to load active instance ports: ${(error as Error).message}`);
+      // Fallback to default ports
+      return { http_server: 9002, websocket_server: 9001 };
+    }
   }
 }

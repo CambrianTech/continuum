@@ -245,32 +245,52 @@ export class SystemConfiguration {
       return envConfig;
     }
 
-    // Try to get ports from running example's package.json
-    if (typeof require !== 'undefined' && typeof process !== 'undefined') {
+    // Try to get ports from ExampleConfig first (server-only, browser uses fallback)
+    if (typeof require !== 'undefined' && typeof process !== 'undefined' && 
+        typeof window === 'undefined' && typeof document === 'undefined') {
       try {
-        // First try the current working directory (might be in an example)
-        let pkg;
-        try {
-          pkg = require(process.cwd() + '/package.json');
-        } catch {
-          // Fall back to main package.json
-          pkg = require('../../../../../../package.json');
-        }
-        
-        const httpPort = pkg.config?.port || 9002;  
-        const wsPort = httpPort - 1; // WebSocket is HTTP port - 1
+        // Use the centralized example configuration (server-only)
+        const ExampleConfig = eval('require')('../../shared/ExampleConfig');
+        const { getActivePortsSync } = ExampleConfig;
+        const activePorts = getActivePortsSync();
         
         return {
           nodeId: 'default-node',
-          wsPort: wsPort,
-          httpPort: httpPort,
+          wsPort: activePorts.websocket_server,
+          httpPort: activePorts.http_server,
           multicastPort: 37471,
-          unicastPort: wsPort + 1000,
+          unicastPort: activePorts.websocket_server + 1000,
           nodeType: 'server',
           capabilities: ['screenshot', 'file-operations']
         };
       } catch (error) {
-        // Fall through to ultimate fallback
+        console.warn('⚠️ Failed to load from ExampleConfig, falling back to package.json:', (error as Error).message);
+        
+        // Fallback to package.json logic (server-only)
+        try {
+          let pkg;
+          try {
+            pkg = require(process.cwd() + '/package.json');
+          } catch {
+            // Fall back to main package.json
+            pkg = require('../../../../../../package.json');
+          }
+          
+          const httpPort = pkg.config?.port || 9002;  
+          const wsPort = httpPort - 1; // WebSocket is HTTP port - 1
+          
+          return {
+            nodeId: 'default-node',
+            wsPort: wsPort,
+            httpPort: httpPort,
+            multicastPort: 37471,
+            unicastPort: wsPort + 1000,
+            nodeType: 'server',
+            capabilities: ['screenshot', 'file-operations']
+          };
+        } catch (pkgError) {
+          // Fall through to ultimate fallback
+        }
       }
     }
 

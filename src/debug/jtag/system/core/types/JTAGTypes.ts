@@ -61,6 +61,7 @@ export type JTAGEnvironment = typeof JTAG_ENVIRONMENTS[keyof typeof JTAG_ENVIRON
 export interface JTAGContext {
   uuid: UUID;
   environment: JTAGEnvironment;
+  readonly config: import('../../shared/SecureConfigTypes').JTAGConfig;
   getConfig(): JTAGContextConfig;
 }
 

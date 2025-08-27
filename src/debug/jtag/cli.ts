@@ -204,35 +204,21 @@ async function main() {
       console.log = originalLog;
       console.warn = originalWarn;
       
-      // Clean error message for connection failures - VERY OBVIOUS FOR AI/USERS
-      console.error('');
-      console.error('═'.repeat(80));
-      console.error('❌ JTAG SYSTEM NOT RUNNING');
-      console.error('═'.repeat(80));
-      console.error('');
+      // Use consistent error formatting for all connection failures
+      console.log('='.repeat(60));
+      console.log('\x1b[31mERROR: Connection failed - ' + connectionError.message + '\x1b[0m');
+      console.log('='.repeat(60));
       
       if (connectionError.message?.includes('ECONNREFUSED') || 
           connectionError.message?.includes('connect') ||
           connectionError.code === 'ECONNREFUSED') {
         console.error('🔍 PROBLEM: No JTAG system is currently running');
-        console.error('');
-        console.error('✅ IMMEDIATE ACTION FOR AI:');
-        console.error('   1. Run: npm start');
-        console.error('   2. Wait 60 seconds (build takes time)');  
-        console.error('   3. Try your command again');
-        console.error('');
-        console.error('⚠️  CRITICAL: Do NOT monitor build status or check logs');
-        console.error('   Just run npm start, wait 60 seconds, then retry');
-        console.error('');
-        console.error('🤖 AI WORKFLOW:');
-        console.error('   npm start → wait 60s → ./jtag [your-command]');
-        console.error('');
-        console.error('📊 Human developers: Check "npm run signal:check" for status');
+        console.error('✅ IMMEDIATE ACTION: Run "npm start" and wait 60 seconds');
       } else {
-        console.error(`🔍 Connection error: ${connectionError.message}`);
+        console.error('🔍 Connection details:', connectionError.message);
+        console.error('🔍 Error code:', connectionError.code || 'unknown');
       }
-      console.error('');
-      console.error('═'.repeat(80));
+      
       process.exit(1);
     }
     
@@ -293,15 +279,20 @@ async function main() {
       
       const result = await Promise.race([commandExecution, commandTimeout]);
       
-      // Use intelligent output formatting based on agent type
-      console.log(entryPoint.formatOutput(result));
+      // Show actual command result for debugging
+      console.log('='.repeat(60));
+      console.log('COMMAND RESULT:');
+      console.log(JSON.stringify(result, null, 2));
+      console.log('='.repeat(60));
       
       // CRITICAL: Properly disconnect client before exit to cleanup sessions
       await client.disconnect();
       
       process.exit(result?.success ? 0 : 1);
     } catch (cmdError: any) {
-      console.error(`❌ ${command} failed:`, cmdError.message);
+      console.log('='.repeat(60));
+      console.log('\x1b[31mERROR: ' + cmdError.message + '\x1b[0m');
+      console.log('='.repeat(60));
       if (cmdError.message.includes('timeout')) {
         console.error('🔍 Debug: Check system logs: npm run signal:errors');
       }

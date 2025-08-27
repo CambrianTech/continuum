@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1156",
+  "version": "1.0.1160",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "port": 9001,
@@ -161,6 +161,9 @@
     "test:tty": "tmux kill-session -t debug-npm 2>/dev/null; rm -f /tmp/debug-npm.log; tmux new-session -d -s debug-npm \"script -q /dev/null npm run clean\" \\; pipe-pane -o 'cat >> /tmp/debug-npm.log'",
     "system:debug": "echo '=== Tmux session state ===' && (tmux has-session -t jtag-test 2>/dev/null && echo 'Session running' && tmux capture-pane -t jtag-test -p || echo 'Session not running') && echo '' && echo '=== Log file ===' && tail -20 .continuum/jtag/system/logs/npm-start.log",
     "screenshot": "npx tsx scripts/screenshot.ts",
+    "switch:test-bench": "npx tsx scripts/switch-example.ts test-bench",
+    "switch:widget-ui": "npx tsx scripts/switch-example.ts widget-ui",
+    "switch:current": "npx tsx scripts/switch-example.ts --current",
     "test": "npx tsx scripts/intelligent-test-runner.ts",
     "test:report": "npx tsx scripts/generate-test-report.ts",
     "test:compiler-check": "echo '🔍 PRE-TEST: TypeScript Compilation Check...' && npx tsc --noEmit --project . && echo '✅ TypeScript compilation passed - proceeding with tests'",
@@ -348,7 +351,7 @@
     "@system/transports/*": "./dist/system/transports/*"
   },
   "_importsGenerated": {
-    "timestamp": "2025-08-27T00:53:28.713Z",
+    "timestamp": "2025-08-27T18:32:42.357Z",
     "source": ".continuum/generator/path-mappings.json",
     "pathCount": 29,
     "note": "Generated from clean essential path mappings only"

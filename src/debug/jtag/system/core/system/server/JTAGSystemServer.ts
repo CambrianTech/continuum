@@ -125,11 +125,15 @@ export class JTAGSystemServer extends JTAGSystem {
       return JTAGSystemServer.instance;
     }
 
-    // 1. Create server context - generate unique context ID (NOT sessionId)
+    // 1. Create server context with configuration
     const sessionId = config?.connection?.sessionId ?? SYSTEM_SCOPES.SYSTEM;
-    // Import the context creation utility at the top and use it here
+    
+    // Load configuration and create context
+    const { createJTAGConfig } = await import('../../../shared/BrowserSafeConfig');
     const { createServerContext } = await import('../../context/SecureJTAGContext');
-    const context: JTAGContext = createServerContext();
+    
+    const jtagConfig = createJTAGConfig();
+    const context: JTAGContext = createServerContext(jtagConfig);
 
     console.log(`🔄 JTAG System: Connecting server environment...`);
     if (config?.connection?.sessionId) {
