@@ -149,7 +149,7 @@ export class SimpleCoordinateValidator {
       return {
         name: test.name,
         passed: false,
-        message: `Command failed: ${error.message} (${executionTime}ms)`
+        message: `Command failed: ${error instanceof Error ? error.message : String(error)} (${executionTime}ms)`
       };
     }
   }
