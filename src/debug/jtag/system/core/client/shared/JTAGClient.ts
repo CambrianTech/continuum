@@ -76,6 +76,7 @@ import type { ITransportFactory, TransportConfig, JTAGTransport, TransportProtoc
 import type { ITransportHandler } from '../../../transports';
 import type { ListParams, ListResult, CommandSignature } from '../../../../commands/list/shared/ListTypes';
 import { createListParams } from '../../../../commands/list/shared/ListTypes';
+import type { SessionDestroyParams, SessionDestroyResult } from '../../../../commands/session/destroy/shared/SessionDestroyTypes';
 import type { BaseResponsePayload, JTAGResponsePayload } from '../../types/ResponseTypes';
 import { getServerConfigFromContext, createServerContext, createTestContext } from '../../context/SecureJTAGContext';
 import { isTestEnvironment } from '../../../shared/BrowserSafeConfig';
@@ -364,12 +365,14 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     // Universal session management - works for both local and remote
     console.log('🏷️ JTAGClient: Requesting session from SessionDaemon...');
 
+    // SECURITY: CLI clients use ephemeral sessions, browser clients use shared sessions
+    const isEphemeralClient = this.context.environment === 'server'; // Server-side JTAGClient = CLI client
     const sessionParams = {
       context: this.context,
-      sessionId: this.sessionId,
+      sessionId: isEphemeralClient ? generateUUID() : this.sessionId, // Generate new UUID for ephemeral CLI sessions
       category: 'user' as const,
-      displayName: 'Anonymous User',
-      isShared: true
+      displayName: isEphemeralClient ? 'CLI Client' : 'Anonymous User',
+      isShared: !isEphemeralClient // CLI clients get ephemeral sessions, browsers get shared
     };
     const result = await this.connection.executeCommand('session/create', sessionParams);
     const sessionResult = result as SessionCreateResult;
@@ -620,6 +623,26 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    */
   public async disconnect(): Promise<void> {
     console.log('🔌 JTAGClient: Disconnecting...');
+    
+    // SECURITY: Destroy session on disconnect (cleanup session)
+    // Only destroy real sessions, not bootstrap sessions (UNKNOWN_SESSION)
+    if (this._session && this._session.sessionId !== SYSTEM_SCOPES.UNKNOWN_SESSION) {
+      console.log(`🧹 JTAGClient: Destroying session ${this._session.sessionId} on disconnect`);
+      
+      try {
+        const destroyParams: SessionDestroyParams = {
+          context: this.context,
+          sessionId: this._session.sessionId,
+          reason: 'client_disconnect'
+        };
+        const destroyResult = await this.commands['session/destroy'](destroyParams) as SessionDestroyResult;
+        
+        console.log(`✅ JTAGClient: Session destroyed successfully:`, destroyResult.success);
+      } catch (error) {
+        console.error(`❌ JTAGClient: Failed to destroy session:`, error);
+        // Continue disconnect even if session destroy fails
+      }
+    }
     
     if (this.systemTransport) {
       await this.systemTransport.disconnect();
