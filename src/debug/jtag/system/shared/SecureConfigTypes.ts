@@ -99,6 +99,47 @@ export interface JTAGTestConfiguration {
   readonly environment: TestEnvironmentConfig;
 }
 
+// INSTANCE configuration - generic instances concept
+export interface InstancePorts {
+  readonly http_server: number;
+  readonly websocket_server: number;
+}
+
+export interface InstancePaths {
+  readonly directory: string;
+  readonly html_file: string;
+  readonly build_output: string;
+}
+
+export interface InstanceCapabilities {
+  readonly browser_automation: boolean;
+  readonly screenshot_testing: boolean;
+  readonly chat_integration: boolean;
+  readonly widget_testing: boolean;
+  readonly auto_launch_browser: boolean;
+}
+
+export interface InstanceConfiguration {
+  readonly name: string;
+  readonly description: string;
+  readonly ports: InstancePorts;
+  readonly paths: InstancePaths;
+  readonly capabilities: InstanceCapabilities;
+}
+
+export interface InstanceConfigData {
+  readonly active_instance: string;
+  readonly instances: Record<string, InstanceConfiguration>;
+}
+
+// UNIFIED JTAG Configuration - context.config interface  
+export interface JTAGConfig {
+  readonly instance: InstanceConfiguration;
+  readonly server: JTAGServerConfiguration;
+  readonly client: JTAGClientConfiguration;
+  readonly test?: JTAGTestConfiguration;
+}
+
 // Utility functions for secure configuration
 export function buildServerUrl(config: { server: Pick<ServerConfig, 'protocol' | 'host' | 'port'> }): string {
   return `${config.server.protocol}://${config.server.host}:${config.server.port}`;
@@ -108,7 +149,32 @@ export function buildClientUrl(config: { client: Pick<ClientConfig, 'protocol' |
   return `${config.client.protocol}://${config.client.host}:${config.client.ui_port}`;
 }
 
-// Security validation
+export function buildServerWebSocketUrl(ports: InstancePorts): string {
+  return `ws://localhost:${ports.websocket_server}`;
+}
+
+export function buildClientHttpUrl(ports: InstancePorts): string {
+  return `http://localhost:${ports.http_server}`;
+}
+
+// Configuration validation - runtime type checking
+export function validateInstanceConfig(config: unknown): config is InstanceConfiguration {
+  return !!(
+    config &&
+    typeof config === 'object' &&
+    config !== null &&
+    'name' in config &&
+    'ports' in config &&
+    'paths' in config &&
+    'capabilities' in config &&
+    typeof (config as any).name === 'string' &&
+    typeof (config as any).ports?.http_server === 'number' &&
+    typeof (config as any).ports?.websocket_server === 'number' &&
+    typeof (config as any).paths?.directory === 'string' &&
+    typeof (config as any).capabilities?.browser_automation === 'boolean'
+  );
+}
+
 export function validateServerConfig(config: unknown): config is JTAGServerConfiguration {
   return !!(
     config &&
@@ -130,5 +196,19 @@ export function validateClientConfig(config: unknown): config is JTAGClientConfi
     typeof (config as any).client?.ui_port === 'number' &&
     typeof (config as any).client?.host === 'string' &&
     ['http', 'https'].includes((config as any).client?.protocol)
+  );
+}
+
+export function validateJTAGConfig(config: unknown): config is JTAGConfig {
+  return !!(
+    config &&
+    typeof config === 'object' &&
+    config !== null &&
+    'instance' in config &&
+    'server' in config &&
+    'client' in config &&
+    validateInstanceConfig((config as any).instance) &&
+    validateServerConfig((config as any).server) &&
+    validateClientConfig((config as any).client)
   );
 }

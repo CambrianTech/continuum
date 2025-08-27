@@ -24,6 +24,21 @@ export type ProcessCapability =
   | 'command-sending' 
   | 'result-receiving';
 
+/**
+ * Default port constants for process registry
+ */
+export const PROCESS_REGISTRY_PORTS = {
+  DEFAULT_MULTICAST_PORT: 37471,
+  DEFAULT_UNICAST_PORT_OFFSET: 1000
+} as const;
+
+/**
+ * Default node identifiers
+ */
+export const DEFAULT_NODE_IDS = {
+  DEFAULT_NODE: 'default-node'
+} as const;
+
 export interface ProcessRegistryEntry {
   readonly processId: string;        // Unique GUID for this process
   readonly nodeId: string;           // JTAG node identifier  

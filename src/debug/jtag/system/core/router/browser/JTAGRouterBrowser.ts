@@ -22,6 +22,6 @@ export class JTAGRouterBrowser extends JTAGRouter {
    * Get browser-specific transport factory
    */
   protected async getTransportFactory(): Promise<ITransportFactory> {
-    return new TransportFactoryBrowser();
+    return new TransportFactoryBrowser(this.context);
   }
 }

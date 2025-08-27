@@ -22,6 +22,6 @@ export class JTAGRouterServer extends JTAGRouter {
    * Get server-specific transport factory
    */
   protected async getTransportFactory(): Promise<ITransportFactory> {
-    return new TransportFactoryServer();
+    return new TransportFactoryServer(this.context);
   }
 }

@@ -68,10 +68,12 @@ export class JTAGSystemBrowser extends JTAGSystem {
       return JTAGSystemBrowser.instance;
     }
 
-    // 1. Create browser context - generate unique context ID (NOT sessionId)
-    // Import the context creation utility and use it here
+    // 1. Create browser context with configuration
+    const { createJTAGConfig } = await import('../../../shared/BrowserSafeConfig');
     const { createClientContext } = await import('../../context/SecureJTAGContext');
-    const context: JTAGContext = createClientContext();
+    
+    const jtagConfig = createJTAGConfig();
+    const context: JTAGContext = createClientContext(jtagConfig);
 
     console.log(`🔄 JTAG System: Connecting browser environment...`);
     console.log(`🆔 JTAG System: Starting with system scope, will get session from SessionDaemon`);

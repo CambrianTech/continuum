@@ -18,7 +18,6 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
-import { getActivePorts } from './system/shared/ExampleConfig';
 import { JTAGSystemServer } from './system/core/system/server/JTAGSystemServer';
 
 interface JTAGMiddlewareOptions {
@@ -56,21 +55,13 @@ class JTAGMiddleware {
     try {
       console.log('🚀 JTAG: Initializing universal debugging system...');
       
-      // Get port configuration
-      let wsPort: number;
-      try {
-        const activePorts = getActivePorts();
-        wsPort = this.options.websocketPort || activePorts.websocket_server;
-        console.log(`🔧 JTAG: Using WebSocket port ${wsPort} from configuration`);
-      } catch (error) {
-        // Fallback to default port if no examples.json
-        wsPort = this.options.websocketPort || 9001;
-        console.log(`🔧 JTAG: Using fallback WebSocket port ${wsPort}`);
-      }
-
-      // Start JTAG system
+      // Start JTAG system - it will use context configuration internally
       this.system = await JTAGSystemServer.connect();
       this.initialized = true;
+      
+      // Get actual port from the system's context after initialization
+      const wsPort = this.system.context?.config?.instance?.ports?.websocket_server || 
+                    this.options.websocketPort || 9001;
       
       console.log(`✅ JTAG: System initialized on WebSocket port ${wsPort}`);
       console.log(`🌐 JTAG: Browser interface available at ${this.options.pathPrefix}/`);
@@ -135,7 +126,8 @@ class JTAGMiddleware {
    * Serve minimal dashboard HTML
    */
   private serveDashboard(res: Response): void {
-    const wsPort = this.options.websocketPort || 9001;
+    const wsPort = this.system?.context?.config?.instance?.ports?.websocket_server || 
+                  this.options.websocketPort || 9001;
     const dashboardHTML = `
 <!DOCTYPE html>
 <html lang="en">

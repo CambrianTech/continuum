@@ -6,11 +6,10 @@
  */
 
 import { MilestoneConfig, SystemReadySignal, SignalConfig } from './SystemSignalingTypes';
-import { getActivePorts } from '../../../system/shared/ExampleConfig';
 
 // Main configuration factory - easily customizable per project
 export function getDefaultMilestoneConfig(): MilestoneConfig {
-  const activePorts = getActivePorts();
+  const activePorts = getActiveInstancePorts();
   
   return {
     core: [
@@ -87,8 +86,8 @@ export function getDefaultMilestoneConfig(): MilestoneConfig {
 
 // Signal configuration factory
 export function getSignalConfig(): SignalConfig {
-  // Use ExampleConfig ports instead of SystemConfiguration for consistency
-  const activePorts = getActivePorts();
+  // Use direct config access instead of SystemConfiguration for consistency
+  const activePorts = getActiveInstancePorts();
   return {
     VERSION: '1.0.0',
     EXPECTED_PORTS: [
@@ -129,4 +128,31 @@ export function mergeMilestoneConfigs(...configs: MilestoneConfig[]): MilestoneC
     integration: [...(merged.integration || []), ...(config.integration || [])],
     custom: [...(merged.custom || []), ...(config.custom || [])]
   }), {} as MilestoneConfig);
+}
+
+/**
+ * Get active instance ports directly from config file
+ * Used by infrastructure scripts that don't have JTAGContext
+ */
+function getActiveInstancePorts(): { http_server: number; websocket_server: number } {
+  try {
+    const fs = eval('require')('fs');
+    const path = eval('require')('path');
+    const configPath = path.join(__dirname, '../../../config/examples.json');
+    const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    
+    const activeInstanceName = configData.active_instance || configData.active_example;
+    const instancesData = configData.instances || configData.examples;
+    const activeInstance = instancesData[activeInstanceName];
+    
+    if (!activeInstance) {
+      throw new Error(`Active instance '${activeInstanceName}' not found in config`);
+    }
+
+    return activeInstance.ports;
+  } catch (error) {
+    console.warn(`⚠️ MilestoneConfiguration: Failed to load active instance ports: ${(error as Error).message}`);
+    // Fallback to default ports
+    return { http_server: 9002, websocket_server: 9001 };
+  }
 }

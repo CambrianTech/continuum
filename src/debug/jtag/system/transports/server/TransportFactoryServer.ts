@@ -14,12 +14,13 @@ import type { WebSocketServerConfig } from '../websocket-transport/server/WebSoc
 import type { WebSocketServerClientConfig } from '../websocket-transport/server/WebSocketTransportClientServer';
 import type { UDPMulticastConfig } from '../udp-multicast-transport/shared/UDPMulticastTypes';
 import { NodeType, NodeCapability } from '../udp-multicast-transport/shared/UDPMulticastTypes';
-import { getSystemConfig } from '../../core/config/SystemConfiguration';
 
 export class TransportFactoryServer extends TransportFactoryBase {
+  private readonly context: JTAGContext;
   
-  constructor() {
+  constructor(context: JTAGContext) {
     super('server');
+    this.context = context;
   }
 
   /**
@@ -73,8 +74,8 @@ export class TransportFactoryServer extends TransportFactoryBase {
     // ✅ Type-safe connection - all adapters implement ITransportAdapter.connect()
     if (adapter.connect) {
       // Universal adapter pattern with connect() method
-      const systemConfig = getSystemConfig();
-      const connectParam = config.protocol === 'websocket' ? config.serverUrl ?? systemConfig.getWebSocketUrl() : undefined;
+      const instanceConfig = this.context.config.instance;
+      const connectParam = config.protocol === 'websocket' ? config.serverUrl ?? `ws://localhost:${instanceConfig.ports.websocket_server}` : undefined;
       await adapter.connect(connectParam);
       console.log(`🚀 Server Factory: Adapter ${adapterEntry.className} connected successfully`);
     } else {
@@ -89,13 +90,14 @@ export class TransportFactoryServer extends TransportFactoryBase {
    * Create adapter-specific configuration from generic TransportConfig
    */
   private createAdapterConfig(config: TransportConfig, adapterEntry: AdapterEntry): WebSocketServerConfig | WebSocketServerClientConfig | UDPMulticastConfig | TransportConfig {
-    const systemConfig = getSystemConfig();
+    // Use context configuration instead of global SystemConfiguration
+    const instanceConfig = this.context.config.instance;
     
     if (config.protocol === 'websocket') {
       if (adapterEntry.className === 'WebSocketTransportServer') {
         // WebSocketServerConfig requires port
         const serverConfig: WebSocketServerConfig = {
-          port: config.serverPort ?? systemConfig.getWebSocketPort(),
+          port: config.serverPort ?? instanceConfig.ports.websocket_server,
           // WebSocket-specific options
           reconnectAttempts: 5,
           reconnectDelay: 1000,
@@ -106,7 +108,7 @@ export class TransportFactoryServer extends TransportFactoryBase {
       } else if (adapterEntry.className === 'WebSocketTransportClientServer') {
         // WebSocketServerClientConfig requires url, handler, eventSystem
         const clientConfig: WebSocketServerClientConfig = {
-          url: config.serverUrl ?? systemConfig.getWebSocketUrl(),
+          url: config.serverUrl ?? `ws://localhost:${instanceConfig.ports.websocket_server}`,
           handler: config.handler,
           eventSystem: config.eventSystem,
           // WebSocket-specific options

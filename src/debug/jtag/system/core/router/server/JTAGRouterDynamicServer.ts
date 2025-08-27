@@ -23,6 +23,6 @@ export class JTAGRouterDynamicServer extends JTAGRouterDynamic {
    */
   protected async getTransportFactory(): Promise<ITransportFactory> {
     console.log(`🏭 JTAGRouterDynamicServer: Creating server transport factory`);
-    return new TransportFactoryServer();
+    return new TransportFactoryServer(this.context);
   }
 }

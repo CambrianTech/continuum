@@ -9,7 +9,7 @@ import { JTAGClientServer } from '../../system/core/client/server/JTAGClientServ
 import type { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import type { JTAGTestConfiguration } from '../../system/shared/SecureConfigTypes';
 import { buildServerUrl } from '../../system/shared/SecureConfigTypes';
-import { getDefaultTestConfig } from '../../system/shared/BrowserSafeConfig';
+import { getDefaultTestConfig, loadInstanceConfigForContext } from '../../system/shared/BrowserSafeConfig';
 
 export interface TestUser {
   client: JTAGClient;
@@ -33,7 +33,13 @@ export class TestUserManager {
   private config: JTAGTestConfiguration;
 
   constructor(config?: JTAGTestConfiguration) {
-    this.config = config || getDefaultTestConfig();
+    if (config) {
+      this.config = config;
+    } else {
+      // Load instance config first, then create test config
+      const instance = loadInstanceConfigForContext();
+      this.config = getDefaultTestConfig(instance);
+    }
   }
 
   /**

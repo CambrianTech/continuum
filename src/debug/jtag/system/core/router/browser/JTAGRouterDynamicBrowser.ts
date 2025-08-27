@@ -23,6 +23,6 @@ export class JTAGRouterDynamicBrowser extends JTAGRouterDynamic {
    */
   protected async getTransportFactory(): Promise<ITransportFactory> {
     console.log(`🏭 JTAGRouterDynamicBrowser: Creating browser transport factory`);
-    return new TransportFactoryBrowser();
+    return new TransportFactoryBrowser(this.context);
   }
 }

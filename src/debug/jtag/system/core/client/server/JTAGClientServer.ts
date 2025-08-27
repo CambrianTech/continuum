@@ -86,7 +86,7 @@ export class JTAGClientServer extends JTAGClient {
    * Get server-specific transport factory
    */
   protected async getTransportFactory(): Promise<ITransportFactory> {
-    return new TransportFactoryServer();
+    return new TransportFactoryServer(this.context);
   }
 
   /**

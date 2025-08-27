@@ -32,11 +32,12 @@ class DynamicPortCleanup {
         commands: new Map()
       };
 
-      // Create context for the command
-      const context = {
-        environment: 'server' as const,
-        uuid: 'cleanup-script'
-      };
+      // Create proper JTAG context for the command
+      const { createJTAGConfig } = await import('../system/shared/BrowserSafeConfig');
+      const { createServerContext } = await import('../system/core/context/SecureJTAGContext');
+      
+      const jtagConfig = createJTAGConfig();
+      const context = createServerContext(jtagConfig, 'cleanup-script');
 
       // Create the process registry server command
       const processRegistryCommand = new ProcessRegistryServerCommand(context, 'process-registry', mockCommander);
