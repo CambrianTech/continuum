@@ -7,7 +7,7 @@ import type { BaseResponsePayload } from '../../../system/core/types/ResponseTyp
  */
 export type SessionCategory = 'user' | 'persona' | 'agent' | 'system';
 
-export type SessionOperation = 'create' | 'get' | 'list';
+export type SessionOperation = 'create' | 'get' | 'list' | 'destroy';
 
 export interface SessionIdentity {
   category: SessionCategory; // user | persona | agent | system
@@ -72,5 +72,13 @@ export interface ListSessionsResult extends SessionResult {
   sessions: SessionMetadata[];
 }
 
+export interface DestroySessionParams extends SessionParams {
+  reason?: string; // Reason for destruction (e.g., 'client_disconnect', 'timeout', 'cleanup')
+}
+
+export interface DestroySessionResult extends SessionResult {
+  destroyedSessionId?: UUID;
+}
+
 //ALL expected results of this daemon's operations
-export type SessionResponse =  SessionErrorResponse | CreateSessionResult | GetSessionResult | ListSessionsResult;
+export type SessionResponse =  SessionErrorResponse | CreateSessionResult | GetSessionResult | ListSessionsResult | DestroySessionResult;

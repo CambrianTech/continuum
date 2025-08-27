@@ -296,12 +296,21 @@ async function main() {
       // Use intelligent output formatting based on agent type
       console.log(entryPoint.formatOutput(result));
       
+      // CRITICAL: Properly disconnect client before exit to cleanup sessions
+      await client.disconnect();
+      
       process.exit(result?.success ? 0 : 1);
     } catch (cmdError: any) {
       console.error(`❌ ${command} failed:`, cmdError.message);
       if (cmdError.message.includes('timeout')) {
         console.error('🔍 Debug: Check system logs: npm run signal:errors');
       }
+      
+      // Cleanup client connection even on command failure
+      if (client) {
+        await client.disconnect();
+      }
+      
       process.exit(1);
     }
     
