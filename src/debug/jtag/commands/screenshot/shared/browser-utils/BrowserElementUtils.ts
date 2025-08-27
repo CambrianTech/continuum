@@ -25,6 +25,24 @@ export interface CropCoordinates {
   scale: number;
 }
 
+// Additional interfaces for modular functions
+export interface ViewportCoordinates {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface ScrollOffset {
+  x: number;
+  y: number;
+}
+
+export interface DocumentCoordinates {
+  x: number;
+  y: number;
+}
+
 /**
  * Get accurate element bounds including overflow content
  * BREAKTHROUGH: Accounts for content that extends beyond getBoundingClientRect()
@@ -64,9 +82,78 @@ export function getElementBounds(element: Element, includeOverflow: boolean = tr
   };
 }
 
+// =============================================================================
+// MODULAR COORDINATE CALCULATION FUNCTIONS
+// =============================================================================
+
 /**
- * Calculate crop coordinates relative to body with proper content detection
- * 🔧 CLAUDE-FIX-2024-08-27-A: Fixed coordinate calculation to prevent cropping bugs
+ * Get current page scroll offset
+ * Pure function - testable in isolation
+ */
+export function getPageScrollOffset(): { x: number; y: number } {
+  return {
+    x: window.pageXOffset || document.documentElement.scrollLeft || 0,
+    y: window.pageYOffset || document.documentElement.scrollTop || 0
+  };
+}
+
+/**
+ * Get element viewport coordinates
+ * Pure function - returns getBoundingClientRect data
+ */
+export function getViewportCoordinates(element: Element): { left: number; top: number; width: number; height: number } {
+  const rect = element.getBoundingClientRect();
+  return {
+    left: rect.left,
+    top: rect.top,
+    width: rect.width,
+    height: rect.height
+  };
+}
+
+/**
+ * Convert viewport coordinates to document coordinates
+ * Pure function - testable with mock data
+ */
+export function viewportToDocumentCoords(
+  viewportCoords: { left: number; top: number },
+  scrollOffset: { x: number; y: number }
+): { x: number; y: number } {
+  return {
+    x: viewportCoords.left + scrollOffset.x,
+    y: viewportCoords.top + scrollOffset.y
+  };
+}
+
+/**
+ * Apply scaling to coordinates and dimensions
+ * Pure function - easily testable
+ */
+export function applyCoordinateScaling(
+  coords: { x: number; y: number; width: number; height: number },
+  scale: number
+): { x: number; y: number; width: number; height: number } {
+  return {
+    x: Math.round(coords.x * scale),
+    y: Math.round(coords.y * scale),
+    width: Math.round(coords.width * scale),
+    height: Math.round(coords.height * scale)
+  };
+}
+
+/**
+ * Get absolute position of element in document coordinates
+ * Composed from smaller, testable functions
+ */
+export function getAbsolutePosition(element: Element): { x: number; y: number } {
+  const viewportCoords = getViewportCoordinates(element);
+  const scrollOffset = getPageScrollOffset();
+  return viewportToDocumentCoords(viewportCoords, scrollOffset);
+}
+
+/**
+ * Calculate crop coordinates for screenshot
+ * 🔧 CLAUDE-FIX-2024-08-27-D: Modular, testable coordinate calculation
  */
 export function calculateCropCoordinates(
   element: Element, 
@@ -78,43 +165,34 @@ export function calculateCropCoordinates(
     throw new Error('calculateCropCoordinates only available in browser environment');
   }
   
-  console.log('🔧 CLAUDE-FIX-2024-08-27-A: Enhanced coordinate calculation active');
+  console.log('🔧 CLAUDE-FIX-2024-08-27-D: Modular, testable coordinate calculation');
   
-  // Get element and body dimensions
-  const elementRect = element.getBoundingClientRect();
-  const bodyRect = bodyElement.getBoundingClientRect();
+  // Step 1: Get viewport coordinates
+  const viewportCoords = getViewportCoordinates(element);
+  console.log(`📐 ElementUtils: Viewport: ${viewportCoords.left}, ${viewportCoords.top}, ${viewportCoords.width}x${viewportCoords.height}`);
   
-  // CRITICAL FIX: Account for scroll position in coordinate calculation
-  const scrollX = window.pageXOffset || document.documentElement.scrollLeft || 0;
-  const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
+  // Step 2: Get scroll offset
+  const scrollOffset = getPageScrollOffset();
+  console.log(`📐 ElementUtils: Scroll: ${scrollOffset.x}, ${scrollOffset.y}`);
   
-  console.log(`📐 ElementUtils: Scroll position: ${scrollX}, ${scrollY}`);
-  console.log(`📐 ElementUtils: Element rect: ${elementRect.left}, ${elementRect.top}, ${elementRect.width}x${elementRect.height}`);
-  console.log(`📐 ElementUtils: Body rect: ${bodyRect.left}, ${bodyRect.top}`);
+  // Step 3: Convert to document coordinates
+  const documentCoords = viewportToDocumentCoords(viewportCoords, scrollOffset);
+  console.log(`📐 ElementUtils: Document: ${documentCoords.x}, ${documentCoords.y}`);
   
-  // Calculate element position relative to body INCLUDING scroll offset
-  const relativeX = Math.max(0, ((elementRect.left + scrollX) - (bodyRect.left + scrollX)) * scale);
-  const relativeY = Math.max(0, ((elementRect.top + scrollY) - (bodyRect.top + scrollY)) * scale);
+  // Step 4: Combine coordinates and dimensions
+  const fullCoords = {
+    x: documentCoords.x,
+    y: documentCoords.y,
+    width: viewportCoords.width,
+    height: viewportCoords.height
+  };
   
-  // Get element dimensions with overflow consideration
-  const elementBounds = getElementBounds(element, includeOverflow);
-  
-  // CRITICAL FIX: Use actual element rect dimensions instead of elementBounds for more reliable cropping
-  const actualWidth = elementRect.width;
-  const actualHeight = elementRect.height;
-  
-  const relativeWidth = actualWidth * scale;
-  const relativeHeight = actualHeight * scale;
-  
-  console.log(`🔧 CLAUDE-FIX-2024-08-27-A: Using actual rect dimensions ${actualWidth}x${actualHeight} instead of bounds ${elementBounds.width}x${elementBounds.height}`);
-  console.log(`📐 ElementUtils: Element ${getElementDisplayName(element)} - viewport: ${elementRect.left},${elementRect.top}, relative to body: ${relativeX/scale},${relativeY/scale}, size: ${actualWidth}x${actualHeight}`);
-  console.log(`📐 ElementUtils: Final crop: ${relativeX},${relativeY} ${relativeWidth}x${relativeHeight} @ scale ${scale}`);
+  // Step 5: Apply scaling
+  const scaledCoords = applyCoordinateScaling(fullCoords, scale);
+  console.log(`📐 ElementUtils: Final crop: ${scaledCoords.x}, ${scaledCoords.y}, ${scaledCoords.width}x${scaledCoords.height}`);
   
   return {
-    x: Math.round(relativeX),
-    y: Math.round(relativeY), 
-    width: Math.round(relativeWidth),
-    height: Math.round(relativeHeight),
+    ...scaledCoords,
     scale
   };
 }
