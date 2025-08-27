@@ -6,6 +6,7 @@
  */
 
 import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
+import type { ScreenshotResult, ScreenshotParams } from '../../shared/ScreenshotTypes';
 
 export interface CoordinateValidationResult {
   testName: string;
@@ -122,28 +123,42 @@ export class ScreenshotCoordinateValidator {
     const startTime = Date.now();
     
     try {
-      // Import JTAG client dynamically to avoid circular dependencies
-      const { jtag } = await import('../../../../server-index');
-      const client = await jtag.connect();
-
       // Generate unique filename for this test
       const filename = `validation-${testCase.name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}.png`;
       
-      // Execute screenshot command
-      const result = await client.commands.screenshot({
-        querySelector: testCase.selector,
-        filename: filename
-      });
-
+      // Use CLI approach to avoid TypeScript interface complexity
+      const util = await import('util');
+      const exec = util.promisify((await import('child_process')).exec);
+      
+      // Execute screenshot via CLI with proper TypeScript compliance
+      const { stdout, stderr } = await exec(`./cli.ts screenshot --querySelector="${testCase.selector}" --filename="${filename}"`);
+      
       const executionTime = Date.now() - startTime;
+      
+      // Parse CLI output to extract results
+      const lines = stdout.split('\n');
+      let filepath: string | undefined;
+      let success = false;
+      
+      // Look for success indicators in CLI output
+      for (const line of lines) {
+        if (line.includes('"filepath":')) {
+          const match = line.match(/"filepath":\s*"([^"]+)"/);
+          if (match) {
+            filepath = match[1];
+            success = true;
+            break;
+          }
+        }
+      }
 
-      if (result.success && result.filepath) {
+      if (success && filepath) {
         // Validate that screenshot file was created and has reasonable size
         const fs = await import('fs');
         const path = await import('path');
         
-        if (fs.existsSync(result.filepath)) {
-          const stats = fs.statSync(result.filepath);
+        if (fs.existsSync(filepath)) {
+          const stats = fs.statSync(filepath);
           const fileSizeKB = stats.size / 1024;
           
           // Screenshot should be at least 1KB (not empty)
@@ -152,7 +167,7 @@ export class ScreenshotCoordinateValidator {
               testName: testCase.name,
               selector: testCase.selector,
               passed: true,
-              screenshotPath: result.filepath,
+              screenshotPath: filepath,
               executionTime
             };
           } else {
@@ -161,7 +176,7 @@ export class ScreenshotCoordinateValidator {
               selector: testCase.selector,
               passed: false,
               errorMessage: `Screenshot file too small (${fileSizeKB.toFixed(1)}KB)`,
-              screenshotPath: result.filepath,
+              screenshotPath: filepath,
               executionTime
             };
           }
@@ -179,7 +194,7 @@ export class ScreenshotCoordinateValidator {
           testName: testCase.name,
           selector: testCase.selector,
           passed: false,
-          errorMessage: `Screenshot command failed: ${result.error || 'Unknown error'}`,
+          errorMessage: `CLI screenshot command failed: ${stderr || 'No error details'}`,
           executionTime
         };
       }
@@ -189,7 +204,7 @@ export class ScreenshotCoordinateValidator {
         testName: testCase.name,
         selector: testCase.selector,
         passed: false,
-        errorMessage: `Validation error: ${error.message}`,
+        errorMessage: `Validation error: ${error instanceof Error ? error.message : String(error)}`,
         executionTime: Date.now() - startTime
       };
     }
@@ -289,7 +304,7 @@ async function runCoordinateValidation(): Promise<void> {
     }
     
   } catch (error) {
-    console.error('\n❌ Coordinate validation failed:', error.message);
+    console.error('\n❌ Coordinate validation failed:', error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
 }
