@@ -162,6 +162,7 @@
     "system:debug": "echo '=== Tmux session state ===' && (tmux has-session -t jtag-test 2>/dev/null && echo 'Session running' && tmux capture-pane -t jtag-test -p || echo 'Session not running') && echo '' && echo '=== Log file ===' && tail -20 .continuum/jtag/system/logs/npm-start.log",
     "screenshot": "npx tsx scripts/screenshot.ts",
     "test": "npx tsx scripts/intelligent-test-runner.ts",
+    "test:report": "npx tsx scripts/generate-test-report.ts",
     "test:compiler-check": "echo '🔍 PRE-TEST: TypeScript Compilation Check...' && npx tsc --noEmit --project . && echo '✅ TypeScript compilation passed - proceeding with tests'",
     "test:global-cli": "echo '📦 GLOBAL CLI: Testing global installation workflow...' && npx tsx tests/global-cli-installation.test.ts && echo '✅ Global CLI installation tests passed'",
     "test:process-coordinator": "echo '🔄 PROCESS COORDINATOR: Testing context switching and handoffs...' && npx tsx tests/process-coordinator-context-switching.test.ts && echo '✅ Process coordinator tests passed'",
