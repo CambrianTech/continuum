@@ -123,42 +123,32 @@ export class ScreenshotCoordinateValidator {
     const startTime = Date.now();
     
     try {
+      // Import JTAG client following the working pattern from server-screenshot.test.ts
+      const { jtag } = await import('../../../../server-index');
+      const client = await jtag.connect();
+
       // Generate unique filename for this test
       const filename = `validation-${testCase.name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}.png`;
       
-      // Use CLI approach to avoid TypeScript interface complexity
-      const util = await import('util');
-      const exec = util.promisify((await import('child_process')).exec);
-      
-      // Execute screenshot via CLI with proper TypeScript compliance
-      const { stdout, stderr } = await exec(`./cli.ts screenshot --querySelector="${testCase.selector}" --filename="${filename}"`);
-      
-      const executionTime = Date.now() - startTime;
-      
-      // Parse CLI output to extract results
-      const lines = stdout.split('\n');
-      let filepath: string | undefined;
-      let success = false;
-      
-      // Look for success indicators in CLI output
-      for (const line of lines) {
-        if (line.includes('"filepath":')) {
-          const match = line.match(/"filepath":\s*"([^"]+)"/);
-          if (match) {
-            filepath = match[1];
-            success = true;
-            break;
-          }
-        }
-      }
+      // Execute screenshot command using the exact same pattern as working tests
+      const screenshotResult = await (client as any).commands.screenshot({
+        querySelector: testCase.selector,
+        filename: filename,
+        resultType: 'file'
+      });
 
-      if (success && filepath) {
+      const executionTime = Date.now() - startTime;
+
+      // Extract result from nested structure like working tests do
+      const actualResult = screenshotResult.commandResult?.commandResult || screenshotResult.commandResult || screenshotResult;
+      
+      if (screenshotResult.success && actualResult.filepath) {
         // Validate that screenshot file was created and has reasonable size
         const fs = await import('fs');
         const path = await import('path');
         
-        if (fs.existsSync(filepath)) {
-          const stats = fs.statSync(filepath);
+        if (fs.existsSync(actualResult.filepath)) {
+          const stats = fs.statSync(actualResult.filepath);
           const fileSizeKB = stats.size / 1024;
           
           // Screenshot should be at least 1KB (not empty)
@@ -167,7 +157,7 @@ export class ScreenshotCoordinateValidator {
               testName: testCase.name,
               selector: testCase.selector,
               passed: true,
-              screenshotPath: filepath,
+              screenshotPath: actualResult.filepath,
               executionTime
             };
           } else {
@@ -176,7 +166,7 @@ export class ScreenshotCoordinateValidator {
               selector: testCase.selector,
               passed: false,
               errorMessage: `Screenshot file too small (${fileSizeKB.toFixed(1)}KB)`,
-              screenshotPath: filepath,
+              screenshotPath: actualResult.filepath,
               executionTime
             };
           }
@@ -194,7 +184,7 @@ export class ScreenshotCoordinateValidator {
           testName: testCase.name,
           selector: testCase.selector,
           passed: false,
-          errorMessage: `CLI screenshot command failed: ${stderr || 'No error details'}`,
+          errorMessage: `Screenshot command failed: ${actualResult.error?.message || 'Unknown error'}`,
           executionTime
         };
       }

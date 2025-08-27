@@ -8,28 +8,39 @@ interface TestResult {
   readonly errorMessage?: string;
 }
 
-async function runTests(): Promise<boolean> {
+async function runTests(): Promise<{ success: boolean; summary?: string }> {
   console.log('🧪 Running test suite...');
   
   return new Promise((resolve) => {
+    let capturedOutput = '';
+    
     const testChild = spawn('npm', ['run', 'test:comprehensive'], {
-      stdio: 'inherit', // Show test output directly
+      stdio: ['inherit', 'pipe', 'inherit'], // Capture stdout to extract summary
       cwd: process.cwd()
     });
     
+    // Capture output while also showing it
+    testChild.stdout?.on('data', (data) => {
+      const text = data.toString();
+      process.stdout.write(text); // Still show output in real-time
+      capturedOutput += text;
+    });
+    
     testChild.on('exit', (code) => {
+      // Extract the comprehensive summary from the output
+      const summaryStart = capturedOutput.lastIndexOf('═══════════════════════════════════════════════════════════════════════════════');
+      const summary = summaryStart !== -1 ? capturedOutput.substring(summaryStart) : '';
+      
       if (code === 0) {
-        console.log('✅ All tests passed!');
-        resolve(true);
+        resolve({ success: true, summary });
       } else {
-        console.error(`❌ Tests failed with code: ${code}`);
-        resolve(false);
+        resolve({ success: false, summary });
       }
     });
     
     testChild.on('error', (error) => {
       console.error('❌ Test execution error:', error.message);
-      resolve(false);
+      resolve({ success: false });
     });
   });
 }
@@ -71,42 +82,23 @@ async function main(): Promise<void> {
     }
     
     // Run tests
-    const testsSucceeded = await runTests();
-    testsSuccessful = testsSucceeded; // Update tracking variable
+    const testResult = await runTests();
+    testsSuccessful = testResult.success; // Update tracking variable
     
-    // Report results
-    const result: TestResult = {
-      success: testsSucceeded,
-      serverStarted: true,
-      testsRan: true
-    };
+    // Strategy: Let all output complete naturally, then show summary as true conclusion
+    // Wait for any background daemon cleanup to finish
+    await new Promise(resolve => setTimeout(resolve, 1000));
     
-    console.log('🎯 TEST RESULTS:');
-    console.log(JSON.stringify(result, null, 2));
-    
-    // Generate comprehensive test report
-    console.log('\n📄 Generating comprehensive test report...');
-    try {
-      const reportChild = spawn('npm', ['run', 'test:report'], {
-        stdio: 'inherit',
-        cwd: process.cwd()
-      });
-
-      await new Promise<void>((resolve) => {
-        reportChild.on('exit', () => resolve());
-        reportChild.on('error', () => resolve()); // Continue even if report fails
-      });
-    } catch (error) {
-      console.warn('⚠️ Report generation failed (test results still valid):', error);
+    // Show the clean comprehensive summary as the final conclusion  
+    if (testResult.summary) {
+      // Clear any lingering output and show clean summary
+      console.log('\n'); // Ensure clean separation
+      console.log(testResult.summary.trim()); // Remove extra whitespace
     }
-
-    if (testsSucceeded) {
-      console.log('🎉 ALL TESTS PASSED - npm test succeeded!');
-      console.log('🚀 Server left running for development (as intended)');
-      console.log('📡 Use Ctrl+C to stop the server, or run ./jtag commands in another terminal');
+    
+    if (testResult.success) {
       // Don't exit - let the keep-alive logic in system-startup.ts keep servers running
     } else {
-      console.error('💥 TESTS FAILED - npm test failed');
       process.exit(1);
     }
     
