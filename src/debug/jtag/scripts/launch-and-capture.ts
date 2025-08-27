@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { SystemReadySignaler } from './signal-system-ready';
 import { TmuxSessionManager } from '../system/shared/TmuxSessionManager';
+import { loadInstanceConfigForContext } from '../system/shared/BrowserSafeConfig';
 
 // Parse command line arguments for configurable behavior
 interface LaunchConfig {
@@ -422,15 +423,23 @@ async function checkExistingServer(): Promise<{isHealthy: boolean; tmuxRunning: 
     tmuxCheck.on('close', (code) => resolve(code === 0));
   });
   
-  // Check port availability
+  // 🔧 CLAUDE-FIX-2024-08-27-B: Use centralized config for port detection
+  const instanceConfig = loadInstanceConfigForContext();
+  const wsPort = instanceConfig.ports.websocket_server;
+  const httpPort = instanceConfig.ports.http_server;
+  
+  console.log(`🔍 Checking configured ports: WS=${wsPort}, HTTP=${httpPort}`);
+  
+  // Check port availability using configured ports (not hardcoded)
   const portsActive = await new Promise<boolean>((resolve) => {
     const portCheck = spawn('netstat', ['-an'], { stdio: 'pipe' });
     let output = '';
     portCheck.stdout?.on('data', (data) => { output += data.toString(); });
     portCheck.on('close', () => {
-      const hasPort9001 = output.includes('.9001') && output.includes('LISTEN');
-      const hasPort9002 = output.includes('.9002') && output.includes('LISTEN');
-      resolve(hasPort9001 && hasPort9002);
+      const hasWSPort = output.includes(`.${wsPort}`) && output.includes('LISTEN');
+      const hasHTTPPort = output.includes(`.${httpPort}`) && output.includes('LISTEN');
+      console.log(`🔍 Port status: WS=${wsPort} ${hasWSPort ? '✅' : '❌'}, HTTP=${httpPort} ${hasHTTPPort ? '✅' : '❌'}`);
+      resolve(hasWSPort && hasHTTPPort);
     });
   });
   
@@ -465,6 +474,45 @@ async function checkExistingServer(): Promise<{isHealthy: boolean; tmuxRunning: 
   }
   
   return { isHealthy, tmuxRunning, portsActive, message };
+}
+
+/**
+ * 🔧 CLAUDE-FIX-2024-08-27-B: Automated port takeover for dual-system prevention
+ * Force kill processes using the configured ports to prevent conflicts
+ */
+async function forcePortTakeover(): Promise<void> {
+  const instanceConfig = loadInstanceConfigForContext();
+  const wsPort = instanceConfig.ports.websocket_server;
+  const httpPort = instanceConfig.ports.http_server;
+  
+  console.log(`🔧 Force taking over configured ports: WS=${wsPort}, HTTP=${httpPort}`);
+  
+  // Use lsof to find and kill processes using our ports
+  for (const port of [wsPort, httpPort]) {
+    await new Promise<void>((resolve) => {
+      const lsofCheck = spawn('lsof', ['-ti', `:${port}`], { stdio: 'pipe' });
+      let pids = '';
+      lsofCheck.stdout?.on('data', (data) => { pids += data.toString(); });
+      lsofCheck.on('close', () => {
+        const pidList = pids.trim().split('\n').filter(pid => pid);
+        if (pidList.length > 0) {
+          console.log(`💀 Killing processes on port ${port}: ${pidList.join(', ')}`);
+          for (const pid of pidList) {
+            try {
+              process.kill(parseInt(pid), 'SIGKILL');
+            } catch (error) {
+              console.warn(`⚠️ Could not kill PID ${pid}: ${error}`);
+            }
+          }
+        }
+        resolve();
+      });
+    });
+  }
+  
+  // Give processes time to die
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  console.log(`✅ Port takeover complete`);
 }
 
 // Mode-specific behavior configurations
@@ -512,10 +560,15 @@ async function main(): Promise<void> {
       
       // Development mode: show status and exit if healthy
       if (serverStatus.isHealthy && !CONFIG.forceRestart && behavior.exitOnHealthy) {
+        // 🔧 CLAUDE-FIX-2024-08-27-B: Use configured ports in success message
+        const instanceConfig = loadInstanceConfigForContext();
+        const wsPort = instanceConfig.ports.websocket_server;
+        const httpPort = instanceConfig.ports.http_server;
+        
         console.log('');
         console.log('🎯 SERVER STATUS: Running and responsive');
-        console.log('🌐 Demo UI: http://localhost:9002/');
-        console.log('🔌 WebSocket: ws://localhost:9001/');
+        console.log(`🌐 ${instanceConfig.name}: http://localhost:${httpPort}/`);
+        console.log(`🔌 WebSocket: ws://localhost:${wsPort}/`);
         
         if (behavior.showCommands) {
           console.log('');
@@ -545,8 +598,13 @@ async function main(): Promise<void> {
           });
         }
         
-        // Give ports time to close
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // 🔧 CLAUDE-FIX-2024-08-27-B: Force port takeover to prevent dual-system conflicts
+        if (serverStatus.portsActive) {
+          await forcePortTakeover();
+        } else {
+          // Give ports time to close naturally if no force needed
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
       }
     }
     

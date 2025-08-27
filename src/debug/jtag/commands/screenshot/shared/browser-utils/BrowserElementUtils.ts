@@ -66,7 +66,7 @@ export function getElementBounds(element: Element, includeOverflow: boolean = tr
 
 /**
  * Calculate crop coordinates relative to body with proper content detection
- * FIXED: Accounts for scroll offsets and viewport positioning
+ * 🔧 CLAUDE-FIX-2024-08-27-A: Fixed coordinate calculation to prevent cropping bugs
  */
 export function calculateCropCoordinates(
   element: Element, 
@@ -78,20 +78,36 @@ export function calculateCropCoordinates(
     throw new Error('calculateCropCoordinates only available in browser environment');
   }
   
+  console.log('🔧 CLAUDE-FIX-2024-08-27-A: Enhanced coordinate calculation active');
+  
   // Get element and body dimensions
   const elementRect = element.getBoundingClientRect();
   const bodyRect = bodyElement.getBoundingClientRect();
   
-  // Calculate element position relative to body
-  const relativeX = Math.max(0, (elementRect.left - bodyRect.left) * scale);
-  const relativeY = Math.max(0, (elementRect.top - bodyRect.top) * scale);
+  // CRITICAL FIX: Account for scroll position in coordinate calculation
+  const scrollX = window.pageXOffset || document.documentElement.scrollLeft || 0;
+  const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
+  
+  console.log(`📐 ElementUtils: Scroll position: ${scrollX}, ${scrollY}`);
+  console.log(`📐 ElementUtils: Element rect: ${elementRect.left}, ${elementRect.top}, ${elementRect.width}x${elementRect.height}`);
+  console.log(`📐 ElementUtils: Body rect: ${bodyRect.left}, ${bodyRect.top}`);
+  
+  // Calculate element position relative to body INCLUDING scroll offset
+  const relativeX = Math.max(0, ((elementRect.left + scrollX) - (bodyRect.left + scrollX)) * scale);
+  const relativeY = Math.max(0, ((elementRect.top + scrollY) - (bodyRect.top + scrollY)) * scale);
   
   // Get element dimensions with overflow consideration
   const elementBounds = getElementBounds(element, includeOverflow);
-  const relativeWidth = elementBounds.width * scale;
-  const relativeHeight = elementBounds.height * scale;
   
-  console.log(`📐 ElementUtils: Element ${getElementDisplayName(element)} - viewport: ${elementRect.left},${elementRect.top}, relative to body: ${relativeX/scale},${relativeY/scale}, size: ${elementBounds.width}x${elementBounds.height}`);
+  // CRITICAL FIX: Use actual element rect dimensions instead of elementBounds for more reliable cropping
+  const actualWidth = elementRect.width;
+  const actualHeight = elementRect.height;
+  
+  const relativeWidth = actualWidth * scale;
+  const relativeHeight = actualHeight * scale;
+  
+  console.log(`🔧 CLAUDE-FIX-2024-08-27-A: Using actual rect dimensions ${actualWidth}x${actualHeight} instead of bounds ${elementBounds.width}x${elementBounds.height}`);
+  console.log(`📐 ElementUtils: Element ${getElementDisplayName(element)} - viewport: ${elementRect.left},${elementRect.top}, relative to body: ${relativeX/scale},${relativeY/scale}, size: ${actualWidth}x${actualHeight}`);
   console.log(`📐 ElementUtils: Final crop: ${relativeX},${relativeY} ${relativeWidth}x${relativeHeight} @ scale ${scale}`);
   
   return {
