@@ -64,7 +64,7 @@ class ComprehensiveBootstrapTester {
     // Step 1: Create a test file with broken imports (simulate the alias error we experienced)
     const testFile = 'temp-broken-test.js';
     const brokenContent = `
-import { SomethingThatDoesntExist } from '@commandsCompileTypescript/shared/CompileTypescriptTypes';
+import { SomethingThatDoesntExist } from '../commands/compile-typescript/shared/CompileTypescriptTypes';
 import { NonExistentModule } from '@nonexistent/broken/import';
 console.log('This should fail to build due to unresolved imports');
 `;

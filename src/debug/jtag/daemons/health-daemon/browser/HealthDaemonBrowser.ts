@@ -6,7 +6,7 @@
 
 import { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
-import { HealthDaemon } from '@daemonsHealthDaemon/shared/HealthDaemon';
+import { HealthDaemon } from '../shared/HealthDaemon';
 
 export class HealthDaemonBrowser extends HealthDaemon {
   

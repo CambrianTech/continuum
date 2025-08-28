@@ -10,7 +10,7 @@ import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { EventsInterface } from '../../../events';
 import { TRANSPORT_EVENTS } from '../../shared/TransportEvents';
-import type { TransportSendResult } from '@system/transports/shared';
+import type { TransportSendResult } from '../../shared';
 import type { 
   JTAGUniversalWebSocket, 
   JTAGWebSocketOpenEvent, 

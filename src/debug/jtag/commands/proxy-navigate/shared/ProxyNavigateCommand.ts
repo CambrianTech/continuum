@@ -5,7 +5,7 @@
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { type ProxyNavigateParams, type ProxyNavigateResult, createProxyNavigateParams } from '@commandsProxyNavigate/shared/ProxyNavigateTypes';
+import { type ProxyNavigateParams, type ProxyNavigateResult, createProxyNavigateParams } from './ProxyNavigateTypes';
 
 export abstract class ProxyNavigateCommand extends CommandBase<ProxyNavigateParams, ProxyNavigateResult> {
 

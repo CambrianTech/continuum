@@ -6,7 +6,7 @@
  * FileResult → FileLoadResult (adds content, bytesRead)
  */
 
-import { type FileParams, type FileResult, createFileParams, createFileResult } from '@commandsFile/shared/FileTypes';
+import { type FileParams, type FileResult, createFileParams, createFileResult } from '../../shared/FileTypes';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';

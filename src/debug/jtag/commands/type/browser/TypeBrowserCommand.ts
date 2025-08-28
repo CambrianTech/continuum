@@ -7,7 +7,7 @@
 
 import { type TypeParams, type TypeResult, createTypeResult } from '../shared/TypeTypes';
 import { ValidationError } from '../../../system/core/types/ErrorTypes';
-import { TypeCommand } from '@commandsType/shared/TypeCommand';
+import { TypeCommand } from '../shared/TypeCommand';
 import { safeQuerySelector } from '../../../daemons/command-daemon/shared/GlobalUtils';
 
 export class TypeBrowserCommand extends TypeCommand {

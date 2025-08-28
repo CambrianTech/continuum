@@ -5,7 +5,7 @@
  */
 
 import { type FileAppendParams, type FileAppendResult, createFileAppendResult } from '../shared/FileAppendTypes';
-import { FileAppendCommand } from '@fileAppend/shared/FileAppendCommand';
+import { FileAppendCommand } from '../shared/FileAppendCommand';
 
 export class FileAppendBrowserCommand extends FileAppendCommand {
   

@@ -7,7 +7,7 @@
 
 import { type GetTextParams, type GetTextResult, createGetTextResult } from '../shared/GetTextTypes';
 import { ValidationError } from '../../../system/core/types/ErrorTypes';
-import { GetTextCommand } from '@commandsGetText/shared/GetTextCommand';
+import { GetTextCommand } from '../shared/GetTextCommand';
 import { safeQuerySelector } from '../../../daemons/command-daemon/shared/GlobalUtils';
 
 export class GetTextBrowserCommand extends GetTextCommand {

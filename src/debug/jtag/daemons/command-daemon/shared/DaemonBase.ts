@@ -9,7 +9,7 @@ import { JTAGModule } from '../../../system/core/shared/JTAGModule';
 import type { JTAGEnvironment, JTAGContext, JTAGMessage, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import {JTAGMessageFactory, useEnvironment} from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter, MessageSubscriber } from '../../../system/core/router/shared/JTAGRouter';
-import { type RouterResult } from '@core/router/shared/RouterTypes';
+import { type RouterResult } from '../../../system/core/router/shared/RouterTypes';
 import { type BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 
 export interface DaemonEntry {

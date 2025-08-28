@@ -6,7 +6,7 @@
 
 import { type FileLoadParams, type FileLoadResult, createFileLoadResult } from '../shared/FileLoadTypes';
 import { NetworkError } from '../../../../system/core/types/ErrorTypes';
-import { FileLoadCommand } from '@fileLoad/shared/FileLoadCommand';
+import { FileLoadCommand } from '../shared/FileLoadCommand';
 
 export class FileLoadBrowserCommand extends FileLoadCommand {
   

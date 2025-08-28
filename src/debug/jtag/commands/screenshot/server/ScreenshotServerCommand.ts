@@ -8,7 +8,7 @@ import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemo
 import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import { type ScreenshotParams, type ScreenshotResult, createScreenshotResult } from '../shared/ScreenshotTypes';
 import { PersistenceError } from '../../../system/core/types/ErrorTypes';
-import type { FileSaveParams, FileSaveResult } from '@commands/file/save/shared/FileSaveTypes';
+import type { FileSaveParams, FileSaveResult } from '../../file/save/shared/FileSaveTypes';
 
 export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
   

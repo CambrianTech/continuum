@@ -6,7 +6,7 @@
 
 import { type FileSaveParams, type FileSaveResult, createFileSaveResult } from '../shared/FileSaveTypes';
 import { NetworkError } from '../../../../system/core/types/ErrorTypes';
-import { FileSaveCommand } from '@fileSave/shared/FileSaveCommand';
+import { FileSaveCommand } from '../shared/FileSaveCommand';
 
 export class FileSaveBrowserCommand extends FileSaveCommand {
   
