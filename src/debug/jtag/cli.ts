@@ -10,6 +10,10 @@ import { JTAGClientServer } from './system/core/client/server/JTAGClientServer';
 import type { JTAGClientConnectOptions } from './system/core/client/shared/JTAGClient';
 import { EntryPointAdapter } from './system/core/entry-points/EntryPointAdapter';
 import { systemOrchestrator } from './system/orchestration/SystemOrchestrator';
+import { loadInstanceConfigForContext } from './system/shared/BrowserSafeConfig.js';
+
+// Load config once at startup
+const instanceConfig = loadInstanceConfigForContext();
 
 /**
  * AI-Friendly Help System - For Fresh AIs Learning JTAG
@@ -27,7 +31,7 @@ function displayHelp() {
   console.log('⚡ PING TEST:    jtag ping');
   console.log('📝 LIST ALL:     jtag list');
   console.log('🔧 EXECUTE JS:   jtag exec --code="return {test: \'success\'}" --environment="browser"');
-  console.log('🌐 NAVIGATE:     jtag navigate --url="http://localhost:9002"');
+  console.log(`🌐 NAVIGATE:     jtag navigate --url="http://localhost:${instanceConfig.ports.http_server}"`);
   console.log('🖱️ CLICK:        jtag click --selector="button.submit"');
   console.log('⌨️ TYPE:         jtag type --text="Hello world" --selector="input"');
   console.log('📄 FILE SAVE:    jtag file/save --path="output.txt" --content="Generated content"');
@@ -170,7 +174,7 @@ async function main() {
     const clientOptions: JTAGClientConnectOptions = {
       targetEnvironment: 'server', 
       transportType: 'websocket',
-      serverUrl: 'ws://localhost:9001',
+      serverUrl: `ws://localhost:${instanceConfig.ports.websocket_server}`,
       enableFallback: false,
       context: {
         ...agentContext,

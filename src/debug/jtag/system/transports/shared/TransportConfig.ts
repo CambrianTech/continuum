@@ -12,14 +12,16 @@ export class TransportConfigHelper {
   /**
    * Auto-detect optimal transport configuration for environment
    */
-  static detectOptimalConfig(environment: JTAGContext['environment']): Partial<TransportConfig> {
+  static detectOptimalConfig(environment: JTAGContext['environment'], context?: JTAGContext): Partial<TransportConfig> {
+    const wsPort = context?.config?.instance?.ports?.websocket_server || 9001;
+    
     // In browser, prefer WebSocket client
     if (environment === JTAG_ENVIRONMENTS.BROWSER) {
       return {
         protocol: 'websocket',
         role: 'client',
         fallback: true,
-        serverUrl: 'ws://localhost:9001'
+        serverUrl: `ws://localhost:${wsPort}`
       };
     }
     
@@ -29,7 +31,7 @@ export class TransportConfigHelper {
         protocol: 'websocket',
         role: 'server',
         fallback: true,
-        serverPort: 9001
+        serverPort: wsPort
       };
     }
     

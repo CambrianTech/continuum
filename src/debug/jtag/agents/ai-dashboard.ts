@@ -225,7 +225,7 @@ class AIAgentDashboardRunner {
       console.log('  📝 FILE SAVE:  ./jtag file/save --path="/tmp/test.txt" --content="AI generated"');
       console.log('  🖱️ CLICK:      ./jtag click --selector="button.submit"');
       console.log('  ⌨️ TYPE:       ./jtag type --text="Autonomous AI input" --selector="input[type=text]"');
-      console.log('  🌐 NAVIGATE:   ./jtag navigate --url="http://localhost:9002"');
+      console.log('  🌐 NAVIGATE:   ./jtag navigate --url="http://localhost:PORT"');
       console.log('  📋 LIST ALL:   ./jtag list --category="all" --includeDescription="true"');
       console.log('');
       console.log('  💡 Full help:  ./jtag help');
@@ -370,7 +370,7 @@ class AIAgentDashboardRunner {
     }
     
     if (signalData.portsActive.length < 2) {
-      issues.push(`Ports not active: Expected [9001,9002], got [${signalData.portsActive.join(',')}]`);
+      issues.push(`Ports not active: Expected 2 ports, got [${signalData.portsActive.join(',')}]`);
     }
     
     if (!signalData.bootstrapComplete) {

@@ -14,7 +14,7 @@ export class HTTPTransport extends TransportBase {
   
   private baseUrl: string;
 
-  constructor(baseUrl: string = 'http://localhost:9002') {
+  constructor(baseUrl: string) {
     super();
     this.baseUrl = baseUrl;
     this.connected = true; // HTTP is stateless, so always "connected" if fetch is available
