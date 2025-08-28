@@ -145,18 +145,21 @@ run_test() {
     if [ "$test_result" = "pass" ]; then
         echo "✅ PASSED: $test_name"
         ((PASSED_TESTS++))
-        echo "$category|PASS|$test_name" >> .continuum/tests/test_results.tmp
+        echo "$category|PASS|$test_name|" >> .continuum/tests/test_results.tmp
     else
         echo "❌ FAILED: $test_name"
         echo "💥 ERROR DETAILS:"
         # Show last 10 lines of error output for debugging
+        local error_details=""
         if [ -f "$temp_output" ]; then
-            tail -10 "$temp_output" | sed 's/^/   /'
+            error_details=$(tail -10 "$temp_output" | sed 's/^/   /')
+            echo "$error_details"
             echo ""
         fi
         ((FAILED_TESTS++))
         FAILED_TEST_NAMES+=("$test_name")
-        echo "$category|FAIL|$test_name" >> .continuum/tests/test_results.tmp
+        # Store error details in results file for summary
+        echo "$category|FAIL|$test_name|$error_details" >> .continuum/tests/test_results.tmp
     fi
     # Cleanup temp file
     rm -f "$temp_output"
@@ -360,11 +363,18 @@ if [ $FAILED_TESTS -gt 0 ]; then
     if [ -f .continuum/tests/test_results.tmp ]; then
         categories=$(cut -d'|' -f1 .continuum/tests/test_results.tmp | sort -u)
         for category in $categories; do
-            failed_tests=$(grep "^$category|FAIL|" .continuum/tests/test_results.tmp | cut -d'|' -f3)
-            if [ ! -z "$failed_tests" ]; then
-                failed_count=$(echo "$failed_tests" | wc -l | tr -d ' ')
+            failed_entries=$(grep "^$category|FAIL|" .continuum/tests/test_results.tmp)
+            if [ ! -z "$failed_entries" ]; then
+                failed_count=$(echo "$failed_entries" | wc -l | tr -d ' ')
                 echo "   🔴 $category ($failed_count failed):"
-                echo "$failed_tests" | sed 's/^/      • /'
+                echo "$failed_entries" | while IFS='|' read -r cat status test_name error_details; do
+                    echo "      • $test_name"
+                    if [ ! -z "$error_details" ]; then
+                        echo "        💥 Error:"
+                        echo "$error_details"
+                    fi
+                    echo ""
+                done
                 echo ""
             fi
         done

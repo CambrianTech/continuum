@@ -26,6 +26,9 @@
  */
 
 import { type UUID } from './CrossPlatformUUID';
+
+// Re-export UUID for use in other modules
+export type { UUID };
 import type { BaseResponsePayload } from './ResponseTypes';
 
 /**
@@ -259,6 +262,11 @@ export const JTAGMessageTypes = {
   isResponse: <T extends JTAGPayload>(message: JTAGMessage<T>): message is JTAGResponseMessage<T> => {
     return message.messageType === 'response';
   }
+};
+
+// Specialized type guard for response messages with JTAGResponsePayload
+export const isJTAGResponseMessage = (message: JTAGMessage): message is JTAGResponseMessage<import('./ResponseTypes').JTAGResponsePayload> => {
+  return message.messageType === 'response';
 };
 
 /**
