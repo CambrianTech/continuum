@@ -30,8 +30,8 @@ export class RoutingChaosBrowserCommand extends CommandBase<RoutingChaosParams, 
     const routingTrace: RoutingChaosResult['routingTrace'] = [];
     
     try {
-      console.log(`🎲 BROWSER: Starting routing chaos test ${chaosParams.testId} (hop ${chaosParams.hopCount}/${chaosParams.maxHops})`);
-      console.log(`🎲 BROWSER: Full params received:`, JSON.stringify(chaosParams, null, 2));
+      // console.debug(`🎲 BROWSER: Starting routing chaos test ${chaosParams.testId} (hop ${chaosParams.hopCount}/${chaosParams.maxHops})`);
+      // console.debug(`🎲 BROWSER: Full params received:`, JSON.stringify(chaosParams, null, 2));
       
       // Record current hop
       const hopStart = Date.now();
@@ -40,14 +40,14 @@ export class RoutingChaosBrowserCommand extends CommandBase<RoutingChaosParams, 
       
       // Check if we've reached max hops
       if (chaosParams.hopCount >= chaosParams.maxHops) {
-        console.log(`✅ BROWSER: Reached max hops for test ${chaosParams.testId}`);
+        // console.debug(`✅ BROWSER: Reached max hops for test ${chaosParams.testId}`);
         return this.createSuccessResult(chaosParams, routingTrace, startTime);
       }
       
       // Inject random failure if configured
       if (shouldInjectError(chaosParams.failureRate)) {
         const error = generateRandomError(['timeout', 'rejection', 'corruption']);
-        console.log(`❌ BROWSER: Injecting random error for test ${chaosParams.testId}: ${error.message}`);
+        // console.debug(`❌ BROWSER: Injecting random error for test ${chaosParams.testId}: ${error.message}`);
         
         routingTrace.push({
           hop: chaosParams.hopCount,
@@ -73,7 +73,7 @@ export class RoutingChaosBrowserCommand extends CommandBase<RoutingChaosParams, 
       const nextEnvironment = Math.random() > 0.3 ? 'server' : 'browser'; // Favor server routing
       const nextHopCount = chaosParams.hopCount + 1;
       
-      console.log(`🔄 BROWSER: Routing to ${nextEnvironment} for hop ${nextHopCount} of test ${chaosParams.testId}`);
+      // console.debug(`🔄 BROWSER: Routing to ${nextEnvironment} for hop ${nextHopCount} of test ${chaosParams.testId}`);
       
       const hopEnd = Date.now();
       routingTrace.push({
@@ -177,7 +177,7 @@ export class RoutingChaosBrowserCommand extends CommandBase<RoutingChaosParams, 
         // Memory usage check if available
         if ('memory' in performance) {
           const memInfo = (performance as any).memory;
-          console.log(`🧠 BROWSER: Memory usage at hop ${params.hopCount}: ${memInfo.usedJSHeapSize} bytes`);
+          // console.debug(`🧠 BROWSER: Memory usage at hop ${params.hopCount}: ${memInfo.usedJSHeapSize} bytes`);
         }
       }
     } catch (error) {
@@ -217,19 +217,19 @@ export class RoutingChaosBrowserCommand extends CommandBase<RoutingChaosParams, 
     childResult: any, // remoteExecute can return wrapped responses
     currentTrace: RoutingChaosResult['routingTrace']
   ): RoutingChaosResult {
-    console.log(`🔄 BROWSER: Merging results - childResult type:`, typeof childResult, 'keys:', Object.keys(childResult));
-    console.log(`🔄 BROWSER: childResult.routingTrace:`, childResult.routingTrace, 'is array:', Array.isArray(childResult.routingTrace));
+    // console.debug(`🔄 BROWSER: Merging results - childResult type:`, typeof childResult, 'keys:', Object.keys(childResult));
+    // console.debug(`🔄 BROWSER: childResult.routingTrace:`, childResult.routingTrace, 'is array:', Array.isArray(childResult.routingTrace));
     
     // Handle wrapped response from remoteExecute
     let actualResult = childResult;
     if (childResult.handlerResult && childResult.handlerResult.commandResult) {
-      console.log(`🔄 BROWSER: Unwrapping nested command result`);
+      // console.debug(`🔄 BROWSER: Unwrapping nested command result`);
       actualResult = childResult.handlerResult.commandResult;
     }
     
     // Ensure routingTrace is an array
     const childTrace = Array.isArray(actualResult.routingTrace) ? actualResult.routingTrace : [];
-    console.log(`🔄 BROWSER: Using childTrace length:`, childTrace.length);
+    // console.debug(`🔄 BROWSER: Using childTrace length:`, childTrace.length);
     
     return {
       ...actualResult,
