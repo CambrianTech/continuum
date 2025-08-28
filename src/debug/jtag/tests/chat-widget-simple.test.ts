@@ -9,7 +9,7 @@
  * 4. Exits cleanly
  */
 
-import { jtag } from '../';
+import { jtag } from '../server-index';
 
 async function testChatWidgetCarefully() {
   console.log('🧪 CAREFUL CHAT WIDGET TEST');
@@ -70,12 +70,18 @@ async function testChatWidgetCarefully() {
     
   } catch (error) {
     console.error('❌ Test failed:', error);
+    console.error('❌ Error details:', {
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
+    throw error;
   } finally {
     // Always disconnect
     if (client) {
       try {
         console.log('🔌 Disconnecting...');
-        // Disconnect properly to avoid hanging connections
+        await client.disconnect();
+        console.log('✅ Disconnected cleanly');
       } catch (disconnectError) {
         console.error('Disconnect error:', disconnectError);
       }

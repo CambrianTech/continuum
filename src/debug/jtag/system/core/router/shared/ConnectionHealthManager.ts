@@ -28,7 +28,7 @@
 
 import type { JTAGContext, JTAGMessage } from '../../types/JTAGTypes';
 import type { EventsInterface } from '../../../events';
-import { TRANSPORT_EVENTS } from '@system/transports/shared/TransportEvents';
+import { TRANSPORT_EVENTS } from '../../../transports/shared/TransportEvents';
 import { SYSTEM_EVENTS } from '../../../events';
 import { JTAG_ENDPOINTS } from './JTAGEndpoints';
 import type { TimerHandle } from '../../types/CrossPlatformTypes';
