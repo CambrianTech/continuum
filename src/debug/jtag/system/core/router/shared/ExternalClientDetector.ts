@@ -8,11 +8,6 @@
 import type { JTAGMessage } from '../../types/JTAGTypes';
 import { JTAGMessageTypes } from '../../types/JTAGTypes';
 
-interface CorrelationEntry {
-  id: string;
-  timestamp: number;
-}
-
 export class ExternalClientDetector {
   private readonly externalCorrelations = new Set<string>();
   private readonly correlationTimestamps = new Map<string, number>();
@@ -58,11 +53,11 @@ export class ExternalClientDetector {
   registerExternal(correlationId: string): void {
     const timestamp = Date.now();
     
-    console.log(`🔗 ExternalClientDetector: Registering ${correlationId}`);
+    // console.debug(`🔗 ExternalClientDetector: Registering ${correlationId}`);
     this.externalCorrelations.add(correlationId);
     this.correlationTimestamps.set(correlationId, timestamp);
     
-    console.log(`📊 ExternalClientDetector: Registered ${correlationId}, set now has ${this.externalCorrelations.size} items`);
+    // console.debug(`📊 ExternalClientDetector: Registered ${correlationId}, set now has ${this.externalCorrelations.size} items`);
     
     // Start intelligent cleanup if not already running
     this.startAutomaticCleanup();
@@ -84,7 +79,9 @@ export class ExternalClientDetector {
     this.correlationTimestamps.delete(correlationId);
     
     if (removed) {
-      console.log(`🧹 ExternalClientDetector: Cleaned up ${correlationId}, set now has ${this.externalCorrelations.size} items`);
+      // console.debug(`🧹 ExternalClientDetector: Cleaned up ${correlationId}, set now has ${this.externalCorrelations.size} items`);
+    } else {
+      console.warn(`🧹 ExternalClientDetector: No cleanup needed for ${correlationId}`);
     }
   }
   
@@ -94,7 +91,7 @@ export class ExternalClientDetector {
   private startAutomaticCleanup(): void {
     if (this.cleanupTimer) return; // Already running
     
-    console.log('🤖 ExternalClientDetector: Starting intelligent auto-cleanup');
+    // console.debug('🤖 ExternalClientDetector: Starting intelligent auto-cleanup');
     
     this.cleanupTimer = setInterval(() => {
       this.cleanupStaleCorrelations();
@@ -117,19 +114,19 @@ export class ExternalClientDetector {
     
     // Remove stale correlations
     if (staleIds.length > 0) {
-      console.log(`🧹 ExternalClientDetector: Auto-cleaning ${staleIds.length} stale correlations`);
+      // console.debug(`🧹 ExternalClientDetector: Auto-cleaning ${staleIds.length} stale correlations`);
       
       for (const id of staleIds) {
         this.externalCorrelations.delete(id);
         this.correlationTimestamps.delete(id);
       }
-      
-      console.log(`📊 ExternalClientDetector: After cleanup: ${this.externalCorrelations.size} active correlations`);
+
+      // console.debug(`📊 ExternalClientDetector: After cleanup: ${this.externalCorrelations.size} active correlations`);
     }
     
     // Stop timer if no correlations left
     if (this.externalCorrelations.size === 0 && this.cleanupTimer) {
-      console.log('🛑 ExternalClientDetector: Stopping auto-cleanup (no correlations)');
+      // console.debug('🛑 ExternalClientDetector: Stopping auto-cleanup (no correlations)');
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = undefined;
     }
@@ -145,7 +142,7 @@ export class ExternalClientDetector {
     }
     this.externalCorrelations.clear();
     this.correlationTimestamps.clear();
-    console.log('🧹 ExternalClientDetector: Manual cleanup completed');
+    // console.debug('🧹 ExternalClientDetector: Manual cleanup completed');
   }
 
   /**
