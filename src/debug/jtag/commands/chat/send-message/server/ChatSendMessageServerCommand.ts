@@ -23,13 +23,13 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
    * Server-specific event emission with proper Node imports
    */
   protected async emitMessageEvent(message: any): Promise<void> {
-    console.log(`🔍 DEBUG: emitMessageEvent called for message ${message.messageId}`);
+    // console.debug(`🔍 DEBUG: emitMessageEvent called for message ${message.messageId}`);
     try {
       // Skip local event emission for now - focus on cross-environment
-      console.log(`🔄 SKIPPING local event emission - focusing on cross-environment`);
+      // console.debug(`🔄 SKIPPING local event emission - focusing on cross-environment`);
       
       // Then send to cross-environment bridge (for browser listeners)
-      console.log(`🔍 DEBUG: Starting cross-environment event creation...`);
+      // console.debug(`🔍 DEBUG: Starting cross-environment event creation...`);
       
       const eventBridgeData: EventBridgePayload = {
         type: 'event-bridge' as const,
@@ -48,7 +48,7 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
         sessionId: message.senderId
       };
       
-      console.log(`🔍 DEBUG: Event payload created:`, JSON.stringify(eventBridgeData, null, 2));
+      // console.debug(`🔍 DEBUG: Event payload created:`, JSON.stringify(eventBridgeData, null, 2));
       
       const eventMessage = JTAGMessageFactory.createEvent(
         this.context,
@@ -57,10 +57,10 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
         eventBridgeData
       );
       
-      console.log(`🔍 DEBUG: Event message created, posting to router...`);
+      // console.debug(`🔍 DEBUG: Event message created, posting to router...`);
       const result = await this.commander.router.postMessage(eventMessage);
-      console.log(`🔍 DEBUG: Router result:`, result);
-      console.log(`📨 Sent cross-environment chat-message-sent event for message ${message.messageId}`);
+      // console.debug(`🔍 DEBUG: Router result:`, result);
+      // console.debug(`📨 Sent cross-environment chat-message-sent event for message ${message.messageId}`);
       
     } catch (error) {
       console.error(`❌ Failed to emit message event:`, error);

@@ -101,7 +101,7 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
     const origin = `${this.context.environment}/${this.commander.subpath}/${subpath}`;
     const endpoint = `${prefix}/${this.commander.subpath}/${subpath}`;
 
-    console.log(`🔀 ${this.toString()}: ${subpath === this.subpath ? 'Remote' : 'Local'} executing from ${origin} to call ${endpoint}`);
+    // console.debug(`🔀 ${this.toString()}: ${subpath === this.subpath ? 'Remote' : 'Local'} executing from ${origin} to call ${endpoint}`);
 
     const message = JTAGMessageFactory.createRequest(
       this.context,
@@ -113,7 +113,7 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
 
     const routerResult = await this.commander.router.postMessage(message);
 
-    console.log(`🔄 ${this.toString()}: Remote execution result:`, JSON.stringify(routerResult, null, 2));
+    // console.debug(`🔄 ${this.toString()}: Remote execution result:`, JSON.stringify(routerResult, null, 2));
     
     // Extract the actual command result from the router response
     const typedResult = routerResult as RouterResult;

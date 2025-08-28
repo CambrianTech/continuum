@@ -20,7 +20,7 @@ export class SessionCreateServerCommand extends SessionCreateCommand {
    * Server session creation - directly call session daemon (like screenshot pattern)
    */
   protected async routeToSessionDaemon(params: CreateSessionParams): Promise<CreateSessionResult | SessionErrorResponse> {
-    console.log(`🏷️ SERVER: Creating session directly via session daemon`);
+    // console.debug(`🏷️ SERVER: Creating session directly via session daemon`);
 
     // Find the SessionDaemon directly
     const sessionDaemon = this.commander.router.getSubscriber('session-daemon');
@@ -38,9 +38,9 @@ export class SessionCreateServerCommand extends SessionCreateCommand {
       JTAGMessageFactory.generateCorrelationId()
     );
 
-    console.log(`🔍 SERVER: Calling session daemon directly`);
+    // console.debug(`🔍 SERVER: Calling session daemon directly`);
     const response = await sessionDaemon.handleMessage(sessionMessage);
-    console.log(`🔍 SERVER: Session daemon response:`, JSON.stringify(response, null, 2));
+    // console.debug(`🔍 SERVER: Session daemon response:`, JSON.stringify(response, null, 2));
     
     return response as CreateSessionResult | SessionErrorResponse;
   }

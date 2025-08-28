@@ -22,8 +22,8 @@ export abstract class SessionCreateCommand extends CommandBase<SessionCreatePara
   async execute(params: JTAGPayload): Promise<SessionCreateResult> {
     const createParams = params as SessionCreateParams;
     
-    console.log(`🏷️ ${this.getEnvironmentLabel()}: Creating session - "${createParams.displayName}"`);
-    console.log(`🔍 ${this.getEnvironmentLabel()}: SessionCreateCommand.execute called with:`, JSON.stringify(createParams, null, 2));
+    // console.debug(`🏷️ ${this.getEnvironmentLabel()}: Creating session - "${createParams.displayName}"`);
+    // console.debug(`🔍 ${this.getEnvironmentLabel()}: SessionCreateCommand.execute called with:`, JSON.stringify(createParams, null, 2));
 
     try {
       // Convert command params to session daemon params
@@ -51,31 +51,31 @@ export abstract class SessionCreateCommand extends CommandBase<SessionCreatePara
       }
       
       // Debug: Log the raw response from session daemon
-      console.log(`🔍 ${this.getEnvironmentLabel()}: Raw session daemon response:`, JSON.stringify(result, null, 2));
+      // console.debug(`🔍 ${this.getEnvironmentLabel()}: Raw session daemon response:`, JSON.stringify(result, null, 2));
       
       // Handle router-wrapped response format
       let sessionResult = result as any;
       if (sessionResult.resolved && sessionResult.response) {
         // Router wrapped the response - extract the actual daemon response
-        console.log(`🔍 ${this.getEnvironmentLabel()}: Router wrapped response detected, extracting response`);
+        // console.debug(`🔍 ${this.getEnvironmentLabel()}: Router wrapped response detected, extracting response`);
         sessionResult = sessionResult.response;
       }
       
-      console.log(`🔍 ${this.getEnvironmentLabel()}: Processed session result:`, JSON.stringify(sessionResult, null, 2));
+      // console.debug(`🔍 ${this.getEnvironmentLabel()}: Processed session result:`, JSON.stringify(sessionResult, null, 2));
       
       // Extract session metadata from session daemon response
       let sessionMetadata = null;
       if (sessionResult.session) {
         // Session daemon returned proper CreateSessionResult format
-        console.log(`🔍 ${this.getEnvironmentLabel()}: Found session field with data:`, sessionResult.session);
+        // console.debug(`🔍 ${this.getEnvironmentLabel()}: Found session field with data:`, sessionResult.session);
         sessionMetadata = sessionResult.session;
       } else if (sessionResult.commandResult?.session) {
         // Response is nested in commandResult (from remoteExecute pattern)
-        console.log(`🔍 ${this.getEnvironmentLabel()}: Found session in commandResult:`, sessionResult.commandResult.session);
+        // console.debug(`🔍 ${this.getEnvironmentLabel()}: Found session in commandResult:`, sessionResult.commandResult.session);
         sessionMetadata = sessionResult.commandResult.session;
       } else if (sessionResult.metadata) {
         // Fallback: Response has metadata field (old format)
-        console.log(`🔍 ${this.getEnvironmentLabel()}: Using fallback metadata field conversion`);
+        // console.debug(`🔍 ${this.getEnvironmentLabel()}: Using fallback metadata field conversion`);
         sessionMetadata = {
           sessionId: sessionResult.metadata.id || sessionResult.responseSessionId,
           category: sessionResult.metadata.category,
@@ -88,18 +88,18 @@ export abstract class SessionCreateCommand extends CommandBase<SessionCreatePara
           isShared: createParams.isShared
         };
       } else {
-        console.log(`🔍 ${this.getEnvironmentLabel()}: No session or metadata field found in response`);
-        console.log(`🔍 ${this.getEnvironmentLabel()}: Available response fields:`, Object.keys(sessionResult));
+        // console.debug(`🔍 ${this.getEnvironmentLabel()}: No session or metadata field found in response`);
+        // console.debug(`🔍 ${this.getEnvironmentLabel()}: Available response fields:`, Object.keys(sessionResult));
       }
       
-      console.log(`✅ ${this.getEnvironmentLabel()}: Session created: ${sessionMetadata?.sessionId}`);
+      // console.debug(`✅ ${this.getEnvironmentLabel()}: Session created: ${sessionMetadata?.sessionId}`);
 
       const finalResult = createSessionCreateResult(createParams, {
         success: sessionResult.success ?? true,
         session: sessionMetadata
       });
       
-      console.log(`🔍 ${this.getEnvironmentLabel()}: Final result being returned:`, JSON.stringify(finalResult, null, 2));
+      // console.debug(`🔍 ${this.getEnvironmentLabel()}: Final result being returned:`, JSON.stringify(finalResult, null, 2));
       
       return finalResult;
 

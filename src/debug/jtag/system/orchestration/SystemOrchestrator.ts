@@ -74,11 +74,11 @@ export class SystemOrchestrator extends EventEmitter {
     this.currentEntryPoint = entryPoint;
     
     try {
-      console.log(`🎯 ORCHESTRATING: ${entryPoint}${options.testMode ? ' (TEST MODE)' : ''}`);
+      console.debug(`🎯 ORCHESTRATING: ${entryPoint}${options.testMode ? ' (TEST MODE)' : ''}`);
       
       // 1. Determine required milestones for this entry point
       const requiredMilestones = this.getRequiredMilestones(entryPoint);
-      console.log(`📋 Required milestones: ${requiredMilestones.join(' → ')}`);
+      console.debug(`📋 Required milestones: ${requiredMilestones.join(' → ')}`);
       
       // 2. Set up working directory context
       await this.setupWorkingDirectory(options.workingDir);
@@ -90,12 +90,12 @@ export class SystemOrchestrator extends EventEmitter {
       const missingMilestones = this.calculateMissingMilestones(requiredMilestones, currentState);
       
       if (missingMilestones.length === 0) {
-        console.log('✅ All required milestones already completed');
+        console.debug('✅ All required milestones already completed');
         
         // Special case: npm-test and npm-start should always ensure browser is opened
         // even if browser milestones are already completed
         if (entryPoint === 'npm-test' || entryPoint === 'npm-start') {
-          console.log('🔄 Entry point requires browser launch - ensuring browser is opened');
+          console.debug('🔄 Entry point requires browser launch - ensuring browser is opened');
           await this.ensureBrowserOpened(options);
         }
         
@@ -107,14 +107,14 @@ export class SystemOrchestrator extends EventEmitter {
         
         // TEST MODE: Generate signal and let caller handle exit
         if (options.testMode) {
-          console.log('🧪 Test mode - generating final system ready signal');
+          console.debug('🧪 Test mode - generating final system ready signal');
           await this.signaler.generateReadySignal();
         }
         
         return finalState;
       }
       
-      console.log(`🔄 Missing milestones: ${missingMilestones.join(' → ')}`);
+      console.debug(`🔄 Missing milestones: ${missingMilestones.join(' → ')}`);
       
       // 5. Execute milestones in proper dependency order
       for (const milestone of missingMilestones) {
@@ -132,13 +132,13 @@ export class SystemOrchestrator extends EventEmitter {
       
       // 6. Verify final system state
       const finalState = await this.verifySystemState(requiredMilestones);
-      console.log('🎉 Orchestration complete');
+      console.debug('🎉 Orchestration complete');
       
       // TEST MODE: Generate final signal after successful orchestration
       if (options.testMode) {
-        console.log('🧪 Test mode - generating final system ready signal');
+        console.debug('🧪 Test mode - generating final system ready signal');
         await this.signaler.generateReadySignal();
-        console.log('📡 Final system signal generated - ready for testing');
+        console.debug('📡 Final system signal generated - ready for testing');
       }
       
       return finalState;
@@ -180,7 +180,7 @@ export class SystemOrchestrator extends EventEmitter {
   private async setupWorkingDirectory(workingDir?: string): Promise<void> {
     if (workingDir) {
       WorkingDirConfig.setWorkingDir(workingDir);
-      console.log(`📁 Working directory: ${workingDir}`);
+      console.debug(`📁 Working directory: ${workingDir}`);
     } else {
       // Use active example configuration
       try {
@@ -188,7 +188,7 @@ export class SystemOrchestrator extends EventEmitter {
         const activeExample = getActiveExampleName();
         const defaultWorkingDir = `examples/${activeExample}`;
         WorkingDirConfig.setWorkingDir(defaultWorkingDir);
-        console.log(`📁 Working directory: ${defaultWorkingDir} (auto-detected)`);
+        console.debug(`📁 Working directory: ${defaultWorkingDir} (auto-detected)`);
       } catch (error) {
         console.warn('⚠️ Could not auto-detect working directory, using current');
       }
@@ -222,7 +222,7 @@ export class SystemOrchestrator extends EventEmitter {
           await milestoneEmitter.completeMilestone(milestone, this.currentEntryPoint);
         }
         
-        console.log(`✅ System already ready (signal detected, browser: ${systemReady.browserReady ? 'ready' : 'not ready'})`);
+        console.debug(`✅ System already ready (signal detected, browser: ${systemReady.browserReady ? 'ready' : 'not ready'})`);
         return completedMilestones;
       }
     } catch (error) {
@@ -251,17 +251,17 @@ export class SystemOrchestrator extends EventEmitter {
             await milestoneEmitter.completeMilestone(milestone, this.currentEntryPoint);
           }
           
-          console.log(`✅ Server already ready (ports active + health check passed: ${activePorts.websocket_server}, ${activePorts.http_server})`);
+          console.debug(`✅ Server already ready (ports active + health check passed: ${activePorts.websocket_server}, ${activePorts.http_server})`);
           return completedMilestones;
         } else {
-          console.log(`⚠️ Ports active but health check failed (${activePorts.websocket_server}, ${activePorts.http_server})`);
+          console.debug(`⚠️ Ports active but health check failed (${activePorts.websocket_server}, ${activePorts.http_server})`);
         }
       }
     } catch (error) {
-      console.log('🔄 Server needs to be started (port check failed)');
+      console.debug('🔄 Server needs to be started (port check failed)');
     }
     
-    console.log('🔄 Server needs to be started');
+    console.debug('🔄 Server needs to be started');
     return completedMilestones;
   }
 
@@ -300,7 +300,7 @@ export class SystemOrchestrator extends EventEmitter {
    * Execute a specific milestone
    */
   private async executeMilestone(milestone: SystemMilestone, options: OrchestrationOptions): Promise<boolean> {
-    console.log(`🚀 Executing milestone: ${milestone}`);
+    console.debug(`🚀 Executing milestone: ${milestone}`);
     
     try {
       switch (milestone) {
@@ -387,7 +387,7 @@ export class SystemOrchestrator extends EventEmitter {
    * BUILD MILESTONES
    */
   private async executeBuildStart(): Promise<boolean> {
-    console.log('🔨 Starting build process...');
+    console.debug('🔨 Starting build process...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.BUILD_START, 
       this.currentEntryPoint
@@ -396,7 +396,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeBuildTypeScript(): Promise<boolean> {
-    console.log('📝 Compiling TypeScript...');
+    console.debug('📝 Compiling TypeScript...');
     // TypeScript compilation would happen here
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.BUILD_TYPESCRIPT_COMPLETE, 
@@ -406,7 +406,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeBuildStructure(): Promise<boolean> {
-    console.log('🏗️ Building structure...');
+    console.debug('🏗️ Building structure...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.BUILD_STRUCTURE_COMPLETE, 
       this.currentEntryPoint
@@ -415,7 +415,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeBuildComplete(): Promise<boolean> {
-    console.log('✅ Build complete');
+    console.debug('✅ Build complete');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.BUILD_COMPLETE, 
       this.currentEntryPoint
@@ -427,7 +427,7 @@ export class SystemOrchestrator extends EventEmitter {
    * DEPLOY MILESTONES
    */
   private async executeDeployStart(): Promise<boolean> {
-    console.log('🚀 Starting deployment...');
+    console.debug('🚀 Starting deployment...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.DEPLOY_START, 
       this.currentEntryPoint
@@ -436,7 +436,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeDeployFiles(): Promise<boolean> {
-    console.log('📁 Deploying files...');
+    console.debug('📁 Deploying files...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.DEPLOY_FILES_COMPLETE, 
       this.currentEntryPoint
@@ -445,7 +445,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeDeployPorts(): Promise<boolean> {
-    console.log('🔌 Allocating ports...');
+    console.debug('🔌 Allocating ports...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.DEPLOY_PORTS_ALLOCATED, 
       this.currentEntryPoint
@@ -454,7 +454,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeDeployComplete(): Promise<boolean> {
-    console.log('✅ Deployment complete');
+    console.debug('✅ Deployment complete');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.DEPLOY_COMPLETE, 
       this.currentEntryPoint
@@ -466,7 +466,7 @@ export class SystemOrchestrator extends EventEmitter {
    * SERVER MILESTONES
    */
   private async executeServerStart(): Promise<boolean> {
-    console.log('🔌 Starting server process...');
+    console.debug('🔌 Starting server process...');
     
     // Clear any existing signals
     await this.signaler.clearSignals();
@@ -479,13 +479,13 @@ export class SystemOrchestrator extends EventEmitter {
     // Import and start the JTAG system server
     const { JTAGSystemServer } = await import('../core/system/server/JTAGSystemServer');
     const jtagServer = await JTAGSystemServer.connect();
-    console.log(`✅ JTAG WebSocket Server running on port ${activePorts.websocket_server}`);
+    console.debug(`✅ JTAG WebSocket Server running on port ${activePorts.websocket_server}`);
     
     // Start the example HTTP server
     const { getActiveExamplePath } = await import('../shared/ExampleConfig');
     const activeExamplePath = getActiveExamplePath();
     
-    console.log(`🎯 Starting npm start in: ${activeExamplePath}`);
+    console.debug(`🎯 Starting npm start in: ${activeExamplePath}`);
     
     this.serverProcess = spawn('npm', ['start'], {
       cwd: activeExamplePath,
@@ -494,11 +494,11 @@ export class SystemOrchestrator extends EventEmitter {
     });
     
     this.serverProcess.stdout?.on('data', (data) => {
-      console.log(`📄 HTTP Server: ${data.toString().trim()}`);
+      console.debug(`📄 HTTP Server: ${data.toString().trim()}`);
     });
     
     this.serverProcess.stderr?.on('data', (data) => {
-      console.log(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
+      console.debug(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
     });
     
     this.serverProcess.on('error', (error) => {
@@ -506,7 +506,7 @@ export class SystemOrchestrator extends EventEmitter {
     });
     
     this.serverProcess.on('exit', (code, signal) => {
-      console.log(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
+      console.debug(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
     });
     
     await milestoneEmitter.completeMilestone(
@@ -517,7 +517,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeServerProcess(): Promise<boolean> {
-    console.log('🔄 Server process ready...');
+    console.debug('🔄 Server process ready...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SERVER_PROCESS_READY, 
       this.currentEntryPoint
@@ -526,7 +526,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeServerWebSocket(): Promise<boolean> {
-    console.log('🔌 WebSocket server ready...');
+    console.debug('🔌 WebSocket server ready...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SERVER_WEBSOCKET_READY, 
       this.currentEntryPoint
@@ -535,7 +535,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeServerHTTP(): Promise<boolean> {
-    console.log('🌐 HTTP server ready...');
+    console.debug('🌐 HTTP server ready...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SERVER_HTTP_READY, 
       this.currentEntryPoint
@@ -544,7 +544,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeServerBootstrap(): Promise<boolean> {
-    console.log('⚡ Server bootstrap complete...');
+    console.debug('⚡ Server bootstrap complete...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SERVER_BOOTSTRAP_COMPLETE, 
       this.currentEntryPoint
@@ -553,7 +553,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeServerCommands(): Promise<boolean> {
-    console.log('📋 Server commands loaded...');
+    console.debug('📋 Server commands loaded...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SERVER_COMMANDS_LOADED, 
       this.currentEntryPoint
@@ -562,7 +562,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeServerReady(): Promise<boolean> {
-    console.log('⏳ Waiting for server to be ready...');
+    console.debug('⏳ Waiting for server to be ready...');
     
     // SIMPLIFIED READINESS CHECK: Check port availability directly
     // This avoids complex signaling system issues while ensuring servers are actually ready
@@ -581,7 +581,7 @@ export class SystemOrchestrator extends EventEmitter {
         ]);
         
         if (portChecks.every(ready => ready)) {
-          console.log(`✅ Server ports ready: WebSocket=${activePorts.websocket_server}, HTTP=${activePorts.http_server}`);
+          console.debug(`✅ Server ports ready: WebSocket=${activePorts.websocket_server}, HTTP=${activePorts.http_server}`);
           break;
         }
       } catch (error) {
@@ -596,7 +596,7 @@ export class SystemOrchestrator extends EventEmitter {
       throw new Error(`Server failed to become ready within ${maxRetries} seconds`);
     }
     
-    console.log('✅ Server is ready');
+    console.debug('✅ Server is ready');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SERVER_READY, 
       this.currentEntryPoint
@@ -614,11 +614,11 @@ export class SystemOrchestrator extends EventEmitter {
     const status = await checker.checkPortNumber(port);
     
     if (status.isActive && status.result === PortCheckResult.ACTIVE) {
-      console.log(`✅ Port ${port} is active (${status.method})`);
+      console.debug(`✅ Port ${port} is active (${status.method})`);
     } else if (status.result === PortCheckResult.ERROR) {
-      console.log(`⚠️ Port ${port} check error (${status.method}): ${status.error}`);
+      console.debug(`⚠️ Port ${port} check error (${status.method}): ${status.error}`);
     } else {
-      console.log(`⚠️ Port ${port} not active (${status.method})`);
+      console.debug(`⚠️ Port ${port} not active (${status.method})`);
     }
     
     return status.isActive && status.result === PortCheckResult.ACTIVE;
@@ -647,20 +647,20 @@ export class SystemOrchestrator extends EventEmitter {
         const browserReady = signal.browserReady;
         
         if (isHealthy && hasPort && hasCommands) {
-          console.log(`✅ Server health confirmed via signal: ${signal.commandCount} commands, browser: ${browserReady} (no HTTP polling)`);
+          console.debug(`✅ Server health confirmed via signal: ${signal.commandCount} commands, browser: ${browserReady} (no HTTP polling)`);
           return true;
         } else {
-          console.log(`⚠️ Server health degraded - health: ${signal.systemHealth}, port: ${hasPort}, commands: ${signal.commandCount}`);
+          console.debug(`⚠️ Server health degraded - health: ${signal.systemHealth}, port: ${hasPort}, commands: ${signal.commandCount}`);
           return false;
         }
       }
       
       // No signal found - server is not healthy
-      console.log(`⚠️ Server health check failed for port ${port} - no signal detected`);
+      console.debug(`⚠️ Server health check failed for port ${port} - no signal detected`);
       return false;
       
     } catch (error) {
-      console.log(`⚠️ Signal-based health check failed for port ${port}: ${error}`);
+      console.debug(`⚠️ Signal-based health check failed for port ${port}: ${error}`);
       return false;
     }
   }
@@ -670,7 +670,7 @@ export class SystemOrchestrator extends EventEmitter {
    */
   private async executeBrowserLaunch(options: OrchestrationOptions): Promise<boolean> {
     if (options.skipBrowser) {
-      console.log('⏭️ Skipping browser launch (skipBrowser option)');
+      console.debug('⏭️ Skipping browser launch (skipBrowser option)');
       await milestoneEmitter.completeMilestone(
         SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED, 
         this.currentEntryPoint
@@ -678,7 +678,7 @@ export class SystemOrchestrator extends EventEmitter {
       return true;
     }
     
-    console.log('🌐 Launching browser...');
+    console.debug('🌐 Launching browser...');
     
     // CRITICAL FIX: Browser only launches AFTER server ready milestone
     const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
@@ -688,10 +688,10 @@ export class SystemOrchestrator extends EventEmitter {
         detached: true, 
         stdio: 'ignore' 
       }).unref();
-      console.log(`✅ Browser launched: ${browserUrl}`);
+      console.debug(`✅ Browser launched: ${browserUrl}`);
     } catch (error) {
       console.warn(`⚠️ Failed to auto-open browser: ${error}`);
-      console.log(`👉 Manually open: ${browserUrl}`);
+      console.debug(`👉 Manually open: ${browserUrl}`);
     }
     
     await milestoneEmitter.completeMilestone(
@@ -702,7 +702,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeBrowserProcess(): Promise<boolean> {
-    console.log('🌐 Browser process started...');
+    console.debug('🌐 Browser process started...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.BROWSER_PROCESS_STARTED, 
       this.currentEntryPoint
@@ -711,7 +711,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeBrowserWebSocket(): Promise<boolean> {
-    console.log('🔗 Browser WebSocket connected...');
+    console.debug('🔗 Browser WebSocket connected...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.BROWSER_WEBSOCKET_CONNECTED, 
       this.currentEntryPoint
@@ -720,7 +720,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeBrowserInterface(): Promise<boolean> {
-    console.log('🖥️ Browser interface loaded...');
+    console.debug('🖥️ Browser interface loaded...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.BROWSER_INTERFACE_LOADED, 
       this.currentEntryPoint
@@ -729,13 +729,13 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeBrowserReady(): Promise<boolean> {
-    console.log('⏳ Waiting for browser to be ready...');
+    console.debug('⏳ Waiting for browser to be ready...');
     
     // For now, assume browser is ready after launch
     // Future: implement browser readiness detection via WebSocket
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    console.log('✅ Browser is ready');
+    console.debug('✅ Browser is ready');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.BROWSER_READY, 
       this.currentEntryPoint
@@ -747,7 +747,7 @@ export class SystemOrchestrator extends EventEmitter {
    * SYSTEM MILESTONES
    */
   private async executeSystemHealthy(): Promise<boolean> {
-    console.log('💚 System is healthy...');
+    console.debug('💚 System is healthy...');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SYSTEM_HEALTHY, 
       this.currentEntryPoint
@@ -756,7 +756,7 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   private async executeSystemReady(): Promise<boolean> {
-    console.log('🎉 System is fully ready');
+    console.debug('🎉 System is fully ready');
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SYSTEM_READY, 
       this.currentEntryPoint
@@ -802,11 +802,11 @@ export class SystemOrchestrator extends EventEmitter {
    */
   private async ensureBrowserOpened(options: OrchestrationOptions): Promise<void> {
     if (options.skipBrowser) {
-      console.log('⏭️ Skipping browser launch (skipBrowser option)');
+      console.debug('⏭️ Skipping browser launch (skipBrowser option)');
       return;
     }
     
-    console.log('🌐 Ensuring browser is opened...');
+    console.debug('🌐 Ensuring browser is opened...');
     
     const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
     
@@ -815,10 +815,10 @@ export class SystemOrchestrator extends EventEmitter {
         detached: true, 
         stdio: 'ignore' 
       }).unref();
-      console.log(`✅ Browser opened: ${browserUrl}`);
+      console.debug(`✅ Browser opened: ${browserUrl}`);
     } catch (error) {
       console.warn(`⚠️ Failed to auto-open browser: ${error}`);
-      console.log(`👉 Manually open: ${browserUrl}`);
+      console.debug(`👉 Manually open: ${browserUrl}`);
     }
   }
 
@@ -849,7 +849,7 @@ export class SystemOrchestrator extends EventEmitter {
    */
   async cleanup(): Promise<void> {
     if (this.serverProcess) {
-      console.log('🛑 Cleaning up server process...');
+      console.debug('🛑 Cleaning up server process...');
       this.serverProcess.kill('SIGTERM');
       this.serverProcess = null;
     }
