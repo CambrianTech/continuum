@@ -21,29 +21,29 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
 
   async execute(params: DataCreateParams): Promise<DataCreateResult> {
     // Debug: Show what parameters we actually received
-    console.log(`🔍 DATA SERVER: Received params:`, JSON.stringify(params, null, 2));
+    //console.debug(`🔍 DATA SERVER: Received params:`, JSON.stringify(params, null, 2));
     
     // Cast to DataCreateParams to handle CLI parameter structure
-    const dataParams = params as DataCreateParams;
-    console.log(`🗄️ DATA SERVER: Creating ${dataParams.collection} record`);
+
+    //console.debug(`🗄️ DATA SERVER: Creating ${params.collection} record`);
     
     try {
-      const id = dataParams.id || generateUUID();
-      
+      const id = params.id ?? generateUUID();
+
       // Follow session-based path structure like FileSaveServerCommand
-      const sessionId = dataParams.sessionId;
+      const sessionId = params.sessionId;
       const basePath = `.continuum/jtag/sessions/user/${sessionId}`;
       const dataDir = path.resolve(basePath, 'data');
-      const collectionDir = path.join(dataDir, dataParams.collection);
+      const collectionDir = path.join(dataDir, params.collection);
       
       // Ensure directories exist
       await fs.mkdir(collectionDir, { recursive: true });
       
       // Parse data if it's a string (from CLI)
-      let parsedData = dataParams.data;
-      if (typeof dataParams.data === 'string') {
+      let parsedData = params.data;
+      if (typeof params.data === 'string') {
         try {
-          parsedData = JSON.parse(dataParams.data);
+          parsedData = JSON.parse(params.data);
         } catch (e) {
           console.warn(`🔧 DATA SERVER: Using string data directly (not JSON)`);
         }
@@ -51,7 +51,7 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
       
       const record = {
         id,
-        collection: dataParams.collection,
+        collection: params.collection,
         data: parsedData,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -61,16 +61,16 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
       const filePath = path.join(collectionDir, `${id}.json`);
       await fs.writeFile(filePath, JSON.stringify(record, null, 2));
       
-      console.log(`✅ DATA SERVER: Created ${dataParams.collection}/${id}`);
-      
-      return createDataCreateResultFromParams(dataParams, {
+      //console.debug(`✅ DATA SERVER: Created ${params.collection}/${id}`);
+
+      return createDataCreateResultFromParams(params, {
         success: true,
         id
       });
       
     } catch (error: any) {
       console.error(`❌ DATA SERVER: Create failed:`, error.message);
-      return createDataCreateResultFromParams(dataParams, {
+      return createDataCreateResultFromParams(params, {
         success: false,
         error: error.message
       });
