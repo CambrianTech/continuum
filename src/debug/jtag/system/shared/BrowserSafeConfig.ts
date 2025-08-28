@@ -21,6 +21,7 @@ import type {
 export const isBrowser = typeof window !== 'undefined' && typeof document !== 'undefined';
 export const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
+
 /**
  * Load active instance configuration from centralized instances.json
  * Called once when JTAGContext is created - returns full typed config  
@@ -28,93 +29,59 @@ export const isNode = typeof process !== 'undefined' && process.versions && proc
  * NO FALLBACKS - Browser gets same config as server from examples.json
  */
 export function loadInstanceConfigForContext(): InstanceConfiguration {
-  // Server context - load from instances.json (temporarily still examples.json)
+  // Server context - load from file system
   if (isNode) {
     const fs = eval('require')('fs');
     const path = eval('require')('path');
-    const configPath = path.join(__dirname, '../../config/examples.json'); // TODO: rename to instances.json
-    const configData: InstanceConfigData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    const configPath = path.join(__dirname, '../../config/examples.json');
+    const examplesConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     
-    const activeInstanceName = configData.active_instance || (configData as any).active_example; // backwards compatibility
-    const instancesData = configData.instances || (configData as any).examples; // backwards compatibility
-    const activeInstance = instancesData[activeInstanceName];
+    const activeInstanceName = examplesConfig.active_example;
+    const allInstances = examplesConfig.examples;
+    const activeInstance = allInstances[activeInstanceName];
     
     if (!activeInstance) {
       throw new Error(`Active instance '${activeInstanceName}' not found in config`);
     }
 
-    // Map old structure to new structure - NO environment variable overrides in API
     const instanceConfig: InstanceConfiguration = {
       name: activeInstance.name,
       description: activeInstance.description,
       ports: activeInstance.ports,
       paths: activeInstance.paths,
-      capabilities: (activeInstance as any).features || activeInstance.capabilities
+      capabilities: activeInstance.features
     };
 
     console.log(`📋 BrowserSafeConfig: Loaded active instance: ${instanceConfig.name} (HTTP: ${instanceConfig.ports.http_server}, WS: ${instanceConfig.ports.websocket_server})`);
     return instanceConfig;
   }
 
-  // Browser context - MUST get same config as server, NO FALLBACKS
+  // Browser context - derive from current port
   if (isBrowser) {
-    // Browser must use same config as server - extract from window location or error
     const currentPort = window.location.port;
     
-    // Since browser is served from HTTP server, we know the HTTP port
-    // Derive WebSocket port from HTTP port based on examples.json structure
-    let httpPort: number;
-    let wsPort: number;
-    let configName: string;
-    let capabilities: any;
-    
     if (currentPort === '9002') {
-      // test-bench configuration
-      httpPort = 9002;
-      wsPort = 9001;
-      configName = 'JTAG Test Bench';
-      capabilities = {
-        browser_automation: true,
-        screenshot_testing: true,
-        chat_integration: true,
-        widget_testing: false,
-        auto_launch_browser: true
+      return {
+        name: 'JTAG Test Bench',
+        description: 'Full-featured testing environment with comprehensive UI',
+        ports: { http_server: 9002, websocket_server: 9001 },
+        paths: { directory: 'examples/test-bench', html_file: 'public/demo.html', build_output: 'dist' },
+        capabilities: { browser_automation: true, screenshot_testing: true, chat_integration: true, widget_testing: false, auto_launch_browser: true }
       };
     } else if (currentPort === '9003') {
-      // widget-ui configuration  
-      httpPort = 9003;
-      wsPort = 9004;
-      configName = 'JTAG Widget Development UI';
-      capabilities = {
-        browser_automation: false,
-        screenshot_testing: false,
-        chat_integration: true,
-        widget_testing: true,
-        auto_launch_browser: true
+      return {
+        name: 'JTAG Widget Development UI',
+        description: 'Focused widget development environment',
+        ports: { http_server: 9003, websocket_server: 9004 },
+        paths: { directory: 'examples/widget-ui', html_file: 'index.html', build_output: 'dist' },
+        capabilities: { browser_automation: false, screenshot_testing: false, chat_integration: true, widget_testing: true, auto_launch_browser: true }
       };
     } else {
-      // ERROR: Browser can't determine config - this is intentional failure
-      throw new Error(`Browser cannot determine configuration from port ${currentPort}. Server must serve browser from correct configured port (9002 or 9003).`);
+      throw new Error(`Browser port ${currentPort} not recognized. Expected 9002 or 9003.`);
     }
-
-    const instanceConfig: InstanceConfiguration = {
-      name: configName,
-      description: 'Browser environment - same config as server',
-      ports: { http_server: httpPort, websocket_server: wsPort },
-      paths: { 
-        directory: currentPort === '9002' ? 'examples/test-bench' : 'examples/widget-ui',
-        html_file: currentPort === '9002' ? 'public/demo.html' : 'index.html',
-        build_output: 'dist'
-      },
-      capabilities
-    };
-
-    console.log(`📋 BrowserSafeConfig: Browser derived config from port ${currentPort}: ${instanceConfig.name} (HTTP: ${instanceConfig.ports.http_server}, WS: ${instanceConfig.ports.websocket_server})`);
-    return instanceConfig;
   }
 
-  // NO FALLBACKS - if we get here, something is wrong
-  throw new Error('loadInstanceConfigForContext: Cannot determine environment (not Node.js or browser)');
+  throw new Error('Cannot determine environment');
 }
 
 /**

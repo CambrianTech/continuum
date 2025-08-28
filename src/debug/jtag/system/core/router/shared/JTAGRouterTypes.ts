@@ -104,7 +104,7 @@ export const DEFAULT_JTAG_ROUTER_CONFIG: ResolvedJTAGRouterConfig = {
     preferred: 'websocket',
     fallback: true,
     role: TRANSPORT_ROLES.SERVER, // Default to server role (browsers will override to 'client')
-    serverPort: 9001, // WebSocket default port
+    serverPort: 9001 as const, // Default - actual port from JTAGContext.config.instance.ports.websocket_server
     serverUrl: undefined // Will be auto-derived from port
   },
   enableLogging: true,

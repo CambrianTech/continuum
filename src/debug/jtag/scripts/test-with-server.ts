@@ -19,10 +19,10 @@ async function runTests(): Promise<{ success: boolean; summary?: string }> {
       cwd: process.cwd()
     });
     
-    // Capture output while also showing it
+    // Capture output but don't show in real-time - will display at end
     testChild.stdout?.on('data', (data) => {
       const text = data.toString();
-      process.stdout.write(text); // Still show output in real-time
+      // Don't show in real-time - save for final display
       capturedOutput += text;
     });
     
@@ -43,6 +43,35 @@ async function runTests(): Promise<{ success: boolean; summary?: string }> {
       resolve({ success: false });
     });
   });
+}
+
+async function teardownSystem(): Promise<void> {
+  try {
+    // Stop system daemons but preserve session directories for analysis
+    const { spawn } = require('child_process');
+    await new Promise<void>((resolve) => {
+      const cleanup = spawn('npm', ['run', 'system:stop'], {
+        stdio: 'inherit',
+        shell: true
+      });
+      
+      cleanup.on('exit', (code) => {
+        console.log(`✅ System teardown completed (exit code: ${code})`);
+        resolve();
+      });
+      
+      cleanup.on('error', (error) => {
+        console.warn(`⚠️ Teardown error (continuing anyway): ${error.message}`);
+        resolve(); // Continue even if teardown fails
+      });
+    });
+    
+    // Brief wait for daemons to fully stop
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+  } catch (error) {
+    console.warn(`⚠️ Teardown failed (continuing): ${error}`);
+  }
 }
 
 async function checkSystemReady(): Promise<boolean> {
@@ -85,22 +114,13 @@ async function main(): Promise<void> {
     const testResult = await runTests();
     testsSuccessful = testResult.success; // Update tracking variable
     
-    // Strategy: Let all output complete naturally, then show summary as true conclusion
-    // Wait for any background daemon cleanup to finish
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Show the clean comprehensive summary as the final conclusion  
+    // Show the captured test results as final output (after all daemon messages)
     if (testResult.summary) {
-      // Clear any lingering output and show clean summary
-      console.log('\n'); // Ensure clean separation
-      console.log(testResult.summary.trim()); // Remove extra whitespace
+      console.log(testResult.summary.trim());
     }
     
-    if (testResult.success) {
-      // Don't exit - let the keep-alive logic in system-startup.ts keep servers running
-    } else {
-      process.exit(1);
-    }
+    // Exit gracefully with proper exit code
+    process.exit(testResult.success ? 0 : 1);
     
   } catch (error) {
     console.error('💥 Fatal error:', error instanceof Error ? error.message : error);
