@@ -1,6 +1,149 @@
 import { spawn } from 'child_process';
 import { startSystem } from './system-startup';
 
+interface OutputFilter {
+  shouldShowLine(line: string): boolean;
+}
+
+class VerboseOutputFilter implements OutputFilter {
+  shouldShowLine(): boolean {
+    return true; // Show everything in verbose mode
+  }
+}
+
+class TestOutputFilter implements OutputFilter {
+  private readonly testStatusPatterns = [
+    /^▶️/,  // Running test
+    /^✅/,  // Test passed 
+    /^❌/,  // Test failed
+    /^💥/,  // Error details
+  ];
+  
+  private readonly importantSystemPatterns = [
+    /^🚀/,  // System startup
+    /^📋/,  // Configuration info  
+    /^⚠️/,  // Warnings
+    /^🎯/,  // Main headers
+    /^═══/, // Summary sections
+  ];
+
+  shouldShowLine(line: string): boolean {
+    const trimmedLine = line.trim();
+    if (!trimmedLine) return false;
+    
+    // Check test status patterns first (highest priority)
+    for (const pattern of this.testStatusPatterns) {
+      if (pattern.test(trimmedLine)) return true;
+    }
+    
+    // Check important system patterns
+    for (const pattern of this.importantSystemPatterns) {
+      if (pattern.test(trimmedLine)) return true;
+    }
+    
+    return false;
+  }
+}
+
+class SilentOutputFilter implements OutputFilter {
+  shouldShowLine(): boolean {
+    return false; // Show nothing (for completely silent mode)
+  }
+}
+
+// Factory for creating appropriate filters
+class OutputFilterFactory {
+  static create(mode: 'verbose' | 'normal' | 'silent'): OutputFilter {
+    switch (mode) {
+      case 'verbose': return new VerboseOutputFilter();
+      case 'normal': return new TestOutputFilter();
+      case 'silent': return new SilentOutputFilter();
+      default: return new TestOutputFilter();
+    }
+  }
+}
+
+// Configuration for test execution
+interface TestConfig {
+  command: string[];
+  verbose: boolean;
+  summaryMarker: string;
+}
+
+// Result of test execution
+interface TestExecutionResult {
+  success: boolean;
+  summary?: string;
+  output: string;
+}
+
+// Helper function to create environment for test execution
+function createTestEnvironment(verbose: boolean): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    JTAG_TEST_VERBOSE: verbose ? 'true' : 'false'
+  };
+}
+
+// Helper function to process test output data
+function processTestOutput(
+  text: string,
+  capturedOutput: { value: string },
+  verbose: boolean,
+  outputFilter: OutputFilter
+): void {
+  // Always capture the output for summary extraction
+  capturedOutput.value += text;
+  
+  if (verbose) {
+    // Verbose mode: show everything in real-time
+    process.stdout.write(text);
+  } else {
+    // Filtered mode: show only lines that pass the filter
+    const lines = text.split('\n');
+    for (const line of lines) {
+      if (outputFilter.shouldShowLine(line)) {
+        console.log(line);
+      }
+    }
+  }
+}
+
+// Generic command executor with output filtering
+async function executeCommand(config: TestConfig): Promise<TestExecutionResult> {
+  return new Promise((resolve) => {
+    const capturedOutput = { value: '' };
+    const outputFilter = OutputFilterFactory.create(config.verbose ? 'verbose' : 'normal');
+    const env = createTestEnvironment(config.verbose);
+    
+    const child = spawn(config.command[0], config.command.slice(1), {
+      stdio: ['inherit', 'pipe', 'inherit'],
+      cwd: process.cwd(),
+      env
+    });
+    
+    child.stdout?.on('data', (data) => {
+      processTestOutput(data.toString(), capturedOutput, config.verbose, outputFilter);
+    });
+    
+    child.on('exit', (code) => {
+      const summaryStart = capturedOutput.value.lastIndexOf(config.summaryMarker);
+      const summary = summaryStart !== -1 ? capturedOutput.value.substring(summaryStart) : '';
+      
+      resolve({
+        success: code === 0,
+        summary,
+        output: capturedOutput.value
+      });
+    });
+    
+    child.on('error', (error) => {
+      console.error('❌ Command execution error:', error.message);
+      resolve({ success: false, output: capturedOutput.value });
+    });
+  });
+}
+
 interface TestResult {
   readonly success: boolean;
   readonly serverStarted: boolean;
@@ -8,41 +151,20 @@ interface TestResult {
   readonly errorMessage?: string;
 }
 
-async function runTests(): Promise<{ success: boolean; summary?: string }> {
+async function runTests(verbose: boolean = false): Promise<{ success: boolean; summary?: string }> {
   console.log('🧪 Running test suite...');
   
-  return new Promise((resolve) => {
-    let capturedOutput = '';
-    
-    const testChild = spawn('npm', ['run', 'test:comprehensive'], {
-      stdio: ['inherit', 'pipe', 'inherit'], // Capture stdout to extract summary
-      cwd: process.cwd()
-    });
-    
-    // Capture output but don't show in real-time - will display at end
-    testChild.stdout?.on('data', (data) => {
-      const text = data.toString();
-      // Don't show in real-time - save for final display
-      capturedOutput += text;
-    });
-    
-    testChild.on('exit', (code) => {
-      // Extract the comprehensive summary from the output
-      const summaryStart = capturedOutput.lastIndexOf('═══════════════════════════════════════════════════════════════════════════════');
-      const summary = summaryStart !== -1 ? capturedOutput.substring(summaryStart) : '';
-      
-      if (code === 0) {
-        resolve({ success: true, summary });
-      } else {
-        resolve({ success: false, summary });
-      }
-    });
-    
-    testChild.on('error', (error) => {
-      console.error('❌ Test execution error:', error.message);
-      resolve({ success: false });
-    });
-  });
+  const config: TestConfig = {
+    command: ['npm', 'run', 'test:comprehensive'],
+    verbose,
+    summaryMarker: '═══════════════════════════════════════════════════════════════════════════════'
+  };
+  
+  const result = await executeCommand(config);
+  return {
+    success: result.success,
+    summary: result.summary
+  };
 }
 
 async function teardownSystem(): Promise<void> {
@@ -96,8 +218,14 @@ async function main(): Promise<void> {
   let testsSuccessful = false; // Track success for cleanup decision
   
   try {
+    // Parse command line arguments for --verbose flag
+    const verbose = process.argv.includes('--verbose');
+    
     console.log('🎯 JTAG TEST WITH SERVER MANAGEMENT');
     console.log('📋 This will check for existing system or start fresh, run tests, then clean up');
+    if (verbose) {
+      console.log('🔊 Verbose mode enabled - showing detailed test output');
+    }
     
     // Check if system is already running (likely from npm test System Ensure phase)
     const systemAlreadyRunning = await checkSystemReady();
@@ -110,8 +238,8 @@ async function main(): Promise<void> {
       await startSystem('npm-test');
     }
     
-    // Run tests
-    const testResult = await runTests();
+    // Run tests with verbose flag
+    const testResult = await runTests(verbose);
     testsSuccessful = testResult.success; // Update tracking variable
     
     // Show the captured test results as final output (after all daemon messages)

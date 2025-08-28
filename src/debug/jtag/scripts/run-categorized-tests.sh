@@ -122,9 +122,27 @@ run_test() {
     echo "▶️  Running: $test_name [$category]"
     ((TOTAL_TESTS++))
     
-    # Capture both stdout and stderr for error reporting
+    # Handle output based on verbose mode
     local temp_output="/tmp/test_output_$$_$(date +%s).log"
-    if eval "$test_command" >"$temp_output" 2>&1; then
+    local test_result
+    
+    if [ "$JTAG_TEST_VERBOSE" = "true" ]; then
+        # Verbose mode: show output in real-time and capture to file
+        if eval "$test_command" 2>&1 | tee "$temp_output"; then
+            test_result="pass"
+        else
+            test_result="fail"
+        fi
+    else
+        # Quiet mode: capture output to file only
+        if eval "$test_command" >"$temp_output" 2>&1; then
+            test_result="pass"
+        else
+            test_result="fail"
+        fi
+    fi
+    
+    if [ "$test_result" = "pass" ]; then
         echo "✅ PASSED: $test_name"
         ((PASSED_TESTS++))
         echo "$category|PASS|$test_name" >> .continuum/tests/test_results.tmp
@@ -353,10 +371,12 @@ if [ $FAILED_TESTS -gt 0 ]; then
     fi
     
     echo "🔍 Recommended Next Steps:"
-    echo "   1. Run specific failing tests with detailed output"
-    echo "   2. Check system logs: .continuum/jtag/system/logs/"
-    echo "   3. Verify system health: npm run agent:quick"
-    echo "   4. Use profile-specific commands for focused testing"
+    echo "   1. Re-run with --verbose for detailed test output:"
+    echo "      npx tsx scripts/test-with-server.ts --verbose"
+    echo "   2. Check detailed logs in test session files (preserved above)"
+    echo "   3. Run specific failing tests individually for focused debugging"
+    echo "   4. Check system logs: .continuum/jtag/system/logs/"
+    echo "   5. Verify system health: npm run agent:quick"
     echo ""
     
     # Keep temp file for debugging if needed
