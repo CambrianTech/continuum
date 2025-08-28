@@ -191,6 +191,7 @@ run_profile_tests() {
             run_test "Multi-user Chat" "npx tsx tests/integration/simple-multiuser-chat.test.ts" "Chat & Messaging"
             
             # Unit tests
+            run_test "Transport Architecture Unit" "npx tsx tests/transport-architecture-unit.test.ts" "Unit Tests"
             run_test "Event Routing Unit" "npx tsx tests/unit/router-broadcast.test.ts" "Unit Tests"
             run_test "Router Broadcast Unit" "npx tsx tests/unit/room-scoped-event-routing.test.ts" "Unit Tests"
             run_test "Events Daemon Unit" "npx tsx tests/unit/events-daemon-unit.test.ts" "Unit Tests"
@@ -224,6 +225,7 @@ run_profile_tests() {
             ;;
             
         "integration")
+            run_test "Transport Architecture Integration" "npx tsx tests/integration/transport-architecture-integration.test.ts" "Integration Tests"
             run_test "Browser Integration" "npx tsx tests/integration/browser-automated-tests.test.ts" "Integration Tests"
             run_test "Server-Client Integration" "npx tsx tests/integration/server-client-integration.test.ts" "Integration Tests"
             run_test "Router Coordination" "npx tsx tests/integration/router-coordination-simple.test.ts" "Integration Tests"
@@ -231,6 +233,7 @@ run_profile_tests() {
             ;;
             
         "unit")
+            run_test "Transport Architecture" "npx tsx tests/transport-architecture-unit.test.ts" "Unit Tests"
             run_test "Event Routing" "npx tsx tests/unit/router-broadcast.test.ts" "Unit Tests"
             run_test "Room Scoped Events" "npx tsx tests/unit/room-scoped-event-routing.test.ts" "Unit Tests"
             run_test "Events Daemon" "npx tsx tests/unit/events-daemon-unit.test.ts" "Unit Tests"
@@ -253,6 +256,8 @@ run_profile_tests() {
             ;;
             
         "transport")
+            run_test "Transport Architecture Unit" "npx tsx tests/transport-architecture-unit.test.ts" "Transport Tests"
+            run_test "Transport Architecture Integration" "npx tsx tests/integration/transport-architecture-integration.test.ts" "Transport Tests"
             run_test "Transport Diagnostic" "npx tsx tests/transport-diagnostic.test.ts" "Transport Tests"
             run_test "Cross-Context Commands" "npx tsx tests/integration/transport/browser-server-commands.test.ts" "Transport Tests"
             # run_test "Transport Flexibility" "npx tsx tests/integration/transport/transport-flexibility.test.ts" "Transport Tests"  # Still may hang
