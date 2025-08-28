@@ -56,7 +56,7 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
         };
       }
 
-      console.log(`🏷️  Process Registry: Registering ${params.processType} process: ${params.description}`);
+      console.debug(`🏷️  Process Registry: Registering ${params.processType} process: ${params.description}`);
       
       // Ensure registry directory exists
       await this.ensureRegistryDir();
@@ -88,7 +88,7 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
         processType: params.processType,
         description: params.description,
         parentProcessId: params.parentProcessId,
-        capabilities: params.capabilities || getProcessCapabilities(params.processType)
+        capabilities: params.capabilities ?? getProcessCapabilities(params.processType)
       };
       
       // Register the process
@@ -97,8 +97,8 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
       // Set up cleanup on exit
       this.setupExitHandlers(processId);
       
-      console.log(`✅ Process Registry: Registered ${params.processType} as ${processId}`);
-      console.log(`🔍 Process Registry: Using ports [${entry.ports.join(', ')}]`);
+      // console.debug(`✅ Process Registry: Registered ${params.processType} as ${processId}`);
+      // console.debug(`🔍 Process Registry: Using ports [${entry.ports.join(', ')}]`);
       
       return {
         context: params.context,
@@ -179,10 +179,10 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
    */
   async cleanupProcesses(params: CleanupProcessesParams): Promise<CleanupProcessesResult> {
     try {
-      console.log('🧹 Smart Port Cleanup: Starting registry-aware cleanup...');
+      // console.debug('🧹 Smart Port Cleanup: Starting registry-aware cleanup...');
       
       const activeProcesses = await this.getActiveProcesses();
-      console.log(`🔍 Found ${activeProcesses.length} active JTAG processes in registry`);
+      // console.debug(`🔍 Found ${activeProcesses.length} active JTAG processes in registry`);
       
       // Determine which processes to preserve vs kill
       const { toKill, toPreserve } = this.categorizeProcesses(activeProcesses, params);
@@ -220,10 +220,10 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
         for (const port of targetPorts) {
           try {
             execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null`, { stdio: 'ignore' });
-            console.log(`💀 Force killed all processes on port ${port}`);
+            // console.debug(`💀 Force killed all processes on port ${port}`);
             cleanedPorts.push(port);
           } catch {
-            console.log(`ℹ️  No processes found on port ${port}`);
+            // console.debug(`ℹ️  No processes found on port ${port}`);
           }
         }
       } else {
@@ -233,30 +233,30 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
 
         for (const port of targetPorts) {
           if (jtagPorts.has(port)) {
-            console.log(`⚠️  Preserving port ${port} (owned by JTAG process)`);
+            // console.debug(`⚠️  Preserving port ${port} (owned by JTAG process)`);
             continue;
           }
 
           try {
             execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null`, { stdio: 'ignore' });
-            console.log(`✅ Cleaned non-JTAG processes on port ${port}`);
+            // console.debug(`✅ Cleaned non-JTAG processes on port ${port}`);
             cleanedPorts.push(port);
           } catch {
-            console.log(`ℹ️  No non-JTAG processes found on port ${port}`);
+            // console.debug(`ℹ️  No non-JTAG processes found on port ${port}`);
           }
         }
       }
 
       // Log results
-      console.log(`🎉 Smart cleanup complete:`);
-      console.log(`  • Killed processes: ${killedProcesses.length}`);
-      console.log(`  • Preserved processes: ${toPreserve.length}`);
-      console.log(`  • Cleaned ports: [${cleanedPorts.join(', ')}]`);
+      // console.debug(`🎉 Smart cleanup complete:`);
+      // console.debug(`  • Killed processes: ${killedProcesses.length}`);
+      // console.debug(`  • Preserved processes: ${toPreserve.length}`);
+      // console.debug(`  • Cleaned ports: [${cleanedPorts.join(', ')}]`);
 
       if (toPreserve.length > 0) {
-        console.log(`📋 Active JTAG processes preserved:`);
+        // console.debug(`📋 Active JTAG processes preserved:`);
         toPreserve.forEach(proc => {
-          console.log(`  • ${proc.processId}: ${proc.description} (ports: ${proc.ports.join(', ')})`);
+          // console.debug(`  • ${proc.processId}: ${proc.description} (ports: ${proc.ports.join(', ')})`);
         });
       }
 
@@ -332,7 +332,7 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
   }
 
   private async killJTAGProcess(proc: ProcessRegistryEntry): Promise<void> {
-    console.log(`🎯 Killing JTAG process ${proc.processId} (${proc.description}) PID ${proc.pid}`);
+    // console.debug(`🎯 Killing JTAG process ${proc.processId} (${proc.description}) PID ${proc.pid}`);
     
     // Kill the process
     process.kill(proc.pid, 'SIGTERM');
@@ -344,7 +344,7 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
     try {
       process.kill(proc.pid, 0); // Check if still exists
       process.kill(proc.pid, 'SIGKILL');
-      console.log(`💀 Force killed JTAG process ${proc.processId}`);
+      // console.debug(`💀 Force killed JTAG process ${proc.processId}`);
     } catch {
       // Process already exited
     }
@@ -353,17 +353,17 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
   private async cleanupTmuxSessions(): Promise<void> {
     try {
       execSync('tmux kill-session -t jtag-test 2>/dev/null', { stdio: 'ignore' });
-      console.log('✅ Tmux session jtag-test killed');
+      // console.debug('✅ Tmux session jtag-test killed');
     } catch {
-      console.log('ℹ️  No tmux session jtag-test found');
+      // console.debug('ℹ️  No tmux session jtag-test found');
     }
 
     // Kill npm start processes (usually safe)
     try {
       execSync(`pkill -f 'npm.*start' 2>/dev/null`, { stdio: 'ignore' });
-      console.log('✅ npm start processes killed');
+      // console.debug('✅ npm start processes killed');
     } catch {
-      console.log('ℹ️  No npm start processes found');
+      // console.debug('ℹ️  No npm start processes found');
     }
   }
 
@@ -428,7 +428,7 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
         activeProcessIds.push(processId);
       } catch {
         // Process is no longer running
-        console.log(`🧹 Process Registry: Cleaned up stale process ${processId} (PID ${entry.pid})`);
+        // console.debug(`🧹 Process Registry: Cleaned up stale process ${processId} (PID ${entry.pid})`);
       }
     }
 
@@ -449,7 +449,7 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
           delete this.registryState.processes[processId];
           this.registryState.lastUpdate = Date.now();
           await this.saveRegistry();
-          console.log(`🧹 Process Registry: Unregistered ${processId}`);
+          // console.debug(`🧹 Process Registry: Unregistered ${processId}`);
         }
       } catch {
         // Best effort cleanup

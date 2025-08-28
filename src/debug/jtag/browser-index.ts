@@ -13,19 +13,19 @@ import { BROWSER_WIDGETS } from './browser/generated';
 export const jtag = {
   // Universal client interface - always returns connection result with client property
   async connect(): Promise<ReturnType<typeof JTAGClientBrowser.connectLocal>> {
-    console.log('🔌 Browser: Connecting via JTAGClientBrowser (local connection)');
+    console.debug('🔌 Browser: Connecting via JTAGClientBrowser (local connection)');
     
     // Register widgets dynamically from generated registry
-    console.log(`🎭 Registering ${BROWSER_WIDGETS.length} widgets...`);
+    console.debug(`🎭 Registering ${BROWSER_WIDGETS.length} widgets...`);
     BROWSER_WIDGETS.forEach(widget => {
       if (!customElements.get(widget.tagName)) {
         customElements.define(widget.tagName, widget.widgetClass);
-        console.log(`✅ Registered widget: ${widget.tagName} (${widget.className})`);
+        console.debug(`✅ Registered widget: ${widget.tagName} (${widget.className})`);
       }
     });
     
     const connectionResult = await JTAGClientBrowser.connectLocal();
-    console.log('✅ Browser: JTAGClient connected with local system');
+    console.debug('✅ Browser: JTAGClient connected with local system');
     return connectionResult;
   },
 
