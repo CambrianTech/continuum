@@ -32,7 +32,7 @@ import { TRANSPORT_EVENTS } from '../../../transports/shared/TransportEvents';
 import { SYSTEM_EVENTS } from '../../../events';
 import { JTAG_ENDPOINTS } from './JTAGEndpoints';
 import type { TimerHandle } from '../../types/CrossPlatformTypes';
-import type { JTAGTransport } from '@system/transports/shared/TransportTypes';
+import type { JTAGTransport } from '../../../transports/shared/TransportTypes';
 import type { UUID } from '../../types/CrossPlatformUUID';
 
 export enum ConnectionState {

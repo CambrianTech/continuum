@@ -7,7 +7,7 @@
 
 import { type WaitForElementParams, type WaitForElementResult, createWaitForElementResult } from '../shared/WaitForElementTypes';
 import { ValidationError } from '../../../system/core/types/ErrorTypes';
-import { WaitForElementCommand } from '@commandsWaitForElement/shared/WaitForElementCommand';
+import { WaitForElementCommand } from '../shared/WaitForElementCommand';
 import { safeQuerySelector } from '../../../daemons/command-daemon/shared/GlobalUtils';
 
 export class WaitForElementBrowserCommand extends WaitForElementCommand {

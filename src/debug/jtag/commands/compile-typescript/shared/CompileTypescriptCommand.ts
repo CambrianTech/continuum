@@ -17,8 +17,8 @@
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { type CompileTypescriptParams, createCompileTypescriptParams } from '@commandsCompileTypescript/shared/CompileTypescriptTypes';
-import type { CompileTypescriptResult } from '@commandsCompileTypescript/shared/CompileTypescriptTypes';
+import { type CompileTypescriptParams, createCompileTypescriptParams } from './CompileTypescriptTypes';
+import type { CompileTypescriptResult } from './CompileTypescriptTypes';
 
 export abstract class CompileTypescriptCommand extends CommandBase<CompileTypescriptParams, CompileTypescriptResult> {
 

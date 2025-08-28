@@ -8,17 +8,16 @@
 
 import { FileManager } from './utils/FileManager';
 import { ConsoleLogger } from './utils/Logger';
-import { PathResolver } from './utils/PathUtils';
+import { join } from 'path';
 
 async function cleanupBackupPollution(): Promise<void> {
   const logger = new ConsoleLogger('info');
   const fileManager = new FileManager(logger);
-  const resolver = new PathResolver(process.cwd());
 
   logger.info('🧹 Starting backup file cleanup...');
   
   // Clean up backup files in the root directory
-  fileManager.cleanupAllBackups(resolver.resolve('.'));
+  fileManager.cleanupAllBackups(process.cwd());
   
   // Also check and clean other directories that might have backups
   const directoriesToCheck = [
@@ -29,7 +28,7 @@ async function cleanupBackupPollution(): Promise<void> {
   ];
   
   for (const dir of directoriesToCheck) {
-    const dirPath = resolver.resolve(dir);
+    const dirPath = join(process.cwd(), dir);
     if (fileManager.exists(dirPath)) {
       logger.info(`🔍 Checking ${dir} for backup files...`);
       fileManager.cleanupAllBackups(dirPath);

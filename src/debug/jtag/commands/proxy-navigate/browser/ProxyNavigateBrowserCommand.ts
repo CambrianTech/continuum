@@ -5,9 +5,9 @@
  * Enables cross-origin screenshot capture by making content same-origin.
  */
 
-import { type ProxyNavigateParams, type ProxyNavigateResult, createProxyNavigateResult } from '@commandsProxyNavigate/shared/ProxyNavigateTypes';
+import { type ProxyNavigateParams, type ProxyNavigateResult, createProxyNavigateResult } from '../shared/ProxyNavigateTypes';
 import { ValidationError } from '../../../system/core/types/ErrorTypes';
-import { ProxyNavigateCommand } from '@commandsProxyNavigate/shared/ProxyNavigateCommand';
+import { ProxyNavigateCommand } from '../shared/ProxyNavigateCommand';
 
 export class ProxyNavigateBrowserCommand extends ProxyNavigateCommand {
   

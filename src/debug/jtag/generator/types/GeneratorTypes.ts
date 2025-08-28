@@ -6,22 +6,8 @@
  */
 
 // ============================================================================
-// Core Configuration Types
+// Core Configuration Types (Path aliases removed - keep only structure types)
 // ============================================================================
-
-export interface PathMapping {
-  alias: string;
-  relativePath: string;
-  description: string;
-  essential: boolean; // True for manually curated, false for auto-generated
-}
-
-export interface PathMappingsConfig {
-  version: string;
-  generatedAt: string;
-  mappings: Record<string, PathMapping>;
-  description: string;
-}
 
 // ============================================================================
 // Structure Generation Types  
@@ -131,14 +117,8 @@ export interface GenerationResult {
 }
 
 // ============================================================================
-// Strategy Types (for pluggable behavior)
+// Strategy Types (path alias strategy removed - keep only file discovery)
 // ============================================================================
-
-export interface AliasStrategy {
-  name: string;
-  generateAlias(relativePath: string): string;
-  description: string;
-}
 
 export interface FileDiscoveryStrategy {
   name: string;

@@ -8,7 +8,7 @@
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import { FileCommand } from '@commandsFile/shared/FileTypes';
+import { FileCommand } from '../../shared/FileTypes';
 import { type FileSaveParams, type FileSaveResult, createFileSaveParams } from './FileSaveTypes';
 
 export abstract class FileSaveCommand extends FileCommand<FileSaveParams, FileSaveResult> {
