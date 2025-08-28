@@ -20,7 +20,7 @@ export class SessionDestroyServerCommand extends SessionDestroyCommand {
    * Server session destruction - directly call session daemon (like screenshot pattern)
    */
   protected async routeToSessionDaemon(params: DestroySessionParams): Promise<DestroySessionResult | SessionErrorResponse> {
-    console.log(`🧹 SERVER: Destroying session directly via session daemon`);
+    // console.debug(`🧹 SERVER: Destroying session directly via session daemon`);
 
     // Find the SessionDaemon directly
     const sessionDaemon = this.commander.router.getSubscriber('session-daemon');
@@ -38,9 +38,9 @@ export class SessionDestroyServerCommand extends SessionDestroyCommand {
       JTAGMessageFactory.generateCorrelationId()
     );
 
-    console.log(`🔍 SERVER: Calling session daemon directly`);
+    // console.debug(`🔍 SERVER: Calling session daemon directly`);
     const response = await sessionDaemon.handleMessage(sessionMessage);
-    console.log(`🔍 SERVER: Session daemon response:`, JSON.stringify(response, null, 2));
+    // console.debug(`🔍 SERVER: Session daemon response:`, JSON.stringify(response, null, 2));
     
     return response as DestroySessionResult | SessionErrorResponse;
   }

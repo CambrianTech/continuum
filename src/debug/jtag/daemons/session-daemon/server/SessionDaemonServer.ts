@@ -102,11 +102,11 @@ export class SessionDaemonServer extends SessionDaemon {
           this.scheduleSessionExpiry(session.sessionId, session.isShared);
         }
         
-        console.log(`📖 ${this.toString()}: Loaded ${this.sessions.length} sessions from ${metadataPath} with timeout restoration`);
+        // console.debug(`📖 ${this.toString()}: Loaded ${this.sessions.length} sessions from ${metadataPath} with timeout restoration`);
       }
     } catch (error) {
       // File doesn't exist or is invalid, start with empty sessions
-      console.log(`📝 ${this.toString()}: No existing session metadata found, starting fresh`);
+      // console.debug(`📝 ${this.toString()}: No existing session metadata found, starting fresh`);
       this.sessions = [];
     }
   }
@@ -127,7 +127,7 @@ export class SessionDaemonServer extends SessionDaemon {
       };
       
       await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2));
-      console.log(`💾 ${this.toString()}: Saved ${this.sessions.length} sessions to ${metadataPath}`);
+      // console.debug(`💾 ${this.toString()}: Saved ${this.sessions.length} sessions to ${metadataPath}`);
     } catch (error) {
       console.error(`❌ ${this.toString()}: Failed to save session metadata:`, error);
     }
@@ -147,7 +147,7 @@ export class SessionDaemonServer extends SessionDaemon {
       });
     }, 5 * 60 * 1000);
     
-    console.log(`🏷️ ${this.toString()}: Session daemon server initialized with per-project persistence and expiry management`);
+    // console.debug(`🏷️ ${this.toString()}: Session daemon server initialized with per-project persistence and expiry management`);
   }
 
   /**
@@ -164,12 +164,12 @@ export class SessionDaemonServer extends SessionDaemon {
     const expiryMs = isShared ? this.BROWSER_SESSION_EXPIRY_MS : this.SESSION_EXPIRY_MS;
     
     const timeout = setTimeout(async () => {
-      console.log(`⏰ ${this.toString()}: Session ${sessionId} expired due to timeout (${expiryMs}ms)`);
+      // console.debug(`⏰ ${this.toString()}: Session ${sessionId} expired due to timeout (${expiryMs}ms)`);
       await this.expireSession(sessionId, 'timeout');
     }, expiryMs);
 
     this.sessionTimeouts.set(sessionId, timeout);
-    console.log(`⏲️ ${this.toString()}: Scheduled expiry for session ${sessionId} in ${expiryMs}ms`);
+    // console.debug(`⏲️ ${this.toString()}: Scheduled expiry for session ${sessionId} in ${expiryMs}ms`);
   }
 
   /**
@@ -180,7 +180,7 @@ export class SessionDaemonServer extends SessionDaemon {
       const sessionIndex = this.sessions.findIndex(s => s.sessionId === sessionId);
       if (sessionIndex !== -1) {
         const session = this.sessions[sessionIndex];
-        console.log(`💀 ${this.toString()}: Expiring ${session.isShared ? 'shared' : 'ephemeral'} session ${sessionId} (${reason})`);
+        // console.debug(`💀 ${this.toString()}: Expiring ${session.isShared ? 'shared' : 'ephemeral'} session ${sessionId} (${reason})`);
         
         // Mark as inactive and remove from memory
         this.sessions.splice(sessionIndex, 1);
@@ -194,7 +194,7 @@ export class SessionDaemonServer extends SessionDaemon {
         
         // Update persistent storage
         await this.saveSessionsToFile();
-        console.log(`✅ ${this.toString()}: Session ${sessionId} expired and cleaned up`);
+        // console.debug(`✅ ${this.toString()}: Session ${sessionId} expired and cleaned up`);
       }
     } catch (error) {
       console.error(`❌ ${this.toString()}: Failed to expire session ${sessionId}:`, error);
@@ -218,7 +218,7 @@ export class SessionDaemonServer extends SessionDaemon {
     }
 
     if (expiredSessions.length > 0) {
-      console.log(`🧹 ${this.toString()}: Found ${expiredSessions.length} expired sessions for cleanup`);
+      // console.debug(`🧹 ${this.toString()}: Found ${expiredSessions.length} expired sessions for cleanup`);
       
       for (const session of expiredSessions) {
         await this.expireSession(session.sessionId, 'periodic_cleanup');
@@ -234,7 +234,7 @@ export class SessionDaemonServer extends SessionDaemon {
     if (session) {
       session.lastActive = new Date();
       this.scheduleSessionExpiry(sessionId, session.isShared);
-      console.log(`🔄 ${this.toString()}: Updated activity for session ${sessionId}`);
+      // console.debug(`🔄 ${this.toString()}: Updated activity for session ${sessionId}`);
     }
   }
 
@@ -250,7 +250,7 @@ export class SessionDaemonServer extends SessionDaemon {
    * Cleanup method for graceful shutdown
    */
   public async cleanup(): Promise<void> {
-    console.log(`🧹 ${this.toString()}: Starting cleanup...`);
+    // console.debug(`🧹 ${this.toString()}: Starting cleanup...`);
     
     // Clear cleanup interval
     if (this.cleanupInterval) {
@@ -261,14 +261,14 @@ export class SessionDaemonServer extends SessionDaemon {
     // Clear all session timeouts
     for (const [sessionId, timeout] of this.sessionTimeouts) {
       clearTimeout(timeout);
-      console.log(`⏲️ ${this.toString()}: Cleared timeout for session ${sessionId}`);
+      // console.debug(`⏲️ ${this.toString()}: Cleared timeout for session ${sessionId}`);
     }
     this.sessionTimeouts.clear();
     
     // Save current session state
     await this.saveSessionsToFile();
     
-    console.log(`✅ ${this.toString()}: Cleanup completed`);
+    // console.debug(`✅ ${this.toString()}: Cleanup completed`);
   }
 
   /**
@@ -292,7 +292,7 @@ export class SessionDaemonServer extends SessionDaemon {
 
   // Only source of truth in all daemons is here:  handleMessage(message: JTAGMessage): Promise<JTAGResponsePayload>
   async handleMessage(message: JTAGMessage): Promise<SessionResponse> {
-      console.log(`📨 ${this.toString()}: Handling message to ${message.endpoint}`);
+      // console.debug(`📨 ${this.toString()}: Handling message to ${message.endpoint}`);
       
       // Extract session operation from endpoint (similar to CommandDaemon pattern)
       const operation = this.extractOperation(message.endpoint);
@@ -338,7 +338,7 @@ export class SessionDaemonServer extends SessionDaemon {
           // Check for existing shared session
           const existingSession = this.sessions.find(s => s.isShared && s.isActive);
           if (existingSession) {
-            console.log(`⚡ ${this.toString()}: Reusing existing shared session:`, existingSession);
+            // console.debug(`⚡ ${this.toString()}: Reusing existing shared session:`, existingSession);
             return createPayload(params.context, params.sessionId, {
               success: true,
               timestamp: new Date().toISOString(),
@@ -351,7 +351,7 @@ export class SessionDaemonServer extends SessionDaemon {
     }
 
     private async createSession(params: CreateSessionParams): Promise<CreateSessionResult> {
-      console.log(`⚡ ${this.toString()}: Creating new session:`, params);
+      // console.debug(`⚡ ${this.toString()}: Creating new session:`, params);
       
       const newSession = {
         sourceContext: params.context,
@@ -365,7 +365,7 @@ export class SessionDaemonServer extends SessionDaemon {
         isShared: params.isShared
       };
 
-      console.log(`✅ ${this.toString()}: New session created:`, newSession);
+      // console.debug(`✅ ${this.toString()}: New session created:`, newSession);
 
       this.sessions.push(newSession);
       
@@ -384,7 +384,7 @@ export class SessionDaemonServer extends SessionDaemon {
     }
 
     private async getSession(params: GetSessionParams): Promise<GetSessionResult> {
-      console.log(`⚡ ${this.toString()}: Getting session with ID: ${params.sessionId}`);
+      // console.debug(`⚡ ${this.toString()}: Getting session with ID: ${params.sessionId}`);
 
       const session = this.sessions.find(s => s.sessionId === params.sessionId);
       
@@ -397,7 +397,7 @@ export class SessionDaemonServer extends SessionDaemon {
     }
 
   private async listSessions(payload: ListSessionsParams): Promise<ListSessionsResult> {
-    console.log(`⚡ ${this.toString()}: Listing sessions with filter:`, payload.filter);
+    // console.debug(`⚡ ${this.toString()}: Listing sessions with filter:`, payload.filter);
     
     let sessions = this.sessions;
     const filter = payload.filter;
@@ -418,7 +418,7 @@ export class SessionDaemonServer extends SessionDaemon {
   }   
 
   private async destroySession(params: DestroySessionParams): Promise<DestroySessionResult> {
-    console.log(`⚡ ${this.toString()}: Destroying session ${params.sessionId}, reason: ${params.reason || 'unknown'}`);
+    // console.debug(`⚡ ${this.toString()}: Destroying session ${params.sessionId}, reason: ${params.reason || 'unknown'}`);
     
     // Find session in memory
     const sessionIndex = this.sessions.findIndex(s => s.sessionId === params.sessionId);
@@ -435,20 +435,20 @@ export class SessionDaemonServer extends SessionDaemon {
 
     // Remove session from memory
     const destroyedSession = this.sessions.splice(sessionIndex, 1)[0];
-    console.log(`✅ ${this.toString()}: Removed session ${params.sessionId} from memory`);
+    // console.debug(`✅ ${this.toString()}: Removed session ${params.sessionId} from memory`);
     
     // Clear session timeout if it exists
     const timeout = this.sessionTimeouts.get(params.sessionId);
     if (timeout) {
       clearTimeout(timeout);
       this.sessionTimeouts.delete(params.sessionId);
-      console.log(`⏲️ ${this.toString()}: Cleared timeout for destroyed session ${params.sessionId}`);
+      // console.debug(`⏲️ ${this.toString()}: Cleared timeout for destroyed session ${params.sessionId}`);
     }
     
     // Update persistent storage
     try {
       await this.saveSessionsToFile();
-      console.log(`✅ ${this.toString()}: Updated session metadata file`);
+      // console.debug(`✅ ${this.toString()}: Updated session metadata file`);
     } catch (error) {
       console.error(`❌ ${this.toString()}: Failed to update session metadata:`, error);
       // Session still destroyed from memory, but file sync failed

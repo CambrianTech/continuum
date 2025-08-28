@@ -50,17 +50,17 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
    * BREAKTHROUGH: Full body capture + element coordinate cropping (more reliable than html2canvas element capture)
    */
   async execute(params: ScreenshotParams): Promise<ScreenshotResult> {
-    console.log(`🔍 BROWSER: Checking multi-resolution conditions:`);
-    console.log(`   resolutions: ${params.options?.resolutions?.length || 0}`);
-    console.log(`   presets: ${params.options?.presets?.length || 0}`);
+    // console.debug(`🔍 BROWSER: Checking multi-resolution conditions:`);
+    // console.debug(`   resolutions: ${params.options?.resolutions?.length || 0}`);
+    // console.debug(`   presets: ${params.options?.presets?.length || 0}`);
     
     // Handle multi-resolution capture
     if (params.options?.resolutions?.length || params.options?.presets?.length) {
-      console.log(`📐 BROWSER: Multi-resolution path selected`);
+      // console.debug(`📐 BROWSER: Multi-resolution path selected`);
       return await this.executeMultiResolution(params);
     }
     
-    console.log(`📸 BROWSER: Single capture path selected`);
+    // console.debug(`📸 BROWSER: Single capture path selected`);
     return await this.executeSingleCapture(params);
   }
   
@@ -68,20 +68,20 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
    * Execute multi-resolution capture
    */
   async executeMultiResolution(params: ScreenshotParams): Promise<ScreenshotResult> {
-    console.log(`📐 BROWSER: Multi-resolution capture requested`);
+    // console.debug(`📐 BROWSER: Multi-resolution capture requested`);
     
     // Combine custom resolutions and presets
     const customResolutions = params.options?.resolutions || [];
     const presetResolutions = params.options?.presets ? expandPresets(params.options.presets) : [];
     const allResolutions = [...customResolutions, ...presetResolutions];
     
-    console.log(`📐 BROWSER: Capturing ${allResolutions.length} resolutions`);
+    // console.debug(`📐 BROWSER: Capturing ${allResolutions.length} resolutions`);
     
     const results: ScreenshotResult[] = [];
     let firstResult: ScreenshotResult | null = null;
     
     for (const resolution of allResolutions) {
-      console.log(`📐 BROWSER: Capturing ${resolution.width}x${resolution.height} (${resolution.suffix || 'custom'})`);
+      // console.debug(`📐 BROWSER: Capturing ${resolution.width}x${resolution.height} (${resolution.suffix || 'custom'})`);
       const result = await this.captureAtResolution(params, resolution);
       results.push(result);
       
@@ -111,9 +111,9 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
    * Single capture execution (original logic)
    */
   async executeSingleCapture(params: ScreenshotParams): Promise<ScreenshotResult> {
-    console.log(`📸 BROWSER: Capturing screenshot`);
-    console.log(`🔍 DEBUG: ScreenshotBrowserCommand.execute() CALLED with sessionId: ${params.sessionId}`);
-    console.log(`🔍 DEBUG: Full params:`, JSON.stringify(params, null, 2));
+    // console.debug(`📸 BROWSER: Capturing screenshot`);
+    // console.debug(`🔍 DEBUG: ScreenshotBrowserCommand.execute() CALLED with sessionId: ${params.sessionId}`);
+    // console.debug(`🔍 DEBUG: Full params:`, JSON.stringify(params, null, 2));
 
     try {
       // Get html2canvas API with proper typing
@@ -136,14 +136,14 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
 
       // Use modular element utilities for accurate bounds and coordinates
       const elementName = params.elementName || getElementDisplayName(targetElement);
-      console.log(`🎯 BROWSER: Targeting element '${elementName}'`);
+      // console.debug(`🎯 BROWSER: Targeting element '${elementName}'`);
 
       // TEST: Try html2canvas direct element capture instead of coordinate cropping
       const scale = params.scale || params.options?.scale || 1;
       
       // CRITICAL FIX: Device pixel ratio normalization for consistent scaling
       const devicePixelRatio = window.devicePixelRatio || 1;
-      console.log(`🖥️ BROWSER: Device pixel ratio: ${devicePixelRatio}, user scale: ${scale}`);
+      // console.debug(`🖥️ BROWSER: Device pixel ratio: ${devicePixelRatio}, user scale: ${scale}`);
       
       // Force html2canvas to use device pixel ratio 1 for consistent scaling
       const captureOptions: Html2CanvasOptions = {
@@ -172,19 +172,19 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
       let canvas: HTMLCanvasElement;
       
       if (useDirectCapture && targetSelector !== 'body') {
-        console.log(`📷 BROWSER: Direct element capture for better shadow rendering`);
+        // console.debug(`📷 BROWSER: Direct element capture for better shadow rendering`);
         canvas = await html2canvas(targetElement, captureOptions) as HTMLCanvasElement;
       } else {
-        console.log(`📷 BROWSER: Full body capture at scale ${scale}`);
+        // console.debug(`📷 BROWSER: Full body capture at scale ${scale}`);
         canvas = await html2canvas(document.body, captureOptions) as HTMLCanvasElement;
       }
       
-      console.log(`📐 BROWSER: Canvas dimensions: ${canvas.width}x${canvas.height}`);
+      // console.debug(`📐 BROWSER: Canvas dimensions: ${canvas.width}x${canvas.height}`);
       
       // Calculate actual scaling factor from viewport to canvas (accounting for DPR)
       const viewport = getViewportDimensions();
       const actualScaleFactor = canvas.width / viewport.width;
-      console.log(`📏 BROWSER: Canvas ${canvas.width}x${canvas.height}, viewport ${viewport.width}x${viewport.height}, scale factor: ${actualScaleFactor}`);
+      // console.debug(`📏 BROWSER: Canvas ${canvas.width}x${canvas.height}, viewport ${viewport.width}x${viewport.height}, scale factor: ${actualScaleFactor}`);
       
       // CROPPING LOGIC: Handle both direct capture and body crop strategies
       let finalCanvas = canvas;
@@ -205,7 +205,7 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
           cropWidth = constrainedCrop.width;
           cropHeight = constrainedCrop.height;
           
-          console.log(`📏 BROWSER: Element coordinates: ${cropX},${cropY} ${cropWidth}x${cropHeight}`);
+          // console.debug(`📏 BROWSER: Element coordinates: ${cropX},${cropY} ${cropWidth}x${cropHeight}`);
         } else {
           // For body with custom crop params
           cropX = (params.cropX || 0) * actualScaleFactor;
@@ -227,9 +227,9 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         );
         
         finalCanvas = croppedCanvas;
-        console.log(`✂️ BROWSER: Cropped from full body: ${cropX},${cropY} ${cropWidth}x${cropHeight}`);
+        // console.debug(`✂️ BROWSER: Cropped from full body: ${cropX},${cropY} ${cropWidth}x${cropHeight}`);
       } else if (useDirectCapture) {
-        console.log(`📷 BROWSER: Using direct element capture (shadows preserved)`);
+        // console.debug(`📷 BROWSER: Using direct element capture (shadows preserved)`);
       }
       
       // SCALING: Fit-inside behavior with aspect ratio preservation
@@ -250,7 +250,7 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         targetWidth = Math.round(finalCanvas.width * scaleFactor);
         targetHeight = Math.round(finalCanvas.height * scaleFactor);
         
-        console.log(`📏 BROWSER: Fit-inside scaling: ${finalCanvas.width}x${finalCanvas.height} → ${targetWidth}x${targetHeight} (scale: ${scaleFactor.toFixed(3)})`);
+        // console.debug(`📏 BROWSER: Fit-inside scaling: ${finalCanvas.width}x${finalCanvas.height} → ${targetWidth}x${targetHeight} (scale: ${scaleFactor.toFixed(3)})`);
       }
       
       // Apply scaling if different from capture size
@@ -264,7 +264,7 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         scaledCtx.drawImage(finalCanvas as HTMLCanvasElement, 0, 0, targetWidth, targetHeight);
         finalCanvas = scaledCanvas;
         
-        console.log(`🔄 BROWSER: Scaled to ${targetWidth}x${targetHeight}`);
+        // console.debug(`🔄 BROWSER: Scaled to ${targetWidth}x${targetHeight}`);
       }
       
       // QUALITY CONTROL: Convert with quality adjustment for file size limits
@@ -284,7 +284,7 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
           if (estimatedSize > params.maxFileSize && quality > 0.1) {
             quality -= 0.1;
             compressed = true;
-            console.log(`📉 BROWSER: Reducing quality to ${quality} for file size limit`);
+            // console.debug(`📉 BROWSER: Reducing quality to ${quality} for file size limit`);
             continue;
           }
         }
@@ -292,7 +292,7 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
       } while (true);
       
       const captureTime = Date.now() - startTime;
-      console.log(`✅ BROWSER: Captured (${finalCanvas.width}x${finalCanvas.height}) in ${captureTime}ms`);
+      // console.debug(`✅ BROWSER: Captured (${finalCanvas.width}x${finalCanvas.height}) in ${captureTime}ms`);
       
       // Enrich params with advanced metadata
       params.dataUrl = dataUrl;

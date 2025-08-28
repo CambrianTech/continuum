@@ -6,7 +6,7 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
-import { type JTAGContext, type JTAGEnvironment, JTAG_ENVIRONMENTS } from '../../../system/core/types/JTAGTypes';
+import { type JTAGContext, type JTAGEnvironment } from '../../../system/core/types/JTAGTypes';
 import type { 
   ExecCommandParams, 
   ExecCommandResult, 
@@ -19,7 +19,7 @@ import type {
   SupportedLanguage
 } from './ExecTypes';
 
-import { ExecTransportEncoder, ExecResultTransporter, ExecNetworkSafety } from './ExecTransportUtils';
+import { ExecTransportEncoder, ExecNetworkSafety } from './ExecTransportUtils';
 
 /**
  * Base ExecCommand implementation - extends JTAG CommandBase for proper registration
@@ -41,16 +41,16 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
    * Implements the CommandBase interface for JTAG compatibility
    */
   async execute(params: ExecCommandParams): Promise<ExecCommandResult> {
-    console.log(`🚀 ExecCommand: Starting execution ${this.correlationId}`);
-    console.log(`📍 ExecCommand: Executing in ${this.getLocalEnvironment()} environment`);
-    console.log(`🎯 ExecCommand: Request context.environment = ${params.context.environment}`);
-    console.log(`🎯 ExecCommand: Request targetEnvironment = ${params.targetEnvironment || 'auto'}`);
-    console.log(`🎯 ExecCommand: Full params received:`, JSON.stringify({
-      sessionId: params.sessionId,
-      context: params.context,
-      targetEnvironment: params.targetEnvironment,
-      codeType: params.code.type
-    }, null, 2));
+    // console.debug(`🚀 ExecCommand: Starting execution ${this.correlationId}`);
+    // console.debug(`📍 ExecCommand: Executing in ${this.getLocalEnvironment()} environment`);
+    // console.debug(`🎯 ExecCommand: Request context.environment = ${params.context.environment}`);
+    // console.debug(`🎯 ExecCommand: Request targetEnvironment = ${params.targetEnvironment || 'auto'}`);
+    // console.debug(`🎯 ExecCommand: Full params received:`, JSON.stringify({
+    //   sessionId: params.sessionId,
+    //   context: params.context,
+    //   targetEnvironment: params.targetEnvironment,
+    //   codeType: params.code.type
+    // }, null, 2));
     
     try {
       // 1. Validate parameters
@@ -71,20 +71,20 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
       // 4. Determine execution environment
       const requestedEnvironment = params.targetEnvironment || 'auto';
       const actualEnvironment = await this.resolveExecutionEnvironment(requestedEnvironment);
-      console.log(`🔄 ExecCommand: Requested environment: ${requestedEnvironment}`);
-      console.log(`🔄 ExecCommand: Resolved environment: ${actualEnvironment}`);
-      console.log(`🔄 ExecCommand: Local environment: ${this.getLocalEnvironment()}`);
+      // console.debug(`🔄 ExecCommand: Requested environment: ${requestedEnvironment}`);
+      // console.debug(`🔄 ExecCommand: Resolved environment: ${actualEnvironment}`);
+      // console.debug(`🔄 ExecCommand: Local environment: ${this.getLocalEnvironment()}`);
       
       // 5. Execute in appropriate context
       let executionResult: any;
       
       if (actualEnvironment === this.getLocalEnvironment()) {
         // Execute locally
-        console.log(`📍 ExecCommand: Executing locally in ${actualEnvironment} environment`);
+        // console.debug(`📍 ExecCommand: Executing locally in ${actualEnvironment} environment`);
         executionResult = await this.executeLocally(transportPayload);
       } else {
         // Execute remotely (cross-context or P2P)
-        console.log(`🌐 ExecCommand: Routing to ${actualEnvironment} environment`);
+        // console.debug(`🌐 ExecCommand: Routing to ${actualEnvironment} environment`);
         executionResult = await this.executeRemotely(transportPayload, actualEnvironment);
       }
       
@@ -237,7 +237,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
   protected async executeTypeScript(sourceCode: string, runtime: ExecRuntimeEnvironment): Promise<any> {
     // For now, treat TypeScript as JavaScript (basic transpilation)
     // In a full implementation, we'd use the TypeScript compiler API
-    console.log('⚠️ ExecCommand: TypeScript execution using JavaScript fallback (full TS compilation not yet implemented)');
+    // console.debug('⚠️ ExecCommand: TypeScript execution using JavaScript fallback (full TS compilation not yet implemented)');
     return await this.executeJavaScript(sourceCode, runtime);
   }
   

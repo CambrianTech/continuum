@@ -11,17 +11,13 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext, JTAGMessage, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
-import { JTAGMessageFactory } from '../../../../system/core/types/JTAGTypes';
-import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { 
   type RoutingChaosParams, 
   type RoutingChaosResult,
   type RoutingChainTestParams,
   type RoutingChainTestResult,
   ROUTING_CHAOS_COMMAND_PATH,
-  generateTestPayload,
-  generateRandomRoutingPath,
   shouldInjectError,
   generateRandomError
 } from '../shared/RoutingChaosTypes';
@@ -38,8 +34,8 @@ export class RoutingChaosServerCommand extends CommandBase<RoutingChaosParams, R
     const routingTrace: RoutingChaosResult['routingTrace'] = [];
     
     try {
-      console.log(`🎲 SERVER: Starting routing chaos test ${chaosParams.testId} (hop ${chaosParams.hopCount}/${chaosParams.maxHops})`);
-      console.log(`🎲 SERVER: Full params received:`, JSON.stringify(chaosParams, null, 2));
+      // console.debug(`🎲 SERVER: Starting routing chaos test ${chaosParams.testId} (hop ${chaosParams.hopCount}/${chaosParams.maxHops})`);
+      // console.debug(`🎲 SERVER: Full params received:`, JSON.stringify(chaosParams, null, 2));
       
       // Record current hop
       const hopStart = Date.now();
@@ -48,14 +44,14 @@ export class RoutingChaosServerCommand extends CommandBase<RoutingChaosParams, R
       
       // Check if we've reached max hops
       if (chaosParams.hopCount >= chaosParams.maxHops) {
-        console.log(`✅ SERVER: Reached max hops for test ${chaosParams.testId}`);
+        // console.debug(`✅ SERVER: Reached max hops for test ${chaosParams.testId}`);
         return this.createSuccessResult(chaosParams, routingTrace, startTime);
       }
       
       // Inject random failure if configured
       if (shouldInjectError(chaosParams.failureRate)) {
         const error = generateRandomError(['timeout', 'rejection', 'corruption']);
-        console.log(`❌ SERVER: Injecting random error for test ${chaosParams.testId}: ${error.message}`);
+        // console.debug(`❌ SERVER: Injecting random error for test ${chaosParams.testId}: ${error.message}`);
         
         routingTrace.push({
           hop: chaosParams.hopCount,
@@ -78,7 +74,7 @@ export class RoutingChaosServerCommand extends CommandBase<RoutingChaosParams, R
       const nextEnvironment = Math.random() > 0.5 ? 'browser' : 'server';
       const nextHopCount = chaosParams.hopCount + 1;
       
-      console.log(`🔄 SERVER: Routing to ${nextEnvironment} for hop ${nextHopCount} of test ${chaosParams.testId}`);
+      // console.debug(`🔄 SERVER: Routing to ${nextEnvironment} for hop ${nextHopCount} of test ${chaosParams.testId}`);
       
       const hopEnd = Date.now();
       routingTrace.push({
@@ -100,16 +96,16 @@ export class RoutingChaosServerCommand extends CommandBase<RoutingChaosParams, R
       
       // Route to next environment using remoteExecute
       if (nextEnvironment === 'browser') {
-        console.log(`🔄 SERVER: About to execute remoteExecute to browser with params:`, JSON.stringify(nextParams, null, 2));
+        // console.debug(`🔄 SERVER: About to execute remoteExecute to browser with params:`, JSON.stringify(nextParams, null, 2));
         // Route to browser
         const browserResult = await this.remoteExecute(nextParams, ROUTING_CHAOS_COMMAND_PATH, 'browser');
-        console.log(`✅ SERVER: Received result from browser:`, JSON.stringify(browserResult, null, 2));
+        // console.debug(`✅ SERVER: Received result from browser:`, JSON.stringify(browserResult, null, 2));
         return this.mergeResults(browserResult, routingTrace);
       } else {
-        console.log(`🔄 SERVER: About to execute remoteExecute to server with params:`, JSON.stringify(nextParams, null, 2));
+        // console.debug(`🔄 SERVER: About to execute remoteExecute to server with params:`, JSON.stringify(nextParams, null, 2));
         // Route to another server instance (simulate distributed server environment)
         const serverResult = await this.remoteExecute(nextParams, ROUTING_CHAOS_COMMAND_PATH, 'server');
-        console.log(`✅ SERVER: Received result from server:`, JSON.stringify(serverResult, null, 2));
+        // console.debug(`✅ SERVER: Received result from server:`, JSON.stringify(serverResult, null, 2));
         return this.mergeResults(serverResult, routingTrace);
       }
       
@@ -170,19 +166,19 @@ export class RoutingChaosServerCommand extends CommandBase<RoutingChaosParams, R
     childResult: any, // remoteExecute can return wrapped responses
     currentTrace: RoutingChaosResult['routingTrace']
   ): RoutingChaosResult {
-    console.log(`🔄 SERVER: Merging results - childResult type:`, typeof childResult, 'keys:', Object.keys(childResult));
-    console.log(`🔄 SERVER: childResult.routingTrace:`, childResult.routingTrace, 'is array:', Array.isArray(childResult.routingTrace));
+    // console.debug(`🔄 SERVER: Merging results - childResult type:`, typeof childResult, 'keys:', Object.keys(childResult));
+    // console.debug(`🔄 SERVER: childResult.routingTrace:`, childResult.routingTrace, 'is array:', Array.isArray(childResult.routingTrace));
     
     // Handle wrapped response from remoteExecute
     let actualResult = childResult;
     if (childResult.handlerResult && childResult.handlerResult.commandResult) {
-      console.log(`🔄 SERVER: Unwrapping nested command result`);
+      // console.debug(`🔄 SERVER: Unwrapping nested command result`);
       actualResult = childResult.handlerResult.commandResult;
     }
     
     // Ensure routingTrace is an array
     const childTrace = Array.isArray(actualResult.routingTrace) ? actualResult.routingTrace : [];
-    console.log(`🔄 SERVER: Using childTrace length:`, childTrace.length);
+    // console.debug(`🔄 SERVER: Using childTrace length:`, childTrace.length);
     
     return {
       ...actualResult,
@@ -210,7 +206,7 @@ export class RoutingChainTestServerCommand extends CommandBase<RoutingChainTestP
   async execute(params: JTAGPayload): Promise<RoutingChainTestResult> {
     const testParams = params as RoutingChainTestParams;
     const testStartTime = Date.now();
-    console.log(`🔗 SERVER: Starting routing chain test ${testParams.chainId} with ${testParams.branchFactor} parallel chains`);
+    // console.debug(`🔗 SERVER: Starting routing chain test ${testParams.chainId} with ${testParams.branchFactor} parallel chains`);
     
     try {
       // Create multiple parallel routing chains
@@ -259,7 +255,7 @@ export class RoutingChainTestServerCommand extends CommandBase<RoutingChainTestP
         .filter(r => r.success)
         .reduce((sum, r) => sum + r.durationMs, 0) / (successfulChains || 1);
       
-      console.log(`✅ SERVER: Chain test ${testParams.chainId} completed - ${successfulChains}/${testParams.branchFactor} successful`);
+      // console.debug(`✅ SERVER: Chain test ${testParams.chainId} completed - ${successfulChains}/${testParams.branchFactor} successful`);
       
       return {
         context: this.context,
