@@ -5,10 +5,11 @@
  */
 
 import type { TimerHandle } from '../types/CrossPlatformTypes';
-import type { JTAGPayload } from '../types/JTAGTypes';
+import type { JTAGPayload, UUID } from '../types/JTAGTypes';
+import type { JTAGResponsePayload } from '../types/ResponseTypes';
 
 export interface PendingRequest {
-  resolve: (result: JTAGPayload) => void;
+  resolve: (result: JTAGResponsePayload) => void;
   reject: (error: Error) => void;
   timestamp: number;
   timeout: TimerHandle;
@@ -20,7 +21,7 @@ export interface CorrelatorStatus {
 }
 
 export class ResponseCorrelator {
-  private pendingRequests = new Map<string, PendingRequest>();
+  private pendingRequests = new Map<UUID, PendingRequest>();
   private defaultTimeoutMs: number;
 
   constructor(defaultTimeoutMs: number = 30000) {
@@ -29,8 +30,9 @@ export class ResponseCorrelator {
 
   /**
    * Create a new request correlation and return Promise
+   * Only for outgoing requests - should not be called by incoming request handlers
    */
-  createRequest(correlationId: string, timeoutMs?: number): Promise<JTAGPayload> {
+  createRequest(correlationId: UUID, timeoutMs?: number): Promise<JTAGResponsePayload> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(correlationId);
@@ -51,7 +53,7 @@ export class ResponseCorrelator {
   /**
    * Resolve a pending request with response
    */
-  resolveRequest(correlationId: string, response: JTAGPayload): boolean {
+  resolveRequest(correlationId: UUID, response: JTAGResponsePayload): boolean {
     const pending = this.pendingRequests.get(correlationId);
     if (!pending) {
       console.warn(`⚠️ ResponseCorrelator: No pending request for ${correlationId}`);

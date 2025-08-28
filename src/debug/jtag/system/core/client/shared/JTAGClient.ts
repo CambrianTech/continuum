@@ -70,7 +70,7 @@
 import { generateUUID, type UUID} from '../../types/CrossPlatformUUID';
 import { JTAGBase, type CommandsInterface } from '../../shared/JTAGBase';
 import type { JTAGContext, JTAGMessage, JTAGPayload, JTAGEnvironment } from '../../types/JTAGTypes';
-import { JTAGMessageFactory, JTAGMessageTypes } from '../../types/JTAGTypes';
+import { JTAGMessageFactory, JTAGMessageTypes, isJTAGResponseMessage } from '../../types/JTAGTypes';
 import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
 import type { ITransportFactory, TransportConfig, JTAGTransport, TransportProtocol, TransportSendResult } from '../../../transports';
 import type { ITransportHandler } from '../../../transports';
@@ -264,7 +264,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     console.log(`📥 JTAGClient: Transport message received (type: ${message.messageType})`);
     
     // Handle correlated responses - complete pending requests
-    if (JTAGMessageTypes.isResponse(message)) {
+    if (isJTAGResponseMessage(message)) {
       console.log(`🔗 JTAGClient: Processing response for correlation ${message.correlationId}`);
       
       const resolved = this.responseCorrelator.resolveRequest(message.correlationId, message.payload);

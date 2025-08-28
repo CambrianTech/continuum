@@ -40,7 +40,7 @@
 
 import { JTAGModule } from '../../shared/JTAGModule';
 import type { JTAGContext, JTAGEnvironment, JTAGMessage, JTAGPayload } from '../../types/JTAGTypes';
-import { JTAGMessageTypes, JTAGMessageFactory } from '../../types/JTAGTypes';
+import { JTAGMessageTypes, JTAGMessageFactory, isJTAGResponseMessage } from '../../types/JTAGTypes';
 import type { UUID } from '../../types/CrossPlatformUUID';
 import { TRANSPORT_TYPES } from '../../../transports';
 import type { ITransportFactory, TransportConfig, JTAGTransport, TransportEndpoint } from '../../../transports';
@@ -359,7 +359,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
         const responsePromise = this.responseCorrelator.createRequest(remoteMessage.correlationId);
         
         await p2pTransport.send(remoteMessage);
-        const response = await responsePromise as JTAGResponsePayload;
+        const response = await responsePromise;
         
         console.debug(`✅ ${this.toString()}: P2P response received from ${nodeId}`);
         return { success: true, resolved: true, response };
@@ -400,7 +400,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       //console.debug(`📤 ${this.toString()}: Request sent, awaiting response...`);
 
       // Await the correlated response
-      const response = await responsePromise as JTAGResponsePayload;
+      const response = await responsePromise;
       //console.debug(`✅ ${this.toString()}: Response received for ${message.correlationId}`);
       return { success: true, resolved: true, response };
 
@@ -544,8 +544,8 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
    * Handle incoming response messages - resolve correlations
    */
   private async handleIncomingResponse(message: JTAGMessage): Promise<LocalRoutingResult> {
-    // Type guard: response messages have correlationId
-    if (!JTAGMessageTypes.isResponse(message)) {
+    // Type guard: response messages have correlationId and JTAGResponsePayload
+    if (!isJTAGResponseMessage(message)) {
       return { success: false, error: 'Expected response message' };
     }
 
@@ -586,10 +586,9 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
         this.externalClientDetector.registerExternal(correlationId);
         // console.debug(`🔗 ${this.toString()}: Registered external client correlation ${correlationId}`);
 
-        // Also register with response correlator for promise resolution
-        this.responseCorrelator.createRequest(correlationId).catch(error => {
-          console.warn(`⚠️ External correlation ${correlationId} failed: ${error.message}`);
-        });
+        // NOTE: Do NOT create correlations here - that's the sender's job
+        // Incoming requests should only handle routing and response creation
+        // The correlation was already created by the original sender
       }
     }
 
