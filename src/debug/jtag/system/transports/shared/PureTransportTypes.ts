@@ -80,10 +80,96 @@ export interface PureSendResult {
 }
 
 /**
- * Pure transport factory interface
- * Creates transports based on pure configuration
+ * Transport Request - What orchestrator asks for
+ * 
+ * Generic request format that works for any configuration source.
+ * Factory translates this to specific destinations.
+ */
+export interface TransportRequest {
+  protocol: string;                      // 'websocket', 'http', 'udp'
+  role: 'client' | 'server';            // Connection behavior
+  
+  // Optional overrides - factory falls back to config
+  host?: string;                         // Override default
+  port?: number;                         // Override default
+  path?: string;                         // For HTTP: /api/messages
+  secure?: boolean;                      // Use TLS/SSL
+  
+  // Context for resolution
+  environment: 'browser' | 'server';     // Factory uses appropriate config
+  configSource: any;                     // Raw config (JTAGContext, etc.)
+}
+
+/**
+ * Enhanced Transport Factory - Configuration to Destination Resolver
+ * 
+ * Responsible for:
+ * - Reading configuration structures  
+ * - Resolving destinations (URLs/addresses)
+ * - Creating transports with resolved destinations
+ * - Handling environment differences (browser vs server)
  */
 export interface PureTransportFactory {
+  // Legacy interface for backward compatibility
   create(config: PureTransportConfig): Promise<PureTransport>;
   supports(protocol: string): boolean;
+  
+  // New dumb pipe interface for radical reconfiguration
+  createPureTransport(protocol: string, request: TransportRequest): Promise<PureTransport>;
+  resolveDestination(protocol: string, request: TransportRequest): string;
+  getSupportedProtocols(): string[];
 }
+
+/**
+ * Transport Orchestrator - Business Logic Layer
+ * 
+ * Handles everything transports don't:
+ * - Message serialization/deserialization
+ * - Connection management and retry logic
+ * - Health monitoring and failover
+ * - Request/response correlation
+ * - Event system integration
+ */
+export interface TransportOrchestrator {
+  // High-level connection management  
+  connect(request: TransportRequest): Promise<void>;
+  disconnect(): Promise<void>;
+  reconnect(): Promise<void>;
+  
+  // Message operations (handles serialization)
+  sendMessage(message: any): Promise<void>;
+  onMessage(handler: (message: any) => void): void;
+  
+  // Health and monitoring
+  getHealth(): TransportHealth;
+  onHealthChange(handler: (health: TransportHealth) => void): void;
+}
+
+/**
+ * Transport Health - Monitoring data
+ */
+export interface TransportHealth {
+  connected: boolean;
+  lastActivity: Date;
+  reconnectAttempts: number;
+  bytesIn: number;
+  bytesOut: number;
+}
+
+/**
+ * Radical Reconfiguration Examples:
+ * 
+ * // Dynamic ports - no hardcoding
+ * const transport = new WebSocketTransport("ws://localhost:37593");
+ * 
+ * // Different sites - no localhost assumptions  
+ * const transport = new WebSocketTransport("wss://widgets.continuum.ai:443");
+ * 
+ * // Multiple widget instances - factory resolves
+ * const widget1 = factory.createTransport('websocket', { host: 'site1.com', port: 9001 });
+ * const widget2 = factory.createTransport('websocket', { host: 'site2.com', port: 9002 });
+ * 
+ * // Protocol changes - same interface
+ * const transport = factory.createTransport('http', { host: 'api.continuum.ai', path: '/messages' });
+ * const transport = factory.createTransport('udp', { host: 'mesh.continuum.ai', port: 37472 });
+ */
