@@ -184,7 +184,7 @@ export class SystemOrchestrator extends EventEmitter {
     } else {
       // Use active example configuration
       try {
-        const { getActiveExampleName } = await import('../shared/ExampleConfig');
+        const { getActiveExampleName } = await import('../../examples/shared/ExampleConfig');
         const activeExample = getActiveExampleName();
         const defaultWorkingDir = `examples/${activeExample}`;
         WorkingDirConfig.setWorkingDir(defaultWorkingDir);
@@ -231,7 +231,7 @@ export class SystemOrchestrator extends EventEmitter {
     
     // Fallback: Check if ports are in use (indicating servers are running)
     try {
-      const { getActivePorts } = await import('../shared/ExampleConfig');
+      const { getActivePorts } = await import('../../examples/shared/ExampleConfig');
       const activePorts = getActivePorts();
       
       const portChecks = await Promise.all([
@@ -473,7 +473,7 @@ export class SystemOrchestrator extends EventEmitter {
     
     // Start the server using the existing launch-active-example script
     // but WITHOUT the premature browser opening
-    const { getActivePorts } = await import('../shared/ExampleConfig');
+    const { getActivePorts } = await import('../../examples/shared/ExampleConfig');
     const activePorts = await getActivePorts();
     
     // Import and start the JTAG system server
@@ -482,7 +482,7 @@ export class SystemOrchestrator extends EventEmitter {
     console.debug(`✅ JTAG WebSocket Server running on port ${activePorts.websocket_server}`);
     
     // Start the example HTTP server
-    const { getActiveExamplePath } = await import('../shared/ExampleConfig');
+    const { getActiveExamplePath } = await import('../../examples/shared/ExampleConfig');
     const activeExamplePath = getActiveExamplePath();
     
     console.debug(`🎯 Starting npm start in: ${activeExamplePath}`);
@@ -566,7 +566,7 @@ export class SystemOrchestrator extends EventEmitter {
     
     // SIMPLIFIED READINESS CHECK: Check port availability directly
     // This avoids complex signaling system issues while ensuring servers are actually ready
-    const { getActivePorts } = await import('../shared/ExampleConfig');
+    const { getActivePorts } = await import('../../examples/shared/ExampleConfig');
     const activePorts = await getActivePorts();
     
     const maxRetries = 30; // 30 seconds max wait
@@ -827,7 +827,7 @@ export class SystemOrchestrator extends EventEmitter {
    */
   private async getDefaultBrowserUrl(): Promise<string> {
     try {
-      const { getActivePorts } = require('../shared/ExampleConfig');
+      const { getActivePorts } = require('../../examples/shared/ExampleConfig');
       const activePorts = await getActivePorts();
       return `http://localhost:${activePorts.http_server}`;
     } catch (error) {

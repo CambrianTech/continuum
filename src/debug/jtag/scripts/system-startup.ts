@@ -6,7 +6,7 @@
  */
 
 import { systemOrchestrator } from '../system/orchestration/SystemOrchestrator';
-import { getActiveExampleName } from '../system/shared/ExampleConfig';
+import { getActiveExampleName } from '../examples/shared/ExampleConfig';
 import type { EntryPointType } from '../system/orchestration/SystemMilestones';
 
 export async function startSystem(entryPoint: EntryPointType = 'npm-start'): Promise<void> {

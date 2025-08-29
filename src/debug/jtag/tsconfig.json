@@ -38,7 +38,9 @@
   "exclude": [
     "node_modules",
     "dist",
-    "examples/**/*",
+    "examples/test-bench/**/*",
+    "examples/widget-ui/**/*", 
+    "examples/auto-discovery-demo.ts",
     "tests/**/*",
     "mcp/**/*",
     "**/*.test.js",

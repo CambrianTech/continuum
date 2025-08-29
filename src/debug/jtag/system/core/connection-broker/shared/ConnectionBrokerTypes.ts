@@ -17,6 +17,8 @@ import type { UUID } from '../../types/CrossPlatformUUID';
 import type { JTAGContext, JTAGEnvironment } from '../../types/JTAGTypes';
 import type { TransportProtocol, JTAGTransport } from '../../../transports/shared/TransportTypes';
 import type { NodeCapability } from '../../../transports/udp-multicast-transport/shared/UDPMulticastTypes';
+import type { EventsInterface } from '../../../events/shared/JTAGEventSystem';
+import type { ITransportHandler } from '../../../transports/shared/ITransportHandler';
 
 /**
  * Connection requirement specification - what the client needs
@@ -38,11 +40,11 @@ export interface ConnectionParams {
   /** Client context information */
   readonly context: JTAGContext;
   
-  /** Event system for transport communication (required for proper typing) */
-  readonly eventSystem: any; // TODO: Replace with proper EventsInterface type
+  /** Event system for transport communication (strongly typed) */
+  readonly eventSystem: EventsInterface;
   
-  /** Transport message handler (required for proper typing) */
-  readonly handler: any; // TODO: Replace with proper ITransportHandler type
+  /** Transport message handler (strongly typed) */
+  readonly handler: ITransportHandler;
   
   /** Server selection criteria - flexible addressing */
   readonly server?: ServerSelector;

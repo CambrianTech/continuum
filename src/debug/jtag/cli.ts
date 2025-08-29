@@ -92,7 +92,7 @@ async function main() {
     }
     
     // Parse parameters into object format
-    const params: any = {};
+    const params: Record<string, string | boolean | number> = {};
     let i = 0;
     while (i < rawParams.length) {
       const arg = rawParams[i];
@@ -203,19 +203,24 @@ async function main() {
     try {
       const result = await JTAGClientServer.connect(clientOptions);
       client = result.client;
-    } catch (connectionError: any) {
+    } catch (err) {
       // Restore console logging first
       console.log = originalLog;
       console.warn = originalWarn;
+      
+      // Type guard for proper error handling
+      const connectionError = err instanceof Error ? err : new Error(String(err));
       
       // Use consistent error formatting for all connection failures
       console.log('='.repeat(60));
       console.log('\x1b[31mERROR: Connection failed - ' + connectionError.message + '\x1b[0m');
       console.log('='.repeat(60));
       
-      if (connectionError.message?.includes('ECONNREFUSED') || 
-          connectionError.message?.includes('connect') ||
-          connectionError.code === 'ECONNREFUSED') {
+      const isConnectionRefused = connectionError.message.includes('ECONNREFUSED') || 
+                                connectionError.message.includes('connect') ||
+                                (err && typeof err === 'object' && 'code' in err && err.code === 'ECONNREFUSED');
+      
+      if (isConnectionRefused) {
         console.error('🔍 PROBLEM: No JTAG system is currently running');
         console.error('✅ IMMEDIATE ACTION: Run "npm start" and wait 60 seconds');
       } else {
@@ -293,7 +298,8 @@ async function main() {
       await client.disconnect();
       
       process.exit(result?.success ? 0 : 1);
-    } catch (cmdError: any) {
+    } catch (err) {
+      const cmdError = err instanceof Error ? err : new Error(String(err));
       console.log('='.repeat(60));
       console.log('\x1b[31mERROR: ' + cmdError.message + '\x1b[0m');
       console.log('='.repeat(60));

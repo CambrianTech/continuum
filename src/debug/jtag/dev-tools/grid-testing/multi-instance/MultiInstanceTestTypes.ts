@@ -5,7 +5,7 @@
  * in parallel - essential for Grid P2P backbone integration tests.
  */
 
-import type { ExamplePortConfiguration } from '../../../system/shared/ExampleConfigTypes';
+import type { ExamplePortConfiguration } from '../../../examples/shared/ExampleConfigTypes';
 
 // Multi-instance test configuration
 export interface MultiInstanceTestConfig {

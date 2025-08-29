@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import { execSync } from 'child_process';
-import { getActiveExample } from '../system/shared/ExampleConfig';
+import { getActiveExample } from '../examples/shared/ExampleConfig';
 
 function getVersionInfo() {
   const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));

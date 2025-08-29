@@ -18,7 +18,7 @@ import type {
   InstanceFeatures
 } from './multi-instance/MultiInstanceTestTypes';
 import { MultiInstanceTestRunner } from './multi-instance/MultiInstanceTestRunner';
-import type { ExamplePortConfiguration } from '../../system/shared/ExampleConfigTypes';
+import type { ExamplePortConfiguration } from '../../examples/shared/ExampleConfigTypes';
 
 // Command line argument parsing
 interface TestArgs {

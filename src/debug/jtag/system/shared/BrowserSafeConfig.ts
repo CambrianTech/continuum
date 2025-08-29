@@ -29,7 +29,7 @@ export const isNode = typeof process !== 'undefined' && process.versions && proc
 export function loadInstanceConfigForContext(): InstanceConfiguration {
   // Server context - delegate to ExampleConfig
   if (isNode) {
-    const { getActiveExample } = eval('require')('./ExampleConfig');
+    const { getActiveExample } = eval('require')('../../examples/shared/ExampleConfig');
     const example = getActiveExample();
     
     return {

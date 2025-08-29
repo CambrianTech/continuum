@@ -361,7 +361,7 @@ export class ConnectionBroker implements IConnectionBroker {
     // Use dynamic port configuration instead of hardcoded values
     let port: number;
     try {
-      const { getActivePortsSync } = require('../../../shared/ExampleConfig');
+      const { getActivePortsSync } = require('../../../../examples/shared/ExampleConfig');
       const activePorts = getActivePortsSync();
       port = activePorts.websocket_server;
     } catch (error) {

@@ -14,7 +14,7 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { getActivePorts } from '../system/shared/ExampleConfig';
+import { getActivePorts } from "../examples/shared/ExampleConfig";
 
 const execAsync = promisify(exec);
 
