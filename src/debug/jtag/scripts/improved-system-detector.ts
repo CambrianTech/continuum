@@ -30,7 +30,10 @@ async function improvedSystemDetector(): Promise<void> {
       name: 'Browser UI Response',
       check: async () => {
         try {
-          const { stdout } = await execAsync('curl -s -w "%{http_code}" -o /dev/null http://localhost:9003/');
+          // Use dynamic port resolution
+          const { getActivePorts } = require('../examples/shared/ExampleConfig');
+          const activePorts = await getActivePorts();
+          const { stdout } = await execAsync(`curl -s -w "%{http_code}" -o /dev/null http://localhost:${activePorts.http_server}/`);
           const statusCode = stdout.trim();
           if (statusCode === '200') {
             return { success: true, details: `HTTP ${statusCode} - Browser UI responding` };
@@ -47,12 +50,14 @@ async function improvedSystemDetector(): Promise<void> {
       name: 'WebSocket Server',
       check: async () => {
         try {
-          // Test if WebSocket port is open
-          const { stdout } = await execAsync('nc -z localhost 9001 && echo "open" || echo "closed"');
+          // Test if WebSocket port is open using dynamic configuration
+          const { getActivePorts } = require('../examples/shared/ExampleConfig');
+          const activePorts = await getActivePorts();
+          const { stdout } = await execAsync(`nc -z localhost ${activePorts.websocket_server} && echo "open" || echo "closed"`);
           if (stdout.trim() === 'open') {
-            return { success: true, details: 'WebSocket port 9001 accepting connections' };
+            return { success: true, details: `WebSocket port ${activePorts.websocket_server} accepting connections` };
           } else {
-            return { success: false, details: 'WebSocket port 9001 not accepting connections' };
+            return { success: false, details: `WebSocket port ${activePorts.websocket_server} not accepting connections` };
           }
         } catch (error: any) {
           return { success: false, details: `WebSocket test failed: ${error.message}` };
@@ -138,8 +143,11 @@ async function improvedSystemDetector(): Promise<void> {
     console.log('🔧 You can now:');
     console.log('   • Run tests: npm test');
     console.log('   • Take screenshots: npm run screenshot');  
-    console.log('   • Access browser UI: http://localhost:9003');
-    console.log('   • Use JTAG commands via WebSocket on port 9001');
+    // Show dynamic ports in success message
+    const { getActivePorts } = require('../examples/shared/ExampleConfig');
+    const activePorts = await getActivePorts();
+    console.log(`   • Access browser UI: http://localhost:${activePorts.http_server}`);
+    console.log(`   • Use JTAG commands via WebSocket on port ${activePorts.websocket_server}`);
     process.exit(0);
   } else {
     console.log('⚠️ SOME HEALTH CHECKS FAILED');
@@ -162,7 +170,9 @@ async function improvedSystemDetector(): Promise<void> {
     
     if (failedChecks.some(c => c.name === 'WebSocket Server')) {
       console.log('   • WebSocket server not running - check for port conflicts');
-      console.log('   • Try: lsof -i :9001');
+      const { getActivePorts } = require('../examples/shared/ExampleConfig');
+      const activePorts = await getActivePorts();
+      console.log(`   • Try: lsof -i :${activePorts.websocket_server}`);
     }
     
     if (failedChecks.some(c => c.name === 'System Logs Creation')) {

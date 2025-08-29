@@ -148,7 +148,10 @@ class AutomatedPerformanceMonitor {
   
   private async isSystemRunning(): Promise<boolean> {
     try {
-      const response = await fetch('http://localhost:9002', { 
+      // Use dynamic port resolution
+      const { getActivePorts } = require('../examples/shared/ExampleConfig');
+      const activePorts = await getActivePorts();
+      const response = await fetch(`http://localhost:${activePorts.http_server}`, { 
         method: 'GET',
         signal: AbortSignal.timeout(3000)
       });
@@ -221,7 +224,10 @@ class AutomatedPerformanceMonitor {
     // Test HTTP latency
     try {
       const httpStart = performance.now();
-      const response = await fetch('http://localhost:9002', { 
+      // Use dynamic port resolution  
+      const { getActivePorts } = require('../examples/shared/ExampleConfig');
+      const activePorts = await getActivePorts();
+      const response = await fetch(`http://localhost:${activePorts.http_server}`, { 
         signal: AbortSignal.timeout(5000)
       });
       snapshot.systemHealth.httpLatency = performance.now() - httpStart;
@@ -254,7 +260,9 @@ class AutomatedPerformanceMonitor {
       
       try {
         // Simple HTTP ping test
-        await fetch('http://localhost:9002', { 
+        const { getActivePorts } = require('../examples/shared/ExampleConfig');
+        const activePorts = await getActivePorts();
+        await fetch(`http://localhost:${activePorts.http_server}`, { 
           method: 'HEAD',
           signal: AbortSignal.timeout(2000)
         });

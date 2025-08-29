@@ -83,8 +83,10 @@ class AutonomousTestSuite {
     // Check tmux session (from proven methodology)
     const tmuxRunning = await this.checkTmuxSession();
     
-    // Check port availability (from proven patterns)
-    const portsActive = await this.checkPorts([9001, 9002]);
+    // Check port availability using dynamic configuration
+    const { getActivePorts } = require('../examples/shared/ExampleConfig');
+    const activePorts = await getActivePorts();
+    const portsActive = await this.checkPorts([activePorts.websocket_server, activePorts.http_server]);
     
     // Check log freshness (critical timing check)
     const logStatus = await this.checkLogFreshness();
@@ -364,8 +366,10 @@ class AutonomousTestSuite {
         diagnostics.push(`Recent system errors: ${systemLogCheck}`);
       }
       
-      // Check if system is still responsive
-      const portCheck = await this.checkPorts([9001, 9002]);
+      // Check if system is still responsive using dynamic ports
+      const { getActivePorts } = require('../examples/shared/ExampleConfig');
+      const activePorts = await getActivePorts();
+      const portCheck = await this.checkPorts([activePorts.websocket_server, activePorts.http_server]);
       if (!portCheck) {
         diagnostics.push('System ports not responding - system may have crashed');
       }
