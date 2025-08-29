@@ -29,14 +29,19 @@ async function runBrowserIntegrationTests(): Promise<void> {
   
   try {
     // Connect to JTAG system (same as ./jtag screenshot)
+    const { getActivePorts } = require('../../system/shared/ExampleConfig');
+    const activePorts = await getActivePorts();
+    const websocketPort = activePorts.websocket_server;
+    const serverUrl = `ws://localhost:${websocketPort}`;
+    
     const clientOptions: JTAGClientConnectOptions = {
       targetEnvironment: 'server',
       transportType: 'websocket', 
-      serverUrl: 'ws://localhost:9001',
+      serverUrl,
       enableFallback: false
     };
     
-    console.log('🔗 Connecting to JTAG system at ws://localhost:9001...');
+    console.log(`🔗 Connecting to JTAG system at ${serverUrl}...`);
     const { client } = await JTAGClientServer.connect(clientOptions);
     console.log('✅ JTAG Client connected for browser test automation');
     

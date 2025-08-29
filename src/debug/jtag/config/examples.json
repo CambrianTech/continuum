@@ -12,13 +12,6 @@
         "directory": "examples/test-bench",
         "html_file": "public/demo.html",
         "build_output": "dist"
-      },
-      "features": {
-        "browser_automation": true,
-        "screenshot_testing": true,
-        "chat_integration": true,
-        "widget_testing": false,
-        "auto_launch_browser": true
       }
     },
     "widget-ui": {
@@ -32,13 +25,6 @@
         "directory": "examples/widget-ui",
         "html_file": "index.html",
         "build_output": "dist"
-      },
-      "features": {
-        "browser_automation": false,
-        "screenshot_testing": false,
-        "chat_integration": true,
-        "widget_testing": true,
-        "auto_launch_browser": true
       }
     }
   }

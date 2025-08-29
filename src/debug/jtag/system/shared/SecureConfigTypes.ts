@@ -112,11 +112,11 @@ export interface InstancePaths {
 }
 
 export interface InstanceCapabilities {
-  readonly browser_automation: boolean;
-  readonly screenshot_testing: boolean;
-  readonly chat_integration: boolean;
-  readonly widget_testing: boolean;
-  readonly auto_launch_browser: boolean;
+  readonly browser_automation?: boolean;
+  readonly screenshot_testing?: boolean;
+  readonly chat_integration?: boolean;
+  readonly widget_testing?: boolean;
+  readonly auto_launch_browser?: boolean;
 }
 
 export interface InstanceConfiguration {
@@ -171,7 +171,7 @@ export function validateInstanceConfig(config: unknown): config is InstanceConfi
     typeof (config as any).ports?.http_server === 'number' &&
     typeof (config as any).ports?.websocket_server === 'number' &&
     typeof (config as any).paths?.directory === 'string' &&
-    typeof (config as any).capabilities?.browser_automation === 'boolean'
+    typeof (config as any).capabilities === 'object'
   );
 }
 
@@ -207,6 +207,7 @@ export function validateJTAGConfig(config: unknown): config is JTAGConfig {
     'instance' in config &&
     'server' in config &&
     'client' in config &&
+    'test' in config &&
     validateInstanceConfig((config as any).instance) &&
     validateServerConfig((config as any).server) &&
     validateClientConfig((config as any).client)

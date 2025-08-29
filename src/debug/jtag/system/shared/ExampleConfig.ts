@@ -19,7 +19,7 @@ interface ExampleConfig {
       readonly html_file: string;
       readonly build_output: string;
     };
-    readonly features: Record<string, boolean>;
+    readonly features?: Record<string, boolean>; // Optional - all features always enabled
   }>;
 }
 
@@ -27,7 +27,7 @@ interface ExampleConfig {
 let config: ExampleConfig | null = null;
 
 /**
- * Load configuration ONCE from file system (server-only)
+ * Load configuration ONCE from package.json discovery pattern (server-only)
  * Browser gets config passed in via configureForBrowser()
  */
 function loadConfig(): ExampleConfig {
@@ -40,15 +40,48 @@ function loadConfig(): ExampleConfig {
     throw new Error('ExampleConfig: Browser environment detected. Use configureForBrowser() to provide config.');
   }
 
-  // Server environment - load from file system ONCE
+  // Server environment - load from package.json discovery pattern
   if (typeof require !== 'undefined' && typeof process !== 'undefined') {
     try {
       const fs = eval('require')('fs');
       const path = eval('require')('path');
-      const configPath = path.join(__dirname, '../../config/examples.json');
-      const configData = fs.readFileSync(configPath, 'utf-8');
-      config = JSON.parse(configData);
-      console.log(`📋 ExampleConfig: Loaded from examples.json - active: ${config!.active_example}`);
+      
+      // 1. Read active_example from main package.json
+      const mainPackageJsonPath = path.join(__dirname, '../../package.json');
+      const mainPackageJson = JSON.parse(fs.readFileSync(mainPackageJsonPath, 'utf-8'));
+      const activeExample = mainPackageJson.config?.active_example || 'test-bench';
+      
+      // 2. Read example-specific config from its package.json
+      const exampleDir = `examples/${activeExample}`;
+      const examplePackageJsonPath = path.join(__dirname, '../../', exampleDir, 'package.json');
+      const examplePackageJson = JSON.parse(fs.readFileSync(examplePackageJsonPath, 'utf-8'));
+      const httpPort = examplePackageJson.config?.port || 9002;
+      const websocketPort = httpPort - 1; // WebSocket port is HTTP port - 1
+      
+      // 3. Determine HTML file based on example
+      const htmlFile = activeExample === 'widget-ui' ? 'index.html' : 'public/demo.html';
+      
+      // 4. Build configuration dynamically (no artificial features)
+      config = {
+        active_example: activeExample,
+        examples: {
+          [activeExample]: {
+            name: examplePackageJson.name || `JTAG ${activeExample}`,
+            description: examplePackageJson.description || `${activeExample} development environment`,
+            ports: {
+              http_server: httpPort,
+              websocket_server: websocketPort
+            },
+            paths: {
+              directory: exampleDir,
+              html_file: htmlFile,
+              build_output: 'dist'
+            },
+            features: {} // All features always enabled - no artificial limitations
+          }
+        }
+      };
+      console.log(`📋 ExampleConfig: Loaded via package.json discovery - active: ${config!.active_example}`);
       return config!;
     } catch (error) {
       throw new Error(`ExampleConfig: Failed to load config file: ${(error as Error).message}`);

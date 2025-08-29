@@ -499,20 +499,8 @@ export class SystemMetricsCollector {
    */
   private getActiveInstancePorts(): { http_server: number; websocket_server: number } {
     try {
-      const fs = eval('require')('fs');
-      const path = eval('require')('path');
-      const configPath = path.join(__dirname, '../../../config/examples.json');
-      const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      
-      const activeInstanceName = configData.active_instance || configData.active_example;
-      const instancesData = configData.instances || configData.examples;
-      const activeInstance = instancesData[activeInstanceName];
-      
-      if (!activeInstance) {
-        throw new Error(`Active instance '${activeInstanceName}' not found in config`);
-      }
-
-      return activeInstance.ports;
+      const { getActivePortsSync } = eval('require')('../../../system/shared/ExampleConfig');
+      return getActivePortsSync();
     } catch (error) {
       console.warn(`⚠️ SystemMetricsCollector: Failed to load active instance ports: ${(error as Error).message}`);
       // Fallback to test-bench ports - system needs to continue working
