@@ -198,12 +198,13 @@ async function teardownSystem(): Promise<void> {
 
 async function checkSystemReady(): Promise<boolean> {
   try {
-    // SIMPLE APPROACH: Just check if both servers are running
-    const { execAsync } = require('child_process').promisify;
+    // Use dynamic port detection instead of hardcoded ports
+    const { getActivePorts } = require('../examples/shared/ExampleConfig');
+    const activePorts = await getActivePorts();
     const exec = require('util').promisify(require('child_process').exec);
     
-    const wsCheck = await exec('lsof -ti:9001 2>/dev/null | head -1 || echo ""');
-    const httpCheck = await exec('lsof -ti:9002 2>/dev/null | head -1 || echo ""');
+    const wsCheck = await exec(`lsof -ti:${activePorts.websocket_server} 2>/dev/null | head -1 || echo ""`);
+    const httpCheck = await exec(`lsof -ti:${activePorts.http_server} 2>/dev/null | head -1 || echo ""`);
     
     const wsRunning = wsCheck.stdout.trim().length > 0;
     const httpRunning = httpCheck.stdout.trim().length > 0;

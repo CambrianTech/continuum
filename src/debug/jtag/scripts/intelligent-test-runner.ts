@@ -49,9 +49,14 @@ async function runIntelligentTest(): Promise<boolean> {
   }
   
   // INTELLIGENCE: Step 2 - Kill any lingering processes on our ports
-  console.log('\n🔫 STEP 2: Kill any lingering processes on ports 9001, 9002');
+  console.log('\n🔫 STEP 2: Kill any lingering processes on dynamic ports');
   try {
-    for (const port of [9001, 9002]) {
+    // Get dynamic port configuration instead of hardcoded ports
+    const { getActivePorts } = require('../examples/shared/ExampleConfig');
+    const activePorts = await getActivePorts();
+    const portsToKill = [activePorts.websocket_server, activePorts.http_server];
+    
+    for (const port of portsToKill) {
       await new Promise<void>((resolve) => {
         // Use lsof to find and kill processes on specific ports
         const killCmd = `lsof -ti :${port} | xargs kill -9 2>/dev/null || true`;
