@@ -61,14 +61,15 @@ export class SystemReadySignaler {
     // Use the dynamic port configuration system
     try {
       // Import the getActivePorts function dynamically
-      const { getActivePortsSync } = require('../../system/shared/ExampleConfig');
+      const { getActivePortsSync } = require('../../../system/shared/ExampleConfig');
       const ports = getActivePortsSync();
-      const websocketPort = ports.websocket_server || 9001;
+      const websocketPort = ports.websocket_server || 9002;
       return `port-${websocketPort}`;
     } catch (error) {
+      console.warn(`⚠️ SystemReadySignaler: Failed to load active instance ports: ${(error as Error).message}`);
       // Fall back to port-based identification if dynamic config fails
       const websocketPort = process.env.JTAG_WEBSOCKET_PORT || 
-                            process.env.JTAG_EXAMPLE_WEBSOCKET_PORT || '9001';
+                            process.env.JTAG_EXAMPLE_WEBSOCKET_PORT || '9002';
       return `port-${websocketPort}`;
     }
   }

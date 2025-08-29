@@ -81,19 +81,26 @@ if [ "$DEPLOY_BROWSER" = "true" ]; then
             echo "🛠️  Try: npm run system:stop && npm run system:start"
             exit 1
         fi
-    elif lsof -ti:9001 >/dev/null 2>&1 && lsof -ti:9002 >/dev/null 2>&1; then
-        echo "✅ System already running and ready (verified by port check)"
     else
-        echo "🚀 Starting system with browser deployment..."
-        echo "📋 Running: npm run system:start (launches browser + waits for ready)"
+        # Use dynamic port checking 
+        ACTIVE_PORTS=$(node -e "const { getActivePortsSync } = require('./system/shared/ExampleConfig'); const ports = getActivePortsSync(); console.log(\`\${ports.websocket_server} \${ports.http_server}\`);" 2>/dev/null || echo "9002 9003")
+        WS_PORT=$(echo $ACTIVE_PORTS | cut -d' ' -f1)
+        HTTP_PORT=$(echo $ACTIVE_PORTS | cut -d' ' -f2)
         
-        if npm run system:start; then
-            echo "✅ Browser deployment successful - proceeding with tests"
+        if lsof -ti:$WS_PORT >/dev/null 2>&1 && lsof -ti:$HTTP_PORT >/dev/null 2>&1; then
+            echo "✅ System already running and ready (verified by port check: WS=$WS_PORT, HTTP=$HTTP_PORT)"
         else
-            echo "❌ FATAL: Browser deployment failed"
-            echo "🔍 Check system logs: .continuum/jtag/system/logs/npm-start.log"
-            echo "🛠️  Try: npm run system:stop && npm run system:start"
-            exit 1
+            echo "🚀 Starting system with browser deployment..."
+            echo "📋 Running: npm run system:start (launches browser + waits for ready)"
+            
+            if npm run system:start; then
+                echo "✅ Browser deployment successful - proceeding with tests"
+            else
+                echo "❌ FATAL: Browser deployment failed"
+                echo "🔍 Check system logs: .continuum/jtag/system/logs/npm-start.log"
+                echo "🛠️  Try: npm run system:stop && npm run system:start"
+                exit 1
+            fi
         fi
     fi
     echo ""

@@ -58,9 +58,11 @@ async function testPerProjectIsolation(): Promise<TestResult> {
     details.push(`✅ Project context signal generated`);
     details.push(`   Timestamp: ${projectSignal.timestamp}`);
     
-    // Test 3: Verify different signal files are created
-    const defaultPath = path.resolve('.continuum/jtag/signals/system-ready-port-9001.json');
-    const projectPath = path.resolve(`${workingDir}/.continuum/jtag/signals/system-ready-port-9001.json`);
+    // Test 3: Verify different signal files are created  
+    const activePorts = await getActivePorts();
+    const websocketPort = activePorts.websocket_server;
+    const defaultPath = path.resolve(`.continuum/jtag/signals/system-ready-port-${websocketPort}.json`);
+    const projectPath = path.resolve(`${workingDir}/.continuum/jtag/signals/system-ready-port-${websocketPort}.json`);
     
     details.push(`📂 Default signal path: ${defaultPath}`);
     details.push(`📂 Project signal path: ${projectPath}`);
@@ -227,7 +229,9 @@ async function testSignalFileOperations(): Promise<TestResult> {
     
     // Test 3: Verify signal file exists
     const continuumPath = WorkingDirConfig.getContinuumPath();
-    const signalFile = path.join(continuumPath, 'jtag', 'signals', 'system-ready-port-9001.json');
+    const activePorts = await getActivePorts();
+    const websocketPort = activePorts.websocket_server;
+    const signalFile = path.join(continuumPath, 'jtag', 'signals', `system-ready-port-${websocketPort}.json`);
     
     try {
       const fileContent = await fs.readFile(signalFile, 'utf-8');

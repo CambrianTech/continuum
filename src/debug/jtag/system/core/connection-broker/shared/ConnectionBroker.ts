@@ -358,8 +358,20 @@ export class ConnectionBroker implements IConnectionBroker {
     console.log(`🔗 ConnectionBroker: Creating client connection to existing server`);
 
     // Connect to existing JTAG system server (assumes system is already running)
-    const systemConfig = { getWebSocketPort: () => 9001, getWebSocketUrl: () => 'ws://localhost:9001' };
-    const port = systemConfig.getWebSocketPort();
+    // Use dynamic port configuration instead of hardcoded values
+    let port = 9001; // fallback
+    try {
+      const { getActivePortsSync } = require('../../../shared/ExampleConfig');
+      const activePorts = getActivePortsSync();
+      port = activePorts.websocket_server;
+    } catch (error) {
+      console.warn(`⚠️ ConnectionBroker: Failed to load dynamic ports, using fallback: ${error}`);
+    }
+    
+    const systemConfig = { 
+      getWebSocketPort: () => port, 
+      getWebSocketUrl: () => `ws://localhost:${port}` 
+    };
     const protocol = params.protocols[0]; // Use first preferred protocol
 
     // Register the existing JTAG server in our registry first

@@ -23,10 +23,14 @@ async function testSimpleRouterCoordination(): Promise<SimpleRouterTest> {
   try {
     // Connect to JTAG system
     console.log('🔗 Connecting to JTAG system...');
+    const { getActivePorts } = require('../../system/shared/ExampleConfig');
+    const activePorts = await getActivePorts();
+    const websocketPort = activePorts.websocket_server;
+    console.log(`🔌 Connecting to WebSocket on port ${websocketPort}...`);
     const { client } = await JTAGClientServer.connect({
       targetEnvironment: 'server',
       transportType: 'websocket',
-      serverUrl: 'ws://localhost:9001'
+      serverUrl: `ws://localhost:${websocketPort}`
     });
     console.log('✅ Connected to JTAG system');
 

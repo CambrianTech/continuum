@@ -2,8 +2,7 @@
  * Browser-Safe Configuration - No Node.js Dependencies
  * 
  * This module provides configuration defaults that work in both browser and server environments.
- * It contains no file system operations or Node.js-specific code.
- * Integrates with centralized examples.json configuration.
+ * Uses package.json-based configuration discovery pattern (NPM standard).
  */
 
 import type { 
@@ -23,62 +22,41 @@ export const isNode = typeof process !== 'undefined' && process.versions && proc
 
 
 /**
- * Load active instance configuration from centralized instances.json
- * Called once when JTAGContext is created - returns full typed config  
- * NO ENVIRONMENT VARIABLES - API level only uses config files and context.config
- * NO FALLBACKS - Browser gets same config as server from examples.json
+ * Load active instance configuration using package.json discovery pattern
+ * Server uses package.json files, browser derives from current port
+ * NO ENVIRONMENT VARIABLES - Uses NPM-standard configuration discovery
  */
 export function loadInstanceConfigForContext(): InstanceConfiguration {
-  // Server context - load from file system
+  // Server context - delegate to ExampleConfig
   if (isNode) {
-    const fs = eval('require')('fs');
-    const path = eval('require')('path');
-    const configPath = path.join(__dirname, '../../config/examples.json');
-    const examplesConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    const { getActiveExample } = eval('require')('./ExampleConfig');
+    const example = getActiveExample();
     
-    const activeInstanceName = examplesConfig.active_example;
-    const allInstances = examplesConfig.examples;
-    const activeInstance = allInstances[activeInstanceName];
-    
-    if (!activeInstance) {
-      throw new Error(`Active instance '${activeInstanceName}' not found in config`);
-    }
-
-    const instanceConfig: InstanceConfiguration = {
-      name: activeInstance.name,
-      description: activeInstance.description,
-      ports: activeInstance.ports,
-      paths: activeInstance.paths,
-      capabilities: activeInstance.features
+    return {
+      name: example.name,
+      description: example.description,
+      ports: example.ports,
+      paths: example.paths,
+      capabilities: {}
     };
-
-    console.log(`📋 BrowserSafeConfig: Loaded active instance: ${instanceConfig.name} (HTTP: ${instanceConfig.ports.http_server}, WS: ${instanceConfig.ports.websocket_server})`);
-    return instanceConfig;
   }
 
-  // Browser context - derive from current port
+  // Browser context - derive from port (temporary until proper config passing)
   if (isBrowser) {
-    const currentPort = window.location.port;
+    const currentPort = parseInt(window.location.port);
+    const websocketPort = currentPort - 1;
     
-    if (currentPort === '9002') {
-      return {
-        name: 'JTAG Test Bench',
-        description: 'Full-featured testing environment with comprehensive UI',
-        ports: { http_server: 9002, websocket_server: 9001 },
-        paths: { directory: 'examples/test-bench', html_file: 'public/demo.html', build_output: 'dist' },
-        capabilities: { browser_automation: true, screenshot_testing: true, chat_integration: true, widget_testing: false, auto_launch_browser: true }
-      };
-    } else if (currentPort === '9003') {
-      return {
-        name: 'JTAG Widget Development UI',
-        description: 'Focused widget development environment',
-        ports: { http_server: 9003, websocket_server: 9004 },
-        paths: { directory: 'examples/widget-ui', html_file: 'index.html', build_output: 'dist' },
-        capabilities: { browser_automation: false, screenshot_testing: false, chat_integration: true, widget_testing: true, auto_launch_browser: true }
-      };
-    } else {
-      throw new Error(`Browser port ${currentPort} not recognized. Expected 9002 or 9003.`);
-    }
+    return {
+      name: currentPort === 9003 ? 'JTAG Widget Development UI' : 'JTAG Test Bench',
+      description: currentPort === 9003 ? 'Focused widget development environment' : 'Full-featured testing environment',
+      ports: { http_server: currentPort, websocket_server: websocketPort },
+      paths: { 
+        directory: currentPort === 9003 ? 'examples/widget-ui' : 'examples/test-bench', 
+        html_file: currentPort === 9003 ? 'index.html' : 'public/demo.html',
+        build_output: 'dist'
+      },
+      capabilities: {}
+    };
   }
 
   throw new Error('Cannot determine environment');
@@ -147,7 +125,7 @@ export function getDefaultClientConfig(instance: InstanceConfiguration): JTAGCli
     },
     browser: {
       headless: false,
-      devtools: instance.capabilities.browser_automation,
+      devtools: true, // Always enabled - no artificial limitations
       width: 1200,
       height: 800,
       user_agent: 'JTAG-TestBrowser/1.0'
@@ -179,7 +157,7 @@ export function getDefaultTestConfig(instance: InstanceConfiguration): JTAGTestC
     test_settings: {
       timeout_ms: 30000,
       retry_attempts: 3,
-      screenshot_on_failure: instance.capabilities.screenshot_testing,
+      screenshot_on_failure: true, // Always enabled - no artificial limitations
       cleanup_after_test: true
     },
     environment: {
