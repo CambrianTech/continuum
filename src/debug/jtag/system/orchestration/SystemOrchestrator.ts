@@ -831,8 +831,8 @@ export class SystemOrchestrator extends EventEmitter {
       const activePorts = await getActivePorts();
       return `http://localhost:${activePorts.http_server}`;
     } catch (error) {
-      console.warn('⚠️ Could not get active ports, using default');
-      return 'http://localhost:9002';
+      console.error('❌ FATAL: Could not get active ports - no fallback:', error);
+      throw error;
     }
   }
 

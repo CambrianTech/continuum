@@ -134,13 +134,18 @@ export class JTAGRouterDynamic extends JTAGRouter {
   async initializeTransport(_config?: Partial<TransportConfig>): Promise<void> {
     console.debug(`🔗 ${this.toString()}: Initializing dynamic transport system...`);
 
+    // Use dynamic port from context instance config if router config doesn't specify one
+    const instanceConfig = this.context.config.instance;
+    const serverPort = this.config.transport.serverPort ?? instanceConfig.ports.websocket_server;
+    const serverUrl = this.config.transport.serverUrl ?? `ws://localhost:${serverPort}`;
+
     // Create transport configuration (same pattern as JTAGRouter)
     const transportConfig: TransportConfig = { 
       protocol: this.config.transport.preferred,
       role: this.config.transport.role,
       sessionId: this.config.sessionId,
-      serverPort: this.config.transport.serverPort,
-      serverUrl: this.config.transport.serverUrl,
+      serverPort,
+      serverUrl,
       fallback: this.config.transport.fallback,
       eventSystem: this.eventManager.events,
       handler: {
