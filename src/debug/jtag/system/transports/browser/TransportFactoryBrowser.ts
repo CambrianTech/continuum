@@ -7,7 +7,7 @@
 
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGTransport, TransportConfig } from '../shared/TransportTypes';
-import { TransportFactoryBase } from '../shared/TransportFactoryBase';
+import { TransportFactoryBase, validateAndConvertProtocol } from '../shared/TransportFactoryBase';
 import { BROWSER_ADAPTERS } from '../../../browser/generated';
 import type { AdapterEntry } from '../shared/TransportBase';
 import type { WebSocketBrowserConfig } from '../websocket-transport/browser/WebSocketTransportClientBrowser';
@@ -107,6 +107,69 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
     
     // For other adapters, pass the config as-is
     return config;
+  }
+
+  /**
+   * New architecture transport creation with resolved destination
+   * Implements pure transport factory for dumb pipes architecture
+   */
+  protected async createTransportWithDestination(
+    protocol: string,
+    request: import('../shared/PureTransportTypes').TransportRequest,
+    destination: string
+  ): Promise<import('../shared/PureTransportTypes').PureTransport> {
+    
+    console.log(`🏭 Browser Factory: Creating ${protocol} pure transport to ${destination}`);
+    
+    // Convert destination URL back to legacy config for now
+    // TODO: Implement pure transport adapters that accept destinations directly
+    const legacyConfig: Partial<TransportConfig> & { 
+      protocol: TransportConfig['protocol']; 
+      role: 'client' | 'server'; 
+      sessionId: string; 
+    } = {
+      protocol: validateAndConvertProtocol(protocol),
+      serverUrl: destination,
+      serverPort: request.port,
+      handler: undefined, // Pure transports don't need legacy handlers
+      eventSystem: undefined, // Pure transports don't need legacy event systems
+      role: request.role,
+      sessionId: 'pure-transport-bridge' // Bridge session until pure transports eliminate this
+    };
+    
+    // Delegate to existing implementation for now
+    const legacyTransport = await this.createTransportImpl('browser', legacyConfig as TransportConfig);
+    
+    // Wrap legacy transport in pure transport interface
+    // This is a bridge pattern while we migrate to pure transports
+    return {
+      name: `pure-${protocol}-transport`,
+      protocol: protocol as import('../shared/PureTransportTypes').PureTransportProtocol,
+      async send(data: string | Uint8Array): Promise<import('../shared/PureTransportTypes').PureSendResult> {
+        // Legacy transports use sendMessage - type-safe method detection
+        if (legacyTransport && typeof legacyTransport === 'object' && 'sendMessage' in legacyTransport) {
+          const sendMethod = legacyTransport.sendMessage as (data: string | Uint8Array) => Promise<void>;
+          await sendMethod(data);
+        }
+        return { success: true, timestamp: new Date().toISOString() };
+      },
+      isConnected(): boolean {
+        if (legacyTransport && typeof legacyTransport === 'object' && 'isConnected' in legacyTransport) {
+          const isConnectedMethod = legacyTransport.isConnected as () => boolean;
+          return isConnectedMethod();
+        }
+        return true;
+      },
+      async connect(): Promise<void> {
+        // Already connected via createTransportImpl
+      },
+      async disconnect(): Promise<void> {
+        if (legacyTransport && typeof legacyTransport === 'object' && 'disconnect' in legacyTransport) {
+          const disconnectMethod = legacyTransport.disconnect as () => Promise<void>;
+          await disconnectMethod();
+        }
+      }
+    };
   }
 
   /**
