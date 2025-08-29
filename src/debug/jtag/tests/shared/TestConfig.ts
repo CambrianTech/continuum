@@ -51,16 +51,21 @@ class TestConfigManager {
 
   /**
    * Default test configuration (same structure as system config)
+   * Uses dynamic port resolution instead of hardcoded values
    */
   private static getDefaults(): JTAGConfiguration {
+    // Get dynamic ports from active example configuration
+    const { getActivePortsSync } = require('../../examples/shared/ExampleConfig');
+    const activePorts = getActivePortsSync();
+    
     return {
       server: {
-        port: 9001,
+        port: activePorts.websocket_server,
         host: 'localhost',
         protocol: 'ws'
       },
       client: {
-        ui_port: 9002,
+        ui_port: activePorts.http_server,
         host: 'localhost',
         protocol: 'http'
       },

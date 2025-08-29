@@ -1,13 +1,22 @@
 {
   "server": {
-    "port": 9001,
     "host": "localhost",
     "protocol": "ws"
   },
   "client": {
-    "ui_port": 9002,
     "host": "localhost",
     "protocol": "http"
+  },
+  "paths": {
+    "test_bench": "test-bench",
+    "logs": ".continuum/jtag/logs",
+    "screenshots": ".continuum/jtag/screenshots"
+  },
+  "browser": {
+    "headless": false,
+    "devtools": true,
+    "width": 1200,
+    "height": 800
   },
   "test_settings": {
     "timeout_ms": 30000,
@@ -19,5 +28,6 @@
     "test_mode": true,
     "verbose_logging": true,
     "isolated_sessions": true
-  }
+  },
+  "_comment": "Ports are resolved dynamically from active example configuration - see TestConfigFactory"
 }

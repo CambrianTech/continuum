@@ -1,11 +1,9 @@
 {
   "server": {
-    "port": 9001,
     "host": "localhost",
     "protocol": "ws"
   },
   "client": {
-    "ui_port": 9002,
     "host": "localhost",
     "protocol": "http"
   },
@@ -23,5 +21,6 @@
   "environment": {
     "test_mode": false,
     "verbose_logging": false
-  }
+  },
+  "_comment": "Ports are resolved dynamically from active example configuration - no hardcoded ports"
 }
