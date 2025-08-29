@@ -7,10 +7,12 @@
 import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
+import { createConnectionConfigAuto } from '../examples/shared/ConnectionConfigFactory';
+import type { ConnectionConfig } from '@continuum/jtag/types';
 
-// Read port from the example's package.json config  
-const packageJson = require(process.cwd() + '/package.json');
-const PORT = packageJson.config?.port || 9002;
+// Create connection config ONCE - does all the reading
+const connectionConfig: ConnectionConfig = createConnectionConfigAuto();
+const PORT = connectionConfig.httpPort;
 
 class MinimalServer {
   private server: http.Server;
@@ -137,21 +139,16 @@ class MinimalServer {
    */
   private async serveConfiguration(res: http.ServerResponse): Promise<void> {
     try {
-      // Import configuration functions
-      const { getActiveExampleName, getActivePorts } = require('../../system/shared/ExampleConfig');
-      
-      const activeExample = getActiveExampleName();
-      const activePorts = await getActivePorts(); // Await the async function
-      
+      // Serve the pre-created connectionConfig - no config reading here
       const config = {
-        activeExample,
-        websocketPort: activePorts.websocket_server,
-        httpPort: activePorts.http_server,
+        activeExample: connectionConfig.exampleName,
+        websocketPort: connectionConfig.websocketPort,
+        httpPort: connectionConfig.httpPort,
         exampleConfig: {
           features: {
-            screenshot_testing: activeExample === 'test-bench',
-            widget_testing: activeExample === 'widget-ui', 
-            browser_automation: activeExample === 'test-bench'
+            screenshot_testing: connectionConfig.exampleName === 'test-bench',
+            widget_testing: connectionConfig.exampleName === 'widget-ui', 
+            browser_automation: connectionConfig.exampleName === 'test-bench'
           }
         }
       };

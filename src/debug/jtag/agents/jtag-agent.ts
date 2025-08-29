@@ -13,6 +13,53 @@
 import { execSync, spawn, ChildProcess } from 'child_process';
 import { existsSync, readlinkSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import type { ConnectionConfig } from '@continuum/jtag/example-shared';
+
+/**
+ * Strong-typed results for JTAGAgent API methods
+ */
+interface SystemStatus {
+  readonly online: boolean;
+  readonly websocketPort: {
+    readonly port: number;
+    readonly listening: boolean;
+  };
+  readonly httpPort: {
+    readonly port: number;
+    readonly listening: boolean;
+  };
+  readonly tmuxSession: {
+    readonly running: boolean;
+    readonly sessionName?: string;
+  };
+  readonly browserConnected: boolean;
+  readonly timestamp: Date;
+}
+
+interface LogInformation {
+  readonly logFiles: ReadonlyArray<{
+    readonly name: string;
+    readonly path: string;
+    readonly exists: boolean;
+    readonly sizeKB?: number;
+    readonly lastModified?: Date;
+  }>;
+  readonly suggestedCommands: ReadonlyArray<{
+    readonly description: string;
+    readonly command: string;
+  }>;
+}
+
+interface AvailableCommands {
+  readonly systemCommands: ReadonlyArray<{
+    readonly category: string;
+    readonly commands: ReadonlyArray<{
+      readonly name: string;
+      readonly command: string;
+      readonly description: string;
+    }>;
+  }>;
+}
 
 interface AgentConfig {
   verbose: boolean;
@@ -23,11 +70,13 @@ interface AgentConfig {
 
 class JTAGAgent {
   private config: AgentConfig;
+  private connectionConfig: ConnectionConfig;
   private systemProcess?: ChildProcess;
   private testClientProcess?: ChildProcess;
   private monitoringInterval?: NodeJS.Timeout;
 
-  constructor(config: Partial<AgentConfig> = {}) {
+  constructor(connectionConfig: ConnectionConfig, config: Partial<AgentConfig> = {}) {
+    this.connectionConfig = connectionConfig;
     this.config = {
       verbose: false,
       autoFix: false,  // Thin client doesn't auto-fix by default
@@ -59,10 +108,10 @@ class JTAGAgent {
       this.showLogLocations();
       
       // 3. Test correlation if system is running
-      const port9001 = this.isPortListening(9001);
-      const port9002 = this.isPortListening(9002);
+      const websocketPortOpen = this.isPortListening(this.connectionConfig.websocketPort);
+      const httpPortOpen = this.isPortListening(this.connectionConfig.httpPort);
       
-      if (port9001 && port9002) {
+      if (websocketPortOpen && httpPortOpen) {
         console.log('\n🔗 TESTING WEBSOCKET CORRELATION');
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         const correlationTest = await this.testWebSocketCorrelation();
@@ -100,8 +149,8 @@ class JTAGAgent {
   }
 
   private showCurrentStatus(): void {
-    const port9001 = this.isPortListening(9001);
-    const port9002 = this.isPortListening(9002);
+    const websocketPortOpen = this.isPortListening(this.connectionConfig.websocketPort);
+    const httpPortOpen = this.isPortListening(this.connectionConfig.httpPort);
     const tmuxRunning = this.isTmuxSessionRunning();
     const browserConnected = this.checkBrowserConnections();
     
@@ -112,16 +161,16 @@ class JTAGAgent {
     console.log(`   🪟 Tmux Session: ${tmuxRunning ? '✅ jtag-test running' : '❌ Not running'}`);
     
     // Port status
-    console.log(`   🔌 WebSocket (9001): ${port9001 ? '✅ Listening' : '❌ Not listening'}`);
-    console.log(`   🌐 HTTP (9002): ${port9002 ? '✅ Listening' : '❌ Not listening'}`);
+    console.log(`   🔌 WebSocket (${this.connectionConfig.websocketPort}): ${websocketPortOpen ? '✅ Listening' : '❌ Not listening'}`);
+    console.log(`   🌐 HTTP (${this.connectionConfig.httpPort}): ${httpPortOpen ? '✅ Listening' : '❌ Not listening'}`);
     
     // Browser connection status
-    if (port9001) {
+    if (websocketPortOpen) {
       console.log(`   🦊 Browser Connected: ${browserConnected ? '✅ Yes' : '❌ No WebSocket connections'}`);
     }
     
     // Overall status - prioritize ports over tmux
-    const systemOnline = port9001 && port9002;
+    const systemOnline = websocketPortOpen && httpPortOpen;
     console.log(`   📊 JTAG System: ${systemOnline ? '✅ FULLY ONLINE' : '❌ OFFLINE'}`);
     
     // Show connected clients (like nvidia-smi)
@@ -139,7 +188,7 @@ class JTAGAgent {
     
     if (systemOnline) {
       console.log('\n   🎯 Ready for:');
-      console.log('      • Browser UI: http://localhost:9002');
+      console.log(`      • Browser UI: http://localhost:${this.connectionConfig.httpPort}`);
       if (browserConnected) {
         console.log('      • Browser is connected and working');
       }
@@ -151,7 +200,7 @@ class JTAGAgent {
       }
     } else {
       console.log('\n   🚀 To start: npm run system:ensure (or use interactive mode)');
-      if (tmuxRunning && (!port9001 || !port9002)) {
+      if (tmuxRunning && (!websocketPortOpen || !httpPortOpen)) {
         console.log('   ⚠️  Tmux running but ports not ready - system may still be starting');
       }
     }
@@ -168,8 +217,8 @@ class JTAGAgent {
 
   private checkBrowserConnections(): boolean {
     try {
-      // Check for established connections to port 9001
-      const result = execSync('lsof -i :9001 | grep ESTABLISHED', { encoding: 'utf8' });
+      // Check for established connections to WebSocket port
+      const result = execSync(`lsof -i :${this.connectionConfig.websocketPort} | grep ESTABLISHED`, { encoding: 'utf8' });
       return result.trim().length > 0;
     } catch {
       return false;
@@ -178,7 +227,7 @@ class JTAGAgent {
   
   private getAllConnectedClients(): Array<{type: string, pid: number, user: string, process: string, connection: string}> {
     try {
-      const result = execSync('lsof -i :9001 -i :9002 | grep ESTABLISHED', { encoding: 'utf8' });
+      const result = execSync(`lsof -i :${this.connectionConfig.websocketPort} -i :${this.connectionConfig.httpPort} | grep ESTABLISHED`, { encoding: 'utf8' });
       const lines = result.trim().split('\n').filter(line => line.length > 0);
       
       return lines.map(line => {
@@ -315,21 +364,21 @@ class JTAGAgent {
     console.log('🔄 Starting continuous monitoring...');
     console.log('Press Ctrl+C to exit\n');
     
-    let lastPort9001 = false;
-    let lastPort9002 = false;
+    let lastWebsocketPortOpen = false;
+    let lastHttpPortOpen = false;
     
     const monitor = setInterval(() => {
-      const port9001 = this.isPortListening(9001);
-      const port9002 = this.isPortListening(9002);
+      const websocketPortOpen = this.isPortListening(this.connectionConfig.websocketPort);
+      const httpPortOpen = this.isPortListening(this.connectionConfig.httpPort);
       
-      if (port9001 !== lastPort9001 || port9002 !== lastPort9002) {
+      if (websocketPortOpen !== lastWebsocketPortOpen || httpPortOpen !== lastHttpPortOpen) {
         const timestamp = new Date().toLocaleTimeString();
         console.log(`[${timestamp}] Status change:`);
-        console.log(`   WebSocket (9001): ${port9001 ? '✅ UP' : '❌ DOWN'}`);
-        console.log(`   HTTP (9002): ${port9002 ? '✅ UP' : '❌ DOWN'}`);
+        console.log(`   WebSocket (${this.connectionConfig.websocketPort}): ${websocketPortOpen ? '✅ UP' : '❌ DOWN'}`);
+        console.log(`   HTTP (${this.connectionConfig.httpPort}): ${httpPortOpen ? '✅ UP' : '❌ DOWN'}`);
         
-        lastPort9001 = port9001;
-        lastPort9002 = port9002;
+        lastWebsocketPortOpen = websocketPortOpen;
+        lastHttpPortOpen = httpPortOpen;
       }
     }, 2000);
     
@@ -594,23 +643,23 @@ class JTAGAgent {
 
 
   private showAINextActions(): void {
-    const port9001 = this.isPortListening(9001);
-    const port9002 = this.isPortListening(9002);
+    const websocketPortOpen = this.isPortListening(this.connectionConfig.websocketPort);
+    const httpPortOpen = this.isPortListening(this.connectionConfig.httpPort);
     const tmux = this.isTmuxSessionRunning();
     
     console.log('\n🧠 AI NEXT ACTIONS');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
-    if (!port9001 && !port9002) {
+    if (!websocketPortOpen && !httpPortOpen) {
       console.log('   🎯 PRIORITY: System is offline');
       console.log('   📋 Action: Run `npm run system:start` to start the system');
       console.log('   ⏱️  Wait: 45+ seconds for TypeScript build to complete');
-      console.log('   ✅ Success: Watch for ports 9001/9002 to become active');
-    } else if (port9001 && port9002) {
+      console.log(`   ✅ Success: Watch for ports ${this.connectionConfig.websocketPort}/${this.connectionConfig.httpPort} to become active`);
+    } else if (websocketPortOpen && httpPortOpen) {
       const browser = this.checkBrowserConnections();
       if (!browser) {
         console.log('   🎯 PRIORITY: System online but no browser connected');
-        console.log('   📋 Action: Open http://localhost:9002 in browser');
+        console.log(`   📋 Action: Open http://localhost:${this.connectionConfig.httpPort} in browser`);
         console.log('   ✅ Success: Browser WebSocket should connect');
       } else {
         console.log('   🎯 PRIORITY: System healthy - ready for testing');
@@ -643,10 +692,10 @@ class JTAGAgent {
       this.showLogLocations();
       
       // Test correlation if system is running
-      const port9001 = this.isPortListening(9001);
-      const port9002 = this.isPortListening(9002);
+      const websocketPortOpen = this.isPortListening(this.connectionConfig.websocketPort);
+      const httpPortOpen = this.isPortListening(this.connectionConfig.httpPort);
       
-      if (port9001 && port9002) {
+      if (websocketPortOpen && httpPortOpen) {
         console.log('\n🔗 WEBSOCKET CORRELATION STATUS');
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         console.log('   🔍 System online - correlation testing available');
@@ -733,7 +782,15 @@ Examples:
     return;
   }
   
-  const agent = new JTAGAgent(config);
+  // Create default connection config for CLI usage
+  const connectionConfig: ConnectionConfig = {
+    websocketPort: 9001,  // CLI default - will be made dynamic later
+    httpPort: 9002,       // CLI default - will be made dynamic later
+    workingDir: process.cwd(),
+    exampleName: 'cli-agent'
+  };
+  
+  const agent = new JTAGAgent(connectionConfig, config);
   await agent.run();
 }
 

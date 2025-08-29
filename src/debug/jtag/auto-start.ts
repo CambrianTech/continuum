@@ -80,7 +80,7 @@ async function initializeJTAG(): Promise<void> {
   try {
     // Import and start JTAG system
     const { JTAGSystemServer } = await import('./system/core/system/server/JTAGSystemServer');
-    const { getActivePorts } = await import('./system/shared/ExampleConfig');
+    const { getActivePorts } = await import('./examples/shared/ExampleConfig');
     
     let wsPort: number;
     try {

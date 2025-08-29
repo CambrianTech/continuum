@@ -23,7 +23,7 @@ async function testSimpleRouterCoordination(): Promise<SimpleRouterTest> {
   try {
     // Connect to JTAG system
     console.log('🔗 Connecting to JTAG system...');
-    const { getActivePorts } = require('../../system/shared/ExampleConfig');
+    const { getActivePorts } = require('../../examples/shared/ExampleConfig');
     const activePorts = await getActivePorts();
     const websocketPort = activePorts.websocket_server;
     console.log(`🔌 Connecting to WebSocket on port ${websocketPort}...`);

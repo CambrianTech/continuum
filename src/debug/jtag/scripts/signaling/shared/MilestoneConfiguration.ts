@@ -136,7 +136,7 @@ export function mergeMilestoneConfigs(...configs: MilestoneConfig[]): MilestoneC
  */
 function getActiveInstancePorts(): { http_server: number; websocket_server: number } {
   try {
-    const { getActivePortsSync } = eval('require')('../../../system/shared/ExampleConfig');
+    const { getActivePortsSync } = eval('require')('../../../examples/shared/ExampleConfig');
     return getActivePortsSync();
   } catch (error) {
     throw new Error(`MilestoneConfiguration: Failed to load active instance ports - configuration required. ${(error as Error).message}. Check package.json port configuration.`);

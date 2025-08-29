@@ -5,7 +5,7 @@
  * Returns the correct logs path for the currently active example
  */
 
-import { getActiveExamplePath } from '../system/shared/ExampleConfig';
+import { getActiveExamplePath } from "../examples/shared/ExampleConfig";
 
 function getActiveExampleLogsPath(): string {
   try {

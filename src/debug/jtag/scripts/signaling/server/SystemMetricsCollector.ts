@@ -499,7 +499,7 @@ export class SystemMetricsCollector {
    */
   private getActiveInstancePorts(): { http_server: number; websocket_server: number } {
     try {
-      const { getActivePortsSync } = eval('require')('../../../system/shared/ExampleConfig');
+      const { getActivePortsSync } = eval('require')('../../../examples/shared/ExampleConfig');
       return getActivePortsSync();
     } catch (error) {
       throw new Error(`SystemMetricsCollector: Failed to load active instance ports - system configuration required. ${(error as Error).message}. Check package.json configuration in active example.`);

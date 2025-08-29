@@ -9,7 +9,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
-import { getActiveExampleName, getActivePorts } from '../system/shared/ExampleConfig';
+import { getActiveExampleName, getActivePorts } from "../examples/shared/ExampleConfig";
 import { createTypedErrorInfo } from '../system/core/types/ErrorTypes';
 
 interface GlobalInstallTestResult {

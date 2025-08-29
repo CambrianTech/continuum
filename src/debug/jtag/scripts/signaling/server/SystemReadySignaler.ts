@@ -61,7 +61,7 @@ export class SystemReadySignaler {
     // Use the dynamic port configuration system
     try {
       // Import the getActivePorts function dynamically
-      const { getActivePortsSync } = require('../../../system/shared/ExampleConfig');
+      const { getActivePortsSync } = require('../../../examples/shared/ExampleConfig');
       const ports = getActivePortsSync();
       const websocketPort = ports.websocket_server || 9002;
       return `port-${websocketPort}`;

@@ -45,7 +45,7 @@ class JTAGLiveMonitor {
       this.portConfig = portConfig;
     } else {
       try {
-        const { getActivePortsSync } = require('../system/shared/ExampleConfig');
+        const { getActivePortsSync } = require('../../examples/shared/ExampleConfig');
         this.portConfig = getActivePortsSync();
       } catch (error) {
         throw new Error(`JTAGLiveMonitor: Failed to load port configuration. ${(error as Error).message}. Either provide portConfig to constructor or ensure system configuration is available.`);

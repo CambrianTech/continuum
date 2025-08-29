@@ -13,7 +13,7 @@
  */
 
 import { spawn } from 'child_process';
-import { getActiveExampleName } from '../system/shared/ExampleConfig';
+import { getActiveExampleName } from '../examples/shared/ExampleConfig';
 
 async function runIntelligentTest(): Promise<boolean> {
   const activeExample = getActiveExampleName();
