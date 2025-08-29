@@ -187,10 +187,11 @@
                     document.getElementById('websocket-port').textContent = config.websocketPort;
                     document.getElementById('http-port').textContent = config.httpPort;
                 } else {
-                    // Fallback values
+                    // No configuration available - derive from current page
                     document.getElementById('example-name').textContent = 'Unknown';
-                    document.getElementById('websocket-port').textContent = '9001';
-                    document.getElementById('http-port').textContent = window.location.port || '9002';
+                    const currentPort = parseInt(window.location.port);
+                    document.getElementById('websocket-port').textContent = (currentPort - 1).toString();
+                    document.getElementById('http-port').textContent = currentPort.toString() || 'Unknown';
                 }
                 
                 // Generate or get system UUID

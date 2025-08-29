@@ -55,7 +55,10 @@ function loadConfig(): ExampleConfig {
       const exampleDir = `examples/${activeExample}`;
       const examplePackageJsonPath = path.join(__dirname, '../../', exampleDir, 'package.json');
       const examplePackageJson = JSON.parse(fs.readFileSync(examplePackageJsonPath, 'utf-8'));
-      const httpPort = examplePackageJson.config?.port || 9002;
+      const httpPort = examplePackageJson.config?.port;
+      if (!httpPort) {
+        throw new Error(`ExampleConfig: No port configuration found in ${examplePackageJsonPath}. Please add "config": { "port": <port_number> } to package.json`);
+      }
       const websocketPort = httpPort - 1; // WebSocket port is HTTP port - 1
       
       // 3. Determine HTML file based on example

@@ -502,9 +502,7 @@ export class SystemMetricsCollector {
       const { getActivePortsSync } = eval('require')('../../../system/shared/ExampleConfig');
       return getActivePortsSync();
     } catch (error) {
-      console.warn(`⚠️ SystemMetricsCollector: Failed to load active instance ports: ${(error as Error).message}`);
-      // Fallback to test-bench ports - system needs to continue working
-      return { http_server: 9002, websocket_server: 9001 };
+      throw new Error(`SystemMetricsCollector: Failed to load active instance ports - system configuration required. ${(error as Error).message}. Check package.json configuration in active example.`);
     }
   }
 }

@@ -359,13 +359,13 @@ export class ConnectionBroker implements IConnectionBroker {
 
     // Connect to existing JTAG system server (assumes system is already running)
     // Use dynamic port configuration instead of hardcoded values
-    let port = 9001; // fallback
+    let port: number;
     try {
       const { getActivePortsSync } = require('../../../shared/ExampleConfig');
       const activePorts = getActivePortsSync();
       port = activePorts.websocket_server;
     } catch (error) {
-      console.warn(`⚠️ ConnectionBroker: Failed to load dynamic ports, using fallback: ${error}`);
+      throw new Error(`ConnectionBroker: Failed to load WebSocket port from configuration. ${error}. Ensure system is properly configured with package.json port settings.`);
     }
     
     const systemConfig = { 

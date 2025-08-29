@@ -86,10 +86,9 @@ async function initializeJTAG(): Promise<void> {
     try {
       const activePorts = getActivePorts();
       wsPort = activePorts.websocket_server;
-      console.log(`🔧 JTAG: Using WebSocket port ${wsPort} from examples.json`);
+      console.log(`🔧 JTAG: Using WebSocket port ${wsPort} from active configuration`);
     } catch (error) {
-      wsPort = 9001;
-      console.log(`🔧 JTAG: Using default WebSocket port ${wsPort}`);
+      throw new Error(`JTAG Auto-Start: Failed to determine WebSocket port from configuration. ${(error as Error).message}. Ensure package.json configuration is properly set up.`);
     }
     
     await JTAGSystemServer.connect();

@@ -139,8 +139,6 @@ function getActiveInstancePorts(): { http_server: number; websocket_server: numb
     const { getActivePortsSync } = eval('require')('../../../system/shared/ExampleConfig');
     return getActivePortsSync();
   } catch (error) {
-    console.warn(`⚠️ MilestoneConfiguration: Failed to load active instance ports: ${(error as Error).message}`);
-    // Fallback to default ports
-    return { http_server: 9002, websocket_server: 9001 };
+    throw new Error(`MilestoneConfiguration: Failed to load active instance ports - configuration required. ${(error as Error).message}. Check package.json port configuration.`);
   }
 }

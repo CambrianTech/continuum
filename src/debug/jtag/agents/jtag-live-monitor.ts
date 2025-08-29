@@ -7,10 +7,15 @@
 import { execSync } from 'child_process';
 import { createInterface } from 'readline';
 
+interface PortConfiguration {
+  websocket_server: number;
+  http_server: number;
+}
+
 interface SystemState {
   tmux: boolean;
-  port9001: boolean;
-  port9002: boolean;
+  websocketPort: boolean;
+  httpPort: boolean;
   browser: boolean;
   clients: Array<{type: string, pid: number, process: string}>;
   correlationStatus: 'unknown' | 'testing' | 'working' | 'failed';
@@ -32,16 +37,29 @@ class JTAGLiveMonitor {
   private updateCount = 0;
   private correlationTestInProgress = false;
   private lastCorrelationTest = 0;
+  private readonly portConfig: PortConfiguration;
 
-  constructor() {
+  constructor(portConfig?: PortConfiguration) {
+    // Use injected configuration or load from system configuration
+    if (portConfig) {
+      this.portConfig = portConfig;
+    } else {
+      try {
+        const { getActivePortsSync } = require('../system/shared/ExampleConfig');
+        this.portConfig = getActivePortsSync();
+      } catch (error) {
+        throw new Error(`JTAGLiveMonitor: Failed to load port configuration. ${(error as Error).message}. Either provide portConfig to constructor or ensure system configuration is available.`);
+      }
+    }
+    
     this.currentState = this.getSystemState();
     this.lastState = { ...this.currentState };
   }
 
   private getSystemState(): SystemState {
     const tmux = this.checkTmux();
-    const port9001 = this.checkPort(9001);
-    const port9002 = this.checkPort(9002);
+    const websocketPort = this.checkPort(this.portConfig.websocket_server);
+    const httpPort = this.checkPort(this.portConfig.http_server);
     const browser = this.checkBrowser();
     const clients = this.getClients();
     
@@ -49,12 +67,12 @@ class JTAGLiveMonitor {
     let correlationStatus: 'unknown' | 'testing' | 'working' | 'failed' = 'unknown';
     if (this.correlationTestInProgress) {
       correlationStatus = 'testing';
-    } else if (port9001 && port9002) {
+    } else if (websocketPort && httpPort) {
       // Only show status if we have ports available
       correlationStatus = this.currentState?.correlationStatus || 'unknown';
     }
 
-    return { tmux, port9001, port9002, browser, clients, correlationStatus, timestamp: new Date() };
+    return { tmux, websocketPort, httpPort, browser, clients, correlationStatus, timestamp: new Date() };
   }
 
   private checkTmux(): boolean {
@@ -73,14 +91,14 @@ class JTAGLiveMonitor {
 
   private checkBrowser(): boolean {
     try {
-      const result = execSync('lsof -i :9001 | grep ESTABLISHED', { encoding: 'utf8' });
+      const result = execSync(`lsof -i :${this.portConfig.websocket_server} | grep ESTABLISHED`, { encoding: 'utf8' });
       return result.trim().length > 0;
     } catch { return false; }
   }
 
   private getClients(): Array<{type: string, pid: number, process: string}> {
     try {
-      const result = execSync('lsof -i :9001 -i :9002 | grep ESTABLISHED', { encoding: 'utf8' });
+      const result = execSync(`lsof -i :${this.portConfig.websocket_server} -i :${this.portConfig.http_server} | grep ESTABLISHED`, { encoding: 'utf8' });
       const lines = result.trim().split('\n').filter(line => line.length > 0);
       
       return lines.map(line => {
@@ -119,7 +137,7 @@ class JTAGLiveMonitor {
     const now = new Date();
 
     // Check simple boolean fields
-    (['tmux', 'port9001', 'port9002', 'browser'] as const).forEach(field => {
+    (['tmux', 'websocketPort', 'httpPort', 'browser'] as const).forEach(field => {
       if (this.currentState[field] !== this.lastState[field]) {
         changes.push({
           field,
@@ -168,7 +186,7 @@ class JTAGLiveMonitor {
     
     const now = new Date();
     const uptime = Math.floor((now.getTime() - this.startTime.getTime()) / 1000);
-    const online = this.currentState.port9001 && this.currentState.port9002;
+    const online = this.currentState.websocketPort && this.currentState.httpPort;
     const logs = this.getLogStatus();
     
     // Header line
@@ -177,11 +195,11 @@ class JTAGLiveMonitor {
     
     // System status line
     const tmuxIcon = this.currentState.tmux ? '🪟✅' : '🪟❌';
-    const wsIcon = this.currentState.port9001 ? '🔌✅' : '🔌❌';
-    const httpIcon = this.currentState.port9002 ? '🌐✅' : '🌐❌';
+    const wsIcon = this.currentState.websocketPort ? '🔌✅' : '🔌❌';
+    const httpIcon = this.currentState.httpPort ? '🌐✅' : '🌐❌';
     const browserIcon = this.currentState.browser ? '🦊✅' : '🦊❌';
     
-    console.log(`${tmuxIcon} tmux │ ${wsIcon} :9001 │ ${httpIcon} :9002 │ ${browserIcon} browser`);
+    console.log(`${tmuxIcon} tmux │ ${wsIcon} :${this.portConfig.websocket_server} │ ${httpIcon} :${this.portConfig.http_server} │ ${browserIcon} browser`);
     
     // Log status line
     const browserLogIcon = logs.browser ? '📋✅' : '📋❌';
@@ -344,7 +362,7 @@ class JTAGLiveMonitor {
       
       // Auto-test correlation every 60 seconds if system is online
       const now = Date.now();
-      const online = this.currentState.port9001 && this.currentState.port9002;
+      const online = this.currentState.websocketPort && this.currentState.httpPort;
       if (online && !this.correlationTestInProgress && (now - this.lastCorrelationTest) > 60000) {
         this.lastCorrelationTest = now;
         this.testCorrelationBackground();

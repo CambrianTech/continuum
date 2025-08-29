@@ -61,7 +61,11 @@ class JTAGMiddleware {
       
       // Get actual port from the system's context after initialization
       const wsPort = this.system.context?.config?.instance?.ports?.websocket_server || 
-                    this.options.websocketPort || 9001;
+                    this.options.websocketPort;
+      
+      if (!wsPort) {
+        throw new Error('JTAG Middleware: No WebSocket port configured. Ensure system context has valid port configuration.');
+      }
       
       console.log(`✅ JTAG: System initialized on WebSocket port ${wsPort}`);
       console.log(`🌐 JTAG: Browser interface available at ${this.options.pathPrefix}/`);
@@ -127,7 +131,28 @@ class JTAGMiddleware {
    */
   private serveDashboard(res: Response): void {
     const wsPort = this.system?.context?.config?.instance?.ports?.websocket_server || 
-                  this.options.websocketPort || 9001;
+                  this.options.websocketPort;
+    
+    if (!wsPort) {
+      // Fallback: try to get from configuration factory if available
+      try {
+        const { getConfiguredPorts } = eval('require')('./system/shared/ConfigurationFactory');
+        const ports = getConfiguredPorts();
+        const resolvedWsPort = ports.websocket_server;
+        if (resolvedWsPort) {
+          return this.serveDashboardWithPort(res, resolvedWsPort);
+        }
+      } catch {
+        // Continue to error below
+      }
+      
+      return res.status(500).send('<h1>JTAG System Error</h1><p>No WebSocket port configured. System may not be properly initialized.</p>');
+    }
+    
+    this.serveDashboardWithPort(res, wsPort);
+  }
+
+  private serveDashboardWithPort(res: Response, wsPort: number): void {
     const dashboardHTML = `
 <!DOCTYPE html>
 <html lang="en">
