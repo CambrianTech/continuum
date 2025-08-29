@@ -24,7 +24,7 @@ async function main(): Promise<void> {
     const result = await orchestrator.orchestrate('npm-start', {
       testMode: true,
       verbose: true,
-      browserUrl: 'http://localhost:9002'
+      browserUrl: `http://localhost:${(await require('../examples/shared/ExampleConfig').getActivePorts()).http_server}`
     });
     
     if (result.success) {
