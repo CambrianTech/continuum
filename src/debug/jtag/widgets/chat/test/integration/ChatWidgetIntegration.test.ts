@@ -22,11 +22,13 @@ async function testChatWidgetIntegration(): Promise<WidgetTestResult> {
   console.log('🧪 ChatWidget Integration Test: Testing widget with JTAG system...');
 
   try {
-    // Connect to JTAG system
+    // Connect to JTAG system using dynamic port resolution
+    const { getActivePorts } = require('../../../../examples/shared/ExampleConfig');
+    const activePorts = await getActivePorts();
     const { client } = await JTAGClientServer.connect({
       targetEnvironment: 'server',
       transportType: 'websocket', 
-      serverUrl: 'ws://localhost:9001'
+      serverUrl: `ws://localhost:${activePorts.websocket_server}`
     });
 
     console.log('🔌 Connected to JTAG system for widget testing');

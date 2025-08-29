@@ -782,10 +782,12 @@ Examples:
     return;
   }
   
-  // Create default connection config for CLI usage
+  // Create connection config using dynamic port resolution
+  const { getActivePorts } = require('../examples/shared/ExampleConfig');
+  const activePorts = await getActivePorts();
   const connectionConfig: ConnectionConfig = {
-    websocketPort: 9001,  // CLI default - will be made dynamic later
-    httpPort: 9002,       // CLI default - will be made dynamic later
+    websocketPort: activePorts.websocket_server,
+    httpPort: activePorts.http_server,
     workingDir: process.cwd(),
     exampleName: 'cli-agent'
   };
