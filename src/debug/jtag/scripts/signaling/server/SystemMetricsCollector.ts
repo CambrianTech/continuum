@@ -440,9 +440,10 @@ export class SystemMetricsCollector {
         const activePorts = await this.getActivePorts([...getSignalConfig().EXPECTED_PORTS]);
         if (activePorts.length === 0) {
           // Only check tmux if ports are not active
-          const { stdout: tmuxCheck } = await execAsync(`tmux has-session -t jtag-test 2>&1 || echo "tmux session not found"`);
-          if (tmuxCheck.includes('not found')) {
-            errors.push('Tmux session jtag-test not running - try: npm run system:start');
+          // Check for any JTAG tmux session (not hardcoded session name)
+          const { stdout: tmuxList } = await execAsync(`tmux list-sessions 2>&1 | grep -E "jtag-.*bench|jtag-.*ui" || echo "no jtag sessions"`);
+          if (tmuxList.includes('no jtag sessions')) {
+            errors.push('No JTAG tmux sessions running - try: npm run system:start');
           }
         }
       }
@@ -514,7 +515,7 @@ export class SystemMetricsCollector {
       return activeInstance.ports;
     } catch (error) {
       console.warn(`⚠️ SystemMetricsCollector: Failed to load active instance ports: ${(error as Error).message}`);
-      // Fallback to default ports
+      // Fallback to test-bench ports - system needs to continue working
       return { http_server: 9002, websocket_server: 9001 };
     }
   }
