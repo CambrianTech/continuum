@@ -41,22 +41,36 @@ export function loadInstanceConfigForContext(): InstanceConfiguration {
     };
   }
 
-  // Browser context - derive from port (temporary until proper config passing)
+  // Browser context - use ConfigurationFactory if initialized, otherwise derive from port
   if (isBrowser) {
-    const currentPort = parseInt(window.location.port);
-    const websocketPort = currentPort - 1;
-    
-    return {
-      name: currentPort === 9003 ? 'JTAG Widget Development UI' : 'JTAG Test Bench',
-      description: currentPort === 9003 ? 'Focused widget development environment' : 'Full-featured testing environment',
-      ports: { http_server: currentPort, websocket_server: websocketPort },
-      paths: { 
-        directory: currentPort === 9003 ? 'examples/widget-ui' : 'examples/test-bench', 
-        html_file: currentPort === 9003 ? 'index.html' : 'public/demo.html',
-        build_output: 'dist'
-      },
-      capabilities: {}
-    };
+    try {
+      // Try to use ConfigurationFactory if it was initialized
+      const { ConfigurationFactory } = eval('require')('./ConfigurationFactory');
+      const factory = ConfigurationFactory.getInstance();
+      const context = factory.getContext();
+      return context.instance;
+    } catch {
+      // Fallback: derive from current port (requires configuration passing in the future)
+      const currentPort = parseInt(window.location.port);
+      const websocketPort = currentPort - 1;
+      
+      // Determine configuration based on port without hardcoded values
+      const isWidgetUI = window.location.pathname.includes('widget') || 
+                        document.title?.includes('Widget') ||
+                        currentPort > 9002; // Widget-UI typically uses higher ports
+      
+      return {
+        name: isWidgetUI ? 'JTAG Widget Development UI' : 'JTAG Test Bench',
+        description: isWidgetUI ? 'Focused widget development environment' : 'Full-featured testing environment',
+        ports: { http_server: currentPort, websocket_server: websocketPort },
+        paths: { 
+          directory: isWidgetUI ? 'examples/widget-ui' : 'examples/test-bench', 
+          html_file: isWidgetUI ? 'index.html' : 'public/demo.html',
+          build_output: 'dist'
+        },
+        capabilities: {}
+      };
+    }
   }
 
   throw new Error('Cannot determine environment');
@@ -193,10 +207,10 @@ export function isTestEnvironment(): boolean {
     return process.env.NODE_ENV === 'test' || process.argv?.includes('--test') || false;
   }
   
-  // Check browser environment
+  // Check browser environment - detect test mode without hardcoded ports
   if (typeof window !== 'undefined') {
     return window.location?.href?.includes('test') || 
-           window.location?.port === '9002' || // Test bench port
+           window.location?.pathname?.includes('test-bench') || 
            document?.title?.includes('Test') ||
            false;
   }
