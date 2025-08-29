@@ -28,15 +28,20 @@ async function improvedSystemDetectorV2(options: DetectorOptions = {}): Promise<
       console.log('🔧 SYSTEM READY - You can now:');
       console.log('   • Run tests: npm test');
       console.log('   • Take screenshots: npm run screenshot');  
-      console.log('   • Access browser UI: http://localhost:9003');
-      console.log('   • Use JTAG commands via WebSocket on port 9001');
+      // Get dynamic ports for display
+      const { getActivePorts } = require('../examples/shared/ExampleConfig');
+      const activePorts = await getActivePorts();
+      console.log(`   • Access browser UI: http://localhost:${activePorts.http_server}`);
+      console.log(`   • Use JTAG commands via WebSocket on port ${activePorts.websocket_server}`);
       process.exit(0);
     } else {
       console.log();
       console.log('💡 SUGGESTED ACTIONS:');
       console.log('   • Check logs: tmux attach-session -t jtag-test');
       console.log('   • Restart system: npm run system:restart');
-      console.log('   • Check port conflicts: lsof -i :9001');
+      const { getActivePorts } = require('../examples/shared/ExampleConfig');
+      const activePorts = await getActivePorts();
+      console.log(`   • Check port conflicts: lsof -i :${activePorts.websocket_server}`);
       process.exit(1);
     }
   } catch (error: any) {
