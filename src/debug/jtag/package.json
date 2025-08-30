@@ -1,10 +1,10 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1179",
+  "version": "1.0.1180",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "port": 9001,
-    "active_example": "widget-ui",
+    "active_example": "test-bench",
     "rootPath": ".continuum/jtag",
     "logsPath": ".continuum/jtag/logs",
     "screenshotsPath": ".continuum/jtag/screenshots",
