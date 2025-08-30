@@ -25,18 +25,16 @@ export function createConnectionConfig(exampleDir?: string): ConnectionConfig {
   
   // Read the example's package.json
   if (!fs.existsSync(packageJsonPath)) {
-    throw new Error(`ConnectionConfigFactory: No package.json found at ${packageJsonPath}. Each example must have a package.json with config.port setting.`);
+    throw new Error(`ConnectionConfigFactory: No package.json found at ${packageJsonPath}. Each example must have a package.json with config.http_port and config.websocket_port settings.`);
   }
   
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-  const httpPort = packageJson.config?.port;
+  const httpPort = packageJson.config?.http_port;
+  const websocketPort = packageJson.config?.websocket_port;
   
-  if (!httpPort) {
-    throw new Error(`ConnectionConfigFactory: No port configuration found in ${packageJsonPath}. Please add "config": { "port": <port_number> } to package.json`);
+  if (!httpPort || !websocketPort) {
+    throw new Error(`ConnectionConfigFactory: Missing port configuration in ${packageJsonPath}. Please add "config": { "http_port": <port>, "websocket_port": <port> } to package.json`);
   }
-  
-  // Calculate WebSocket port (HTTP port - 1)
-  const websocketPort = httpPort - 1;
   
   // Determine example name from directory or package name
   const exampleName = path.basename(workingDir) || 

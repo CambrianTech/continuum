@@ -4,7 +4,8 @@
   "description": "JTAG Widget UI - Standalone Widget Development Environment",
   "main": "dist/index.js",
   "config": {
-    "port": 9003
+    "http_port": 9003,
+    "websocket_port": 9002
   },
   "scripts": {
     "start": "npm run build && npm run dev",
@@ -19,7 +20,7 @@
     "dev": "npx tsx src/minimal-server.ts"
   },
   "dependencies": {
-    "@continuum/jtag": "file:../../continuum-jtag-1.0.1178.tgz"
+    "@continuum/jtag": "file:../../continuum-jtag-1.0.1179.tgz"
   },
   "devDependencies": {
     "esbuild": "^0.19.12",
