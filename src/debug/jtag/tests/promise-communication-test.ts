@@ -176,9 +176,9 @@ async function testPromiseCommunication() {
     console.log('📤 Client → Server log call result:', logResult?.success ? '✅' : '❌');
     if (logResult) console.log('📝 Server response:', logResult);
 
-    // Test 4: Client calls server.takeScreenshot() via promise
-    console.log('\n📋 Test 4.4: Client calls server.takeScreenshot() via promise');
-    
+    // Test 4: Client calls client's screenshot via promise
+    console.log('\n📋 Test 4.4: Client calls client\'s screenshot via promise');
+
     const screenshotResult = await client.callServer('screenshot', {
       filename: 'promise-based-screenshot',
       width: 800,
