@@ -13,10 +13,18 @@ async function main(): Promise<void> {
   console.log('🚀 TEST SYSTEM STARTUP - Starting system for testing...');
   
   try {
-    // Force test-bench example for npm test
-    const testWorkingDir = 'examples/test-bench';
+    // Get active example from package.json config
+    const pkg = require('../package.json');
+    const activeExampleName = pkg.config.active_example;
+    const testWorkingDir = `examples/${activeExampleName}`;
     WorkingDirConfig.setWorkingDir(testWorkingDir);
-    console.log(`📂 Test working directory: ${testWorkingDir}`);
+    console.log(`📂 Test working directory: ${testWorkingDir} (from package.json config)`);
+    
+    // Get ports from the example's package.json (no hardcoded imports)
+    const examplePkg = require(`../examples/${activeExampleName}/package.json`);
+    const httpPort = examplePkg.config.http_port;
+    const websocketPort = examplePkg.config.websocket_port;
+    console.log(`📋 Using ports from ${activeExampleName}/package.json config: HTTP=${httpPort}, WebSocket=${websocketPort}`);
     
     const orchestrator = new SystemOrchestrator();
     
@@ -24,7 +32,7 @@ async function main(): Promise<void> {
     const result = await orchestrator.orchestrate('npm-start', {
       testMode: true,
       verbose: true,
-      browserUrl: `http://localhost:${(await require('../examples/shared/ExampleConfig').getActivePorts()).http_server}`
+      browserUrl: `http://localhost:${httpPort}`
     });
     
     if (result.success) {

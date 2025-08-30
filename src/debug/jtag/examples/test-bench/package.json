@@ -4,7 +4,8 @@
   "description": "JTAG Test Bench - Standalone Example App",
   "main": "dist/index.js",
   "config": {
-    "port": 9002
+    "http_port": 9002,
+    "websocket_port": 9001
   },
   "scripts": {
     "start": "npm run build && npm run dev",
