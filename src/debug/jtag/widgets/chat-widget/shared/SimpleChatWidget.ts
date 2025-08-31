@@ -74,7 +74,7 @@ export class SimpleChatWidget extends BaseWidget {
 
   protected async renderWidget(): Promise<void> {
     // Load CSS (BaseWidget handles theme coordination)
-    await this.loadWidgetCSS();
+    await this.loadChatCSS();
     
     // Render chat UI
     this.shadowRoot.innerHTML += `
@@ -352,17 +352,22 @@ export class SimpleChatWidget extends BaseWidget {
     }, 2000);
   }
 
-  private async loadWidgetCSS(): Promise<void> {
+  private async loadChatCSS(): Promise<string> {
     try {
       const response = await fetch('/widgets/chat-widget/public/chat-widget.css');
       const css = await response.text();
       
+      // Inject CSS for styling
       const style = document.createElement('style');
       style.textContent = css;
       this.shadowRoot.appendChild(style);
       
+      // Return CSS content for validation purposes
+      return css;
+      
     } catch (error) {
       console.warn('❌ Failed to load chat CSS, using defaults');
+      return '/* Chat CSS loading failed */';
     }
   }
 
