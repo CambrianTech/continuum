@@ -8,8 +8,10 @@
     <link rel="stylesheet" href="/demo.css">
 </head>
 <body>
+
+    <!-- THIS SHOULD BE A "continuum" WIDGET-->
     <div class="desktop-container">
-        <!-- Left Sidebar -->
+        <!--THIS IS THE REAL Left Sidebar -->
         <aside class="sidebar-panel left-sidebar">
             <continuum-emoter></continuum-emoter>
             <div class="status-view">
@@ -42,5 +44,11 @@
     
     <!-- Load demo script as ES6 module -->
     <script type="module" src="/dist/index.js"></script>
+
+    <!-- Theme widget handles all theme management -->
+    <theme-widget></theme-widget>
+
+    <!-- THIS SHOULD BE THE END OF "continuum" WIDGET-->
+
 </body>
 </html>
