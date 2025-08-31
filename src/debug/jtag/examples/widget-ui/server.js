@@ -42,11 +42,19 @@ const server = http.createServer((req, res) => {
   let filepath;
   
   if (req.url === '/' || req.url === '/index.html') {
-    filepath = path.join(ROOT_DIR, 'index.html');
+    filepath = path.join(ROOT_DIR, 'public/demo.html');
   } else if (req.url.startsWith('/dist/')) {
     filepath = path.join(DIST_DIR, req.url.replace('/dist/', ''));
   } else {
-    filepath = path.join(ROOT_DIR, req.url);
+    // Try public directory first, then root
+    const publicPath = path.join(ROOT_DIR, 'public', req.url);
+    const rootPath = path.join(ROOT_DIR, req.url);
+    
+    if (fs.existsSync(publicPath)) {
+      filepath = publicPath;
+    } else {
+      filepath = rootPath;
+    }
   }
   
   serveFile(req, res, filepath);
