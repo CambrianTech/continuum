@@ -21,8 +21,7 @@ export class ChatWidget extends BaseWidget {
       enableAI: true,
       enableDatabase: true,
       enableRouterEvents: true,
-      enableScreenshots: true,
-      theme: 'cyberpunk'
+      enableScreenshots: true
     });
   }
 

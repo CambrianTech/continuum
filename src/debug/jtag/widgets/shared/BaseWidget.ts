@@ -14,7 +14,6 @@
  * - this.storeData(key, value) - handles database + caching
  * - this.broadcastEvent(type, data) - handles router + WebSocket
  * - this.notifyAI(message) - handles Academy daemon
- * - this.applyTheme(name) - handles theme system
  */
 
 import { 
@@ -26,7 +25,6 @@ import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/sh
 import type { FileSaveParams, FileSaveResult } from '../../commands/file/save/shared/FileSaveTypes';
 import type { ScreenshotParams, ScreenshotResult } from '../../commands/screenshot/shared/ScreenshotTypes';
 import {
-  THEME_NAMES,
   WIDGET_DEFAULTS,
   DATABASE_OPERATIONS,
   ROUTER_OPERATIONS,
@@ -37,7 +35,6 @@ import {
   WIDGET_DIRECTORIES,
   STORAGE_KEYS,
   DAEMON_NAMES,
-  type ThemeName,
   type DatabaseOperation,
   type RouterOperation,
   type AcademyOperation
@@ -50,7 +47,6 @@ export interface WidgetConfig {
   version?: string;
   
   // Theme and appearance
-  theme?: ThemeName;
   customTheme?: Record<string, string>;
   compactMode?: boolean;
   
@@ -81,7 +77,6 @@ export interface WidgetState {
   hasError: boolean;
   errorMessage?: string;
   lastUpdate: string;
-  theme: string;
   data: Map<string, any>;
   cache: Map<string, any>;
 }
@@ -105,7 +100,6 @@ export abstract class BaseWidget extends HTMLElement {
   private databaseDaemon?: any;
   private routerDaemon?: any;
   private academyDaemon?: any;
-  private themeDaemon?: any;
   
   // Performance and caching
   private operationCache = new Map<string, any>();
@@ -124,7 +118,6 @@ export abstract class BaseWidget extends HTMLElement {
       widgetId: this.generateWidgetId(),
       widgetName: this.constructor.name,
       version: '1.0.0',
-      theme: WIDGET_DEFAULTS.THEME,
       enablePersistence: true,
       cacheData: true,
       enableAI: true,
@@ -143,7 +136,6 @@ export abstract class BaseWidget extends HTMLElement {
       isConnected: false,
       hasError: false,
       lastUpdate: new Date().toISOString(),
-      theme: this.config.theme || WIDGET_DEFAULTS.THEME,
       data: new Map(),
       cache: new Map()
     };
@@ -165,8 +157,6 @@ export abstract class BaseWidget extends HTMLElement {
       // 1. Connect to daemon systems (abstracted)
       await this.initializeDaemonConnections();
       
-      // 2. Load and apply theme (abstracted)
-      await this.initializeTheme();
       
       // 3. Restore persisted state (abstracted)
       await this.restorePersistedState();
@@ -436,69 +426,6 @@ export abstract class BaseWidget extends HTMLElement {
     }
   }
 
-  /**
-   * Apply theme with automatic theme system coordination
-   */
-  protected async applyTheme(themeName: string, customProperties?: Record<string, string>): Promise<boolean> {
-    try {
-      console.log(`🎨 ${this.config.widgetName}: Applying theme '${themeName}'...`);
-      
-      // 1. Load theme CSS file directly (themes are in shared directory, not widget-specific)
-      const themePath = `widgets/shared/themes/${themeName}.css`;
-      console.log(`🎨 ${this.config.widgetName}: Loading theme from ${themePath}`);
-      
-      const result = await this.jtagOperation<FileLoadResult>('file/load', {
-        filepath: themePath
-      });
-      
-      // Handle nested JTAG response structure - actual data is in commandResult
-      const fileData = (result as any).commandResult || result;
-      let themeCSS: string;
-      
-      if (result.success && fileData.success && fileData.content) {
-        console.log(`✅ ${this.config.widgetName}: Theme loaded successfully (${fileData.bytesRead} bytes)`);
-        themeCSS = fileData.content;
-      } else {
-        console.warn(`⚠️ ${this.config.widgetName}: Theme load failed: ${themePath}`);
-        console.warn(`  Debug: result.success=${result.success}, fileData.success=${fileData.success}, has content=${!!fileData.content}`);
-        themeCSS = '/* No theme loaded */';
-      }
-      
-      if (themeCSS === '/* No theme loaded */') {
-        console.warn(`⚠️ ${this.config.widgetName}: Theme '${themeName}' not found, using default`);
-        return false;
-      }
-      
-      // 2. Validate CSS custom properties before injection
-      await this.validateCSSCustomProperties(themeCSS);
-      
-      // 3. Inject theme CSS into document head (site-wide theming)
-      this.injectThemeIntoDocument(themeName, themeCSS);
-      
-      // 4. Apply any custom properties if provided
-      if (customProperties) {
-        this.applyCustomCSSProperties(customProperties);
-      }
-      
-      // 5. Update state and persist preference
-      this.state.theme = themeName;
-      await this.storeData(STORAGE_KEYS.CURRENT_THEME, themeName, { persistent: true });
-      
-      // 6. Notify other widgets about theme change
-      this.eventEmitter.emit(WIDGET_EVENTS.THEME_CHANGED, { 
-        themeName, 
-        widgetId: this.config.widgetId,
-        customProperties
-      });
-      
-      console.log(`✅ ${this.config.widgetName}: Theme '${themeName}' applied successfully`);
-      return true;
-      
-    } catch (error) {
-      console.error(`❌ ${this.config.widgetName}: applyTheme failed:`, error);
-      return false;
-    }
-  }
 
   /**
    * Save file with automatic file system coordination
@@ -539,7 +466,6 @@ export abstract class BaseWidget extends HTMLElement {
     return {
       widgetType: this.config.widgetName,
       currentState: Object.fromEntries(this.state.data),
-      theme: this.state.theme,
       capabilities: this.context.capabilities
     };
   }
@@ -580,7 +506,6 @@ export abstract class BaseWidget extends HTMLElement {
   protected serializeState(): any {
     return {
       data: Object.fromEntries(this.state.data),
-      theme: this.state.theme,
       lastUpdate: this.state.lastUpdate,
       config: this.config
     };
@@ -592,9 +517,6 @@ export abstract class BaseWidget extends HTMLElement {
   protected deserializeState(serialized: any): void {
     if (serialized.data) {
       this.state.data = new Map(Object.entries(serialized.data));
-    }
-    if (serialized.theme) {
-      this.state.theme = serialized.theme;
     }
     if (serialized.config) {
       this.config = { ...this.config, ...serialized.config };
@@ -669,149 +591,7 @@ export abstract class BaseWidget extends HTMLElement {
     }
   }
 
-  /**
-   * Inject theme CSS into document head for site-wide theming
-   */
-  private injectThemeIntoDocument(themeName: string, themeCSS: string): void {
-    const themeId = `jtag-theme-${themeName}`;
-    
-    // Remove existing theme if present
-    const existingTheme = document.getElementById(themeId);
-    if (existingTheme) {
-      existingTheme.remove();
-    }
-    
-    // Create and inject new theme style element
-    const styleElement = document.createElement('style');
-    styleElement.id = themeId;
-    styleElement.textContent = themeCSS;
-    document.head.appendChild(styleElement);
-    
-    console.log(`🎨 ${this.config.widgetName}: Theme CSS injected into document head`);
-  }
 
-  /**
-   * Apply custom CSS properties to document root for site-wide theming
-   */
-  private applyCustomCSSProperties(customProperties: Record<string, string>): void {
-    const documentStyle = document.documentElement.style;
-    
-    for (const [property, value] of Object.entries(customProperties)) {
-      // Ensure property starts with --
-      const cssProperty = property.startsWith('--') ? property : `--${property}`;
-      documentStyle.setProperty(cssProperty, value);
-    }
-    
-    console.log(`🎨 ${this.config.widgetName}: Applied ${Object.keys(customProperties).length} custom CSS properties`);
-  }
-
-  /**
-   * Validate CSS custom properties by scanning widget CSS and checking theme definitions
-   */
-  private async validateCSSCustomProperties(themeCSS: string): Promise<void> {
-    try {
-      // Skip validation if not in debug mode
-      if (!this.config.debugMode && !this.config.visualDebugging) {
-        return;
-      }
-
-      console.log(`🔍 ${this.config.widgetName}: Validating CSS custom properties...`);
-
-      // 1. Load widget's CSS to find what properties it uses
-      const widgetCSS = this.templateCSS || await this.loadWidgetCSS();
-      
-      if (!widgetCSS) {
-        console.warn(`⚠️ ${this.config.widgetName}: No widget CSS found for validation`);
-        return;
-      }
-
-      // 2. Extract custom properties from widget CSS (--property-name patterns)
-      const usedProperties = this.extractCSSCustomProperties(widgetCSS);
-      
-      // 3. Extract custom properties defined in theme CSS
-      const definedProperties = this.extractCSSCustomProperties(themeCSS);
-      
-      // 4. Find missing properties
-      const missingProperties = usedProperties.filter(prop => !definedProperties.includes(prop));
-      
-      // 5. Report results
-      if (missingProperties.length > 0) {
-        console.warn(`⚠️ ${this.config.widgetName}: Missing CSS custom properties in theme:`, {
-          missing: missingProperties,
-          widget: this.config.widgetName,
-          theme: this.state.theme,
-          totalUsed: usedProperties.length,
-          totalDefined: definedProperties.length
-        });
-
-        // Show detailed warning for each missing property
-        missingProperties.forEach(prop => {
-          console.warn(`   🚨 Missing: ${prop} (used by widget but not defined in theme)`);
-        });
-
-        // Suggest checking devtools
-        console.warn(`   💡 Check DevTools Elements → Styles → Computed to see which properties show as undefined`);
-      } else {
-        console.log(`✅ ${this.config.widgetName}: All CSS custom properties are properly defined (${usedProperties.length} properties)`);
-      }
-
-      // 6. Log summary for debugging
-      console.log(`🔍 ${this.config.widgetName}: CSS validation summary:`, {
-        usedByWidget: usedProperties.length,
-        definedInTheme: definedProperties.length,
-        missing: missingProperties.length
-      });
-
-    } catch (error) {
-      console.error(`❌ ${this.config.widgetName}: CSS validation failed:`, error);
-    }
-  }
-
-  /**
-   * Extract CSS custom property names from CSS content
-   */
-  private extractCSSCustomProperties(cssContent: string): string[] {
-    const customPropertyRegex = /var\(([^,)]+)/g;
-    const definitionRegex = /--[\w-]+/g;
-    const properties = new Set<string>();
-    
-    // Find var() usages
-    let match;
-    while ((match = customPropertyRegex.exec(cssContent)) !== null) {
-      // Clean up the property name (remove var( and any fallbacks)
-      const propName = match[1].trim().split(',')[0].trim();
-      if (propName.startsWith('--')) {
-        properties.add(propName);
-      }
-    }
-    
-    // Find -- definitions (in case some are defined but not used)
-    while ((match = definitionRegex.exec(cssContent)) !== null) {
-      properties.add(match[0]);
-    }
-    
-    return Array.from(properties).sort();
-  }
-
-  /**
-   * Load widget CSS for validation purposes
-   */
-  private async loadWidgetCSS(): Promise<string> {
-    try {
-      if (this.config.styles) {
-        return await this.loadResource(this.config.styles, 'styles', '');
-      }
-      
-      // Try default widget CSS file
-      const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
-      const defaultCSSFile = `${widgetDir}-widget.css`;
-      return await this.loadResource(defaultCSSFile, 'styles', '');
-      
-    } catch (error) {
-      console.warn(`⚠️ ${this.config.widgetName}: Could not load widget CSS for validation:`, error);
-      return '';
-    }
-  }
 
   // === PRIVATE IMPLEMENTATION - Hidden complexity ===
 
@@ -828,15 +608,8 @@ export abstract class BaseWidget extends HTMLElement {
       this.academyDaemon = await this.connectToDaemon(DAEMON_NAMES.CHAT); // Chat daemon handles AI queries
     }
     
-    this.themeDaemon = await this.connectToDaemon(DAEMON_NAMES.WIDGET); // Widget daemon handles themes
   }
 
-  private async initializeTheme(): Promise<void> {
-    const savedTheme = await this.getData(STORAGE_KEYS.CURRENT_THEME, this.config.theme);
-    if (savedTheme) {
-      await this.applyTheme(savedTheme);
-    }
-  }
 
   private async restorePersistedState(): Promise<void> {
     if (!this.config.enablePersistence) return;
@@ -873,7 +646,6 @@ export abstract class BaseWidget extends HTMLElement {
     this.databaseDaemon = undefined;
     this.routerDaemon = undefined;
     this.academyDaemon = undefined;
-    this.themeDaemon = undefined;
   }
 
   private async handleInitializationError(error: any): Promise<void> {
@@ -940,11 +712,6 @@ export abstract class BaseWidget extends HTMLElement {
     return { success: true, data: {} };
   }
 
-  private async themeOperation(operation: string, data: any): Promise<any> {
-    if (!this.themeDaemon) throw new Error('Theme daemon not connected');
-    // Would integrate with actual daemon messaging system
-    return { success: true, data: { styles: {} } };
-  }
 
   // Core JTAG integration - delegates to JTAG system with proper typing
   protected async jtagOperation<T>(command: string, params?: Record<string, any>): Promise<T> {

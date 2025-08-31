@@ -10,6 +10,9 @@ import { JTAGClientBrowser } from './system/core/client/browser/JTAGClientBrowse
 // Import widget registry for dynamic registration
 import { BROWSER_WIDGETS } from './browser/generated';
 
+// Import theme widget for centralized theme management
+import './widgets/shared/ThemeWidget';
+
 export const jtag = {
   // Universal client interface - always returns connection result with client property
   async connect(): Promise<ReturnType<typeof JTAGClientBrowser.connectLocal>> {

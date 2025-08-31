@@ -278,9 +278,8 @@ export class SimpleChatWidget extends BaseWidget {
     
     // Theme button (BaseWidget handles theme system)
     this.shadowRoot.getElementById('themeBtn')?.addEventListener('click', async () => {
-      const currentTheme = this.state.theme;
-      const newTheme = currentTheme === 'cyberpunk' ? 'basic' : 'cyberpunk';
-      await this.applyTheme(newTheme);
+      console.log('🎨 Theme switching now handled at site level - see index.html');
+      // Themes are now applied site-wide via CSS link in document head
     });
     
     // Screenshot button (BaseWidget handles JTAG coordination)
