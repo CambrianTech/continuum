@@ -424,29 +424,54 @@ export abstract class BaseWidget extends HTMLElement {
    */
   protected async applyTheme(themeName: string, customProperties?: Record<string, string>): Promise<boolean> {
     try {
-      // 1. Load theme via theme daemon
-      const themeResult = await this.themeOperation('load', {
-        themeName,
+      console.log(`🎨 ${this.config.widgetName}: Applying theme '${themeName}'...`);
+      
+      // 1. Load theme CSS file directly (themes are in shared directory, not widget-specific)
+      const themePath = `widgets/shared/themes/${themeName}.css`;
+      console.log(`🎨 ${this.config.widgetName}: Loading theme from ${themePath}`);
+      
+      const result = await this.jtagOperation<FileLoadResult>('file/load', {
+        filepath: themePath
+      });
+      
+      // Handle nested JTAG response structure - actual data is in commandResult
+      const fileData = (result as any).commandResult || result;
+      let themeCSS: string;
+      
+      if (result.success && fileData.success && fileData.content) {
+        console.log(`✅ ${this.config.widgetName}: Theme loaded successfully (${fileData.bytesRead} bytes)`);
+        themeCSS = fileData.content;
+      } else {
+        console.warn(`⚠️ ${this.config.widgetName}: Theme load failed: ${themePath}`);
+        console.warn(`  Debug: result.success=${result.success}, fileData.success=${fileData.success}, has content=${!!fileData.content}`);
+        themeCSS = '/* No theme loaded */';
+      }
+      
+      if (themeCSS === '/* No theme loaded */') {
+        console.warn(`⚠️ ${this.config.widgetName}: Theme '${themeName}' not found, using default`);
+        return false;
+      }
+      
+      // 2. Inject theme CSS into document head (site-wide theming)
+      this.injectThemeIntoDocument(themeName, themeCSS);
+      
+      // 3. Apply any custom properties if provided
+      if (customProperties) {
+        this.applyCustomCSSProperties(customProperties);
+      }
+      
+      // 4. Update state and persist preference
+      this.state.theme = themeName;
+      await this.storeData('current_theme', themeName, { persistent: true });
+      
+      // 5. Notify other widgets about theme change
+      this.eventEmitter.emit('theme_changed', { 
+        themeName, 
         widgetId: this.config.widgetId,
         customProperties
       });
       
-      if (!themeResult.success) return false;
-      
-      // 2. Apply CSS custom properties
-      const themeStyles = themeResult.data.styles;
-      this.applyCSSProperties(themeStyles);
-      
-      // 3. Update state and persist preference
-      this.state.theme = themeName;
-      await this.storeData('current_theme', themeName, { persistent: true });
-      
-      // 4. Notify other widgets
-      await this.broadcastEvent('theme_changed', { 
-        themeName, 
-        widgetId: this.config.widgetId 
-      });
-      
+      console.log(`✅ ${this.config.widgetName}: Theme '${themeName}' applied successfully`);
       return true;
       
     } catch (error) {
@@ -622,6 +647,42 @@ export abstract class BaseWidget extends HTMLElement {
       console.warn(`⚠️ ${this.config.widgetName}: ${resourceType} load error: ${resourcePath}`, loadError);
       return fallback;
     }
+  }
+
+  /**
+   * Inject theme CSS into document head for site-wide theming
+   */
+  private injectThemeIntoDocument(themeName: string, themeCSS: string): void {
+    const themeId = `jtag-theme-${themeName}`;
+    
+    // Remove existing theme if present
+    const existingTheme = document.getElementById(themeId);
+    if (existingTheme) {
+      existingTheme.remove();
+    }
+    
+    // Create and inject new theme style element
+    const styleElement = document.createElement('style');
+    styleElement.id = themeId;
+    styleElement.textContent = themeCSS;
+    document.head.appendChild(styleElement);
+    
+    console.log(`🎨 ${this.config.widgetName}: Theme CSS injected into document head`);
+  }
+
+  /**
+   * Apply custom CSS properties to document root for site-wide theming
+   */
+  private applyCustomCSSProperties(customProperties: Record<string, string>): void {
+    const documentStyle = document.documentElement.style;
+    
+    for (const [property, value] of Object.entries(customProperties)) {
+      // Ensure property starts with --
+      const cssProperty = property.startsWith('--') ? property : `--${property}`;
+      documentStyle.setProperty(cssProperty, value);
+    }
+    
+    console.log(`🎨 ${this.config.widgetName}: Applied ${Object.keys(customProperties).length} custom CSS properties`);
   }
 
   // === PRIVATE IMPLEMENTATION - Hidden complexity ===

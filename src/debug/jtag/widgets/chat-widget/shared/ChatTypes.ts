@@ -131,6 +131,9 @@ export interface ChatEventData {
   // System events
   connection_status_changed: { status: string; error?: string };
   error_occurred: { error: string; context?: string };
+  
+  // Theme events
+  theme_changed: { themeName: string; widgetId: string; customProperties?: Record<string, string> };
 }
 
 export type ChatEventType = keyof ChatEventData;
