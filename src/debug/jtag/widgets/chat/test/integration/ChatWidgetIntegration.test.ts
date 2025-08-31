@@ -10,6 +10,7 @@
 import { JTAGClientServer } from '../../../../system/core/client/server/JTAGClientServer';
 import { SYSTEM_SCOPES } from '../../../../system/core/types/SystemScopes';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import { getActivePorts } from '../../../../examples/shared/ExampleConfig';
 
 interface WidgetTestResult {
   success: boolean;
@@ -23,7 +24,6 @@ async function testChatWidgetIntegration(): Promise<WidgetTestResult> {
 
   try {
     // Connect to JTAG system using dynamic port resolution
-    const { getActivePorts } = require('../../../../examples/shared/ExampleConfig');
     const activePorts = await getActivePorts();
     const { client } = await JTAGClientServer.connect({
       targetEnvironment: 'server',
