@@ -1,35 +1,41 @@
 /**
- * Chat Widget - JTAG-based Web Component
+ * Chat Widget - JTAG-based Web Component using BaseWidget Architecture
  * 
- * Simple chat interface that uses JTAG command routing for real functionality.
- * Follows the legacy widget pattern but integrates with JTAG system.
+ * Updated to use the new BaseWidget abstraction with one-line operations.
+ * Demonstrates dramatic code simplification through proper abstraction.
  */
 
-import { WidgetBase } from '../shared/WidgetBase';
-import type { ChatMessageEventData } from '../../daemons/chat-daemon/shared/ChatTypes';
+import { BaseWidget } from '../shared/BaseWidget';
+import type { ChatMessage } from '../chat-widget/shared/ChatTypes';
 
-export class ChatWidget extends WidgetBase {
-  private messages: Array<{id: string, content: string, type: 'user' | 'assistant', timestamp: Date}> = [];
-  private inputElement: HTMLInputElement | null = null;
-
-  static get widgetName(): string {
-    return 'chat';
-  }
-
+export class ChatWidget extends BaseWidget {
+  private messages: ChatMessage[] = [];
+  private currentRoom = 'general';
+  private messageInput?: HTMLInputElement;
+  
   constructor() {
-    super();
-    this.attachShadow({ mode: 'open' });
+    super({
+      widgetName: 'ChatWidget',
+      enableAI: true,
+      enableDatabase: true,
+      enableRouterEvents: true,
+      enableScreenshots: true,
+      theme: 'cyberpunk'
+    });
   }
 
-  connectedCallback() {
-    this.render();
-    this.setupEventListeners();
-    this.setupChatEventListeners();
+  protected async onWidgetInitialize(): Promise<void> {
+    console.log('🎯 ChatWidget: Initializing with BaseWidget architecture...');
+    
+    // Load chat history using BaseWidget's data methods
+    const savedMessages = await this.getData('chat_messages', []);
+    this.messages = savedMessages;
+    
+    console.log('✅ ChatWidget: BaseWidget features initialized');
   }
 
-  private render() {
-    if (!this.shadowRoot) return;
-
+  protected async renderWidget(): Promise<void> {
+    // Simple, clean UI using BaseWidget pattern
     this.shadowRoot.innerHTML = `
       <style>
         :host {
@@ -48,31 +54,33 @@ export class ChatWidget extends WidgetBase {
           font-weight: 600;
         }
         
-        .messages {
+        .messages-container {
           flex: 1;
           overflow-y: auto;
           padding: 16px;
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
         }
         
         .message {
-          margin-bottom: 12px;
           padding: 8px 12px;
           border-radius: 8px;
+          max-width: 80%;
         }
         
         .message.user {
-          background: #2b6cb0;
-          margin-left: 40px;
+          align-self: flex-end;
+          background: #3182ce;
         }
         
         .message.assistant {
-          background: #2d543d;
-          margin-right: 40px;
+          align-self: flex-start;
+          background: #4a5568;
         }
         
-        .input-area {
+        .input-container {
           padding: 16px;
-          background: #2d3748;
           border-top: 1px solid #4a5568;
           display: flex;
           gap: 8px;
@@ -90,126 +98,143 @@ export class ChatWidget extends WidgetBase {
         
         .send-button {
           padding: 8px 16px;
-          background: #3182ce;
+          background: #00d4ff;
           border: none;
           border-radius: 6px;
-          color: white;
+          color: #000;
           cursor: pointer;
           font-weight: 600;
         }
         
         .send-button:hover {
-          background: #2c5aa0;
+          background: #00b8e6;
         }
       </style>
       
       <div class="chat-header">
-        💬 Chat Widget
+        💬 Chat Widget (BaseWidget Architecture)
       </div>
       
-      <div class="messages" id="messages">
-        <div class="message assistant">
-          Hello! This is a JTAG-powered chat widget. Try sending a message.
-        </div>
+      <div class="messages-container" id="messages">
+        ${this.renderMessages()}
       </div>
       
-      <div class="input-area">
+      <div class="input-container">
         <input type="text" class="message-input" id="messageInput" placeholder="Type a message...">
         <button class="send-button" id="sendButton">Send</button>
       </div>
     `;
+    
+    // Cache input element
+    this.messageInput = this.shadowRoot.getElementById('messageInput') as HTMLInputElement;
+    
+    // Setup event listeners
+    this.setupEventListeners();
   }
 
-  private setupEventListeners() {
-    const sendButton = this.shadowRoot?.getElementById('sendButton');
-    const messageInput = this.shadowRoot?.getElementById('messageInput') as HTMLInputElement;
-    
-    if (sendButton && messageInput) {
-      this.inputElement = messageInput;
-      
-      sendButton.addEventListener('click', () => this.sendMessage());
-      messageInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-          this.sendMessage();
-        }
-      });
+  private renderMessages(): string {
+    if (this.messages.length === 0) {
+      return '<div class="message assistant">Hello! This is a BaseWidget-powered chat. Try sending a message!</div>';
     }
+    
+    return this.messages.map(msg => `
+      <div class="message ${msg.type}">
+        ${msg.content}
+      </div>
+    `).join('');
   }
 
-  private async sendMessage() {
-    if (!this.inputElement) return;
+  private setupEventListeners(): void {
+    // Send message on Enter or button click
+    this.messageInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        this.sendMessage();
+      }
+    });
     
-    const content = this.inputElement.value.trim();
+    this.shadowRoot.getElementById('sendButton')?.addEventListener('click', () => {
+      this.sendMessage();
+    });
+  }
+
+  private async sendMessage(): Promise<void> {
+    if (!this.messageInput) return;
+    
+    const content = this.messageInput.value.trim();
     if (!content) return;
-
-    // Add user message to UI immediately
-    this.addMessage(content, 'user');
-    this.inputElement.value = '';
-
-    try {
-      // Use JTAG command system directly for chat functionality
-      // For now, simulate AI response - later this will connect to real chat system
-      const response = `AI: I received your message "${content}". This is a simulated response from the JTAG chat system.`;
-      
-      // Add AI response after short delay
-      setTimeout(() => {
-        this.addMessage(response, 'assistant');
-      }, 500);
-      
-      console.log('💬 ChatWidget: Message processed locally (avoiding delegation loop)');
-      
-    } catch (error) {
-      console.error('Chat processing failed:', error);
-      this.addMessage('Sorry, I encountered an error. Please try again.', 'assistant');
-    }
-  }
-
-  private addMessage(content: string, type: 'user' | 'assistant') {
-    const messagesContainer = this.shadowRoot?.getElementById('messages');
-    if (!messagesContainer) return;
-
-    const messageElement = document.createElement('div');
-    messageElement.className = `message ${type}`;
-    messageElement.textContent = content;
     
-    messagesContainer.appendChild(messageElement);
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-
-    // Store message in memory
-    this.messages.push({
+    // Create user message
+    const userMessage: ChatMessage = {
       id: `msg_${Date.now()}`,
       content,
-      type,
-      timestamp: new Date()
-    });
+      roomId: this.currentRoom,
+      userId: 'current_user',
+      type: 'user',
+      timestamp: new Date().toISOString()
+    };
+    
+    // Add to messages and clear input
+    this.messages.push(userMessage);
+    this.messageInput.value = '';
+    
+    try {
+      // ONE LINE: Store message with BaseWidget abstraction
+      await this.storeData(`message_${userMessage.id}`, userMessage, { 
+        persistent: true, 
+        broadcast: true 
+      });
+      
+      // ONE LINE: Get AI response with BaseWidget abstraction
+      const aiResponse = await this.queryAI(content, {
+        persona: 'chat_assistant',
+        context: this.getChatContext()
+      });
+      
+      if (aiResponse && aiResponse.reply) {
+        const aiMessage: ChatMessage = {
+          id: `ai_${Date.now()}`,
+          content: aiResponse.reply,
+          roomId: this.currentRoom,
+          userId: 'ai_assistant',
+          type: 'assistant',
+          timestamp: new Date().toISOString()
+        };
+        
+        // Add AI response
+        this.messages.push(aiMessage);
+        
+        // ONE LINE: Store AI response
+        await this.storeData(`message_${aiMessage.id}`, aiMessage, { 
+          persistent: true, 
+          broadcast: true 
+        });
+      }
+      
+      // Re-render messages
+      await this.renderWidget();
+      
+    } catch (error) {
+      console.error('❌ ChatWidget: Failed to send message:', error);
+      this.handleError(error, 'sendMessage');
+    }
   }
 
-  /**
-   * Set up event listeners for ChatDaemon updates
-   * SIMPLIFIED to avoid infinite loops
-   */
-  private setupChatEventListeners() {
-    // Only listen for incoming messages (not send events to avoid loops)
-    document.addEventListener('chat:message-received', (event: Event) => {
-      const customEvent = event as CustomEvent<ChatMessageEventData>;
-      const { message } = customEvent.detail;
-      this.addMessage(message.content, 'assistant');
-      console.log('💬 ChatWidget: Received message from ChatDaemon');
-    });
-
-    console.log('💬 ChatWidget: Event listeners set up (loop-safe)');
+  private getChatContext(): any {
+    return {
+      recentMessages: this.messages.slice(-5),
+      roomId: this.currentRoom,
+      messageCount: this.messages.length
+    };
   }
 
-  /**
-   * Clean up event listeners when component is removed
-   */
-  disconnectedCallback() {
-    // Remove event listeners to prevent memory leaks
-    document.removeEventListener('chat:message-received', this.setupChatEventListeners);
-    document.removeEventListener('chat:room-updated', this.setupChatEventListeners);
-    document.removeEventListener('chat:participant-joined', this.setupChatEventListeners);
-    document.removeEventListener('chat:participant-left', this.setupChatEventListeners);
+  protected async onWidgetCleanup(): Promise<void> {
+    // Save messages using BaseWidget abstraction
+    await this.storeData('chat_messages', this.messages, { persistent: true });
+    console.log('✅ ChatWidget: BaseWidget cleanup complete');
+  }
+
+  // Static property required by widget registration system
+  static get widgetName(): string {
+    return 'chat';
   }
 }
-
-// Widget will be registered dynamically by the generator system
