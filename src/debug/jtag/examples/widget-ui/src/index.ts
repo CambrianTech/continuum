@@ -8,6 +8,9 @@ console.log('🚀 Widget UI: Loading...');
 import { jtag } from '@continuum/jtag';
 import type { JTAGClient } from '@continuum/jtag/dist/system/core/client/shared/JTAGClient';
 
+// Import widget components
+import './components/ContinuumEmoter.js';
+
 console.log('✅ Widget UI: JTAG imported:', typeof jtag);
 
 // Cross-platform environment detection

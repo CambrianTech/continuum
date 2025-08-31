@@ -1,359 +1,320 @@
-# JTAG Widget Architecture - Cross-Origin Training Revolution
+# JTAG Widget System - Dynamic Desktop Architecture
 
-## 🎯 **THE BREAKTHROUGH**
+## 🎯 **THE NEW VISION**
 
-**We solved the fundamental cross-origin screenshot problem for AI training!**
+**Dynamic desktop interface similar to VSCode/Discord with truly modular, self-contained widgets.**
 
-Traditional browser widgets couldn't capture screenshots of external websites in iframes due to CORS restrictions. Our JTAG-based proxy architecture eliminates this limitation completely.
+This system transforms static HTML into a dynamic, widget-driven desktop where:
+- **Widgets deliver their own HTML, CSS, and JavaScript**
+- **Desktop layout adapts to current "page" context** 
+- **Everything is event-driven and cross-environment compatible**
+- **Zero hardcoded UI - widgets populate both sidebar and content areas**
 
-## 🚨 **Problem We Solved**
+## 🏗️ **Architecture Overview**
 
-### **The Cross-Origin Screenshot Nightmare:**
+### **Desktop Layout Structure:**
+```
+┌─sidebar-panel─┬─draggable─┬──main-panel──┬─draggable─┬─sidebar-panel─┐
+│ continuum-    │    bar    │ content-tabs │    bar    │ (collapsible) │
+│ emoter        │           │ version-info │           │               │
+├───────────────┤           │ status-btns  │           │               │
+│ status-view   │           ├──────────────┤           │               │
+├───────────────┤           │              │           │               │
+│ dynamic-list  │           │ content-view │           │               │
+│ • academy     │           │ [WIDGET]     │           │               │
+│ • general     │           │              │           │               │
+│ • community   │           │              │           │               │
+│ ...           │           │              │           │               │
+└───────────────┴───────────┴──────────────┴───────────┴───────────────┘
+```
+
+### **Page-Driven Context System:**
 ```typescript
-// ❌ BROKEN: html2canvas + cross-origin iframe
-const iframe = document.querySelector('#external-site-iframe');
-iframe.src = 'https://external-website.com';  // Different domain
-
-// Later... (FAILS!)
-html2canvas(iframe).then(canvas => {
-  // Result: Empty iframe box, no website content
-  // Browser security blocks cross-origin canvas operations
-});
+// Different page types load different widget combinations
+const PAGE_CONTEXTS = {
+  academy: {
+    contentWidget: 'academy-trainer',
+    sidebarWidgets: ['academy-controls', 'lora-manager', 'persona-list']
+  },
+  chat: {
+    contentWidget: 'chat-widget', 
+    sidebarWidgets: ['room-list', 'participants', 'chat-settings']
+  }
+};
 ```
 
-### **Training Impact:**
-- **No screenshots** of external training sites
-- **No visual feedback** for AI training
-- **No interaction capture** for behavior learning
-- **Limited to same-origin** content only
+## 🔧 **Widget System Components**
 
-## ✅ **Our Solution: JTAG Proxy Architecture**
-
-### **How It Works:**
-```typescript
-// ✅ WORKS: JTAG proxy + same-origin magic
-await widgetDaemon.executeCommand('proxy-navigate', {
-  url: 'https://external-website.com',  // Any website!
-  target: 'training-iframe'
-});
-
-// Now screenshot works perfectly!
-await widgetDaemon.executeCommand('screenshot', {
-  querySelector: '#training-iframe',
-  filename: 'training-capture.png'  // Full website content captured!
-});
-```
-
-### **Magic Architecture:**
-```
-External Site → ProxyDaemon → Same-Origin Content → html2canvas ✅
-```
-
-## 🏗️ **JTAG Widget System Architecture**
-
-### **Core Components:**
+### **Core Architecture:**
 
 #### **1. WidgetDaemon** (`/daemons/widget-daemon/`)
 - **Purpose**: Bridge between widgets and JTAG routing system
 - **Interface**: `window.widgetDaemon.executeCommand()`
 - **Integration**: Auto-registered in JTAG daemon structure
 
-#### **2. ProxyDaemon** (`/daemons/proxy-daemon/`)
-- **Purpose**: HTTP proxy for cross-origin content access
-- **Features**: URL rewriting, header forwarding, caching
-- **Result**: Makes external sites appear same-origin
+#### **2. WidgetRegistry** (New)
+- **Purpose**: Dynamic widget discovery and management
+- **Features**: Auto-scans widget directories, loads manifests
+- **Result**: Zero hardcoded widget references
 
-#### **3. Proxy Commands** (`/daemons/command-daemon/commands/proxy-navigate/`)
-- **Purpose**: Navigate iframes through proxy system
-- **Browser**: Sets iframe src to proxy URL
-- **Server**: Handles HTTP proxy requests and content processing
+#### **3. WidgetRenderEngine** (New)
+- **Purpose**: Dynamic HTML/CSS/JS injection from widget `/public` directories
+- **Features**: Scoped CSS, event system integration, hot reloading
+- **Result**: Widgets deliver their own presentation layer
 
-#### **4. Enhanced Screenshot** (`/daemons/command-daemon/commands/screenshot/`)
-- **Purpose**: Capture any content, including proxied external sites
-- **Power**: Works on cross-origin content via proxy magic
-- **Training**: Perfect visual feedback for AI learning
+#### **4. Enhanced BaseWidget** (`/widgets/shared/WidgetBase.ts`)
+- **Purpose**: Foundation class for all widgets with JTAG integration
+- **Features**: Command execution, event handling, lifecycle management
+- **Pattern**: Follows same modular pattern as CommandBase/DaemonBase
 
-## 🚀 **Training Workflow Revolution**
+## 🚀 **Dynamic Widget Development**
 
-### **Complete Training Cycle:**
+### **Widget Self-Containment Example:**
 ```typescript
-class AITrainingWidget extends BaseWidget {
-  async trainOnWebsite(url: string) {
-    // 1. Navigate to ANY external website via proxy
-    const navResult = await this.executeCommand('proxy-navigate', {
-      url: url,  // https://any-website.com
-      target: 'training-iframe'
+// widgets/academy-trainer/shared/AcademyTrainer.ts
+class AcademyTrainerWidget extends WidgetBase {
+  static get widgetName() { return 'academy-trainer'; }
+  
+  async initialize(context: WidgetContext) {
+    // Widget delivers its own HTML, CSS, JS
+    await this.loadFromPublic();
+    
+    // Set up cross-environment event handling
+    context.subscribeRemote('academy:training-complete', (data) => {
+      this.displayTrainingResult(data);
     });
     
-    // 2. Take initial screenshot (NOW WORKS!)
-    const initialShot = await this.executeCommand('screenshot', {
-      querySelector: '#training-iframe',
-      filename: `initial-${Date.now()}.png`
+    // Connect to JTAG command system
+    this.commandInterface = context.executeCommand;
+  }
+  
+  async startTraining(persona: string) {
+    // Use JTAG commands through widget interface
+    const result = await this.executeCommand('academy:start-training', {
+      persona,
+      lora_settings: this.getLORASettings()
     });
     
-    // 3. Interact with the proxied content
-    await this.executeCommand('click', {
-      querySelector: '#training-iframe .important-button'
-    });
-    
-    // 4. Capture interaction results
-    const resultShot = await this.executeCommand('screenshot', {
-      querySelector: '#training-iframe',
-      filename: `result-${Date.now()}.png`
-    });
-    
-    // 5. Save training data
-    await this.executeCommand('fileSave', {
-      filename: 'training-session.json',
-      content: JSON.stringify({
-        url,
-        initialShot: initialShot.filepath,
-        resultShot: resultShot.filepath,
-        actions: ['click .important-button'],
-        timestamp: Date.now()
-      })
-    });
-    
-    // 6. Send to AI for analysis
-    await this.executeCommand('chat', {
-      message: `Analyze training session: ${url}`,
-      attachments: [initialShot.filepath, resultShot.filepath]
-    });
+    // Emit events for other widgets to respond
+    this.context.emit('academy:training-started', { persona, result });
   }
 }
 ```
 
-## 🎯 **Available Commands for Widgets**
+## 🎯 **Widget File Structure**
 
-### **Navigation & Proxy:**
-```typescript
-// Cross-origin navigation (THE BREAKTHROUGH!)
-await this.executeCommand('proxy-navigate', {
-  url: 'https://any-external-site.com',
-  target: 'training-iframe',
-  rewriteUrls: true,     // Fix internal links
-  userAgent: 'TrainingBot/1.0'
-});
-
-// Traditional same-origin navigation
-await this.executeCommand('navigate', {
-  url: '/local/page.html'
-});
+### **Self-Contained Widget Directory:**
+```
+widgets/academy-trainer/
+├── package.json              # Widget metadata & dependencies
+├── manifest.json             # Widget registration info
+├── public/                   # 🔑 Served by WidgetDaemon HTTP server
+│   ├── academy-trainer.html  # Widget's HTML structure
+│   ├── academy-trainer.css   # Widget's styling (or .scss)
+│   ├── academy-trainer.js    # Compiled TypeScript behavior
+│   └── assets/
+│       ├── icons/
+│       └── sounds/
+├── shared/
+│   ├── AcademyTrainer.ts     # Core widget logic
+│   └── AcademyTypes.ts       # Widget-specific types
+├── browser/
+│   └── AcademyTrainerBrowser.ts  # Browser-specific logic
+├── server/
+│   └── AcademyTrainerServer.ts   # Server-specific logic
+└── README.md
 ```
 
-### **Visual Capture:**
+### **Widget Manifest System:**
+```json
+{
+  "name": "academy-trainer",
+  "version": "1.0.0", 
+  "displayName": "Academy Trainer",
+  "description": "AI training interface with LoRA management",
+  "type": "content-widget",
+  "contexts": ["academy"],
+  "dependencies": ["persona-manager", "threshold-controls"],
+  "permissions": ["file-access", "chat-integration", "screenshot-capture"]
+}
+```
+
+## 🎯 **Key Widget Commands**
+
+### **Core JTAG Integration:**
 ```typescript
-// Screenshots (works on proxy content!)
+// All JTAG commands available to widgets
 await this.executeCommand('screenshot', {
-  querySelector: '#training-iframe',  // External site content!
-  filename: 'training-capture.png',
-  options: {
-    width: 1200,
-    height: 800,
-    format: 'png'
-  }
-});
-```
-
-### **Interaction:**
-```typescript
-// Click elements in proxied content
-await this.executeCommand('click', {
-  querySelector: '#training-iframe button.submit'
+  querySelector: '.widget-content',
+  filename: 'widget-capture.png'
 });
 
-// Type in proxied forms
-await this.executeCommand('type', {
-  querySelector: '#training-iframe input[name="query"]',
-  text: 'training search term'
-});
-
-// Scroll proxied content
-await this.executeCommand('scroll', {
-  querySelector: '#training-iframe',
-  x: 0, y: 500
-});
-```
-
-### **Data Management:**
-```typescript
-// Save training data
-await this.executeCommand('fileSave', {
-  filename: 'training-results.json',
-  content: JSON.stringify(trainingData)
-});
-
-// Load training configuration
-const config = await this.executeCommand('fileLoad', {
-  filename: 'training-config.json'
-});
-```
-
-### **AI Integration:**
-```typescript
-// Send to AI for analysis
 await this.executeCommand('chat', {
-  message: 'Analyze this training screenshot',
-  room: 'training-analysis',
-  attachments: ['screenshot.png']
+  message: 'AI assistance request from widget',
+  room: 'academy'
 });
 
-// Get chat history for context
-const history = await this.executeCommand('getChatHistory', {
-  room: 'training-analysis',
-  limit: 10
+await this.executeCommand('fileSave', {
+  filename: 'widget-data.json',
+  content: JSON.stringify(this.getState())
 });
 ```
 
-## 📁 **Planned Widget Directory Structure**
-
-```
-src/debug/jtag/widgets/
-├── training-widget/              # AI training interface
-│   ├── TrainingWidget.ts
-│   ├── TrainingWidget.css
-│   ├── package.json
-│   └── README.md
-├── proxy-widget/                 # Cross-origin web access
-│   ├── ProxyWidget.ts
-│   ├── ProxyWidget.css
-│   ├── package.json
-│   └── README.md
-├── dashboard-widget/             # System monitoring
-│   ├── DashboardWidget.ts
-│   ├── DashboardWidget.css
-│   ├── package.json
-│   └── README.md
-├── chat-widget/                  # AI conversation
-│   ├── ChatWidget.ts
-│   ├── ChatWidget.css
-│   ├── package.json
-│   └── README.md
-└── shared/                       # Widget base classes
-    ├── BaseWidget.ts             # Enhanced BaseWidget
-    ├── BaseWidget.css            # Universal styles
-    └── WidgetFactory.ts          # Auto-generation
-```
-
-## 🧪 **Testing Cross-Origin Capabilities**
-
-### **Test Suite:**
+### **Cross-Widget Communication:**
 ```typescript
-describe('Cross-Origin Training', () => {
-  let trainingWidget: TrainingWidget;
-  
-  beforeEach(async () => {
-    trainingWidget = new TrainingWidget();
-    await trainingWidget.connectedCallback();
-  });
+// Event-driven widget communication
+this.context.emit('academy:training-started', { 
+  persona: 'claude', 
+  timestamp: Date.now() 
+});
 
-  it('should capture external website screenshots', async () => {
-    // Navigate to external site via proxy
-    const navResult = await trainingWidget.executeCommand('proxy-navigate', {
-      url: 'https://example.com'
-    });
-    expect(navResult.success).toBe(true);
-    
-    // Screenshot should work (was impossible before!)
-    const screenshot = await trainingWidget.executeCommand('screenshot', {
-      querySelector: '#proxy-iframe'
-    });
-    expect(screenshot.success).toBe(true);
-    expect(screenshot.filepath).toContain('.png');
-  });
-  
-  it('should interact with proxied content', async () => {
-    await trainingWidget.executeCommand('proxy-navigate', {
-      url: 'https://httpbin.org/forms/post'
-    });
-    
-    // Fill form in external site
-    await trainingWidget.executeCommand('type', {
-      querySelector: '#proxy-iframe input[name="comments"]',
-      text: 'Training data input'
-    });
-    
-    // Click submit
-    const clickResult = await trainingWidget.executeCommand('click', {
-      querySelector: '#proxy-iframe input[type="submit"]'
-    });
-    expect(clickResult.success).toBe(true);
-  });
+this.context.subscribe('chat:message-received', (data) => {
+  this.displayChatMessage(data.message);
+});
+
+// Cross-environment events (browser ↔ server)
+this.context.emitRemote('widget:state-changed', {
+  widget: this.widgetName,
+  state: this.getState()
 });
 ```
 
-## 🔧 **Development Workflow**
+## 📁 **Planned Widget Ecosystem**
 
-### **1. Create Widget:**
+### **Core Content Widgets:**
+```
+widgets/
+├── academy-trainer/        # AI training with LoRA management
+├── chat-widget/           # AI conversation interface  
+├── code-editor/           # Code editing and file management
+├── web-browser/           # Embedded browser with proxy support
+├── arcade-portal/         # Gaming and entertainment interface
+└── desktop-manager/       # System status and controls
+```
+
+### **Sidebar Helper Widgets:**
+```
+widgets/
+├── room-list/            # Chat rooms and channels
+├── participant-panel/    # Active users and agents
+├── file-tree/           # Project file browser
+├── persona-manager/     # AI persona selection
+├── threshold-controls/  # Academy training settings  
+├── lora-manager/        # LoRA weight management
+├── git-status/          # Version control status
+└── debug-panel/         # System debugging tools
+```
+
+### **System Widgets:**
+```
+widgets/
+├── continuum-emoter/    # System mood/status indicator
+├── status-view/         # System health dashboard
+├── version-info/        # Build and version display
+├── content-tabs/        # Tab management for main content
+└── notification-center/ # System-wide notifications
+```
+
+## 🧪 **Widget Development & Testing**
+
+### **Development Workflow:**
 ```typescript
-// Extend BaseWidget for automatic JTAG integration
-class MyTrainingWidget extends BaseWidget {
-  static get widgetName(): string {
-    return 'my-training-widget';
+// 1. Create widget following modular pattern
+class MyCustomWidget extends WidgetBase {
+  static get widgetName() { return 'my-custom-widget'; }
+  
+  // Widget delivers its own HTML/CSS/JS
+  async initialize(context: WidgetContext) {
+    await this.loadFromPublic();
+    this.setupEventHandlers(context);
   }
-  
-  // All JTAG commands available via this.executeCommand()
 }
+
+// 2. Create manifest.json for widget registration
+{
+  "name": "my-custom-widget",
+  "type": "sidebar-widget", 
+  "contexts": ["academy", "chat"]
+}
+
+// 3. Build pipeline compiles TypeScript to JavaScript
+npm run build:widget my-custom-widget
+
+// 4. Widget auto-discovered by registry system
+await widgetRegistry.discoverWidgets();
 ```
 
-### **2. Register Widget:**
-```html
-<!-- Auto-registration through JTAG structure -->
-<my-training-widget></my-training-widget>
+### **Widget Testing Framework:**
+```typescript
+describe('Widget System', () => {
+  it('should load widgets dynamically', async () => {
+    const widgetDaemon = new WidgetDaemon(context, router);
+    
+    // Test dynamic widget loading
+    const result = await widgetDaemon.loadWidget(
+      'academy-trainer', 
+      'main-content'
+    );
+    expect(result.success).toBe(true);
+    
+    // Test command integration
+    const commandResult = await widgetDaemon.executeCommand('ping');
+    expect(commandResult.success).toBe(true);
+  });
+});
 ```
 
-### **3. Test Integration:**
-```bash
-# Build and test
-npm run build
-npm run test -- widgets/
+## 🚀 **Migration Path**
 
-# Start system
-npm start
-```
+### **Phase 1: Foundation (Current)**
+- ✅ **WidgetDaemon architecture** - Basic JTAG integration exists
+- ✅ **BaseWidget class** - Simple widget foundation exists
+- ✅ **JTAG command integration** - Widgets can execute commands
+- 🔄 **Next**: Implement WidgetRegistry and WidgetRenderEngine
 
-## 🌐 **Website Compatibility**
+### **Phase 2: Dynamic Loading**
+- 🎯 **WidgetRegistry system** - Auto-discover widgets by scanning directories
+- 🎯 **WidgetRenderEngine** - Dynamic HTML/CSS/JS injection from `/public`
+- 🎯 **Widget manifest system** - Metadata and dependency management
+- 🎯 **Build pipeline** - TypeScript compilation and SCSS processing
 
-### **What Works:**
-- ✅ **Static Sites**: Perfect compatibility
-- ✅ **Dynamic Sites**: JavaScript execution preserved
-- ✅ **Forms**: Full interaction capability
-- ✅ **AJAX**: Requests work through proxy
-- ✅ **Images/CSS**: All assets load correctly
+### **Phase 3: Desktop Interface**
+- 🎯 **Desktop layout components** - Sidebar panels, content areas, draggable bars
+- 🎯 **Page context system** - Dynamic widget loading based on current page
+- 🎯 **Event-driven communication** - Cross-widget and cross-environment events
+- 🎯 **Content tabs** - Multiple content views with tab management
 
-### **Edge Cases:**
-- ⚠️ **WebSockets**: May need special handling
-- ⚠️ **Authentication**: Cookie domain issues
-- ⚠️ **CDNs**: Some absolute URLs need rewriting
+### **Phase 4: Advanced Features**
+- 🎯 **Hot reloading** - Development productivity enhancements
+- 🎯 **Widget ecosystem** - Community widget distribution system
+- 🎯 **3D capabilities** - Advanced widget rendering possibilities
+- 🎯 **AI-controlled layout** - Dynamic layout optimization
 
-### **Mitigation:**
-- **URL Rewriting**: Automatic asset path correction
-- **Header Forwarding**: Proper CORS and auth headers
-- **Content Processing**: Smart HTML/CSS/JS modification
+## 🎯 **Immediate Next Steps**
 
-## 🎯 **Next Steps**
+### **Critical Tasks:**
+1. **Create WidgetRegistry** - Replace hardcoded widget references with dynamic discovery
+2. **Implement WidgetRenderEngine** - Enable widgets to deliver their own HTML/CSS/JS 
+3. **Build `/public` directory serving** - Static asset delivery from widget directories
+4. **Enhance BaseWidget** - Better integration with JTAG system and event handling
+5. **Design desktop layout HTML** - Minimal skeleton that widgets populate dynamically
 
-### **Immediate Goals:**
-1. **Complete ProxyDaemon server implementation**
-2. **Build TrainingWidget with proxy navigation**
-3. **Test cross-origin screenshot capture**
-4. **Create widget development toolkit**
-
-### **Future Enhancements:**
-- **Widget Factory**: Auto-generate widgets from commands
-- **Real-time Sync**: WebSocket-based widget updates
-- **Advanced Proxy**: WebSocket proxy, caching layers
-- **AI Training Pipeline**: Automated training data collection
+### **Success Criteria:**
+- **Zero hardcoded widgets** - All widgets loaded dynamically from directories
+- **Widget self-containment** - Each widget delivers complete HTML/CSS/JS
+- **Event-driven architecture** - Clean communication between widgets
+- **Modern development** - TypeScript compilation and SCSS support
+- **JTAG integration** - Seamless command execution from widgets
 
 ---
 
-## 🏆 **The Achievement**
+## 🏆 **Revolutionary Architecture**
 
-**We turned an impossible browser limitation into a powerful training advantage.**
+**From static HTML to truly dynamic, widget-driven desktop interface.**
 
-- **Before**: No screenshots of external sites (CORS blocked)
-- **After**: Perfect screenshots of ANY website (proxy magic)
-- **Impact**: Full AI training capability on the entire web
-- **Architecture**: Clean, testable, JTAG-integrated solution
+- **Before**: Hardcoded HTML with limited flexibility
+- **After**: Dynamic widget ecosystem with self-contained components
+- **Impact**: VSCode/Discord-level interface powered by JTAG system
+- **Architecture**: Clean separation, elegant abstraction, zero dependencies
 
-**🌐 JTAG Widgets: Training AI on the entire web, one proxy at a time!**
+**🎨 JTAG Widgets: Building the future of AI-human collaboration interfaces!**

@@ -1,0 +1,54 @@
+
+
+So the idea we are going for is for our continuum desktop, as we demonstrate it in the widget-ui example, is to build our user portal to the entirity of continuum. Much of this is chat, and the academy training system which to the user is mostly chat and widgets to control what is going on. The content area usually displays the chat widget and some tabs of whats open. Essentially the same design as discord AND something like VSCode. Each tab above the chat widget will have the current page, which could be a chat, or a code editor, or a web browser pane, or an arcade, or video view, point being any form of content. The sidebar then contains a few static items like the emoter and the status view, but a dynamic list.
+
+<sidebar-desktop>
+  Contains two panels like vscode or most editors, discord, microsoft teams, slack, Xcode etc.
+  <sidebar-panel>
+    <continuum-emoter />
+    <status-view></status-view>
+    <dynamic-list>
+      This dynamic-list Changes based upon "page", all widgets set to display for page's content type, to assist. 
+      For academy this is a academy widgets to control thresholds and stuff, lora stuff, saved personas
+      list of chat rooms, so "academy" and "general" are going to have been created automatically on install
+      community features? 
+      sharing?
+      lots of widget ideas we will work on here.
+    </dynamic-list>
+  </sidebar-panel>
+  <draggable bar /> not sure if literally here or just inherent inbetween panels in sidebar-desktop. I am at least denoting it
+  <main-panel>
+    <div class="content-view-header">
+      <content-tabs>
+        tabs of all open content
+      </content-view>
+      <version-info />
+      <status-buttons/>
+    </div>
+    <content-view>
+      Displays "page" such as a chat widget, or a code-editor widget, whatever 
+    </content-view>
+    <div class="content-view-header">
+      maybe static tos links and things just basic text
+    </div>
+  </main-panel>
+  <draggable bar /> again, not sure if literally here
+  <sidebar-panel>
+   probably starts collapsed, but same functionality as the left sidebar. In vscode this has ai assistance stuff.
+   For now, just leave it empty, but same control as the right panel. both collapse but also draggable
+  </sidebar-panel>
+</sidebar-desktop>
+
+When you research the existing widget system. Here is a screenshot and I want you to know our new design is going to be far more dynamic and very little html or even statically defined widgets. Our desktop is really mostly empty, loaded by "page" and the widgets popualte the dynamic lists by current page, and event responsive. What you must understand is the entirity of our html and javascript in the page are to be basically empty. The widgets themselves carry their own html, css, and typescript (compiled to js), delivered dynamically, and much like their own little portals. It's a little like react but using even ai controlled data and layout, even 3d capabilities, incredibly extensible and entirely modular. Like commands, these are portable and community driven. Continuum will have its own dynamically available commands and widgets, akin to npm, but probably a bit like apt-get/homebrew and of course bittorrent, in its makeup. The point being, not literally npm modules, but using the same flexibility and dependencies. Do not design this aspect now, just preventing you from going with any cross cutting concerns. Commands and widgets stand independent, the continuum system itself should never depend on them (with rare exceptions). Continuum doesnt render the html, the widgets deliver it. The render daemons and widget daemons orchestrate it, but like commands, jtag/generator is involved in creating entirely dynamic lists. NEVER EVER use SWITCH STATEMENTS or god objects. This is going to need to take a great design session where we break it into small pieces and never break anything. We will build them carefully and strategically.
+
+Go look at the images of some of our old systems:
+/continuum/screenshots/old-main-interface.png
+/continuum/screenshots/continuum-academy-start.jpg
+
+Good looking left sidebar item (which we will definitely need) 
+/continuum/screenshots/user-selector.png
+
+
+However, consider the tabs in the right panel are wrong, and there are not currently tabs above the content-view but they are incredibly necessary. The legacy system did a good job of the modular nature of widgets, html, css, and typescript logic for server, browser, and shared, all in here. I think we will have a /public dir in each widget and then use THAT for serving, making the widget daemon much easier. Think of the basewidget, kind of like how we did a commandbase. Do a much more elegant job. Do not just copy the old one. Think of how OUR router works, how our transport system (which needs some cross cutting concerns fixed) works. Think of how css, html and js can be delivered, and how events will work. The chat left sidebar item and chat widget need to dynamically respond to both events and commands. They send them both too. And not only that, their content or css can be loaded and edited at any time. Don't overengineer, but engineer with this in mind. Complete all capabilities of the old system. We are rendering everything wrong in our new jtag system, but I let it go. The chat widget is very poor and you had no idea how to load content, do events across environment or even load its history. We will first however, just focus on making the system render html, typescript logic, and css. I suggest the modern standards only, and of course ONLY ever typescript. And maybe scss? what's used lately? We should support both (start with css, then just like our ts, we can compile).
+
+First and foremost, create a README.md for widgets in its dir, and ARCHITECTURE.md for it in there too. Same organization as commands. The daemon is separate from the widgets themselves. The base widget belongs with the widgets, just like command (should if not). Research the hell out of the old system, then understand our transports and router, then lets focus entirely on the design first, no code yet.
