@@ -9,7 +9,7 @@
 2. **Increments version** - `npm run version:bump` 
 3. **Builds browser bundle** - `npm run build:browser-ts`
 4. **Runs TypeScript compilation** - `npx tsc --noEmit --project .`
-5. **Starts the daemon system** - `./continuum`
+5. **Starts the daemon system** - `./continuum` or in new jtag, and only temporarily `./jtag`. We will rename this to `continuum` again when migrated.
 6. **⚠️ LAUNCHES BROWSER TAB** - `npm start` automatically opens browser interface
 
 **Essential Commands for Engineers:**

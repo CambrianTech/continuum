@@ -98,17 +98,17 @@ export class TmuxSessionManager {
   }
 
   /**
-   * Get active instance name directly from config file
+   * Get active instance name from package.json
    * Used by infrastructure scripts that don't have JTAGContext
    */
   private static getActiveInstanceName(): string {
     try {
       const fs = eval('require')('fs');
       const path = eval('require')('path');
-      const configPath = path.join(__dirname, '../../config/examples.json');
-      const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      const packagePath = path.join(__dirname, '../../package.json');
+      const packageData = JSON.parse(fs.readFileSync(packagePath, 'utf-8'));
       
-      return configData.active_instance || configData.active_example || 'unknown';
+      return packageData.active_example || 'unknown';
     } catch (error) {
       console.warn(`⚠️ TmuxSessionManager: Failed to load active instance name: ${(error as Error).message}`);
       return 'unknown';
