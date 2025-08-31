@@ -452,19 +452,22 @@ export abstract class BaseWidget extends HTMLElement {
         return false;
       }
       
-      // 2. Inject theme CSS into document head (site-wide theming)
+      // 2. Validate CSS custom properties before injection
+      await this.validateCSSCustomProperties(themeCSS);
+      
+      // 3. Inject theme CSS into document head (site-wide theming)
       this.injectThemeIntoDocument(themeName, themeCSS);
       
-      // 3. Apply any custom properties if provided
+      // 4. Apply any custom properties if provided
       if (customProperties) {
         this.applyCustomCSSProperties(customProperties);
       }
       
-      // 4. Update state and persist preference
+      // 5. Update state and persist preference
       this.state.theme = themeName;
       await this.storeData('current_theme', themeName, { persistent: true });
       
-      // 5. Notify other widgets about theme change
+      // 6. Notify other widgets about theme change
       this.eventEmitter.emit('theme_changed', { 
         themeName, 
         widgetId: this.config.widgetId,
@@ -683,6 +686,114 @@ export abstract class BaseWidget extends HTMLElement {
     }
     
     console.log(`🎨 ${this.config.widgetName}: Applied ${Object.keys(customProperties).length} custom CSS properties`);
+  }
+
+  /**
+   * Validate CSS custom properties by scanning widget CSS and checking theme definitions
+   */
+  private async validateCSSCustomProperties(themeCSS: string): Promise<void> {
+    try {
+      // Skip validation if not in debug mode
+      if (!this.config.debugMode && !this.config.visualDebugging) {
+        return;
+      }
+
+      console.log(`🔍 ${this.config.widgetName}: Validating CSS custom properties...`);
+
+      // 1. Load widget's CSS to find what properties it uses
+      const widgetCSS = this.templateCSS || await this.loadWidgetCSS();
+      
+      if (!widgetCSS) {
+        console.warn(`⚠️ ${this.config.widgetName}: No widget CSS found for validation`);
+        return;
+      }
+
+      // 2. Extract custom properties from widget CSS (--property-name patterns)
+      const usedProperties = this.extractCSSCustomProperties(widgetCSS);
+      
+      // 3. Extract custom properties defined in theme CSS
+      const definedProperties = this.extractCSSCustomProperties(themeCSS);
+      
+      // 4. Find missing properties
+      const missingProperties = usedProperties.filter(prop => !definedProperties.includes(prop));
+      
+      // 5. Report results
+      if (missingProperties.length > 0) {
+        console.warn(`⚠️ ${this.config.widgetName}: Missing CSS custom properties in theme:`, {
+          missing: missingProperties,
+          widget: this.config.widgetName,
+          theme: this.state.theme,
+          totalUsed: usedProperties.length,
+          totalDefined: definedProperties.length
+        });
+
+        // Show detailed warning for each missing property
+        missingProperties.forEach(prop => {
+          console.warn(`   🚨 Missing: ${prop} (used by widget but not defined in theme)`);
+        });
+
+        // Suggest checking devtools
+        console.warn(`   💡 Check DevTools Elements → Styles → Computed to see which properties show as undefined`);
+      } else {
+        console.log(`✅ ${this.config.widgetName}: All CSS custom properties are properly defined (${usedProperties.length} properties)`);
+      }
+
+      // 6. Log summary for debugging
+      console.log(`🔍 ${this.config.widgetName}: CSS validation summary:`, {
+        usedByWidget: usedProperties.length,
+        definedInTheme: definedProperties.length,
+        missing: missingProperties.length
+      });
+
+    } catch (error) {
+      console.error(`❌ ${this.config.widgetName}: CSS validation failed:`, error);
+    }
+  }
+
+  /**
+   * Extract CSS custom property names from CSS content
+   */
+  private extractCSSCustomProperties(cssContent: string): string[] {
+    const customPropertyRegex = /var\(([^,)]+)/g;
+    const definitionRegex = /--[\w-]+/g;
+    const properties = new Set<string>();
+    
+    // Find var() usages
+    let match;
+    while ((match = customPropertyRegex.exec(cssContent)) !== null) {
+      // Clean up the property name (remove var( and any fallbacks)
+      const propName = match[1].trim().split(',')[0].trim();
+      if (propName.startsWith('--')) {
+        properties.add(propName);
+      }
+    }
+    
+    // Find -- definitions (in case some are defined but not used)
+    while ((match = definitionRegex.exec(cssContent)) !== null) {
+      properties.add(match[0]);
+    }
+    
+    return Array.from(properties).sort();
+  }
+
+  /**
+   * Load widget CSS for validation purposes
+   */
+  private async loadWidgetCSS(): Promise<string> {
+    try {
+      if (this.config.styles) {
+        return await this.loadResource(this.config.styles, 'styles', '');
+      }
+      
+      // Try default widget CSS file
+      const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
+      const defaultCSSFile = `${widgetDir}-widget.css`;
+      return await this.loadResource(defaultCSSFile, 'styles', '');
+      
+    } catch (error) {
+      console.warn(`⚠️ ${this.config.widgetName}: Could not load widget CSS for validation:`, error);
+      return '';
+    }
   }
 
   // === PRIVATE IMPLEMENTATION - Hidden complexity ===
