@@ -7,37 +7,29 @@
     <link rel="stylesheet" href="/demo.css">
 </head>
 <body>
-    <div class="cyberpunk-container">
-        <header class="cyber-header">
-            <h1 class="cyber-title">⚡ Continuum Widget UI</h1>
-            <div class="status-bar">
-                <span class="status-indicator">Status:</span>
-                <span id="connection-status" class="status disconnected">Initializing...</span>
+    <div class="desktop-container">
+        <!-- Left Sidebar -->
+        <aside class="sidebar-panel left-sidebar">
+            <continuum-emoter></continuum-emoter>
+            <div class="status-view">
+                <div id="connection-status" class="status">Initializing...</div>
             </div>
-        </header>
+            <div class="dynamic-list">
+                <div class="list-item active">• general</div>
+                <div class="list-item">• academy</div>
+                <div class="list-item">• community</div>
+            </div>
+        </aside>
         
-        <main class="widget-layout">
-            <!-- Screenshot Widget -->
-            <section class="widget-panel screenshot-widget">
-                <div class="widget-header">
-                    <h2 class="widget-title">📸 Screenshot Widget</h2>
-                </div>
-                <div class="widget-controls">
-                    <button class="cyber-btn primary" onclick="takeScreenshot()">Capture Screen</button>
-                    <button class="cyber-btn secondary" onclick="clearWidgetLog()">Clear Log</button>
-                </div>
-                <div id="widget-log" class="widget-log">Screenshot widget ready...</div>
-            </section>
-            
-            <!-- Chat Widget -->
-            <section class="widget-panel chat-widget">
-                <div class="widget-header">
-                    <h2 class="widget-title">💬 Chat Interface</h2>
-                </div>
-                <div class="chat-container">
-                    <chat-widget></chat-widget>
-                </div>
-            </section>
+        <!-- Main Content Area -->
+        <main class="main-panel">
+            <div class="content-header">
+                <h1>🎭 JTAG Widget System</h1>
+            </div>
+            <div class="content-view">
+                <!-- EXISTING CHAT WIDGET STAYS HERE -->
+                <chat-widget></chat-widget>
+            </div>
         </main>
     </div>
 

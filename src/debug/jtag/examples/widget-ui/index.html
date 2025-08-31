@@ -31,12 +31,30 @@
 </head>
 <body>
     <div class="app-container">
-        <div class="widget-area">
-            <h1>🎭 JTAG Widget System</h1>
-            <p>Widgets are self-contained web components with CSS, HTML, and logic all inside the widget module.</p>
+        <div class="desktop-container">
+            <!-- Left Sidebar -->
+            <aside class="sidebar-panel left-sidebar">
+                <div class="continuum-emoter">🟢 continuum</div>
+                <div class="status-view">
+                    <div id="connection-status" class="status">Initializing...</div>
+                </div>
+                <div class="dynamic-list">
+                    <div class="list-item active">• general</div>
+                    <div class="list-item">• academy</div>
+                    <div class="list-item">• community</div>
+                </div>
+            </aside>
             
-            <!-- Chat widget - self-contained with shadow DOM -->
-            <chat-widget></chat-widget>
+            <!-- Main Content Area -->
+            <main class="main-panel">
+                <div class="content-header">
+                    <h1>🎭 JTAG Widget System</h1>
+                </div>
+                <div class="content-view">
+                    <!-- EXISTING CHAT WIDGET STAYS HERE -->
+                    <chat-widget></chat-widget>
+                </div>
+            </main>
         </div>
     </div>
 
