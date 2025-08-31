@@ -25,6 +25,23 @@ import {
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import type { FileSaveParams, FileSaveResult } from '../../commands/file/save/shared/FileSaveTypes';
 import type { ScreenshotParams, ScreenshotResult } from '../../commands/screenshot/shared/ScreenshotTypes';
+import {
+  THEME_NAMES,
+  WIDGET_DEFAULTS,
+  DATABASE_OPERATIONS,
+  ROUTER_OPERATIONS,
+  ACADEMY_OPERATIONS,
+  WIDGET_EVENTS,
+  WIDGET_CHANNELS,
+  AI_PERSONAS,
+  WIDGET_DIRECTORIES,
+  STORAGE_KEYS,
+  DAEMON_NAMES,
+  type ThemeName,
+  type DatabaseOperation,
+  type RouterOperation,
+  type AcademyOperation
+} from './WidgetConstants';
 
 export interface WidgetConfig {
   // Core settings
@@ -33,7 +50,7 @@ export interface WidgetConfig {
   version?: string;
   
   // Theme and appearance
-  theme?: 'basic' | 'cyberpunk' | 'anime' | 'custom';
+  theme?: ThemeName;
   customTheme?: Record<string, string>;
   compactMode?: boolean;
   
@@ -100,14 +117,14 @@ export abstract class BaseWidget extends HTMLElement {
   
   constructor(config: Partial<WidgetConfig> = {}) {
     super();
-    this.attachShadow({ mode: 'open' });
+    this.attachShadow({ mode: WIDGET_DEFAULTS.SHADOW_MODE });
     
     // Default configuration with smart defaults
     this.config = {
       widgetId: this.generateWidgetId(),
       widgetName: this.constructor.name,
       version: '1.0.0',
-      theme: 'cyberpunk',
+      theme: WIDGET_DEFAULTS.THEME,
       enablePersistence: true,
       cacheData: true,
       enableAI: true,
@@ -126,7 +143,7 @@ export abstract class BaseWidget extends HTMLElement {
       isConnected: false,
       hasError: false,
       lastUpdate: new Date().toISOString(),
-      theme: this.config.theme || 'cyberpunk',
+      theme: this.config.theme || WIDGET_DEFAULTS.THEME,
       data: new Map(),
       cache: new Map()
     };
@@ -241,7 +258,7 @@ export abstract class BaseWidget extends HTMLElement {
       
       // 2. Store in database if enabled
       if (persistent && this.config.enableDatabase) {
-        await this.databaseOperation('store', {
+        await this.databaseOperation(DATABASE_OPERATIONS.STORE, {
           widgetId: this.config.widgetId,
           key,
           value: JSON.stringify(value),
@@ -251,7 +268,7 @@ export abstract class BaseWidget extends HTMLElement {
       
       // 3. Broadcast change if enabled
       if (broadcast) {
-        await this.broadcastEvent('data_updated', { key, value });
+        await this.broadcastEvent(WIDGET_EVENTS.DATA_UPDATED, { key, value });
       }
       
       // 4. Update widget state
@@ -284,7 +301,7 @@ export abstract class BaseWidget extends HTMLElement {
       
       // 3. Load from database if enabled
       if (this.config.enableDatabase) {
-        const dbResult = await this.databaseOperation('retrieve', {
+        const dbResult = await this.databaseOperation(DATABASE_OPERATIONS.RETRIEVE, {
           widgetId: this.config.widgetId,
           key
         });
@@ -336,8 +353,8 @@ export abstract class BaseWidget extends HTMLElement {
       };
       
       // Send via router daemon (handles WebSocket, cross-browser, etc.)
-      const result = await this.routerOperation('broadcast', {
-        channel: 'widget_events',
+      const result = await this.routerOperation(ROUTER_OPERATIONS.BROADCAST, {
+        channel: WIDGET_CHANNELS.WIDGET_EVENTS,
         event: eventData,
         persistent
       });
@@ -365,12 +382,12 @@ export abstract class BaseWidget extends HTMLElement {
       }
       
       const {
-        persona = 'general_assistant',
+        persona = AI_PERSONAS.GENERAL_ASSISTANT,
         context = this.getAIContext(),
         expectResponse = true
       } = options;
       
-      const result = await this.academyOperation('query', {
+      const result = await this.academyOperation(ACADEMY_OPERATIONS.QUERY, {
         message,
         persona,
         context,
@@ -465,10 +482,10 @@ export abstract class BaseWidget extends HTMLElement {
       
       // 5. Update state and persist preference
       this.state.theme = themeName;
-      await this.storeData('current_theme', themeName, { persistent: true });
+      await this.storeData(STORAGE_KEYS.CURRENT_THEME, themeName, { persistent: true });
       
       // 6. Notify other widgets about theme change
-      this.eventEmitter.emit('theme_changed', { 
+      this.eventEmitter.emit(WIDGET_EVENTS.THEME_CHANGED, { 
         themeName, 
         widgetId: this.config.widgetId,
         customProperties
@@ -493,7 +510,7 @@ export abstract class BaseWidget extends HTMLElement {
   } = {}): Promise<string | null> {
     try {
       const {
-        directory = 'widget_data',
+        directory = WIDGET_DIRECTORIES.WIDGET_DATA,
         format = 'auto',
         compress = false
       } = options;
@@ -800,22 +817,22 @@ export abstract class BaseWidget extends HTMLElement {
 
   private async initializeDaemonConnections(): Promise<void> {
     if (this.config.enableDatabase) {
-      this.databaseDaemon = await this.connectToDaemon('database');
+      this.databaseDaemon = await this.connectToDaemon(DAEMON_NAMES.DATA);
     }
     
     if (this.config.enableRouterEvents) {
-      this.routerDaemon = await this.connectToDaemon('router');
+      this.routerDaemon = await this.connectToDaemon(DAEMON_NAMES.EVENTS);
     }
     
     if (this.config.enableAI) {
-      this.academyDaemon = await this.connectToDaemon('academy');
+      this.academyDaemon = await this.connectToDaemon(DAEMON_NAMES.CHAT); // Chat daemon handles AI queries
     }
     
-    this.themeDaemon = await this.connectToDaemon('theme');
+    this.themeDaemon = await this.connectToDaemon(DAEMON_NAMES.WIDGET); // Widget daemon handles themes
   }
 
   private async initializeTheme(): Promise<void> {
-    const savedTheme = await this.getData('current_theme', this.config.theme);
+    const savedTheme = await this.getData(STORAGE_KEYS.CURRENT_THEME, this.config.theme);
     if (savedTheme) {
       await this.applyTheme(savedTheme);
     }
