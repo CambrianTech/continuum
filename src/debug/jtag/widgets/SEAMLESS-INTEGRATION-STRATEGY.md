@@ -320,9 +320,9 @@ describe('ChatWidget Enhanced Tests', () => {
 
 ### **Step 1: Foundation Setup (Safe)**
 ```bash
-# Create new enhanced widgets without touching existing ones
-mkdir -p widgets/enhanced/
-mkdir -p widgets/enhanced/public/
+# Create new widgets directly in jtag/widgets/
+mkdir -p widgets/chat-widget/{server,shared,browser,public}
+mkdir -p widgets/sidebar-panel/{server,shared,browser,public}
 mkdir -p widgets/shared/compatibility/
 
 # Set up import system
@@ -331,14 +331,16 @@ touch widgets/shared/BackwardCompatibleRegistry.ts
 touch widgets/shared/TestCompatibilityLayer.ts
 ```
 
-### **Step 2: Enhanced Chat Widget (Parallel to Old One)**
+### **Step 2: New Chat Widget (Following New Architecture)**
 ```bash
-# Create enhanced version alongside existing
-touch widgets/enhanced/ChatWidget.ts
-touch widgets/enhanced/public/chat-widget.css
-touch widgets/enhanced/test/ChatWidget.test.ts
+# Create new widget using proper modular structure
+touch widgets/chat-widget/shared/ChatWidget.ts
+touch widgets/chat-widget/browser/ChatWidgetBrowser.ts  
+touch widgets/chat-widget/server/ChatWidgetServer.ts
+touch widgets/chat-widget/public/chat-widget.css
+touch widgets/chat-widget/public/chat-widget.html
 
-# Both versions will work simultaneously during transition
+# This is the NEW system, not enhanced version of old
 ```
 
 ### **Step 3: Seamless Integration Test**
@@ -395,19 +397,28 @@ widgets/
 │   └── compatibility/
 │       ├── TestCompatibilityLayer.ts   # 🆕 Test preservation
 │       └── LegacyWidgetBridge.ts       # 🆕 Legacy support
-├── enhanced/                            # 🆕 New widget system
-│   ├── ChatWidget.ts                   # 🆕 Replacement for problematic one
-│   ├── public/
-│   │   ├── chat-widget.css             # 🆕 Separate from TS
-│   │   ├── chat-widget.html            # 🆕 Template file
-│   │   └── assets/
-│   └── test/
-│       └── ChatWidget.test.ts          # 🆕 Fixed test implementation
+├── chat-widget/                         # 🆕 New modular widget system
+│   ├── server/
+│   │   └── ChatWidgetServer.ts         # 🆕 Server-side logic
+│   ├── shared/
+│   │   └── ChatWidget.ts               # 🆕 Core widget logic
+│   ├── browser/
+│   │   └── ChatWidgetBrowser.ts        # 🆕 Browser-specific logic
+│   └── public/
+│       ├── chat-widget.css             # 🆕 Separate CSS
+│       ├── chat-widget.html            # 🆕 Template file
+│       └── assets/
+├── sidebar-panel/                       # 🆕 Another modular widget
+│   ├── server/
+│   ├── shared/
+│   ├── browser/
+│   └── public/
+│       └── sidebar-panel.css
 ├── chat/                               # 🔄 Keep existing during transition
-│   ├── ChatWidget.ts                   # ⚠️  Problematic but working
+│   ├── ChatWidget.ts                   # ⚠️  Legacy - will be deprecated
 │   └── test/
-│       ├── unit/ChatWidget.test.ts     # ⚠️  Scary but don't break
-│       └── integration/                # ⚠️  Keep until replacement ready
+│       ├── unit/ChatWidget.test.ts     # ⚠️  Keep until migration complete
+│       └── integration/
 └── DOCUMENTATION/                      # 📚 Complete doc suite
     ├── SEAMLESS-INTEGRATION-STRATEGY.md
     ├── TEST-COMPATIBILITY-GUIDE.md

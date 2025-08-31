@@ -1,0 +1,678 @@
+/**
+ * ChatWidgetBrowser - Thin browser UI layer
+ * 
+ * Handles ONLY UI logic:
+ * - Render messages and UI elements
+ * - Capture user input
+ * - Send commands to server widget
+ * - Listen for server events and update UI
+ * 
+ * All complex logic handled by ChatWidgetServer
+ */
+
+import { 
+  ChatMessage, 
+  ChatUser, 
+  ChatRoom, 
+  ChatWidgetConfig, 
+  ChatWidgetState,
+  ChatEventEmitter,
+  ChatEventData,
+  validateChatMessage,
+  formatMessageTime,
+  formatMessageDate,
+  getMessageAuthor
+} from '../shared/ChatTypes';
+
+export class ChatWidgetBrowser extends HTMLElement {
+  private shadowRoot: ShadowRoot;
+  private eventEmitter = new ChatEventEmitter();
+  private serverWidget: any; // Connection to ChatWidgetServer
+  
+  // UI State (keep minimal)
+  private state: ChatWidgetState = {
+    isConnected: false,
+    connectionStatus: 'disconnected',
+    messages: [],
+    messageCache: new Map(),
+    isTyping: false,
+    typingUsers: [],
+    unreadCount: 0,
+    isLoading: false,
+    hasMoreHistory: true
+  };
+  
+  private config: ChatWidgetConfig;
+  private currentRequestId = 0;
+  private pendingRequests = new Map<string, (response: any) => void>();
+  
+  // UI Elements (cached for performance)
+  private messagesContainer?: HTMLElement;
+  private messageInput?: HTMLInputElement;
+  private sendButton?: HTMLElement;
+  private userList?: HTMLElement;
+  private typingIndicator?: HTMLElement;
+
+  constructor(config: Partial<ChatWidgetConfig> = {}) {
+    super();
+    this.shadowRoot = this.attachShadow({ mode: 'open' });
+    
+    // Default configuration
+    this.config = {
+      autoConnect: true,
+      defaultRoom: 'general',
+      showUserList: true,
+      showTypingIndicators: true,
+      messageLimit: 100,
+      autoScroll: true,
+      allowMarkdown: true,
+      enableAI: true,
+      theme: 'cyberpunk',
+      showTimestamps: true,
+      cacheMessages: true,
+      ...config
+    };
+  }
+
+  async connectedCallback(): Promise<void> {
+    console.log('🎭 ChatWidgetBrowser: Initializing...');
+    
+    try {
+      // Load styles and render UI
+      await this.loadStyles();
+      await this.renderUI();
+      this.setupEventListeners();
+      this.cacheUIElements();
+      
+      // Connect to server widget
+      if (this.config.autoConnect) {
+        await this.connectToServer();
+      }
+      
+      // Join default room if specified
+      if (this.config.defaultRoom) {
+        await this.joinRoom(this.config.defaultRoom);
+      }
+      
+      console.log('✅ ChatWidgetBrowser: Initialized successfully');
+      
+    } catch (error) {
+      console.error('❌ ChatWidgetBrowser: Initialization failed:', error);
+      this.renderError(error);
+    }
+  }
+
+  disconnectedCallback(): void {
+    console.log('🎭 ChatWidgetBrowser: Disconnecting...');
+    
+    // Clean up server connection
+    if (this.serverWidget) {
+      this.serverWidget.disconnect();
+    }
+    
+    // Clear event listeners and state
+    this.eventEmitter.clear();
+    this.pendingRequests.clear();
+    this.state = {
+      ...this.state,
+      isConnected: false,
+      connectionStatus: 'disconnected'
+    };
+  }
+
+  // === SERVER COMMUNICATION ===
+
+  private async connectToServer(): Promise<void> {
+    try {
+      console.log('🔌 Connecting to ChatWidgetServer...');
+      
+      // This would connect to the actual server widget via daemon messaging
+      // For now, mock the connection
+      this.serverWidget = {
+        sendCommand: this.mockServerCommand.bind(this),
+        on: (event: string, handler: Function) => {
+          // Mock server event system
+          this.eventEmitter.on(event as any, handler as any);
+        }
+      };
+      
+      this.state.isConnected = true;
+      this.state.connectionStatus = 'connected';
+      
+      this.setupServerEventListeners();
+      this.updateConnectionStatus();
+      
+      console.log('✅ Connected to ChatWidgetServer');
+      
+    } catch (error) {
+      console.error('❌ Server connection failed:', error);
+      this.state.connectionStatus = 'error';
+      this.state.lastError = error instanceof Error ? error.message : String(error);
+      this.updateConnectionStatus();
+    }
+  }
+
+  private setupServerEventListeners(): void {
+    // Listen for messages from server
+    this.serverWidget.on('message_received', (data: ChatEventData['message_received']) => {
+      this.handleMessageReceived(data.message);
+    });
+    
+    // Listen for user events
+    this.serverWidget.on('user_joined', (data: ChatEventData['user_joined']) => {
+      this.handleUserJoined(data.user, data.roomId);
+    });
+    
+    this.serverWidget.on('user_left', (data: ChatEventData['user_left']) => {
+      this.handleUserLeft(data.user, data.roomId);
+    });
+    
+    // Listen for typing indicators
+    this.serverWidget.on('typing_indicator', (data: ChatEventData['typing_indicator']) => {
+      this.handleTypingIndicator(data.userId, data.isTyping);
+    });
+  }
+
+  private async sendServerCommand(type: string, data: any): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const requestId = `req_${++this.currentRequestId}`;
+      
+      // Store resolver for response
+      this.pendingRequests.set(requestId, resolve);
+      
+      // Send to server widget
+      this.serverWidget.sendCommand({
+        type: `chat-widget:${type}`,
+        data,
+        requestId
+      });
+      
+      // Cleanup timeout
+      setTimeout(() => {
+        if (this.pendingRequests.has(requestId)) {
+          this.pendingRequests.delete(requestId);
+          reject(new Error('Server command timeout'));
+        }
+      }, 10000); // 10 second timeout
+    });
+  }
+
+  // === UI EVENT HANDLERS ===
+
+  private setupEventListeners(): void {
+    // Message input and send button
+    this.shadowRoot.addEventListener('keydown', (e) => {
+      if (e.target === this.messageInput && e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        this.sendMessage();
+      }
+    });
+    
+    this.shadowRoot.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      
+      if (target.matches('#sendButton') || target.closest('#sendButton')) {
+        this.sendMessage();
+      } else if (target.matches('.load-more-button')) {
+        this.loadMoreHistory();
+      } else if (target.matches('.user-item')) {
+        const userId = target.dataset.userId;
+        if (userId) this.handleUserClick(userId);
+      }
+    });
+    
+    // Typing indicator
+    this.shadowRoot.addEventListener('input', (e) => {
+      if (e.target === this.messageInput) {
+        this.handleInputChange();
+      }
+    });
+    
+    // Auto-resize textarea
+    this.shadowRoot.addEventListener('input', (e) => {
+      if (e.target === this.messageInput) {
+        this.autoResizeInput();
+      }
+    });
+  }
+
+  private async sendMessage(): Promise<void> {
+    if (!this.messageInput || !this.state.currentRoom) return;
+    
+    const content = this.messageInput.value.trim();
+    if (!content) return;
+    
+    try {
+      // Clear input immediately (optimistic UI)
+      this.messageInput.value = '';
+      this.autoResizeInput();
+      
+      // Add message to UI immediately with 'sending' status
+      const tempMessage: ChatMessage = {
+        id: `temp_${Date.now()}`,
+        content,
+        roomId: this.state.currentRoom.id,
+        userId: this.state.currentUser?.id || 'unknown',
+        type: 'user',
+        timestamp: new Date().toISOString(),
+        status: 'sending'
+      };
+      
+      this.addMessageToUI(tempMessage);
+      
+      // Send to server
+      const response = await this.sendServerCommand('send_message', {
+        content,
+        roomId: this.state.currentRoom.id,
+        userId: this.state.currentUser?.id || 'unknown'
+      });
+      
+      if (response.success) {
+        // Replace temp message with real message
+        this.updateMessageInUI(tempMessage.id, response.data.message);
+      } else {
+        // Mark as error
+        this.updateMessageStatus(tempMessage.id, 'error');
+      }
+      
+    } catch (error) {
+      console.error('❌ Failed to send message:', error);
+      // Update UI to show error
+    }
+  }
+
+  private async joinRoom(roomId: string): Promise<void> {
+    try {
+      const response = await this.sendServerCommand('join_room', {
+        roomId,
+        userId: this.state.currentUser?.id || 'browser_user'
+      });
+      
+      if (response.success) {
+        // Load room history
+        await this.loadRoomHistory(roomId);
+      }
+      
+    } catch (error) {
+      console.error('❌ Failed to join room:', error);
+    }
+  }
+
+  private async loadRoomHistory(roomId: string): Promise<void> {
+    try {
+      this.state.isLoading = true;
+      this.updateLoadingState();
+      
+      const response = await this.sendServerCommand('get_history', {
+        roomId,
+        limit: this.config.messageLimit || 50
+      });
+      
+      if (response.success) {
+        this.state.messages = response.data.messages || [];
+        this.renderMessages();
+        
+        if (this.config.autoScroll) {
+          this.scrollToBottom();
+        }
+      }
+      
+    } catch (error) {
+      console.error('❌ Failed to load room history:', error);
+    } finally {
+      this.state.isLoading = false;
+      this.updateLoadingState();
+    }
+  }
+
+  // === UI RENDERING ===
+
+  private async loadStyles(): Promise<void> {
+    try {
+      const response = await fetch('/widgets/chat-widget/public/chat-widget.css');
+      const css = await response.text();
+      
+      const style = document.createElement('style');
+      style.textContent = css;
+      this.shadowRoot.appendChild(style);
+      
+    } catch (error) {
+      console.warn('❌ Failed to load chat widget styles:', error);
+      // Use fallback styles
+      this.shadowRoot.innerHTML = `
+        <style>
+          :host { display: flex; flex-direction: column; height: 100%; }
+          .chat-container { display: flex; flex-direction: column; height: 100%; }
+          .messages { flex: 1; overflow-y: auto; padding: 1rem; }
+          .message { margin-bottom: 0.5rem; padding: 0.5rem; border-radius: 0.25rem; }
+          .input-area { padding: 1rem; border-top: 1px solid #ccc; }
+          .input-container { display: flex; gap: 0.5rem; }
+          .input-field { flex: 1; padding: 0.5rem; border-radius: 0.25rem; }
+          .send-button { padding: 0.5rem 1rem; background: #0066cc; color: white; border: none; border-radius: 0.25rem; cursor: pointer; }
+        </style>
+      `;
+    }
+  }
+
+  private async renderUI(): Promise<void> {
+    this.shadowRoot.innerHTML += `
+      <div class="chat-container">
+        <!-- Chat Header -->
+        <div class="chat-header">
+          <div class="header-left">
+            <div class="chat-icon">💬</div>
+            <div class="header-info">
+              <div class="chat-title">${this.state.currentRoom?.name || 'Chat'}</div>
+              <div class="chat-subtitle">
+                <span class="connection-status">${this.state.connectionStatus}</span>
+                <span class="user-count">• 0 users</span>
+              </div>
+            </div>
+          </div>
+          <div class="header-right">
+            <div class="chat-controls">
+              <button class="control-button" id="refreshButton" title="Refresh">🔄</button>
+              <button class="control-button" id="settingsButton" title="Settings">⚙️</button>
+            </div>
+          </div>
+        </div>
+        
+        <div class="chat-body">
+          <!-- Messages Area -->
+          <div class="messages" id="messages">
+            <div class="loading-indicator hidden" id="loadingIndicator">
+              <div class="loading-spinner"></div>
+              <span>Loading messages...</span>
+            </div>
+            <div class="messages-list" id="messagesList"></div>
+            <div class="typing-indicator hidden" id="typingIndicator">
+              <span class="typing-text">Someone is typing...</span>
+              <div class="typing-dots">
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+              </div>
+            </div>
+          </div>
+          
+          ${this.config.showUserList ? `
+          <!-- User List -->
+          <div class="user-list" id="userList">
+            <div class="user-list-header">
+              <span class="user-list-title">Online Users</span>
+              <span class="user-count" id="userCount">0</span>
+            </div>
+            <div class="user-list-items" id="userListItems">
+              <!-- Users populated by JavaScript -->
+            </div>
+          </div>
+          ` : ''}
+        </div>
+        
+        <!-- Input Area -->
+        <div class="input-area">
+          <div class="input-container">
+            <textarea 
+              id="messageInput" 
+              class="input-field" 
+              placeholder="Type your message..." 
+              rows="1"
+              maxlength="10000"
+            ></textarea>
+            <button class="send-button" id="sendButton" title="Send message">
+              <span class="send-icon">➤</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private cacheUIElements(): void {
+    this.messagesContainer = this.shadowRoot.getElementById('messagesList');
+    this.messageInput = this.shadowRoot.getElementById('messageInput') as HTMLInputElement;
+    this.sendButton = this.shadowRoot.getElementById('sendButton');
+    this.userList = this.shadowRoot.getElementById('userListItems');
+    this.typingIndicator = this.shadowRoot.getElementById('typingIndicator');
+  }
+
+  private renderMessages(): void {
+    if (!this.messagesContainer) return;
+    
+    const messagesHTML = this.state.messages.map(message => this.renderMessage(message)).join('');
+    this.messagesContainer.innerHTML = messagesHTML;
+    
+    if (this.config.autoScroll) {
+      this.scrollToBottom();
+    }
+  }
+
+  private renderMessage(message: ChatMessage): string {
+    const timeStr = formatMessageTime(message.timestamp);
+    const dateStr = formatMessageDate(message.timestamp);
+    const author = getMessageAuthor(message, new Map()); // Would pass actual users map
+    
+    const statusIcon = this.getStatusIcon(message.status);
+    const messageClasses = [
+      'message',
+      `message-${message.type}`,
+      message.status ? `status-${message.status}` : ''
+    ].filter(Boolean).join(' ');
+    
+    return `
+      <div class="${messageClasses}" data-message-id="${message.id}">
+        ${author ? `
+          <div class="message-author">
+            <span class="author-avatar">${author.avatar}</span>
+            <span class="author-name">${author.name}</span>
+            ${this.config.showTimestamps ? `
+              <span class="message-time" title="${dateStr} at ${timeStr}">${timeStr}</span>
+            ` : ''}
+          </div>
+        ` : ''}
+        <div class="message-content">${this.formatMessageContent(message.content)}</div>
+        ${statusIcon ? `<div class="message-status">${statusIcon}</div>` : ''}
+      </div>
+    `;
+  }
+
+  // === SERVER EVENT HANDLERS ===
+
+  private handleMessageReceived(message: ChatMessage): void {
+    if (validateChatMessage(message)) {
+      this.addMessageToUI(message);
+      
+      // Update unread count if not focused
+      if (document.hidden) {
+        this.state.unreadCount++;
+        this.updateTitle();
+      }
+    }
+  }
+
+  private handleUserJoined(user: ChatUser, roomId: string): void {
+    if (this.state.currentRoom?.id === roomId) {
+      this.state.currentRoom.users.set(user.id, user);
+      this.updateUserList();
+    }
+  }
+
+  private handleUserLeft(user: ChatUser, roomId: string): void {
+    if (this.state.currentRoom?.id === roomId) {
+      this.state.currentRoom.users.delete(user.id);
+      this.updateUserList();
+    }
+  }
+
+  private handleTypingIndicator(userId: string, isTyping: boolean): void {
+    // Update typing indicator in UI
+    this.updateTypingIndicator();
+  }
+
+  // === HELPER METHODS ===
+
+  private addMessageToUI(message: ChatMessage): void {
+    this.state.messages.push(message);
+    
+    // Keep message limit
+    if (this.state.messages.length > (this.config.messageLimit || 100)) {
+      this.state.messages.shift();
+    }
+    
+    // Re-render or append new message
+    if (this.messagesContainer) {
+      const messageHTML = this.renderMessage(message);
+      this.messagesContainer.insertAdjacentHTML('beforeend', messageHTML);
+      
+      if (this.config.autoScroll) {
+        this.scrollToBottom();
+      }
+    }
+  }
+
+  private updateMessageInUI(tempId: string, newMessage: ChatMessage): void {
+    const messageElement = this.shadowRoot.querySelector(`[data-message-id="${tempId}"]`);
+    if (messageElement) {
+      messageElement.outerHTML = this.renderMessage(newMessage);
+    }
+    
+    // Update in state
+    const index = this.state.messages.findIndex(m => m.id === tempId);
+    if (index >= 0) {
+      this.state.messages[index] = newMessage;
+    }
+  }
+
+  private updateMessageStatus(messageId: string, status: ChatMessage['status']): void {
+    const messageElement = this.shadowRoot.querySelector(`[data-message-id="${messageId}"]`);
+    if (messageElement) {
+      const statusElement = messageElement.querySelector('.message-status');
+      if (statusElement) {
+        statusElement.innerHTML = this.getStatusIcon(status);
+      }
+    }
+  }
+
+  private formatMessageContent(content: string): string {
+    if (!this.config.allowMarkdown) {
+      return this.escapeHTML(content);
+    }
+    
+    // Simple markdown formatting
+    return content
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      .replace(/`(.*?)`/g, '<code>$1</code>')
+      .replace(/\n/g, '<br>');
+  }
+
+  private escapeHTML(text: string): string {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  private getStatusIcon(status?: ChatMessage['status']): string {
+    switch (status) {
+      case 'sending': return '⏳';
+      case 'sent': return '✓';
+      case 'delivered': return '✓✓';
+      case 'error': return '❌';
+      default: return '';
+    }
+  }
+
+  private autoResizeInput(): void {
+    if (this.messageInput) {
+      this.messageInput.style.height = 'auto';
+      this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 120) + 'px';
+    }
+  }
+
+  private scrollToBottom(): void {
+    const messagesContainer = this.shadowRoot.querySelector('.messages');
+    if (messagesContainer) {
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+  }
+
+  private updateConnectionStatus(): void {
+    const statusElement = this.shadowRoot.querySelector('.connection-status');
+    if (statusElement) {
+      statusElement.textContent = this.state.connectionStatus;
+      statusElement.className = `connection-status status-${this.state.connectionStatus}`;
+    }
+  }
+
+  private updateUserList(): void {
+    // Update user list UI
+  }
+
+  private updateTypingIndicator(): void {
+    // Update typing indicator UI
+  }
+
+  private updateTitle(): void {
+    if (this.state.unreadCount > 0) {
+      document.title = `(${this.state.unreadCount}) Chat`;
+    } else {
+      document.title = 'Chat';
+    }
+  }
+
+  private updateLoadingState(): void {
+    const loadingIndicator = this.shadowRoot.getElementById('loadingIndicator');
+    if (loadingIndicator) {
+      loadingIndicator.classList.toggle('hidden', !this.state.isLoading);
+    }
+  }
+
+  private renderError(error: any): void {
+    this.shadowRoot.innerHTML = `
+      <div class="error-container">
+        <div class="error-title">❌ Chat Widget Error</div>
+        <div class="error-message">${error.message || 'Unknown error occurred'}</div>
+        <button onclick="location.reload()">Reload</button>
+      </div>
+    `;
+  }
+
+  // Mock server command for development
+  private async mockServerCommand(command: any): Promise<any> {
+    console.log('🎭 Mock server command:', command);
+    
+    // Simulate server response delay
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    return {
+      success: true,
+      data: { 
+        message: 'Mock response',
+        messageId: 'mock_' + Date.now()
+      }
+    };
+  }
+
+  // Public API methods
+  public async sendChatMessage(content: string): Promise<void> {
+    this.messageInput!.value = content;
+    await this.sendMessage();
+  }
+
+  public joinChatRoom(roomId: string): Promise<void> {
+    return this.joinRoom(roomId);
+  }
+
+  public getCurrentRoom(): ChatRoom | undefined {
+    return this.state.currentRoom;
+  }
+
+  public getMessages(): ChatMessage[] {
+    return [...this.state.messages];
+  }
+}
+
+// Register the custom element
+if (!customElements.get('chat-widget')) {
+  customElements.define('chat-widget', ChatWidgetBrowser);
+}
