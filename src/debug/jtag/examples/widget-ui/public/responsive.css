@@ -1,0 +1,41 @@
+/* Responsive design */
+@media (max-width: 968px) {
+    .widget-layout {
+        grid-template-columns: 1fr;
+        padding: 20px;
+        gap: 20px;
+    }
+    
+    .cyber-header {
+        flex-direction: column;
+        gap: 15px;
+        text-align: center;
+    }
+    
+    .cyber-title {
+        font-size: 2rem;
+    }
+    
+    .widget-controls {
+        justify-content: center;
+    }
+}
+
+@media (max-width: 640px) {
+    .cyber-title {
+        font-size: 1.7rem;
+    }
+    
+    .widget-layout {
+        padding: 15px;
+    }
+    
+    .widget-panel {
+        padding: 20px;
+    }
+    
+    .cyber-btn {
+        flex: 1;
+        text-align: center;
+    }
+}

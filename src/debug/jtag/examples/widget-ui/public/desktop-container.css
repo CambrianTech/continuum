@@ -1,0 +1,42 @@
+/* Desktop container - VSCode/Discord style */
+.desktop-container {
+    display: grid;
+    grid-template-columns: 250px 1fr;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* Main panel */
+.main-panel {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* Content header */
+.content-header {
+    background: linear-gradient(90deg, rgba(0, 212, 255, 0.1), rgba(255, 0, 150, 0.1));
+    border-bottom: 2px solid rgba(0, 212, 255, 0.3);
+    padding: 20px;
+    backdrop-filter: blur(20px);
+}
+
+.content-header h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #00d4ff, #ff0096);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    text-shadow: 0 0 30px rgba(0, 212, 255, 0.3);
+    letter-spacing: -0.02em;
+    margin: 0;
+}
+
+/* Content view */
+.content-view {
+    flex: 1;
+    padding: 30px;
+    overflow-y: auto;
+    background: rgba(0, 0, 0, 0.2);
+}

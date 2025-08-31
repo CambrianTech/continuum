@@ -2,30 +2,48 @@
  * SidebarResizer - Draggable resizer for desktop layout
  * Handles sidebar width with localStorage persistence
  */
+interface SidebarResizedDetail {
+    width: number;
+}
+
+interface WidthLimits {
+    min: number;
+    max: number;
+    default: number;
+}
+
 class SidebarResizer extends HTMLElement {
+    private isDragging: boolean = false;
+    private startX: number = 0;
+    private startWidth: number = 0;
+    private currentWidth?: number;
+    private readonly minWidth: number = 150;
+    private readonly maxWidth: number = 500;
+    private readonly defaultWidth: number = 250;
+    private readonly storageKey: string = 'continuum-sidebar-width';
+    
+    // Event handler references for proper cleanup
+    private boundMouseMove?: (e: MouseEvent) => void;
+    private boundMouseUp?: () => void;
+    private boundTouchMove?: (e: TouchEvent) => void;
+    private boundTouchEnd?: () => void;
+
     constructor() {
         super();
         this.attachShadow({ mode: 'open' });
-        this.isDragging = false;
-        this.startX = 0;
-        this.startWidth = 0;
-        this.minWidth = 150;
-        this.maxWidth = 500;
-        this.defaultWidth = 250;
-        this.storageKey = 'continuum-sidebar-width';
     }
 
-    connectedCallback() {
+    connectedCallback(): void {
         this.render();
         this.setupEventListeners();
         this.loadSavedWidth();
     }
 
-    disconnectedCallback() {
+    disconnectedCallback(): void {
         this.removeEventListeners();
     }
 
-    loadSavedWidth() {
+    private loadSavedWidth(): void {
         try {
             const savedWidth = localStorage.getItem(this.storageKey);
             if (savedWidth) {
@@ -36,67 +54,84 @@ class SidebarResizer extends HTMLElement {
                 }
             }
         } catch (error) {
-            console.warn('SidebarResizer: Failed to load saved width:', error.message);
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            console.warn('SidebarResizer: Failed to load saved width:', errorMessage);
         }
         
         // Use default width if no valid saved width
         this.applySidebarWidth(this.defaultWidth);
     }
 
-    saveWidth(width) {
+    private saveWidth(width: number): void {
         try {
             localStorage.setItem(this.storageKey, width.toString());
             console.log('🔧 SidebarResizer: Saved width:', width);
         } catch (error) {
-            console.warn('SidebarResizer: Failed to save width:', error.message);
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            console.warn('SidebarResizer: Failed to save width:', errorMessage);
         }
     }
 
-    applySidebarWidth(width) {
-        const desktopContainer = document.querySelector('.desktop-container');
+    private applySidebarWidth(width: number): void {
+        const desktopContainer = document.querySelector('.desktop-container') as HTMLElement;
         if (desktopContainer) {
             desktopContainer.style.gridTemplateColumns = `${width}px 1fr`;
             this.currentWidth = width;
             
             // Dispatch custom event for other components
-            this.dispatchEvent(new CustomEvent('sidebar-resized', {
+            const event = new CustomEvent<SidebarResizedDetail>('sidebar-resized', {
                 detail: { width },
                 bubbles: true
-            }));
+            });
+            this.dispatchEvent(event);
         }
     }
 
-    setupEventListeners() {
-        this.shadowRoot.addEventListener('mousedown', this.handleMouseDown.bind(this));
-        document.addEventListener('mousemove', this.handleMouseMove.bind(this));
-        document.addEventListener('mouseup', this.handleMouseUp.bind(this));
+    private setupEventListeners(): void {
+        // Create bound references for proper cleanup
+        this.boundMouseMove = this.handleMouseMove.bind(this);
+        this.boundMouseUp = this.handleMouseUp.bind(this);
+        this.boundTouchMove = this.handleTouchMove.bind(this);
+        this.boundTouchEnd = this.handleTouchEnd.bind(this);
+        
+        this.shadowRoot?.addEventListener('mousedown', this.handleMouseDown.bind(this));
+        document.addEventListener('mousemove', this.boundMouseMove);
+        document.addEventListener('mouseup', this.boundMouseUp);
         
         // Touch events for mobile
-        this.shadowRoot.addEventListener('touchstart', this.handleTouchStart.bind(this));
-        document.addEventListener('touchmove', this.handleTouchMove.bind(this));
-        document.addEventListener('touchend', this.handleTouchEnd.bind(this));
+        this.shadowRoot?.addEventListener('touchstart', this.handleTouchStart.bind(this));
+        document.addEventListener('touchmove', this.boundTouchMove);
+        document.addEventListener('touchend', this.boundTouchEnd);
     }
 
-    removeEventListeners() {
-        document.removeEventListener('mousemove', this.handleMouseMove.bind(this));
-        document.removeEventListener('mouseup', this.handleMouseUp.bind(this));
-        document.removeEventListener('touchmove', this.handleTouchMove.bind(this));
-        document.removeEventListener('touchend', this.handleTouchEnd.bind(this));
+    private removeEventListeners(): void {
+        if (this.boundMouseMove) {
+            document.removeEventListener('mousemove', this.boundMouseMove);
+        }
+        if (this.boundMouseUp) {
+            document.removeEventListener('mouseup', this.boundMouseUp);
+        }
+        if (this.boundTouchMove) {
+            document.removeEventListener('touchmove', this.boundTouchMove);
+        }
+        if (this.boundTouchEnd) {
+            document.removeEventListener('touchend', this.boundTouchEnd);
+        }
     }
 
-    handleMouseDown(e) {
+    private handleMouseDown(e: MouseEvent): void {
         this.startDrag(e.clientX);
         e.preventDefault();
     }
 
-    handleTouchStart(e) {
+    private handleTouchStart(e: TouchEvent): void {
         if (e.touches.length === 1) {
             this.startDrag(e.touches[0].clientX);
             e.preventDefault();
         }
     }
 
-    startDrag(clientX) {
+    private startDrag(clientX: number): void {
         this.isDragging = true;
         this.startX = clientX;
         this.startWidth = this.currentWidth || this.defaultWidth;
@@ -108,40 +143,40 @@ class SidebarResizer extends HTMLElement {
         document.documentElement.classList.add('sidebar-dragging');
         
         // Visual feedback on resizer
-        this.shadowRoot.host.classList.add('dragging');
+        this.shadowRoot?.host.classList.add('dragging');
         
         console.log('🔧 SidebarResizer: Started drag', { startX: this.startX, startWidth: this.startWidth });
     }
 
-    handleMouseMove(e) {
+    private handleMouseMove(e: MouseEvent): void {
         if (this.isDragging) {
             this.doDrag(e.clientX);
         }
     }
 
-    handleTouchMove(e) {
+    private handleTouchMove(e: TouchEvent): void {
         if (this.isDragging && e.touches.length === 1) {
             this.doDrag(e.touches[0].clientX);
             e.preventDefault();
         }
     }
 
-    doDrag(clientX) {
+    private doDrag(clientX: number): void {
         const deltaX = clientX - this.startX;
         const newWidth = Math.max(this.minWidth, Math.min(this.maxWidth, this.startWidth + deltaX));
         
         this.applySidebarWidth(newWidth);
     }
 
-    handleMouseUp() {
+    private handleMouseUp(): void {
         this.endDrag();
     }
 
-    handleTouchEnd() {
+    private handleTouchEnd(): void {
         this.endDrag();
     }
 
-    endDrag() {
+    private endDrag(): void {
         if (this.isDragging) {
             this.isDragging = false;
             
@@ -152,16 +187,20 @@ class SidebarResizer extends HTMLElement {
             document.documentElement.classList.remove('sidebar-dragging');
             
             // Remove visual feedback on resizer
-            this.shadowRoot.host.classList.remove('dragging');
+            this.shadowRoot?.host.classList.remove('dragging');
             
             // Save the final width
-            this.saveWidth(this.currentWidth);
+            if (this.currentWidth !== undefined) {
+                this.saveWidth(this.currentWidth);
+            }
             
             console.log('🔧 SidebarResizer: Ended drag, final width:', this.currentWidth);
         }
     }
 
-    render() {
+    private render(): void {
+        if (!this.shadowRoot) return;
+        
         this.shadowRoot.innerHTML = `
             <style>
                 :host {
@@ -211,21 +250,21 @@ class SidebarResizer extends HTMLElement {
     }
 
     // API methods for external control
-    getCurrentWidth() {
+    getCurrentWidth(): number {
         return this.currentWidth || this.defaultWidth;
     }
 
-    setWidth(width) {
+    setWidth(width: number): void {
         const clampedWidth = Math.max(this.minWidth, Math.min(this.maxWidth, width));
         this.applySidebarWidth(clampedWidth);
         this.saveWidth(clampedWidth);
     }
 
-    resetToDefault() {
+    resetToDefault(): void {
         this.setWidth(this.defaultWidth);
     }
 
-    getWidthLimits() {
+    getWidthLimits(): WidthLimits {
         return {
             min: this.minWidth,
             max: this.maxWidth,
@@ -238,3 +277,4 @@ class SidebarResizer extends HTMLElement {
 customElements.define('sidebar-resizer', SidebarResizer);
 
 export { SidebarResizer };
+export type { SidebarResizedDetail, WidthLimits };
