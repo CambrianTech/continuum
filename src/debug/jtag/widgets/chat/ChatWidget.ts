@@ -16,6 +16,8 @@ export class ChatWidget extends BaseWidget {
   constructor() {
     super({
       widgetName: 'ChatWidget',
+      template: 'chat-widget.html',
+      styles: 'chat-widget.css',
       enableAI: true,
       enableDatabase: true,
       enableRouterEvents: true,
@@ -35,94 +37,22 @@ export class ChatWidget extends BaseWidget {
   }
 
   protected async renderWidget(): Promise<void> {
-    // Simple, clean UI using BaseWidget pattern
+    // Use external template and styles loaded by BaseWidget
+    const styles = this.templateCSS || '/* No styles loaded */';
+    const template = this.templateHTML || '<div>No template loaded</div>';
+    
+    // Ensure template is a string before calling replace
+    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
+    
+    // Replace dynamic content in template
+    const dynamicContent = templateString.replace(
+      '<!-- Dynamic messages rendered here -->', 
+      this.renderMessages()
+    );
+    
     this.shadowRoot.innerHTML = `
-      <style>
-        :host {
-          display: flex;
-          flex-direction: column;
-          height: 100%;
-          background: #1a1f2e;
-          color: #e0e6ed;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        }
-        
-        .chat-header {
-          padding: 12px 16px;
-          background: #2d3748;
-          border-bottom: 1px solid #4a5568;
-          font-weight: 600;
-        }
-        
-        .messages-container {
-          flex: 1;
-          overflow-y: auto;
-          padding: 16px;
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-        
-        .message {
-          padding: 8px 12px;
-          border-radius: 8px;
-          max-width: 80%;
-        }
-        
-        .message.user {
-          align-self: flex-end;
-          background: #3182ce;
-        }
-        
-        .message.assistant {
-          align-self: flex-start;
-          background: #4a5568;
-        }
-        
-        .input-container {
-          padding: 16px;
-          border-top: 1px solid #4a5568;
-          display: flex;
-          gap: 8px;
-        }
-        
-        .message-input {
-          flex: 1;
-          padding: 8px 12px;
-          background: #4a5568;
-          border: 1px solid #718096;
-          border-radius: 6px;
-          color: #e0e6ed;
-          font-size: 14px;
-        }
-        
-        .send-button {
-          padding: 8px 16px;
-          background: #00d4ff;
-          border: none;
-          border-radius: 6px;
-          color: #000;
-          cursor: pointer;
-          font-weight: 600;
-        }
-        
-        .send-button:hover {
-          background: #00b8e6;
-        }
-      </style>
-      
-      <div class="chat-header">
-        💬 Chat Widget (BaseWidget Architecture)
-      </div>
-      
-      <div class="messages-container" id="messages">
-        ${this.renderMessages()}
-      </div>
-      
-      <div class="input-container">
-        <input type="text" class="message-input" id="messageInput" placeholder="Type a message...">
-        <button class="send-button" id="sendButton">Send</button>
-      </div>
+      <style>${styles}</style>
+      ${dynamicContent}
     `;
     
     // Cache input element

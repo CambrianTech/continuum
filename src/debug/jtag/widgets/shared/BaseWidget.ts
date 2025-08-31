@@ -22,6 +22,9 @@ import {
   ChatEventData,
   ChatEventType 
 } from '../chat-widget/shared/ChatTypes';
+import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
+import type { FileSaveParams, FileSaveResult } from '../../commands/file/save/shared/FileSaveTypes';
+import type { ScreenshotParams, ScreenshotResult } from '../../commands/screenshot/shared/ScreenshotTypes';
 
 export interface WidgetConfig {
   // Core settings
@@ -33,6 +36,10 @@ export interface WidgetConfig {
   theme?: 'basic' | 'cyberpunk' | 'anime' | 'custom';
   customTheme?: Record<string, string>;
   compactMode?: boolean;
+  
+  // Resource files
+  template?: string;  // HTML template filename
+  styles?: string;    // CSS styles filename
   
   // Data and persistence
   enablePersistence?: boolean;
@@ -87,6 +94,10 @@ export abstract class BaseWidget extends HTMLElement {
   private operationCache = new Map<string, any>();
   private throttledOperations = new Map<string, number>();
   
+  // Template resources (loaded from external files)
+  protected templateHTML?: string;
+  protected templateCSS?: string;
+  
   constructor(config: Partial<WidgetConfig> = {}) {
     super();
     this.attachShadow({ mode: 'open' });
@@ -126,7 +137,7 @@ export abstract class BaseWidget extends HTMLElement {
       sessionId: this.generateSessionId(),
       userId: 'current_user', // From user system
       permissions: ['read', 'write'], // From permission system
-      capabilities: ['screenshot', 'file_save', 'ai_integration'] // From capability system
+      capabilities: ['screenshot', 'file/save', 'ai_integration'] // From capability system
     };
   }
 
@@ -143,13 +154,16 @@ export abstract class BaseWidget extends HTMLElement {
       // 3. Restore persisted state (abstracted)
       await this.restorePersistedState();
       
-      // 4. Let subclass initialize its specific logic
+      // 4. Load external resources (template & styles)
+      await this.loadResources();
+      
+      // 5. Let subclass initialize its specific logic
       await this.onWidgetInitialize();
       
-      // 5. Render UI (subclass-specific but with base support)
+      // 6. Render UI (subclass-specific but with base support)
       await this.renderWidget();
       
-      // 6. Setup event coordination (abstracted)
+      // 7. Setup event coordination (abstracted)
       await this.initializeEventSystem();
       
       this.state.isInitialized = true;
@@ -390,14 +404,14 @@ export abstract class BaseWidget extends HTMLElement {
         includeContext = true
       } = options;
       
-      // Use JTAG screenshot command (existing abstraction)
-      const result = await this.jtagOperation('screenshot', {
+      // Use JTAG screenshot command with proper types
+      const result = await this.jtagOperation<ScreenshotResult>('screenshot', {
         filename,
-        selector,
+        querySelector: selector,
         includeContext
       });
       
-      return result.success ? result.data.filepath : null;
+      return result ? result.filepath : null;
       
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: takeScreenshot failed:`, error);
@@ -456,20 +470,14 @@ export abstract class BaseWidget extends HTMLElement {
         compress = false
       } = options;
       
-      // Use JTAG file save command (existing abstraction)
-      const result = await this.jtagOperation('file_save', {
-        filename,
-        content,
-        directory,
-        format,
-        compress,
-        metadata: {
-          widgetId: this.config.widgetId,
-          timestamp: new Date().toISOString()
-        }
+      // Use JTAG file/save command with proper types
+      const result = await this.jtagOperation<FileSaveResult>('file/save', {
+        filepath: `${directory}/${filename}`,
+        content: content,
+        createDirs: true
       });
       
-      return result.success ? result.data.filepath : null;
+      return result ? result.filepath : null;
       
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: saveFile failed:`, error);
@@ -545,6 +553,74 @@ export abstract class BaseWidget extends HTMLElement {
     }
     if (serialized.config) {
       this.config = { ...this.config, ...serialized.config };
+    }
+  }
+
+  /**
+   * Load external resources (HTML template and CSS styles) via HTTP fetch
+   * Uses HTTP server instead of file/load JTAG command to avoid session directory issues
+   */
+  private async loadResources(): Promise<void> {
+    if (!this.config.template && !this.config.styles) {
+      return; // No resources to load
+    }
+
+    try {
+      // Load HTML template if specified
+      if (this.config.template) {
+        this.templateHTML = await this.loadResource(this.config.template, 'template', '<div>Widget template not found</div>');
+      }
+
+      // Load CSS styles if specified  
+      if (this.config.styles) {
+        this.templateCSS = await this.loadResource(this.config.styles, 'styles', '/* Widget styles not found */');
+      }
+
+    } catch (error) {
+      console.error(`❌ ${this.config.widgetName}: Resource loading failed:`, error);
+      // Provide fallback content
+      this.templateHTML = this.templateHTML || '<div>Resource loading error</div>';
+      this.templateCSS = this.templateCSS || '/* Fallback styles */';
+    }
+  }
+
+  /**
+   * Resolve resource path for JTAG file/load command
+   */
+  private resolveResourcePath(filename: string): string {
+    // Extract widget directory name from widget name (ChatWidget -> chat)
+    const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
+    // Return relative path from current working directory
+    return `widgets/${widgetDir}/public/${filename}`;
+  }
+
+  /**
+   * Load a single resource using JTAG file/load command
+   */
+  private async loadResource(filename: string, resourceType: string, fallback: string): Promise<string> {
+    const resourcePath = this.resolveResourcePath(filename);
+    const emoji = resourceType === 'template' ? '📄' : '🎨';
+    
+    console.log(`${emoji} ${this.config.widgetName}: Loading ${resourceType} from ${resourcePath}`);
+    
+    try {
+      const result = await this.jtagOperation<FileLoadResult>('file/load', {
+        filepath: resourcePath
+      });
+      
+      // Handle nested JTAG response structure - actual data is in commandResult
+      const fileData = (result as any).commandResult || result;
+      if (result.success && fileData.success && fileData.content) {
+        console.log(`✅ ${this.config.widgetName}: ${resourceType} loaded successfully (${fileData.bytesRead} bytes)`);
+        return fileData.content;
+      } else {
+        console.warn(`⚠️ ${this.config.widgetName}: ${resourceType} load failed: ${resourcePath}`);
+        console.warn(`  Debug: result.success=${result.success}, fileData.success=${fileData.success}, has content=${!!fileData.content}`);
+        return fallback;
+      }
+    } catch (loadError) {
+      console.warn(`⚠️ ${this.config.widgetName}: ${resourceType} load error: ${resourcePath}`, loadError);
+      return fallback;
     }
   }
 
@@ -681,28 +757,58 @@ export abstract class BaseWidget extends HTMLElement {
     return { success: true, data: { styles: {} } };
   }
 
-  private async jtagOperation(operation: string, params: any): Promise<any> {
-    // Delegate to actual JTAG command system via client connection
+  // Core JTAG integration - delegates to JTAG system with proper typing
+  protected async jtagOperation<T>(command: string, params?: Record<string, any>): Promise<T> {
     try {
-      // Import JTAGClient dynamically to avoid circular dependencies
-      const { JTAGClientBrowser } = await import('../../system/core/client/browser/JTAGClientBrowser');
+      // Wait for JTAG system to be ready using proper events
+      await this.waitForSystemReady();
       
-      // Create temporary client connection
-      const connection = await JTAGClientBrowser.connectLocal();
-      
-      // Execute command through JTAG system
-      const result = await connection.client.commands[operation](params);
-      
-      // Clean up connection (if disconnect method exists)
-      if (typeof connection.client.disconnect === 'function') {
-        await connection.client.disconnect();
+      // Get the JTAG client from window
+      const jtagClient = (window as any).jtag; // TODO: Add proper window.jtag typing
+      if (!jtagClient || !jtagClient.commands) {
+        throw new Error('JTAG client not available even after system ready event');
       }
       
-      return { success: true, data: result };
+      // Execute command through the global JTAG system
+      const result = await jtagClient.commands[command](params);
+      
+      console.log(`🔧 BaseWidget: JTAG operation ${command} completed:`, result);
+      return result as T;
+      
     } catch (error) {
-      console.error(`❌ BaseWidget: JTAG operation '${operation}' failed:`, error);
-      return { success: false, error: String(error) };
+      console.error(`❌ BaseWidget: JTAG operation ${command} failed:`, error);
+      throw error;
     }
+  }
+
+  /**
+   * Wait for window.jtag to be available (simple polling without timeout complexity)
+   */
+  private async waitForSystemReady(): Promise<void> {
+    return new Promise((resolve) => {
+      // Check if system is already ready
+      const jtagClient = (window as any).jtag;
+      if (jtagClient && jtagClient.commands) {
+        console.log(`✅ BaseWidget: JTAG system already ready for ${this.config.widgetName}`);
+        resolve();
+        return;
+      }
+      
+      console.log(`⏳ BaseWidget: Waiting for JTAG system to be ready for ${this.config.widgetName}`);
+      
+      // Simple polling - check every 100ms for window.jtag
+      const checkReady = () => {
+        const jtag = (window as any).jtag;
+        if (jtag && jtag.commands) {
+          console.log(`✅ BaseWidget: JTAG system ready for ${this.config.widgetName}`);
+          resolve();
+        } else {
+          setTimeout(checkReady, 100);
+        }
+      };
+      
+      checkReady();
+    });
   }
 
   private async connectToDaemon(daemonName: string): Promise<any> {
