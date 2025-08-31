@@ -16,6 +16,11 @@ body {
     padding: 0;
     overflow-x: hidden;
     background-attachment: fixed;
+    /* Disable text selection globally for app-like behavior */
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
 }
 
 /* Desktop container - VSCode/Discord style */
@@ -28,6 +33,7 @@ body {
 
 /* Left sidebar */
 .sidebar-panel {
+    position: relative;
     background: linear-gradient(135deg, rgba(15, 20, 25, 0.95), rgba(20, 25, 35, 0.9));
     border-right: 1px solid rgba(0, 212, 255, 0.2);
     padding: 20px;
@@ -279,6 +285,18 @@ body {
     border-radius: 8px;
     border: 1px solid rgba(255, 255, 255, 0.1);
     padding: 15px;
+}
+
+/* Enable text selection for chat widget and other text areas */
+chat-widget,
+.chat-container,
+.content-view chat-widget,
+input[type="text"],
+textarea {
+    user-select: text !important;
+    -webkit-user-select: text !important;
+    -moz-user-select: text !important;
+    -ms-user-select: text !important;
 }
 
 /* Status styling */
