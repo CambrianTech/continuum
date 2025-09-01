@@ -564,7 +564,7 @@ export abstract class BaseWidget extends HTMLElement {
   /**
    * Load a single resource using JTAG file/load command
    */
-  private async loadResource(filename: string, resourceType: string, fallback: string): Promise<string> {
+  protected async loadResource(filename: string, resourceType: string, fallback: string): Promise<string> {
     const resourcePath = this.resolveResourcePath(filename);
     const emoji = resourceType === 'template' ? '📄' : '🎨';
     
