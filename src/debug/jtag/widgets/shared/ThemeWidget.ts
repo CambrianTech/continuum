@@ -66,6 +66,9 @@ export class ThemeWidget extends BaseWidget {
       ${dynamicContent}
     `;
     
+    // Set up theme switching event handlers
+    this.setupThemeControls();
+    
     console.log('✅ ThemeWidget: Rendered using BaseWidget template system like ChatWidget');
   }
 
@@ -264,14 +267,16 @@ export class ThemeWidget extends BaseWidget {
    */
   private async getDirectoryFiles(directoryName: string): Promise<string[]> {
     const knownFiles: Record<string, string[]> = {
-      'base': ['base.css'],
-      'cyberpunk': ['cyberpunk.css'],
+      'base': ['base.css', 'theme.css'],
+      'cyberpunk': ['theme.css'],
+      'light': ['theme.css'],
+      'retro-mac': ['theme.css'],
       'monochrome': ['monochrome.css'],
       'classic': ['classic.css']
     };
 
     // Return known files for directory, or try common names
-    return knownFiles[directoryName] || ['main.css', 'index.css', `${directoryName}.css`];
+    return knownFiles[directoryName] || ['theme.css', 'main.css', 'index.css', `${directoryName}.css`];
   }
 
   /**
@@ -285,8 +290,44 @@ export class ThemeWidget extends BaseWidget {
    * List available themes
    */
   async getAvailableThemes(): Promise<string[]> {
-    // Could fetch from server or return static list
-    return ['base', 'monochrome', 'classic'];
+    // Return all available theme variants
+    return ['base', 'light', 'cyberpunk', 'retro-mac', 'monochrome', 'classic'];
+  }
+
+  /**
+   * Set up theme switching controls and event handlers
+   */
+  private setupThemeControls(): void {
+    const themeSelector = this.shadowRoot?.querySelector('#theme-selector') as HTMLSelectElement;
+    const applyButton = this.shadowRoot?.querySelector('#apply-theme') as HTMLButtonElement;
+    
+    if (!themeSelector || !applyButton) {
+      console.warn('🎨 ThemeWidget: Theme controls not found in shadow DOM');
+      return;
+    }
+    
+    // Set current theme as selected
+    themeSelector.value = this.currentTheme;
+    
+    // Handle Apply button click
+    applyButton.addEventListener('click', async () => {
+      const selectedTheme = themeSelector.value;
+      if (selectedTheme && selectedTheme !== this.currentTheme) {
+        console.log(`🎨 ThemeWidget: Applying theme switch from '${this.currentTheme}' to '${selectedTheme}'`);
+        await this.setTheme(selectedTheme);
+      }
+    });
+    
+    // Handle dropdown change (immediate apply)
+    themeSelector.addEventListener('change', async (event) => {
+      const selectedTheme = (event.target as HTMLSelectElement).value;
+      if (selectedTheme && selectedTheme !== this.currentTheme) {
+        console.log(`🎨 ThemeWidget: Auto-applying theme switch to '${selectedTheme}'`);
+        await this.setTheme(selectedTheme);
+      }
+    });
+    
+    console.log('✅ ThemeWidget: Theme controls set up successfully');
   }
 }
 

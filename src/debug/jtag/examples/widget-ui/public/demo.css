@@ -8,9 +8,9 @@
 }
 
 body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background: linear-gradient(135deg, rgba(15, 20, 25, 1) 0%, rgba(20, 25, 35, 1) 100%);
-    color: #e0e6ed;
+    font-family: var(--font-primary, 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif);
+    background: var(--background-primary, linear-gradient(135deg, rgba(15, 20, 25, 1) 0%, rgba(20, 25, 35, 1) 100%));
+    color: var(--content-primary, #e0e6ed);
     overflow: hidden;
     user-select: none;
     -webkit-user-select: none;
@@ -41,19 +41,19 @@ textarea {
 /* === SIDEBAR === */
 .sidebar-panel {
     position: relative;
-    background: linear-gradient(180deg, rgba(25, 30, 40, 0.95) 0%, rgba(35, 40, 50, 0.9) 100%);
-    border-right: 1px solid rgba(0, 212, 255, 0.3);
+    background: var(--sidebar-background, linear-gradient(180deg, rgba(25, 30, 40, 0.95) 0%, rgba(35, 40, 50, 0.9) 100%));
+    border-right: 1px solid var(--sidebar-border, rgba(0, 212, 255, 0.3));
     padding: 20px;
     display: flex;
     flex-direction: column;
     gap: 20px;
     backdrop-filter: blur(10px);
-    box-shadow: 4px 0 15px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--shadow-lg, 4px 0 15px rgba(0, 0, 0, 0.3));
 }
 
 .status-view {
     padding: 15px 0;
-    border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+    border-bottom: 1px solid var(--border-subtle, rgba(0, 212, 255, 0.2));
 }
 
 .dynamic-list {
@@ -68,7 +68,7 @@ textarea {
     border-radius: 8px;
     cursor: pointer;
     transition: all 0.3s ease;
-    color: rgba(224, 230, 237, 0.7);
+    color: var(--content-secondary, rgba(224, 230, 237, 0.7));
     font-weight: 500;
     border: 1px solid transparent;
     background: rgba(255, 255, 255, 0.02);
@@ -76,16 +76,16 @@ textarea {
 
 .list-item:hover {
     background: linear-gradient(135deg, rgba(0, 212, 255, 0.1) 0%, rgba(0, 150, 255, 0.05) 100%);
-    color: #00d4ff;
-    border: 1px solid rgba(0, 212, 255, 0.3);
+    color: var(--content-accent, #00d4ff);
+    border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.3));
     transform: translateX(5px);
 }
 
 .list-item.active {
     background: linear-gradient(135deg, rgba(0, 212, 255, 0.2) 0%, rgba(0, 150, 255, 0.1) 100%);
-    color: #00d4ff;
-    border: 1px solid rgba(0, 212, 255, 0.5);
-    box-shadow: 0 0 15px rgba(0, 212, 255, 0.3);
+    color: var(--content-accent, #00d4ff);
+    border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.5));
+    box-shadow: var(--shadow-glow, 0 0 15px rgba(0, 212, 255, 0.3));
 }
 
 /* === MAIN PANEL === */
@@ -96,8 +96,8 @@ textarea {
 }
 
 .content-header {
-    background: linear-gradient(90deg, rgba(20, 25, 35, 0.95) 0%, rgba(25, 30, 40, 0.9) 100%);
-    border-bottom: 2px solid rgba(0, 212, 255, 0.3);
+    background: var(--widget-header-background, linear-gradient(90deg, rgba(20, 25, 35, 0.95) 0%, rgba(25, 30, 40, 0.9) 100%));
+    border-bottom: 2px solid var(--border-accent, rgba(0, 212, 255, 0.3));
     padding: 20px;
     backdrop-filter: blur(5px);
 }
@@ -105,8 +105,8 @@ textarea {
 .content-header h1 {
     font-size: 2rem;
     font-weight: 700;
-    color: #00d4ff;
-    text-shadow: 0 0 20px rgba(0, 212, 255, 0.5);
+    color: var(--content-accent, #00d4ff);
+    text-shadow: var(--shadow-glow, 0 0 20px rgba(0, 212, 255, 0.5));
     letter-spacing: -0.02em;
     margin: 0;
 }
@@ -115,7 +115,7 @@ textarea {
     flex: 1;
     padding: 30px;
     overflow-y: auto;
-    background: linear-gradient(135deg, rgba(15, 20, 25, 0.8) 0%, rgba(20, 25, 35, 0.9) 100%);
+    background: var(--widget-content-background, linear-gradient(135deg, rgba(15, 20, 25, 0.8) 0%, rgba(20, 25, 35, 0.9) 100%));
 }
 
 /* === STATUS BADGES === */
