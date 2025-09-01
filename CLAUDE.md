@@ -9,7 +9,7 @@
 2. **Increments version** - `npm run version:bump` 
 3. **Builds browser bundle** - `npm run build:browser-ts`
 4. **Runs TypeScript compilation** - `npx tsc --noEmit --project .`
-5. **Starts the daemon system** - `./continuum` or in new jtag, and only temporarily `./jtag`. We will rename this to `continuum` again when migrated.
+5. **Starts the daemon system** - `./jtag`. We will rename this to `/continuum` again when migrated.
 6. **⚠️ LAUNCHES BROWSER TAB** - `npm start` automatically opens browser interface
 
 **Essential Commands for Engineers:**
@@ -18,12 +18,12 @@ cd src/debug/jtag
 npm start                              # Start system (ALWAYS FIRST)
 
 # Test your changes
-./continuum screenshot                 # Basic functionality test
-./continuum screenshot --querySelector=body  # Element targeting test
+./jtag screenshot                 # Basic functionality test
+./jtag screenshot --querySelector=body  # Element targeting test
 
 # Debug with logs
-tail -f .continuum/sessions/user/shared/*/logs/server.log
-tail -f .continuum/sessions/user/shared/*/logs/browser.log
+tail -f WEBSITE/.continuum/sessions/user/shared/*/logs/server.log
+tail -f WEBSITE/.continuum/sessions/user/shared/*/logs/browser.log
 
 # Full validation
 npm run jtag                          # Git hook validation
@@ -176,9 +176,9 @@ src/commands/screenshot/        src/daemons/health-daemon/
 ### **🎯 Screenshot-Driven Development**
 ```bash
 # Get visual feedback on UI changes
-./continuum screenshot --querySelector="chat-widget" --filename="claude-debug-chat.png"
-./continuum screenshot --querySelector="continuum-sidebar" --filename="claude-debug-sidebar.png"
-./continuum screenshot --querySelector="body" --filename="claude-debug-full.png"
+./jtag screenshot --querySelector="chat-widget" --filename="claude-debug-chat.png"
+./jtag screenshot --querySelector="continuum-sidebar" --filename="claude-debug-sidebar.png"
+./jtag screenshot --querySelector="body" --filename="claude-debug-full.png"
 ```
 
 ### **🎨 Verified UI Selectors**
@@ -258,8 +258,6 @@ npx tsx test-server-client.ts
 
 **Location**: `src/debug/jtag/` - Building distributed P2P backbone for AI-human collaboration
 **Status**: ✅ UDP transport foundation complete, building routing layer
-
-**Grid Mission**: Distributed neural mesh network enabling seamless collaboration across any topology. Location-transparent command execution: `./continuum screenshot --remote=laptop-node`
 
 **Next Priorities**:
 1. **Unified JTAGClient interface** - Same `jtag.commands.screenshot()` API local or remote

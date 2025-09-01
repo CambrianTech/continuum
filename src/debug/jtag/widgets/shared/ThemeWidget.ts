@@ -3,15 +3,79 @@
  * 
  * Single responsibility: Load and inject theme CSS into document head
  * All other widgets just consume the CSS custom properties
+ * Extends BaseWidget to reuse existing CSS loading infrastructure
  */
 
-export class ThemeWidget extends HTMLElement {
+import { BaseWidget } from './BaseWidget';
+import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
+
+export class ThemeWidget extends BaseWidget {
   private currentTheme: string = 'base';
   private themeStyleElement: HTMLStyleElement | null = null;
 
   constructor() {
-    super();
-    this.loadTheme(this.currentTheme);
+    super({
+      widgetName: 'ThemeWidget',
+      template: 'theme-widget.html',
+      styles: 'theme-widget.css',
+      enableAI: false,
+      enableDatabase: false,
+      enableRouterEvents: false,
+      enableScreenshots: false
+    });
+  }
+
+  protected async onWidgetInitialize(): Promise<void> {
+    console.log('🎨 ThemeWidget: Initializing with BaseWidget infrastructure...');
+    
+    // Load all theme CSS and inject into DOCUMENT HEAD (not shadow DOM) 
+    // so CSS custom properties can be accessed by all widgets
+    try {
+      const combinedCSS = await this.loadAllThemeCSS();
+      
+      // Inject theme CSS into document head for global access
+      await this.injectThemeIntoDocumentHead(combinedCSS);
+      
+      // Still keep widget's own CSS in templateCSS for the widget itself
+      console.log('✅ ThemeWidget: Theme CSS injected into document head for global widget access');
+    } catch (error) {
+      console.error('❌ ThemeWidget: Failed to load and inject theme CSS:', error);
+    }
+    
+    console.log('✅ ThemeWidget: BaseWidget initialization complete');
+  }
+
+  protected async renderWidget(): Promise<void> {
+    console.log('🎨 ThemeWidget: renderWidget() called - using BaseWidget template system');
+    
+    // Use external template and styles loaded by BaseWidget (like ChatWidget does)
+    const styles = this.templateCSS || '/* No styles loaded */';
+    const template = this.templateHTML || '<div>No template loaded</div>';
+    
+    // Ensure template is a string before processing
+    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
+    
+    // Replace dynamic content in template
+    const dynamicContent = templateString.replace(
+      '<!-- Current theme name -->', 
+      this.currentTheme
+    );
+
+    this.shadowRoot!.innerHTML = `
+      <style>${styles}</style>
+      ${dynamicContent}
+    `;
+    
+    console.log('✅ ThemeWidget: Rendered using BaseWidget template system like ChatWidget');
+  }
+
+  protected async onWidgetCleanup(): Promise<void> {
+    // Remove theme CSS when widget is destroyed
+    if (this.themeStyleElement) {
+      this.themeStyleElement.remove();
+      this.themeStyleElement = null;
+    }
+    console.log('✅ ThemeWidget: Cleanup complete');
   }
 
   /**
@@ -20,11 +84,27 @@ export class ThemeWidget extends HTMLElement {
   async setTheme(themeName: string): Promise<void> {
     console.log(`🎨 ThemeWidget: Switching to theme '${themeName}'`);
     this.currentTheme = themeName;
-    await this.loadTheme(themeName);
+    
+    // Reload all theme CSS and inject into document head
+    try {
+      const combinedCSS = await this.loadAllThemeCSS();
+      
+      // Inject updated theme CSS into document head
+      await this.injectThemeIntoDocumentHead(combinedCSS);
+      
+      // Re-render widget to show updated theme name
+      await this.renderWidget();
+      
+      console.log('✅ ThemeWidget: Theme switched and injected globally');
+      
+    } catch (error) {
+      console.error('❌ ThemeWidget: Failed to switch theme:', error);
+    }
   }
 
   /**
    * Load and inject theme CSS into document head
+   * Loads from themes/base/ directory + themes/current-theme-name/ directory
    */
   private async loadTheme(themeName: string): Promise<void> {
     try {
@@ -33,18 +113,23 @@ export class ThemeWidget extends HTMLElement {
         this.themeStyleElement.remove();
       }
 
-      // Load theme CSS
-      const response = await fetch(`/dist/widgets/shared/themes/${themeName}.css`);
-      if (!response.ok) {
-        throw new Error(`Failed to load theme: ${response.status}`);
-      }
+      console.log(`🎨 ThemeWidget: Loading base styles + theme '${themeName}'`);
+
+      // Load base CSS files from themes/base/
+      const baseStyles = await this.loadDirectoryStyles('base');
       
-      const themeCSS = await response.text();
+      // Load theme-specific CSS files from themes/current-theme-name/
+      const themeStyles = themeName !== 'base' 
+        ? await this.loadDirectoryStyles(themeName)
+        : '';
+      
+      // Combine base + theme styles
+      const combinedCSS = baseStyles + themeStyles;
       
       // Inject into document head
       this.themeStyleElement = document.createElement('style');
       this.themeStyleElement.id = `jtag-theme-${themeName}`;
-      this.themeStyleElement.textContent = themeCSS;
+      this.themeStyleElement.textContent = combinedCSS;
       document.head.appendChild(this.themeStyleElement);
       
       console.log(`✅ ThemeWidget: Theme '${themeName}' loaded and injected`);
@@ -58,6 +143,135 @@ export class ThemeWidget extends HTMLElement {
     } catch (error) {
       console.error(`❌ ThemeWidget: Failed to load theme '${themeName}':`, error);
     }
+  }
+
+  /**
+   * Inject theme CSS into document head for global widget access
+   * Removes existing theme styles and adds new ones
+   */
+  private async injectThemeIntoDocumentHead(combinedCSS: string): Promise<void> {
+    try {
+      console.log('🎨 ThemeWidget: Injecting theme CSS into document head for global access...');
+      console.log('🔧 CLAUDE-DEBUG: combinedCSS length:', combinedCSS.length);
+      console.log('🔧 CLAUDE-DEBUG: combinedCSS first 200 chars:', combinedCSS.substring(0, 200));
+      
+      // Remove existing theme style element
+      if (this.themeStyleElement) {
+        console.log('🔧 CLAUDE-DEBUG: Removing existing theme style element:', this.themeStyleElement.id);
+        this.themeStyleElement.remove();
+        this.themeStyleElement = null;
+      }
+      
+      // Create new theme style element and inject into document head
+      this.themeStyleElement = document.createElement('style');
+      this.themeStyleElement.id = `jtag-theme-${this.currentTheme}`;
+      this.themeStyleElement.textContent = combinedCSS;
+      
+      console.log('🔧 CLAUDE-DEBUG: Created style element with id:', this.themeStyleElement.id);
+      console.log('🔧 CLAUDE-DEBUG: About to append to document.head...');
+      
+      document.head.appendChild(this.themeStyleElement);
+      
+      // Verify the injection worked
+      const verifyElement = document.head.querySelector(`#jtag-theme-${this.currentTheme}`);
+      console.log('🔧 CLAUDE-DEBUG: Verification - element exists in document head:', !!verifyElement);
+      console.log('🔧 CLAUDE-DEBUG: Verification - element content length:', verifyElement?.textContent?.length || 0);
+      
+      console.log(`✅ ThemeWidget: Theme '${this.currentTheme}' CSS injected into document head (${combinedCSS.length} chars)`);
+      
+      // Dispatch theme change event
+      this.dispatchEvent(new CustomEvent('theme-changed', {
+        detail: { themeName: this.currentTheme },
+        bubbles: true
+      }));
+      
+    } catch (error) {
+      console.error('❌ ThemeWidget: Failed to inject theme CSS into document head:', error);
+      console.error('🔧 CLAUDE-DEBUG: Error stack:', (error as Error).stack);
+      throw error;
+    }
+  }
+
+  /**
+   * Load ALL theme CSS (base + current theme) for injection into templateCSS
+   */
+  private async loadAllThemeCSS(): Promise<string> {
+    try {
+      console.log('🎨 ThemeWidget: Loading ALL theme CSS (base + theme)');
+      
+      // Load base CSS files from themes/base/
+      const baseStyles = await this.loadDirectoryStyles('base');
+      
+      // Load theme-specific CSS files from themes/current-theme-name/
+      const themeStyles = this.currentTheme !== 'base' 
+        ? await this.loadDirectoryStyles(this.currentTheme)
+        : '';
+      
+      // Combine base + theme styles
+      const combinedCSS = baseStyles + themeStyles;
+      
+      console.log(`✅ ThemeWidget: Combined theme CSS loaded (${combinedCSS.length} chars)`);
+      return combinedCSS;
+      
+    } catch (error) {
+      console.error('❌ ThemeWidget: Failed to load all theme CSS:', error);
+      return '';
+    }
+  }
+
+  /**
+   * Load all CSS files from a theme directory using BaseWidget's existing asset delivery
+   */
+  private async loadDirectoryStyles(directoryName: string): Promise<string> {
+    try {
+      // Get list of files to load for this directory
+      const cssFiles = await this.getDirectoryFiles(directoryName);
+      let combinedStyles = '';
+      
+      for (const fileName of cssFiles) {
+        try {
+          // Use BaseWidget's protected jtagOperation method - same as loadResource does internally
+          const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
+          console.log(`🎨 ThemeWidget: Loading ${filePath} via BaseWidget jtagOperation`);
+          
+          const result = await this.jtagOperation<FileLoadResult>('file/load', {
+            filepath: filePath
+          });
+          
+          // Handle nested JTAG response structure (same as BaseWidget loadResource)
+          const fileData = (result as any).commandResult || result;
+          if (result.success && fileData.success && fileData.content) {
+            combinedStyles += `\n/* === ${directoryName}/${fileName} === */\n${fileData.content}\n`;
+            console.log(`✅ ThemeWidget: Loaded ${directoryName}/${fileName} (${fileData.bytesRead} bytes)`);
+          } else {
+            console.log(`⚠️ ThemeWidget: ${directoryName}/${fileName} not found - skipping`);
+          }
+        } catch (error) {
+          console.warn(`⚠️ ThemeWidget: Could not load ${directoryName}/${fileName}:`, error);
+        }
+      }
+      
+      return combinedStyles;
+    } catch (error) {
+      console.error(`❌ ThemeWidget: Failed to load directory styles for '${directoryName}':`, error);
+      return '';
+    }
+  }
+
+  /**
+   * Get list of CSS files in a theme directory
+   * For now, use known file names. In future could fetch from server API
+   */
+  private async getDirectoryFiles(directoryName: string): Promise<string[]> {
+    const knownFiles: Record<string, string[]> = {
+      'base': ['base.css'],
+      'cyberpunk': ['cyberpunk.css'],
+      'monochrome': ['monochrome.css'],
+      'classic': ['classic.css']
+    };
+
+    // Return known files for directory, or try common names
+    return knownFiles[directoryName] || ['main.css', 'index.css', `${directoryName}.css`];
   }
 
   /**
