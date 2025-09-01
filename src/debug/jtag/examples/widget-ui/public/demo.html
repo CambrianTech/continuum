@@ -4,50 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>⚡ Continuum Widget UI</title>
-    <!-- Theme handled by <theme-widget> -->
+    
+    <!-- Scripts moved to head for safe migration -->
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <script type="module" src="/dist/index.js"></script>
 </head>
 <body>
-
-    <!-- THIS SHOULD BE A "continuum" WIDGET-->
-    <div class="desktop-container">
-        <!--THIS IS THE REAL Left Sidebar -->
-        <aside class="sidebar-panel left-sidebar">
-            <continuum-emoter></continuum-emoter>
-            <div class="status-view">
-                <div id="connection-status" class="status">Initializing...</div>
-            </div>
-            <div class="dynamic-list">
-                <div class="list-item active">• general</div>
-                <div class="list-item">• academy</div>
-                <div class="list-item">• community</div>
-            </div>
-            
-            <!-- Draggable Resizer -->
-            <sidebar-resizer></sidebar-resizer>
-        </aside>
-        
-        <!-- Main Content Area -->
-        <main class="main-panel">
-            <div class="content-header">
-                <h1>🎭 JTAG Widget System</h1>
-            </div>
-            <div class="content-view">
-                <!-- EXISTING CHAT WIDGET STAYS HERE -->
-                <chat-widget></chat-widget>
-            </div>
-        </main>
-    </div>
-
-    <!-- Load html2canvas for screenshot functionality -->
-    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-    
-    <!-- Load demo script as ES6 module -->
-    <script type="module" src="/dist/index.js"></script>
-
-    <!-- Theme widget handles all theme management -->
-    <theme-widget></theme-widget>
-
-    <!-- THIS SHOULD BE THE END OF "continuum" WIDGET-->
-
+    <!-- Complete desktop interface as a single widget -->
+    <continuum-widget></continuum-widget>
 </body>
 </html>

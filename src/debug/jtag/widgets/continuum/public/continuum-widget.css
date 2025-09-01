@@ -1,0 +1,59 @@
+/* ContinuumWidget - Main Desktop Interface Styling */
+
+:host {
+  display: block;
+  width: 100%;
+  height: 100vh;
+}
+
+.desktop-container {
+  display: grid;
+  grid-template-columns: 250px 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Fix main panel layout */
+.main-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.content-header {
+  padding: 15px 20px;
+  border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+  flex-shrink: 0;
+}
+
+.content-header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  color: var(--content-primary);
+}
+
+.content-view {
+  flex: 1;
+  padding: 15px;
+  overflow: hidden;
+  display: flex;
+  min-height: 0;
+}
+
+/* Chat widget container - let chat widget handle its own styling completely */
+
+/* Debug sidebar resizer - make it visible for testing */
+sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  background: rgba(0, 212, 255, 0.1);
+  z-index: 1000;
+}
+
+sidebar-resizer:hover {
+  background: rgba(0, 212, 255, 0.3);
+}

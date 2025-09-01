@@ -1,0 +1,116 @@
+/**
+ * ContinuumWidget - Main Desktop Interface Widget
+ * 
+ * Encompasses the entire JTAG desktop layout including sidebar and main content area.
+ * This is the top-level widget that contains all other interface components.
+ */
+
+import { BaseWidget } from '../shared/BaseWidget';
+
+export class ContinuumWidget extends BaseWidget {
+  
+  constructor() {
+    super({
+      widgetName: 'ContinuumWidget',
+      template: 'continuum-widget.html',
+      styles: 'continuum-widget.css',
+      enableAI: false,
+      enableDatabase: false, 
+      enableRouterEvents: true,
+      enableScreenshots: false
+    });
+  }
+
+  protected async onWidgetInitialize(): Promise<void> {
+    console.log('🌐 ContinuumWidget: Initializing main desktop interface...');
+    
+    // Initialize any dynamic content or state
+    await this.updateConnectionStatus();
+    
+    console.log('✅ ContinuumWidget: Desktop interface initialized');
+  }
+
+  protected async renderWidget(): Promise<void> {
+    // Use BaseWidget's template and styles system
+    const styles = this.templateCSS || '/* No styles loaded */';
+    const template = this.templateHTML || '<div>No template loaded</div>';
+    
+    // Load theme CSS directly into shadow DOM (since theme CSS can't cross shadow boundary)
+    const themeCSS = await this.loadThemeCSS();
+    
+    // Ensure template is a string
+    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
+    
+    // Replace any dynamic content
+    const dynamicContent = templateString
+      .replace('<!-- CONNECTION_STATUS -->', await this.getConnectionStatusHTML())
+      .replace('<!-- CURRENT_TIMESTAMP -->', new Date().toLocaleTimeString());
+
+    this.shadowRoot!.innerHTML = `
+      <style>${themeCSS}</style>
+      <style>${styles}</style>
+      ${dynamicContent}
+    `;
+    
+    console.log('✅ ContinuumWidget: Desktop interface rendered with theme CSS');
+  }
+
+  protected async onWidgetCleanup(): Promise<void> {
+    console.log('🧹 ContinuumWidget: Cleanup complete');
+  }
+
+  /**
+   * Update connection status display
+   */
+  private async updateConnectionStatus(): Promise<void> {
+    // This could connect to system status, for now just show connected
+    console.log('🔗 ContinuumWidget: Connection status updated');
+  }
+
+  /**
+   * Get connection status HTML
+   */
+  private async getConnectionStatusHTML(): Promise<string> {
+    return '<div id="connection-status" class="status connected">CONNECTED</div>';
+  }
+
+  /**
+   * Load theme CSS for shadow DOM injection
+   */
+  private async loadThemeCSS(): Promise<string> {
+    try {
+      // Load base theme CSS using correct path (same as ThemeWidget)
+      const baseResult = await this.jtagOperation<any>('file/load', {
+        filepath: 'widgets/shared/themes/base/base.css'
+      });
+      
+      // Extract content from correct location in response structure
+      const baseCss = baseResult.commandResult?.content || '/* Base theme not found */';
+      console.log('🎨 ContinuumWidget: Loaded base theme CSS for shadow DOM injection');
+      
+      // For now, just use base theme (can expand later)
+      return baseCss;
+    } catch (error) {
+      console.error('❌ ContinuumWidget: Failed to load theme CSS:', error);
+      return '/* Theme CSS loading failed */';
+    }
+  }
+
+  /**
+   * Get current theme name for theme widget
+   */
+  getCurrentTheme(): string {
+    return 'base';
+  }
+
+
+  /**
+   * List available rooms/channels for sidebar
+   */
+  async getAvailableRooms(): Promise<string[]> {
+    return ['general', 'academy', 'community'];
+  }
+}
+
+// Register the custom element
+customElements.define('continuum-widget', ContinuumWidget);

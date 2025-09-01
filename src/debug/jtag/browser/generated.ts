@@ -51,6 +51,7 @@ import { WebSocketTransportClientBrowser } from './../system/transports/websocke
 
 // Browser widgets Imports
 import { ChatWidget } from './../widgets/chat/ChatWidget';
+import { ContinuumWidget } from './../widgets/continuum/ContinuumWidget';
 
 // Types
 import type { DaemonEntry } from './../daemons/command-daemon/shared/DaemonBase';
@@ -272,5 +273,11 @@ export const BROWSER_WIDGETS: WidgetEntry[] = [
     className: 'ChatWidget',
     widgetClass: ChatWidget,
     tagName: 'Chat'.toLowerCase() + '-widget'
+  },
+  {
+    name: 'Continuum',
+    className: 'ContinuumWidget',
+    widgetClass: ContinuumWidget,
+    tagName: 'Continuum'.toLowerCase() + '-widget'
   }
 ];
