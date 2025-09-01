@@ -266,17 +266,19 @@ export class ThemeWidget extends BaseWidget {
    * For now, use known file names. In future could fetch from server API
    */
   private async getDirectoryFiles(directoryName: string): Promise<string[]> {
+    // Consistent naming convention: each theme has a theme.css file
+    // Base theme also includes base.css for foundational styles
     const knownFiles: Record<string, string[]> = {
       'base': ['base.css', 'theme.css'],
-      'cyberpunk': ['theme.css'],
       'light': ['theme.css'],
+      'cyberpunk': ['theme.css'],
       'retro-mac': ['theme.css'],
-      'monochrome': ['monochrome.css'],
-      'classic': ['classic.css']
+      'monochrome': ['theme.css'],
+      'classic': ['theme.css']
     };
 
-    // Return known files for directory, or try common names
-    return knownFiles[directoryName] || ['theme.css', 'main.css', 'index.css', `${directoryName}.css`];
+    // Return known files for directory, or fallback to standard theme.css
+    return knownFiles[directoryName] || ['theme.css'];
   }
 
   /**
