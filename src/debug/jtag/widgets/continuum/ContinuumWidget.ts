@@ -27,6 +27,9 @@ export class ContinuumWidget extends BaseWidget {
     // Initialize any dynamic content or state
     await this.updateConnectionStatus();
     
+    // Load external scripts into shadow DOM for complete encapsulation
+    await this.loadExternalScripts();
+    
     console.log('✅ ContinuumWidget: Desktop interface initialized');
   }
 
@@ -103,6 +106,35 @@ export class ContinuumWidget extends BaseWidget {
     return 'base';
   }
 
+
+  /**
+   * Load external scripts into shadow DOM for complete encapsulation
+   */
+  private async loadExternalScripts(): Promise<void> {
+    try {
+      // Create script element for html2canvas
+      const html2canvasScript = document.createElement('script');
+      html2canvasScript.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+      html2canvasScript.async = true;
+      
+      // Add script to shadow DOM
+      this.shadowRoot!.appendChild(html2canvasScript);
+      
+      // Wait for script to load
+      await new Promise<void>((resolve, reject) => {
+        html2canvasScript.onload = () => {
+          console.log('📸 ContinuumWidget: html2canvas script loaded into shadow DOM');
+          resolve();
+        };
+        html2canvasScript.onerror = () => {
+          console.error('❌ ContinuumWidget: Failed to load html2canvas script');
+          reject(new Error('Failed to load html2canvas'));
+        };
+      });
+    } catch (error) {
+      console.error('❌ ContinuumWidget: Failed to load external scripts:', error);
+    }
+  }
 
   /**
    * List available rooms/channels for sidebar

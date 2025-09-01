@@ -1,30 +1,13 @@
+<!-- ContinuumWidget - Modular Desktop Architecture -->
 <div class="desktop-container">
-    <!-- Left Sidebar -->
-    <aside class="sidebar-panel left-sidebar">
-        <continuum-emoter></continuum-emoter>
-        <div class="status-view">
-            <!-- CONNECTION_STATUS -->
-        </div>
-        <div class="dynamic-list">
-            <div class="list-item active">• general</div>
-            <div class="list-item">• academy</div>
-            <div class="list-item">• community</div>
-        </div>
-        
-        <!-- Draggable Resizer -->
+    <!-- Left Sidebar Panel with Resizer -->
+    <div class="sidebar-container">
+        <sidebar-widget class="left-sidebar"></sidebar-widget>
         <sidebar-resizer></sidebar-resizer>
-    </aside>
+    </div>
     
-    <!-- Main Content Area -->
-    <main class="main-panel">
-        <div class="content-header">
-            <h1>🎭 JTAG Widget System</h1>
-        </div>
-        <div class="content-view">
-            <!-- Chat Widget Container -->
-            <chat-widget></chat-widget>
-        </div>
-    </main>
+    <!-- Main Content Panel -->
+    <main-widget></main-widget>
 </div>
 
 <!-- Theme widget handles all theme management -->
