@@ -277,8 +277,36 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
               }, 5000); // Check every 5 seconds
             };
             
-            // Start checking for server readiness after tmux session is created
-            setTimeout(detectServerStartup, 5000); // Start checking after 5 seconds
+            // CRITICAL: Check for build failures before checking server readiness
+            setTimeout(() => {
+              // First check if tmux session is still alive (build didn't fail)
+              const checkSession = spawn('tmux', ['has-session', '-t', sessionName], { stdio: 'ignore' });
+              checkSession.on('close', (sessionCode) => {
+                if (sessionCode !== 0) {
+                  // Session died - likely build failure
+                  console.log('');
+                  console.log('🚨🚨🚨 CRITICAL BUILD FAILURE 🚨🚨🚨');
+                  console.log('📋 The tmux session exited early - likely TypeScript compilation error');
+                  console.log(`📄 Check build logs: tail -20 ${logFile}`);
+                  console.log('💥 BUILD FAILED - npm start cannot continue');
+                  console.log('🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨');
+                  console.log('');
+                  
+                  resolve({
+                    success: false,
+                    reason: 'build_failure',
+                    processId: tmuxPid,
+                    logFile,
+                    errorMessage: 'Build failed - check TypeScript compilation errors',
+                    diagnostics: createDiagnostics()
+                  });
+                  return;
+                }
+                
+                // Session is alive, proceed with server readiness check
+                detectServerStartup();
+              });
+            }, 3000); // Check session status after 3 seconds (before server detection)
             
           });
           

@@ -40,10 +40,29 @@ function updateActiveExampleDependency(tarballName: string): void {
   console.log(`✅ Updated ${activeExample.name} to use ${tarballName}`);
 }
 
-function trySmartInstall(): boolean {
-  console.log('📥 Trying smart install...');
+function isInstallNeeded(activeExample: any): boolean {
+  const exampleDir = activeExample.paths.directory;
+  const jtagPath = `${exampleDir}/node_modules/@continuum/jtag`;
   
+  // If jtag module exists with basic files, skip install
+  if (fs.existsSync(`${jtagPath}/package.json`) && fs.existsSync(`${jtagPath}/dist`)) {
+    console.log(`✅ ${activeExample.name} already installed - skipping npm install`);
+    return false;
+  }
+  
+  return true;
+}
+
+function trySmartInstall(): boolean {
   const activeExample = getActiveExample();
+  
+  // Check if install is actually needed
+  if (!isInstallNeeded(activeExample)) {
+    return true; // Already up to date
+  }
+  
+  console.log('📥 Installation needed, running smart install...');
+  
   const exampleDir = activeExample.paths.directory;
   
   // Only clean the specific JTAG module
