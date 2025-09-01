@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1248",
+  "version": "1.0.1258",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -298,20 +298,12 @@
     "INTEGRATION-TEST-CHAIN.md"
   ],
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
     "@types/glob": "^8.1.0",
-    "@types/jest": "^29.5.14",
     "@types/node": "^22.15.29",
     "@types/node-fetch": "^2.6.12",
     "@types/ws": "^8.18.1",
-    "@typescript-eslint/eslint-plugin": "^8.41.0",
-    "@typescript-eslint/parser": "^8.41.0",
-    "eslint": "^9.34.0",
     "glob": "^11.0.3",
-    "jest": "^29.5.0",
     "node-fetch": "^3.3.2",
-    "puppeteer": "^24.15.0",
-    "ts-jest": "^29.3.4",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3",
     "ws": "^8.18.3"

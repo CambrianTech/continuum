@@ -28,6 +28,7 @@ export class SystemReadySignaler {
   private lastNotReadyLog = 0;
   private lastProgressSignal?: SystemReadySignal;
   private lastErrorKey?: string;
+  private hasLoggedInitialClear = false;
 
   constructor() {
     const milestoneConfig = getDefaultMilestoneConfig();
@@ -430,9 +431,11 @@ export class SystemReadySignaler {
       
       if (isStale) {
         console.log(`🧹 [${instanceId}] Cleared stale signals (auto-cleanup)`);
-      } else {
+      } else if (!this.hasLoggedInitialClear) {
         console.log(`🧹 [${instanceId}] Cleared signals for fresh generation`);
+        this.hasLoggedInitialClear = true;
       }
+      // After first clear, remain silent to avoid spam during polling
     } catch (error) {
       // Non-fatal - just log and continue
       console.log(`⚠️ Could not clear stale signals: ${error}`);

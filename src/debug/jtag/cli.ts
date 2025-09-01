@@ -11,9 +11,59 @@ import type { JTAGClientConnectOptions } from './system/core/client/shared/JTAGC
 import { EntryPointAdapter } from './system/core/entry-points/EntryPointAdapter';
 import { systemOrchestrator } from './system/orchestration/SystemOrchestrator';
 import { loadInstanceConfigForContext } from './system/shared/BrowserSafeConfig.js';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // Load config once at startup
 const instanceConfig = loadInstanceConfigForContext();
+
+/**
+ * Get or create a persistent session ID for CLI continuity
+ * This ensures all CLI commands in a session use the same browser session
+ */
+function getPersistentSessionId(): string | undefined {
+  try {
+    // Use the same path resolution as the instance config
+    const exampleDir = instanceConfig.paths.directory;
+    const sessionFile = path.join(exampleDir, '.continuum', 'jtag', 'cli-session-id.txt');
+    
+    // Check if we have a stored session ID
+    if (fs.existsSync(sessionFile)) {
+      const storedSessionId = fs.readFileSync(sessionFile, 'utf8').trim();
+      
+      // Verify the session directory still exists (session is active)
+      const sessionDir = path.join(exampleDir, '.continuum', 'jtag', 'sessions', 'user', storedSessionId);
+      if (fs.existsSync(sessionDir)) {
+        return storedSessionId;
+      } else {
+        // Session directory gone, remove stale session ID
+        fs.unlinkSync(sessionFile);
+      }
+    }
+    
+    return undefined; // No valid existing session
+  } catch (error) {
+    // If anything fails, just let the system create a new session
+    return undefined;
+  }
+}
+
+/**
+ * Store the session ID for future CLI commands
+ */
+function storePersistentSessionId(sessionId: string): void {
+  try {
+    // Use the same path resolution as the instance config
+    const exampleDir = instanceConfig.paths.directory;
+    const sessionFile = path.join(exampleDir, '.continuum', 'jtag', 'cli-session-id.txt');
+    console.log(`🗂️ Storing session file at: ${sessionFile}`);
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+    fs.writeFileSync(sessionFile, sessionId);
+    console.log(`✅ Session ID stored successfully`);
+  } catch (error) {
+    console.log(`❌ Failed to store session ID: ${error}`);
+  }
+}
 
 /**
  * AI-Friendly Help System - For Fresh AIs Learning JTAG
@@ -46,6 +96,12 @@ function displayHelp() {
   console.log('3. 🔍 jtag ping  # Check system health');
   console.log('4. 📋 ls -la .continuum/jtag/currentUser/logs/  # Check logs');
   console.log('5. 🔄 jtag --restart  # Restart if needed');
+  console.log('');
+  console.log('🔗 SESSION PERSISTENCE:');
+  console.log('----------------------------------------');
+  console.log('✅ CLI automatically reuses browser sessions for continuity');
+  console.log('🆕 jtag --new-session <command>  # Force new session');
+  console.log('📝 Session state preserved across multiple CLI calls');
   console.log('');
   
   console.log('💡 GLOBAL CLI PATTERNS:');
@@ -176,17 +232,26 @@ async function main() {
       // Don't delete it - let the system route to the appropriate exec command
     }
     
+    // Session persistence: reuse existing session unless --new-session flag
+    let sessionId: string | undefined;
+    if (!params['new-session'] && command !== 'session/create') {
+      sessionId = getPersistentSessionId();
+      console.log(`🔄 Session persistence: ${sessionId ? `reusing ${sessionId}` : 'creating new session'}`);
+    }
+    
     const clientOptions: JTAGClientConnectOptions = {
       targetEnvironment: 'server', 
       transportType: 'websocket',
       serverUrl: `ws://localhost:${instanceConfig.ports.websocket_server}`,
       enableFallback: false,
+      sessionId: sessionId, // Use persistent session if available
       context: {
         ...agentContext,
         cli: {
           command,
           args: commandArgs,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          sessionPersistence: sessionId ? 'reused' : 'new'
         }
       }
     };
@@ -239,6 +304,16 @@ async function main() {
     // Restore console logging
     console.log = originalLog;
     console.warn = originalWarn;
+    
+    // Store session ID for persistence (will reuse browser session)
+    console.log(`🔍 Session storage check: client.sessionId=${client.sessionId}, sessionId=${sessionId}`);
+    if (client.sessionId && !sessionId) {
+      // Only store if we didn't already have one (new session created)
+      console.log(`💾 Storing new session ID for persistence: ${client.sessionId}`);
+      storePersistentSessionId(client.sessionId);
+    } else {
+      console.log(`⏭️ Skipping session storage - already had existing session or no client sessionId`);
+    }
     
     // Execute command with timeout for autonomous development
     try {
@@ -299,8 +374,19 @@ async function main() {
       console.log(JSON.stringify(result, null, 2));
       console.log('='.repeat(60));
       
-      // CRITICAL: Properly disconnect client before exit to cleanup sessions
-      await client.disconnect();
+      // Session persistence: only destroy session if explicitly requested
+      if (params['new-session'] || command.startsWith('session/')) {
+        // Explicit session management - disconnect fully
+        await client.disconnect();
+      } else {
+        // Session persistence - disconnect transport only, keep session alive
+        // The session remains active in the browser for next CLI call
+        const transport = (client as any).getSystemTransport();
+        if (transport) {
+          await transport.disconnect();
+          console.log('✅ JTAGClient: Transport disconnected (session preserved)');
+        }
+      }
       
       process.exit(result?.success ? 0 : 1);
     } catch (err) {

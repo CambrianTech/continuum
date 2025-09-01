@@ -147,8 +147,8 @@ export class JTAGClientBrowser extends JTAGClient {
    */
   static async connectLocal(): Promise<{ client: JTAGClientBrowser; listResult: ListResult }> {
     return await JTAGClientBrowser.connect({
-      targetEnvironment: 'browser',
-      sessionId: SYSTEM_SCOPES.SYSTEM
+      targetEnvironment: 'browser'
+      // Let server assign session ID instead of hardcoding SYSTEM session
     });
   }
 

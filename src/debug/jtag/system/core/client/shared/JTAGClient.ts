@@ -307,6 +307,12 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * TODO: Add automatic fallback when local system unavailable
    */
   protected async initialize(options?: JTAGClientConnectOptions): Promise<void> {
+    // Store provided sessionId for use throughout initialization
+    const providedSessionId = options?.sessionId;
+    if (providedSessionId) {
+      console.log(`🎯 JTAGClient: Provided sessionId: ${providedSessionId}`);
+    }
+    
     // Try local system first if available
     const localSystem = await this.getLocalSystem();
     this.connectionMetadata.localSystemAvailable = !!localSystem;
@@ -317,7 +323,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       this.connectionMetadata.connectionType = 'local';
       this.connectionMetadata.reason = 'Local system instance available';
       
-      this.connection = this.createLocalConnection();
+      this.connection = this.createLocalConnection(options);
     } else {
       // Remote connection setup using Connection Broker
       this.connectionMetadata.connectionType = 'remote';
@@ -328,6 +334,9 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       const broker = await this.getConnectionBroker();
       
       // Create connection parameters from client options with proper TypeScript typing
+      const effectiveSessionId = providedSessionId ?? this.sessionId;
+      console.log(`🔧 JTAGClient: Connection with sessionId: ${effectiveSessionId} (provided: ${providedSessionId}, current: ${this.sessionId})`);
+      
       const connectionParams: ConnectionParams = {
         protocols: [
           (options?.transportType ?? 'websocket') as TransportProtocol,
@@ -335,7 +344,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
         ],
         mode: 'preferred', // Prefer shared connections, fall back to isolated
         targetEnvironment: this.context.environment,
-        sessionId: this.sessionId,
+        sessionId: effectiveSessionId, // Use provided sessionId if available
         context: this.context,
         eventSystem: this.eventManager.events, // Required field with proper typing
         handler: this, // Required field with proper typing
@@ -357,6 +366,8 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       this.systemTransport = connectionResult.transport;
       this.connectionMetadata.reason = `Connected via ${connectionResult.strategy} (${connectionResult.metadata.protocolUsed})`;
       
+      // providedSessionId is already available from the method scope
+      
       console.log(`✅ JTAGClient: ${connectionResult.strategy} connection established on port ${connectionResult.server.port}`);
       
       this.connection = this.createRemoteConnection();
@@ -367,9 +378,23 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
 
     // SECURITY: CLI clients use ephemeral sessions, browser clients use shared sessions
     const isEphemeralClient = this.context.environment === 'server'; // Server-side JTAGClient = CLI client
+    
+    // Use provided sessionId if available, otherwise generate new UUID for CLI or use existing for browser
+    let targetSessionId: UUID;
+    if (providedSessionId) {
+      targetSessionId = providedSessionId;
+      console.log(`🔄 JTAGClient: Using provided sessionId: ${providedSessionId}`);
+    } else if (isEphemeralClient) {
+      targetSessionId = generateUUID();
+      console.log(`🆕 JTAGClient: Generated new ephemeral sessionId: ${targetSessionId}`);
+    } else {
+      targetSessionId = this.sessionId;
+      console.log(`♻️ JTAGClient: Using existing sessionId: ${targetSessionId}`);
+    }
+    
     const sessionParams = {
       context: this.context,
-      sessionId: isEphemeralClient ? generateUUID() : this.sessionId, // Generate new UUID for ephemeral CLI sessions
+      sessionId: targetSessionId,
       category: 'user' as const,
       displayName: isEphemeralClient ? 'CLI Client' : 'Anonymous User',
       isShared: !isEphemeralClient // CLI clients get ephemeral sessions, browsers get shared
@@ -613,11 +638,11 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   /**
    * Create local connection (direct system calls)
    */
-  protected createLocalConnection(): JTAGConnection {
+  protected createLocalConnection(options?: JTAGClientConnectOptions): JTAGConnection {
     if (!this.systemInstance) {
       throw new Error('Local system instance not available');
     }
-    return new LocalConnection(this.systemInstance, this.context, this.sessionId);
+    return new LocalConnection(this.systemInstance, this.context, options?.sessionId ?? this.sessionId);
   }
 
   /**
