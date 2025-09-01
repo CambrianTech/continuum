@@ -61,10 +61,23 @@ textarea {
     overflow: hidden;
 }
 
+.content-header {
+    padding: 20px 30px;
+    border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+}
+
+.content-header h1 {
+    margin: 0;
+    font-size: 1.5rem;
+    color: var(--content-primary);
+}
+
 .content-view {
     flex: 1;
-    padding: 30px;
-    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     background: linear-gradient(135deg, rgba(15, 20, 25, 0.8) 0%, rgba(20, 25, 35, 0.9) 100%);
 }
 

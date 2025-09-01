@@ -73,7 +73,20 @@ class SidebarResizer extends HTMLElement {
     }
 
     private applySidebarWidth(width: number): void {
-        const desktopContainer = document.querySelector('.desktop-container') as HTMLElement;
+        // Find desktop-container by traversing up from this element's location
+        let desktopContainer: HTMLElement | null = null;
+        
+        // First, try to find it in the same shadow DOM or document as this element
+        const root = this.shadowRoot?.host.getRootNode() as Document | ShadowRoot;
+        if (root) {
+            desktopContainer = (root as any).querySelector?.('.desktop-container') as HTMLElement;
+        }
+        
+        // If still not found, try the document (for non-shadow DOM cases)
+        if (!desktopContainer) {
+            desktopContainer = document.querySelector('.desktop-container') as HTMLElement;
+        }
+        
         if (desktopContainer) {
             desktopContainer.style.gridTemplateColumns = `${width}px 1fr`;
             this.currentWidth = width;
@@ -84,6 +97,8 @@ class SidebarResizer extends HTMLElement {
                 bubbles: true
             });
             this.dispatchEvent(event);
+        } else {
+            console.warn('SidebarResizer: Could not find .desktop-container');
         }
     }
 
