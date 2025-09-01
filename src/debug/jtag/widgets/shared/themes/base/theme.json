@@ -1,0 +1,18 @@
+{
+  "name": "base",
+  "displayName": "Base - Dark Cyberpunk",
+  "description": "Default dark cyberpunk aesthetic with neon accents",
+  "category": "dark",
+  "author": "JTAG Team",
+  "version": "1.0.0",
+  "files": [
+    "base.css",
+    "theme.css"
+  ],
+  "tags": ["dark", "cyberpunk", "default", "neon"],
+  "preview": {
+    "primaryColor": "#00d4ff",
+    "backgroundColor": "#14191f",
+    "textColor": "#e0e6ed"
+  }
+}

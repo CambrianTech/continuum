@@ -8,10 +8,13 @@
 
 import { BaseWidget } from './BaseWidget';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
+import { ThemeDiscoveryService } from './themes/ThemeDiscoveryService';
+import { ThemeRegistry, ThemeManifest } from './themes/ThemeTypes';
 
 export class ThemeWidget extends BaseWidget {
   private currentTheme: string = 'base';
   private themeStyleElement: HTMLStyleElement | null = null;
+  private themeDiscovery: ThemeDiscoveryService;
 
   constructor() {
     super({
@@ -23,23 +26,30 @@ export class ThemeWidget extends BaseWidget {
       enableRouterEvents: false,
       enableScreenshots: false
     });
+    
+    // Initialize dynamic theme discovery service
+    this.themeDiscovery = new ThemeDiscoveryService(this);
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎨 ThemeWidget: Initializing with BaseWidget infrastructure...');
+    console.log('🎨 ThemeWidget: Initializing with dynamic theme discovery...');
     
-    // Load all theme CSS and inject into DOCUMENT HEAD (not shadow DOM) 
-    // so CSS custom properties can be accessed by all widgets
     try {
-      const combinedCSS = await this.loadAllThemeCSS();
+      // Discover all available themes dynamically (like widget/command discovery)
+      await this.themeDiscovery.discoverThemes();
       
-      // Inject theme CSS into document head for global access
-      await this.injectThemeIntoDocumentHead(combinedCSS);
+      // Load current theme using dynamic system
+      const themeResult = await this.themeDiscovery.loadTheme(this.currentTheme);
       
-      // Still keep widget's own CSS in templateCSS for the widget itself
-      console.log('✅ ThemeWidget: Theme CSS injected into document head for global widget access');
+      if (themeResult.success) {
+        // Inject theme CSS into document head for global access
+        await this.injectThemeIntoDocumentHead(themeResult.cssContent);
+        console.log('✅ ThemeWidget: Dynamic theme system initialized successfully');
+      } else {
+        console.error('❌ ThemeWidget: Failed to load theme:', themeResult.error);
+      }
     } catch (error) {
-      console.error('❌ ThemeWidget: Failed to load and inject theme CSS:', error);
+      console.error('❌ ThemeWidget: Theme discovery failed:', error);
     }
     
     console.log('✅ ThemeWidget: BaseWidget initialization complete');
@@ -66,8 +76,8 @@ export class ThemeWidget extends BaseWidget {
       ${dynamicContent}
     `;
     
-    // Set up theme switching event handlers
-    this.setupThemeControls();
+    // Set up theme switching event handlers (now async for dynamic population)
+    await this.setupThemeControls();
     
     console.log('✅ ThemeWidget: Rendered using BaseWidget template system like ChatWidget');
   }
@@ -106,45 +116,25 @@ export class ThemeWidget extends BaseWidget {
   }
 
   /**
-   * Load and inject theme CSS into document head
-   * Loads from themes/base/ directory + themes/current-theme-name/ directory
+   * Load and inject theme CSS into document head (DEPRECATED - use themeDiscovery.loadTheme)
+   * This method is kept for compatibility but delegates to the dynamic discovery service
    */
   private async loadTheme(themeName: string): Promise<void> {
+    console.log(`🎨 ThemeWidget: Loading theme '${themeName}' via dynamic discovery service`);
+    
     try {
-      // Remove existing theme
-      if (this.themeStyleElement) {
-        this.themeStyleElement.remove();
+      // Use dynamic theme discovery service
+      const themeResult = await this.themeDiscovery.loadTheme(themeName);
+      
+      if (themeResult.success) {
+        // Inject theme CSS into document head for global access
+        await this.injectThemeIntoDocumentHead(themeResult.cssContent);
+        console.log(`✅ ThemeWidget: Theme '${themeName}' loaded via discovery service`);
+      } else {
+        console.error(`❌ ThemeWidget: Failed to load theme '${themeName}':`, themeResult.error);
       }
-
-      console.log(`🎨 ThemeWidget: Loading base styles + theme '${themeName}'`);
-
-      // Load base CSS files from themes/base/
-      const baseStyles = await this.loadDirectoryStyles('base');
-      
-      // Load theme-specific CSS files from themes/current-theme-name/
-      const themeStyles = themeName !== 'base' 
-        ? await this.loadDirectoryStyles(themeName)
-        : '';
-      
-      // Combine base + theme styles
-      const combinedCSS = baseStyles + themeStyles;
-      
-      // Inject into document head
-      this.themeStyleElement = document.createElement('style');
-      this.themeStyleElement.id = `jtag-theme-${themeName}`;
-      this.themeStyleElement.textContent = combinedCSS;
-      document.head.appendChild(this.themeStyleElement);
-      
-      console.log(`✅ ThemeWidget: Theme '${themeName}' loaded and injected`);
-      
-      // Dispatch theme change event
-      this.dispatchEvent(new CustomEvent('theme-changed', {
-        detail: { themeName },
-        bubbles: true
-      }));
-      
     } catch (error) {
-      console.error(`❌ ThemeWidget: Failed to load theme '${themeName}':`, error);
+      console.error(`❌ ThemeWidget: Error loading theme '${themeName}':`, error);
     }
   }
 
@@ -262,23 +252,18 @@ export class ThemeWidget extends BaseWidget {
   }
 
   /**
-   * Get list of CSS files in a theme directory
-   * For now, use known file names. In future could fetch from server API
+   * Get list of CSS files for a theme from its manifest
    */
   private async getDirectoryFiles(directoryName: string): Promise<string[]> {
-    // Consistent naming convention: each theme has a theme.css file
-    // Base theme also includes base.css for foundational styles
-    const knownFiles: Record<string, string[]> = {
-      'base': ['base.css', 'theme.css'],
-      'light': ['theme.css'],
-      'cyberpunk': ['theme.css'],
-      'retro-mac': ['theme.css'],
-      'monochrome': ['theme.css'],
-      'classic': ['theme.css']
-    };
-
-    // Return known files for directory, or fallback to standard theme.css
-    return knownFiles[directoryName] || ['theme.css'];
+    // Get files from theme manifest in registry
+    const themeManifest = ThemeRegistry.getTheme(directoryName);
+    if (themeManifest) {
+      return themeManifest.files;
+    }
+    
+    // Fallback to standard theme.css if no manifest found
+    console.warn(`⚠️ ThemeWidget: No manifest found for theme '${directoryName}', using fallback`);
+    return ['theme.css'];
   }
 
   /**
@@ -292,14 +277,15 @@ export class ThemeWidget extends BaseWidget {
    * List available themes
    */
   async getAvailableThemes(): Promise<string[]> {
-    // Return all available theme variants
-    return ['base', 'light', 'cyberpunk', 'retro-mac', 'monochrome', 'classic'];
+    // Return themes from dynamic registry
+    const themes = ThemeRegistry.getAllThemes();
+    return themes.map(theme => theme.name);
   }
 
   /**
    * Set up theme switching controls and event handlers
    */
-  private setupThemeControls(): void {
+  private async setupThemeControls(): Promise<void> {
     const themeSelector = this.shadowRoot?.querySelector('#theme-selector') as HTMLSelectElement;
     const applyButton = this.shadowRoot?.querySelector('#apply-theme') as HTMLButtonElement;
     
@@ -307,6 +293,9 @@ export class ThemeWidget extends BaseWidget {
       console.warn('🎨 ThemeWidget: Theme controls not found in shadow DOM');
       return;
     }
+    
+    // Populate dropdown with discovered themes dynamically
+    await this.populateThemeDropdown(themeSelector);
     
     // Set current theme as selected
     themeSelector.value = this.currentTheme;
@@ -330,6 +319,38 @@ export class ThemeWidget extends BaseWidget {
     });
     
     console.log('✅ ThemeWidget: Theme controls set up successfully');
+  }
+
+  /**
+   * Dynamically populate theme dropdown from discovered themes
+   */
+  private async populateThemeDropdown(themeSelector: HTMLSelectElement): Promise<void> {
+    try {
+      // Clear existing options
+      themeSelector.innerHTML = '';
+      
+      // Get all discovered themes from registry
+      const themes = ThemeRegistry.getAllThemes();
+      
+      // Create options for each theme
+      themes.forEach(theme => {
+        const option = document.createElement('option');
+        option.value = theme.name;
+        option.textContent = theme.displayName;
+        option.title = theme.description;
+        themeSelector.appendChild(option);
+      });
+      
+      console.log(`🎨 ThemeWidget: Populated dropdown with ${themes.length} discovered themes`);
+      
+    } catch (error) {
+      console.error('❌ ThemeWidget: Failed to populate theme dropdown:', error);
+      // Fallback option if discovery fails
+      const fallbackOption = document.createElement('option');
+      fallbackOption.value = 'base';
+      fallbackOption.textContent = 'Base Theme';
+      themeSelector.appendChild(fallbackOption);
+    }
   }
 }
 

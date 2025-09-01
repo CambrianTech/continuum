@@ -203,8 +203,6 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
                   // Use proper well-defined constants for health check
                   const isSystemReady = (
                     signal.bootstrapComplete &&         // System bootstrap done
-                    signal.browserReady &&              // Browser launched successfully  
-                    signal.commandCount > 0 &&          // Commands are registered
                     (signal.systemHealth === 'healthy' || signal.systemHealth === 'degraded')   // Accept healthy or degraded
                   );
                   

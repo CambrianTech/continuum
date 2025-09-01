@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1237",
+  "version": "1.0.1248",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -192,6 +192,7 @@
     "test:critical": "./scripts/run-categorized-tests.sh critical",
     "test:transport": "./scripts/run-categorized-tests.sh transport",
     "test:screenshots": "./scripts/run-categorized-tests.sh screenshots",
+    "test:themes": "echo '🎨 Testing theme system with screenshot validation (requires running system: npm start)' && npx tsx tests/integration/theme-screenshot-integration.test.ts",
     "test:chat": "./scripts/run-categorized-tests.sh chat",
     "test:events": "./scripts/run-categorized-tests.sh events",
     "test:widgets": "./scripts/run-categorized-tests.sh widgets",

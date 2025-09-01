@@ -141,6 +141,11 @@ async function main() {
           }
         }
       } else {
+        // Handle positional arguments - add them to a general array
+        if (!params._positional) {
+          params._positional = [];
+        }
+        params._positional.push(arg);
         i++;
       }
     }

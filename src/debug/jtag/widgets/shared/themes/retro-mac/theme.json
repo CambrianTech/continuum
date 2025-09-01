@@ -1,0 +1,17 @@
+{
+  "name": "retro-mac",
+  "displayName": "Retro Mac - System 11",
+  "description": "Authentic classic Mac System 11 grayscale interface",
+  "category": "retro",
+  "author": "JTAG Team",
+  "version": "1.0.0",
+  "files": [
+    "theme.css"
+  ],
+  "tags": ["retro", "mac", "classic", "grayscale", "vintage"],
+  "preview": {
+    "primaryColor": "#000000",
+    "backgroundColor": "#c0c0c0",
+    "textColor": "#000000"
+  }
+}
