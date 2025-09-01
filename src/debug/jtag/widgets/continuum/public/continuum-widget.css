@@ -11,6 +11,7 @@
   grid-template-columns: 250px 1fr;
   height: 100vh;
   overflow: hidden;
+  position: relative;
 }
 
 /* Fix main panel layout */
@@ -40,20 +41,44 @@
   min-height: 0;
 }
 
-/* Chat widget container - let chat widget handle its own styling completely */
+/* Sidebar container - fixed width with resizer */
+.sidebar-container {
+  position: relative;
+  display: flex;
+  height: 100%;
+  background: var(--sidebar-bg, rgba(20, 25, 35, 0.95));
+  border-right: 1px solid var(--border-color, rgba(0, 212, 255, 0.2));
+}
 
-/* Debug sidebar resizer - make it visible for testing */
+.left-sidebar {
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Discord/VS Code style resizer - visible divider at exact border */
 sidebar-resizer {
   position: absolute;
   top: 0;
-  right: -4px;
-  width: 8px;
+  right: -1px;  /* Position at the exact border */
+  width: 2px;
   height: 100%;
   cursor: col-resize;
   background: rgba(0, 212, 255, 0.1);
   z-index: 1000;
+  transition: all 0.2s ease;
+  border-right: 1px solid rgba(0, 212, 255, 0.2);
 }
 
 sidebar-resizer:hover {
   background: rgba(0, 212, 255, 0.3);
+  border-right: 1px solid var(--accent-color, #00d4ff);
+  box-shadow: 0 0 4px rgba(0, 212, 255, 0.5);
+}
+
+sidebar-resizer:active, sidebar-resizer.dragging {
+  background: rgba(0, 212, 255, 0.6);
+  border-right: 2px solid var(--accent-color, #00d4ff);
+  box-shadow: 0 0 6px rgba(0, 212, 255, 0.8);
+  width: 3px;
 }

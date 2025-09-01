@@ -73,22 +73,37 @@ class SidebarResizer extends HTMLElement {
     }
 
     private applySidebarWidth(width: number): void {
-        // Find desktop-container by traversing up from this element's location
+        // Find sidebar-container and desktop-container for proper resizing
+        let sidebarContainer: HTMLElement | null = null;
         let desktopContainer: HTMLElement | null = null;
         
-        // First, try to find it in the same shadow DOM or document as this element
-        const root = this.shadowRoot?.host.getRootNode() as Document | ShadowRoot;
-        if (root) {
-            desktopContainer = (root as any).querySelector?.('.desktop-container') as HTMLElement;
+        // Strategy 1: Look for continuum-widget in the document and search its shadow DOM
+        const continuumWidget = document.querySelector('continuum-widget') as any;
+        if (continuumWidget && continuumWidget.shadowRoot) {
+            sidebarContainer = continuumWidget.shadowRoot.querySelector('.sidebar-container') as HTMLElement;
+            desktopContainer = continuumWidget.shadowRoot.querySelector('.desktop-container') as HTMLElement;
         }
         
-        // If still not found, try the document (for non-shadow DOM cases)
+        // Strategy 2: Try to find sidebar-container from this element's context
+        if (!sidebarContainer) {
+            sidebarContainer = this.closest('.sidebar-container') as HTMLElement;
+        }
+        
+        // Strategy 3: Direct document queries (fallback)
+        if (!sidebarContainer) {
+            sidebarContainer = document.querySelector('.sidebar-container') as HTMLElement;
+        }
         if (!desktopContainer) {
             desktopContainer = document.querySelector('.desktop-container') as HTMLElement;
         }
         
-        if (desktopContainer) {
+        if (sidebarContainer && desktopContainer) {
+            // Set the sidebar container width directly
+            sidebarContainer.style.width = `${width}px`;
+            
+            // Update the grid template to match the new sidebar width
             desktopContainer.style.gridTemplateColumns = `${width}px 1fr`;
+            
             this.currentWidth = width;
             
             // Dispatch custom event for other components
@@ -97,8 +112,18 @@ class SidebarResizer extends HTMLElement {
                 bubbles: true
             });
             this.dispatchEvent(event);
+            
+            console.log('🔧 SidebarResizer: Applied width:', width, 'to sidebar container and grid template');
         } else {
-            console.warn('SidebarResizer: Could not find .desktop-container');
+            console.warn('SidebarResizer: Could not find .sidebar-container or .desktop-container');
+            console.log('SidebarResizer: Debug - available elements:', {
+                continuumWidgetExists: !!document.querySelector('continuum-widget'),
+                continuumWidgetHasShadowRoot: !!(document.querySelector('continuum-widget') as any)?.shadowRoot,
+                sidebarContainerFound: !!sidebarContainer,
+                desktopContainerFound: !!desktopContainer,
+                thisParent: this.parentElement?.tagName,
+                thisClosest: this.closest('.sidebar-container')?.tagName
+            });
         }
     }
 
@@ -221,46 +246,39 @@ class SidebarResizer extends HTMLElement {
                 :host {
                     position: absolute;
                     top: 0;
-                    right: -4px;
+                    right: -1px;
                     bottom: 0;
-                    width: 8px;
+                    width: 2px;
                     cursor: col-resize;
                     z-index: 1000;
-                    background: transparent;
-                    transition: background 0.2s ease;
+                    background: rgba(0, 212, 255, 0.1);
+                    border-right: 1px solid rgba(0, 212, 255, 0.2);
+                    transition: all 0.2s ease;
                 }
 
                 :host(:hover) {
                     background: rgba(0, 212, 255, 0.3);
+                    border-right: 1px solid #00d4ff;
+                    box-shadow: 0 0 4px rgba(0, 212, 255, 0.5);
                 }
 
                 :host(.dragging) {
                     background: rgba(0, 212, 255, 0.6);
+                    border-right: 2px solid #00d4ff;
+                    box-shadow: 0 0 6px rgba(0, 212, 255, 0.8);
+                    width: 3px;
                 }
 
-                .resizer-line {
+                .resizer-handle {
                     position: absolute;
                     top: 0;
                     bottom: 0;
-                    left: 50%;
-                    width: 1px;
-                    background: rgba(0, 212, 255, 0.2);
-                    transform: translateX(-50%);
-                    transition: all 0.2s ease;
-                }
-
-                :host(:hover) .resizer-line {
-                    background: rgba(0, 212, 255, 0.6);
-                    box-shadow: 0 0 4px rgba(0, 212, 255, 0.4);
-                }
-
-                :host(.dragging) .resizer-line {
-                    background: rgba(0, 212, 255, 0.8);
-                    box-shadow: 0 0 8px rgba(0, 212, 255, 0.6);
-                    width: 2px;
+                    left: 0;
+                    right: 0;
+                    background: transparent;
                 }
             </style>
-            <div class="resizer-line"></div>
+            <div class="resizer-handle"></div>
         `;
     }
 

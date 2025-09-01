@@ -12,6 +12,8 @@
 5. **Starts the daemon system** - `./jtag`. We will rename this to `/continuum` again when migrated.
 6. **⚠️ LAUNCHES BROWSER TAB** - `npm start` automatically opens browser interface
 
+We are in a transition, development of jtag. So assume src/debug/jtag for all, and immediately go there.
+
 **Essential Commands for Engineers:**
 ```bash
 cd src/debug/jtag

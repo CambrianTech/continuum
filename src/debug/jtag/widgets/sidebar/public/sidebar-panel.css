@@ -1,0 +1,88 @@
+/* SidebarPanel - Modular Sidebar Styling */
+
+:host {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 250px;
+  background: var(--sidebar-bg, linear-gradient(135deg, rgba(10, 15, 20, 0.95) 0%, rgba(15, 20, 30, 0.98) 100%));
+  border-right: 1px solid var(--border-color, rgba(0, 212, 255, 0.2));
+  position: relative;
+}
+
+.sidebar-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 15px;
+  position: relative;
+}
+
+/* Status View */
+.status-view {
+  margin-bottom: 20px;
+  padding: 10px;
+  background: rgba(0, 212, 255, 0.1);
+  border-radius: 6px;
+  border: 1px solid rgba(0, 212, 255, 0.2);
+}
+
+.connection-status {
+  font-size: 0.8em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 5px;
+}
+
+.connection-status.connected {
+  color: var(--success-color, #4CAF50);
+}
+
+.user-status {
+  font-size: 0.7em;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.7));
+}
+
+/* Dynamic List */
+.dynamic-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.list-item {
+  padding: 8px 12px;
+  margin: 2px 0;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 0.9em;
+  color: var(--text-primary, rgba(255, 255, 255, 0.9));
+}
+
+.list-item:hover {
+  background: rgba(0, 212, 255, 0.1);
+  transform: translateX(2px);
+}
+
+.list-item.active {
+  background: rgba(0, 212, 255, 0.2);
+  border-left: 3px solid var(--accent-color, #00d4ff);
+  color: var(--accent-color, #00d4ff);
+}
+
+/* Continuum Emoter Widget Styling */
+continuum-emoter {
+  margin-bottom: 15px;
+}
+
+/* Sidebar Resizer */
+sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 1000;
+}
