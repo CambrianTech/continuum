@@ -1,0 +1,77 @@
+/**
+ * Light Theme - Clean light theme for JTAG Widget System
+ * Overrides base theme with light color palette
+ */
+
+:root {
+  /* === COLORS - CONTENT === */
+  --content-primary: #1a1f2e;
+  --content-secondary: #4a5568;
+  --content-accent: #0066cc;
+  --content-warning: #d63031;
+  --content-success: #00b894;
+  
+  /* === COLORS - BACKGROUNDS === */
+  --background-primary: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+  --widget-surface: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.95));
+  --widget-surface-solid: #ffffff;
+  --widget-content-background: rgba(255, 255, 255, 0.9);
+  --widget-header-background: linear-gradient(90deg, #4299e1, #3182ce);
+  --widget-input-area-background: rgba(247, 250, 252, 0.9);
+  
+  /* === COLORS - SIDEBAR === */
+  --sidebar-background: rgba(248, 250, 252, 0.95);
+  --sidebar-border: rgba(203, 213, 224, 0.8);
+  
+  /* === COLORS - BORDERS === */
+  --border-subtle: rgba(203, 213, 224, 0.6);
+  --border-strong: rgba(160, 174, 192, 0.8);
+  --border-accent: rgba(66, 153, 225, 0.6);
+  --widget-border: rgba(203, 213, 224, 0.8);
+  --widget-border-focus: rgba(66, 153, 225, 0.8);
+  
+  /* === COLORS - RESIZER === */
+  --resizer-background: rgba(66, 153, 225, 0.1);
+  --resizer-background-hover: rgba(66, 153, 225, 0.3);
+  --resizer-background-active: rgba(66, 153, 225, 0.5);
+  --resizer-border: rgba(203, 213, 224, 0.6);
+  --resizer-border-hover: #4299e1;
+  --resizer-border-active: #3182ce;
+  --resizer-glow-hover: rgba(66, 153, 225, 0.4);
+  --resizer-glow-active: rgba(66, 153, 225, 0.6);
+  
+  /* === COLORS - INPUT === */
+  --input-background: rgba(255, 255, 255, 0.9);
+  --input-border: rgba(203, 213, 224, 0.8);
+  --input-border-focus: rgba(66, 153, 225, 0.6);
+  --input-text: #1a202c;
+  --input-placeholder: #718096;
+  --input-focus-shadow: rgba(66, 153, 225, 0.3);
+  
+  /* === COLORS - BUTTONS === */
+  --button-primary-background: linear-gradient(135deg, #4299e1, #3182ce);
+  --button-primary-background-hover: linear-gradient(135deg, #3182ce, #2c5aa0);
+  --button-primary-background-active: linear-gradient(135deg, #2c5aa0, #2a4365);
+  --button-primary-text: #ffffff;
+  --button-primary-shadow: rgba(66, 153, 225, 0.4);
+  
+  --button-secondary-background: rgba(237, 242, 247, 0.8);
+  --button-secondary-background-hover: rgba(226, 232, 240, 0.9);
+  --button-secondary-background-active: rgba(203, 213, 224, 0.8);
+  --button-secondary-text: #4a5568;
+  
+  /* === COLORS - MESSAGES === */
+  --message-user-background: rgba(66, 153, 225, 0.1);
+  --message-user-text: #1a202c;
+  --message-user-border: rgba(66, 153, 225, 0.3);
+  
+  --message-assistant-background: rgba(247, 250, 252, 0.8);
+  --message-assistant-text: #2d3748;
+  --message-assistant-border: rgba(203, 213, 224, 0.4);
+  
+  /* === SHADOWS === */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+  --shadow-glow: 0 0 20px rgba(66, 153, 225, 0.3);
+}

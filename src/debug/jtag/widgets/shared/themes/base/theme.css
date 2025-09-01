@@ -1,0 +1,105 @@
+/**
+ * Base Theme - Default theme for JTAG Widget System
+ * Contains all CSS custom properties for the base dark cyberpunk aesthetic
+ */
+
+:root {
+  /* === LAYOUT === */
+  --sidebar-width: 250px;
+  
+  /* === SPACING === */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  
+  /* === BORDER RADIUS === */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  
+  /* === COLORS - CONTENT === */
+  --content-primary: #e0e6ed;
+  --content-secondary: #8a92a5;
+  --content-accent: #00d4ff;
+  --content-warning: #ff6b35;
+  --content-success: #00ff88;
+  
+  /* === COLORS - BACKGROUNDS === */
+  --background-primary: linear-gradient(135deg, rgba(15, 20, 25, 1) 0%, rgba(20, 25, 35, 1) 100%);
+  --widget-surface: linear-gradient(135deg, rgba(15, 20, 25, 0.98), rgba(20, 25, 35, 0.95));
+  --widget-surface-solid: #1a1f2e;
+  --widget-content-background: rgba(25, 30, 40, 0.8);
+  --widget-header-background: linear-gradient(90deg, #0066cc, #004499);
+  --widget-input-area-background: rgba(20, 25, 35, 0.9);
+  
+  /* === COLORS - SIDEBAR === */
+  --sidebar-background: rgba(20, 25, 35, 0.95);
+  --sidebar-border: rgba(0, 212, 255, 0.2);
+  
+  /* === COLORS - BORDERS === */
+  --border-subtle: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.2);
+  --border-accent: rgba(0, 212, 255, 0.4);
+  --widget-border: rgba(0, 212, 255, 0.3);
+  --widget-border-focus: rgba(0, 212, 255, 0.6);
+  
+  /* === COLORS - RESIZER === */
+  --resizer-width: 2px;
+  --resizer-width-active: 3px;
+  --resizer-background: rgba(0, 212, 255, 0.1);
+  --resizer-background-hover: rgba(0, 212, 255, 0.3);
+  --resizer-background-active: rgba(0, 212, 255, 0.6);
+  --resizer-border: rgba(0, 212, 255, 0.2);
+  --resizer-border-hover: #00d4ff;
+  --resizer-border-active: #00d4ff;
+  --resizer-glow-hover: rgba(0, 212, 255, 0.5);
+  --resizer-glow-active: rgba(0, 212, 255, 0.8);
+  
+  /* === COLORS - STATUS === */
+  --status-online: #00ff88;
+  --status-away: #ffaa00;
+  --status-busy: #ff4444;
+  --status-offline: #666666;
+  
+  /* === COLORS - INPUT === */
+  --input-background: rgba(40, 45, 55, 0.8);
+  --input-border: rgba(255, 255, 255, 0.15);
+  --input-border-focus: rgba(0, 212, 255, 0.5);
+  --input-text: #ffffff;
+  --input-placeholder: #8a92a5;
+  --input-focus-shadow: rgba(0, 212, 255, 0.2);
+  
+  /* === COLORS - BUTTONS === */
+  --button-primary-background: linear-gradient(135deg, #00d4ff, #0099cc);
+  --button-primary-background-hover: linear-gradient(135deg, #00b8e6, #0088bb);
+  --button-primary-background-active: linear-gradient(135deg, #009acc, #0077aa);
+  --button-primary-text: #000000;
+  --button-primary-shadow: rgba(0, 212, 255, 0.3);
+  
+  --button-secondary-background: rgba(255, 255, 255, 0.1);
+  --button-secondary-background-hover: rgba(255, 255, 255, 0.15);
+  --button-secondary-background-active: rgba(255, 255, 255, 0.05);
+  --button-secondary-text: #e0e6ed;
+  
+  /* === COLORS - MESSAGES === */
+  --message-user-background: rgba(0, 212, 255, 0.15);
+  --message-user-text: #ffffff;
+  --message-user-border: rgba(0, 212, 255, 0.3);
+  
+  --message-assistant-background: rgba(255, 255, 255, 0.05);
+  --message-assistant-text: #e0e6ed;
+  --message-assistant-border: rgba(255, 255, 255, 0.1);
+  
+  /* === TYPOGRAPHY === */
+  --font-primary: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+  
+  /* === SHADOWS === */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.4);
+  --shadow-glow: 0 0 20px rgba(0, 212, 255, 0.3);
+}

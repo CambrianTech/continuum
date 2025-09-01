@@ -1,0 +1,86 @@
+/**
+ * Retro Mac Theme - Classic System 11 inspired theme for JTAG Widget System
+ * Captures the authentic early Mac OS control panel aesthetic
+ */
+
+:root {
+  /* === COLORS - CLASSIC MAC GRAYSCALE PALETTE === */
+  --content-primary: #000000;
+  --content-secondary: #666666;
+  --content-accent: #000000;
+  --content-warning: #000000;
+  --content-success: #000000;
+  
+  /* === COLORS - CLASSIC MAC PANEL BACKGROUNDS === */
+  --background-primary: #c0c0c0;
+  --widget-surface: #c0c0c0;
+  --widget-surface-solid: #c0c0c0;
+  --widget-content-background: #ffffff;
+  --widget-header-background: #c0c0c0;
+  --widget-input-area-background: #ffffff;
+  
+  /* === COLORS - SIDEBAR CLASSIC STYLING === */
+  --sidebar-background: #c0c0c0;
+  --sidebar-border: #000000;
+  
+  /* === COLORS - CLASSIC MAC BORDERS === */
+  --border-subtle: #808080;
+  --border-strong: #000000;
+  --border-accent: #000000;
+  --widget-border: #000000;
+  --widget-border-focus: #000000;
+  
+  /* === COLORS - RETRO RESIZER === */
+  --resizer-background: #808080;
+  --resizer-background-hover: #606060;
+  --resizer-background-active: #404040;
+  --resizer-border: #000000;
+  --resizer-border-hover: #000000;
+  --resizer-border-active: #000000;
+  --resizer-glow-hover: transparent;
+  --resizer-glow-active: transparent;
+  
+  /* === COLORS - CLASSIC MAC INPUTS === */
+  --input-background: #ffffff;
+  --input-border: #000000;
+  --input-border-focus: #000000;
+  --input-text: #000000;
+  --input-placeholder: #666666;
+  --input-focus-shadow: transparent;
+  
+  /* === COLORS - CLASSIC BUTTONS === */
+  --button-primary-background: #c0c0c0;
+  --button-primary-background-hover: #b0b0b0;
+  --button-primary-background-active: #a0a0a0;
+  --button-primary-text: #000000;
+  --button-primary-shadow: transparent;
+  
+  --button-secondary-background: #c0c0c0;
+  --button-secondary-background-hover: #b0b0b0;
+  --button-secondary-background-active: #a0a0a0;
+  --button-secondary-text: #000000;
+  
+  /* === COLORS - CLASSIC MESSAGES === */
+  --message-user-background: #ffffff;
+  --message-user-text: #000000;
+  --message-user-border: #000000;
+  
+  --message-assistant-background: #f0f0f0;
+  --message-assistant-text: #000000;
+  --message-assistant-border: #808080;
+  
+  /* === CLASSIC MAC TYPOGRAPHY === */
+  --font-primary: 'Geneva', 'Chicago', 'Monaco', system-ui, monospace;
+  --font-mono: 'Monaco', 'Geneva', monospace;
+  
+  /* === CLASSIC MAC SHADOWS (MINIMAL) === */
+  --shadow-sm: 1px 1px 0px #808080;
+  --shadow-md: 2px 2px 0px #808080;
+  --shadow-lg: 3px 3px 0px #808080;
+  --shadow-glow: none;
+  
+  /* === CLASSIC MAC CONTROL PANEL AESTHETICS === */
+  --panel-inset: inset 1px 1px 0px #ffffff, inset -1px -1px 0px #808080;
+  --panel-outset: 1px 1px 0px #808080, -1px -1px 0px #ffffff;
+  --panel-border: 1px solid #000000;
+}

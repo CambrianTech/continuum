@@ -181,6 +181,23 @@ sidebar-resizer:hover {
   --content-warning: #ff6b35;
   --content-success: #00ff88;
   
+  /* Sidebar styling */
+  --sidebar-width: 250px;
+  --sidebar-background: rgba(20, 25, 35, 0.95);
+  --sidebar-border: rgba(0, 212, 255, 0.2);
+  
+  /* Resizer styling */
+  --resizer-width: 2px;
+  --resizer-width-active: 3px;
+  --resizer-background: rgba(0, 212, 255, 0.1);
+  --resizer-background-hover: rgba(0, 212, 255, 0.3);
+  --resizer-background-active: rgba(0, 212, 255, 0.6);
+  --resizer-border: rgba(0, 212, 255, 0.2);
+  --resizer-border-hover: #00d4ff;
+  --resizer-border-active: #00d4ff;
+  --resizer-glow-hover: rgba(0, 212, 255, 0.5);
+  --resizer-glow-active: rgba(0, 212, 255, 0.8);
+  
   /* Font properties */
   --font-primary: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;

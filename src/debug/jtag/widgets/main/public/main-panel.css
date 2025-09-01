@@ -20,8 +20,8 @@
   justify-content: space-between;
   align-items: center;
   padding: 15px 20px;
-  border-bottom: 1px solid var(--border-color, rgba(0, 212, 255, 0.2));
-  background: rgba(10, 15, 20, 0.3);
+  border-bottom: 1px solid var(--border-subtle, rgba(0, 212, 255, 0.2));
+  background: var(--widget-header-background, rgba(10, 15, 20, 0.3));
   flex-shrink: 0;
 }
 
@@ -109,8 +109,8 @@ chat-widget {
 /* Content Footer */
 .content-footer {
   padding: 10px 20px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(10, 15, 20, 0.3);
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  background: var(--widget-header-background, rgba(10, 15, 20, 0.3));
   flex-shrink: 0;
 }
 
