@@ -1,0 +1,17 @@
+{
+  "name": "cyberpunk",
+  "displayName": "Cyberpunk - Neon Enhanced",
+  "description": "Enhanced cyberpunk aesthetic with vibrant neon colors",
+  "category": "dark",
+  "author": "JTAG Team",
+  "version": "1.0.0",
+  "files": [
+    "theme.css"
+  ],
+  "tags": ["dark", "cyberpunk", "neon", "vibrant", "enhanced"],
+  "preview": {
+    "primaryColor": "#ff0080",
+    "backgroundColor": "#0a0a0f",
+    "textColor": "#ffffff"
+  }
+}

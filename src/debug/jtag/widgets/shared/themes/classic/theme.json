@@ -1,0 +1,17 @@
+{
+  "name": "classic",
+  "displayName": "Classic - Professional",
+  "description": "Traditional professional interface with business-appropriate styling",
+  "category": "professional",
+  "author": "JTAG Team",
+  "version": "1.0.0",
+  "files": [
+    "theme.css"
+  ],
+  "tags": ["professional", "business", "traditional", "classic"],
+  "preview": {
+    "primaryColor": "#3498db",
+    "backgroundColor": "#ecf0f1",
+    "textColor": "#2c3e50"
+  }
+}

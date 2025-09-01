@@ -1,0 +1,17 @@
+{
+  "name": "light",
+  "displayName": "Light - Clean & Minimal",
+  "description": "Clean light interface with subtle colors",
+  "category": "light",
+  "author": "JTAG Team",
+  "version": "1.0.0",
+  "files": [
+    "theme.css"
+  ],
+  "tags": ["light", "clean", "minimal", "professional"],
+  "preview": {
+    "primaryColor": "#3498db",
+    "backgroundColor": "#ffffff",
+    "textColor": "#2c3e50"
+  }
+}
