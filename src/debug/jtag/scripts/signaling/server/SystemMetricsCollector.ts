@@ -133,33 +133,58 @@ export class SystemMetricsCollector {
 
   private async checkWebSocketBootstrap(): Promise<boolean> {
     try {
-      // Use WorkingDirConfig for per-project isolation
-      const continuumPath = WorkingDirConfig.getContinuumPath();
-      
-      // Self-healing: Try multiple log locations in order of preference
-      const logPatterns = [
-        // 1. Try currentUser logs first (symlinked to active user session)
-        path.join(continuumPath, 'jtag', 'currentUser', 'logs', 'browser-console-log.log'),
-        // 2. Fallback to system session logs (use shell glob expansion)
-        `"${continuumPath}/jtag/sessions/system/*/logs/browser-console-log.log"`,
-        // 3. Fallback to any user session logs (use shell glob expansion)
-        `"${continuumPath}/jtag/sessions/user/*/logs/browser-console-log.log"`
+      // ROBUST FIX: Check where logs actually exist instead of relying on fragile path resolution
+      const baseDirs = [
+        process.cwd(), // Current working directory
+        path.join(process.cwd(), 'examples/widget-ui'), // Widget UI example
+        path.join(process.cwd(), 'examples/test-bench')  // Test bench example
       ];
+      
+      const logPatterns: string[] = [];
+      
+      // Try all possible locations where .continuum directories might exist
+      for (const baseDir of baseDirs) {
+        const continuumPath = path.join(baseDir, '.continuum');
+        logPatterns.push(
+          // Try currentUser logs first (most reliable)
+          path.join(continuumPath, 'jtag', 'currentUser', 'logs', 'browser-console-log.log'),
+          // Try direct session access
+          `"${continuumPath}/jtag/sessions/system/*/logs/browser-console-log.log"`,
+          `"${continuumPath}/jtag/sessions/user/*/logs/browser-console-log.log"`
+        );
+      }
+      
+      console.log('🔍 Bootstrap check: Searching for logs in', logPatterns.length, 'possible locations...');
       
       for (const logPattern of logPatterns) {
         try {
+          console.log('🔍 Bootstrap check: Trying:', logPattern);
+          
+          // First check if file exists
+          const fileExists = await fs.access(logPattern.replace(/"/g, '')).then(() => true).catch(() => false);
+          if (!fileExists) {
+            console.log('❌ Bootstrap check: File does not exist:', logPattern);
+            continue;
+          }
+          
+          console.log('✅ Bootstrap check: File exists, checking content...');
+          
           // Use shell expansion for glob patterns
           const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" ${logPattern} 2>/dev/null | grep "commands" || echo ""`);
           if (stdout.trim().length > 0) {
             console.log(`✅ Bootstrap check: Found WebSocket bootstrap in ${logPattern}`);
             return true;
+          } else {
+            console.log('⚠️ Bootstrap check: File exists but no bootstrap completion message found');
           }
-        } catch {
-          // Try next location
+        } catch (error) {
+          console.log('❌ Bootstrap check: Error accessing', logPattern, ':', (error as Error).message);
         }
       }
       
-      console.log('🔍 Bootstrap check: WebSocket bootstrap logs not found');
+      console.log('❌ Bootstrap check: WebSocket bootstrap completion message not found in any log files');
+      console.log('🔍 Bootstrap check: Looking for text: "Bootstrap complete! Discovered" + "commands"');
+      console.log('💡 Bootstrap check: This usually means the system is still starting up or logs are in a different location');
       return false;
     } catch {
       return false;
