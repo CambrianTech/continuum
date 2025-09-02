@@ -1,5 +1,25 @@
 # CLAUDE - MIDDLE-OUT ARCHITECTURE
 
+## **🚨🚨🚨 CRITICAL DEPLOYMENT REQUIREMENT 🚨🚨🚨**
+
+**⚠️⚠️⚠️ CLAUDE: ALWAYS RUN `npm start` TO DEPLOY CODE CHANGES ⚠️⚠️⚠️**
+
+```bash
+cd src/debug/jtag
+npm start                    # REQUIRED to deploy ANY code changes
+./jtag theme/set cyberpunk   # Use ./jtag NOT ./continuum 
+```
+
+**YOU CANNOT TEST CODE CHANGES WITHOUT RUNNING `npm start` FIRST!**
+
+- ❌ Building with `npm run build` alone does NOT deploy changes
+- ❌ TypeScript compilation alone does NOT deploy changes  
+- ✅ ONLY `npm start` properly deploys and runs your code changes
+
+**This is Claude's #1 failure pattern - always deploy before testing!**
+
+---
+
 ## **🚀 ESSENTIAL: HOW TO START & WORK IN THE SYSTEM**
 
 ### **🔧 DEVELOPMENT WORKFLOW (DO THIS FIRST)**
