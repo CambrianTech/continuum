@@ -117,7 +117,7 @@ class ComprehensiveRoutingTest {
       `server/commands/${commandName}`, // target: server command endpoint
       {
         context,
-        sessionId: 'integration-test-session',
+        // Use shared session instead of hardcoded string
         ...payload
       },
       correlationId

@@ -83,7 +83,7 @@ async function testChatWidgetRoomEvents() {
     console.log('💬 Sending message to room-123...');
     const messageResult = await client.commands['chat/send-message']({
       context: { uuid: 'room-test', environment: 'server' },
-      sessionId: 'room-test-session',
+      // Use shared session instead of hardcoded string
       roomId: 'room-123',
       content: 'Test message for room-specific event routing',
       category: 'chat'

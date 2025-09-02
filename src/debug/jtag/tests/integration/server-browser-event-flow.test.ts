@@ -26,7 +26,7 @@ async function testServerToBrowserEventFlow() {
     
     const chatResult = await client.commands['chat/send-message']({
       context: { uuid: 'server-test', environment: 'server' },
-      sessionId: 'server-test-session',
+      // Don't hardcode session ID - use shared session
       roomId: 'test-room-123',
       content: 'Test message for server→browser event flow',
       category: 'chat'

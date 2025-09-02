@@ -12,6 +12,7 @@
 // Process registry functionality now handled via modular command system
 import { ProcessRegistryServerCommand } from '../commands/process-registry/server/ProcessRegistryServerCommand';
 import { syncRegistryState } from '../system/core/registry/RegistrySync';
+import { generateUUID } from '../system/core/types/CrossPlatformUUID';
 
 class DynamicPortCleanup {
   /**
@@ -45,7 +46,7 @@ class DynamicPortCleanup {
       // Execute cleanup through the modular command
       const result = await processRegistryCommand.cleanupProcesses({
         context,
-        sessionId: 'cleanup-session' as any,
+        sessionId: generateUUID(), // Use proper UUID instead of hardcoded string
         forceAll,
         preserveActive: !forceAll
       });

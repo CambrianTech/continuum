@@ -23,7 +23,7 @@ async function testServerClient() {
     console.log('🏷️ Testing session/create command from server...');
     const sessionResult = await client.commands['session/create']({
       context: { uuid: 'direct-test-session', environment: 'server' },
-      sessionId: 'direct-test-session',
+      // Use shared session instead of hardcoded string
       category: 'user' as const,
       displayName: 'Direct Test Session',
       isShared: true

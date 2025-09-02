@@ -76,7 +76,7 @@ async function testCrossEnvironmentEvents() {
     // Send chat message that should emit event
     const chatResult = await client.commands['chat/send-message']({
       context: { uuid: 'cross-env-test', environment: 'server' },
-      sessionId: 'cross-env-test-session',
+      // Use shared session instead of hardcoded string
       roomId: 'cross-env-test-room',
       content: 'Cross-environment test message',
       category: 'chat'

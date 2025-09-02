@@ -120,7 +120,7 @@ src/commands/screenshot/        src/daemons/health-daemon/
 
 1. **Start the JTAG system**: `npm start`
    - **Verify**: tmux session starts, browser opens at localhost:9002, no startup errors
-   - **If failed**: Check port conflicts (`lsof -i :9001 -i :9002`), kill processes (`pkill -f continuum`), check TypeScript (`npx tsc --noEmit`), check logs (`tail -f .continuum/jtag/system/logs/npm-start.log`), retry clean (`npm run clean:all && npm start`)
+   - **If you are sure it failed**: Check port conflicts (`lsof -i :9001 -i :9002`), kill processes (`pkill -f continuum`), check TypeScript (`npx tsc --noEmit`), check logs (`tail -f .continuum/jtag/system/logs/npm-start.log`), retry clean (`npm run clean:all && npm start`)
 
 2. **Wait for system ready**: ~45 seconds for TypeScript build and bootstrap
    - **Verify**: `.continuum/jtag/signals/system-ready.json` exists OR `./jtag ping` responds
