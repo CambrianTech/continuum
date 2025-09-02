@@ -31,39 +31,29 @@ import type { JTAGPayload, JTAGContext } from '../../types/JTAGTypes';
 import type { UUID } from '../../types/CrossPlatformUUID';
 
 export class JTAGClientServer extends JTAGClient {
-  private _sessionId: UUID;
-  
   constructor(context: JTAGContext) {
     super(context);
-    // Initialize with system session bootstrap, will be updated by session daemon
-    this._sessionId = SYSTEM_SCOPES.SYSTEM;
+    // Session ID managed by base class - SessionDaemon will assign proper session
   }
 
   /**
-   * Get current session ID (updated dynamically by session daemon)
+   * Get current session ID (inherited from base class - updated by SessionDaemon)
+   * Base class returns: this._session?.sessionId ?? SYSTEM_SCOPES.UNKNOWN_SESSION
    */
-  public get sessionId(): UUID {
-    return this._sessionId;
-  }
+  // Removed override - use base class sessionId getter that gets updated by SessionDaemon
 
   /**
-   * Update session ID and notify any systems using this client as single source of truth
+   * Session ID is now managed by base class via SessionDaemon
+   * This method is no longer needed - base class handles session updates
    */
-  public setSessionId(sessionId: UUID): void {
-    this._sessionId = sessionId;
-    console.log(`🏷️ JTAGClientServer: Updated session to: ${sessionId}`);
-    
-    // TODO: Update any local system daemons to use client session (like browser does)
-    // if (this.connection instanceof LocalConnection) {
-    //   this.updateSystemConsoleDaemon();
-    // }
-  }
 
   /**
-   * Override to update server client session (called by base JTAGClient)
+   * Server clients don't need session storage - base class handles session management
+   * Base class already updates this._session which is used by sessionId getter
    */
   protected updateClientSessionStorage(sessionId: UUID): void {
-    this.setSessionId(sessionId);
+    // No-op for server clients - session already updated by base class
+    console.log(`🏷️ JTAGClientServer: Session updated to: ${sessionId} (managed by base class)`);
   }
   
   protected async getLocalSystem(): Promise<JTAGSystem | null> {
@@ -118,7 +108,7 @@ export class JTAGClientServer extends JTAGClient {
   static async connectRemote(options?: JTAGClientConnectOptions): Promise<{ client: JTAGClientServer; listResult: ListResult }> {
     return await JTAGClientServer.connect({
       targetEnvironment: 'server',
-      sessionId: SYSTEM_SCOPES.SYSTEM, // Default to system session
+      // NO sessionId specified - let SessionDaemon assign shared session
       ...options
     });
   }
