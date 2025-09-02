@@ -9,10 +9,16 @@
 2. **Increments version** - `npm run version:bump` 
 3. **Builds browser bundle** - `npm run build:browser-ts`
 4. **Runs TypeScript compilation** - `npx tsc --noEmit --project .`
-5. **Starts the daemon system** - `./jtag`. We will rename this to `/continuum` again when migrated.
+5. **Starts the daemon system** - `./jtag`. We will rename this to `/continuum` when migrated.
 6. **⚠️ LAUNCHES BROWSER TAB** - `npm start` automatically opens browser interface
 
 We are in a transition, development of jtag. So assume src/debug/jtag for all, and immediately go there.
+
+  1. ONE SERVER running in an example like examples/widget-ui/ is running with ONE SessionDaemon that has the sessions for all clients connecting (all our tests use CLIENTS to connect)
+  2. Server clients such as those running in "npm test" or /jtag commands (after running npm start) also use a JTAGClient (JTAGClientServer extends JTAGClientBase)
+  2. Browser client connects to this server's SessionDaemon (using JTAGBrowserClient extends JTAGClientBase)
+  3. npm test runs clients that also connect to this SAME server's SessionDaemon
+  4. Tests start no server - they're all clients connecting to the existing server, with a BROWSER attached and a BROWSER launched by npm start workflow (YOU DO NOT EVER need to open localhost)
 
 **Essential Commands for Engineers:**
 ```bash
@@ -40,7 +46,7 @@ npm test                              # All tests
 
 1. **Know your deployment pipeline**: 
    - **Browser code**: `npm run build:browser-ts` → builds to `/dist` → served by HTTP server
-   - **Server code**: `npm start` → restarts Node.js server with new code
+   - **Server code**: `npm start` → restarts Node.js server with new code INSIDE tmux, continuously running (safe to exit once tmux starts) Look at tmux captured logs/node logs
    - **Full system**: `npm run system:restart` → clean restart of entire system
 
 2. **Make changes traceable**: 
