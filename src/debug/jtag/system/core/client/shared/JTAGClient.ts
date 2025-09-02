@@ -379,17 +379,15 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     // SECURITY: CLI clients use ephemeral sessions, browser clients use shared sessions
     const isEphemeralClient = this.context.environment === 'server'; // Server-side JTAGClient = CLI client
     
-    // Use provided sessionId if available, otherwise generate new UUID for CLI or use existing for browser
+    // Use provided sessionId if available, otherwise generate new UUID for shared session
     let targetSessionId: UUID;
     if (providedSessionId) {
       targetSessionId = providedSessionId;
       console.log(`🔄 JTAGClient: Using provided sessionId: ${providedSessionId}`);
-    } else if (isEphemeralClient) {
-      targetSessionId = generateUUID();
-      console.log(`🆕 JTAGClient: Generated new ephemeral sessionId: ${targetSessionId}`);
     } else {
-      targetSessionId = this.sessionId;
-      console.log(`♻️ JTAGClient: Using existing sessionId: ${targetSessionId}`);
+      // Always generate new UUID for session creation - let SessionDaemon handle shared session logic
+      targetSessionId = generateUUID();
+      console.log(`🆕 JTAGClient: Generated sessionId for ${isEphemeralClient ? 'ephemeral' : 'shared'} session: ${targetSessionId}`);
     }
     
     const sessionParams = {
@@ -397,7 +395,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       sessionId: targetSessionId,
       category: 'user' as const,
       displayName: isEphemeralClient ? 'CLI Client' : 'Anonymous User',
-      isShared: !isEphemeralClient // CLI clients get ephemeral sessions, browsers get shared
+      isShared: true // All clients use shared sessions by default (defined in SessionCreateTypes)
     };
     const result = await this.connection.executeCommand('session/create', sessionParams);
     const sessionResult = result as SessionCreateResult;

@@ -31,6 +31,14 @@ function getPersistentSessionId(): string | undefined {
     if (fs.existsSync(sessionFile)) {
       const storedSessionId = fs.readFileSync(sessionFile, 'utf8').trim();
       
+      // Validate session ID format (must be valid UUID)
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(storedSessionId)) {
+        console.log(`❌ Invalid session ID format in persistence file: ${storedSessionId}`);
+        fs.unlinkSync(sessionFile);
+        return undefined;
+      }
+      
       // Verify the session directory still exists (session is active)
       const sessionDir = path.join(exampleDir, '.continuum', 'jtag', 'sessions', 'user', storedSessionId);
       if (fs.existsSync(sessionDir)) {

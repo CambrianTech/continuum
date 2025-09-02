@@ -91,7 +91,7 @@ async function testRealEventBridgeProof() {
     console.log('💬 Step 2: Sending server chat message (should bridge to browser)...');
     const chatResult = await client.commands['chat/send-message']({
       context: { uuid: 'bridge-proof', environment: 'server' },
-      sessionId: 'bridge-proof-session',
+      // Use shared session instead of hardcoded string
       roomId: 'bridge-proof-room',
       content: 'PROOF: This message should trigger cross-environment event',
       category: 'chat'

@@ -362,7 +362,7 @@ describe('DataDaemon Orchestrator', () => {
 
     it('should validate data before storage operations', async () => {
       const context: DataOperationContext = {
-        sessionId: 'validation-session' as UUID,
+        sessionId: generateUUID(), // Use proper UUID instead of string
         timestamp: new Date().toISOString(),
         source: 'validation-test'
       };
