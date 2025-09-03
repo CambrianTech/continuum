@@ -21,8 +21,8 @@ async function runArchitectureTests() {
   
   try {
     // Test that we can import the client classes
-    const { JTAGClient, DynamicCommandsInterface } = await import('../../shared/JTAGClient');
-    const { JTAGClientBrowser } = await import('../../shared/JTAGClientBrowser');
+    const { JTAGClient, DynamicCommandsInterface } = await import('../../system/core/client/shared/JTAGClient');
+    const { JTAGClientServer } = await import('../../system/core/client/server/JTAGClientServer');
     
     console.log('✅ JTAGClient classes import successfully');
     console.log('✅ DynamicCommandsInterface type available');
@@ -30,7 +30,7 @@ async function runArchitectureTests() {
     // Check that JTAGClient is abstract (can't be instantiated directly)
     try {
       // This should fail because JTAGClient is abstract
-      new (JTAGClient as any)({ uuid: 'test', environment: 'browser' });
+      new (JTAGClient as any)({ uuid: 'test', environment: 'server' });
       console.log('⚠️  JTAGClient is not abstract - should be fixed');
     } catch (error) {
       console.log('✅ JTAGClient is properly abstract');
@@ -49,7 +49,7 @@ async function runArchitectureTests() {
     console.log('✅ List command types available');
     
     // Test that we can create list params (our single dependency)
-    const testContext = { uuid: 'test-uuid', environment: 'browser' as const };
+    const testContext = { uuid: 'test-uuid', environment: 'server' as const };
     const listParams = createListParams(testContext, 'test-session-id');
     
     assert(listParams.context === testContext, 'List params preserve context');
@@ -66,7 +66,7 @@ async function runArchitectureTests() {
   
   try {
     // Test that connection interfaces are properly defined
-    const { LocalConnection, RemoteConnection } = await import('../../shared/JTAGClient');
+    const { LocalConnection, RemoteConnection } = await import('../../system/core/client/shared/JTAGClient');
     
     console.log('✅ LocalConnection class available');
     console.log('✅ RemoteConnection class available');
@@ -82,7 +82,7 @@ async function runArchitectureTests() {
   
   try {
     // Test the dynamic commands interface concept
-    const { DynamicCommandsInterface } = await import('../../shared/JTAGClient');
+    const { DynamicCommandsInterface } = await import('../../system/core/client/shared/JTAGClient');
     
     // This should be a TypeScript interface, so we can't test runtime behavior
     // But we can verify the type exists and our design is sound

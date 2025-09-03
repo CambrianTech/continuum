@@ -44,8 +44,8 @@ async function ensureSystemRunning() {
   // Simple approach: try to connect to existing system via JTAG client
   // If this works, the system is running and we can proceed with transport tests
   try {
-    const { JTAGClientBrowser } = await import('../../browser/JTAGClientBrowser');
-    const result = await withTimeout(JTAGClientBrowser.connectLocal(), 10000);
+    const { JTAGClientServer } = await import('../../system/core/client/server/JTAGClientServer');
+    const result = await withTimeout(JTAGClientServer.connect(), 10000);
     const { client, listResult } = result;
     
     if (listResult.success && Array.isArray(listResult.commands)) {
@@ -105,12 +105,12 @@ async function testRealWebSocketCommunication() {
   console.log('\n🔌 TEST 2: Real WebSocket communication through transport architecture');
   
   // Import JTAG client for real cross-environment testing
-  const { JTAGClientBrowser } = await import('../../browser/JTAGClientBrowser');
+  const { JTAGClientServer } = await import('../../system/core/client/server/JTAGClientServer');
   
   console.log('🔄 Connecting browser client to server via real WebSocket...');
   
   // This creates a REAL WebSocket connection browser → server
-  const result = await withTimeout(JTAGClientBrowser.connectLocal(), 15000);
+  const result = await withTimeout(JTAGClientServer.connect(), 15000);
   const { client, listResult } = result;
   
   assert(listResult.success === true, 'Real WebSocket connection established');

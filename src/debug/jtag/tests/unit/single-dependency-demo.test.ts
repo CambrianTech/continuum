@@ -7,7 +7,7 @@
  */
 
 import type { JTAGContext } from '../../system/core/types/JTAGTypes';
-import { JTAGClientBrowser } from '../../system/core/client/browser/JTAGClientBrowser';
+import { JTAGClientServer } from '../../system/core/client/server/JTAGClientServer';
 import type { ListResult } from '../../commands/list/shared/ListTypes';
 
 console.log('🧪 Single Dependency Pattern Demo');
@@ -16,10 +16,10 @@ async function runDemo() {
   console.log('\n🔑 DEMO 1: Fresh client has only list command available');
   
   try {
-    const context: JTAGContext = { uuid: 'demo-session', environment: 'browser' };
-    const client = new JTAGClientBrowser(context);
+    const context: JTAGContext = { uuid: 'demo-session', environment: 'server' };
+    const client = new JTAGClientServer(context);
     
-    console.log('✅ JTAGClientBrowser created');
+    console.log('✅ JTAGClientServer created');
     console.log(`📊 Discovered commands: ${client.discoveredCommands.size} (should be 0)`);
     
     // The only command that should work is 'list'

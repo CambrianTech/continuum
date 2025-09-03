@@ -6,7 +6,7 @@
  * All other commands should be discovered dynamically via list command response.
  */
 
-import { JTAGClientBrowser } from '../../system/core/client/browser/JTAGClientBrowser';
+import { JTAGClientServer } from '../../system/core/client/server/JTAGClientServer';
 import type { ListResult } from '../../commands/list/shared/ListTypes';
 
 console.log('🧪 JTAGClient Single Command Dependency Test Suite');
@@ -33,8 +33,8 @@ async function runTests() {
   
   try {
     // Before connect() - client should only know about list command
-    const context = { uuid: 'test-session', environment: 'browser' as const };
-    const client = new JTAGClientBrowser(context);
+    const context = { uuid: 'test-session', environment: 'server' as const };
+    const client = new JTAGClientServer(context);
     
     // At this point, the client should have NO discovered commands
     // Only the essential 'list' command should be available
@@ -51,7 +51,7 @@ async function runTests() {
   console.log('\n🔄 TEST 2: connect() should return list result for CLI integration');
   
   try {
-    const client = await JTAGClientBrowser.connectLocal();
+    const client = await JTAGClientServer.connect();
     
     // Check if connect returns anything (TDD - we'll implement this)
     console.log('✅ Local connection established');
@@ -68,7 +68,7 @@ async function runTests() {
   console.log('\n🎯 TEST 3: Commands should be populated after connect()');
   
   try {
-    const client = await JTAGClientBrowser.connectLocal();
+    const client = await JTAGClientServer.connect();
     
     // Check if any commands are available
     if (client.commands) {
@@ -98,7 +98,7 @@ async function runTests() {
   console.log('\n📋 TEST 4: CLI Integration potential');
   
   try {
-    const client = await JTAGClientBrowser.connectLocal();
+    const client = await JTAGClientServer.connect();
     
     if (client.commands?.list) {
       const listResult = await client.commands.list();

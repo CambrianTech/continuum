@@ -46,9 +46,9 @@ async function ensureSystemRunning() {
 async function testBasicConnection() {
   console.log('\n🔗 TEST 1: Basic client connection and command discovery');
   
-  const { JTAGClientBrowser } = await import('../../browser/JTAGClientBrowser');
+  const { JTAGClientServer } = await import('../../system/core/client/server/JTAGClientServer');
   
-  const result = await withTimeout(JTAGClientBrowser.connectLocal(), 15000);
+  const result = await withTimeout(JTAGClientServer.connect(), 15000);
   const { client, listResult } = result;
   
   assert(listResult.success === true, 'List command succeeded');

@@ -31,7 +31,7 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
       const previousTheme = await this.getCurrentTheme();
       
       // COPY THE WORKING THEME SWITCHING CODE FROM ThemeWidget.setTheme()
-      await this.setThemeDirectly(themeName);
+      await this.setThemeDirectly(themeName, params);
       
       return createThemeSetResult(params.context, params.sessionId, {
         success: true,
@@ -58,7 +58,7 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
   /**
    * SIMPLIFIED: Browser theme switching using existing theme infrastructure
    */
-  private async setThemeDirectly(themeName: string): Promise<void> {
+  private async setThemeDirectly(themeName: string, params: ThemeSetParams): Promise<void> {
     console.log(`🎨 ThemeSetBrowser: Switching to theme '${themeName}' using simplified approach`);
     
     try {
@@ -68,11 +68,11 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
         throw new Error(`Theme '${themeName}' not found in registry`);
       }
       
-      // STEP 2: For now, create basic theme CSS (will improve with proper file loading later)
-      const basicThemeCSS = this.createBasicThemeCSS(themeName, themeManifest);
+      // STEP 2: Load ALL theme CSS (base + theme) - SAME AS ThemeWidget.loadAllThemeCSS()
+      const combinedCSS = await this.loadAllThemeCSS(themeName, params);
       
-      // STEP 3: Inject CSS into document head (browser responsibility)
-      await this.injectThemeIntoDocumentHead(basicThemeCSS, themeName);
+      // STEP 3: Inject CSS into document head - SAME AS ThemeWidget.injectThemeIntoDocumentHead()
+      await this.injectThemeIntoDocumentHead(combinedCSS, themeName);
       
       console.log('✅ ThemeSetBrowser: Theme switched using simplified approach');
       
@@ -83,39 +83,94 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
   }
 
   /**
-   * Create basic theme CSS using theme manifest (temporary until proper file loading)
+   * COPIED EXACTLY FROM ThemeWidget.loadAllThemeCSS() - Load ALL theme CSS (base + current theme)
    */
-  private createBasicThemeCSS(themeName: string, manifest: any): string {
-    const primaryColor = manifest.preview?.primaryColor || '#007acc';
-    const backgroundColor = manifest.preview?.backgroundColor || '#1e1e1e';
-    const textColor = manifest.preview?.textColor || '#ffffff';
+  private async loadAllThemeCSS(themeName: string, params: ThemeSetParams): Promise<string> {
+    try {
+      console.log('🎨 ThemeSetBrowser: Loading ALL theme CSS (base + theme)');
+      
+      // Load base CSS files from themes/base/
+      const baseStyles = await this.loadDirectoryStyles('base', params);
+      
+      // Load theme-specific CSS files from themes/current-theme-name/
+      const themeStyles = themeName !== 'base' 
+        ? await this.loadDirectoryStyles(themeName, params)
+        : '';
+      
+      // Combine base + theme styles
+      const combinedCSS = baseStyles + themeStyles;
+      
+      console.log(`✅ ThemeSetBrowser: Combined theme CSS loaded (${combinedCSS.length} chars)`);
+      return combinedCSS;
+      
+    } catch (error) {
+      console.error('❌ ThemeSetBrowser: Failed to load all theme CSS:', error);
+      return '';
+    }
+  }
+
+  /**
+   * COPIED EXACTLY FROM ThemeWidget.loadDirectoryStyles() - Load all CSS files from a theme directory
+   */
+  private async loadDirectoryStyles(directoryName: string, params: ThemeSetParams): Promise<string> {
+    try {
+      // Get list of files to load for this directory
+      const cssFiles = await this.getDirectoryFiles(directoryName);
+      let combinedStyles = '';
+      
+      for (const fileName of cssFiles) {
+        try {
+          // Use BaseWidget's protected jtagOperation method - same as loadResource does internally
+          const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
+          console.log(`🎨 ThemeSetBrowser: Loading ${filePath} via file/load command`);
+          
+          // EXACT SAME APPROACH AS ThemeWidget - use JTAG client directly
+          console.log(`🎨 ThemeSetBrowser: Loading ${filePath} via JTAG client like ThemeWidget`);
+          
+          // Get the JTAG client from window (same as BaseWidget.jtagOperation)
+          const jtagClient = (window as any).jtag;
+          if (!jtagClient || !jtagClient.commands) {
+            throw new Error('JTAG client not available - system not ready');
+          }
+          
+          // Call file/load command directly (same as ThemeWidget does)
+          const result = await jtagClient.commands['file/load']({
+            filepath: filePath
+          });
+          
+          // Handle nested JTAG response structure (same as BaseWidget loadResource)
+          const fileData = (result as any).commandResult || result;
+          if (result.success && fileData.success && fileData.content) {
+            combinedStyles += `\n/* === ${directoryName}/${fileName} === */\n${fileData.content}\n`;
+            console.log(`✅ ThemeSetBrowser: Loaded ${directoryName}/${fileName} (${fileData.bytesRead} bytes)`);
+          } else {
+            console.log(`⚠️ ThemeSetBrowser: ${directoryName}/${fileName} not found - skipping`);
+          }
+        } catch (error) {
+          console.warn(`⚠️ ThemeSetBrowser: Could not load ${directoryName}/${fileName}:`, error);
+        }
+      }
+      
+      return combinedStyles;
+    } catch (error) {
+      console.error(`❌ ThemeSetBrowser: Failed to load directory styles for '${directoryName}':`, error);
+      return '';
+    }
+  }
+
+  /**
+   * COPIED EXACTLY FROM ThemeWidget.getDirectoryFiles() - Get list of CSS files for a theme from its manifest
+   */
+  private async getDirectoryFiles(directoryName: string): Promise<string[]> {
+    // Get files from theme manifest in registry
+    const themeManifest = ThemeRegistry.getTheme(directoryName);
+    if (themeManifest) {
+      return themeManifest.files;
+    }
     
-    return `
-/* Theme: ${themeName} - ${manifest.displayName} */
-:root {
-  --theme-primary: ${primaryColor};
-  --theme-background: ${backgroundColor};
-  --theme-text: ${textColor};
-  --theme-name: "${themeName}";
-}
-
-/* Apply theme colors to common elements */
-body {
-  background-color: var(--theme-background);
-  color: var(--theme-text);
-}
-
-.continuum-sidebar {
-  background-color: var(--theme-background);
-  border-right: 1px solid var(--theme-primary);
-}
-
-chat-widget {
-  --chat-background: var(--theme-background);
-  --chat-text: var(--theme-text);
-  --chat-accent: var(--theme-primary);
-}
-`;
+    // Fallback to standard theme.css if no manifest found
+    console.warn(`⚠️ ThemeSetBrowser: No manifest found for theme '${directoryName}', using fallback`);
+    return ['theme.css'];
   }
 
   /**

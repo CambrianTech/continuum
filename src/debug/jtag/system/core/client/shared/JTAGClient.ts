@@ -395,7 +395,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       sessionId: targetSessionId,
       category: 'user' as const,
       displayName: isEphemeralClient ? 'CLI Client' : 'Anonymous User',
-      isShared: true // All clients use shared sessions by default (defined in SessionCreateTypes)
+      isShared: true // All clients use shared sessions by default
     };
     const result = await this.connection.executeCommand('session/create', sessionParams);
     const sessionResult = result as SessionCreateResult;
@@ -646,13 +646,15 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   /**
    * Disconnect the client and cleanup resources
    */
-  public async disconnect(): Promise<void> {
+  public async disconnect(destroySession?: boolean): Promise<void> {
     console.log('🔌 JTAGClient: Disconnecting...');
     
-    // SECURITY: Destroy session on disconnect (cleanup session)
+    // Smart default: Don't destroy shared sessions, do destroy private sessions
+    const shouldDestroySession = destroySession ?? !this._session?.isShared;
+    
     // Only destroy real sessions, not bootstrap sessions (UNKNOWN_SESSION)
-    if (this._session && this._session.sessionId !== SYSTEM_SCOPES.UNKNOWN_SESSION) {
-      console.log(`🧹 JTAGClient: Destroying session ${this._session.sessionId} on disconnect`);
+    if (this._session && this._session.sessionId !== SYSTEM_SCOPES.UNKNOWN_SESSION && shouldDestroySession) {
+      console.log(`🧹 JTAGClient: Destroying session ${this._session.sessionId} on disconnect (shared: ${this._session.isShared})`);
       
       try {
         const destroyParams: SessionDestroyParams = {
@@ -667,6 +669,8 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
         console.error(`❌ JTAGClient: Failed to destroy session:`, error);
         // Continue disconnect even if session destroy fails
       }
+    } else if (this._session && this._session.sessionId !== SYSTEM_SCOPES.UNKNOWN_SESSION) {
+      console.log(`🔄 JTAGClient: Preserving shared session ${this._session.sessionId} on disconnect (shared: ${this._session.isShared})`);
     }
     
     if (this.systemTransport) {

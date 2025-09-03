@@ -5,7 +5,7 @@
  * Uses persistent browser session to maintain state across commands
  */
 
-import { JTAGClientBrowser } from '../../system/core/client/browser/JTAGClientBrowser';
+const { JTAGClientServer } = await import('../../system/core/client/server/JTAGClientServer');
 
 async function takeThemeScreenshots() {
   console.log('🎨 Theme Screenshot Integration Test');
@@ -17,7 +17,7 @@ async function takeThemeScreenshots() {
   try {
     // Connect to JTAG system with persistent session
     console.log('🔌 Connecting to JTAG system...');
-    const { client } = await JTAGClientBrowser.connectLocal();
+    const { client } = await JTAGClientServer.connect();
     jtagSystem = client;
     
     console.log('✅ Connected to JTAG system');

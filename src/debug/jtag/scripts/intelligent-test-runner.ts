@@ -20,8 +20,37 @@ async function runIntelligentTest(): Promise<boolean> {
   console.log('🧠 INTELLIGENT TEST RUNNER: Handling cross-example switching');
   console.log(`📋 Using active example: ${activeExample} (from examples.json)`);
   
-  // INTELLIGENCE: Step 1 - Force cleanup ALL existing systems
-  console.log('\n🧹 STEP 1: Force cleanup of all existing JTAG systems (any example)');
+  // INTELLIGENCE: Step 0 - TypeScript compilation check first
+  console.log('\n🔧 STEP 0: TypeScript compilation verification');
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tscCheck = spawn('npx', ['tsc', '--noEmit', '--project', '.'], {
+        stdio: 'inherit',
+        shell: true
+      });
+      
+      tscCheck.on('exit', (code) => {
+        if (code === 0) {
+          console.log('✅ TypeScript compilation successful');
+          resolve();
+        } else {
+          console.log(`❌ FATAL: TypeScript compilation failed (exit code: ${code})`);
+          reject(new Error('TypeScript compilation failed'));
+        }
+      });
+      
+      tscCheck.on('error', (error) => {
+        console.log(`❌ FATAL: TypeScript compilation error: ${error.message}`);
+        reject(error);
+      });
+    });
+  } catch (error) {
+    console.log('💥 TypeScript compilation failed - aborting tests');
+    return false;
+  }
+
+  // INTELLIGENCE: Step 1 - Force cleanup ALL existing systems AND session directories
+  console.log('\n🧹 STEP 1: Force cleanup of all existing JTAG systems and session directories (any example)');
   try {
     await new Promise<void>((resolve) => {
       const cleanup = spawn('npm', ['run', 'system:stop'], {
@@ -39,6 +68,36 @@ async function runIntelligentTest(): Promise<boolean> {
         resolve(); // Continue even if cleanup fails
       });
     });
+    
+    // INTELLIGENCE: Clean session directories to prevent deadbeef accumulation
+    console.log('🗑️  Cleaning session directories to prevent deadbeef accumulation...');
+    try {
+      const fs = await import('fs').then(m => m.promises);
+      const path = await import('path');
+      
+      // Clean metadata.json files in both widget-ui and test-bench examples
+      const exampleDirs = ['examples/widget-ui', 'examples/test-bench'];
+      
+      for (const exampleDir of exampleDirs) {
+        const metadataPath = path.join(exampleDir, '.continuum/jtag/sessions/metadata.json');
+        try {
+          const emptyMetadata = {
+            "projectContext": path.resolve(exampleDir),
+            "sessions": [],
+            "lastUpdated": new Date().toISOString(),
+            "version": "1.0.0"
+          };
+          
+          await fs.writeFile(metadataPath, JSON.stringify(emptyMetadata, null, 2));
+          console.log(`✅ Cleared session metadata: ${metadataPath}`);
+        } catch (error) {
+          console.warn(`⚠️ Could not clean ${metadataPath}: ${error instanceof Error ? error.message : error}`);
+        }
+      }
+      
+    } catch (error) {
+      console.warn(`⚠️ Session cleanup error (continuing anyway): ${error instanceof Error ? error.message : error}`);
+    }
     
     // INTELLIGENCE: Extra wait for ports to be fully released
     console.log('⏳ Waiting for ports to be fully released...');
