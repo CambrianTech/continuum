@@ -386,7 +386,7 @@ class ElegantCrossDomainValidator {
     }
     
     if (!result.browserEnvironment.success) {
-      console.log('   📍 Browser environment: Check JTAGClientBrowser connection and browser-specific commands');
+      console.log('   📍 Browser environment: Check JTAGClientServer connection and browser-specific commands');
     }
     
     if (!result.crossDomainCommunication.websocketEstablished) {

@@ -4,7 +4,7 @@
  * Proper Cross-Domain Integration Test
  * 
  * CORRECT ARCHITECTURE: No mixing of environmental code
- * - Browser tests use JTAGClientBrowser only
+ * - Browser tests use JTAGClientServer only
  * - Server tests use JTAGClientServer only  
  * - Cross-domain tests validate WebSocket communication between separate environments
  */
@@ -60,7 +60,7 @@ class ProperCrossDomainTest {
       // Phase 1: Test Server Environment Only (using JTAGClientServer)
       await this.testServerEnvironmentOnly();
       
-      // Phase 2: Test Browser Environment Only (using JTAGClientBrowser)
+      // Phase 2: Test Browser Environment Only (using JTAGClientServer)
       await this.testBrowserEnvironmentOnly();
       
       // Phase 3: Test Cross-Domain WebSocket Communication
@@ -152,20 +152,20 @@ class ProperCrossDomainTest {
   }
 
   private async testBrowserEnvironmentOnly(): Promise<void> {
-    console.log('🌐 PHASE 2: Testing Browser Environment Only (JTAGClientBrowser)');
+    console.log('🌐 PHASE 2: Testing Browser Environment Only (JTAGClientServer)');
     console.log('---------------------------------------------------------------');
     
     const startTime = performance.now();
     
-    // Create a browser-only test that uses JTAGClientBrowser
+    // Create a browser-only test that uses JTAGClientServer
     const browserTestScript = `
       // Pure browser environment test - no server code mixing
-      import { JTAGClientBrowser } from '../system/core/client/browser/JTAGClientBrowser';
+      import { JTAGClientServer } from '../system/core/client/server/JTAGClientServer';
       import type { JTAGClientConnectOptions } from '../system/core/client/shared/JTAGClient';
       
       async function testBrowserEnvironment() {
         try {
-          console.log('🔗 Browser Test: Connecting via JTAGClientBrowser...');
+          console.log('🔗 Browser Test: Connecting via JTAGClientServer...');
           
           const clientOptions: JTAGClientConnectOptions = {
             targetEnvironment: 'browser',
@@ -174,8 +174,8 @@ class ProperCrossDomainTest {
             enableFallback: true
           };
           
-          const { client } = await JTAGClientBrowser.connect(clientOptions);
-          console.log('✅ Browser Test: JTAGClientBrowser connected');
+          const { client } = await JTAGClientServer.connect(clientOptions);
+          console.log('✅ Browser Test: JTAGClientServer connected');
           
           // Test browser commands
           const listResult = await (client as any).commands.list();

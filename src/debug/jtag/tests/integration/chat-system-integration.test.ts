@@ -51,9 +51,9 @@ async function testChatConnection() {
   console.log('\n🔗 TEST 1: Basic system connection and screenshot test');
   
   // Use the browser client pattern from existing tests
-  const { JTAGClientBrowser } = await import('../../system/core/client/browser/JTAGClientBrowser');
+  const { JTAGClientServer } = await import('../../system/core/client/server/JTAGClientServer');
   
-  const result = await withTimeout(JTAGClientBrowser.connectLocal(), 15000);
+  const result = await withTimeout(JTAGClientServer.connect(), 15000);
   const { client, listResult } = result;
   
   assert(listResult.success === true, 'Client connected to JTAG system');

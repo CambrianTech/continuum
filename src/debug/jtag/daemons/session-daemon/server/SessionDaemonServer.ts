@@ -26,6 +26,7 @@ import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
 import { createPayload } from '../../../system/core/types/JTAGTypes';
 import { type JTAGMessage } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { isBootstrapSession } from '../../../system/core/types/SystemScopes';
 import { WorkingDirConfig } from '../../../system/core/config/WorkingDirConfig';
 import fs from 'fs/promises';
 import path from 'path';
@@ -91,7 +92,12 @@ export class SessionDaemonServer extends SessionDaemon {
       const metadata = JSON.parse(metadataContent);
       
       if (metadata.sessions && Array.isArray(metadata.sessions)) {
-        this.sessions = metadata.sessions.map((session: any) => ({
+        // Filter out bootstrap sessions that should never be shared
+        const validSessions = metadata.sessions.filter((session: SessionMetadata) => 
+          !isBootstrapSession(session.sessionId)
+        );
+        
+        this.sessions = validSessions.map((session: SessionMetadata) => ({
           ...session,
           created: new Date(session.created),
           lastActive: new Date(session.lastActive)
@@ -100,6 +106,12 @@ export class SessionDaemonServer extends SessionDaemon {
         // Restore session timeouts for loaded sessions
         for (const session of this.sessions) {
           this.scheduleSessionExpiry(session.sessionId, session.isShared);
+        }
+        
+        // Log cleanup if bootstrap sessions were filtered
+        const filteredCount = metadata.sessions.length - validSessions.length;
+        if (filteredCount > 0) {
+          console.log(`🗑️ SessionDaemon: Filtered out ${filteredCount} bootstrap sessions during load`);
         }
         
         // console.debug(`📖 ${this.toString()}: Loaded ${this.sessions.length} sessions from ${metadataPath} with timeout restoration`);
@@ -338,7 +350,7 @@ export class SessionDaemonServer extends SessionDaemon {
           // Check for existing shared session
           const existingSession = this.sessions.find(s => s.isShared && s.isActive);
           if (existingSession) {
-            // console.debug(`⚡ ${this.toString()}: Reusing existing shared session:`, existingSession);
+            console.log(`✅ SessionDaemon: Reusing existing valid shared session: ${existingSession.sessionId}`);
             return createPayload(params.context, params.sessionId, {
               success: true,
               timestamp: new Date().toISOString(),
@@ -346,6 +358,7 @@ export class SessionDaemonServer extends SessionDaemon {
               session: existingSession
             });
           }
+          console.log(`🆕 SessionDaemon: No existing valid shared session found, creating new one`);
         }
         return await this.createSession(params);
     }
@@ -353,16 +366,19 @@ export class SessionDaemonServer extends SessionDaemon {
     private async createSession(params: CreateSessionParams): Promise<CreateSessionResult> {
       // console.debug(`⚡ ${this.toString()}: Creating new session:`, params);
       
+      // Always generate a new UUID for actual sessions - never use bootstrap IDs
+      const actualSessionId = isBootstrapSession(params.sessionId) ? generateUUID() : params.sessionId;
+      
       const newSession = {
         sourceContext: params.context,
-        sessionId: params.sessionId, // Use the provided sessionId, don't generate new one
+        sessionId: actualSessionId, // Use generated UUID, not bootstrap ID
         category: params.category,
         displayName: params.displayName,
         userId: params.userId ?? generateUUID(),
         created: new Date(),
         lastActive: new Date(),
         isActive: true,
-        isShared: params.isShared
+        isShared: params.isShared // Use original isShared request
       };
 
       // console.debug(`✅ ${this.toString()}: New session created:`, newSession);

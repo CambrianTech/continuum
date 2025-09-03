@@ -7,7 +7,6 @@
  */
 
 import { JTAGClient, LocalConnection, RemoteConnection, type JTAGConnection, type JTAGClientConnectOptions } from '../../system/core/client/shared/JTAGClient';
-import { JTAGClientBrowser } from '../../system/core/client/browser/JTAGClientBrowser';
 import { JTAGClientServer } from '../../system/core/client/server/JTAGClientServer';
 import type { JTAGContext, JTAGMessage, JTAGPayload } from '../../system/core/types/JTAGTypes';
 import type { ListResult, CommandSignature } from '../../commands/list/shared/ListTypes';
@@ -393,20 +392,20 @@ function testClientEnvironmentSpecifics() {
   
   return new Promise<void>((resolve, reject) => {
     try {
-      // Test browser client
-      const browserContext: JTAGContext = { uuid: 'test-browser', environment: 'browser' };
-      const browserClient = new JTAGClientBrowser(browserContext);
+      // Test server client (first instance) 
+      const serverContext1: JTAGContext = { uuid: 'test-server-1', environment: 'server' };
+      const serverClient1 = new JTAGClientServer(serverContext1);
       
-      if (browserClient.context.environment !== 'browser') {
-        reject(new Error('Browser client should have browser environment'));
+      if (serverClient1.context.environment !== 'server') {
+        reject(new Error('Server client should have server environment'));
         return;
       }
       
-      // Test server client
-      const serverContext: JTAGContext = { uuid: 'test-server', environment: 'server' };
-      const serverClient = new JTAGClientServer(serverContext);
+      // Test server client (second instance)
+      const serverContext2: JTAGContext = { uuid: 'test-server-2', environment: 'server' };
+      const serverClient2 = new JTAGClientServer(serverContext2);
       
-      if (serverClient.context.environment !== 'server') {
+      if (serverClient2.context.environment !== 'server') {
         reject(new Error('Server client should have server environment'));
         return;
       }

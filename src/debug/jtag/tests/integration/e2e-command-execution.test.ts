@@ -38,10 +38,10 @@ async function testBasicCommandDiscovery() {
   console.log('\n🔍 TEST 1: Basic command discovery and availability');
   
   try {
-    const { JTAGClientBrowser } = await import('../../browser/JTAGClientBrowser');
+    const { JTAGClientServer } = await import('../../system/core/client/server/JTAGClientServer');
     
     console.log('🔗 Connecting to browser system for command discovery...');
-    const { client, listResult } = await JTAGClientBrowser.connectLocal();
+    const { client, listResult } = await JTAGClientServer.connect();
     
     // Verify our new commands are discovered
     assert(listResult.success === true, 'List command succeeded');
