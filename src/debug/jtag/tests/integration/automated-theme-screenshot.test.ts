@@ -7,7 +7,7 @@
  * THIS TEST PROVES THEME SYSTEM WORKS END-TO-END
  */
 
-const { JTAGClientServer } = await import('../../system/core/client/server/JTAGClientServer');
+import { JTAGClientServer } from '../../system/core/client/server/JTAGClientServer';
 
 interface ThemeTestResult {
   theme: string;
