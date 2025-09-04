@@ -49,11 +49,16 @@ async function runAdvancedScreenshotTests(): Promise<void> {
   
   try {
     // Connect to JTAG system
+    const { getActivePorts } = require('../examples/shared/ExampleConfig');
+    const activePorts = await getActivePorts();
+    const websocketPort = activePorts.websocket_server;
+    const serverUrl = `ws://localhost:${websocketPort}`;
+    
     const agentContext = AgentDetector.createConnectionContext();
     const clientOptions: JTAGClientConnectOptions = {
       targetEnvironment: 'server',
       transportType: 'websocket', 
-      serverUrl: 'ws://localhost:9001',
+      serverUrl,
       enableFallback: false,
       context: {
         ...agentContext,
@@ -61,7 +66,7 @@ async function runAdvancedScreenshotTests(): Promise<void> {
       }
     };
     
-    console.log('🔗 Connecting to JTAG system for advanced screenshot testing...');
+    console.log(`🔗 Connecting to JTAG system at ${serverUrl}...`);
     const { client } = await JTAGClientServer.connect(clientOptions);
     console.log('✅ JTAG Client connected for advanced screenshot automation');
     
@@ -70,7 +75,7 @@ async function runAdvancedScreenshotTests(): Promise<void> {
     try {
       console.log('🧪 Test 1: Widget coordinate-based cropping test...');
       
-      const result = await (client as any).commands.screenshot({
+      const result = await client.commands.screenshot({
         querySelector: 'chat-widget',
         filename: `widget-crop-${Date.now()}.png`,
         scale: 1.0,
@@ -109,7 +114,7 @@ async function runAdvancedScreenshotTests(): Promise<void> {
       
       const resolutionResults = [];
       for (const res of resolutions) {
-        const result = await (client as any).commands.screenshot({
+        const result = await client.commands.screenshot({
           querySelector: 'body',
           filename: `resolution-${res.name}-${Date.now()}.png`,
           width: res.width,
@@ -150,7 +155,7 @@ async function runAdvancedScreenshotTests(): Promise<void> {
     try {
       console.log('🧪 Test 3: Custom coordinate cropping test...');
       
-      const result = await (client as any).commands.screenshot({
+      const result = await client.commands.screenshot({
         querySelector: 'body',
         filename: `custom-crop-${Date.now()}.png`,
         cropX: 100,
@@ -195,7 +200,7 @@ async function runAdvancedScreenshotTests(): Promise<void> {
     try {
       console.log('🧪 Test 4: Quality control and file size limit test...');
       
-      const result = await (client as any).commands.screenshot({
+      const result = await client.commands.screenshot({
         querySelector: 'body',
         filename: `quality-control-${Date.now()}.jpg`,
         format: 'jpeg',
@@ -240,7 +245,7 @@ async function runAdvancedScreenshotTests(): Promise<void> {
       console.log('🧪 Test 5: Widget development pattern - before/after state validation...');
       
       // Capture widget initial state
-      const beforeResult = await (client as any).commands.screenshot({
+      const beforeResult = await client.commands.screenshot({
         querySelector: 'chat-widget',
         filename: `widget-before-state-${Date.now()}.png`,
         scale: 2.0, // High DPI for detailed analysis
@@ -248,7 +253,7 @@ async function runAdvancedScreenshotTests(): Promise<void> {
       });
       
       // Modify widget state via JavaScript
-      const modifyResult = await (client as any).commands.exec({
+      const modifyResult = await client.commands.exec({
         code: {
           type: 'inline',
           language: 'javascript',
@@ -284,7 +289,7 @@ async function runAdvancedScreenshotTests(): Promise<void> {
       });
       
       // Capture widget after state
-      const afterResult = await (client as any).commands.screenshot({
+      const afterResult = await client.commands.screenshot({
         querySelector: 'chat-widget',
         filename: `widget-after-state-${Date.now()}.png`,
         scale: 2.0, // High DPI for detailed analysis
@@ -324,8 +329,8 @@ async function runAdvancedScreenshotTests(): Promise<void> {
     // Graceful disconnect
     try {
       console.log('🔌 GRACEFUL DISCONNECT: Closing JTAG client connection...');
-      if (client && typeof (client as any).disconnect === 'function') {
-        await (client as any).disconnect();
+      if (client && typeof client.disconnect === 'function') {
+        await client.disconnect();
         console.log('✅ GRACEFUL DISCONNECT: Client disconnected successfully');
       }
     } catch (disconnectError) {
