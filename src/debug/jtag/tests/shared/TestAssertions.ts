@@ -380,5 +380,4 @@ export function assertFileExists(
   });
 }
 
-// Export main assertions class
-export { TestAssertions };
+// TestAssertions class already exported above
