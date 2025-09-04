@@ -245,20 +245,53 @@ export function getElementDisplayName(element: Element): string {
 }
 
 /**
- * Enhanced element selector with content boundary detection
+ * Shadow DOM-aware recursive element finder
+ * Traverses through shadow DOMs to find web components like chat-widget
+ */
+function findInShadowDOM(root: Document | DocumentFragment | Element, selector: string): Element | null {
+  // Check current root with standard querySelector
+  const direct = root.querySelector(selector);
+  if (direct) return direct;
+  
+  // Recursively check all shadow roots
+  const elements = root.querySelectorAll('*');
+  for (const el of elements) {
+    if (el.shadowRoot) {
+      const found = findInShadowDOM(el.shadowRoot, selector);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/**
+ * Enhanced element selector with shadow DOM traversal and content boundary detection
+ * BREAKTHROUGH: Finds web components inside shadow DOMs
  */
 export function smartQuerySelector(selector: string): Element | null {
   if (!isBrowserEnvironment()) return null;
   
   try {
-    const element = document.querySelector(selector);
-    if (!element) return null;
+    // First try standard querySelector (fastest for regular elements)
+    let element = document.querySelector(selector);
+    
+    // If not found, try shadow DOM traversal (for web components)
+    if (!element) {
+      console.log(`🔍 ElementUtils: Standard querySelector failed for "${selector}", trying shadow DOM traversal...`);
+      element = findInShadowDOM(document, selector);
+    }
+    
+    if (!element) {
+      console.warn(`❌ ElementUtils: Element not found: "${selector}" (checked regular DOM and shadow DOMs)`);
+      return null;
+    }
     
     // Log element info for debugging
     const bounds = getElementBounds(element);
     const displayName = getElementDisplayName(element);
+    const inShadowDOM = element.getRootNode() !== document;
     
-    console.log(`🎯 ElementUtils: Found ${displayName} - bounds: ${bounds.width}x${bounds.height}${bounds.hasOverflow ? ' (has overflow)' : ''}`);
+    console.log(`🎯 ElementUtils: Found ${displayName}${inShadowDOM ? ' (in shadow DOM)' : ''} - bounds: ${bounds.width}x${bounds.height}${bounds.hasOverflow ? ' (has overflow)' : ''}`);
     
     return element;
   } catch (error) {

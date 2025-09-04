@@ -52,13 +52,14 @@ async function runBrowserIntegrationTests(): Promise<void> {
       
       // Step 1: Take BEFORE screenshot
       console.log('📸 Step 1a: Taking BEFORE screenshot of chat widget...');
-      const beforeResult = await (client as any).commands.screenshot({
+      const beforeResult = await client.commands.screenshot({
+        querySelector: 'chat-widget',
         filename: 'chat-widget-before-test.png'
       });
       
       // Step 2: Send message to chat widget
       console.log('💬 Step 1b: Sending message to chat widget...');
-      const chatResult = await (client as any).commands.exec({
+      const chatResult = await client.commands.exec({
         code: {
           type: 'inline',
           language: 'javascript',
@@ -81,11 +82,12 @@ async function runBrowserIntegrationTests(): Promise<void> {
                   return { success: false, error: 'Shadow root not found' };
                 }
                 
-                const input = shadowRoot.querySelector('input[type="text"]');
-                const button = shadowRoot.querySelector('button');
+                const input = shadowRoot.querySelector('#messageInput') || shadowRoot.querySelector('.message-input');
+                const button = shadowRoot.querySelector('#sendButton') || shadowRoot.querySelector('.send-button');
                 
                 if (!input || !button) {
                   console.log('❌ CHAT TEST: Input or button not found in chat widget');
+                  console.log('🔍 CHAT TEST: Available elements:', Array.from(shadowRoot.querySelectorAll('*')).map(el => el.tagName + (el.id ? '#' + el.id : '') + (el.className ? '.' + el.className : '')));
                   return { success: false, error: 'Chat widget controls not found' };
                 }
                 
@@ -114,7 +116,8 @@ async function runBrowserIntegrationTests(): Promise<void> {
       
       // Step 3: Take AFTER screenshot
       console.log('📸 Step 1c: Taking AFTER screenshot to show message...');
-      const afterResult = await (client as any).commands.screenshot({
+      const afterResult = await client.commands.screenshot({
+        querySelector: 'chat-widget',
         filename: 'chat-widget-after-test.png'
       });
       
@@ -138,7 +141,7 @@ async function runBrowserIntegrationTests(): Promise<void> {
     try {
       console.log('🧪 Test 2: Triggering browser exec test via WebSocket...');
       
-      const result = await (client as any).commands.exec({
+      const result = await client.commands.exec({
         code: {
           type: 'inline',
           language: 'javascript',
@@ -187,7 +190,7 @@ async function runBrowserIntegrationTests(): Promise<void> {
     try {
       console.log('🧪 Test 3: Triggering cross-context communication test via WebSocket...');
       
-      const result = await (client as any).commands.exec({
+      const result = await client.commands.exec({
         code: {
           type: 'inline',
           language: 'javascript',
@@ -241,7 +244,7 @@ async function runBrowserIntegrationTests(): Promise<void> {
     try {
       console.log('🧪 Test 4: Triggering browser logging test via WebSocket...');
       
-      const result = await (client as any).commands.exec({
+      const result = await client.commands.exec({
         code: {
           type: 'inline',
           language: 'javascript',
@@ -299,7 +302,7 @@ async function runBrowserIntegrationTests(): Promise<void> {
     try {
       console.log('🧪 Test 5: Adding explicit log proof that tests ran in browser...');
       
-      const result = await (client as any).commands.exec({
+      const result = await client.commands.exec({
         code: {
           type: 'inline',
           language: 'javascript',

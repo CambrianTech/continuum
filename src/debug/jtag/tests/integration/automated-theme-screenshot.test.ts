@@ -61,7 +61,7 @@ async function runAutomatedThemeTest(): Promise<{ success: boolean; results: The
         // AWAIT visual changes to apply  
         await new Promise(resolve => setTimeout(resolve, 1500));
         
-        // AWAIT screenshot
+        // AWAIT screenshot - using body since chat-widget may not exist
         const screenshotResult = await jtagSystem.commands.screenshot({
           querySelector: 'body',
           filename: `automated-theme-${themeName}.png`
