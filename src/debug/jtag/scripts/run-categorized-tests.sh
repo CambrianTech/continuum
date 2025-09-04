@@ -10,6 +10,7 @@
 #   - unit: Unit tests only  
 #   - chat: Chat-related tests only
 #   - screenshots: Screenshot tests only
+#   - themes: Theme system tests only
 #   - transport: Transport tests only
 #   - events: Event system tests only
 #   - blocker: Blocker-level tests only
@@ -31,7 +32,7 @@ DEPLOY_BROWSER="${JTAG_DEPLOY_BROWSER:-auto}"
 # Auto-detect deployment needs based on profile
 if [ "$DEPLOY_BROWSER" = "auto" ]; then
     case "$PROFILE" in
-        "comprehensive"|"transport"|"screenshots"|"critical"|"widgets")
+        "comprehensive"|"transport"|"screenshots"|"themes"|"critical"|"widgets")
             DEPLOY_BROWSER="true"
             ;;
         *)
@@ -208,6 +209,7 @@ run_profile_tests() {
             run_test "Screenshot Verification" "npx tsx tests/screenshot-verification.test.ts" "Screenshots & Visual"
             run_test "Screenshot Advanced" "npx tsx tests/screenshot-integration-advanced.test.ts" "Screenshots & Visual"
             run_test "Screenshot Transport" "npx tsx tests/screenshot-transport-test.ts" "Screenshots & Visual"
+            run_test "Automated Theme Screenshots" "npx tsx tests/integration/automated-theme-screenshot.test.ts" "Screenshots & Visual"
             run_test "Coordinate Calculation Unit" "npx tsx commands/screenshot/test/unit/CoordinateCalculation.test.ts" "Screenshots & Visual"
             run_test "Coordinate Validation" "npx tsx commands/screenshot/test/validation/SimpleCoordinateValidator.ts" "Screenshots & Visual"
             
@@ -258,8 +260,13 @@ run_profile_tests() {
             run_test "Server Screenshot" "npx tsx tests/server-screenshot.test.ts" "Screenshot Tests"
             run_test "Screenshot Verification" "npx tsx tests/screenshot-verification.test.ts" "Screenshot Tests"
             run_test "Screenshot Advanced" "npx tsx tests/screenshot-integration-advanced.test.ts" "Screenshot Tests"
+            run_test "Automated Theme Screenshots" "npx tsx tests/integration/automated-theme-screenshot.test.ts" "Screenshot Tests"
             run_test "Coordinate Calculation Unit" "npx tsx commands/screenshot/test/unit/CoordinateCalculation.test.ts" "Screenshot Tests"
             run_test "Coordinate Validation" "npx tsx commands/screenshot/test/validation/SimpleCoordinateValidator.ts" "Screenshot Tests"
+            ;;
+            
+        "themes")
+            run_test "Automated Theme Screenshots" "npx tsx tests/integration/automated-theme-screenshot.test.ts" "Theme Tests"
             ;;
             
         "transport")
@@ -320,7 +327,7 @@ run_profile_tests() {
             
         *)
             echo "❌ Unknown profile: $PROFILE"
-            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, transport, events, blocker, critical, widgets, performance, single-test"
+            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, themes, transport, events, blocker, critical, widgets, performance, single-test"
             exit 1
             ;;
     esac
