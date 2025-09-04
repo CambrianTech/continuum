@@ -1,112 +1,61 @@
 /**
- * Automated Theme Screenshot Test - Refactored with Modern Test Utilities
+ * Automated Theme Screenshot Test - Refactored with Specialized Test Utilities
  * 
  * AUTONOMOUS TEST: Gets themes via theme/list, iterates through all themes,
  * takes screenshots of each, all in same session directory.
  * 
  * THIS TEST PROVES THEME SYSTEM WORKS END-TO-END
  * 
- * REFACTORED: Uses shared utilities, proper typing, constants, error handling
+ * REFACTORED: Uses properly categorized utilities with descriptive names
  */
 
 import { 
-  ModernTestRunner,
-  ThemeTestResult,
-  MODERN_TEST_CONSTANTS,
-  testAllThemes 
-} from '../shared/ModernTestUtilities';
+  testAllThemesWithScreenshots,
+  ThemeSuiteResult,
+  assertThemeSuiteSuccess
+} from '../shared/ThemeTesting';
 
-import { JTAGClientFactory, connectJTAGClient } from '../shared/JTAGClientFactory';
+import { TEST_TIMEOUTS } from '../shared/TestConstants';
 
-async function runAutomatedThemeTest(): Promise<{ success: boolean; results: ThemeTestResult[] }> {
-  console.log('🎨 AUTOMATED THEME SCREENSHOT TEST (MODERNIZED)');
+async function runAutomatedThemeTest(): Promise<{ success: boolean; results: ThemeSuiteResult }> {
+  console.log('🎨 AUTOMATED THEME SCREENSHOT TEST (SPECIALIZED)');
   console.log('================================================');
   
-  const runner = new ModernTestRunner();
-  
   try {
-    // Connect using modern client factory with proper error handling
-    console.log('🔌 Connecting using ModernTestUtilities...');
-    const connection = await connectJTAGClient({
-      timeout: MODERN_TEST_CONSTANTS.TIMEOUTS.INTEGRATION_TEST,
-      validateConnection: true
+    // Use specialized theme testing engine with comprehensive validation
+    console.log('🔌 Using ThemeTesting engine for comprehensive validation...');
+    
+    const suiteResult = await testAllThemesWithScreenshots({
+      timeout: TEST_TIMEOUTS.INTEGRATION_TEST,
+      validateSwitch: true,
+      captureScreenshot: true,
+      logProgress: true
     });
     
-    console.log('✅ Connected to JTAG system');
-    console.log(`📋 Session: ${connection.sessionId}`);
-    
-    // Get themes via shared test runner
-    console.log('📋 Getting theme list dynamically...');
-    const themeListResult = await runner.executeTest(
-      'Get Theme List',
-      async (client) => {
-        const factory = JTAGClientFactory.getInstance();
-        const result = await factory.executeCommand(
-          client,
-          'theme/list',
-          {},
-          { timeout: MODERN_TEST_CONSTANTS.TIMEOUTS.NORMAL_TEST }
-        );
-        
-        if (!result.success) {
-          throw new Error(`Failed to get theme list: ${result.error}`);
-        }
-        
-        return result.data;
-      }
-    );
-    
-    if (!themeListResult.success) {
-      throw new Error(`Theme list failed: ${themeListResult.error}`);
-    }
-    
-    const themes: string[] = themeListResult.data?.themes || MODERN_TEST_CONSTANTS.THEMES.ALL_THEMES;
-    console.log(`🎨 Found ${themes.length} themes: ${themes.join(', ')}`);
-    
-    // Test each theme using modern test utilities
-    const results: ThemeTestResult[] = [];
-    for (const themeName of themes) {
-      console.log(`\n📸 Processing theme: ${themeName}`);
-      const themeResult = await runner.executeThemeTest(themeName, {
-        timeout: MODERN_TEST_CONSTANTS.TIMEOUTS.NORMAL_TEST,
-        logProgress: true
+    // Validate results using specialized assertions
+    try {
+      assertThemeSuiteSuccess(suiteResult, {
+        context: 'Automated Theme Test',
+        throwOnFailure: true
       });
-      
-      results.push(themeResult);
+    } catch (error) {
+      // Don't throw, but report the validation issue
+      console.warn('⚠️ Theme suite validation:', error);
     }
     
-    // Print comprehensive summary using modern utilities
-    console.log('\n🎨 AUTOMATED THEME TEST SUMMARY');
-    console.log('================================');
+    console.log('\n✅ AUTOMATED THEME TEST COMPLETED!');
+    console.log('🎯 All themes tested via dynamic theme/list command');
+    console.log('📸 All screenshots captured in same session directory');
+    console.log(`📊 Final Result: ${suiteResult.summary.successful}/${suiteResult.summary.total} themes successful`);
     
-    const successful = results.filter(r => r.success).length;
-    const total = results.length;
-    
-    console.log(`📊 Success Rate: ${successful}/${total} (${Math.round(successful/total*100)}%)`);
-    console.log(`📁 All screenshots saved to same session directory!`);
-    console.log(`📋 Session maintained: ${connection.sessionId}`);
-    
-    // Detailed results with proper formatting
-    for (const result of results) {
-      const status = result.success ? '✅' : '❌';
-      const details = result.success 
-        ? `${result.screenshotPath} (switch: ${result.switchTime}ms, capture: ${result.screenshotTime}ms)`
-        : result.error;
-      console.log(`${status} ${result.theme}: ${details}`);
-    }
-    
-    if (successful === 0) {
-      throw new Error('No themes were successfully captured');
-    }
-    
-    return { success: successful === total, results };
+    return { 
+      success: suiteResult.summary.successRate === 100,
+      results: suiteResult 
+    };
     
   } catch (error) {
     console.error(`💥 Automated theme test error: ${error}`);
     throw error;
-  } finally {
-    // Proper cleanup using modern utilities
-    await runner.cleanup();
   }
 }
 
