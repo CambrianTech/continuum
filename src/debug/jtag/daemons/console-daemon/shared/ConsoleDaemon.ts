@@ -35,7 +35,7 @@
 
 import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
 import type { JTAGContext, JTAGMessage } from '../../../system/core/types/JTAGTypes';
-import { type JTAGPayload, JTAGMessageFactory, createPayload } from '../../../system/core/types/JTAGTypes';
+import { type JTAGPayload, JTAGMessageFactory, createPayload, createSessionPayload } from '../../../system/core/types/JTAGTypes';
 import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { SYSTEM_EVENTS } from '../../../system/events';
@@ -48,8 +48,10 @@ import type { TimerHandle } from '../../../system/core/types/CrossPlatformTypes'
 import type { LogLevel } from './LogLevels';
 
 
-// Console-specific payload
-export interface ConsolePayload extends JTAGPayload {
+import type { JTAGSessionPayload } from '../../../system/core/types/JTAGTypes';
+
+// Console-specific payload with session resolution capability
+export interface ConsolePayload extends JTAGSessionPayload {
   level: LogLevel;
   component: string;
   message: string;
@@ -69,15 +71,17 @@ export const createConsolePayload = (
     data?: unknown;
     stack?: string;
   }
-): ConsolePayload => createPayload(context, sessionId, {
-  level: data.level ?? 'log',
-  component: data.component ?? 'UNKNOWN',
-  message: data.message ?? '',
-  timestamp: data.timestamp ?? new Date().toISOString(),
-  data: data.data,
-  stack: data.stack,
-  ...data
-});
+): ConsolePayload => {
+  return createSessionPayload(context, sessionId, {
+    level: data.level ?? 'log',
+    component: data.component ?? 'UNKNOWN',
+    message: data.message ?? '',
+    timestamp: data.timestamp ?? new Date().toISOString(),
+    data: data.data,
+    stack: data.stack,
+    ...data
+  }) as ConsolePayload;
+};
 
 export interface ConsoleFilter {
   excludePatterns: string[];

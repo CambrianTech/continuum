@@ -351,7 +351,7 @@ export class SessionDaemonServer extends SessionDaemon {
           const existingSession = this.sessions.find(s => s.isShared && s.isActive);
           if (existingSession) {
             console.log(`✅ SessionDaemon: Reusing existing valid shared session: ${existingSession.sessionId}`);
-            return createPayload(params.context, params.sessionId, {
+            return createPayload(params.context, existingSession.sessionId, {
               success: true,
               timestamp: new Date().toISOString(),
               operation: 'get',
@@ -391,7 +391,7 @@ export class SessionDaemonServer extends SessionDaemon {
       // Persist session to per-project metadata file
       await this.saveSessionsToFile();
 
-      return createPayload(params.context, params.sessionId, {
+      return createPayload(params.context, actualSessionId, {
         success: true,
         timestamp: new Date().toISOString(),
         operation: params.operation,

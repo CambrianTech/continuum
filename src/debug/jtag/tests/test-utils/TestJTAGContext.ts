@@ -4,12 +4,13 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import type { JTAGContext, JTAGEnvironment } from '../../system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '../../system/core/types/SystemScopes';
 
 export function createTestJTAGContext(environment: JTAGEnvironment = 'browser'): JTAGContext {
   return {
     uuid: `jtag_test_${uuidv4()}`,
     environment,
-    sessionId: `session_${uuidv4()}`,
+    sessionId: SYSTEM_SCOPES.UNKNOWN_SESSION, // Let SessionDaemon assign shared session
     timestamp: Date.now()
   };
 }

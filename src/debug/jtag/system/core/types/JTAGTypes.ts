@@ -177,6 +177,67 @@ export const decodePayload = <T extends JTAGPayload>(encoded: string): T => {
 };
 
 /**
+ * Session-Aware Payload - Extended payload with session resolution capability
+ * 
+ * This interface enables session resolution throughout the JTAG system, preventing
+ * the session ID tracking issues where original client sessionIds are used instead
+ * of resolved shared session IDs.
+ */
+export interface JTAGSessionPayload extends JTAGPayload {
+  /** Session resolution context - replaces primitive sessionId with rich session object */
+  readonly sessionContext: import('../../../daemons/session-daemon/shared/SessionTypes').SessionContext;
+}
+
+/**
+ * Create a session-aware payload with unresolved session context
+ */
+export const createSessionPayload = <T>(
+  context: JTAGContext,
+  sessionId: UUID,
+  data: T
+): T & JTAGSessionPayload => {
+  // Create unresolved session context - will be resolved later by SessionDaemon
+  const sessionContext = {
+    originalSessionId: sessionId,
+    resolvedSessionId: sessionId,
+    session: undefined,
+    isResolved: false
+  };
+  
+  return {
+    context,
+    sessionId, // Keep for backward compatibility
+    sessionContext,
+    ...data
+  };
+};
+
+/**
+ * Create a session-aware payload with resolved session context
+ */
+export const createResolvedSessionPayload = <T>(
+  context: JTAGContext,
+  originalSessionId: UUID,
+  session: import('../../../daemons/session-daemon/shared/SessionTypes').SessionMetadata,
+  data: T
+): T & JTAGSessionPayload => {
+  // Create resolved session context
+  const sessionContext = {
+    originalSessionId,
+    resolvedSessionId: session.sessionId,
+    session,
+    isResolved: true
+  };
+  
+  return {
+    context,
+    sessionId: session.sessionId, // Use resolved session ID for backward compatibility
+    sessionContext,
+    ...data
+  };
+};
+
+/**
  * Check equality between two payloads
  */
 export const payloadEquals = (payload1: JTAGPayload, payload2: JTAGPayload): boolean => {
