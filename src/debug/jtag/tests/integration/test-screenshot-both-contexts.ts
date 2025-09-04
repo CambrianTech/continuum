@@ -1,12 +1,27 @@
 /**
  * Comprehensive Screenshot Test - Both Server and Browser Contexts
  * Tests screenshot functionality with TRUE browser-side and server-side execution
+ * 
+ * REFACTORED: Uses ScreenshotTesting utilities to eliminate code duplication
  */
 
-import { JTAGClientServer } from './system/core/client/server/JTAGClientServer';
-import type { JTAGClientConnectOptions } from './system/core/client/shared/JTAGClient';
+import {
+  ScreenshotTestingEngine,
+  captureTestScreenshot,
+  assertScreenshotValid
+} from '../shared/ScreenshotTesting';
 
-interface ScreenshotTestResult {
+import {
+  TestExecutionEngine,
+  runTestSuite
+} from '../shared/TestExecution';
+
+import {
+  DOM_SELECTORS,
+  TEST_TIMEOUTS
+} from '../shared/TestConstants';
+
+interface CrossContextScreenshotResult {
   testName: string;
   context: 'server' | 'browser';
   success: boolean;
@@ -15,44 +30,47 @@ interface ScreenshotTestResult {
   error?: string;
 }
 
-async function testServerSideScreenshot(): Promise<ScreenshotTestResult> {
+async function testServerSideScreenshot(): Promise<CrossContextScreenshotResult> {
   console.log('🖥️  SERVER CONTEXT: Server-initiated screenshot');
   
   try {
-    const clientOptions: JTAGClientConnectOptions = {
-      targetEnvironment: 'server',
-      transportType: 'websocket',
-      serverUrl: 'ws://localhost:9001',
-      enableFallback: false
-    };
+    // Use ScreenshotTesting utilities - eliminates all duplicate connection/error handling
+    const screenshotResult = await captureTestScreenshot(
+      'Server Context Screenshot',
+      DOM_SELECTORS.BODY,
+      {
+        filename: 'server-context-test.png',
+        timeout: TEST_TIMEOUTS.STANDARD_OPERATION,
+        validateFile: true
+      }
+    );
     
-    const { client } = await JTAGClientServer.connect(clientOptions);
-    
-    // Server calls screenshot command directly
-    const result = await (client as any).commands.screenshot({
-      filename: 'final-server-test.png',
-      querySelector: 'body'
-    });
-    
-    await (client as any).disconnect();
-    
-    const filepath = result.commandResult?.commandResult?.filepath;
-    if (filepath && result.success) {
-      const fs = await import('fs');
-      const stats = fs.statSync(filepath);
-      return {
-        testName: 'serverScreenshot',
-        context: 'server',
-        success: true,
-        filepath,
-        fileSize: stats.size
-      };
+    // Validate result using shared assertions
+    if (screenshotResult.success && screenshotResult.data) {
+      try {
+        assertScreenshotValid(screenshotResult.data, 'Server Screenshot');
+        
+        return {
+          testName: 'serverScreenshot',
+          context: 'server',
+          success: true,
+          filepath: screenshotResult.data.filepath,
+          fileSize: screenshotResult.data.fileSize
+        };
+      } catch (validationError) {
+        return {
+          testName: 'serverScreenshot',
+          context: 'server',
+          success: false,
+          error: `Validation failed: ${validationError}`
+        };
+      }
     } else {
       return {
         testName: 'serverScreenshot',
         context: 'server',
         success: false,
-        error: 'No file created'
+        error: screenshotResult.error || 'Screenshot capture failed'
       };
     }
     
@@ -66,54 +84,52 @@ async function testServerSideScreenshot(): Promise<ScreenshotTestResult> {
   }
 }
 
-async function testBrowserSideScreenshot(): Promise<ScreenshotTestResult> {
-  console.log('🌐 BROWSER CONTEXT: Browser-initiated screenshot');
+async function testBrowserSideScreenshot(): Promise<CrossContextScreenshotResult> {
+  console.log('🌐 BROWSER CONTEXT: Browser-initiated screenshot via exec');
   
   try {
-    const clientOptions: JTAGClientConnectOptions = {
-      targetEnvironment: 'server',
-      transportType: 'websocket', 
-      serverUrl: 'ws://localhost:9001',
-      enableFallback: false
-    };
+    // Use TestExecution utilities for browser code execution
+    const engine = new TestExecutionEngine();
     
-    const { client } = await JTAGClientServer.connect(clientOptions);
-    
-    // Have browser initiate its own screenshot using demo function
-    const result = await (client as any).commands.exec({
-      code: {
-        type: 'inline',
-        language: 'javascript',
-        source: `
-          console.log('🌐 BROWSER INITIATED: Starting browser-side screenshot');
-          
-          if (typeof testBrowserScreenshot === 'function') {
-            console.log('🌐 BROWSER INITIATED: Calling demo function');
-            testBrowserScreenshot(); // Browser calls its own screenshot
-            console.log('✅ BROWSER INITIATED: Demo function executed');
-            return { success: true, method: 'browser-initiated' };
-          } else {
-            console.log('❌ BROWSER INITIATED: Demo function not available');
-            return { success: false, error: 'Demo function not available' };
-          }
-        `
+    const browserResult = await engine.executeTest(
+      'Browser Context Exec Screenshot',
+      async (client) => {
+        // Have browser execute screenshot via exec command
+        const execResult = await client.commands.exec({
+          code: `
+            console.log('🌐 BROWSER INITIATED: Starting browser-side screenshot');
+            
+            // Try to call screenshot function if available
+            if (typeof window !== 'undefined' && window.jtag && window.jtag.screenshot) {
+              console.log('🌐 BROWSER INITIATED: Using jtag.screenshot');
+              return window.jtag.screenshot('browser-initiated-test.png');
+            } else {
+              console.log('❌ BROWSER INITIATED: jtag.screenshot not available');
+              return { success: false, error: 'Browser screenshot API not available' };
+            }
+          `
+        });
+        
+        return execResult;
+      },
+      {
+        timeout: TEST_TIMEOUTS.COMPLEX_OPERATION,
+        cleanupAfter: true
       }
-    });
+    );
     
-    await (client as any).disconnect();
-    
-    if (result.success && result.commandResult?.success) {
+    if (browserResult.success && browserResult.data?.success) {
       return {
-        testName: 'browserScreenshot', 
+        testName: 'browserScreenshot',
         context: 'browser',
         success: true
       };
     } else {
       return {
         testName: 'browserScreenshot',
-        context: 'browser', 
+        context: 'browser',
         success: false,
-        error: 'Browser execution failed'
+        error: browserResult.error || 'Browser execution failed'
       };
     }
     
@@ -121,73 +137,83 @@ async function testBrowserSideScreenshot(): Promise<ScreenshotTestResult> {
     return {
       testName: 'browserScreenshot',
       context: 'browser',
-      success: false, 
+      success: false,
       error: error instanceof Error ? error.message : String(error)
     };
   }
 }
 
 async function runComprehensiveScreenshotTests(): Promise<void> {
-  console.log('📸 COMPREHENSIVE SCREENSHOT TESTS - Both Contexts');
-  console.log('='.repeat(60));
+  console.log('📸 COMPREHENSIVE SCREENSHOT TESTS - Both Contexts (REFACTORED)');
+  console.log('='.repeat(65));
   
-  const results: ScreenshotTestResult[] = [];
-  
-  // Test 1: Server-initiated screenshot
-  console.log('1️⃣  Testing server-initiated screenshot...');
-  const serverResult = await testServerSideScreenshot();
-  results.push(serverResult);
-  console.log('');
-  
-  // Test 2: Browser-initiated screenshot  
-  console.log('2️⃣  Testing browser-initiated screenshot...');
-  const browserResult = await testBrowserSideScreenshot();
-  results.push(browserResult);
-  console.log('');
-  
-  // Results
-  console.log('🎯 COMPREHENSIVE SCREENSHOT TEST RESULTS');
-  console.log('='.repeat(60));
-  
-  const totalSuccess = results.filter(r => r.success).length;
-  console.log(`📊 Results: ${totalSuccess}/${results.length} tests passed`);
-  
-  results.forEach((result, index) => {
-    const status = result.success ? '✅ PASSED' : '❌ FAILED';
-    const context = result.context === 'server' ? '🖥️ ' : '🌐';
-    console.log(`${index + 1}. ${context} ${result.testName}: ${status}`);
-    
-    if (result.success) {
-      if (result.filepath) console.log(`   📁 File: ${result.filepath}`);
-      if (result.fileSize) console.log(`   📏 Size: ${result.fileSize} bytes`);
-    } else if (result.error) {
-      console.log(`   ❌ Error: ${result.error}`);
-    }
-  });
-  
-  console.log('');
-  
-  // Check for screenshot files
-  console.log('📁 SCREENSHOT FILES VERIFICATION:');
   try {
-    const fs = await import('fs');
-    const files = fs.readdirSync('/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/test-bench/.continuum/jtag/sessions/user/44be8f85-a3d2-410a-bd04-87c4bfeef9b9/screenshots/');
-    files.forEach(file => {
-      const stats = fs.statSync(`/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/test-bench/.continuum/jtag/sessions/user/44be8f85-a3d2-410a-bd04-87c4bfeef9b9/screenshots/${file}`);
-      console.log(`   📸 ${file} (${stats.size} bytes)`);
+    // Use TestExecution utilities for structured test suite
+    const suiteResult = await runTestSuite(
+      'Cross-Context Screenshot Tests',
+      [
+        {
+          name: 'Server Context Screenshot',
+          testFunction: async () => {
+            const result = await testServerSideScreenshot();
+            if (!result.success) {
+              throw new Error(result.error || 'Server screenshot failed');
+            }
+            return result;
+          },
+          options: { timeout: TEST_TIMEOUTS.STANDARD_OPERATION }
+        },
+        {
+          name: 'Browser Context Screenshot',
+          testFunction: async () => {
+            const result = await testBrowserSideScreenshot();
+            if (!result.success) {
+              throw new Error(result.error || 'Browser screenshot failed');
+            }
+            return result;
+          },
+          options: { timeout: TEST_TIMEOUTS.COMPLEX_OPERATION }
+        }
+      ]
+    );
+    
+    // Enhanced results reporting
+    console.log('🎯 CROSS-CONTEXT SCREENSHOT TEST RESULTS');
+    console.log('='.repeat(45));
+    
+    const { summary } = suiteResult;
+    console.log(`📊 Results: ${summary.passed}/${summary.total} tests passed (${summary.successRate}%)`);
+    console.log(`⏱️ Total Duration: ${summary.totalDuration}ms`);
+    
+    // Detailed results from individual tests
+    const serverResult = await testServerSideScreenshot();
+    const browserResult = await testBrowserSideScreenshot();
+    
+    [serverResult, browserResult].forEach((result, index) => {
+      const status = result.success ? '✅ PASSED' : '❌ FAILED';
+      const context = result.context === 'server' ? '🖥️ ' : '🌐';
+      console.log(`${index + 1}. ${context} ${result.testName}: ${status}`);
+      
+      if (result.success) {
+        if (result.filepath) console.log(`   📁 File: ${result.filepath}`);
+        if (result.fileSize) console.log(`   📏 Size: ${result.fileSize} bytes`);
+      } else if (result.error) {
+        console.log(`   ❌ Error: ${result.error}`);
+      }
     });
+    
+    if (summary.passed === summary.total) {
+      console.log('\n🎉 ALL CROSS-CONTEXT SCREENSHOT TESTS PASSED!');
+      console.log('✅ Both server-side and browser-side screenshot functionality confirmed');
+      console.log('✅ Refactored utilities eliminated code duplication successfully');
+    } else {
+      console.log('\n❌ SOME SCREENSHOT TESTS FAILED');
+      console.error('Test failures detected in cross-context screenshot tests');
+      process.exit(1);
+    }
+    
   } catch (error) {
-    console.log('   ⚠️ Could not list screenshot files');
-  }
-  
-  if (totalSuccess === results.length) {
-    console.log('');
-    console.log('🎉 ALL SCREENSHOT TESTS PASSED!');
-    console.log('✅ Both server-side and browser-side screenshot functionality confirmed');
-    console.log('✅ Thin client architecture working in both contexts');
-  } else {
-    console.log('');
-    console.log('❌ SOME SCREENSHOT TESTS FAILED');
+    console.error('💥 Cross-context screenshot test suite failed:', error);
     process.exit(1);
   }
 }
