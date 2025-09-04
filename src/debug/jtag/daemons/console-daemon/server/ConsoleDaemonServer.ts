@@ -8,10 +8,13 @@ import { ConsoleDaemon } from '../shared/ConsoleDaemon';
 import type { ConsolePayload } from '../shared/ConsoleDaemon';
 import { SYSTEM_SCOPES, shouldDualScope } from '../../../system/core/types/SystemScopes';
 import { WorkingDirConfig } from '../../../system/core/config/WorkingDirConfig';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 export class ConsoleDaemonServer extends ConsoleDaemon {
   private symlinkWarningShown = false;
   private currentUserSymlinkWarningShown = false;
+  
   
   // setupConsoleInterception() is now handled by the base class
 
@@ -22,7 +25,12 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
     // Always write to system logs
     await this.writeToSystemLogs(consolePayload);
     
-    // Also write to session logs if this is a real session
+    // Don't create session directories for server context UUIDs
+    if (consolePayload.sessionId === this.context.uuid) {
+      return;
+    }
+    
+    // Write to session logs for real client sessions
     if (shouldDualScope(consolePayload.sessionId)) {
       await this.writeToSessionLogs(consolePayload);
     }
@@ -34,20 +42,13 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
   }
 
   private async writeToSystemLogs(consolePayload: ConsolePayload): Promise<void> {
-    // Write to system logs: {workingDir}/.continuum/jtag/sessions/system/00000000-0000-0000-0000-000000000000/logs/
     try {
-      const fs = await eval('import("fs/promises")');
-      const path = await eval('import("path")');
-      
-      // Use WorkingDirConfig for per-project isolation
       const continuumPath = WorkingDirConfig.getContinuumPath();
       const logDir = path.join(continuumPath, 'jtag', 'sessions', 'system', SYSTEM_SCOPES.SYSTEM, 'logs');
       await fs.mkdir(logDir, { recursive: true });
       
-      // Create symlink for convenient access: {continuumPath}/jtag/system -> sessions/system/00000000-0000-0000-0000-000000000000/
-      await this.ensureSystemSymlink(fs, path, continuumPath);
-      
-      await this.writeLogFiles(fs, path, logDir, consolePayload);
+      await this.ensureSystemSymlink(continuumPath);
+      await this.writeLogFiles(logDir, consolePayload);
       
     } catch (error) {
       this.originalConsole.error('ConsoleDaemon: Failed to write system logs:', error);
@@ -55,29 +56,21 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
   }
 
   private async writeToSessionLogs(consolePayload: ConsolePayload): Promise<void> {
-    // Write to session logs: {workingDir}/.continuum/jtag/sessions/{category}/sessionId/logs/
-    // TODO: Get category from session metadata - for now use 'user' as default
     try {
-      const fs = await eval('import("fs/promises")');
-      const path = await eval('import("path")');
-      
-      // Use WorkingDirConfig for per-project isolation
       const continuumPath = WorkingDirConfig.getContinuumPath();
-      const category = 'user'; // TODO: Get from SessionDaemon
+      const category = 'user';
       const logDir = path.join(continuumPath, 'jtag', 'sessions', category, consolePayload.sessionId, 'logs');
       await fs.mkdir(logDir, { recursive: true });
       
-      // Create/update currentUser symlink for easy access to current session
-      await this.ensureCurrentUserSymlink(fs, path, continuumPath, category, consolePayload.sessionId);
-      
-      await this.writeLogFiles(fs, path, logDir, consolePayload);
+      await this.ensureCurrentUserSymlink(continuumPath, category, consolePayload.sessionId);
+      await this.writeLogFiles(logDir, consolePayload);
       
     } catch (error) {
       this.originalConsole.error('ConsoleDaemon: Failed to write session logs:', error);
     }
   }
 
-  private async ensureSystemSymlink(fs: any, path: any, continuumPath: string): Promise<void> {
+  private async ensureSystemSymlink(continuumPath: string): Promise<void> {
     try {
       const symlinkPath = path.join(continuumPath, 'jtag', 'system');
       const targetPath = `sessions/system/${SYSTEM_SCOPES.SYSTEM}`;
@@ -127,7 +120,7 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
     }
   }
 
-  private async ensureCurrentUserSymlink(fs: any, path: any, continuumPath: string, category: string, sessionId: string): Promise<void> {
+  private async ensureCurrentUserSymlink(continuumPath: string, category: string, sessionId: string): Promise<void> {
     try {
       const symlinkPath = path.join(continuumPath, 'jtag', 'currentUser');
       const targetPath = `sessions/${category}/${sessionId}`;
@@ -177,7 +170,7 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
     }
   }
 
-  private async writeLogFiles(fs: any, path: any, logDir: string, consolePayload: ConsolePayload): Promise<void> {
+  private async writeLogFiles(logDir: string, consolePayload: ConsolePayload): Promise<void> {
     // Write to both text and JSON files
     const baseName = `${consolePayload.context.environment}-console-${consolePayload.level}`;
     const txtFile = path.join(logDir, `${baseName}.log`);

@@ -379,15 +379,15 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     // SECURITY: CLI clients use ephemeral sessions, browser clients use shared sessions
     const isEphemeralClient = this.context.environment === 'server'; // Server-side JTAGClient = CLI client
     
-    // Use provided sessionId if available, otherwise generate new UUID for shared session
+    // Use provided sessionId if available, otherwise let SessionDaemon assign shared session
     let targetSessionId: UUID;
     if (providedSessionId) {
       targetSessionId = providedSessionId;
       console.log(`🔄 JTAGClient: Using provided sessionId: ${providedSessionId}`);
     } else {
-      // Always generate new UUID for session creation - let SessionDaemon handle shared session logic
-      targetSessionId = generateUUID();
-      console.log(`🆕 JTAGClient: Generated sessionId for ${isEphemeralClient ? 'ephemeral' : 'shared'} session: ${targetSessionId}`);
+      // Use UNKNOWN_SESSION marker - let SessionDaemon assign the shared session ID
+      targetSessionId = SYSTEM_SCOPES.UNKNOWN_SESSION;
+      console.log(`🎯 JTAGClient: Requesting shared session assignment from SessionDaemon`);
     }
     
     const sessionParams = {
