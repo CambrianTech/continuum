@@ -305,8 +305,8 @@ export class ThemeWidget extends BaseWidget {
     // Handle Apply button click
     applyButton.addEventListener('click', async () => {
       const selectedTheme = themeSelector.value;
-      if (selectedTheme && selectedTheme !== this.currentTheme) {
-        console.log(`🎨 ThemeWidget: Applying theme switch from '${this.currentTheme}' to '${selectedTheme}'`);
+      if (selectedTheme) {
+        console.log(`🎨 ThemeWidget: Applying theme '${selectedTheme}' (removing !== check due to dropdown preview)`);
         
         // Use the actual JTAG theme/set command for proper theme switching
         try {
