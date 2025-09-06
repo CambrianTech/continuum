@@ -288,6 +288,7 @@ export class ThemeWidget extends BaseWidget {
   private async setupThemeControls(): Promise<void> {
     const themeSelector = this.shadowRoot?.querySelector('#theme-selector') as HTMLSelectElement;
     const applyButton = this.shadowRoot?.querySelector('#apply-theme') as HTMLButtonElement;
+    const cancelButton = this.shadowRoot?.querySelector('#cancel-theme') as HTMLButtonElement;
     
     if (!themeSelector || !applyButton) {
       console.warn('🎨 ThemeWidget: Theme controls not found in shadow DOM');
@@ -298,6 +299,7 @@ export class ThemeWidget extends BaseWidget {
     await this.populateThemeDropdown(themeSelector);
     
     // Set current theme as selected
+    const originalTheme = this.currentTheme;
     themeSelector.value = this.currentTheme;
     
     // Handle Apply button click
@@ -305,9 +307,52 @@ export class ThemeWidget extends BaseWidget {
       const selectedTheme = themeSelector.value;
       if (selectedTheme && selectedTheme !== this.currentTheme) {
         console.log(`🎨 ThemeWidget: Applying theme switch from '${this.currentTheme}' to '${selectedTheme}'`);
-        await this.setTheme(selectedTheme);
+        
+        // Use the actual JTAG theme/set command for proper theme switching
+        try {
+          // Get JTAG client if available (for command execution)
+          if (typeof window !== 'undefined' && (window as any).jtagSystem) {
+            await (window as any).jtagSystem.commands.themeSet({ themeName: selectedTheme });
+            console.log(`✅ ThemeWidget: Successfully applied theme '${selectedTheme}' via JTAG command`);
+          } else {
+            // Fallback to internal method if JTAG not available
+            await this.setTheme(selectedTheme);
+            console.log(`✅ ThemeWidget: Applied theme '${selectedTheme}' via internal method`);
+          }
+        } catch (error) {
+          console.error(`❌ ThemeWidget: Failed to apply theme '${selectedTheme}':`, error);
+          // Try fallback method
+          await this.setTheme(selectedTheme);
+        }
+        
+        // Dispatch custom event to signal theme was applied (for panel closing)
+        this.dispatchEvent(new CustomEvent('theme-applied', {
+          detail: { themeName: selectedTheme },
+          bubbles: true
+        }));
       }
     });
+    
+    // Handle Cancel button click
+    if (cancelButton) {
+      cancelButton.addEventListener('click', async () => {
+        console.log(`🎨 ThemeWidget: Canceling theme changes, reverting to '${originalTheme}'`);
+        
+        // Revert dropdown to original theme
+        themeSelector.value = originalTheme;
+        
+        // Revert theme if it was changed
+        if (this.currentTheme !== originalTheme) {
+          await this.setTheme(originalTheme);
+        }
+        
+        // Close the theme modal if we're in one
+        this.dispatchEvent(new CustomEvent('theme-cancelled', {
+          detail: { originalTheme },
+          bubbles: true
+        }));
+      });
+    }
     
     // Handle dropdown change (immediate apply)
     themeSelector.addEventListener('change', async (event) => {
@@ -318,7 +363,7 @@ export class ThemeWidget extends BaseWidget {
       }
     });
     
-    console.log('✅ ThemeWidget: Theme controls set up successfully');
+    console.log('✅ ThemeWidget: Theme controls set up successfully with Cancel button');
   }
 
   /**

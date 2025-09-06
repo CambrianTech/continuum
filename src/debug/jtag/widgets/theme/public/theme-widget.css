@@ -64,17 +64,28 @@
   box-shadow: 0 0 0 2px var(--input-focus-shadow, rgba(0, 212, 255, 0.2));
 }
 
-.theme-apply-btn {
-  background: var(--button-primary-background, linear-gradient(135deg, #00d4ff, #0099cc));
+.theme-button-group {
+  display: flex;
+  gap: var(--spacing-xs, 4px);
+  align-items: center;
+}
+
+.theme-apply-btn,
+.theme-cancel-btn {
   border: none;
   border-radius: var(--radius-sm, 4px);
-  color: var(--button-primary-text, #000000);
   padding: var(--spacing-xs, 4px) var(--spacing-sm, 8px);
   font-family: var(--font-primary, monospace);
   font-size: 10px;
   font-weight: bold;
   cursor: pointer;
   transition: all 0.2s ease;
+  min-width: 50px;
+}
+
+.theme-apply-btn {
+  background: var(--button-primary-background, linear-gradient(135deg, #00d4ff, #0099cc));
+  color: var(--button-primary-text, #000000);
 }
 
 .theme-apply-btn:hover {
@@ -84,6 +95,21 @@
 
 .theme-apply-btn:active {
   background: var(--button-primary-background-active, linear-gradient(135deg, #009acc, #0077aa));
+  transform: translateY(0);
+}
+
+.theme-cancel-btn {
+  background: var(--button-secondary-background, linear-gradient(135deg, #666666, #555555));
+  color: var(--button-secondary-text, #ffffff);
+}
+
+.theme-cancel-btn:hover {
+  background: var(--button-secondary-background-hover, linear-gradient(135deg, #777777, #666666));
+  transform: translateY(-1px);
+}
+
+.theme-cancel-btn:active {
+  background: var(--button-secondary-background-active, linear-gradient(135deg, #555555, #444444));
   transform: translateY(0);
 }
 
