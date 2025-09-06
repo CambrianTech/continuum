@@ -19,10 +19,11 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 15px 20px;
-  border-bottom: 1px solid var(--border-subtle, rgba(0, 212, 255, 0.2));
-  background: var(--widget-header-background, rgba(10, 15, 20, 0.3));
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-subtle, rgba(0, 212, 255, 0.15));
+  background: var(--surface-secondary, rgba(10, 15, 20, 0.8));
   flex-shrink: 0;
+  backdrop-filter: blur(10px);
 }
 
 .content-tabs {
@@ -32,25 +33,29 @@
 
 .content-tab {
   padding: 8px 16px;
-  border-radius: 4px;
-  background: rgba(0, 212, 255, 0.1);
-  border: 1px solid rgba(0, 212, 255, 0.2);
-  color: var(--text-primary, rgba(255, 255, 255, 0.9));
+  border-radius: 6px;
+  background: var(--surface-input, rgba(255, 255, 255, 0.08));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  color: var(--text-secondary, rgba(255, 255, 255, 0.7));
   cursor: pointer;
   transition: all 0.2s ease;
-  font-size: 0.9em;
+  font-size: 0.85em;
+  font-weight: 500;
 }
 
 .content-tab:hover {
-  background: rgba(0, 212, 255, 0.2);
+  background: var(--surface-hover, rgba(255, 255, 255, 0.12));
+  border-color: var(--accent-color, #00d4ff);
+  color: var(--text-primary, rgba(255, 255, 255, 0.9));
   transform: translateY(-1px);
 }
 
 .content-tab.active {
-  background: rgba(0, 212, 255, 0.3);
+  background: var(--accent-color, #00d4ff);
   border-color: var(--accent-color, #00d4ff);
-  color: var(--accent-color, #00d4ff);
-  box-shadow: 0 2px 8px rgba(0, 212, 255, 0.2);
+  color: var(--bg-primary, #000);
+  box-shadow: 0 2px 8px rgba(0, 212, 255, 0.3);
+  font-weight: 600;
 }
 
 .header-controls {
@@ -94,16 +99,18 @@
 /* Main Content View */
 .content-view {
   flex: 1;
-  padding: 15px;
+  padding: 0;
   overflow: hidden;
   display: flex;
   min-height: 0;
+  background: var(--surface-primary, rgba(15, 20, 25, 0.95));
 }
 
-/* Chat widget container - let chat widget handle its own styling */
+/* Widget containers - let widgets handle their own styling */
 chat-widget {
   flex: 1;
   min-height: 0;
+  width: 100%;
 }
 
 /* Content Footer */

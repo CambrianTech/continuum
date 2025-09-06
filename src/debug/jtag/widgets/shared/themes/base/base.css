@@ -12,14 +12,19 @@
 }
 
 body {
-    font-family: var(--font-primary);
-    background: var(--background-primary);
-    color: var(--content-primary);
+    font-family: var(--font-primary, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+    background: var(--background-primary, var(--bg-primary, #0a0f14));
+    color: var(--content-primary, var(--text-primary, rgba(255, 255, 255, 0.9)));
     overflow: hidden;
     user-select: none;
     -webkit-user-select: none;
     -moz-user-select: none;
     -ms-user-select: none;
+}
+
+/* Additional fallback for any white background issues */
+html, body {
+    background-color: #0a0f14 !important;
 }
 
 /* Enable text selection for chat widget areas */

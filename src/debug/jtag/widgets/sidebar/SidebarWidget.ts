@@ -85,14 +85,18 @@ export class SidebarWidget extends BaseWidget {
   }
 
   /**
-   * Get dynamic list content HTML
+   * Get dynamic list content HTML - now loads modular widgets
    */
   private async getDynamicListContent(): Promise<string> {
-    // For now, return chat rooms - will be dynamic based on page
+    // Dynamic sidebar widgets based on current page/context
+    // For chat page: load room list and user list widgets
     return `
-      <div class="list-item active">• general</div>
-      <div class="list-item">• academy</div>
-      <div class="list-item">• community</div>
+      <div class="sidebar-widget-container">
+        <room-list-widget></room-list-widget>
+      </div>
+      <div class="sidebar-widget-container">  
+        <user-list-widget></user-list-widget>
+      </div>
     `;
   }
 

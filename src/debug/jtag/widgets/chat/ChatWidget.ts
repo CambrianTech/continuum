@@ -44,10 +44,9 @@ export class ChatWidget extends BaseWidget {
     const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
     
     // Replace dynamic content in template
-    const dynamicContent = templateString.replace(
-      '<!-- Dynamic messages rendered here -->', 
-      this.renderMessages()
-    );
+    const dynamicContent = templateString
+      .replace('<!-- ROOM_NAME -->', this.getRoomDisplayName())
+      .replace('<!-- Dynamic messages rendered here -->', this.renderMessages());
     
     this.shadowRoot.innerHTML = `
       <style>${styles}</style>
@@ -146,6 +145,11 @@ export class ChatWidget extends BaseWidget {
       console.error('❌ ChatWidget: Failed to send message:', error);
       this.handleError(error, 'sendMessage');
     }
+  }
+
+  private getRoomDisplayName(): string {
+    // Capitalize the room name for display
+    return this.currentRoom.charAt(0).toUpperCase() + this.currentRoom.slice(1);
   }
 
   private getChatContext(): any {

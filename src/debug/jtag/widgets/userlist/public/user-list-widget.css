@@ -1,0 +1,107 @@
+/* User List Widget - Sidebar widget styling with CSS variables */
+
+:host {
+  display: block;
+  width: 100%;
+}
+
+.user-list-container {
+  background: var(--widget-background, rgba(15, 20, 25, 0.95));
+  border: 1px solid var(--widget-border, rgba(0, 212, 255, 0.3));
+  border-radius: var(--radius-md, 8px);
+  overflow: hidden;
+  margin-bottom: var(--spacing-md, 12px);
+}
+
+.user-list-header {
+  padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
+  background: var(--widget-header-background, rgba(10, 15, 20, 0.5));
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header-title {
+  color: var(--text-primary, rgba(255, 255, 255, 0.9));
+  font-weight: 600;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.user-count {
+  background: var(--accent-color, #00d4ff);
+  color: var(--bg-primary, #000);
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7em;
+  font-weight: bold;
+}
+
+.user-list {
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.user-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm, 8px);
+  padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border-left: 3px solid transparent;
+}
+
+.user-item:hover {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.05));
+  transform: translateX(2px);
+}
+
+.user-icon {
+  font-size: 1.2em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}
+
+.user-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.user-name {
+  color: var(--text-primary, rgba(255, 255, 255, 0.8));
+  font-size: 0.9em;
+  font-weight: 500;
+}
+
+.user-role {
+  color: var(--text-secondary, rgba(255, 255, 255, 0.5));
+  font-size: 0.75em;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.user-status {
+  font-size: 0.8em;
+  display: flex;
+  align-items: center;
+}
+
+.empty-state {
+  padding: var(--spacing-lg, 16px);
+  text-align: center;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.5));
+  font-size: 0.8em;
+  font-style: italic;
+}
