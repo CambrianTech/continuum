@@ -55,7 +55,70 @@ export class MainWidget extends BaseWidget {
       ${dynamicContent}
     `;
     
+    // Add event listeners after DOM is created
+    this.setupEventListeners();
+    
     console.log('✅ MainPanel: Main panel rendered');
+  }
+
+  private setupEventListeners(): void {
+    // Theme button click
+    this.shadowRoot?.getElementById('theme-button')?.addEventListener('click', () => {
+      this.openThemeTab();
+    });
+
+    // Tab clicks
+    this.shadowRoot?.querySelectorAll('.content-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        const tabName = (tab as HTMLElement).dataset.tab;
+        if (tabName) {
+          this.switchToTab(tabName);
+        }
+      });
+    });
+  }
+
+  private openThemeTab(): void {
+    // Switch to theme tab and show theme widget content
+    this.switchToTab('theme');
+  }
+
+  private switchToTab(tabName: string): void {
+    // Remove active class from all tabs
+    this.shadowRoot?.querySelectorAll('.content-tab').forEach(tab => {
+      tab.classList.remove('active');
+    });
+
+    // Add active class to selected tab
+    const selectedTab = this.shadowRoot?.querySelector(`[data-tab="${tabName}"]`);
+    selectedTab?.classList.add('active');
+
+    // Update content view based on tab
+    this.updateContentView(tabName);
+    
+    console.log(`📄 MainPanel: Switched to tab: ${tabName}`);
+  }
+
+  private updateContentView(tabName: string): void {
+    const contentView = this.shadowRoot?.querySelector('.content-view');
+    if (!contentView) return;
+
+    switch (tabName) {
+      case 'chat':
+        contentView.innerHTML = '<chat-widget></chat-widget>';
+        break;
+      case 'theme':
+        contentView.innerHTML = '<theme-widget></theme-widget>';
+        break;
+      case 'code':
+        contentView.innerHTML = '<div>Code Editor - Coming Soon</div>';
+        break;
+      case 'academy':
+        contentView.innerHTML = '<div>Academy - Coming Soon</div>';
+        break;
+      default:
+        contentView.innerHTML = '<chat-widget></chat-widget>';
+    }
   }
 
   protected async onWidgetCleanup(): Promise<void> {
@@ -89,9 +152,10 @@ export class MainWidget extends BaseWidget {
    */
   private async getContentTabs(): Promise<string> {
     return `
-      <div class="content-tab active">Chat</div>
-      <div class="content-tab">Code Editor</div>
-      <div class="content-tab">Academy</div>
+      <div class="content-tab active" data-tab="chat">Chat</div>
+      <div class="content-tab" data-tab="code">Code Editor</div>
+      <div class="content-tab" data-tab="academy">Academy</div>
+      <div class="content-tab" data-tab="theme">Theme</div>
     `;
   }
 
@@ -109,8 +173,9 @@ export class MainWidget extends BaseWidget {
    */
   private async getStatusButtons(): Promise<string> {
     return `
-      <button class="status-button">Settings</button>
-      <button class="status-button">Help</button>
+      <button class="status-button" id="theme-button">Theme</button>
+      <button class="status-button" id="settings-button">Settings</button>
+      <button class="status-button" id="help-button">Help</button>
     `;
   }
 
