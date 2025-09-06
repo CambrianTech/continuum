@@ -12,6 +12,8 @@
 }
 
 body {
+    margin: 0 !important;  /* Force remove default 8px margin */
+    padding: 0 !important;  /* Force remove any padding */
     font-family: var(--font-primary, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
     background: var(--background-primary, var(--bg-primary, #0a0f14));
     color: var(--content-primary, var(--text-primary, rgba(255, 255, 255, 0.9)));
@@ -24,6 +26,8 @@ body {
 
 /* Additional fallback for any white background issues */
 html, body {
+    margin: 0 !important;
+    padding: 0 !important; 
     background-color: #0a0f14 !important;
 }
 
@@ -80,11 +84,11 @@ textarea {
 
 .content-view {
     flex: 1;
-    padding: var(--spacing-lg);
+    padding: 0;  /* Remove padding that causes white margin around interface */
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    background: var(--widget-content-background);
+    background: transparent;  /* Ensure no background color creates white margin */
 }
 
 /* === CHAT WIDGET PANEL === */
