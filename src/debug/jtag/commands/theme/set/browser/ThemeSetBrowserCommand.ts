@@ -7,7 +7,6 @@ import { createThemeSetResult } from '../shared/ThemeSetTypes';
 import { EnhancementError } from '../../../../system/core/types/ErrorTypes';
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
-import { ThemeRegistry } from '../../../../widgets/shared/themes/ThemeTypes';
 
 export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSetResult> {
   private themeStyleElement: HTMLStyleElement | null = null;
@@ -56,25 +55,30 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
   }
 
   /**
-   * SIMPLIFIED: Browser theme switching using existing theme infrastructure
+   * Simple theme switching - delegate to ThemeWidget if available
    */
   private async setThemeDirectly(themeName: string, params: ThemeSetParams): Promise<void> {
-    console.log(`🎨 ThemeSetBrowser: Switching to theme '${themeName}' using simplified approach`);
+    console.log(`🎨 ThemeSetBrowser: Setting theme '${themeName}'`);
     
     try {
-      // STEP 1: Check if theme exists in registry
-      const themeManifest = ThemeRegistry.getTheme(themeName);
-      if (!themeManifest) {
-        throw new Error(`Theme '${themeName}' not found in registry`);
+      // Try to delegate to existing ThemeWidget
+      const themeWidget = document.querySelector('theme-widget') as any;
+      if (themeWidget && typeof themeWidget.setTheme === 'function') {
+        console.log('🎨 ThemeSetBrowser: Delegating to ThemeWidget');
+        await themeWidget.setTheme(themeName);
+        console.log('✅ ThemeSetBrowser: Theme set via ThemeWidget delegation');
+        return;
       }
       
-      // STEP 2: Load ALL theme CSS (base + theme) - SAME AS ThemeWidget.loadAllThemeCSS()
-      const combinedCSS = await this.loadAllThemeCSS(themeName, params);
+      // Fallback - simple CSS loading
+      console.log('🎨 ThemeSetBrowser: No ThemeWidget found, using fallback');
+      const baseCSS = await this.loadThemeFile('base/theme.css');
+      const themeCSS = themeName !== 'base' ? await this.loadThemeFile(`${themeName}/theme.css`) : '';
       
-      // STEP 3: Inject CSS into document head - SAME AS ThemeWidget.injectThemeIntoDocumentHead()
-      await this.injectThemeIntoDocumentHead(combinedCSS, themeName);
+      const combinedCSS = baseCSS + '\n' + themeCSS;
+      this.injectCSS(combinedCSS, themeName);
       
-      console.log('✅ ThemeSetBrowser: Theme switched using simplified approach');
+      console.log(`✅ ThemeSetBrowser: Theme '${themeName}' applied`);
       
     } catch (error) {
       console.error('❌ ThemeSetBrowser: Failed to switch theme:', error);
@@ -83,141 +87,45 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
   }
 
   /**
-   * COPIED EXACTLY FROM ThemeWidget.loadAllThemeCSS() - Load ALL theme CSS (base + current theme)
+   * Load a theme CSS file
    */
-  private async loadAllThemeCSS(themeName: string, params: ThemeSetParams): Promise<string> {
+  private async loadThemeFile(filename: string): Promise<string> {
     try {
-      console.log('🎨 ThemeSetBrowser: Loading ALL theme CSS (base + theme)');
-      
-      // Load base CSS files from themes/base/
-      const baseStyles = await this.loadDirectoryStyles('base', params);
-      
-      // Load theme-specific CSS files from themes/current-theme-name/
-      const themeStyles = themeName !== 'base' 
-        ? await this.loadDirectoryStyles(themeName, params)
-        : '';
-      
-      // Combine base + theme styles
-      const combinedCSS = baseStyles + themeStyles;
-      
-      console.log(`✅ ThemeSetBrowser: Combined theme CSS loaded (${combinedCSS.length} chars)`);
-      return combinedCSS;
-      
-    } catch (error) {
-      console.error('❌ ThemeSetBrowser: Failed to load all theme CSS:', error);
-      return '';
-    }
-  }
-
-  /**
-   * COPIED EXACTLY FROM ThemeWidget.loadDirectoryStyles() - Load all CSS files from a theme directory
-   */
-  private async loadDirectoryStyles(directoryName: string, params: ThemeSetParams): Promise<string> {
-    try {
-      // Get list of files to load for this directory
-      const cssFiles = await this.getDirectoryFiles(directoryName);
-      let combinedStyles = '';
-      
-      for (const fileName of cssFiles) {
-        try {
-          // Use BaseWidget's protected jtagOperation method - same as loadResource does internally
-          const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
-          console.log(`🎨 ThemeSetBrowser: Loading ${filePath} via file/load command`);
-          
-          // EXACT SAME APPROACH AS ThemeWidget - use JTAG client directly
-          console.log(`🎨 ThemeSetBrowser: Loading ${filePath} via JTAG client like ThemeWidget`);
-          
-          // Get the JTAG client from window (same as BaseWidget.jtagOperation)
-          const jtagClient = (window as any).jtag;
-          if (!jtagClient || !jtagClient.commands) {
-            throw new Error('JTAG client not available - system not ready');
-          }
-          
-          // Call file/load command directly (same as ThemeWidget does)
-          const result = await jtagClient.commands['file/load']({
-            filepath: filePath
-          });
-          
-          // Handle nested JTAG response structure (same as BaseWidget loadResource)
-          const fileData = (result as any).commandResult || result;
-          if (result.success && fileData.success && fileData.content) {
-            combinedStyles += `\n/* === ${directoryName}/${fileName} === */\n${fileData.content}\n`;
-            console.log(`✅ ThemeSetBrowser: Loaded ${directoryName}/${fileName} (${fileData.bytesRead} bytes)`);
-          } else {
-            console.log(`⚠️ ThemeSetBrowser: ${directoryName}/${fileName} not found - skipping`);
-          }
-        } catch (error) {
-          console.warn(`⚠️ ThemeSetBrowser: Could not load ${directoryName}/${fileName}:`, error);
-        }
+      const filePath = `widgets/shared/themes/${filename}`;
+      const jtagClient = (window as any).jtag;
+      if (!jtagClient?.commands) {
+        throw new Error('JTAG client not available');
       }
       
-      return combinedStyles;
+      const result = await jtagClient.commands['file/load']({ filepath: filePath });
+      const fileData = (result as any).commandResult || result;
+      
+      if (result.success && fileData.success && fileData.content) {
+        return fileData.content;
+      }
+      return '';
     } catch (error) {
-      console.error(`❌ ThemeSetBrowser: Failed to load directory styles for '${directoryName}':`, error);
+      console.warn(`⚠️ Could not load theme file ${filename}:`, error);
       return '';
     }
   }
-
+  
   /**
-   * COPIED EXACTLY FROM ThemeWidget.getDirectoryFiles() - Get list of CSS files for a theme from its manifest
+   * Simple CSS injection
    */
-  private async getDirectoryFiles(directoryName: string): Promise<string[]> {
-    // Get files from theme manifest in registry
-    const themeManifest = ThemeRegistry.getTheme(directoryName);
-    if (themeManifest) {
-      return themeManifest.files;
+  private injectCSS(css: string, themeName: string): void {
+    // Remove existing theme style
+    if (this.themeStyleElement) {
+      this.themeStyleElement.remove();
     }
     
-    // Fallback to standard theme.css if no manifest found
-    console.warn(`⚠️ ThemeSetBrowser: No manifest found for theme '${directoryName}', using fallback`);
-    return ['theme.css'];
+    // Create and inject new style
+    this.themeStyleElement = document.createElement('style');
+    this.themeStyleElement.id = `jtag-theme-${themeName}`;
+    this.themeStyleElement.textContent = css;
+    document.head.appendChild(this.themeStyleElement);
   }
 
-  /**
-   * COPIED FROM ThemeWidget.injectThemeIntoDocumentHead() - Inject CSS into document head
-   */
-  private async injectThemeIntoDocumentHead(combinedCSS: string, themeName: string): Promise<void> {
-    try {
-      console.log('🎨 ThemeSetBrowser: Injecting theme CSS into document head for global access...');
-      console.log('🔧 CLAUDE-DEBUG: combinedCSS length:', combinedCSS.length);
-      console.log('🔧 CLAUDE-DEBUG: combinedCSS first 200 chars:', combinedCSS.substring(0, 200));
-      
-      // Remove existing theme style element
-      if (this.themeStyleElement) {
-        console.log('🔧 CLAUDE-DEBUG: Removing existing theme style element:', this.themeStyleElement.id);
-        this.themeStyleElement.remove();
-        this.themeStyleElement = null;
-      }
-      
-      // Create new theme style element and inject into document head
-      this.themeStyleElement = document.createElement('style');
-      this.themeStyleElement.id = `jtag-theme-${themeName}`;
-      this.themeStyleElement.textContent = combinedCSS;
-      
-      console.log('🔧 CLAUDE-DEBUG: Created style element with id:', this.themeStyleElement.id);
-      console.log('🔧 CLAUDE-DEBUG: About to append to document.head...');
-      
-      document.head.appendChild(this.themeStyleElement);
-      
-      // Verify the injection worked
-      const verifyElement = document.head.querySelector(`#jtag-theme-${themeName}`);
-      console.log('🔧 CLAUDE-DEBUG: Verification - element exists in document head:', !!verifyElement);
-      console.log('🔧 CLAUDE-DEBUG: Verification - element content length:', verifyElement?.textContent?.length || 0);
-      
-      console.log(`✅ ThemeSetBrowser: Theme '${themeName}' CSS injected into document head (${combinedCSS.length} chars)`);
-      
-      // Dispatch theme change event
-      document.dispatchEvent(new CustomEvent('theme-changed', {
-        detail: { themeName: themeName },
-        bubbles: true
-      }));
-      
-    } catch (error) {
-      console.error('❌ ThemeSetBrowser: Failed to inject theme CSS into document head:', error);
-      console.error('🔧 CLAUDE-DEBUG: Error stack:', (error as Error).stack);
-      throw error;
-    }
-  }
   
   private async getCurrentTheme(): Promise<string | undefined> {
     try {

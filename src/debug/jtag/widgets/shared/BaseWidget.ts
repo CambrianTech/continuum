@@ -16,11 +16,7 @@
  * - this.notifyAI(message) - handles Academy daemon
  */
 
-import { 
-  ChatEventEmitter,
-  ChatEventData,
-  ChatEventType 
-} from '../chat-widget/shared/ChatTypes';
+// Event types will be added when needed
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import type { FileSaveParams, FileSaveResult } from '../../commands/file/save/shared/FileSaveTypes';
 import type { ScreenshotParams, ScreenshotResult } from '../../commands/screenshot/shared/ScreenshotTypes';
@@ -91,7 +87,7 @@ export interface WidgetContext {
 
 export abstract class BaseWidget extends HTMLElement {
   declare shadowRoot: ShadowRoot;
-  protected eventEmitter = new ChatEventEmitter();
+  protected eventEmitter = new Map<string, Function[]>();
   protected config: WidgetConfig;
   protected state: WidgetState;
   protected context: WidgetContext;
@@ -497,7 +493,8 @@ export abstract class BaseWidget extends HTMLElement {
    */
   protected onEventReceived(eventType: string, data: any): void {
     // Default: just emit to internal event system
-    this.eventEmitter.emit(eventType as any, data);
+    const handlers = this.eventEmitter.get(eventType) || [];
+    handlers.forEach(handler => handler(data));
   }
 
   /**
