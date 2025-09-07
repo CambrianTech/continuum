@@ -17,7 +17,7 @@ import {
   createChatUser,
   formatLastActive,
   getUserStatusColor
-} from '../../shared/shared/ChatModuleTypes';
+} from '../../shared/ChatModuleTypes';
 
 // JTAG client interface
 declare global {

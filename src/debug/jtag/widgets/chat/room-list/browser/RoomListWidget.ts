@@ -15,7 +15,7 @@ import {
   ChatModuleEventType,
   DEFAULT_CHAT_CONFIG,
   createChatRoom
-} from '../../shared/shared/ChatModuleTypes';
+} from '../../shared/ChatModuleTypes';
 
 // JTAG client interface
 declare global {

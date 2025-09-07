@@ -10,8 +10,7 @@ import { JTAGClientBrowser } from './system/core/client/browser/JTAGClientBrowse
 // Import widget registry for dynamic registration
 import { BROWSER_WIDGETS } from './browser/generated';
 
-// Import theme widget for centralized theme management
-import './widgets/shared/ThemeWidget';
+// NOTE: ThemeWidget imported via BROWSER_WIDGETS registry - no need for direct import
 
 export const jtag = {
   // Universal client interface - always returns connection result with client property
@@ -22,8 +21,16 @@ export const jtag = {
     console.debug(`🎭 Registering ${BROWSER_WIDGETS.length} widgets...`);
     BROWSER_WIDGETS.forEach(widget => {
       if (!customElements.get(widget.tagName)) {
-        customElements.define(widget.tagName, widget.widgetClass);
-        console.debug(`✅ Registered widget: ${widget.tagName} (${widget.className})`);
+        try {
+          customElements.define(widget.tagName, widget.widgetClass);
+          console.debug(`✅ Registered widget: ${widget.tagName} (${widget.className})`);
+        } catch (error) {
+          console.warn(`⚠️ Failed to register widget ${widget.tagName}: ${error}`);
+          console.warn(`⚠️ This usually means the constructor has already been used with this registry`);
+          console.warn(`⚠️ Skipping registration for ${widget.tagName}`);
+        }
+      } else {
+        console.warn(`⚠️ Widget ${widget.tagName} already registered, skipping`);
       }
     });
     

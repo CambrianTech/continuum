@@ -6,7 +6,7 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
-import type { ChatMessage } from '../chat-widget/shared/ChatTypes';
+import type { ChatMessage } from './shared/ChatModuleTypes';
 
 export class ChatWidget extends BaseWidget {
   private messages: ChatMessage[] = [];
@@ -96,7 +96,8 @@ export class ChatWidget extends BaseWidget {
       id: `msg_${Date.now()}`,
       content,
       roomId: this.currentRoom,
-      userId: 'current_user',
+      senderId: 'current_user',
+      senderName: 'You',
       type: 'user',
       timestamp: new Date().toISOString()
     };
@@ -123,7 +124,8 @@ export class ChatWidget extends BaseWidget {
           id: `ai_${Date.now()}`,
           content: aiResponse.reply,
           roomId: this.currentRoom,
-          userId: 'ai_assistant',
+          senderId: 'ai_assistant',
+          senderName: 'AI Assistant',
           type: 'assistant',
           timestamp: new Date().toISOString()
         };
