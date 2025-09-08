@@ -19,6 +19,8 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
     return 'SERVER';
   }
 
+  // REMOVED BROKEN CODE - Going back to base implementation until proper types are defined
+
   /**
    * Server-specific event emission with proper Node imports
    */

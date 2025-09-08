@@ -251,6 +251,13 @@ All screenshots are automatically saved to:
 - ❌ Clear success/failure feedback
 - ❌ Command execution correlation IDs
 
+**8. DEPLOYMENT FEEDBACK GAPS**
+- **Problem**: TypeScript compilation happens inside tmux, failures not visible during `npm start`
+- **Impact**: Deploy broken code, waste time debugging at runtime instead of compile-time
+- **Examples**: `npx tsc --noEmit --project .` should run FIRST in `npm start`, tmux errors hidden
+- **Solution**: Move TypeScript check to front of deployment pipeline, show tmux failures
+- **Priority**: 🔥 **HIGH** - Prevents deploying broken code, saves debugging time
+
 **Phase 3: System Observability (❌ PLANNED)**
 - ❌ Comprehensive `./jtag status` command
 - ❌ Real-time system health monitoring
@@ -286,11 +293,11 @@ All screenshots are automatically saved to:
 - **Priority**: 🔥 **CRITICAL** - BaseWidget success shows the way forward
 
 **3. MAGIC STRINGS & WEAK TYPING**
-- **Problem**: String-based IDs, untyped data, runtime errors
-- **Impact**: Hard to refactor, runtime failures, unclear contracts
-- **Examples**: `userId` strings instead of `UserId` branded types
-- **Solution**: Strong typing with branded types, compile-time safety
-- **Priority**: 🔥 **CRITICAL** - Type safety enables confidence
+- **Problem**: String-based IDs, untyped data, runtime errors, pervasive `any` type usage
+- **Impact**: Hard to refactor, runtime failures, unclear contracts, violates "typing like Rust - strict, explicit, and predictable"
+- **Examples**: `userId` strings instead of `UserId` branded types, `execute(params: any): Promise<any>` in chat commands
+- **Solution**: Strong typing with branded types, compile-time safety, eliminate all `any` types
+- **Priority**: 🔥 **CRITICAL** - Type safety enables confidence and follows established principles
 
 **4. PROTOCOL INCONSISTENCY**  
 - **Problem**: Different message formats, validation rules, error patterns
@@ -312,6 +319,13 @@ All screenshots are automatically saved to:
 - **Examples**: Commands that directly access daemon internals
 - **Solution**: True modules with explicit interfaces - NPM package ready
 - **Priority**: 🔥 **CRITICAL** - Real modularity enables autonomous architecture
+
+**7. DISCORD-SCALE ARCHITECTURE GAPS**
+- **Problem**: Chat system is 5% of Discord requirements - massive architectural gaps in every layer
+- **Impact**: Cannot deliver modern chat experience, user expectations unmet, system unusable for real collaboration
+- **Examples**: No room management, missing 90% of commands, no real-time events, hardcoded "general" room
+- **Solution**: Complete rebuild with proper room hierarchy, user management, event system, command layer
+- **Priority**: 🔥 **CRITICAL** - Core business feature completely inadequate
 
 ### **🎯 CODE IMPROVEMENT ROADMAP**
 
