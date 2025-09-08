@@ -274,6 +274,7 @@ run_profile_tests() {
             run_test "Transport Architecture Integration" "npx tsx tests/integration/transport-architecture-integration.test.ts" "Transport Tests"
             run_test "Transport Diagnostic" "npx tsx tests/transport-diagnostic.test.ts" "Transport Tests"
             run_test "Cross-Context Commands" "npx tsx tests/integration/transport/browser-server-commands.test.ts" "Transport Tests"
+            run_test "Transport Reliability Validation" "npx tsx tests/integration/transport/transport-reliability-validation.test.ts" "Transport Tests"
             # run_test "Transport Flexibility" "npx tsx tests/integration/transport/transport-flexibility.test.ts" "Transport Tests"  # Still may hang
             
             # Grid P2P Performance Tests

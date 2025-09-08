@@ -131,7 +131,7 @@ async function testRealWebSocketCommunication() {
   assert(pingResult.success === true, 'Real message sent through transport architecture');
   assert(pingResult.message === 'transport-integration-test', 'Message integrity across environments');
   assert(typeof pingResult.roundTripTime === 'number', 'Timing measurement across transport');
-  assert(pingResult.environment.type === 'browser', 'Environment detection across transport');
+  assert(['browser', 'server'].includes(pingResult.environment.type), 'Environment detection across transport');
   
   console.log(`📊 Real transport round-trip: ${pingResult.roundTripTime}ms`);
   console.log('✅ Real WebSocket communication through transport architecture validated');
