@@ -197,6 +197,7 @@ run_profile_tests() {
             run_test "Chat Widget Simple" "npx tsx tests/chat-widget-simple.test.ts" "Chat & Messaging"
             run_test "Chat TDD" "npx tsx tests/chat-daemon-tdd.test.ts" "Chat & Messaging"
             run_test "Multi-user Chat" "npx tsx tests/integration/simple-multiuser-chat.test.ts" "Chat & Messaging"
+            run_test "Real Chat Functionality" "npx tsx tests/integration/chat-scenarios/real-chat-functionality.test.ts" "Chat & Messaging"
             
             # Unit tests
             run_test "Transport Architecture Unit" "npx tsx tests/transport-architecture-unit.test.ts" "Unit Tests"
@@ -258,6 +259,7 @@ run_profile_tests() {
             run_test "Chat Widget Simple" "npx tsx tests/chat-widget-simple.test.ts" "Chat Tests"
             run_test "Chat TDD" "npx tsx tests/chat-daemon-tdd.test.ts" "Chat Tests"
             run_test "Multi-user Chat" "npx tsx tests/integration/simple-multiuser-chat.test.ts" "Chat Tests"
+            run_test "Real Chat Functionality" "npx tsx tests/integration/chat-scenarios/real-chat-functionality.test.ts" "Chat Tests"
             ;;
             
         "screenshots")
