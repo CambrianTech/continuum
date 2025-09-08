@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1304",
+  "version": "1.0.1305",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -196,6 +196,7 @@
     "test:chat": "./scripts/run-categorized-tests.sh chat",
     "test:events": "./scripts/run-categorized-tests.sh events",
     "test:widgets": "./scripts/run-categorized-tests.sh widgets",
+    "test:database": "./scripts/run-categorized-tests.sh database",
     "test:routing": "npx tsx tests/integration/comprehensive-routing-validation.test.ts",
     "test:logging": "npx tsx scripts/register-classified-tests.ts logging-category",
     "test:no-system": "npx tsx scripts/register-classified-tests.ts no-system",

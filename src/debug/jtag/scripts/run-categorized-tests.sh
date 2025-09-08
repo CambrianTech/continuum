@@ -32,7 +32,7 @@ DEPLOY_BROWSER="${JTAG_DEPLOY_BROWSER:-auto}"
 # Auto-detect deployment needs based on profile
 if [ "$DEPLOY_BROWSER" = "auto" ]; then
     case "$PROFILE" in
-        "comprehensive"|"transport"|"screenshots"|"themes"|"critical"|"widgets")
+        "comprehensive"|"transport"|"screenshots"|"themes"|"critical"|"widgets"|"database")
             DEPLOY_BROWSER="true"
             ;;
         *)
@@ -227,6 +227,10 @@ run_profile_tests() {
             run_test "Grid Events All Layers" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/integration/grid-events-all-layers.test.ts" "Grid Performance"
             run_test "Grid Advanced Performance Analysis" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/integration/grid-advanced-performance-analysis.test.ts" "Grid Performance"
             
+            # Database & persistence tests
+            run_test "Database Persistence Validation" "npx tsx tests/integration/database/database-persistence-validation.test.ts" "Database Tests"
+            run_test "Data Daemon Unit Tests" "npx tsx tests/data-daemon/run-data-tests.ts" "Database Tests"
+            
             # Event system
             run_test "Server-Browser Events" "npx tsx tests/integration/server-browser-event-flow.test.ts" "Event Tests"
             run_test "Browser-Server Events" "npx tsx tests/integration/browser-server-event-flow.test.ts" "Event Tests" 
@@ -307,6 +311,11 @@ run_profile_tests() {
             run_test "Widget Foundation" "npx tsx tests/layer-6-browser-integration/simplified-widget-demo.test.ts" "Widget Tests"
             ;;
             
+        "database")
+            run_test "Database Persistence Validation" "npx tsx tests/integration/database/database-persistence-validation.test.ts" "Database Tests"
+            run_test "Data Daemon Unit Tests" "npx tsx tests/data-daemon/run-data-tests.ts" "Database Tests"
+            ;;
+            
         "performance")
             # Grid P2P Performance Testing Suite - Microsecond precision measurements
             run_test "Grid Transport Foundation" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/grid-transport-foundation.test.ts" "Grid Performance"
@@ -328,7 +337,7 @@ run_profile_tests() {
             
         *)
             echo "❌ Unknown profile: $PROFILE"
-            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, themes, transport, events, blocker, critical, widgets, performance, single-test"
+            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, themes, transport, events, blocker, critical, widgets, database, performance, single-test"
             exit 1
             ;;
     esac
