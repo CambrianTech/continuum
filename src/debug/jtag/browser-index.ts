@@ -6,6 +6,7 @@
 
 import { JTAGSystemBrowser } from './system/core/system/browser/JTAGSystemBrowser';
 import { JTAGClientBrowser } from './system/core/client/browser/JTAGClientBrowser';
+import { createJTAGClientServices } from './system/core/client/shared/services';
 
 // Import widget registry for dynamic registration
 import { BROWSER_WIDGETS } from './browser/generated';
@@ -35,8 +36,16 @@ export const jtag = {
     });
     
     const connectionResult = await JTAGClientBrowser.connectLocal();
-    console.debug('✅ Browser: JTAGClient connected with local system');
-    return connectionResult;
+    const client = connectionResult.client;
+    
+    // Enhance client with organized services - no globals needed
+    const services = createJTAGClientServices(client);
+    Object.assign(client, services);
+    
+    console.debug('✅ Browser: JTAGClient connected with organized services');
+    console.debug('ℹ️ Access services via: client.chat, client.users, client.widgets');
+    
+    return { ...connectionResult, client };
   },
 
   // Legacy: Full system access (for advanced usage)
