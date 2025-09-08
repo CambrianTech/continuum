@@ -11,12 +11,15 @@ import {
   createChatSendMessageResult,
   createChatSendMessageError
 } from './ChatSendMessageTypes';
+import type { DataCreateParams, DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
+import { ChatMessage } from '../../../../domain/chat/ChatMessage';
 
 export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessageParams, ChatSendMessageResult> {
   
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('chat-send-message', context, subpath, commander);
   }
+
 
   /**
    * Execute chat message sending
@@ -28,42 +31,31 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
     console.log(`💬 ${this.getEnvironmentLabel()}: Sending message to room ${chatParams.roomId}`);
 
     try {
-      // 1. Create message object
-      const messageId = generateUUID();
-      const timestamp = new Date().toISOString();
-      const senderName = this.getSenderName(chatParams);
-      
-      const message = {
-        messageId,
+      // 1. Create domain object - will handle validation and structure
+      // TODO: Need User and ChatRoom objects - for now create directly
+      const message = ChatMessage.fromData({
+        messageId: generateUUID(),
         roomId: chatParams.roomId,
         content: chatParams.content,
-        senderName,
-        timestamp,
         senderId: chatParams.sessionId,
-        mentions: chatParams.mentions || [],
-        category: chatParams.category || 'chat',
-        replyToId: chatParams.replyToId,
-        messageContext: chatParams.messageContext
-      };
+        timestamp: new Date().toISOString(),
+        mentions: [], // TODO: Parse mentions from content or params
+        category: 'chat',
+        replyToId: chatParams.replyToId
+      });
 
-      // 2. Store message via DataDaemon
-      await this.storeMessage(message, chatParams.sessionId);
+      // 2. Store message - let errors bubble up, no fallbacks  
+      await this.storeMessage(message);
       
       // 3. Emit event for widgets and other listeners (server-specific)
       await this.emitMessageEvent(message);
       
       const duration = Date.now() - startTime;
-      console.log(`✅ ${this.getEnvironmentLabel()}: Message ${messageId} sent in ${duration}ms`);
+      console.log(`✅ ${this.getEnvironmentLabel()}: Message ${message.messageId} sent in ${duration}ms`);
 
       return createChatSendMessageResult(chatParams, {
-        messageId,
-        message: {
-          messageId,
-          roomId: chatParams.roomId,
-          content: chatParams.content,
-          senderName,
-          timestamp
-        }
+        messageId: message.messageId,
+        message: message
       });
 
     } catch (error) {
@@ -77,32 +69,26 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
   }
 
   /**
-   * Store message using data/create command
+   * Store message using data/create command - domain object approach
    */
-  private async storeMessage(message: any, sessionId: UUID): Promise<void> {
-    try {
-      const dataCreateCommand = this.commander.commands.get('data/create');
-      if (!dataCreateCommand) {
-        console.error(`❌ data/create command not available`);
-        return;
-      }
+  private async storeMessage(message: ChatMessage): Promise<void> {
+    const createParams: DataCreateParams = {
+      collection: 'chat_messages',
+      data: message.toData(),
+      context: this.context,
+      sessionId: message.senderId
+    };
+    
+    const result = await this.remoteExecute<DataCreateParams, DataCreateResult>(
+      createParams, 
+      'data/create'
+    );
 
-      const storeResult = await dataCreateCommand.execute({
-        collection: 'chat_messages',
-        data: message,
-        context: this.context,
-        sessionId: sessionId
-      } as any);
-      
-      const result = storeResult as any;
-      if (!result.success) {
-        console.error(`❌ Failed to store message ${message.messageId}:`, result.error);
-      } else {
-        console.log(`💾 Stored message ${message.messageId} via data/create command`);
-      }
-    } catch (error) {
-      console.error(`💥 Error storing message ${message.messageId}:`, error);
+    if (!result.success) {
+      throw new Error(`Failed to store message ${message.messageId}: ${result.error}`);
     }
+    
+    console.log(`💾 Stored message ${message.messageId} in global database`);
   }
 
   /**

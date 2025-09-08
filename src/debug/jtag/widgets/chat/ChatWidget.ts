@@ -7,13 +7,46 @@
 
 import { BaseWidget } from '../shared/BaseWidget';
 import type { ChatMessage } from './shared/ChatModuleTypes';
+import type { ChatSendMessageParams, ChatSendMessageResult } from '../../commands/chat/send-message/shared/ChatSendMessageTypes';
+import type { GetMessageHistoryResult } from '../../api/commands/chat/ChatCommands';
+
+// Strict event data types - no more 'any'!
+interface ChatMessageEventData {
+  readonly eventType: 'chat:message-sent';
+  readonly message: {
+    readonly messageId: string;
+    readonly content: string;
+    readonly roomId: string;
+    readonly senderId: string;
+    readonly senderName: string;
+    readonly timestamp: string;
+  };
+  readonly roomId: string;
+}
+
+interface UserJoinedEventData {
+  readonly eventType: 'chat:user-joined';
+  readonly userId: string;
+  readonly userName: string;
+  readonly roomId: string;
+  readonly timestamp: string;
+}
+
+interface UserLeftEventData {
+  readonly eventType: 'chat:user-left';
+  readonly userId: string;
+  readonly userName: string;
+  readonly roomId: string;
+  readonly timestamp: string;
+}
 
 export class ChatWidget extends BaseWidget {
   private messages: ChatMessage[] = [];
-  private currentRoom = 'general';
+  private currentRoom: string;
   private messageInput?: HTMLInputElement;
+  private eventSubscriptionId?: string;
   
-  constructor() {
+  constructor(roomId: string = 'general') {
     super({
       widgetName: 'ChatWidget',
       template: 'chat-widget.html',
@@ -23,16 +56,185 @@ export class ChatWidget extends BaseWidget {
       enableRouterEvents: true,
       enableScreenshots: true
     });
+    this.currentRoom = roomId;
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎯 ChatWidget: Initializing with BaseWidget architecture...');
+    console.log(`🎯 ChatWidget: Initializing for room "${this.currentRoom}"...`);
     
-    // Load chat history using BaseWidget's data methods
-    const savedMessages = await this.getData('chat_messages', []);
-    this.messages = savedMessages;
+    // Load room message history using command abstraction
+    await this.loadRoomHistory();
     
-    console.log('✅ ChatWidget: BaseWidget features initialized');
+    // Subscribe to room-specific events
+    await this.subscribeToRoomEvents();
+    
+    console.log(`✅ ChatWidget: Initialized for room "${this.currentRoom}" with ${this.messages.length} messages`);
+  }
+
+  /**
+   * Load room message history using get-messages command
+   */
+  private async loadRoomHistory(): Promise<void> {
+    try {
+      console.log(`📚 ChatWidget: Loading room history using get-messages command`);
+      
+      // Use new get-messages command with proper typing
+      const historyResult = await this.jtagOperation<GetMessageHistoryResult>('chat/get-messages', {
+        roomId: this.currentRoom,
+        limit: 50 // Recent messages
+      });
+      
+      if (historyResult && historyResult.success && historyResult.messages) {
+        // Convert ChatMessage[] to internal ChatMessage format
+        this.messages = historyResult.messages.map(msg => ({
+          id: msg.id,
+          content: msg.content.text, // Extract text from MessageContent
+          roomId: msg.roomId,
+          senderId: msg.senderId,
+          senderName: msg.senderName,
+          type: msg.senderId === 'current_user' ? 'user' : 'assistant',
+          timestamp: msg.timestamp
+        }));
+        
+        console.log(`✅ ChatWidget: Loaded ${this.messages.length} messages from get-messages command`);
+      } else {
+        throw new Error(`Failed to load room history: ${historyResult?.error || 'get-messages command failed'}`);
+      }
+      
+    } catch (error) {
+      console.error(`❌ ChatWidget: Failed to load room history:`, error);
+      throw error; // No fallbacks - crash and burn is better
+    }
+  }
+
+  /**
+   * Subscribe to room-specific events for real-time updates using RoomEventSystem
+   */
+  private async subscribeToRoomEvents(): Promise<void> {
+    try {
+      console.log(`🔗 ChatWidget: Subscribing to room events for "${this.currentRoom}"`);
+      
+      // Use JTAG operation to subscribe to room events via the chat daemon
+      const subscribeResult = await this.jtagOperation('chat/subscribe-room', {
+        roomId: this.currentRoom,
+        eventTypes: ['chat:message-received', 'chat:participant-joined', 'chat:participant-left']
+      }) as any;
+      
+      if (subscribeResult && subscribeResult.success) {
+        this.eventSubscriptionId = subscribeResult.subscriptionId;
+        console.log(`✅ ChatWidget: Subscribed to room "${this.currentRoom}" events`);
+        
+        // Set up event handlers for real-time updates
+        this.setupRoomEventHandlers();
+      } else {
+        throw new Error(`Room subscription failed: ${subscribeResult?.error || 'Unknown error'}`);
+      }
+      
+    } catch (error) {
+      console.error(`❌ ChatWidget: Failed to subscribe to room events:`, error);
+      throw error; // No fallbacks - either it works or it fails
+    }
+  }
+
+  /**
+   * Set up event handlers for real-time room updates
+   */
+  private setupRoomEventHandlers(): void {
+    // Use BaseWidget's router event system to handle incoming room events
+    console.log(`📡 ChatWidget: Setting up room event handlers for room ${this.currentRoom}`);
+    
+    // This will be handled by the BaseWidget event routing system
+    // When RoomEventSystem sends events, they'll be routed to this widget
+  }
+  
+  /**
+   * Handle incoming room events from RoomEventSystem
+   */
+  public async handleRoomEvent(eventType: string, eventData: any): Promise<void> {
+    console.log(`📨 ChatWidget: Received room event "${eventType}" for room ${this.currentRoom}`);
+    
+    switch (eventType) {
+      case 'chat:message-received':
+        await this.onMessageReceived(eventData as ChatMessageEventData);
+        break;
+      case 'chat:participant-joined':
+        await this.onUserJoined(eventData as UserJoinedEventData);
+        break;
+      case 'chat:participant-left':
+        await this.onUserLeft(eventData as UserLeftEventData);
+        break;
+      default:
+        console.log(`ℹ️ ChatWidget: Unhandled room event type: ${eventType}`);
+    }
+  }
+
+
+  /**
+   * Handle incoming chat messages for this room - STRICT TYPING
+   */
+  private async onMessageReceived(eventData: ChatMessageEventData): Promise<void> {
+    console.log(`📨 ChatWidget: Received message for room ${this.currentRoom}:`, eventData);
+    
+    if (eventData.roomId === this.currentRoom) {
+      const newMessage: ChatMessage = {
+        id: eventData.message.messageId,
+        content: eventData.message.content,
+        roomId: eventData.message.roomId,
+        senderId: eventData.message.senderId,
+        senderName: eventData.message.senderName,
+        type: eventData.message.senderId === 'current_user' ? 'user' : 'assistant',
+        timestamp: eventData.message.timestamp
+      };
+      
+      this.messages.push(newMessage);
+      await this.renderWidget(); // Re-render with new message
+    }
+  }
+
+  /**
+   * Handle user joined events - STRICT TYPING
+   */
+  private async onUserJoined(eventData: UserJoinedEventData): Promise<void> {
+    console.log(`👋 ChatWidget: User ${eventData.userName} joined room ${this.currentRoom}`);
+    
+    if (eventData.roomId === this.currentRoom) {
+      // Add system message for user join
+      const systemMessage: ChatMessage = {
+        id: `system_${Date.now()}`,
+        content: `${eventData.userName} joined the room`,
+        roomId: this.currentRoom,
+        senderId: 'system',
+        senderName: 'System',
+        type: 'assistant', // System messages appear as assistant messages
+        timestamp: eventData.timestamp
+      };
+      
+      this.messages.push(systemMessage);
+      await this.renderWidget();
+    }
+  }
+
+  /**
+   * Handle user left events - STRICT TYPING
+   */
+  private async onUserLeft(eventData: UserLeftEventData): Promise<void> {
+    console.log(`👋 ChatWidget: User ${eventData.userName} left room ${this.currentRoom}`);
+    
+    if (eventData.roomId === this.currentRoom) {
+      // Add system message for user leave
+      const systemMessage: ChatMessage = {
+        id: `system_${Date.now()}`,
+        content: `${eventData.userName} left the room`,
+        roomId: this.currentRoom,
+        senderId: 'system',
+        senderName: 'System',
+        type: 'assistant', // System messages appear as assistant messages
+        timestamp: eventData.timestamp
+      };
+      
+      this.messages.push(systemMessage);
+      await this.renderWidget();
+    }
   }
 
   protected async renderWidget(): Promise<void> {
@@ -61,10 +263,6 @@ export class ChatWidget extends BaseWidget {
   }
 
   private renderMessages(): string {
-    if (this.messages.length === 0) {
-      return '<div class="message assistant">Hello! This is a BaseWidget-powered chat. Try sending a message!</div>';
-    }
-    
     return this.messages.map(msg => `
       <div class="message ${msg.type}">
         ${msg.content}
@@ -107,41 +305,21 @@ export class ChatWidget extends BaseWidget {
     this.messageInput.value = '';
     
     try {
-      // ONE LINE: Store message with BaseWidget abstraction
-      await this.storeData(`message_${userMessage.id}`, userMessage, { 
-        persistent: true, 
-        broadcast: true 
+      // Use existing chat/send-message command with proper types
+      const sendResult = await this.jtagOperation<ChatSendMessageResult>('chat/send-message', {
+        message: content,
+        roomId: this.currentRoom,
+        userId: 'current_user'
       });
       
-      // ONE LINE: Get AI response with BaseWidget abstraction
-      const aiResponse = await this.queryAI(content, {
-        persona: 'chat_assistant',
-        context: this.getChatContext()
-      });
-      
-      if (aiResponse && aiResponse.reply) {
-        const aiMessage: ChatMessage = {
-          id: `ai_${Date.now()}`,
-          content: aiResponse.reply,
-          roomId: this.currentRoom,
-          senderId: 'ai_assistant',
-          senderName: 'AI Assistant',
-          type: 'assistant',
-          timestamp: new Date().toISOString()
-        };
-        
-        // Add AI response
-        this.messages.push(aiMessage);
-        
-        // ONE LINE: Store AI response
-        await this.storeData(`message_${aiMessage.id}`, aiMessage, { 
-          persistent: true, 
-          broadcast: true 
-        });
+      if (sendResult && sendResult.success) {
+        console.log(`✅ ChatWidget: Message sent to room ${this.currentRoom}`);
+        // Message will appear via event subscription when that's implemented
+      } else {
+        const errorMsg = sendResult?.error || 'Unknown error';
+        console.error(`❌ ChatWidget: Failed to send message:`, errorMsg);
+        this.handleError(errorMsg, 'sendMessage');
       }
-      
-      // Re-render messages
-      await this.renderWidget();
       
     } catch (error) {
       console.error('❌ ChatWidget: Failed to send message:', error);
@@ -163,9 +341,22 @@ export class ChatWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    // Save messages using BaseWidget abstraction
-    await this.storeData('chat_messages', this.messages, { persistent: true });
-    console.log('✅ ChatWidget: BaseWidget cleanup complete');
+    // Unsubscribe from room events using JTAG abstraction
+    if (this.eventSubscriptionId) {
+      try {
+        await this.jtagOperation('events/unsubscribe', {
+          subscriptionId: this.eventSubscriptionId
+        });
+        console.log(`🔌 ChatWidget: Unsubscribed from room ${this.currentRoom} events`);
+      } catch (error) {
+        console.error(`❌ ChatWidget: Failed to unsubscribe from events:`, error);
+      }
+    }
+    
+    // Save room-specific messages using BaseWidget abstraction
+    const roomMessageKey = `chat_messages_${this.currentRoom}`;
+    await this.storeData(roomMessageKey, this.messages, { persistent: true });
+    console.log(`✅ ChatWidget: Cleanup complete for room "${this.currentRoom}"`);
   }
 
   // Static property required by widget registration system

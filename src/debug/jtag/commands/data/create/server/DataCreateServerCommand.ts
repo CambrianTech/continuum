@@ -30,36 +30,33 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
     try {
       const id = params.id ?? generateUUID();
 
-      // Follow session-based path structure like FileSaveServerCommand
-      const sessionId = params.sessionId;
-      const basePath = `.continuum/jtag/sessions/user/${sessionId}`;
-      const dataDir = path.resolve(basePath, 'data');
-      const collectionDir = path.join(dataDir, params.collection);
-      
-      // Ensure directories exist
-      await fs.mkdir(collectionDir, { recursive: true });
-      
-      // Parse data if it's a string (from CLI)
-      let parsedData = params.data;
-      if (typeof params.data === 'string') {
-        try {
-          parsedData = JSON.parse(params.data);
-        } catch (e) {
-          console.warn(`🔧 DATA SERVER: Using string data directly (not JSON)`);
-        }
-      }
-      
-      const record = {
+      // Use file/save command for proper storage - simple like screenshot
+      const filepath = `.continuum/database/${params.collection}/${id}.json`;
+      const content = JSON.stringify({
         id,
         collection: params.collection,
-        data: parsedData,
+        data: params.data,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         version: 1
-      };
-      
-      const filePath = path.join(collectionDir, `${id}.json`);
-      await fs.writeFile(filePath, JSON.stringify(record, null, 2));
+      }, null, 2);
+
+      const result = await this.remoteExecute({
+        filepath: filepath,
+        content: content,
+        createDirectories: true,
+        context: this.context,
+        sessionId: params.sessionId
+      }, 'file/save');
+
+      const typedResult = result as any;
+      if (!typedResult.success) {
+        console.error(`❌ DATA SERVER: File save failed:`, typedResult.error);
+        return createDataCreateResultFromParams(params, {
+          success: false,
+          error: typedResult.error || 'Unknown file save error'
+        });
+      }
       
       //console.debug(`✅ DATA SERVER: Created ${params.collection}/${id}`);
 

@@ -25,7 +25,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleRead(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
       const encoding = payload.options?.encoding || 'utf8';
       
       const content = await fs.readFile(fullPath, encoding);
@@ -42,14 +42,14 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         return {
           success: true,
           data: undefined,
-          fullPath: this.validateAndResolvePath(payload.relativePath, payload.sessionId)
+          fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
         };
       }
       
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
       };
     }
   }
@@ -59,7 +59,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleWrite(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
       const content = payload.content || '';
       
       // Ensure directory exists
@@ -103,7 +103,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
       };
     }
   }
@@ -113,7 +113,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleAppend(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
       const content = payload.content || '';
       
       // Ensure directory exists
@@ -141,7 +141,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
       };
     }
   }
@@ -151,7 +151,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleMkdir(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
       
       await fs.mkdir(fullPath, { recursive: payload.options?.createDirectories !== false });
       
@@ -164,7 +164,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
       };
     }
   }
@@ -174,7 +174,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleList(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
       
       const entries = await fs.readdir(fullPath, { withFileTypes: true });
       const files = entries.map(entry => ({
@@ -194,14 +194,14 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         return {
           success: true,
           data: [],
-          fullPath: this.validateAndResolvePath(payload.relativePath, payload.sessionId)
+          fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
         };
       }
       
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
       };
     }
   }
@@ -211,7 +211,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleStat(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
       
       const stats = await fs.stat(fullPath);
       
@@ -232,14 +232,14 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         return {
           success: true,
           data: undefined,
-          fullPath: this.validateAndResolvePath(payload.relativePath, payload.sessionId)
+          fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
         };
       }
       
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
       };
     }
   }
@@ -249,7 +249,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleDelete(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
       
       const stats = await fs.stat(fullPath);
       
@@ -269,14 +269,14 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         return {
           success: true,
           data: false, // File didn't exist
-          fullPath: this.validateAndResolvePath(payload.relativePath, payload.sessionId)
+          fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
         };
       }
       
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
       };
     }
   }
