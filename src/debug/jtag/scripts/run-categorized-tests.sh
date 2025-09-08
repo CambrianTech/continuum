@@ -191,6 +191,7 @@ run_profile_tests() {
             # Browser integration (no widget tests in comprehensive to avoid navigation issues)
             run_test "WebSocket Connection" "npx tsx tests/integration/browser-automated-tests.test.ts" "Browser Integration"
             run_test "Browser Automation" "npx tsx tests/layer-6-browser-integration/minimal-pure-jtag.test.ts" "Browser Integration"
+            run_test "CLI to Browser Integration" "npx tsx tests/integration/cli-to-browser-integration.test.ts" "Browser Integration"
             
             # Chat & messaging
             run_test "Chat Message Send" "npx tsx tests/chat-daemon-integration.test.ts" "Chat & Messaging"
@@ -198,6 +199,9 @@ run_profile_tests() {
             run_test "Chat TDD" "npx tsx tests/chat-daemon-tdd.test.ts" "Chat & Messaging"
             run_test "Multi-user Chat" "npx tsx tests/integration/simple-multiuser-chat.test.ts" "Chat & Messaging"
             run_test "Real Chat Functionality" "npx tsx tests/integration/chat-scenarios/real-chat-functionality.test.ts" "Chat & Messaging"
+            
+            # AI & persona integration
+            run_test "AI Persona Integration" "npx tsx tests/integration/ai-persona-integration.test.ts" "AI & Personas"
             
             # Unit tests
             run_test "Transport Architecture Unit" "npx tsx tests/transport-architecture-unit.test.ts" "Unit Tests"
@@ -230,6 +234,7 @@ run_profile_tests() {
             
             # Database & persistence tests
             run_test "Database Persistence Validation" "npx tsx tests/integration/database/database-persistence-validation.test.ts" "Database Tests"
+            run_test "Database Comprehensive Integration" "npx tsx tests/integration/database-comprehensive-integration.test.ts" "Database Tests"
             run_test "Data Daemon Unit Tests" "npx tsx tests/data-daemon/run-data-tests.ts" "Database Tests"
             
             # Event system
@@ -241,6 +246,7 @@ run_profile_tests() {
         "integration")
             run_test "Transport Architecture Integration" "npx tsx tests/integration/transport-architecture-integration.test.ts" "Integration Tests"
             run_test "Browser Integration" "npx tsx tests/integration/browser-automated-tests.test.ts" "Integration Tests"
+            run_test "CLI to Browser Integration" "npx tsx tests/integration/cli-to-browser-integration.test.ts" "Integration Tests"
             run_test "Server-Client Integration" "npx tsx tests/integration/server-client-integration.test.ts" "Integration Tests"
             run_test "Router Coordination" "npx tsx tests/integration/router-coordination-simple.test.ts" "Integration Tests"
             run_test "Cross-Context Commands" "npx tsx tests/integration/transport/browser-server-commands.test.ts" "Integration Tests"
@@ -315,7 +321,12 @@ run_profile_tests() {
             
         "database")
             run_test "Database Persistence Validation" "npx tsx tests/integration/database/database-persistence-validation.test.ts" "Database Tests"
+            run_test "Database Comprehensive Integration" "npx tsx tests/integration/database-comprehensive-integration.test.ts" "Database Tests"
             run_test "Data Daemon Unit Tests" "npx tsx tests/data-daemon/run-data-tests.ts" "Database Tests"
+            ;;
+            
+        "ai")
+            run_test "AI Persona Integration" "npx tsx tests/integration/ai-persona-integration.test.ts" "AI Tests"
             ;;
             
         "performance")
@@ -339,7 +350,7 @@ run_profile_tests() {
             
         *)
             echo "❌ Unknown profile: $PROFILE"
-            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, themes, transport, events, blocker, critical, widgets, database, performance, single-test"
+            echo "Available profiles: comprehensive, integration, unit, chat, screenshots, themes, transport, events, blocker, critical, widgets, database, ai, performance, single-test"
             exit 1
             ;;
     esac

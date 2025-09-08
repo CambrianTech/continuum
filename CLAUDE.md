@@ -231,6 +231,12 @@ All screenshots are automatically saved to:
 - **Solution**: Robust setup validation, dependency checking, self-healing startup
 - **Status**: 🔄 **PARTIAL** - `npm start` mostly reliable, need validation improvements
 
+**6. INTEGRATION GAP DISCOVERY**
+- **Problem**: Surface-level command success masks deep integration failures
+- **Symptoms**: CLI commands return success but changes don't appear in browser; database operations succeed but data not persisted; tests pass but features don't work for users
+- **Solution**: Comprehensive end-to-end integration tests that validate entire CLI→Server→Browser→Widget chain
+- **Status**: ✅ **IDENTIFIED** - Created integration test suite that reveals 75% failure rate in core functionality despite apparent success
+
 ### **🎯 FRICTION REDUCTION ROADMAP**
 
 **Phase 1: Core Debugging (✅ COMPLETE)**
