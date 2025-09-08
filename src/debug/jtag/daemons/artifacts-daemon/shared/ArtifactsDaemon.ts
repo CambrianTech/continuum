@@ -13,10 +13,14 @@ import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 import { createBaseResponse, type BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 
+// Storage location types that ArtifactsDaemon manages
+export type StorageType = 'database' | 'session' | 'system' | 'cache' | 'logs';
+
 // Artifacts operation types
 export interface ArtifactsPayload extends JTAGPayload {
   readonly operation: 'read' | 'write' | 'append' | 'mkdir' | 'list' | 'stat' | 'delete';
   readonly relativePath: string;
+  readonly storageType?: StorageType;  // Where to store/read from
   readonly content?: string | Buffer;
   readonly options?: {
     createDirectories?: boolean;
@@ -32,6 +36,7 @@ export const createArtifactsPayload = (
 ): ArtifactsPayload => createPayload(context, sessionId, {
   operation: data.operation ?? 'read',
   relativePath: data.relativePath ?? '',
+  storageType: data.storageType ?? 'system',
   content: data.content,
   options: data.options ?? {},
   ...data
@@ -151,16 +156,44 @@ export abstract class ArtifactsDaemon extends DaemonBase {
   }
 
   /**
-   * Validate and resolve path within .continuum structure
+   * Validate and resolve path within .continuum structure based on storage type
    */
-  protected validateAndResolvePath(relativePath: string, sessionId?: UUID): string {
+  protected validateAndResolvePath(
+    relativePath: string, 
+    storageType: StorageType = 'system',
+    sessionId?: UUID
+  ): string {
     // Remove leading slash if present
     const cleanPath = relativePath.startsWith('/') ? relativePath.slice(1) : relativePath;
     
-    // Build full path within .continuum/jtag
-    const basePath = sessionId 
-      ? `.continuum/jtag/sessions/user/${sessionId}`
-      : '.continuum/jtag/system';
+    // Build full path based on storage type
+    let basePath: string;
+    
+    switch (storageType) {
+      case 'database':
+        // Global user database: $HOME/.continuum/database/
+        basePath = '.continuum/database';
+        break;
+      case 'session':
+        // Session-specific data
+        if (!sessionId) throw new Error('Session storage requires sessionId');
+        basePath = `.continuum/jtag/sessions/user/${sessionId}`;
+        break;
+      case 'system':
+        // System/project data
+        basePath = '.continuum/jtag/system';
+        break;
+      case 'cache':
+        // Temporary cache data
+        basePath = '.continuum/cache';
+        break;
+      case 'logs':
+        // Log files
+        basePath = '.continuum/logs';
+        break;
+      default:
+        throw new Error(`Unknown storage type: ${storageType}`);
+    }
       
     return `${basePath}/${cleanPath}`;
   }

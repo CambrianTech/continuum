@@ -6,7 +6,6 @@
  */
 
 import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { ScreenshotResult, ScreenshotParams } from '../../shared/ScreenshotTypes';
 
 export interface CoordinateValidationResult {
   testName: string;
