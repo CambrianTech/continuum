@@ -16,7 +16,9 @@ import type {
   HumanUser, 
   PersonaUser, 
   AgentUser,
-  UserType,
+  UserType
+} from '../../api/types/User';
+import { 
   createHumanUser,
   isHumanUser,
   isPersonaUser, 
