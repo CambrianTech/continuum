@@ -388,5 +388,4 @@ export class MainWidget extends BaseWidget {
   }
 }
 
-// Register the custom element
-customElements.define('main-widget', MainWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry

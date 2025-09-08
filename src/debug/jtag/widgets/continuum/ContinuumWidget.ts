@@ -35,8 +35,8 @@ export class ContinuumWidget extends BaseWidget {
 
   protected async renderWidget(): Promise<void> {
     // Use BaseWidget's template and styles system
-    const styles = this.templateCSS || '/* No styles loaded */';
-    const template = this.templateHTML || '<div>No template loaded</div>';
+    const styles = this.templateCSS ?? '/* No styles loaded */';
+    const template = this.templateHTML ?? '<div>No template loaded</div>';
     
     // Load theme CSS directly into shadow DOM (since theme CSS can't cross shadow boundary)
     const themeCSS = await this.loadThemeCSS();
@@ -49,7 +49,7 @@ export class ContinuumWidget extends BaseWidget {
       .replace('<!-- CONNECTION_STATUS -->', await this.getConnectionStatusHTML())
       .replace('<!-- CURRENT_TIMESTAMP -->', new Date().toLocaleTimeString());
 
-    this.shadowRoot!.innerHTML = `
+    this.shadowRoot.innerHTML = `
       <style>${themeCSS}</style>
       <style>${styles}</style>
       ${dynamicContent}
@@ -88,7 +88,7 @@ export class ContinuumWidget extends BaseWidget {
       });
       
       // Extract content from correct location in response structure
-      const baseCss = baseResult.commandResult?.content || '/* Base theme not found */';
+      const baseCss = baseResult.commandResult?.content ?? '/* Base theme not found */';
       console.log('🎨 ContinuumWidget: Loaded base theme CSS for shadow DOM injection');
       
       // For now, just use base theme (can expand later)
@@ -118,7 +118,7 @@ export class ContinuumWidget extends BaseWidget {
       html2canvasScript.async = true;
       
       // Add script to shadow DOM
-      this.shadowRoot!.appendChild(html2canvasScript);
+      this.shadowRoot.appendChild(html2canvasScript);
       
       // Wait for script to load
       await new Promise<void>((resolve, reject) => {
@@ -144,5 +144,4 @@ export class ContinuumWidget extends BaseWidget {
   }
 }
 
-// Register the custom element
-customElements.define('continuum-widget', ContinuumWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry

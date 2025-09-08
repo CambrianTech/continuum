@@ -125,5 +125,4 @@ export class RoomListWidget extends BaseWidget {
   }
 }
 
-// Register the custom element
-customElements.define('room-list-widget', RoomListWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry

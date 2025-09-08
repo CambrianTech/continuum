@@ -400,4 +400,4 @@ export class ThemeWidget extends BaseWidget {
 }
 
 // Register the custom element
-customElements.define('theme-widget', ThemeWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry
