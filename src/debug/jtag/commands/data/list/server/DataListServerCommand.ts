@@ -21,13 +21,23 @@ export class DataListServerCommand extends CommandBase<DataListParams, DataListR
     console.log(`🗄️ DATA SERVER: Listing ${params.collection}`);
     
     try {
-      // Follow session-based path structure like DataCreateServerCommand  
-      // Use WorkingDirConfig to respect per-project .continuum isolation
-      const sessionId = params.sessionId;
+      // Use global database for persistent collections like chat_messages
+      // TODO: This should be configurable per collection (some data should be session-specific)
+      const isGlobalCollection = ['chat_messages', 'user_profiles', 'chat_rooms'].includes(params.collection);
       const continuumPath = WorkingDirConfig.getContinuumPath();
-      const basePath = path.join(continuumPath, 'jtag', 'sessions', 'user', sessionId);
-      const dataDir = path.join(basePath, '.continuum', 'database');
-      const collectionDir = path.join(dataDir, params.collection);
+      
+      let collectionDir: string;
+      if (isGlobalCollection) {
+        // Global database path for persistent data
+        const globalDataDir = path.join(continuumPath, 'jtag', 'global-database');
+        collectionDir = path.join(globalDataDir, params.collection);
+      } else {
+        // Session-based path for session-specific data
+        const sessionId = params.sessionId;
+        const basePath = path.join(continuumPath, 'jtag', 'sessions', 'user', sessionId);
+        const dataDir = path.join(basePath, '.continuum', 'database');
+        collectionDir = path.join(dataDir, params.collection);
+      }
       
       try {
         const files = await fs.readdir(collectionDir);

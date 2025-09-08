@@ -18,6 +18,7 @@ import {
   ChatModuleEventType,
   DEFAULT_CHAT_CONFIG
 } from '../../shared/ChatModuleTypes';
+import { JTAGClient } from '../../../../system/core/client/shared/JTAGClient';
 
 // JTAG client interface
 declare global {
@@ -75,6 +76,7 @@ export class ChatWidgetBrowser extends HTMLElement {
 
   constructor() {
     super();
+    console.log('🔧 CLAUDE-DEBUG-' + Date.now() + ': ChatWidgetBrowser constructor - fixed architecture deployed');
     this.attachShadow({ mode: 'open' });
   }
 
@@ -560,23 +562,33 @@ export class ChatWidgetBrowser extends HTMLElement {
   }
 
   /**
-   * Connect to JTAG system
+   * Connect to JTAG system through WidgetDaemon
    */
   private async connectToJTAG(): Promise<void> {
     try {
-      console.log('🔌 ChatWidgetBrowser: Connecting to JTAG...');
+      console.log('🔌 ChatWidgetBrowser: Connecting to JTAG through WidgetDaemon...');
       
-      const jtagSystem = await window.jtag.connect();
-      this.jtagClient = jtagSystem.client;
+      // The widget should use WidgetDaemon which provides executeCommand() like CommandBase.remoteExecute()
+      const widgetDaemon = (window as any).widgetDaemon;
+      if (!widgetDaemon) {
+        throw new Error('WidgetDaemon not available on window object');
+      }
+      
+      if (!widgetDaemon.executeCommand) {
+        throw new Error('WidgetDaemon missing executeCommand method');
+      }
+      
+      // Store reference to daemon for command execution
+      this.jtagClient = widgetDaemon;
       this.state.isConnected = true;
       
       // Update UI
       this.updateConnectionStatus();
       
-      // Subscribe to relevant events
+      // Subscribe to relevant events (if supported)
       this.setupJTAGEventListeners();
       
-      console.log('✅ ChatWidgetBrowser: Connected to JTAG');
+      console.log('✅ ChatWidgetBrowser: Connected to JTAG via WidgetDaemon');
       
     } catch (error) {
       console.error('❌ ChatWidgetBrowser: JTAG connection failed:', error);
@@ -691,11 +703,11 @@ export class ChatWidgetBrowser extends HTMLElement {
     this.autoResizeInput();
     
     try {
-      // Send via JTAG command
-      const result = await this.jtagClient.commands['chat/send-message']({
+      // Send via WidgetDaemon.executeCommand() - same pattern as CommandBase.remoteExecute()
+      const result = await this.jtagClient.executeCommand('chat/send-message', {
         roomId: this.state.currentRoomId,
         content,
-        senderId: 'current-user',
+        sessionId: 'current-user',
         senderName: this.state.currentPersona,
         metadata: {
           persona: this.state.currentPersona
@@ -740,8 +752,8 @@ export class ChatWidgetBrowser extends HTMLElement {
     this.renderLoadingState();
     
     try {
-      const result = await this.jtagClient?.commands['data/list']?.({
-        collection: 'chat-messages',
+      const result = await this.jtagClient.executeCommand('data/list', {
+        collection: 'chat_messages',
         filter: { roomId },
         sort: { timestamp: 1 },
         limit: 50

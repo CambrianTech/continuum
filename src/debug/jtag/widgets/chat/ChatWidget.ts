@@ -83,9 +83,12 @@ export class ChatWidget extends BaseWidget {
         limit: 50 // Recent messages
       }) as any;
       
-      if (historyResult && historyResult.success && historyResult.items) {
-        // Filter messages for current room and convert to internal format
-        const roomMessages = historyResult.items
+      // Handle nested JTAG response structure - actual data is in commandResult
+      const dataResult = (historyResult as any).commandResult || historyResult;
+      
+      if (historyResult && historyResult.success && dataResult.items) {
+        // Filter messages for current room and convert to internal format  
+        const roomMessages = dataResult.items
           .filter((item: any) => item.data && item.data.roomId === this.currentRoom)
           .map((item: any) => ({
             id: item.data.messageId,
