@@ -106,7 +106,7 @@ class DatabaseComprehensiveIntegrationTest {
           operations.push({
             operation: 'CREATE',
             collection,
-            success: createResult.success && createResult.commandResult?.success,
+            success: createResult.success === true,
             result: createResult
           });
         } catch (error) {
@@ -125,15 +125,15 @@ class DatabaseComprehensiveIntegrationTest {
           const readResult = this.executeJTAGCommand(
             `data/list --collection="${collection}" --format="json"`
           );
-          const hasData = readResult.success && 
-                         readResult.commandResult?.success &&
-                         readResult.commandResult?.items?.length > 0;
+          const hasData = readResult.success === true && 
+                         readResult.items && 
+                         readResult.items.length > 0;
           
           operations.push({
             operation: 'READ',
             collection,
             success: hasData,
-            itemCount: readResult.commandResult?.items?.length || 0
+            itemCount: readResult.items?.length || 0
           });
         } catch (error) {
           operations.push({
