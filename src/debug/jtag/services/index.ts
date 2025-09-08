@@ -19,6 +19,7 @@ export * from './shared/ServiceBase';
 // Business logic services
 export * from './chat/ChatService';
 export * from './user/UserService';
+export * from './ai/AIService';
 
 // Service registry for dependency injection
 export { ServiceRegistry } from './shared/ServiceBase';
