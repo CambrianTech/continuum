@@ -30,8 +30,12 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
     try {
       const id = params.id ?? generateUUID();
 
-      // Use file/save command for proper storage - simple like screenshot
-      const filepath = `.continuum/database/${params.collection}/${id}.json`;
+      // Use file/save command for proper storage - global database for persistent data
+      // TODO: This should be configurable per collection (some data should be session-specific)
+      const isGlobalCollection = ['chat_messages', 'user_profiles', 'chat_rooms'].includes(params.collection);
+      const filepath = isGlobalCollection 
+        ? `.continuum/jtag/global-database/${params.collection}/${id}.json`
+        : `.continuum/database/${params.collection}/${id}.json`;
       const content = JSON.stringify({
         id,
         collection: params.collection,
