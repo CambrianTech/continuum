@@ -8,7 +8,6 @@
 import { BaseWidget } from '../shared/BaseWidget';
 import type { ChatMessage } from './shared/ChatModuleTypes';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../../commands/chat/send-message/shared/ChatSendMessageTypes';
-import type { GetMessageHistoryResult } from '../../api/commands/chat/ChatCommands';
 
 // Strict event data types - no more 'any'!
 interface ChatMessageEventData {
@@ -72,33 +71,38 @@ export class ChatWidget extends BaseWidget {
   }
 
   /**
-   * Load room message history using get-messages command
+   * Load room message history using data/list command
    */
   private async loadRoomHistory(): Promise<void> {
     try {
-      console.log(`📚 ChatWidget: Loading room history using get-messages command`);
+      console.log(`📚 ChatWidget: Loading room history using data/list command`);
       
-      // Use new get-messages command with proper typing
-      const historyResult = await this.jtagOperation<GetMessageHistoryResult>('chat/get-messages', {
-        roomId: this.currentRoom,
+      // Use data/list command to get all chat messages, then filter by room
+      const historyResult = await this.jtagOperation('data/list', {
+        collection: 'chat_messages',
         limit: 50 // Recent messages
-      });
+      }) as any;
       
-      if (historyResult && historyResult.success && historyResult.messages) {
-        // Convert ChatMessage[] to internal ChatMessage format
-        this.messages = historyResult.messages.map(msg => ({
-          id: msg.id,
-          content: msg.content.text, // Extract text from MessageContent
-          roomId: msg.roomId,
-          senderId: msg.senderId,
-          senderName: msg.senderName,
-          type: msg.senderId === 'current_user' ? 'user' : 'assistant',
-          timestamp: msg.timestamp
-        }));
+      if (historyResult && historyResult.success && historyResult.items) {
+        // Filter messages for current room and convert to internal format
+        const roomMessages = historyResult.items
+          .filter((item: any) => item.data && item.data.roomId === this.currentRoom)
+          .map((item: any) => ({
+            id: item.data.messageId,
+            content: item.data.content,
+            roomId: item.data.roomId,
+            senderId: item.data.senderId,
+            senderName: item.data.senderName || 'Unknown',
+            type: item.data.senderId === 'current_user' ? 'user' : 'assistant',
+            timestamp: item.data.timestamp
+          }))
+          .sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()); // Sort by timestamp
         
-        console.log(`✅ ChatWidget: Loaded ${this.messages.length} messages from get-messages command`);
+        this.messages = roomMessages;
+        console.log(`✅ ChatWidget: Loaded ${this.messages.length} messages for room "${this.currentRoom}" from data/list`);
       } else {
-        throw new Error(`Failed to load room history: ${historyResult?.error || 'get-messages command failed'}`);
+        console.log(`ℹ️ ChatWidget: No messages found for room "${this.currentRoom}"`);
+        this.messages = [];
       }
       
     } catch (error) {

@@ -9,6 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataListParams, DataListResult } from '../shared/DataListTypes';
 import { createDataListResultFromParams } from '../shared/DataListTypes';
+import { WorkingDirConfig } from '../../../../system/core/config/WorkingDirConfig';
 
 export class DataListServerCommand extends CommandBase<DataListParams, DataListResult> {
   
@@ -20,10 +21,12 @@ export class DataListServerCommand extends CommandBase<DataListParams, DataListR
     console.log(`🗄️ DATA SERVER: Listing ${params.collection}`);
     
     try {
-      // Follow session-based path structure like FileSaveServerCommand
+      // Follow session-based path structure like DataCreateServerCommand  
+      // Use WorkingDirConfig to respect per-project .continuum isolation
       const sessionId = params.sessionId;
-      const basePath = `.continuum/jtag/sessions/user/${sessionId}`;
-      const dataDir = path.resolve(basePath, 'data');
+      const continuumPath = WorkingDirConfig.getContinuumPath();
+      const basePath = path.join(continuumPath, 'jtag', 'sessions', 'user', sessionId);
+      const dataDir = path.join(basePath, '.continuum', 'database');
       const collectionDir = path.join(dataDir, params.collection);
       
       try {
@@ -43,7 +46,7 @@ export class DataListServerCommand extends CommandBase<DataListParams, DataListR
         
         const limitedItems = params.limit ? items.slice(0, params.limit) : items;
         
-        console.log(`✅ DATA SERVER: Listed ${limitedItems.length} items from ${params.collection}`);
+        console.log(`✅ DATA SERVER: Listed ${limitedItems.length} items from ${params.collection} (session path: ${collectionDir})`);
         
         return createDataListResultFromParams(params, {
           success: true,
