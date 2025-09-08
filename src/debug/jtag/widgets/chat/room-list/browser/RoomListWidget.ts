@@ -871,5 +871,4 @@ export class RoomListWidget extends HTMLElement {
   }
 }
 
-// Register the custom element
-customElements.define('room-list-widget', RoomListWidget);
+// Registration handled by generator system in browser/generated.ts
