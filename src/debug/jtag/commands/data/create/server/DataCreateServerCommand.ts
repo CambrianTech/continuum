@@ -1,17 +1,16 @@
 /**
  * Data Create Command - Server Implementation
  * 
- * Direct filesystem operations following FileSaveServerCommand pattern
+ * Uses global database storage following ArtifactsDaemon database storage pattern
  */
 
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../shared/DataCreateTypes';
 import { createDataCreateResultFromParams } from '../shared/DataCreateTypes';
+import { WorkingDirConfig } from '../../../../system/core/config/WorkingDirConfig';
 
 export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataCreateResult> {
   
@@ -20,30 +19,29 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
   }
 
   async execute(params: DataCreateParams): Promise<DataCreateResult> {
-    // Debug: Show what parameters we actually received
-    //console.debug(`🔍 DATA SERVER: Received params:`, JSON.stringify(params, null, 2));
-    
-    // Cast to DataCreateParams to handle CLI parameter structure
-
-    //console.debug(`🗄️ DATA SERVER: Creating ${params.collection} record`);
+    console.debug(`🗄️ DATA SERVER: Creating ${params.collection} record in global database`);
     
     try {
       const id = params.id ?? generateUUID();
 
-      // Use file/save command for proper storage - global database for persistent data
-      // TODO: This should be configurable per collection (some data should be session-specific)
-      const isGlobalCollection = ['chat_messages', 'user_profiles', 'chat_rooms'].includes(params.collection);
-      const filepath = isGlobalCollection 
-        ? `.continuum/jtag/global-database/${params.collection}/${id}.json`
-        : `.continuum/database/${params.collection}/${id}.json`;
-      const content = JSON.stringify({
+      // Create data record following DataDaemon format
+      const dataRecord = {
         id,
         collection: params.collection,
         data: params.data,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        version: 1
-      }, null, 2);
+        metadata: {
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          version: 1
+        }
+      };
+
+      // Use global database path following ArtifactsDaemon database storage type pattern
+      // Database storage type uses: .continuum/database/{relativePath}
+      const continuumPath = WorkingDirConfig.getContinuumPath();
+      const databasePath = `${continuumPath}/database`;
+      const filepath = `${databasePath}/${params.collection}/${id}.json`;
+      const content = JSON.stringify(dataRecord, null, 2);
 
       const result = await this.remoteExecute({
         filepath: filepath,
@@ -55,14 +53,14 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
 
       const typedResult = result as any;
       if (!typedResult.success) {
-        console.error(`❌ DATA SERVER: File save failed:`, typedResult.error);
+        console.error(`❌ DATA SERVER: Global database write failed:`, typedResult.error);
         return createDataCreateResultFromParams(params, {
           success: false,
-          error: typedResult.error || 'Unknown file save error'
+          error: typedResult.error || 'Database write failed'
         });
       }
       
-      //console.debug(`✅ DATA SERVER: Created ${params.collection}/${id}`);
+      console.debug(`✅ DATA SERVER: Created ${params.collection}/${id} in global database`);
 
       return createDataCreateResultFromParams(params, {
         success: true,

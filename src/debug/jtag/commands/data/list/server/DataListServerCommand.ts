@@ -1,5 +1,7 @@
 /**
  * Data List Command - Server Implementation
+ * 
+ * Uses global database storage following ArtifactsDaemon database storage pattern
  */
 
 import * as fs from 'fs/promises';
@@ -18,26 +20,13 @@ export class DataListServerCommand extends CommandBase<DataListParams, DataListR
   }
 
   async execute(params: DataListParams): Promise<DataListResult> {
-    console.log(`🗄️ DATA SERVER: Listing ${params.collection}`);
+    console.debug(`🗄️ DATA SERVER: Listing ${params.collection} from global database`);
     
     try {
-      // Use global database for persistent collections like chat_messages
-      // TODO: This should be configurable per collection (some data should be session-specific)
-      const isGlobalCollection = ['chat_messages', 'user_profiles', 'chat_rooms'].includes(params.collection);
+      // Use global database path following ArtifactsDaemon database storage pattern
+      // Database storage type uses: .continuum/database/{relativePath}
       const continuumPath = WorkingDirConfig.getContinuumPath();
-      
-      let collectionDir: string;
-      if (isGlobalCollection) {
-        // Global database path for persistent data
-        const globalDataDir = path.join(continuumPath, 'jtag', 'global-database');
-        collectionDir = path.join(globalDataDir, params.collection);
-      } else {
-        // Session-based path for session-specific data
-        const sessionId = params.sessionId;
-        const basePath = path.join(continuumPath, 'jtag', 'sessions', 'user', sessionId);
-        const dataDir = path.join(basePath, '.continuum', 'database');
-        collectionDir = path.join(dataDir, params.collection);
-      }
+      const collectionDir = path.join(continuumPath, 'database', params.collection);
       
       try {
         const files = await fs.readdir(collectionDir);
@@ -56,7 +45,7 @@ export class DataListServerCommand extends CommandBase<DataListParams, DataListR
         
         const limitedItems = params.limit ? items.slice(0, params.limit) : items;
         
-        console.log(`✅ DATA SERVER: Listed ${limitedItems.length} items from ${params.collection} (session path: ${collectionDir})`);
+        console.debug(`✅ DATA SERVER: Listed ${limitedItems.length} items from ${params.collection} (global database: ${collectionDir})`);
         
         return createDataListResultFromParams(params, {
           success: true,
@@ -65,7 +54,7 @@ export class DataListServerCommand extends CommandBase<DataListParams, DataListR
         });
         
       } catch (error: any) {
-        console.log(`ℹ️ DATA SERVER: Collection ${params.collection} not found`);
+        console.debug(`ℹ️ DATA SERVER: Collection ${params.collection} not found in global database`);
         return createDataListResultFromParams(params, {
           success: true,
           items: [],
