@@ -31,6 +31,7 @@ export interface GetTextResult extends CommandResult {
   readonly found: boolean;
   readonly error?: JTAGError;
   readonly timestamp: string;
+  readonly shadowDOMData?: any; // Shadow DOM query results
 }
 
 export const createGetTextResult = (
@@ -42,6 +43,7 @@ export const createGetTextResult = (
     text?: string;
     found?: boolean;
     error?: JTAGError;
+    shadowDOMData?: any;
   }
 ): GetTextResult => createPayload(context, sessionId, {
   selector: data.selector ?? '',
