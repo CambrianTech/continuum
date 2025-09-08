@@ -35,8 +35,8 @@ export class SidebarWidget extends BaseWidget {
 
   protected async renderWidget(): Promise<void> {
     // Use BaseWidget's template and styles system
-    const styles = this.templateCSS || '/* No styles loaded */';
-    const template = this.templateHTML || '<div>No template loaded</div>';
+    const styles = this.templateCSS ?? '/* No styles loaded */';
+    const template = this.templateHTML ?? '<div>No template loaded</div>';
     
     // Ensure template is a string
     const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
@@ -46,7 +46,7 @@ export class SidebarWidget extends BaseWidget {
       .replace('<!-- STATUS_CONTENT -->', await this.getStatusContent())
       .replace('<!-- DYNAMIC_LIST_CONTENT -->', await this.getDynamicListContent());
 
-    this.shadowRoot!.innerHTML = `
+    this.shadowRoot.innerHTML = `
       <style>${styles}</style>
       ${dynamicContent}
     `;
@@ -110,4 +110,4 @@ export class SidebarWidget extends BaseWidget {
 }
 
 // Register the custom element
-customElements.define('sidebar-widget', SidebarWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry

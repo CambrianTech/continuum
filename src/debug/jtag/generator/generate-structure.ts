@@ -240,7 +240,7 @@ const STRUCTURE_CONFIG: GeneratorConfig = {
     name: '{name}',
     className: '{className}',
     widgetClass: {className},
-    tagName: '{name}'.toLowerCase() + '-widget'
+    tagName: '{name}'.replace(/([A-Z])/g, (match, p1, offset) => offset > 0 ? '-' + p1.toLowerCase() : p1.toLowerCase()) + '-widget'
   }`
       }
     }

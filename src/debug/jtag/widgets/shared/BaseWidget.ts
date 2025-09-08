@@ -647,7 +647,7 @@ export abstract class BaseWidget extends HTMLElement {
 
   private async handleInitializationError(error: any): Promise<void> {
     this.state.hasError = true;
-    this.state.errorMessage = error.message || String(error);
+    this.state.errorMessage = error.message ?? String(error);
     
     // Render error state
     this.shadowRoot.innerHTML = `
