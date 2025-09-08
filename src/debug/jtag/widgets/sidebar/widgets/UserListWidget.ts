@@ -145,5 +145,4 @@ export class UserListWidget extends BaseWidget {
   }
 }
 
-// Register the custom element
-customElements.define('user-list-widget', UserListWidget);
+// Registration handled by generator system in browser/generated.ts
