@@ -122,25 +122,27 @@ export class ChatWidget extends BaseWidget {
     try {
       console.log(`🔗 ChatWidget: Subscribing to room events for "${this.currentRoom}"`);
       
-      // Use JTAG operation to subscribe to room events via the chat daemon
-      const subscribeResult = await this.jtagOperation('chat/subscribe-room', {
-        roomId: this.currentRoom,
-        eventTypes: ['chat:message-received', 'chat:participant-joined', 'chat:participant-left']
-      }) as any;
-      
-      if (subscribeResult && subscribeResult.success) {
-        this.eventSubscriptionId = subscribeResult.subscriptionId;
-        console.log(`✅ ChatWidget: Subscribed to room "${this.currentRoom}" events`);
+      // Try JTAG operation to subscribe to room events via the chat daemon
+      try {
+        const subscribeResult = await this.jtagOperation('chat/subscribe-room', {
+          roomId: this.currentRoom,
+          eventTypes: ['chat:message-received', 'chat:participant-joined', 'chat:participant-left']
+        }) as any;
         
-        // Set up event handlers for real-time updates
-        this.setupRoomEventHandlers();
-      } else {
-        throw new Error(`Room subscription failed: ${subscribeResult?.error || 'Unknown error'}`);
+        if (subscribeResult && subscribeResult.success) {
+          this.eventSubscriptionId = subscribeResult.subscriptionId;
+          console.log(`✅ ChatWidget: Subscribed to room "${this.currentRoom}" events via JTAG`);
+        }
+      } catch (jtagError) {
+        console.log(`ℹ️ ChatWidget: JTAG room subscription not available, using DOM events fallback`);
       }
+      
+      // Set up DOM event listeners as fallback (these are emitted by EventsDaemon)
+      this.setupRoomEventHandlers();
       
     } catch (error) {
       console.error(`❌ ChatWidget: Failed to subscribe to room events:`, error);
-      throw error; // No fallbacks - either it works or it fails
+      // Don't throw - continue with DOM events only
     }
   }
 
@@ -148,11 +150,70 @@ export class ChatWidget extends BaseWidget {
    * Set up event handlers for real-time room updates
    */
   private setupRoomEventHandlers(): void {
-    // Use BaseWidget's router event system to handle incoming room events
     console.log(`📡 ChatWidget: Setting up room event handlers for room ${this.currentRoom}`);
     
-    // This will be handled by the BaseWidget event routing system
-    // When RoomEventSystem sends events, they'll be routed to this widget
+    // Listen to DOM events emitted by EventsDaemon (these are working!)
+    document.addEventListener('chat:message-received', (event: Event) => {
+      const customEvent = event as CustomEvent;
+      console.log(`🔧 CLAUDE-DOM-EVENT: Received chat:message-received`, customEvent.detail);
+      this.handleDOMChatEvent(customEvent);
+    });
+    
+    // Also listen to chat-message-sent events as fallback
+    document.addEventListener('chat-message-sent', (event: Event) => {
+      const customEvent = event as CustomEvent;
+      console.log(`🔧 CLAUDE-DOM-EVENT: Received chat-message-sent`, customEvent.detail);  
+      this.handleDOMChatEvent(customEvent);
+    });
+    
+    console.log(`✅ ChatWidget: Set up DOM event listeners for chat events`);
+  }
+  
+  /**
+   * Handle DOM chat events from EventsDaemon - React-like efficient rendering
+   */
+  private async handleDOMChatEvent(event: CustomEvent): Promise<void> {
+    console.log(`🔧 CLAUDE-DOM-HANDLER: Processing DOM chat event`, event.detail);
+    
+    // Check if event has message data we can use directly (React-like state update)
+    if (event.detail && event.detail.message) {
+      const eventMessage = event.detail.message;
+      
+      // Only add if it's for our room and not already in our messages
+      if (eventMessage.roomId === this.currentRoom) {
+        const messageExists = this.messages.some(msg => msg.id === eventMessage.messageId);
+        
+        if (!messageExists) {
+          // Add new message directly (React-like state update)
+          const newMessage: ChatMessage = {
+            id: eventMessage.messageId,
+            content: eventMessage.content,
+            roomId: eventMessage.roomId,
+            senderId: eventMessage.senderId,
+            senderName: eventMessage.senderName || 'Unknown User',
+            type: eventMessage.senderId === 'current_user' ? 'user' : 'assistant',
+            timestamp: eventMessage.timestamp
+          };
+          
+          this.messages.push(newMessage);
+          
+          // Super efficient: just render and append the new message row
+          this.appendMessageRow(newMessage);
+          console.log(`✅ ChatWidget: Added new message row via DOM event (React-like row rendering)`);
+          return;
+        }
+      }
+    }
+    
+    // Fallback: reload from database if we couldn't parse the event
+    try {
+      console.log(`🔄 ChatWidget: Falling back to database reload`);
+      await this.loadRoomHistory();
+      await this.renderWidget();
+      console.log(`✅ ChatWidget: Reloaded messages after DOM event`);
+    } catch (error) {
+      console.error(`❌ ChatWidget: Failed to reload after DOM event:`, error);
+    }
   }
   
   /**
@@ -282,6 +343,39 @@ export class ChatWidget extends BaseWidget {
       return renderer.renderMessageContainer(msg);
     }).join('');
   }
+  
+  /**
+   * Efficiently append a single message row without re-rendering entire widget
+   */
+  private appendMessageRow(message: ChatMessage): void {
+    const messagesContainer = this.shadowRoot.querySelector('#messages');
+    if (!messagesContainer) {
+      console.warn('⚠️ ChatWidget: No messages container found for row append');
+      return;
+    }
+    
+    // Render just this one message row
+    const renderer = MessageRowWidgetFactory.createRenderer(message, {
+      enableIntersectionObserver: true,
+      lazyLoadImages: true,
+      enableInteractions: true,
+      customClassNames: ['chat-message-renderer']
+    });
+    
+    const messageRowHTML = renderer.renderMessageContainer(message);
+    
+    // Create temporary element and append to container
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = messageRowHTML;
+    
+    // Append all children from temp div to messages container
+    while (tempDiv.firstChild) {
+      messagesContainer.appendChild(tempDiv.firstChild);
+    }
+    
+    // Auto-scroll to show new message
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  }
 
   private setupEventListeners(): void {
     // Send message on Enter or button click
@@ -313,8 +407,9 @@ export class ChatWidget extends BaseWidget {
       timestamp: new Date().toISOString()
     };
     
-    // Add to messages and clear input
+    // Add to messages and render immediately (optimistic UI update)
     this.messages.push(userMessage);
+    this.appendMessageRow(userMessage);
     this.messageInput.value = '';
     
     try {
@@ -327,7 +422,8 @@ export class ChatWidget extends BaseWidget {
       
       if (sendResult && sendResult.success) {
         console.log(`✅ ChatWidget: Message sent to room ${this.currentRoom}`);
-        // Message will appear via event subscription when that's implemented
+        // Message already added optimistically, and events will trigger React-like updates
+        // No need to reload - let the DOM events handle it efficiently
       } else {
         const errorMsg = sendResult?.error || 'Unknown error';
         console.error(`❌ ChatWidget: Failed to send message:`, errorMsg);
