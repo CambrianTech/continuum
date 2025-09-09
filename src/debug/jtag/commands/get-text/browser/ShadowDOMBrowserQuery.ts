@@ -5,7 +5,7 @@
  * Direct browser-side implementation for real DOM manipulation.
  */
 
-import { ShadowDOMSearchResult, ShadowDOMElement, ShadowDOMQueryOptions } from '../../../system/shared/ShadowDOMUtils';
+import { ShadowDOMSearchResult, ShadowDOMElement, ShadowDOMQueryOptions } from '../../../system/browser/WidgetUtils';
 
 export class ShadowDOMBrowserQuery {
   

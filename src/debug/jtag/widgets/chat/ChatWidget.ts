@@ -91,13 +91,13 @@ export class ChatWidget extends BaseWidget {
         const roomMessages = dataResult.items
           .filter((item: any) => item.data && item.data.roomId === this.currentRoom)
           .map((item: any) => ({
-            id: item.data.messageId,
-            content: item.data.content,
-            roomId: item.data.roomId,
-            senderId: item.data.senderId,
-            senderName: item.data.senderName || 'Unknown',
+            id: item.data.messageId || item.id || 'unknown-id',
+            content: item.data.content || '[Message content not available]',
+            roomId: item.data.roomId || this.currentRoom,
+            senderId: item.data.senderId || 'unknown-sender',
+            senderName: item.data.senderName || 'Unknown User',
             type: item.data.senderId === 'current_user' ? 'user' : 'assistant',
-            timestamp: item.data.timestamp
+            timestamp: item.data.timestamp || new Date().toISOString()
           }))
           .sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()); // Sort by timestamp
         

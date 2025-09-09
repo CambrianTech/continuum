@@ -116,6 +116,12 @@ Widget Integration Tests (100% MISSING):
 ├── Button/input validation → Verify functional UI elements exist
 ├── Event subscription → Verify widgets receive real-time updates  
 └── Error handling → Widget behavior when commands fail
+
+Exec Command Integration Tests (NEW APPROACH - CRITICAL):
+├── ./jtag exec --code="widget.sendMessage('test')" → Verify server receives
+├── ./jtag chat/send-message → ./jtag exec --code="widget.getMessages()" → Verify browser has message
+├── ./jtag exec --code="document.querySelector('#send-button').click()" → Verify full flow
+└── ./jtag exec --code="return widget.shadowRoot.innerHTML.includes('MESSAGE_TEXT')" → Verify widget HTML
 ```
 
 **Required Architecture (Discord/Teams Standard)**:
@@ -176,10 +182,18 @@ tests/integration/end-to-end-chat/
 ├── browser-ui-integration.test.ts     # Click buttons, verify widget HTML
 ├── cross-environment-flow.test.ts     # Browser→Server→Browser flow
 ├── widget-event-integration.test.ts   # Event subscriptions → Widget updates  
-└── multi-user-scenarios.test.ts       # Cross-user interactions
+├── multi-user-scenarios.test.ts       # Cross-user interactions
+└── exec-command-flow.test.ts          # NEW: Full exec command browser↔server testing
+
+# NEW: Exec command test patterns
+tests/chat-scenarios/
+├── chat-exec-browser-integration.test.ts  # Browser-side exec command triggers
+├── chat-exec-bidirectional-flow.test.ts   # Complete exec command flow testing
+└── chat-exec-widget-validation.test.ts    # Widget HTML validation via exec
 
 # Execution framework
 npm run test:end-to-end               # Run full integration suite
+npm run test:chat-exec                # Run exec command chat tests
 ```
 
 **Success Criteria**:
@@ -270,8 +284,25 @@ npm run test:end-to-end               # Run full integration suite
 
 ### **🎯 CURRENT FOCUS (Next 1-2 months)**
 
+### **🚨 CRITICAL DAEMON ARCHITECTURE GAPS** 
+**Priority: IMMEDIATE - Architecture debt blocking scalability**
+
+5. **Daemon Architecture Integration** (Critical Missing Infrastructure)
+   - **DataDaemon Integration**: Replace direct filesystem operations in data commands with proper DataDaemon abstraction
+   - **ArtifactsDaemon Integration**: Convert file/save, file/load, and all filesystem operations to use ArtifactsDaemon
+   - **Command Routing Fix**: Fix daemon endpoint routing so commands can properly call 'artifacts' and 'data' daemons
+   - **Storage Strategy Implementation**: Implement proper StorageType routing ('database', 'session', 'system', 'cache')
+   - **File Command Migration**: Convert all file commands to use ArtifactsDaemon instead of direct fs operations
+
+**Technical Debt Impact**: Currently data/chat commands bypass daemon architecture with direct filesystem access, creating:
+- Cluttered code that will worsen over time
+- No proper storage abstraction 
+- Missing storage strategy flexibility
+- Violated separation of concerns
+- Difficult testing and maintenance
+
 ### **🚀 LONG-TERM (3+ months)**
-5. **AI Persona Integration** (Milestone 6)
+6. **AI Persona Integration** (Milestone 6)
    - Human ↔ AI conversation implementation
    - Academy training system
    - Genomic LoRA optimization

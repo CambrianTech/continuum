@@ -11,9 +11,15 @@ import { createJTAGClientServices } from './system/core/client/shared/services';
 // Import widget registry for dynamic registration
 import { BROWSER_WIDGETS } from './browser/generated';
 
+// Import widget debugging utilities
+import * as WidgetUtils from './system/browser/WidgetUtils';
+
 // NOTE: ThemeWidget imported via BROWSER_WIDGETS registry - no need for direct import
 
 export const jtag = {
+  // Widget debugging utilities
+  widgets: WidgetUtils,
+  
   // Universal client interface - always returns connection result with client property
   async connect(): Promise<ReturnType<typeof JTAGClientBrowser.connectLocal>> {
     console.debug('🔌 Browser: Connecting via JTAGClientBrowser (local connection)');
