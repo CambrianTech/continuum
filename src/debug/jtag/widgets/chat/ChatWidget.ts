@@ -46,6 +46,11 @@ export class ChatWidget extends BaseWidget {
   private messageInput?: HTMLInputElement;
   private eventSubscriptionId?: string;
   
+  // Event handler references for proper cleanup
+  private _keydownHandler?: (e: KeyboardEvent) => void;
+  private _clickHandler?: (e: Event) => void;
+  private currentSessionId?: string;
+  
   constructor(roomId: string = 'general') {
     super({
       widgetName: 'ChatWidget',
@@ -84,6 +89,12 @@ export class ChatWidget extends BaseWidget {
         limit: 50 // Recent messages
       }) as any;
       
+      // CRITICAL: Capture session ID from ANY jtag operation result if not already set
+      if (!this.currentSessionId && historyResult.sessionId) {
+        this.currentSessionId = historyResult.sessionId;
+        console.log(`🔧 CLAUDE-SESSION-DEBUG: Set currentSessionId from loadRoomHistory: "${this.currentSessionId}"`);
+      }
+      
       // Handle nested JTAG response structure - actual data is in commandResult
       const dataResult = (historyResult as any).commandResult || historyResult;
       
@@ -98,7 +109,11 @@ export class ChatWidget extends BaseWidget {
             roomId: item.data.roomId || this.currentRoom,
             senderId: item.data.senderId || 'unknown-sender',
             senderName: item.data.senderName || this.generateSenderName(item.data.senderId),
-            type: item.data.senderId === 'current_user' ? 'user' : 'assistant',
+            type: (() => {
+              const isCurrentUser = this.currentSessionId && item.data.senderId === this.currentSessionId;
+              console.log(`🔧 CLAUDE-ATTRIBUTION-DEBUG: senderId="${item.data.senderId}", currentSessionId="${this.currentSessionId}", isCurrentUser=${isCurrentUser}`);
+              return isCurrentUser ? 'user' : 'assistant';
+            })(),
             timestamp: item.data.timestamp || new Date().toISOString()
           }))
           .sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()); // Sort by timestamp
@@ -192,7 +207,7 @@ export class ChatWidget extends BaseWidget {
             roomId: eventMessage.roomId,
             senderId: eventMessage.senderId,
             senderName: eventMessage.senderName || 'Unknown User',
-            type: eventMessage.senderId === 'current_user' ? 'user' : 'assistant',
+            type: (this.currentSessionId && eventMessage.senderId === this.currentSessionId) ? 'user' : 'assistant',
             timestamp: eventMessage.timestamp
           };
           
@@ -252,7 +267,7 @@ export class ChatWidget extends BaseWidget {
         roomId: eventData.message.roomId,
         senderId: eventData.message.senderId,
         senderName: eventData.message.senderName,
-        type: eventData.message.senderId === 'current_user' ? 'user' : 'assistant',
+        type: (this.currentSessionId && eventData.message.senderId === this.currentSessionId) ? 'user' : 'assistant',
         timestamp: eventData.message.timestamp
       };
       
@@ -379,19 +394,58 @@ export class ChatWidget extends BaseWidget {
   }
 
   private setupEventListeners(): void {
-    // Send message on Enter or button click
-    this.messageInput?.addEventListener('keydown', (e) => {
+    console.log('🔧 CLAUDE-DEBUG: setupEventListeners called');
+    console.log('🔧 CLAUDE-DEBUG: messageInput exists:', !!this.messageInput);
+    console.log('🔧 CLAUDE-DEBUG: sendButton exists:', !!this.shadowRoot.getElementById('sendButton'));
+    
+    // Remove existing event listeners to prevent duplicates
+    this.cleanupEventListeners();
+    
+    // Send message on Enter
+    const keydownHandler = (e: KeyboardEvent) => {
+      console.log('🔧 CLAUDE-DEBUG: keydown event:', e.key);
       if (e.key === 'Enter') {
+        e.preventDefault();
         this.sendMessage();
       }
-    });
+    };
     
-    this.shadowRoot.getElementById('sendButton')?.addEventListener('click', () => {
+    // Send message on button click  
+    const clickHandler = (e: Event) => {
+      e.preventDefault();
+      console.log('🔧 CLAUDE-DEBUG: send button clicked');
       this.sendMessage();
-    });
+    };
+    
+    // Store handlers for cleanup
+    this._keydownHandler = keydownHandler;
+    this._clickHandler = clickHandler;
+    
+    // Attach event listeners
+    this.messageInput?.addEventListener('keydown', keydownHandler);
+    
+    const sendButton = this.shadowRoot.getElementById('sendButton');
+    sendButton?.addEventListener('click', clickHandler);
+    
+    console.log('🔧 CLAUDE-DEBUG: event listeners attached with proper cleanup');
+  }
+  
+  private cleanupEventListeners(): void {
+    // Remove existing event listeners to prevent duplicates
+    if (this._keydownHandler && this.messageInput) {
+      this.messageInput.removeEventListener('keydown', this._keydownHandler);
+    }
+    
+    if (this._clickHandler) {
+      const sendButton = this.shadowRoot.getElementById('sendButton');
+      if (sendButton) {
+        sendButton.removeEventListener('click', this._clickHandler);
+      }
+    }
   }
 
-  private async sendMessage(): Promise<void> {
+  public async sendMessage(): Promise<void> {
+    console.log('🔧 CLAUDE-DEBUG: sendMessage called');
     if (!this.messageInput) return;
     
     const content = this.messageInput.value.trim();
@@ -416,10 +470,16 @@ export class ChatWidget extends BaseWidget {
     try {
       // Use existing chat/send-message command with proper types
       const sendResult = await this.jtagOperation<ChatSendMessageResult>('chat/send-message', {
-        message: content,
+        content: content,  // ← Fixed: use 'content' parameter as expected by server
         roomId: this.currentRoom,
         userId: 'current_user'
       });
+      
+      // Capture current session ID from result for attribution
+      if (sendResult.sessionId) {
+        this.currentSessionId = sendResult.sessionId;
+        console.log(`🔧 CLAUDE-SESSION-DEBUG: Stored currentSessionId="${this.currentSessionId}"`);
+      }
       
       if (sendResult && sendResult.success) {
         console.log(`✅ ChatWidget: Message sent to room ${this.currentRoom}`);
