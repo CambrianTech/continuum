@@ -33,11 +33,19 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
     try {
       // 1. Create domain object - will handle validation and structure
       // TODO: Need User and ChatRoom objects - for now create directly
+      // CRITICAL FIX: Use system sender for server-originated messages
+      // When server sends messages via CLI, they should appear as assistant messages
+      const senderId = chatParams.senderType === 'system' ? 'system' 
+                     : chatParams.senderType === 'server' ? 'server'
+                     : chatParams.sessionId; // Default to session for user messages
+      
+      console.log(`🔧 CLAUDE-SENDER-DEBUG: senderType="${chatParams.senderType}", sessionId="${chatParams.sessionId}", using senderId="${senderId}"`);
+      
       const message = ChatMessage.fromData({
         messageId: generateUUID(),
         roomId: chatParams.roomId,
         content: chatParams.content,
-        senderId: chatParams.sessionId,
+        senderId: senderId,
         timestamp: new Date().toISOString(),
         mentions: [], // TODO: Parse mentions from content or params
         category: 'chat',

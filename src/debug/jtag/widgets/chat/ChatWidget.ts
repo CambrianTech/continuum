@@ -345,6 +345,29 @@ export class ChatWidget extends BaseWidget {
     
     // Setup event listeners
     this.setupEventListeners();
+    
+    // Auto-scroll to bottom to show latest messages
+    this.scrollToBottom();
+  }
+  
+  /**
+   * Scroll chat messages to bottom to show latest content
+   */
+  private scrollToBottom(): void {
+    try {
+      const messagesContainer = this.shadowRoot.querySelector('#messages');
+      if (messagesContainer) {
+        // Use requestAnimationFrame to ensure DOM is fully rendered
+        requestAnimationFrame(() => {
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+          console.log('🔧 CLAUDE-SCROLL-DEBUG: Scrolled to bottom');
+        });
+      } else {
+        console.warn('⚠️ ChatWidget: Messages container not found for auto-scroll');
+      }
+    } catch (error) {
+      console.error('❌ ChatWidget: Auto-scroll failed:', error);
+    }
   }
 
   private renderMessages(): string {

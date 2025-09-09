@@ -16,6 +16,7 @@ export interface ChatSendMessageParams extends CommandParams {
   readonly category?: 'chat' | 'system' | 'response' | 'notification';
   readonly replyToId?: UUID;
   readonly messageContext?: any;
+  readonly senderType?: 'user' | 'system' | 'server'; // For proper attribution
 }
 
 /**

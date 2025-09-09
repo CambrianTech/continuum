@@ -84,15 +84,19 @@ export abstract class BaseMessageRowWidget {
 
   /**
    * Main message container with common features:
-   * - Me/someone-else positioning (right/left alignment)
+   * - Me/someone-else positioning (right/left alignment) 
    * - Message bubble styling
    * - Timestamp display
    * - Reaction system
    */
   public renderMessageContainer(message: ChatMessage): string {
-    const isMe = message.senderId === 'current_user';
+    // Use message.type instead of hardcoded 'current_user' check
+    // ChatWidget already sets type correctly based on session ID comparison
+    const isMe = message.type === 'user';
     const alignment = isMe ? 'right' : 'left';
     const messageClass = isMe ? 'message-me' : 'message-other';
+    
+    console.log(`🔧 CLAUDE-RENDER-DEBUG: message.type="${message.type}", senderId="${message.senderId}", isMe=${isMe}, alignment="${alignment}"`);
     
     return `
       <div class="message-row ${alignment}">
