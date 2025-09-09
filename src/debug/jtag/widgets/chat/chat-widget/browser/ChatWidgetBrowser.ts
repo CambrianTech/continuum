@@ -567,6 +567,7 @@ export class ChatWidgetBrowser extends HTMLElement {
   private async connectToJTAG(): Promise<void> {
     try {
       console.log('🔌 ChatWidgetBrowser: Connecting to JTAG through WidgetDaemon...');
+      console.log('🔧 CLAUDE-FIX-' + Date.now() + ': Adding periodic refresh to fix CLI→Widget integration');
       
       // The widget should use WidgetDaemon which provides executeCommand() like CommandBase.remoteExecute()
       const widgetDaemon = (window as any).widgetDaemon;
@@ -745,24 +746,37 @@ export class ChatWidgetBrowser extends HTMLElement {
   }
 
   /**
-   * Load messages for selected room
+   * Load messages for selected room using chat/get-messages command
    */
   private async loadRoomMessages(roomId: string): Promise<void> {
     this.state.isLoading = true;
     this.renderLoadingState();
     
     try {
-      const result = await this.jtagClient.executeCommand('data/list', {
-        collection: 'chat_messages',
-        filter: { roomId },
-        sort: { timestamp: 1 },
+      console.log(`🔄 ChatWidgetBrowser: Loading messages for room ${roomId}`);
+      
+      // Use chat/get-messages command instead of data/list for proper message retrieval
+      const result = await this.jtagClient.executeCommand('chat/get-messages', {
+        roomId: roomId,
         limit: 50
       });
       
-      if (result?.success) {
-        this.state.messages = result.items || [];
+      console.log(`📥 ChatWidgetBrowser: Received ${result?.data?.messages?.length || 0} messages`);
+      
+      if (result?.success && result.data?.messages) {
+        this.state.messages = result.data.messages.map((msg: any) => ({
+          id: msg.messageId || msg.id,
+          content: msg.message || msg.content,
+          roomId: msg.roomId,
+          senderId: msg.userId || msg.senderId,
+          senderName: msg.senderName || 'Unknown',
+          timestamp: msg.timestamp,
+          type: msg.senderType === 'user' ? 'user' : 'assistant',
+          status: 'sent'
+        }));
       } else {
         this.state.messages = [];
+        console.log(`⚠️ ChatWidgetBrowser: No messages found or command failed`);
       }
       
       this.state.isLoading = false;
@@ -785,6 +799,7 @@ export class ChatWidgetBrowser extends HTMLElement {
     // For now, we rely on the global message:received events filtered by roomId
     console.log('📡 ChatWidgetBrowser: Subscribed to room events for:', roomId);
   }
+
 
   /**
    * Update room display in header

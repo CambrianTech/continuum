@@ -24,7 +24,7 @@ export class GetMessagesServerCommand extends GetMessagesCommand {
       // Simple like other commands - use existing data/list 
       const result = await this.remoteExecute({
         collection: 'chat_messages',
-        filter: JSON.stringify({ roomId: params.roomId }),
+        filter: { roomId: params.roomId },
         limit: limit,
         context: this.context,
         sessionId: params.sessionId
@@ -37,23 +37,28 @@ export class GetMessagesServerCommand extends GetMessagesCommand {
       }
 
       // Transform database records to MessageData format
-      const messages: MessageData[] = typedResult.items.map((item: Record<string, unknown>) => ({
-        id: item.messageId || item.id || `msg_${Date.now()}`,
-        roomId: item.roomId || params.roomId,
-        senderId: item.senderId || item.userId || 'unknown',
-        senderName: item.senderName || item.userName || 'Unknown User',
-        content: {
-          text: item.content || item.message || '',
-          attachments: item.attachments || [],
-          formatting: item.formatting || { markdown: false }
-        },
-        timestamp: item.timestamp || new Date().toISOString(),
-        replyToId: item.replyToId,
-        mentions: item.mentions || [],
-        reactions: item.reactions || [],
-        status: item.status || 'sent',
-        metadata: item.metadata || {}
-      }));
+      const messages: MessageData[] = typedResult.items.map((item: any) => {
+        // Extract data from the database record structure
+        const data = item.data || item;
+        
+        return {
+          id: data.messageId || data.id || item.id || `msg_${Date.now()}`,
+          roomId: data.roomId || params.roomId,
+          senderId: data.senderId || data.userId || 'unknown',
+          senderName: data.senderName || data.userName || 'Unknown User',
+          content: {
+            text: data.content || data.message || data.text || '[MISSING CONTENT]',
+            attachments: data.attachments || [],
+            formatting: data.formatting || { markdown: false }
+          },
+          timestamp: data.timestamp || new Date().toISOString(),
+          replyToId: data.replyToId,
+          mentions: data.mentions || [],
+          reactions: data.reactions || [],
+          status: data.status || 'sent',
+          metadata: data.metadata || item.metadata || {}
+        };
+      });
 
       console.log(`📚 Server: Retrieved ${messages.length} messages for room ${params.roomId}`);
       return messages;

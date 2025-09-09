@@ -9,6 +9,7 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 export interface DataListParams extends JTAGPayload {
   readonly collection: string;
   readonly limit?: number;
+  readonly filter?: Record<string, any>;
 }
 
 export interface DataListResult extends JTAGPayload {
