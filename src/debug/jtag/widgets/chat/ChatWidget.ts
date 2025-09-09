@@ -9,6 +9,7 @@ import { BaseWidget } from '../shared/BaseWidget';
 import type { ChatMessage } from './shared/ChatModuleTypes';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../../commands/chat/send-message/shared/ChatSendMessageTypes';
 import { MessageRowWidgetFactory } from './shared/BaseMessageRowWidget';
+import type { User } from '../../domain/user/User';
 
 // Strict event data types - no more 'any'!
 interface ChatMessageEventData {
@@ -50,6 +51,8 @@ export class ChatWidget extends BaseWidget {
   private _keydownHandler?: (e: KeyboardEvent) => void;
   private _clickHandler?: (e: Event) => void;
   private currentSessionId?: string;
+  private currentUser: User | null = null; // Domain object for current user
+  private currentUserId?: string; // Persistent User ID for "me" attribution
   
   constructor(roomId: string = 'general') {
     super({
@@ -66,6 +69,10 @@ export class ChatWidget extends BaseWidget {
 
   protected async onWidgetInitialize(): Promise<void> {
     console.log(`🎯 ChatWidget: Initializing for room "${this.currentRoom}"...`);
+    
+    // CRITICAL: Initialize persistent User ID using simple localStorage approach
+    this.currentUserId = this.getPersistentUserId();
+    console.log(`🔧 CLAUDE-USER-ID-DEBUG: Initialized persistent User ID: ${this.currentUserId}`);
     
     // Load room message history using command abstraction
     await this.loadRoomHistory();
@@ -110,8 +117,17 @@ export class ChatWidget extends BaseWidget {
             senderId: item.data.senderId || 'unknown-sender',
             senderName: item.data.senderName || this.generateSenderName(item.data.senderId),
             type: (() => {
-              const isCurrentUser = this.currentSessionId && item.data.senderId === this.currentSessionId;
-              console.log(`🔧 CLAUDE-ATTRIBUTION-DEBUG: senderId="${item.data.senderId}", currentSessionId="${this.currentSessionId}", isCurrentUser=${isCurrentUser}`);
+              // CRITICAL FIX: Use persistent User ID instead of Session ID for attribution
+              const senderId = item.data.senderId;
+              const currentUserId = this.currentUserId;
+              const isCurrentUser = currentUserId && senderId === currentUserId;
+              console.log(`🔧 CLAUDE-ATTRIBUTION-DEBUG: senderId="${senderId}", currentUserId="${currentUserId}", isCurrentUser=${isCurrentUser}`);
+              
+              // Extra debugging for the specific case
+              if (senderId === 'user-joel-12345') {
+                console.log(`🔧 CLAUDE-JOEL-DEBUG: Found user-joel-12345 message, currentUserId="${currentUserId}", match=${senderId === currentUserId}`);
+              }
+              
               return isCurrentUser ? 'user' : 'assistant';
             })(),
             timestamp: item.data.timestamp || new Date().toISOString()
@@ -207,7 +223,11 @@ export class ChatWidget extends BaseWidget {
             roomId: eventMessage.roomId,
             senderId: eventMessage.senderId,
             senderName: eventMessage.senderName || 'Unknown User',
-            type: (this.currentSessionId && eventMessage.senderId === this.currentSessionId) ? 'user' : 'assistant',
+            type: (() => {
+              const isCurrentUser = this.currentUserId && eventMessage.senderId === this.currentUserId;
+              console.log(`🔧 CLAUDE-DOM-ATTRIBUTION-DEBUG: DOM event senderId="${eventMessage.senderId}", currentUserId="${this.currentUserId}", isCurrentUser=${isCurrentUser}`);
+              return isCurrentUser ? 'user' : 'assistant';
+            })(),
             timestamp: eventMessage.timestamp
           };
           
@@ -267,7 +287,7 @@ export class ChatWidget extends BaseWidget {
         roomId: eventData.message.roomId,
         senderId: eventData.message.senderId,
         senderName: eventData.message.senderName,
-        type: (this.currentSessionId && eventData.message.senderId === this.currentSessionId) ? 'user' : 'assistant',
+        type: (this.currentUserId && eventData.message.senderId === this.currentUserId) ? 'user' : 'assistant',
         timestamp: eventData.message.timestamp
       };
       
@@ -474,12 +494,12 @@ export class ChatWidget extends BaseWidget {
     const content = this.messageInput.value.trim();
     if (!content) return;
     
-    // Create user message
+    // Create user message using persistent User ID
     const userMessage: ChatMessage = {
       id: `msg_${Date.now()}`,
       content,
       roomId: this.currentRoom,
-      senderId: 'current_user',
+      senderId: this.currentUserId || 'current_user', // Use persistent User ID
       senderName: 'You',
       type: 'user',
       timestamp: new Date().toISOString()
@@ -495,7 +515,7 @@ export class ChatWidget extends BaseWidget {
       const sendResult = await this.jtagOperation<ChatSendMessageResult>('chat/send-message', {
         content: content,  // ← Fixed: use 'content' parameter as expected by server
         roomId: this.currentRoom,
-        userId: 'current_user'
+        senderType: 'user' // Explicitly mark as user message - server will use UserIdManager
       });
       
       // Capture current session ID from result for attribution
@@ -520,13 +540,41 @@ export class ChatWidget extends BaseWidget {
     }
   }
 
+  /**
+   * Get or create persistent User ID that survives browser sessions
+   * Foundation for proper User domain objects
+   */
+  private getPersistentUserId(): string {
+    const STORAGE_KEY = 'continuum_user_id';
+    const DEFAULT_USER_ID = 'user-joel-12345'; // Matches fake-users.json
+    
+    // Try to get from localStorage first
+    if (typeof localStorage !== 'undefined') {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        console.log(`🔧 CLAUDE-USER-ID-DEBUG: Retrieved persistent User ID from localStorage: ${stored}`);
+        return stored;
+      }
+    }
+    
+    // Set up persistent User ID and store it
+    const persistentUserId = DEFAULT_USER_ID;
+    
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(STORAGE_KEY, persistentUserId);
+      console.log(`🔧 CLAUDE-USER-ID-DEBUG: Created and stored persistent User ID: ${persistentUserId}`);
+    }
+    
+    return persistentUserId;
+  }
+
   private generateSenderName(senderId: string): string {
     if (!senderId || senderId === 'unknown-sender') {
       return 'Unknown User';
     }
     
     // Handle known system senders
-    if (senderId === 'current_user') {
+    if (senderId === 'current_user' || (this.currentUserId && senderId === this.currentUserId)) {
       return 'You';
     }
     
