@@ -91,12 +91,13 @@ export class ChatWidget extends BaseWidget {
         // Filter messages for current room and convert to internal format  
         const roomMessages = dataResult.items
           .filter((item: any) => item.data && item.data.roomId === this.currentRoom)
+          .filter((item: any) => item.data.content && item.data.content.trim().length > 0) // Skip messages without valid content
           .map((item: any) => ({
             id: item.data.messageId || item.id || 'unknown-id',
-            content: item.data.content ?? '[Message content not available]',
+            content: item.data.content,
             roomId: item.data.roomId || this.currentRoom,
             senderId: item.data.senderId || 'unknown-sender',
-            senderName: item.data.senderName || 'Unknown User',
+            senderName: item.data.senderName || this.generateSenderName(item.data.senderId),
             type: item.data.senderId === 'current_user' ? 'user' : 'assistant',
             timestamp: item.data.timestamp || new Date().toISOString()
           }))
@@ -434,6 +435,26 @@ export class ChatWidget extends BaseWidget {
       console.error('❌ ChatWidget: Failed to send message:', error);
       this.handleError(error, 'sendMessage');
     }
+  }
+
+  private generateSenderName(senderId: string): string {
+    if (!senderId || senderId === 'unknown-sender') {
+      return 'Unknown User';
+    }
+    
+    // Handle known system senders
+    if (senderId === 'current_user') {
+      return 'You';
+    }
+    
+    if (senderId === 'system') {
+      return 'System';
+    }
+    
+    // Generate readable name from senderId
+    // Take first 8 characters of UUID and make it readable
+    const shortId = senderId.split('-')[0] || senderId.slice(0, 8);
+    return `User-${shortId}`;
   }
 
   private getRoomDisplayName(): string {
