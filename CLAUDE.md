@@ -93,6 +93,44 @@ npm test                              # All tests
 
 ---
 
+## **🚨 CRITICAL ANTI-PATTERN: DON'T IGNORE EXISTING INFRASTRUCTURE**
+
+**⚠️⚠️⚠️ CLAUDE'S #2 FAILURE PATTERN: Ignoring existing test scripts and debugging tools ⚠️⚠️⚠️**
+
+### **🔥 THE "LOST INFRASTRUCTURE" TRAP**
+
+**SYMPTOMS**: You start debugging from scratch when solutions already exist:
+- Forgetting about existing test scripts (`test-bidirectional-chat.sh`, `test-all-chat-sends.sh`)
+- Not using existing Shadow DOM selectors and utilities documented in CLAUDE.md
+- Reinventing debugging approaches instead of using proven workflows
+- Acting like widget infrastructure doesn't exist when it's fully documented
+
+**ROOT CAUSE**: Not reading and following your own documentation systematically.
+
+### **🛡️ PREVENTION PROTOCOL**
+
+**BEFORE starting ANY debugging session:**
+
+1. **READ CLAUDE.md FIRST** - Every single priority section, in order
+2. **CHECK EXISTING TEST SCRIPTS** - Look in root directory for `test-*.sh` scripts
+3. **USE DOCUMENTED SELECTORS** - Widget paths and Shadow DOM utilities are already documented
+4. **FOLLOW ESTABLISHED PATTERNS** - Don't reinvent, extend what works
+
+**CRITICAL EXAMPLE**: Widget DOM path is `continuum-widget → main-widget → chat-widget`. This is documented multiple times in this file, with working Shadow DOM code examples.
+
+### **🎯 EXISTING INFRASTRUCTURE CHECKLIST**
+
+**Before debugging widgets:**
+- [ ] Check if test scripts exist for the exact problem (`test-bidirectional-chat.sh` etc.)
+- [ ] Use documented Shadow DOM utilities (`queryShadowDOM` function)
+- [ ] Follow documented widget paths (`continuum-widget → main-widget → chat-widget`)
+- [ ] Use existing screenshot and debugging infrastructure
+- [ ] Run established test patterns instead of creating new ones
+
+**Remember: You built comprehensive testing infrastructure - USE IT!**
+
+---
+
 ## **🧙‍♂️ JTAG DEBUGGING MASTERY**
 
 **CORE DEBUGGING WORKFLOW - MEMORIZE THIS:**
@@ -190,6 +228,31 @@ All screenshots are automatically saved to:
 ```
 .continuum/sessions/user/shared/{SESSION_ID}/screenshots/
 ```
+
+### **🔗 CRITICAL: Complete Shadow DOM Widget Path**
+**NEVER FORGET**: The chat widget is nested in Shadow DOM:
+```
+continuum-widget (shadowRoot)
+  ↳ main-widget (shadowRoot) 
+    ↳ chat-widget (shadowRoot)
+      ↳ .message-input, .messages-container, etc.
+```
+
+**Browser access pattern (used in test scripts):**
+```javascript
+const continuumWidget = document.querySelector('continuum-widget');
+const mainWidget = continuumWidget?.shadowRoot?.querySelector('main-widget');
+const chatWidget = mainWidget?.shadowRoot?.querySelector('chat-widget');
+const input = chatWidget?.shadowRoot?.querySelector('.message-input');
+
+// Send message via chat widget
+if (input && chatWidget.sendMessage) {
+  input.value = 'test message';
+  chatWidget.sendMessage();
+}
+```
+
+**This exact pattern is used in `test-bidirectional-chat.sh` and other test scripts!**
 
 **Claude can now develop with confidence using visual validation!**
 

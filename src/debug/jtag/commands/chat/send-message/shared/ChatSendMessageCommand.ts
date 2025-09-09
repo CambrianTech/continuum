@@ -13,6 +13,7 @@ import {
 } from './ChatSendMessageTypes';
 import type { DataCreateParams, DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
 import { ChatMessage } from '../../../../domain/chat/ChatMessage';
+import { userIdManager } from '../../../../system/shared/UserIdManager';
 
 export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessageParams, ChatSendMessageResult> {
   
@@ -33,11 +34,23 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
     try {
       // 1. Create domain object - will handle validation and structure
       // TODO: Need User and ChatRoom objects - for now create directly
-      // CRITICAL FIX: Use system sender for server-originated messages
-      // When server sends messages via CLI, they should appear as assistant messages
-      const senderId = chatParams.senderType === 'system' ? 'system' 
-                     : chatParams.senderType === 'server' ? 'server'
-                     : chatParams.sessionId; // Default to session for user messages
+      // CRITICAL FIX: Use persistent User ID for user messages, system sender for others
+      let senderId: string;
+      
+      if (chatParams.senderType === 'system') {
+        senderId = 'system';
+      } else if (chatParams.senderType === 'server') {
+        senderId = 'server';
+      } else {
+        // For user messages, use persistent User ID from UserIdManager
+        try {
+          senderId = await userIdManager.getCurrentUserId();
+          console.log(`🔧 CLAUDE-USER-ID-DEBUG: Using persistent User ID for user message: ${senderId}`);
+        } catch (error) {
+          console.warn('⚠️ ChatSendMessage: Failed to get User ID, falling back to Session ID:', error);
+          senderId = chatParams.sessionId; // Fallback to Session ID
+        }
+      }
       
       console.log(`🔧 CLAUDE-SENDER-DEBUG: senderType="${chatParams.senderType}", sessionId="${chatParams.sessionId}", using senderId="${senderId}"`);
       
