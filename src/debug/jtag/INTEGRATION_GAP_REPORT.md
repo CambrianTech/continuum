@@ -46,7 +46,22 @@
    - Browser DOM search for test message returns `false`
    - Integration chain CLI → Server → Browser → Widget is interrupted
 
-2. **Real-Time Event System**
+2. **Daemon Architecture Integration**  
+   - Status: ❌ **CRITICAL BROKEN**
+   - **DataDaemon Routing**: Commands can't route to 'data' daemon - endpoint not registered
+   - **ArtifactsDaemon Routing**: Commands can't route to 'artifacts' daemon - endpoint not registered  
+   - **Error**: `"Command 'artifacts' not found in server context"` when trying proper daemon abstraction
+   - **Current Workaround**: Direct filesystem access bypasses daemon architecture entirely
+   - **Impact**: All data/file commands use cluttered direct fs operations instead of proper abstraction
+
+3. **Storage Strategy Abstraction Missing**
+   - Status: ❌ **NOT IMPLEMENTED**
+   - ArtifactsDaemon StorageType enum exists but not wired up to command routing
+   - No distinction between 'database', 'session', 'system', 'cache' storage types
+   - Commands hardcode paths instead of using storage strategy abstraction
+   - File commands all use direct filesystem access instead of ArtifactsDaemon
+
+4. **Real-Time Event System**
    - Status: ❌ **NOT VALIDATED**  
    - Messages sent via CLI should trigger real-time updates in browser widgets
    - No evidence of WebSocket events propagating message data to browser

@@ -9,7 +9,7 @@ import { type GetTextParams, type GetTextResult, createGetTextResult } from '../
 import { ValidationError } from '../../../system/core/types/ErrorTypes';
 import { GetTextCommand } from '../shared/GetTextCommand';
 import { safeQuerySelector } from '../../../daemons/command-daemon/shared/GlobalUtils';
-import { ShadowDOMQueryOptions } from '../../../system/shared/ShadowDOMUtils';
+import { ShadowDOMQueryOptions } from '../../../system/browser/WidgetUtils';
 import { ShadowDOMBrowserQuery } from './ShadowDOMBrowserQuery';
 
 export class GetTextBrowserCommand extends GetTextCommand {
