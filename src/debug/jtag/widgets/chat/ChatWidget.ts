@@ -8,6 +8,7 @@
 import { BaseWidget } from '../shared/BaseWidget';
 import type { ChatMessage } from './shared/ChatModuleTypes';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../../commands/chat/send-message/shared/ChatSendMessageTypes';
+import { MessageRowWidgetFactory } from './shared/BaseMessageRowWidget';
 
 // Strict event data types - no more 'any'!
 interface ChatMessageEventData {
@@ -92,7 +93,7 @@ export class ChatWidget extends BaseWidget {
           .filter((item: any) => item.data && item.data.roomId === this.currentRoom)
           .map((item: any) => ({
             id: item.data.messageId || item.id || 'unknown-id',
-            content: item.data.content || '[Message content not available]',
+            content: item.data.content ?? '[Message content not available]',
             roomId: item.data.roomId || this.currentRoom,
             senderId: item.data.senderId || 'unknown-sender',
             senderName: item.data.senderName || 'Unknown User',
@@ -270,11 +271,16 @@ export class ChatWidget extends BaseWidget {
   }
 
   private renderMessages(): string {
-    return this.messages.map(msg => `
-      <div class="message ${msg.type}">
-        ${msg.content}
-      </div>
-    `).join('');
+    return this.messages.map(msg => {
+      // Use enhanced modular renderer with options
+      const renderer = MessageRowWidgetFactory.createRenderer(msg, {
+        enableIntersectionObserver: true,
+        lazyLoadImages: true,
+        enableInteractions: true,
+        customClassNames: ['chat-message-renderer']
+      });
+      return renderer.renderMessageContainer(msg);
+    }).join('');
   }
 
   private setupEventListeners(): void {
