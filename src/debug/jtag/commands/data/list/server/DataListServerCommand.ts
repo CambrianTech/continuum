@@ -13,6 +13,15 @@ import type { DataListParams, DataListResult } from '../shared/DataListTypes';
 import { createDataListResultFromParams } from '../shared/DataListTypes';
 import { WorkingDirConfig } from '../../../../system/core/config/WorkingDirConfig';
 
+// Rust-style config defaults with high values for chat applications
+const DEFAULT_CONFIG = {
+  database: {
+    queryLimit: 100,      // High default for substantial context
+    maxBatchSize: 500,    // Safety ceiling
+    minLimit: 1,          // Never allow 0 or negative
+  }
+} as const;
+
 export class DataListServerCommand extends CommandBase<DataListParams, DataListResult> {
   
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -36,14 +45,39 @@ export class DataListServerCommand extends CommandBase<DataListParams, DataListR
           if (file.endsWith('.json')) {
             try {
               const data = await fs.readFile(path.join(collectionDir, file), 'utf-8');
-              items.push(JSON.parse(data));
+              const item = JSON.parse(data);
+              
+              // Apply filter if provided
+              if (params.filter) {
+                const filterMatches = Object.entries(params.filter).every(([key, value]) => {
+                  return item.data && item.data[key] === value;
+                });
+                if (filterMatches) {
+                  items.push(item);
+                }
+              } else {
+                items.push(item);
+              }
             } catch (error) {
               console.warn(`Failed to read ${file}:`, error);
             }
           }
         }
         
-        const limitedItems = params.limit ? items.slice(0, params.limit) : items;
+        // Safe limit calculation with defensive guards
+        const configLimit = (this.context.config as any)?.database?.queryLimit;
+        const requestedLimit = params.limit;
+        
+        // Use Math.max to ensure we never get 0 or negative values
+        const safeLimit = Math.max(
+          DEFAULT_CONFIG.database.minLimit,
+          Math.min(
+            requestedLimit || configLimit || DEFAULT_CONFIG.database.queryLimit,
+            DEFAULT_CONFIG.database.maxBatchSize
+          )
+        );
+        
+        const limitedItems = items.slice(0, safeLimit);
         
         console.debug(`✅ DATA SERVER: Listed ${limitedItems.length} items from ${params.collection} (global database: ${collectionDir})`);
         
