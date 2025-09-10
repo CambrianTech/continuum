@@ -8,6 +8,7 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import { EVENT_ENDPOINTS } from '../../../../daemons/events-daemon/shared/EventEndpoints';
 import type { EventBridgePayload } from '../../../../daemons/events-daemon/shared/EventsDaemon';
 import { ChatSendMessageCommand } from '../shared/ChatSendMessageCommand';
+import { CHAT_EVENTS } from '../../../../widgets/chat/shared/ChatEventConstants';
 
 export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
   
@@ -25,22 +26,19 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
    * Server-specific event emission with proper Node imports
    */
   protected async emitMessageEvent(message: any): Promise<void> {
-    // console.debug(`🔍 DEBUG: emitMessageEvent called for message ${message.messageId}`);
+    console.log(`🔥 SERVER-EVENT: emitMessageEvent called for message ${message.messageId}`);
     try {
-      // Skip local event emission for now - focus on cross-environment
-      // console.debug(`🔄 SKIPPING local event emission - focusing on cross-environment`);
-      
-      // Then send to cross-environment bridge (for browser listeners)
-      // console.debug(`🔍 DEBUG: Starting cross-environment event creation...`);
+      // Cross-environment event emission (to browser listeners)
+      console.log(`🔥 SERVER-EVENT: Starting cross-environment event creation...`);
       
       const eventBridgeData: EventBridgePayload = {
         type: 'event-bridge' as const,
-        eventName: 'chat-message-sent',
+        eventName: CHAT_EVENTS.MESSAGE_RECEIVED,  // Use constant and correct event name
         data: { message },
         scope: {
           type: 'room' as const,
           id: message.roomId,
-          sessionId: message.senderId
+          // Remove sessionId to broadcast to ALL room participants, not just sender
         },
         originSessionId: message.senderId,
         originContextUUID: this.context.uuid,  // Track the originating context for recursion prevention
@@ -50,7 +48,7 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
         sessionId: message.senderId
       };
       
-      // console.debug(`🔍 DEBUG: Event payload created:`, JSON.stringify(eventBridgeData, null, 2));
+      console.log(`🔥 SERVER-EVENT: Event payload created:`, JSON.stringify(eventBridgeData, null, 2));
       
       const eventMessage = JTAGMessageFactory.createEvent(
         this.context,
@@ -59,10 +57,10 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
         eventBridgeData
       );
       
-      // console.debug(`🔍 DEBUG: Event message created, posting to router...`);
+      console.log(`🔥 SERVER-EVENT: Event message created, posting to router...`);
       const result = await this.commander.router.postMessage(eventMessage);
-      // console.debug(`🔍 DEBUG: Router result:`, result);
-      // console.debug(`📨 Sent cross-environment chat-message-sent event for message ${message.messageId}`);
+      console.log(`🔥 SERVER-EVENT: Router result:`, result);
+      console.log(`📨 SERVER-EVENT: Sent ${CHAT_EVENTS.MESSAGE_RECEIVED} event for message ${message.messageId} to room ${message.roomId}`);
       
     } catch (error) {
       console.error(`❌ Failed to emit message event:`, error);
