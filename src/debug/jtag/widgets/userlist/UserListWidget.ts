@@ -1,148 +1,111 @@
 /**
- * User List Widget - Simple BaseWidget for sidebar user display
- * 
- * Uses BaseWidget architecture with template/styles system.
- * Shows list of users in current room.
+ * User List Widget - Database-Driven Chat Users
+ * Properly located in chat directory structure
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
+import type { BaseUser } from '../../api/types/User';
+import { COLLECTIONS } from '../../api/data-seed/SeedConstants';
+
+interface DatabaseItem {
+  id: string;
+  collection: string;
+  data: BaseUser;
+  metadata: {
+    createdAt: string;
+    updatedAt: string;
+    version: number;
+  };
+}
+
+interface UserListResult {
+  success: boolean;
+  items?: DatabaseItem[];
+}
 
 export class UserListWidget extends BaseWidget {
-  private currentRoomId: string = 'general';
-  private users: Array<{id: string, name: string, status: string, role: string}> = [];
-  
+  private users: BaseUser[] = [];
+
   constructor() {
     super({
       widgetName: 'UserListWidget',
       template: 'user-list-widget.html',
-      styles: 'user-list-widget.css',
+      styles: 'widgets/userlist/user-list.css',
       enableAI: false,
       enableDatabase: true,
-      enableRouterEvents: true,
+      enableRouterEvents: false,
       enableScreenshots: false
     });
   }
 
-  protected async onWidgetInitialize(): Promise<void> {
-    console.log('👥 UserListWidget: Initializing...');
+  async onWidgetInitialize(): Promise<void> {
+    await this.loadUsersFromDatabase();
+  }
+
+  private async loadUsersFromDatabase(): Promise<void> {
+    const result = await this.jtagOperation<UserListResult>('data/list', {
+      collection: COLLECTIONS.USERS,
+      sort: { lastActiveAt: -1 },
+      limit: 100
+    });
     
-    // Load users from data system or use defaults
-    await this.loadUsers();
+    if (!result?.success || !result.items?.length) {
+      console.warn('⚠️ No users found in database - using empty list');
+      this.users = [];
+      return;
+    }
     
-    // Listen for room changes
-    this.setupRoomListener();
-    
-    console.log('✅ UserListWidget: Initialized');
+    // Extract user data from the nested structure
+    this.users = result.items.map(item => item.data).filter(user => user && user.id);
+    console.log(`✅ UserListWidget: Loaded ${this.users.length} users from database`);
   }
 
   protected async renderWidget(): Promise<void> {
     const styles = this.templateCSS || '/* No styles loaded */';
-    const template = this.templateHTML || '<div>No template loaded</div>';
     
-    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
-    
-    // Replace dynamic content
-    const dynamicContent = templateString.replace(
-      '<!-- USER_LIST_CONTENT -->', 
-      this.renderUserList()
-    );
-
-    this.shadowRoot!.innerHTML = `
+    this.shadowRoot.innerHTML = `
       <style>${styles}</style>
-      ${dynamicContent}
+      ${this.renderUserListHTML()}
     `;
-    
-    // Setup event listeners
-    this.setupEventListeners();
-  }
-
-  private async loadUsers(): Promise<void> {
-    try {
-      // Use BaseWidget data methods to load users
-      const savedUsers = await this.getData(`room_users_${this.currentRoomId}`, []);
-      
-      if (savedUsers.length === 0) {
-        // Create default users
-        this.users = [
-          { id: 'user1', name: 'You', status: 'online', role: 'USER' },
-          { id: 'ai1', name: 'AI Assistant', status: 'online', role: 'AI Assistant' }
-        ];
-        await this.storeData(`room_users_${this.currentRoomId}`, this.users, { persistent: true });
-      } else {
-        this.users = savedUsers;
-      }
-    } catch (error) {
-      console.error('❌ UserListWidget: Failed to load users:', error);
-      // Fallback to defaults
-      this.users = [
-        { id: 'user1', name: 'You', status: 'online', role: 'USER' },
-        { id: 'ai1', name: 'AI Assistant', status: 'online', role: 'AI Assistant' }
-      ];
-    }
-  }
-
-  private setupRoomListener(): void {
-    // Listen for room selection events from other widgets
-    this.addEventListener('room:selected', ((event: CustomEvent) => {
-      const { roomId } = event.detail;
-      this.handleRoomChange(roomId);
-    }) as EventListener);
-  }
-
-  private async handleRoomChange(roomId: string): Promise<void> {
-    if (this.currentRoomId !== roomId) {
-      this.currentRoomId = roomId;
-      await this.loadUsers();
-      await this.renderWidget();
-    }
-  }
-
-  private renderUserList(): string {
-    if (this.users.length === 0) {
-      return '<div class="empty-state">No users in this room</div>';
-    }
-
-    return this.users.map(user => {
-      const statusIcon = user.status === 'online' ? '🟢' : '🔴';
-      const roleIcon = user.role === 'AI Assistant' ? '🤖' : '👤';
-      
-      return `
-        <div class="user-item" data-user-id="${user.id}">
-          <span class="user-icon">${roleIcon}</span>
-          <div class="user-info">
-            <span class="user-name">${user.name}</span>
-            <span class="user-role">${user.role}</span>
-          </div>
-          <span class="user-status">${statusIcon}</span>
-        </div>
-      `;
-    }).join('');
-  }
-
-  private setupEventListeners(): void {
-    this.shadowRoot?.addEventListener('click', (e) => {
-      const target = e.target as HTMLElement;
-      const userItem = target.closest('.user-item') as HTMLElement;
-      
-      if (userItem) {
-        const userId = userItem.dataset.userId;
-        if (userId) {
-          this.selectUser(userId);
-        }
-      }
-    });
-  }
-
-  private async selectUser(userId: string): Promise<void> {
-    // Broadcast event using BaseWidget methods
-    await this.broadcastEvent('user:selected', { userId });
-    
-    console.log('👥 UserListWidget: Selected user:', userId);
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    console.log('🧹 UserListWidget: Cleanup complete');
+    this.users = [];
+  }
+
+  private renderUserListHTML(): string {
+    return `
+      <div class="user-list-container">
+        <div class="user-list-header">
+          <h3>USERS & AGENTS</h3>
+          <span class="user-count">${this.users.length}</span>
+        </div>
+        <div class="user-search">
+          <input type="text" class="search-input" placeholder="Search users..." />
+        </div>
+        <div class="user-list">
+          ${this.users.map(user => this.renderUserItem(user)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderUserItem(user: BaseUser): string {
+    const statusClass = user.isAuthenticated ? 'online' : 'offline';
+    const avatar = user.userType === 'human' ? '👤' : '🤖';
+    const displayName = user.userType === 'human' && user.name === 'human' ? 'joel' : user.name;
+    
+    return `
+      <div class="user-item ${statusClass}" data-user-id="${user.id}">
+        <span class="user-avatar">${avatar}</span>
+        <div class="user-info">
+          <div class="user-name">${displayName}</div>
+          <div class="user-type">${user.userType}</div>
+        </div>
+        <div class="user-status">
+          <span class="status-indicator"></span>
+        </div>
+      </div>
+    `;
   }
 }
-
-// Registration handled by centralized BROWSER_WIDGETS registry

@@ -29,12 +29,10 @@ import {
   WIDGET_CHANNELS,
   AI_PERSONAS,
   WIDGET_DIRECTORIES,
-  STORAGE_KEYS,
   DAEMON_NAMES,
-  type DatabaseOperation,
-  type RouterOperation,
-  type AcademyOperation
 } from './WidgetConstants';
+
+import type { CommandResult } from '../../system/core/types/JTAGTypes';
 
 export interface WidgetConfig {
   // Core settings
@@ -718,7 +716,7 @@ export abstract class BaseWidget extends HTMLElement {
       
       // Get the JTAG client from window
       const jtagClient = (window as any).jtag; // TODO: Add proper window.jtag typing
-      if (!jtagClient || !jtagClient.commands) {
+      if (!jtagClient?.commands) {
         throw new Error('JTAG client not available even after system ready event');
       }
       
@@ -728,6 +726,29 @@ export abstract class BaseWidget extends HTMLElement {
       console.log(`🔧 BaseWidget: JTAG operation ${command} completed:`, result);
       return result as T;
       
+    } catch (error) {
+      console.error(`❌ BaseWidget: JTAG operation ${command} failed:`, error);
+      throw error;
+    }
+  }
+
+  protected async executeCommand<T>(command: string, params?: Record<string, any>): Promise<T> {
+    try {
+      // Wait for JTAG system to be ready using proper events
+      await this.waitForSystemReady();
+      
+      // Get the JTAG client from window
+      const jtagClient = (window as any).jtag; // TODO: Add proper window.jtag typing
+      if (!jtagClient?.commands) {
+        throw new Error('JTAG client not available even after system ready event');
+      }
+      
+      // Execute command through the global JTAG system
+      const result = await jtagClient.commands[command](params);
+      
+      console.log(`🔧 BaseWidget: JTAG operation ${command} completed:`, result);
+      return result.commandResult as T;
+
     } catch (error) {
       console.error(`❌ BaseWidget: JTAG operation ${command} failed:`, error);
       throw error;

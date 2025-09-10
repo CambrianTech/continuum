@@ -229,7 +229,7 @@ const STRUCTURE_CONFIG: GeneratorConfig = {
       name: 'widget',
       pluralName: 'widgets',
       typeScriptTypeName: 'WidgetEntry',
-      patterns: ['widgets/*/*Widget.ts'],
+      patterns: ['widgets/**/*Widget.ts'],
       nameExtraction: {
         type: 'regex',
         pattern: '^(.+?)Widget$'  // Extract widget name, removing Widget suffix
