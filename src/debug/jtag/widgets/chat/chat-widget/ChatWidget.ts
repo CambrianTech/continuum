@@ -5,11 +5,12 @@
  * Demonstrates dramatic code simplification through proper abstraction.
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
-import type { ChatMessage } from './shared/ChatModuleTypes';
-import type { ChatSendMessageParams, ChatSendMessageResult } from '../../commands/chat/send-message/shared/ChatSendMessageTypes';
-import { MessageRowWidgetFactory } from './shared/BaseMessageRowWidget';
-import type { User } from '../../domain/user/User';
+import { BaseWidget } from '../../shared/BaseWidget';
+import type { ChatMessage } from '../shared/ChatModuleTypes';
+import type { ChatSendMessageResult } from '../../../commands/chat/send-message/shared/ChatSendMessageTypes';
+import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
+//import type { User } from '../../../domain/user/User';
+import type { DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 
 // Strict event data types - no more 'any'!
 interface ChatMessageEventData {
@@ -50,8 +51,7 @@ export class ChatWidget extends BaseWidget {
   // Event handler references for proper cleanup
   private _keydownHandler?: (e: KeyboardEvent) => void;
   private _clickHandler?: (e: Event) => void;
-  private currentSessionId?: string;
-  private currentUser: User | null = null; // Domain object for current user
+
   private currentUserId?: string; // Persistent User ID for "me" attribution
   
   constructor(roomId: string = 'general') {
@@ -91,50 +91,27 @@ export class ChatWidget extends BaseWidget {
       console.log(`📚 ChatWidget: Loading room history using data/list command`);
       
       // Use data/list command to get all chat messages, then filter by room
-      const historyResult = await this.jtagOperation('data/list', {
+      const historyResult = await this.executeCommand<DataListResult>('data/list', {
         collection: 'chat_messages',
         limit: 50 // Recent messages
-      }) as any;
+      });
       
-      // CRITICAL: Capture session ID from ANY jtag operation result if not already set
-      if (!this.currentSessionId && historyResult.sessionId) {
-        this.currentSessionId = historyResult.sessionId;
-        console.log(`🔧 CLAUDE-SESSION-DEBUG: Set currentSessionId from loadRoomHistory: "${this.currentSessionId}"`);
-      }
+      console.log("JOEL History result:", historyResult.items);
       
-      // Handle nested JTAG response structure - actual data is in commandResult
-      const dataResult = (historyResult as any).commandResult || historyResult;
-      
-      if (historyResult && historyResult.success && dataResult.items) {
+      if (historyResult?.items) {
         // Filter messages for current room and convert to internal format  
-        const roomMessages = dataResult.items
-          .filter((item: any) => item.data && item.data.roomId === this.currentRoom)
-          .filter((item: any) => item.data.content && item.data.content.trim().length > 0) // Skip messages without valid content
-          .map((item: any) => ({
-            id: item.data.messageId || item.id || 'unknown-id',
-            content: item.data.content,
-            roomId: item.data.roomId || this.currentRoom,
-            senderId: item.data.senderId || 'unknown-sender',
-            senderName: item.data.senderName || this.generateSenderName(item.data.senderId),
-            type: (() => {
-              // CRITICAL FIX: Use persistent User ID instead of Session ID for attribution
-              const senderId = item.data.senderId;
-              const currentUserId = this.currentUserId;
-              const isCurrentUser = currentUserId && senderId === currentUserId;
-              console.log(`🔧 CLAUDE-ATTRIBUTION-DEBUG: senderId="${senderId}", currentUserId="${currentUserId}", isCurrentUser=${isCurrentUser}`);
-              
-              // Extra debugging for the specific case
-              if (senderId === 'user-joel-12345') {
-                console.log(`🔧 CLAUDE-JOEL-DEBUG: Found user-joel-12345 message, currentUserId="${currentUserId}", match=${senderId === currentUserId}`);
-              }
-              
-              return isCurrentUser ? 'user' : 'assistant';
-            })(),
-            timestamp: item.data.timestamp || new Date().toISOString()
-          }))
-          .sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()); // Sort by timestamp
-        
-        this.messages = roomMessages;
+         this.messages = historyResult.items
+          .map((item: any) => {
+            // TODO: type isnt used as current user you are ridiculous claude. the style should be applied by the user id match but has nothing to do with type
+            const senderId = item.data.senderId;
+            const currentUserId = this.currentUserId;
+            const isCurrentUser = currentUserId && senderId === currentUserId;
+            return { ...item.data, type: isCurrentUser ? item.type : 'user' };
+          })
+          .filter((item: ChatMessage) => item.roomId === this.currentRoom) // TODO: use query to filter by roomId on server side
+          .filter((item: ChatMessage) => item.content && item.content.trim().length > 0) // TODO: fix your data claude and Skip messages without valid content, but also server
+          .sort((a: ChatMessage, b: ChatMessage) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()); // TODO: ORDER BY timestamp ASC on server side moron
+
         console.log(`✅ ChatWidget: Loaded ${this.messages.length} messages for room "${this.currentRoom}" from data/list`);
       } else {
         console.log(`ℹ️ ChatWidget: No messages found for room "${this.currentRoom}"`);
@@ -222,7 +199,7 @@ export class ChatWidget extends BaseWidget {
             content: eventMessage.content,
             roomId: eventMessage.roomId,
             senderId: eventMessage.senderId,
-            senderName: eventMessage.senderName || 'Unknown User',
+            senderName: eventMessage.senderName ?? 'Unknown User',
             type: (() => {
               const isCurrentUser = this.currentUserId && eventMessage.senderId === this.currentUserId;
               console.log(`🔧 CLAUDE-DOM-ATTRIBUTION-DEBUG: DOM event senderId="${eventMessage.senderId}", currentUserId="${this.currentUserId}", isCurrentUser=${isCurrentUser}`);
@@ -344,9 +321,9 @@ export class ChatWidget extends BaseWidget {
 
   protected async renderWidget(): Promise<void> {
     // Use external template and styles loaded by BaseWidget
-    const styles = this.templateCSS || '/* No styles loaded */';
-    const template = this.templateHTML || '<div>No template loaded</div>';
-    
+    const styles = this.templateCSS ?? '/* No styles loaded */';
+    const template = this.templateHTML ?? '<div>No template loaded</div>';
+
     // Ensure template is a string before calling replace
     const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
     
@@ -446,7 +423,6 @@ export class ChatWidget extends BaseWidget {
     
     // Send message on Enter
     const keydownHandler = (e: KeyboardEvent) => {
-      console.log('🔧 CLAUDE-DEBUG: keydown event:', e.key);
       if (e.key === 'Enter') {
         e.preventDefault();
         this.sendMessage();
@@ -499,7 +475,7 @@ export class ChatWidget extends BaseWidget {
       id: `msg_${Date.now()}`,
       content,
       roomId: this.currentRoom,
-      senderId: this.currentUserId || 'current_user', // Use persistent User ID
+      senderId: this.currentUserId ?? 'current_user', // Use persistent User ID
       senderName: 'You',
       type: 'user',
       timestamp: new Date().toISOString()
@@ -517,12 +493,6 @@ export class ChatWidget extends BaseWidget {
         roomId: this.currentRoom,
         senderType: 'user' // Explicitly mark as user message - server will use UserIdManager
       });
-      
-      // Capture current session ID from result for attribution
-      if (sendResult.sessionId) {
-        this.currentSessionId = sendResult.sessionId;
-        console.log(`🔧 CLAUDE-SESSION-DEBUG: Stored currentSessionId="${this.currentSessionId}"`);
-      }
       
       if (sendResult && sendResult.success) {
         console.log(`✅ ChatWidget: Message sent to room ${this.currentRoom}`);
@@ -568,37 +538,9 @@ export class ChatWidget extends BaseWidget {
     return persistentUserId;
   }
 
-  private generateSenderName(senderId: string): string {
-    if (!senderId || senderId === 'unknown-sender') {
-      return 'Unknown User';
-    }
-    
-    // Handle known system senders
-    if (senderId === 'current_user' || (this.currentUserId && senderId === this.currentUserId)) {
-      return 'You';
-    }
-    
-    if (senderId === 'system') {
-      return 'System';
-    }
-    
-    // Generate readable name from senderId
-    // Take first 8 characters of UUID and make it readable
-    const shortId = senderId.split('-')[0] || senderId.slice(0, 8);
-    return `User-${shortId}`;
-  }
-
   private getRoomDisplayName(): string {
     // Capitalize the room name for display
     return this.currentRoom.charAt(0).toUpperCase() + this.currentRoom.slice(1);
-  }
-
-  private getChatContext(): any {
-    return {
-      recentMessages: this.messages.slice(-5),
-      roomId: this.currentRoom,
-      messageCount: this.messages.length
-    };
   }
 
   protected async onWidgetCleanup(): Promise<void> {

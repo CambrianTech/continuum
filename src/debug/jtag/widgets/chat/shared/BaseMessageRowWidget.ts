@@ -102,7 +102,7 @@ export abstract class BaseMessageRowWidget {
       <div class="message-row ${alignment}">
         <div class="message-bubble ${messageClass}">
           <div class="message-header">
-            ${!isMe ? `<span class="sender-name">${message.senderName}</span>` : ''}
+            ${!isMe ? `<span class="sender-name">${message.senderName ?? message.senderId ?? 'Unknown User'}</span>` : ''}
             <span class="message-time">${this.formatTimestamp(message.timestamp)}</span>
           </div>
           <div class="message-content">
