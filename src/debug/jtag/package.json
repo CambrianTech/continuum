@@ -273,7 +273,10 @@
     "dev:diagnose": "npx tsx scripts/autonomous-dev-toolkit.ts diagnose",
     "dev:iterate": "npx tsx scripts/autonomous-dev-toolkit.ts iterate",
     "dev:stress": "npx tsx scripts/autonomous-dev-toolkit.ts stress",
-    "dev:fix": "npx tsx scripts/autonomous-dev-toolkit.ts diagnose"
+    "dev:fix": "npx tsx scripts/autonomous-dev-toolkit.ts diagnose",
+    "data:clear": "npx tsx api/data-seed/clear-data.ts",
+    "data:seed": "npx tsx api/data-seed/seed-data.ts", 
+    "data:reseed": "npm run data:clear && npm run data:seed"
   },
   "keywords": [
     "global-cli",
