@@ -16,7 +16,8 @@
  * - this.notifyAI(message) - handles Academy daemon
  */
 
-// Event types will be added when needed
+// Event types - Rust-like strict typing
+import type { ChatEventMap, ChatEventName, ChatEventDataFor } from '../chat/shared/ChatEventTypes';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import type { FileSaveParams, FileSaveResult } from '../../commands/file/save/shared/FileSaveTypes';
 import type { ScreenshotParams, ScreenshotResult } from '../../commands/screenshot/shared/ScreenshotTypes';
@@ -86,6 +87,7 @@ export interface WidgetContext {
 export abstract class BaseWidget extends HTMLElement {
   declare shadowRoot: ShadowRoot;
   protected eventEmitter = new Map<string, Function[]>();
+  protected dispatcherEventTypes?: Set<string>; // Track event types with active dispatchers
   protected config: WidgetConfig;
   protected state: WidgetState;
   protected context: WidgetContext;
@@ -723,13 +725,111 @@ export abstract class BaseWidget extends HTMLElement {
       // Execute command through the global JTAG system
       const result = await jtagClient.commands[command](params);
       
-      console.log(`🔧 BaseWidget: JTAG operation ${command} completed:`, result);
+      console.log(`🔧 BaseWidget: executeCommand ${command} completed:`, result);
       return result.commandResult as T;
 
     } catch (error) {
       console.error(`❌ BaseWidget: JTAG operation ${command} failed:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Execute event with Rust-like strict typing - same elegance as executeCommand
+   * Type-safe event emission and listening with explicit contracts
+   */
+  protected async executeEvent<T extends ChatEventName>(
+    eventName: T, 
+    eventData: ChatEventDataFor<T>,
+    options: {
+      broadcast?: boolean;
+      targetWidgets?: string[];
+      excludeSelf?: boolean;
+    } = {}
+  ): Promise<boolean> {
+    try {
+      const {
+        broadcast = true,
+        targetWidgets,
+        excludeSelf = true
+      } = options;
+
+      // Emit locally first - immediate feedback
+      const handlers = this.eventEmitter.get(eventName) || [];
+      handlers.forEach(handler => handler(eventData));
+      
+      // Broadcast to other widgets if enabled
+      if (broadcast) {
+        return await this.broadcastEvent(eventName, eventData, {
+          targetWidgets,
+          excludeSelf,
+          persistent: false
+        });
+      }
+      
+      return true;
+
+    } catch (error) {
+      console.error(`❌ BaseWidget: executeEvent ${eventName} failed:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Register type-safe event listener - companion to executeEvent
+   */
+  protected addWidgetEventListener<T extends ChatEventName>(
+    eventName: T,
+    handler: (data: ChatEventDataFor<T>) => void
+  ): void {
+    if (!this.eventEmitter.has(eventName)) {
+      this.eventEmitter.set(eventName, []);
+    }
+    this.eventEmitter.get(eventName)!.push(handler);
+    
+    // CRITICAL: Set up automatic event dispatcher to connect server events to widget handlers
+    this.setupEventDispatcher(eventName);
+  }
+
+  /**
+   * CRITICAL: Sets up event dispatcher to connect server-originated events to widget handlers
+   * This is the missing link between server events and registered widget event handlers
+   */
+  private setupEventDispatcher<T extends ChatEventName>(eventName: T): void {
+    // Only set up dispatcher once per event type
+    if (this.dispatcherEventTypes?.has(eventName)) {
+      return;
+    }
+
+    if (!this.dispatcherEventTypes) {
+      this.dispatcherEventTypes = new Set();
+    }
+    this.dispatcherEventTypes.add(eventName);
+
+    console.log(`🔗 BaseWidget: Setting up event dispatcher for ${eventName}`);
+
+    // Listen for server-originated events via the JTAG event system
+    // These events come from EventsDaemon when server emits events
+    document.addEventListener(eventName, (event: any) => {
+      console.log(`🔥 EVENT-DISPATCHER: Received server event ${eventName}:`, event.detail);
+      
+      // Dispatch to all registered widget handlers
+      const handlers = this.eventEmitter.get(eventName);
+      if (handlers && handlers.length > 0) {
+        console.log(`🔗 EVENT-DISPATCHER: Dispatching ${eventName} to ${handlers.length} widget handlers`);
+        handlers.forEach(handler => {
+          try {
+            handler(event.detail);
+          } catch (error) {
+            console.error(`❌ EVENT-DISPATCHER: Handler error for ${eventName}:`, error);
+          }
+        });
+      } else {
+        console.warn(`⚠️ EVENT-DISPATCHER: No widget handlers found for ${eventName}`);
+      }
+    });
+    
+    console.log(`✅ BaseWidget: Event dispatcher ready for ${eventName}`);
   }
 
   /**

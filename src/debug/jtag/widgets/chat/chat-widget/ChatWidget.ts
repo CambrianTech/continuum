@@ -12,36 +12,12 @@ import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
 import type { DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { SubscribeRoomResult } from '../../../commands/chat/subscribe-room/shared/SubscribeRoomCommand';
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
-
-// Strict event data types - no more 'any'!
-interface ChatMessageEventData {
-  readonly eventType: 'chat:message-sent';
-  readonly message: {
-    readonly messageId: string;
-    readonly content: string;
-    readonly roomId: string;
-    readonly senderId: string;
-    readonly senderName: string;
-    readonly timestamp: string;
-  };
-  readonly roomId: string;
-}
-
-interface UserJoinedEventData {
-  readonly eventType: 'chat:user-joined';
-  readonly userId: string;
-  readonly userName: string;
-  readonly roomId: string;
-  readonly timestamp: string;
-}
-
-interface UserLeftEventData {
-  readonly eventType: 'chat:user-left';
-  readonly userId: string;
-  readonly userName: string;
-  readonly roomId: string;
-  readonly timestamp: string;
-}
+import { CHAT_EVENTS, CHAT_EVENT_TYPES } from '../shared/ChatEventConstants';
+import type { 
+  ChatMessageEventData, 
+  ChatParticipantEventData,
+  ChatEventName
+} from '../shared/ChatEventTypes';
 
 export class ChatWidget extends ChatWidgetBase {
   private messages: ChatMessage[] = [];
@@ -178,7 +154,7 @@ export class ChatWidget extends ChatWidgetBase {
       try {
         const subscribeResult = await this.executeCommand<SubscribeRoomResult>('chat/subscribe-room', {
           roomId: this.currentRoom,
-          eventTypes: ['chat:message-received', 'chat:participant-joined', 'chat:participant-left']
+          eventTypes: [CHAT_EVENTS.MESSAGE_RECEIVED, CHAT_EVENTS.PARTICIPANT_JOINED, CHAT_EVENTS.PARTICIPANT_LEFT]
         });
         
         if (subscribeResult && subscribeResult.success && subscribeResult.subscriptionId) {
@@ -199,26 +175,54 @@ export class ChatWidget extends ChatWidgetBase {
   }
 
   /**
-   * Set up event handlers for real-time room updates
+   * Set up type-safe event handlers for real-time room updates using BaseWidget
    */
   private setupRoomEventHandlers(): void {
-    console.log(`📡 ChatWidget: Setting up room event handlers for room ${this.currentRoom}`);
+    console.log(`📡 ChatWidget: Setting up type-safe room event handlers for room ${this.currentRoom}`);
     
-    // Listen to DOM events emitted by EventsDaemon (these are working!)
-    document.addEventListener('chat:message-received', (event: Event) => {
+    // Type-safe event listeners using BaseWidget's executeEvent system
+    // These ONLY respond to genuine server-originated events
+    this.addWidgetEventListener(CHAT_EVENTS.MESSAGE_RECEIVED, (eventData: ChatMessageEventData) => {
+      console.log(`🔥 SERVER-EVENT-RECEIVED: ${CHAT_EVENTS.MESSAGE_RECEIVED}`, eventData);
+      this.onMessageReceived(eventData);
+    });
+    
+    this.addWidgetEventListener(CHAT_EVENTS.PARTICIPANT_JOINED, (eventData: ChatParticipantEventData) => {
+      console.log(`🔥 SERVER-EVENT-RECEIVED: ${CHAT_EVENTS.PARTICIPANT_JOINED}`, eventData);
+      this.onUserJoined(eventData);
+    });
+    
+    this.addWidgetEventListener(CHAT_EVENTS.PARTICIPANT_LEFT, (eventData: ChatParticipantEventData) => {
+      console.log(`🔥 SERVER-EVENT-RECEIVED: ${CHAT_EVENTS.PARTICIPANT_LEFT}`, eventData);
+      this.onUserLeft(eventData);
+    });
+    
+    // DEPRECATED: DOM event listeners - mark for removal
+    console.warn("⚠️ DEPRECATED: Setting up DOM event fallbacks - these will be removed once server events are working");
+    this.setupDOMEventFallbacks();
+    
+    console.log(`✅ ChatWidget: Set up type-safe event listeners for chat events`);
+  }
+
+  /**
+   * DEPRECATED: DOM event fallbacks - only for backward compatibility
+   * TODO: Remove this once server-side event emission is working properly
+   */
+  private setupDOMEventFallbacks(): void {
+    console.warn("⚠️ DEPRECATED: setupDOMEventFallbacks() - Remove after fixing server events");
+    
+    // Keep existing DOM listeners as fallback until server events work
+    document.addEventListener(CHAT_EVENTS.MESSAGE_RECEIVED, (event: Event) => {
+      console.warn("⚠️ DEPRECATED: Using DOM event fallback for MESSAGE_RECEIVED");
       const customEvent = event as CustomEvent;
-      console.log(`🔧 CLAUDE-DOM-EVENT: Received chat:message-received`, customEvent.detail);
       this.handleDOMChatEvent(customEvent);
     });
     
-    // Also listen to chat-message-sent events as fallback
     document.addEventListener('chat-message-sent', (event: Event) => {
+      console.warn("⚠️ DEPRECATED: Using legacy chat-message-sent DOM event");
       const customEvent = event as CustomEvent;
-      console.log(`🔧 CLAUDE-DOM-EVENT: Received chat-message-sent`, customEvent.detail);  
       this.handleDOMChatEvent(customEvent);
     });
-    
-    console.log(`✅ ChatWidget: Set up DOM event listeners for chat events`);
   }
   
   /**
@@ -283,10 +287,10 @@ export class ChatWidget extends ChatWidgetBase {
         await this.onMessageReceived(eventData as ChatMessageEventData);
         break;
       case 'chat:participant-joined':
-        await this.onUserJoined(eventData as UserJoinedEventData);
+        await this.onUserJoined(eventData as ChatParticipantEventData);
         break;
       case 'chat:participant-left':
-        await this.onUserLeft(eventData as UserLeftEventData);
+        await this.onUserLeft(eventData as ChatParticipantEventData);
         break;
       default:
         console.log(`ℹ️ ChatWidget: Unhandled room event type: ${eventType}`);
@@ -302,13 +306,13 @@ export class ChatWidget extends ChatWidgetBase {
     
     if (eventData.roomId === this.currentRoom) {
       const newMessage: ChatMessage = {
-        id: eventData.message.messageId,
-        content: eventData.message.content,
-        roomId: eventData.message.roomId,
-        senderId: eventData.message.senderId,
-        senderName: eventData.message.senderName,
-        type: (this.currentUserId && eventData.message.senderId === this.currentUserId) ? 'user' : 'assistant',
-        timestamp: eventData.message.timestamp
+        id: eventData.messageId,
+        content: eventData.content,
+        roomId: eventData.roomId,
+        senderId: eventData.senderId,
+        senderName: eventData.senderName,
+        type: (this.currentUserId && eventData.senderId === this.currentUserId) ? 'user' : 'assistant',
+        timestamp: eventData.timestamp
       };
       
       this.messages.push(newMessage);
@@ -319,7 +323,7 @@ export class ChatWidget extends ChatWidgetBase {
   /**
    * Handle user joined events - STRICT TYPING
    */
-  private async onUserJoined(eventData: UserJoinedEventData): Promise<void> {
+  private async onUserJoined(eventData: ChatParticipantEventData): Promise<void> {
     console.log(`👋 ChatWidget: User ${eventData.userName} joined room ${this.currentRoom}`);
     
     if (eventData.roomId === this.currentRoom) {
@@ -342,7 +346,7 @@ export class ChatWidget extends ChatWidgetBase {
   /**
    * Handle user left events - STRICT TYPING
    */
-  private async onUserLeft(eventData: UserLeftEventData): Promise<void> {
+  private async onUserLeft(eventData: ChatParticipantEventData): Promise<void> {
     console.log(`👋 ChatWidget: User ${eventData.userName} left room ${this.currentRoom}`);
     
     if (eventData.roomId === this.currentRoom) {
@@ -430,13 +434,22 @@ export class ChatWidget extends ChatWidgetBase {
 
   protected override setupEventListeners(): void {
     super.setupEventListeners();
+    
+    // Re-cache messageInput in case it wasn't available during renderWidget
+    if (!this.messageInput) {
+      this.messageInput = this.shadowRoot.getElementById('messageInput') as HTMLInputElement;
+    }
+    
     console.log('🔧 CLAUDE-DEBUG: setupEventListeners called');
     console.log('🔧 CLAUDE-DEBUG: messageInput exists:', !!this.messageInput);
+    console.log('🔧 CLAUDE-DEBUG: messageInput element:', this.messageInput);
     console.log('🔧 CLAUDE-DEBUG: sendButton exists:', !!this.shadowRoot.getElementById('sendButton'));
     
     // Send message on Enter
     const keydownHandler = (e: KeyboardEvent) => {
+      console.log('🔧 CLAUDE-DEBUG: keydown event triggered, key:', e.key);
       if (e.key === 'Enter') {
+        console.log('🔧 CLAUDE-DEBUG: Enter key pressed, calling sendMessage');
         e.preventDefault();
         this.sendMessage();
       }
@@ -509,18 +522,25 @@ export class ChatWidget extends ChatWidgetBase {
     
     try {
       // Use existing chat/send-message command with proper types
+      console.log(`🔧 CLAUDE-DEBUG: About to execute chat/send-message command`);
       const sendResult = await this.executeCommand<ChatSendMessageResult>('chat/send-message', {
         content: content,  // ← Fixed: use 'content' parameter as expected by server
         roomId: this.currentRoom,
         senderType: 'user' // Explicitly mark as user message - server will use UserIdManager
       });
       
-      if (sendResult?.success) {
-        console.log(`✅ ChatWidget: Message sent to room ${this.currentRoom}`);
+      console.log(`🔧 CLAUDE-DEBUG: executeCommand returned:`, sendResult);
+      console.log(`🔧 CLAUDE-DEBUG: sendResult type:`, typeof sendResult);
+      console.log(`🔧 CLAUDE-DEBUG: sendResult.success:`, sendResult?.success);
+      
+      // executeCommand might return undefined if result.commandResult is undefined
+      // Fall back to checking if the command executed without throwing
+      if (sendResult && sendResult.success) {
+        console.log(`✅ ChatWidget: Message sent to room ${this.currentRoom}`, sendResult);
         // Message already added optimistically, and events will trigger React-like updates
         // No need to reload - let the DOM events handle it efficiently
       } else {
-        const errorMsg = sendResult?.error || 'Unknown error';
+        const errorMsg = sendResult?.error || `Send failed: ${JSON.stringify(sendResult)}`;
         console.error(`❌ ChatWidget: Failed to send message:`, errorMsg);
         this.handleError(errorMsg, 'sendMessage');
       }
