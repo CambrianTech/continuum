@@ -3,9 +3,10 @@
  * Properly located in chat directory structure
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
-import type { BaseUser } from '../../api/types/User';
-import { COLLECTIONS } from '../../api/data-seed/SeedConstants';
+import { ChatWidgetBase } from '../shared/ChatWidgetBase';
+
+import type { BaseUser } from '../../../api/types/User';
+import { COLLECTIONS } from '../../../api/data-seed/SeedConstants';
 
 interface DatabaseItem {
   id: string;
@@ -23,20 +24,27 @@ interface UserListResult {
   items?: DatabaseItem[];
 }
 
-export class UserListWidget extends BaseWidget {
+export class UserListWidget extends ChatWidgetBase {
   private users: BaseUser[] = [];
 
   constructor() {
     super({
       widgetName: 'UserListWidget',
       template: 'user-list-widget.html',
-      styles: 'widgets/userlist/user-list.css',
+      styles: 'user-list.css',
       enableAI: false,
       enableDatabase: true,
       enableRouterEvents: false,
       enableScreenshots: false
     });
   }
+
+  protected override resolveResourcePath(filename: string): string {
+      // Extract widget directory name from widget name (ChatWidget -> chat)
+      //const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
+      // Return relative path from current working directory
+      return `widgets/chat/user-list/${filename}`;
+    }
 
   async onWidgetInitialize(): Promise<void> {
     await this.loadUsersFromDatabase();
@@ -56,7 +64,7 @@ export class UserListWidget extends BaseWidget {
     }
     
     // Extract user data from the nested structure
-    this.users = result.items.map(item => item.data).filter(user => user && user.id);
+    this.users = result.items.map(item => item.data).filter(user => user?.id);
     console.log(`✅ UserListWidget: Loaded ${this.users.length} users from database`);
   }
 
