@@ -22,13 +22,13 @@ const DEFAULT_CONFIG = {
   }
 } as const;
 
-export class DataListServerCommand extends CommandBase<DataListParams, DataListResult> {
-  
+export class DataListServerCommand<T> extends CommandBase<DataListParams, DataListResult<T>> {
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('data-list', context, subpath, commander);
   }
 
-  async execute(params: DataListParams): Promise<DataListResult> {
+  async execute(params: DataListParams): Promise<DataListResult<T>> {
     console.debug(`🗄️ DATA SERVER: Listing ${params.collection} from global database`);
     
     try {
@@ -53,10 +53,10 @@ export class DataListServerCommand extends CommandBase<DataListParams, DataListR
                   return item.data && item.data[key] === value;
                 });
                 if (filterMatches) {
-                  items.push(item);
+                  items.push(item.data);
                 }
               } else {
-                items.push(item);
+                items.push(item.data);
               }
             } catch (error) {
               console.warn(`Failed to read ${file}:`, error);

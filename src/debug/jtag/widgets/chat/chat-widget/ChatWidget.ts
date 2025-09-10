@@ -42,6 +42,8 @@ interface UserLeftEventData {
   readonly timestamp: string;
 }
 
+export type ChatMessageResult = DataListResult<ChatMessage>;
+
 export class ChatWidget extends BaseWidget {
   private messages: ChatMessage[] = [];
   private currentRoom: string;
@@ -91,22 +93,22 @@ export class ChatWidget extends BaseWidget {
       console.log(`📚 ChatWidget: Loading room history using data/list command`);
       
       // Use data/list command to get all chat messages, then filter by room
-      const historyResult = await this.executeCommand<DataListResult>('data/list', {
+      const historyResult = await this.executeCommand<ChatMessageResult>('data/list', {
         collection: 'chat_messages',
         limit: 50 // Recent messages
       });
       
       console.log("JOEL History result:", historyResult.items);
-      
+
       if (historyResult?.items) {
-        // Filter messages for current room and convert to internal format  
-         this.messages = historyResult.items
-          .map((item: any) => {
+        // Filter messages for current room and convert to internal format
+        this.messages = historyResult.items
+          .map((item) => {
             // TODO: type isnt used as current user you are ridiculous claude. the style should be applied by the user id match but has nothing to do with type
-            const senderId = item.data.senderId;
+            const senderId = item.senderId;
             const currentUserId = this.currentUserId;
             const isCurrentUser = currentUserId && senderId === currentUserId;
-            return { ...item.data, type: isCurrentUser ? item.type : 'user' };
+            return { ...item, type: isCurrentUser ?  'user' : item.type };
           })
           .filter((item: ChatMessage) => item.roomId === this.currentRoom) // TODO: use query to filter by roomId on server side
           .filter((item: ChatMessage) => item.content && item.content.trim().length > 0) // TODO: fix your data claude and Skip messages without valid content, but also server
