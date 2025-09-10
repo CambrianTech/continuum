@@ -1,13 +1,6 @@
 import { BaseWidget } from '../../shared/BaseWidget';
 
 export abstract class ChatWidgetBase extends BaseWidget {
-
-  protected override resolveResourcePath(filename: string): string {
-      // Extract widget directory name from widget name (ChatWidget -> chat)
-      const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
-      // Return relative path from current working directory
-      return `widgets/${widgetDir}/chat-widget/${filename}`;
-    }
   
     protected async renderWidget(): Promise<void> {
       // Use external template and styles loaded by BaseWidget

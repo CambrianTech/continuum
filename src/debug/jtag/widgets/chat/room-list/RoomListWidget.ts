@@ -5,9 +5,9 @@
  * Shows list of chat rooms for easy navigation.
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
+import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 
-export class RoomListWidget extends BaseWidget {
+export class RoomListWidget extends ChatWidgetBase {
   private currentRoomId: string = 'general';
   private rooms: Array<{id: string, name: string, unreadCount: number}> = [];
   
@@ -32,25 +32,17 @@ export class RoomListWidget extends BaseWidget {
     console.log('✅ RoomListWidget: Initialized');
   }
 
-  protected async renderWidget(): Promise<void> {
-    const styles = this.templateCSS || '/* No styles loaded */';
-    const template = this.templateHTML || '<div>No template loaded</div>';
-    
-    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
-    
-    // Replace dynamic content
-    const dynamicContent = templateString.replace(
-      '<!-- ROOM_LIST_CONTENT -->', 
-      this.renderRoomList()
-    );
+  protected override resolveResourcePath(filename: string): string {
+      // Extract widget directory name from widget name (ChatWidget -> chat)
+      //const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
+      // Return relative path from current working directory
+      return `widgets/chat/room-list/${filename}`;
+    }
 
-    this.shadowRoot!.innerHTML = `
-      <style>${styles}</style>
-      ${dynamicContent}
-    `;
-    
-    // Setup event listeners
-    this.setupEventListeners();
+  protected override getReplacements(): Record<string, string> {
+      return {
+          '<!-- ROOM_LIST_CONTENT -->': this.renderRoomList(),
+      };
   }
 
   private async loadRooms(): Promise<void> {
@@ -92,7 +84,7 @@ export class RoomListWidget extends BaseWidget {
     }).join('');
   }
 
-  private setupEventListeners(): void {
+  protected override setupEventListeners(): void {
     this.shadowRoot?.addEventListener('click', (e) => {
       const target = e.target as HTMLElement;
       const roomItem = target.closest('.room-item') as HTMLElement;
