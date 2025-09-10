@@ -12,9 +12,9 @@ export interface DataListParams extends JTAGPayload {
   readonly filter?: Record<string, any>;
 }
 
-export interface DataListResult extends JTAGPayload {
+export interface DataListResult<T> extends JTAGPayload {
   readonly success: boolean;
-  readonly items: readonly any[];
+  readonly items: readonly T[];
   readonly collection: string;
   readonly count: number;
   readonly timestamp: string;
@@ -27,10 +27,10 @@ export const createDataListParams = (
   data: Omit<DataListParams, 'context' | 'sessionId'>
 ): DataListParams => createPayload(context, sessionId, data);
 
-export const createDataListResultFromParams = (
+export const createDataListResultFromParams = <T>(
   params: DataListParams,
-  differences: Omit<Partial<DataListResult>, 'context' | 'sessionId'>
-): DataListResult => transformPayload(params, {
+  differences: Omit<Partial<DataListResult<T>>, 'context' | 'sessionId'>
+): DataListResult<T> => transformPayload(params, {
   success: false,
   items: [],
   collection: params.collection,
