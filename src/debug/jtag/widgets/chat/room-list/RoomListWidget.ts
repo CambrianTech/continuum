@@ -53,8 +53,8 @@ export class RoomListWidget extends ChatWidgetBase {
       if (savedRooms.length === 0) {
         // Create default rooms
         this.rooms = [
-          { id: 'general', name: 'General', unreadCount: 0 },
-          { id: 'academy', name: 'Academy', unreadCount: 0 }
+          { id: 'general', name: 'General', unreadCount: 42 },
+          { id: 'academy', name: 'Academy', unreadCount: 42 }
         ];
         await this.storeData('chat_rooms', this.rooms, { persistent: true });
       } else {
@@ -64,8 +64,8 @@ export class RoomListWidget extends ChatWidgetBase {
       console.error('❌ RoomListWidget: Failed to load rooms:', error);
       // Fallback to defaults
       this.rooms = [
-        { id: 'general', name: 'General', unreadCount: 0 },
-        { id: 'academy', name: 'Academy', unreadCount: 0 }
+        { id: 'general', name: 'General', unreadCount: 69 },
+        { id: 'academy', name: 'Academy', unreadCount: 69 }
       ];
     }
   }
