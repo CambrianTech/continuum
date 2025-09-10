@@ -11,6 +11,7 @@ import type { ChatSendMessageResult } from '../../../commands/chat/send-message/
 import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
 //import type { User } from '../../../domain/user/User';
 import type { DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { SubscribeRoomResult } from '../../../commands/chat/subscribe-room/shared/SubscribeRoomCommand';
 
 // Strict event data types - no more 'any'!
 interface ChatMessageEventData {
@@ -67,6 +68,11 @@ export class ChatWidget extends BaseWidget {
     this.currentRoom = roomId;
   }
 
+  // Static property required by widget registration system
+  static get widgetName(): string {
+    return 'chat';
+  }
+
   protected async onWidgetInitialize(): Promise<void> {
     console.log(`🎯 ChatWidget: Initializing for room "${this.currentRoom}"...`);
     
@@ -81,6 +87,26 @@ export class ChatWidget extends BaseWidget {
     await this.subscribeToRoomEvents();
     
     console.log(`✅ ChatWidget: Initialized for room "${this.currentRoom}" with ${this.messages.length} messages`);
+  }
+
+  protected async onWidgetCleanup(): Promise<void> {
+    // Unsubscribe from room events using JTAG abstraction
+    //TODO: completely missing command for unsubscribe. should this just be subscribe-room with a flag?
+    // if (this.eventSubscriptionId) {
+    //   try {
+    //     await this.executeCommand<ChatUnsubscribeEventResult>('events/unsubscribe', {
+    //       subscriptionId: this.eventSubscriptionId
+    //     });
+    //     console.log(`🔌 ChatWidget: Unsubscribed from room ${this.currentRoom} events`);
+    //   } catch (error) {
+    //     console.error(`❌ ChatWidget: Failed to unsubscribe from events:`, error);
+    //   }
+    // }
+    
+    // Save room-specific messages using BaseWidget abstraction
+    const roomMessageKey = `chat_messages_${this.currentRoom}`;
+    await this.storeData(roomMessageKey, this.messages, { persistent: true });
+    console.log(`✅ ChatWidget: Cleanup complete for room "${this.currentRoom}"`);
   }
 
   /**
@@ -132,17 +158,17 @@ export class ChatWidget extends BaseWidget {
       
       // Try JTAG operation to subscribe to room events via the chat daemon
       try {
-        const subscribeResult = await this.jtagOperation('chat/subscribe-room', {
+        const subscribeResult = await this.executeCommand<SubscribeRoomResult>('chat/subscribe-room', {
           roomId: this.currentRoom,
           eventTypes: ['chat:message-received', 'chat:participant-joined', 'chat:participant-left']
-        }) as any;
+        });
         
-        if (subscribeResult && subscribeResult.success) {
+        if (subscribeResult && subscribeResult.success && subscribeResult.subscriptionId) {
           this.eventSubscriptionId = subscribeResult.subscriptionId;
           console.log(`✅ ChatWidget: Subscribed to room "${this.currentRoom}" events via JTAG`);
         }
       } catch (jtagError) {
-        console.log(`ℹ️ ChatWidget: JTAG room subscription not available, using DOM events fallback`);
+        console.error(`ℹ️ ChatWidget: JTAG room subscription not available, using DOM events fallback`, jtagError);
       }
       
       // Set up DOM event listeners as fallback (these are emitted by EventsDaemon)
@@ -184,7 +210,7 @@ export class ChatWidget extends BaseWidget {
     console.log(`🔧 CLAUDE-DOM-HANDLER: Processing DOM chat event`, event.detail);
     
     // Check if event has message data we can use directly (React-like state update)
-    if (event.detail && event.detail.message) {
+    if (event.detail.message) {
       const eventMessage = event.detail.message;
       
       // Only add if it's for our room and not already in our messages
@@ -487,13 +513,13 @@ export class ChatWidget extends BaseWidget {
     
     try {
       // Use existing chat/send-message command with proper types
-      const sendResult = await this.jtagOperation<ChatSendMessageResult>('chat/send-message', {
+      const sendResult = await this.executeCommand<ChatSendMessageResult>('chat/send-message', {
         content: content,  // ← Fixed: use 'content' parameter as expected by server
         roomId: this.currentRoom,
         senderType: 'user' // Explicitly mark as user message - server will use UserIdManager
       });
       
-      if (sendResult && sendResult.success) {
+      if (sendResult?.success) {
         console.log(`✅ ChatWidget: Message sent to room ${this.currentRoom}`);
         // Message already added optimistically, and events will trigger React-like updates
         // No need to reload - let the DOM events handle it efficiently
@@ -540,29 +566,5 @@ export class ChatWidget extends BaseWidget {
   private getRoomDisplayName(): string {
     // Capitalize the room name for display
     return this.currentRoom.charAt(0).toUpperCase() + this.currentRoom.slice(1);
-  }
-
-  protected async onWidgetCleanup(): Promise<void> {
-    // Unsubscribe from room events using JTAG abstraction
-    if (this.eventSubscriptionId) {
-      try {
-        await this.jtagOperation('events/unsubscribe', {
-          subscriptionId: this.eventSubscriptionId
-        });
-        console.log(`🔌 ChatWidget: Unsubscribed from room ${this.currentRoom} events`);
-      } catch (error) {
-        console.error(`❌ ChatWidget: Failed to unsubscribe from events:`, error);
-      }
-    }
-    
-    // Save room-specific messages using BaseWidget abstraction
-    const roomMessageKey = `chat_messages_${this.currentRoom}`;
-    await this.storeData(roomMessageKey, this.messages, { persistent: true });
-    console.log(`✅ ChatWidget: Cleanup complete for room "${this.currentRoom}"`);
-  }
-
-  // Static property required by widget registration system
-  static get widgetName(): string {
-    return 'chat';
   }
 }
