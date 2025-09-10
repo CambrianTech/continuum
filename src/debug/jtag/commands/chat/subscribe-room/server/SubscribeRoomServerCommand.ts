@@ -3,7 +3,7 @@
  * Connects widget subscriptions directly to RoomEventSystem
  */
 
-import { SubscribeRoomCommand, SubscribeRoomParams, SubscribeRoomResult } from '../shared/SubscribeRoomCommand';
+import { SubscribeRoomCommand } from '../shared/SubscribeRoomCommand';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 
