@@ -72,7 +72,7 @@ export class ThemeDiscoveryService {
           const filePath = `${this.themesPath}/${themeName}/${filename}`;
           console.log(`🎨 ThemeDiscoveryService: Loading ${filePath}`);
           
-          const result = await this.baseWidget.jtagOperation('file/load', {
+          const result = await this.baseWidget.executeCommand('file/load', {
             filepath: filePath
           });
           
@@ -109,7 +109,7 @@ export class ThemeDiscoveryService {
    */
   private async getThemeDirectories(): Promise<string[]> {
     // Future: Dynamic directory scanning would look like this:
-    // const result = await this.baseWidget.jtagOperation('file/list', { path: this.themesPath });
+    // const result = await this.baseWidget.executeCommand('file/list', { path: this.themesPath });
     // return result.directories || [];
     
     // For now, discover by attempting to load manifests for potential themes
@@ -154,7 +154,7 @@ export class ThemeDiscoveryService {
       const manifestPath = `${this.themesPath}/${themeName}/theme.json`;
       console.log(`🎨 ThemeDiscoveryService: Loading manifest ${manifestPath}`);
       
-      const result = await this.baseWidget.jtagOperation('file/load', {
+      const result = await this.baseWidget.executeCommand('file/load', {
         filepath: manifestPath
       });
       

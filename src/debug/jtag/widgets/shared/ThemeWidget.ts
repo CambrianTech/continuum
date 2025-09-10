@@ -223,11 +223,11 @@ export class ThemeWidget extends BaseWidget {
       
       for (const fileName of cssFiles) {
         try {
-          // Use BaseWidget's protected jtagOperation method - same as loadResource does internally
+          // Use BaseWidget's protected executeCommand method - same as loadResource does internally
           const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
-          console.log(`🎨 ThemeWidget: Loading ${filePath} via BaseWidget jtagOperation`);
+          console.log(`🎨 ThemeWidget: Loading ${filePath} via BaseWidget executeCommand`);
           
-          const result = await this.jtagOperation<FileLoadResult>('file/load', {
+          const result = await this.executeCommand<FileLoadResult>('file/load', {
             filepath: filePath
           });
           

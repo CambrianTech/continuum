@@ -406,7 +406,7 @@ export abstract class BaseWidget extends HTMLElement {
       } = options;
       
       // Use JTAG screenshot command with proper types
-      const result = await this.jtagOperation<ScreenshotResult>('screenshot', {
+      const result = await this.executeCommand<ScreenshotResult>('screenshot', {
         filename,
         querySelector: selector,
         includeContext
@@ -437,7 +437,7 @@ export abstract class BaseWidget extends HTMLElement {
       } = options;
       
       // Use JTAG file/save command with proper types
-      const result = await this.jtagOperation<FileSaveResult>('file/save', {
+      const result = await this.executeCommand<FileSaveResult>('file/save', {
         filepath: `${directory}/${filename}`,
         content: content,
         createDirs: true
@@ -566,7 +566,7 @@ export abstract class BaseWidget extends HTMLElement {
     console.log(`${emoji} ${this.config.widgetName}: Loading ${resourceType} from ${resourcePath}`);
     
     try {
-      const result = await this.jtagOperation<FileLoadResult>('file/load', {
+      const result = await this.executeCommand<FileLoadResult>('file/load', {
         filepath: resourcePath
       });
       
@@ -708,29 +708,6 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
 
-  // Core JTAG integration - delegates to JTAG system with proper typing
-  protected async jtagOperation<T>(command: string, params?: Record<string, any>): Promise<T> {
-    try {
-      // Wait for JTAG system to be ready using proper events
-      await this.waitForSystemReady();
-      
-      // Get the JTAG client from window
-      const jtagClient = (window as any).jtag; // TODO: Add proper window.jtag typing
-      if (!jtagClient?.commands) {
-        throw new Error('JTAG client not available even after system ready event');
-      }
-      
-      // Execute command through the global JTAG system
-      const result = await jtagClient.commands[command](params);
-      
-      console.log(`🔧 BaseWidget: JTAG operation ${command} completed:`, result);
-      return result as T;
-      
-    } catch (error) {
-      console.error(`❌ BaseWidget: JTAG operation ${command} failed:`, error);
-      throw error;
-    }
-  }
 
   protected async executeCommand<T>(command: string, params?: Record<string, any>): Promise<T> {
     try {
