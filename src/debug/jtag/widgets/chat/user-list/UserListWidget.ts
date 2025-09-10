@@ -4,25 +4,9 @@
  */
 
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
-
 import type { BaseUser } from '../../../api/types/User';
+import type { DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { COLLECTIONS } from '../../../api/data-seed/SeedConstants';
-
-interface DatabaseItem {
-  id: string;
-  collection: string;
-  data: BaseUser;
-  metadata: {
-    createdAt: string;
-    updatedAt: string;
-    version: number;
-  };
-}
-
-interface UserListResult {
-  success: boolean;
-  items?: DatabaseItem[];
-}
 
 export class UserListWidget extends ChatWidgetBase {
   private users: BaseUser[] = [];
@@ -51,51 +35,39 @@ export class UserListWidget extends ChatWidgetBase {
   }
 
   private async loadUsersFromDatabase(): Promise<void> {
-    const result = await this.jtagOperation<UserListResult>('data/list', {
+    const result = await this.executeCommand<DataListResult<BaseUser>>('data/list', {
       collection: COLLECTIONS.USERS,
       sort: { lastActiveAt: -1 },
       limit: 100
     });
     
     if (!result?.success || !result.items?.length) {
-      console.warn('⚠️ No users found in database - using empty list');
-      this.users = [];
-      return;
+      console.error('❌ UserListWidget: No users found in database');
+      throw new Error('No users found in database - seed data first');
     }
     
-    // Extract user data from the nested structure
-    this.users = result.items.map(item => item.data).filter(user => user?.id);
+    // Extract user data with strict typing
+    this.users = result.items.filter((user: BaseUser) => user && user.id);
     console.log(`✅ UserListWidget: Loaded ${this.users.length} users from database`);
   }
 
-  protected async renderWidget(): Promise<void> {
-    const styles = this.templateCSS || '/* No styles loaded */';
-    
-    this.shadowRoot.innerHTML = `
-      <style>${styles}</style>
-      ${this.renderUserListHTML()}
-    `;
+  protected override async renderWidget(): Promise<void> {
+    // Use parent's getReplacements pattern like other widgets
+    await super.renderWidget();
   }
 
   protected async onWidgetCleanup(): Promise<void> {
     this.users = [];
   }
 
+  protected override getReplacements(): Record<string, string> {
+    return {
+      '<!-- USER_LIST_CONTENT -->': this.renderUserListHTML()
+    };
+  }
+
   private renderUserListHTML(): string {
-    return `
-      <div class="user-list-container">
-        <div class="user-list-header">
-          <h3>USERS & AGENTS</h3>
-          <span class="user-count">${this.users.length}</span>
-        </div>
-        <div class="user-search">
-          <input type="text" class="search-input" placeholder="Search users..." />
-        </div>
-        <div class="user-list">
-          ${this.users.map(user => this.renderUserItem(user)).join('')}
-        </div>
-      </div>
-    `;
+    return this.users.map(user => this.renderUserItem(user)).join('');
   }
 
   private renderUserItem(user: BaseUser): string {
