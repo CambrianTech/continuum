@@ -5,13 +5,13 @@
  * Demonstrates dramatic code simplification through proper abstraction.
  */
 
-import { BaseWidget } from '../../shared/BaseWidget';
 import type { ChatMessage } from '../shared/ChatModuleTypes';
 import type { ChatSendMessageResult } from '../../../commands/chat/send-message/shared/ChatSendMessageTypes';
 import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
 //import type { User } from '../../../domain/user/User';
 import type { DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { SubscribeRoomResult } from '../../../commands/chat/subscribe-room/shared/SubscribeRoomCommand';
+import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 
 // Strict event data types - no more 'any'!
 interface ChatMessageEventData {
@@ -43,7 +43,7 @@ interface UserLeftEventData {
   readonly timestamp: string;
 }
 
-export class ChatWidget extends BaseWidget {
+export class ChatWidget extends ChatWidgetBase {
   private messages: ChatMessage[] = [];
   private currentRoom: string;
   private messageInput?: HTMLInputElement;
@@ -108,6 +108,17 @@ export class ChatWidget extends BaseWidget {
     await this.storeData(roomMessageKey, this.messages, { persistent: true });
     console.log(`✅ ChatWidget: Cleanup complete for room "${this.currentRoom}"`);
   }
+
+  protected override async renderWidget(): Promise<void> {
+    super.renderWidget();
+    
+    // Cache input element
+    this.messageInput = this.shadowRoot.getElementById('messageInput') as HTMLInputElement;
+        
+    // Auto-scroll to bottom to show latest messages
+    this.scrollToBottom();
+  }
+
 
   /**
    * Load room message history using data/list command
@@ -343,41 +354,6 @@ export class ChatWidget extends BaseWidget {
       await this.renderWidget();
     }
   }
-
-  protected override resolveResourcePath(filename: string): string {
-    // Extract widget directory name from widget name (ChatWidget -> chat)
-    const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
-    // Return relative path from current working directory
-    return `widgets/${widgetDir}/chat-widget/${filename}`;
-  }
-
-  protected async renderWidget(): Promise<void> {
-    // Use external template and styles loaded by BaseWidget
-    const styles = this.templateCSS ?? '/* No styles loaded */';
-    const template = this.templateHTML ?? '<div>No template loaded</div>';
-
-    // Ensure template is a string before calling replace
-    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
-    
-    // Replace dynamic content in template
-    const dynamicContent = templateString
-      .replace('<!-- ROOM_NAME -->', this.getRoomDisplayName())
-      .replace('<!-- Dynamic messages rendered here -->', this.renderMessages());
-    
-    this.shadowRoot.innerHTML = `
-      <style>${styles}</style>
-      ${dynamicContent}
-    `;
-    
-    // Cache input element
-    this.messageInput = this.shadowRoot.getElementById('messageInput') as HTMLInputElement;
-    
-    // Setup event listeners
-    this.setupEventListeners();
-    
-    // Auto-scroll to bottom to show latest messages
-    this.scrollToBottom();
-  }
   
   /**
    * Scroll chat messages to bottom to show latest content
@@ -445,13 +421,11 @@ export class ChatWidget extends BaseWidget {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
   }
 
-  private setupEventListeners(): void {
+  protected override setupEventListeners(): void {
+    super.setupEventListeners();
     console.log('🔧 CLAUDE-DEBUG: setupEventListeners called');
     console.log('🔧 CLAUDE-DEBUG: messageInput exists:', !!this.messageInput);
     console.log('🔧 CLAUDE-DEBUG: sendButton exists:', !!this.shadowRoot.getElementById('sendButton'));
-    
-    // Remove existing event listeners to prevent duplicates
-    this.cleanupEventListeners();
     
     // Send message on Enter
     const keydownHandler = (e: KeyboardEvent) => {
@@ -481,7 +455,8 @@ export class ChatWidget extends BaseWidget {
     console.log('🔧 CLAUDE-DEBUG: event listeners attached with proper cleanup');
   }
   
-  private cleanupEventListeners(): void {
+  protected override cleanupEventListeners(): void {
+    super.cleanupEventListeners();
     // Remove existing event listeners to prevent duplicates
     if (this._keydownHandler && this.messageInput) {
       this.messageInput.removeEventListener('keydown', this._keydownHandler);
@@ -493,6 +468,13 @@ export class ChatWidget extends BaseWidget {
         sendButton.removeEventListener('click', this._clickHandler);
       }
     }
+  }
+
+  protected override getReplacements(): Record<string, string> {
+      return {
+          '<!-- ROOM_NAME -->': this.getRoomDisplayName(),
+          '<!-- Dynamic messages rendered here -->': this.renderMessages()
+      };
   }
 
   public async sendMessage(): Promise<void> {
