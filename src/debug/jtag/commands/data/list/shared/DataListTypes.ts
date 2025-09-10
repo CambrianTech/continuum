@@ -10,6 +10,7 @@ export interface DataListParams extends JTAGPayload {
   readonly collection: string;
   readonly limit?: number;
   readonly filter?: Record<string, any>;
+  readonly orderBy?: { field: string; direction: 'asc' | 'desc' }[];
 }
 
 export interface DataListResult<T> extends JTAGPayload {

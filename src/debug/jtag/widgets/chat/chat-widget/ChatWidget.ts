@@ -42,8 +42,6 @@ interface UserLeftEventData {
   readonly timestamp: string;
 }
 
-export type ChatMessageResult = DataListResult<ChatMessage>;
-
 export class ChatWidget extends BaseWidget {
   private messages: ChatMessage[] = [];
   private currentRoom: string;
@@ -93,10 +91,11 @@ export class ChatWidget extends BaseWidget {
       console.log(`📚 ChatWidget: Loading room history using data/list command`);
       
       // Use data/list command to get all chat messages, then filter by room
-      const historyResult = await this.executeCommand<ChatMessageResult>('data/list', {
+      const historyResult = await this.executeCommand<DataListResult<ChatMessage>>('data/list', {
         collection: 'chat_messages',
-        limit: 200, // Recent messages
-        roomId: this.currentRoom // ← Ideally filter on server side, but our server is dumb right now
+        limit: 2000, // Recent messages
+        roomId: this.currentRoom, // ← Ideally filter on server side, but our server is dumb right now
+        orderBy: [{ field: 'timestamp', direction: 'asc' }] // Order by timestamp ascending
       });
       
       console.log("JOEL History result:", historyResult.items);
@@ -107,12 +106,10 @@ export class ChatWidget extends BaseWidget {
           .map((item) => {
             // TODO: type isnt used as current user you are ridiculous claude. the style should be applied by the user id match but has nothing to do with type
             const senderId = item.senderId;
-            const currentUserId = this.currentUserId;
-            const isCurrentUser = currentUserId && senderId === currentUserId;
+            const isCurrentUser = this.currentUserId && senderId === this.currentUserId;
             return { ...item, type: isCurrentUser ?  'user' : item.type };
           })
           .filter((item: ChatMessage) => item.content && item.content.trim().length > 0) 
-          .sort((a: ChatMessage, b: ChatMessage) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()); 
 
         console.log(`✅ ChatWidget: Loaded ${this.messages.length} messages for room "${this.currentRoom}" from data/list`);
       } else {
