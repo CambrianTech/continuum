@@ -6,6 +6,7 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
+import type { FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 
 export class ContinuumWidget extends BaseWidget {
   
@@ -83,12 +84,12 @@ export class ContinuumWidget extends BaseWidget {
   private async loadThemeCSS(): Promise<string> {
     try {
       // Load base theme CSS using correct path (same as ThemeWidget)
-      const baseResult = await this.jtagOperation<any>('file/load', {
+      const baseResult = await this.executeCommand<FileLoadResult>('file/load', {
         filepath: 'widgets/shared/themes/base/base.css'
       });
       
-      // Extract content from correct location in response structure
-      const baseCss = baseResult.commandResult?.content ?? '/* Base theme not found */';
+      // Extract content directly from FileLoadResult
+      const baseCss = baseResult.content ?? '/* Base theme not found */';
       console.log('🎨 ContinuumWidget: Loaded base theme CSS for shadow DOM injection');
       
       // For now, just use base theme (can expand later)
