@@ -549,7 +549,7 @@ export abstract class BaseWidget extends HTMLElement {
   /**
    * Resolve resource path for JTAG file/load command
    */
-  private resolveResourcePath(filename: string): string {
+  protected resolveResourcePath(filename: string): string {
     // Extract widget directory name from widget name (ChatWidget -> chat)
     const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
     // Return relative path from current working directory
