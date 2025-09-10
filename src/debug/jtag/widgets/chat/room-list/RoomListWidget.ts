@@ -6,6 +6,15 @@
  */
 
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
+import type { DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { ChatMessage } from '../shared/ChatModuleTypes';
+
+interface RoomData {
+  readonly roomId: string;
+  readonly name: string;
+  readonly type: string;
+  readonly description?: string;
+}
 
 export class RoomListWidget extends ChatWidgetBase {
   private currentRoomId: string = 'general';
@@ -45,29 +54,40 @@ export class RoomListWidget extends ChatWidgetBase {
       };
   }
 
-  private async loadRooms(): Promise<void> {
-    try {
-      // Use BaseWidget data methods to load rooms
-      const savedRooms = await this.getData('chat_rooms', []);
+  private async calculateUnreadCounts(): Promise<void> {
+    // For each room, get actual unread message count from database
+    for (const room of this.rooms) {
+      const messageResult = await this.executeCommand<DataListResult<ChatMessage>>('data/list', {
+        collection: 'chat_messages',
+        filter: { roomId: room.id, isRead: false },
+        count: true
+      });
       
-      if (savedRooms.length === 0) {
-        // Create default rooms
-        this.rooms = [
-          { id: 'general', name: 'General', unreadCount: 42 },
-          { id: 'academy', name: 'Academy', unreadCount: 42 }
-        ];
-        await this.storeData('chat_rooms', this.rooms, { persistent: true });
-      } else {
-        this.rooms = savedRooms;
-      }
-    } catch (error) {
-      console.error('❌ RoomListWidget: Failed to load rooms:', error);
-      // Fallback to defaults
-      this.rooms = [
-        { id: 'general', name: 'General', unreadCount: 69 },
-        { id: 'academy', name: 'Academy', unreadCount: 69 }
-      ];
+      room.unreadCount = messageResult?.success ? (messageResult.count || 0) : 0;
     }
+  }
+
+  private async loadRooms(): Promise<void> {
+    // Load rooms from database using proper executeCommand with strict typing
+    const result = await this.executeCommand<DataListResult<RoomData>>('data/list', {
+      collection: 'rooms',
+      sort: { name: 1 }
+    });
+    
+    if (result?.success && result.items?.length > 0) {
+      this.rooms = result.items.map((roomData: RoomData) => ({
+        id: roomData.roomId,
+        name: roomData.name,
+        unreadCount: 0 // Will be calculated from messages
+      }));
+      console.log(`✅ RoomListWidget: Loaded ${this.rooms.length} rooms from database`);
+    } else {
+      console.warn('⚠️ RoomListWidget: No rooms found in database');
+      this.rooms = [];
+    }
+    
+    // Calculate actual unread counts for each room
+    await this.calculateUnreadCounts();
   }
 
   private renderRoomList(): string {
