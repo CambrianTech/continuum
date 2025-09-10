@@ -95,7 +95,8 @@ export class ChatWidget extends BaseWidget {
       // Use data/list command to get all chat messages, then filter by room
       const historyResult = await this.executeCommand<ChatMessageResult>('data/list', {
         collection: 'chat_messages',
-        limit: 50 // Recent messages
+        limit: 200, // Recent messages
+        roomId: this.currentRoom // ← Ideally filter on server side, but our server is dumb right now
       });
       
       console.log("JOEL History result:", historyResult.items);
@@ -110,9 +111,8 @@ export class ChatWidget extends BaseWidget {
             const isCurrentUser = currentUserId && senderId === currentUserId;
             return { ...item, type: isCurrentUser ?  'user' : item.type };
           })
-          .filter((item: ChatMessage) => item.roomId === this.currentRoom) // TODO: use query to filter by roomId on server side
-          .filter((item: ChatMessage) => item.content && item.content.trim().length > 0) // TODO: fix your data claude and Skip messages without valid content, but also server
-          .sort((a: ChatMessage, b: ChatMessage) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()); // TODO: ORDER BY timestamp ASC on server side moron
+          .filter((item: ChatMessage) => item.content && item.content.trim().length > 0) 
+          .sort((a: ChatMessage, b: ChatMessage) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()); 
 
         console.log(`✅ ChatWidget: Loaded ${this.messages.length} messages for room "${this.currentRoom}" from data/list`);
       } else {
