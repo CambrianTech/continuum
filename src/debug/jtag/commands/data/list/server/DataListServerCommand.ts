@@ -58,11 +58,22 @@ export class DataListServerCommand<T> extends CommandBase<DataListParams, DataLi
               } else {
                 items.push(item.data);
               }
+              
             } catch (error) {
               console.warn(`Failed to read ${file}:`, error);
             }
           }
         }
+
+        if (params.orderBy && items.length > 1) {
+            items.sort((a, b) => {
+              for (const { field, direction } of params.orderBy!) {
+                if (a[field] < b[field]) return direction === 'asc' ? -1 : 1;
+                if (a[field] > b[field]) return direction === 'asc' ? 1 : -1;
+              }
+              return 0;
+            });
+          }
         
         // Safe limit calculation with defensive guards
         const configLimit = (this.context.config as any)?.database?.queryLimit;
