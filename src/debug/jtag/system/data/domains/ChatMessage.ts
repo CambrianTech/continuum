@@ -151,6 +151,7 @@ export interface CreateMessageData {
     readonly formatting?: Partial<MessageFormatting>;
   };
   readonly priority?: MessagePriority;
+  readonly mentions?: readonly UserId[];
   readonly replyToId?: MessageId;
   readonly metadata?: Partial<MessageMetadata>;
 }

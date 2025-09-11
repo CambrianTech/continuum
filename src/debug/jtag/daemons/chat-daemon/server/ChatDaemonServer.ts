@@ -6,6 +6,7 @@
  */
 
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { JTAGContext, JTAGMessage } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
@@ -13,10 +14,20 @@ import { createBaseResponse } from '../../../system/core/types/ResponseTypes';
 import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
 import { DataDaemon, DataOperationContext } from '../../data-daemon/shared/DataDaemon';
 import type { StorageResult } from '../../data-daemon/shared/DataStorageAdapter';
+
+// Professional Data Architecture - Rust-like strict typing
+import { DataServiceFactory, DataServiceMode } from '../../../system/data/services/DataServiceFactory';
+import type { DataService } from '../../../system/data/services/DataService';
+import type { DataResult, ISOString, BaseEntity } from '../../../system/data/domains/CoreTypes';
+import { UserId, SessionId, RoomId, MessageId } from '../../../system/data/domains/CoreTypes';
+import type { ChatMessage, CreateMessageData, MessageContent, MessageMetadata } from '../../../system/data/domains/ChatMessage';
+import { validateMessageData, processMessageFormatting } from '../../../system/data/domains/ChatMessage';
+import type { User, CreateUserData } from '../../../system/data/domains/User';
+import { validateUserData } from '../../../system/data/domains/User';
 import {
   SessionParticipant,
   ChatRoom,
-  ChatMessage,
+  ChatMessage as LegacyChatMessage,
   ChatCreateRoomParams,
   ChatJoinRoomParams,
   ChatSendMessageParams,
@@ -50,12 +61,13 @@ interface ChatOperationPayload {
  */
 export class ChatDaemonServer extends DaemonBase {
   public readonly subpath: string = 'chat';
-  private dataDaemon: DataDaemon;
+  private readonly dataDaemon: DataDaemon;
+  private professionalDataService: DataService | null = null; // Rust-like nullable type
   
   constructor(context: JTAGContext, router: JTAGRouter) {
     super('chat-daemon', context, router);
     
-    // Initialize data daemon for chat persistence
+    // Initialize data daemon for chat persistence (legacy - keep working)
     this.dataDaemon = new DataDaemon({
       strategy: 'file',
       backend: 'file',
@@ -66,6 +78,36 @@ export class ChatDaemonServer extends DaemonBase {
         atomicWrites: true
       }
     });
+    
+    // Professional service will be initialized in the initialize() method
+  }
+
+  /**
+   * Initialize professional data service - Rust-like error handling with Result types
+   * Non-blocking initialization - if it fails, we continue with legacy DataDaemon
+   */
+  private async initializeProfessionalDataService(): Promise<void> {
+    try {
+      console.log('🏗️ ChatDaemon: Initializing professional data service with strict typing');
+      
+      // JsonFileAdapter: uses existing JSON files (proven working)
+      // Note: DataService needs a session ID, but daemon doesn't have one yet
+      // The actual sessionId will be provided in the message parameters
+      this.professionalDataService = await DataServiceFactory.createJsonCompatible(
+        '.continuum/database'            // Existing JSON files (backwards compatible)
+        // No sessionId provided here - will be passed per-operation in context override
+      );
+      
+      console.log('✅ ChatDaemon: Professional data service initialized successfully');
+      console.log('   📊 Features: Rust-like typing, Discord-scale messaging, rich formatting');
+      console.log('   🔄 Migration: Reading existing JSON, writing to SQLite');
+      
+    } catch (error: any) {
+      console.log('⚠️ ChatDaemon: Professional data service unavailable, using legacy DataDaemon');
+      console.log(`   💡 Reason: ${error.message}`);
+      console.log('   🔧 Install sqlite3 for professional features: npm install sqlite3 @types/sqlite3');
+      this.professionalDataService = null;
+    }
   }
 
   /**
@@ -242,9 +284,143 @@ export class ChatDaemonServer extends DaemonBase {
    * Send message to chat room
    */
   private async handleSendMessage(params: ChatSendMessageParams): Promise<BaseResponsePayload> {
+    // Hybrid approach: try professional first, fall back to legacy
+    console.log(`🔍 DEBUG: professionalDataService is ${this.professionalDataService ? 'available' : 'null'}`);
+    
+    if (this.professionalDataService) {
+      console.log('💬 ChatDaemon: Using professional data service with Rust-like typing');
+      try {
+        return await this.handleSendMessageProfessional(params);
+      } catch (error: any) {
+        console.log(`⚠️ Professional path failed: ${error.message}, falling back to legacy`);
+        return await this.handleSendMessageLegacy(params);
+      }
+    } else {
+      console.log('💬 ChatDaemon: Using legacy DataDaemon (professional service unavailable)');
+      return await this.handleSendMessageLegacy(params);
+    }
+  }
+
+  /**
+   * Professional message handling with Rust-like strict typing
+   * - Uses branded types (UserId, RoomId, MessageId)
+   * - Rich message formatting (@mentions, #hashtags, ```code```)
+   * - Result type error handling (no exceptions)
+   * - Discord-scale features
+   */
+  private async handleSendMessageProfessional(params: ChatSendMessageParams): Promise<BaseResponsePayload> {
+    try {
+      // Rust-like strict typing with branded types
+      const roomId: RoomId = RoomId(params.roomId);
+      const senderId: UserId = UserId(params.sessionId); // Use session as sender ID
+      
+      // Professional message data with rich formatting
+      const messageData: CreateMessageData = {
+        roomId,
+        senderId,
+        content: {
+          text: params.content,
+          formatting: processMessageFormatting(params.content) // Discord-like rich formatting!
+        },
+        priority: 'normal',
+        mentions: (params.mentions || []).map((id: string) => UserId(id)),
+        replyToId: params.replyToId ? MessageId(params.replyToId) : undefined
+      };
+
+      // Validate message data (Rust-like explicit validation)
+      const validation = validateMessageData(messageData);
+      if (!validation.success) {
+        return createBaseResponse(false, this.context, params.sessionId, {
+          error: `Message validation failed: ${validation.error.message}`
+        });
+      }
+
+      // Create context for professional data service
+      const professionalContext = {
+        sessionId: params.sessionId as any, // TODO: Fix branded type conversion
+        timestamp: new Date().toISOString() as ISOString,
+        source: 'chat-daemon'
+      };
+
+      // Convert CreateMessageData to ChatMessage format for DataService.create()
+      const chatMessage: Omit<ChatMessage, keyof BaseEntity> = {
+        messageId: MessageId(generateUUID()),
+        roomId: messageData.roomId,
+        senderId: messageData.senderId,
+        senderName: 'Professional User', // Would be populated from user service
+        content: {
+          text: messageData.content.text,
+          attachments: messageData.content.attachments || [],
+          formatting: processMessageFormatting(messageData.content.text),
+          embeds: []
+        } as MessageContent,
+        status: 'sent',
+        priority: messageData.priority || 'normal',
+        timestamp: professionalContext.timestamp as ISOString,
+        reactions: [],
+        replyToId: messageData.replyToId,
+        metadata: {
+          source: 'user' as const,
+          ...messageData.metadata
+        } as MessageMetadata
+      };
+
+      // Create message using professional data service
+      const createResult = await this.professionalDataService!.create<ChatMessage>('messages', chatMessage, professionalContext);
+      
+      // Type guard to ensure we get a ChatMessage from the create operation
+      if (createResult.success && typeof createResult.data !== 'object') {
+        console.log('⚠️ Unexpected data type from create operation');
+        return await this.handleSendMessageLegacy(params);
+      }
+      
+      if (!createResult.success) {
+        console.log('⚠️ Professional create failed, falling back to legacy');
+        return await this.handleSendMessageLegacy(params);
+      }
+
+      const professionalMessage = createResult.data as ChatMessage;
+
+      // Convert professional message to legacy format for backwards compatibility
+      const legacyMessage: LegacyChatMessage = {
+        messageId: professionalMessage.id,
+        roomId: professionalMessage.roomId,
+        senderId: professionalMessage.senderId,
+        senderName: 'Participant', // Would get from user lookup
+        content: professionalMessage.content.text,
+        timestamp: professionalMessage.createdAt,
+        mentions: professionalMessage.content.formatting.mentions || [],
+        category: 'chat',
+        replyToId: professionalMessage.replyToId,
+        messageContext: params.messageContext
+      };
+
+      const result = createChatSendMessageResult(params.context, params.sessionId, {
+        success: true,
+        messageId: legacyMessage.messageId,
+        message: legacyMessage,
+        timestamp: professionalMessage.createdAt
+      });
+
+      console.log('✅ ChatDaemon: Professional message created with rich formatting');
+      console.log(`   📝 Features: ${professionalMessage.content.formatting.hashtags.length} hashtags, ${professionalMessage.content.formatting.links.length} links`);
+      
+      return createBaseResponse(true, this.context, params.sessionId, result);
+      
+    } catch (error: any) {
+      console.log(`⚠️ Professional message handling failed: ${error.message}, falling back to legacy`);
+      return await this.handleSendMessageLegacy(params);
+    }
+  }
+
+  /**
+   * Legacy message handling (original implementation)
+   * Keeps existing functionality working unchanged
+   */
+  private async handleSendMessageLegacy(params: ChatSendMessageParams): Promise<BaseResponsePayload> {
     const context = this.createDataContext('chat-send-message');
     
-    const messageData: Partial<ChatMessage> = {
+    const messageData: Partial<LegacyChatMessage> = {
       roomId: params.roomId,
       senderId: params.sessionId, // Use session as sender
       senderName: 'Participant', // Would get from participant record
@@ -264,7 +440,7 @@ export class ChatDaemonServer extends DaemonBase {
       });
     }
 
-    const message: ChatMessage = {
+    const message: LegacyChatMessage = {
       messageId: createResult.data!.id,
       roomId: messageData.roomId!,
       senderId: messageData.senderId!,
@@ -380,5 +556,8 @@ export class ChatDaemonServer extends DaemonBase {
   protected async initialize(): Promise<void> {
     console.log('💬 ChatDaemonServer: Initializing with data daemon persistence');
     // Data daemon initializes itself
+    
+    // Initialize professional data service (blocks until ready)
+    await this.initializeProfessionalDataService();
   }
 }

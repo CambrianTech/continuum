@@ -268,7 +268,7 @@ export class HybridAdapter implements DataAdapter {
     context: DataOperationContext = {} as DataOperationContext
   ): Promise<DataResult<T[]>> {
     // Use list with filters for hybrid query
-    return await this.list<T>(collection, { ...options, filters }, context);
+    return await this.list<T>(collection, { ...options, filters: filters as Record<keyof T, unknown> }, context);
   }
 
   async count(
