@@ -271,7 +271,7 @@ export class SQLiteAdapter implements DataAdapter {
         [id, collection]
       );
 
-      return Ok((result.changes ?? 0) > 0);
+      return Ok((result?.changes ?? 0) > 0);
 
     } catch (error: any) {
       return Err(createDataError('STORAGE_ERROR', `Failed to delete ${collection}/${id}: ${error.message}`));
