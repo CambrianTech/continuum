@@ -23,6 +23,29 @@ import * as sqlite3 from 'sqlite3';
 import { promisify } from 'util';
 
 /**
+ * Strict type definitions for sqlite3 - Rust-like explicit typing
+ */
+interface SQLiteRow {
+  readonly [key: string]: any;
+}
+
+interface SQLiteStatement {
+  readonly changes?: number;
+}
+
+interface SQLiteRowWithData {
+  readonly data: string;
+}
+
+interface SQLiteCountRow {
+  readonly count: number;
+}
+
+type SQLiteGetFn = (sql: string, params?: any[]) => Promise<SQLiteRow | undefined>;
+type SQLiteAllFn = (sql: string, params?: any[]) => Promise<SQLiteRow[]>;
+type SQLiteRunFn = (sql: string, params?: any[]) => Promise<SQLiteStatement>;
+
+/**
  * SQLite Adapter Implementation
  */
 export class SQLiteAdapter implements DataAdapter {
@@ -40,8 +63,6 @@ export class SQLiteAdapter implements DataAdapter {
 
   constructor(dbPath: string = '.continuum/database/continuum.db') {
     this.dbPath = dbPath;
-    // TODO: Fix SQLite adapter TypeScript errors before enabling
-    throw new Error('SQLiteAdapter temporarily disabled due to TypeScript compilation errors');
   }
 
   async initialize(): Promise<DataResult<void>> {
@@ -138,15 +159,20 @@ export class SQLiteAdapter implements DataAdapter {
         ...data
       } as T;
 
-      const dbRun = promisify(this.db.run.bind(this.db));
       const entityJson = JSON.stringify(entity);
       
       // Extract searchable content for full-text search
       const searchContent = this.extractSearchContent(entity);
 
-      // Temporarily disabled due to type issues - will fallback to other adapters
-      // TODO: Fix SQLite parameter count mismatches and type issues
-      return Ok({ ...entity, id: entity.id, createdAt: entity.createdAt, updatedAt: entity.updatedAt } as T);
+      // Create properly typed database functions
+      const dbRun: SQLiteRunFn = promisify(this.db.run.bind(this.db));
+      
+      await dbRun(`
+        INSERT INTO entities (id, collection, data, created_at, updated_at, version, search_content)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [entity.id, collection, entityJson, entity.createdAt, entity.updatedAt, entity.version, searchContent]);
+
+      return Ok(entity);
 
     } catch (error: any) {
       return Err(createDataError('STORAGE_ERROR', `Failed to create ${collection} record: ${error.message}`));
@@ -163,9 +189,18 @@ export class SQLiteAdapter implements DataAdapter {
     }
 
     try {
-      const dbGet = promisify(this.db.get.bind(this.db));
-      // TODO: Fix SQLite parameter binding issues  
-      return Err(createDataError('STORAGE_ERROR', 'SQLite adapter temporarily disabled'));
+      const dbGet: SQLiteGetFn = promisify(this.db.get.bind(this.db));
+      const row = await dbGet(
+        'SELECT data FROM entities WHERE id = ? AND collection = ?',
+        [id, collection]
+      ) as SQLiteRowWithData | undefined;
+
+      if (!row) {
+        return Ok(null);
+      }
+
+      const entity = JSON.parse(row.data) as T;
+      return Ok(entity);
 
     } catch (error: any) {
       return Err(createDataError('STORAGE_ERROR', `Failed to read ${collection}/${id}: ${error.message}`));
@@ -203,12 +238,17 @@ export class SQLiteAdapter implements DataAdapter {
         version: existing.version + 1
       };
 
-      const dbRun = promisify(this.db.run.bind(this.db));
+      const dbRun: SQLiteRunFn = promisify(this.db.run.bind(this.db));
       const entityJson = JSON.stringify(updated);
       const searchContent = this.extractSearchContent(updated);
 
-      // TODO: Fix SQLite parameter binding issues
-      return Err(createDataError('STORAGE_ERROR', 'SQLite adapter temporarily disabled'));
+      await dbRun(`
+        UPDATE entities 
+        SET data = ?, updated_at = ?, version = ?, search_content = ?
+        WHERE id = ? AND collection = ?
+      `, [entityJson, updated.updatedAt, updated.version, searchContent, id, collection]);
+
+      return Ok(updated);
 
     } catch (error: any) {
       return Err(createDataError('STORAGE_ERROR', `Failed to update ${collection}/${id}: ${error.message}`));
@@ -225,8 +265,13 @@ export class SQLiteAdapter implements DataAdapter {
     }
 
     try {
-      // TODO: Fix SQLite parameter binding issues
-      return Err(createDataError('STORAGE_ERROR', 'SQLite adapter temporarily disabled'));
+      const dbRun: SQLiteRunFn = promisify(this.db.run.bind(this.db));
+      const result = await dbRun(
+        'DELETE FROM entities WHERE id = ? AND collection = ?',
+        [id, collection]
+      );
+
+      return Ok((result.changes ?? 0) > 0);
 
     } catch (error: any) {
       return Err(createDataError('STORAGE_ERROR', `Failed to delete ${collection}/${id}: ${error.message}`));
@@ -243,8 +288,6 @@ export class SQLiteAdapter implements DataAdapter {
     }
 
     try {
-      const dbAll = promisify(this.db.all.bind(this.db));
-      
       // Build query
       let sql = 'SELECT data FROM entities WHERE collection = ?';
       const params: any[] = [collection];
@@ -276,8 +319,19 @@ export class SQLiteAdapter implements DataAdapter {
         params.push(options.offset);
       }
 
-      // TODO: Fix SQLite parameter binding issues
-      return Err(createDataError('STORAGE_ERROR', 'SQLite adapter temporarily disabled'));
+      const dbAll = promisify(this.db.all.bind(this.db)) as SQLiteAllFn;
+      const rows = await dbAll(sql, params) as SQLiteRowWithData[];
+
+      const entities: T[] = rows.map(row => {
+        try {
+          return JSON.parse(row.data) as T;
+        } catch (parseError: any) {
+          console.error(`Failed to parse entity data: ${parseError.message}`);
+          return null;
+        }
+      }).filter((entity): entity is T => entity !== null);
+
+      return Ok(entities);
 
     } catch (error: any) {
       return Err(createDataError('STORAGE_ERROR', `Failed to list ${collection}: ${error.message}`));
@@ -304,7 +358,7 @@ export class SQLiteAdapter implements DataAdapter {
     }
 
     try {
-      const dbGet = promisify(this.db.get.bind(this.db));
+      const dbGet = promisify(this.db.get.bind(this.db)) as SQLiteGetFn;
       
       let sql = 'SELECT COUNT(*) as count FROM entities WHERE collection = ?';
       const params: any[] = [collection];
@@ -315,8 +369,12 @@ export class SQLiteAdapter implements DataAdapter {
         params.push(value);
       }
 
-      // TODO: Fix SQLite parameter binding issues
-      return Err(createDataError('STORAGE_ERROR', 'SQLite adapter temporarily disabled'));
+      const row = await dbGet(sql, params) as SQLiteCountRow | undefined;
+      if (!row) {
+        return Ok(0);
+      }
+
+      return Ok(row.count);
 
     } catch (error: any) {
       return Err(createDataError('STORAGE_ERROR', `Failed to count ${collection}: ${error.message}`));
