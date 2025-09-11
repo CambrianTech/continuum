@@ -65,9 +65,10 @@ export class DataServiceFactory {
     };
 
     // Create collection-specific adapters if needed
-    serviceConfig.adapters = await this.createCollectionAdapters(config);
+    const adapters = await this.createCollectionAdapters(config);
+    const mutableConfig = { ...serviceConfig, adapters };
 
-    const dataService = new DataService(serviceConfig);
+    const dataService = new DataService(mutableConfig);
     await dataService.initialize();
     
     return dataService;

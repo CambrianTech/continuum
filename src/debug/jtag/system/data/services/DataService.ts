@@ -177,7 +177,7 @@ export class DataService {
           if (!id) {
             return Err(createDataError('VALIDATION_ERROR', 'ID is required for read operation'));
           }
-          return await adapter.read<T>(collection, id, context);
+          return await adapter.read<T>(collection, id, context) as DataResult<T | T[] | boolean | number>;
         
         case 'update':
           const updateData = data as { id: string } & Partial<T>;

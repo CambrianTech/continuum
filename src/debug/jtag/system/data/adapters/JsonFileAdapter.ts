@@ -272,7 +272,7 @@ export class JsonFileAdapter implements DataAdapter {
     context: DataOperationContext = {} as DataOperationContext
   ): Promise<DataResult<T[]>> {
     // For JSON files, query is the same as list with filters
-    return await this.list<T>(collection, { ...options, filters }, context);
+    return await this.list<T>(collection, { ...options, filters: filters as Record<keyof T, unknown> }, context);
   }
 
   async count(
