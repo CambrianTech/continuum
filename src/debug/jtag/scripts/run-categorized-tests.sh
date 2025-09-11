@@ -236,6 +236,7 @@ run_profile_tests() {
             run_test "Database Persistence Validation" "npx tsx tests/integration/database/database-persistence-validation.test.ts" "Database Tests"
             run_test "Database Comprehensive Integration" "npx tsx tests/integration/database-comprehensive-integration.test.ts" "Database Tests"
             run_test "Data Daemon Unit Tests" "npx tsx tests/data-daemon/run-data-tests.ts" "Database Tests"
+            run_test "Professional Data Architecture" "npx tsx tests/classified/ProfessionalDataArchitectureTest.ts" "Database Tests"
             
             # Event system
             run_test "Server-Browser Events" "npx tsx tests/integration/server-browser-event-flow.test.ts" "Event Tests"
@@ -323,6 +324,7 @@ run_profile_tests() {
             run_test "Database Persistence Validation" "npx tsx tests/integration/database/database-persistence-validation.test.ts" "Database Tests"
             run_test "Database Comprehensive Integration" "npx tsx tests/integration/database-comprehensive-integration.test.ts" "Database Tests"
             run_test "Data Daemon Unit Tests" "npx tsx tests/data-daemon/run-data-tests.ts" "Database Tests"
+            run_test "Professional Data Architecture" "npx tsx tests/classified/ProfessionalDataArchitectureTest.ts" "Database Tests"
             ;;
             
         "ai")
