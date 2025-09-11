@@ -35,6 +35,32 @@ import {
 
 import type { CommandResult } from '../../system/core/types/JTAGTypes';
 
+type WidgetData = string | number | boolean | object | null;
+type DaemonInstance = Record<string, unknown>;
+type SerializedState = Record<string, WidgetData>;
+type EventCallback = (eventData: WidgetData) => void;
+type OperationResult = Record<string, WidgetData>;
+
+interface CachedValue {
+  value: WidgetData;
+  timestamp: number;
+  ttl?: number;
+}
+
+interface EventData {
+  sourceWidget: string;
+  eventType: string;
+  data: WidgetData;
+}
+
+interface JTAGClient {
+  commands: Record<string, (params?: Record<string, WidgetData>) => Promise<{ commandResult: WidgetData }>>;
+}
+
+interface WindowWithJTAG extends Window {
+  jtag?: JTAGClient;
+}
+
 export interface WidgetConfig {
   // Core settings
   widgetId: string;
@@ -72,8 +98,8 @@ export interface WidgetState {
   hasError: boolean;
   errorMessage?: string;
   lastUpdate: string;
-  data: Map<string, any>;
-  cache: Map<string, any>;
+  data: Map<string, WidgetData>;
+  cache: Map<string, CachedValue>;
 }
 
 export interface WidgetContext {
@@ -93,12 +119,12 @@ export abstract class BaseWidget extends HTMLElement {
   protected context: WidgetContext;
   
   // Daemon connections (abstracted away from subclasses)
-  private databaseDaemon?: any;
-  private routerDaemon?: any;
-  private academyDaemon?: any;
+  private databaseDaemon?: DaemonInstance;
+  private routerDaemon?: DaemonInstance;
+  private academyDaemon?: DaemonInstance;
   
   // Performance and caching
-  private operationCache = new Map<string, any>();
+  private operationCache = new Map<string, WidgetData>();
   private throttledOperations = new Map<string, number>();
   
   // Template resources (loaded from external files)
@@ -227,7 +253,7 @@ export abstract class BaseWidget extends HTMLElement {
    * Store data with automatic database + cache coordination
    * Like JTAG's this.screenshot() - one call, full coordination
    */
-  protected async storeData(key: string, value: any, options: { 
+  protected async storeData(key: string, value: WidgetData, options: { 
     persistent?: boolean;
     broadcast?: boolean;
     ttl?: number;
@@ -272,7 +298,7 @@ export abstract class BaseWidget extends HTMLElement {
   /**
    * Retrieve data with automatic cache + database coordination
    */
-  protected async getData(key: string, defaultValue?: any): Promise<any> {
+  protected async getData(key: string, defaultValue: WidgetData = null): Promise<WidgetData> {
     try {
       // 1. Check cache first (fastest)
       const cached = this.state.cache.get(key);
@@ -282,7 +308,7 @@ export abstract class BaseWidget extends HTMLElement {
       
       // 2. Check widget state
       if (this.state.data.has(key)) {
-        return this.state.data.get(key);
+        return this.state.data.get(key)!; // Non-null assertion - has() confirms existence
       }
       
       // 3. Load from database if enabled
@@ -292,8 +318,8 @@ export abstract class BaseWidget extends HTMLElement {
           key
         });
         
-        if (dbResult.success && dbResult.data.value) {
-          const value = JSON.parse(dbResult.data.value);
+        if (dbResult.success && dbResult.data && typeof dbResult.data === 'object' && 'value' in dbResult.data && typeof (dbResult.data as { value: string }).value === 'string') {
+          const value = JSON.parse((dbResult.data as { value: string }).value);
           
           // Update cache and state
           this.state.cache.set(key, { value, timestamp: Date.now() });
@@ -315,7 +341,7 @@ export abstract class BaseWidget extends HTMLElement {
    * Broadcast event with automatic router + WebSocket coordination
    * Like JTAG's cross-environment messaging but for widgets
    */
-  protected async broadcastEvent(eventType: string, data: any, options: {
+  protected async broadcastEvent(eventType: string, data: WidgetData, options: {
     targetWidgets?: string[];
     excludeSelf?: boolean;
     persistent?: boolean;
@@ -345,7 +371,7 @@ export abstract class BaseWidget extends HTMLElement {
         persistent
       });
       
-      return result.success;
+      return Boolean(result.success);
       
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: broadcastEvent failed:`, error);
@@ -358,9 +384,9 @@ export abstract class BaseWidget extends HTMLElement {
    */
   protected async queryAI(message: string, options: {
     persona?: string;
-    context?: any;
+    context?: WidgetData;
     expectResponse?: boolean;
-  } = {}): Promise<any> {
+  } = {}): Promise<WidgetData> {
     try {
       if (!this.config.enableAI) {
         console.warn(`⚠️ ${this.config.widgetName}: AI disabled for this widget`);
@@ -458,7 +484,7 @@ export abstract class BaseWidget extends HTMLElement {
   /**
    * Override to customize AI context sent with queries
    */
-  protected getAIContext(): any {
+  protected getAIContext(): WidgetData {
     return {
       widgetType: this.config.widgetName,
       currentState: Object.fromEntries(this.state.data),
@@ -469,13 +495,14 @@ export abstract class BaseWidget extends HTMLElement {
   /**
    * Override to customize error handling
    */
-  protected handleError(error: any, operation: string): void {
+  protected handleError(error: Error | unknown, operation: string): void {
     console.error(`❌ ${this.config.widgetName}: ${operation} error:`, error);
     this.state.hasError = true;
-    this.state.errorMessage = error.message || String(error);
+    this.state.errorMessage = error instanceof Error ? error.message : String(error);
     
     // Default error UI - subclasses can override
-    this.showErrorMessage(`${operation} failed: ${error.message}`);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    this.showErrorMessage(`${operation} failed: ${errorMessage}`);
   }
 
   /**
@@ -491,7 +518,7 @@ export abstract class BaseWidget extends HTMLElement {
   /**
    * Override to customize event handling
    */
-  protected onEventReceived(eventType: string, data: any): void {
+  protected onEventReceived(eventType: string, data: WidgetData): void {
     // Default: just emit to internal event system
     const handlers = this.eventEmitter.get(eventType) || [];
     handlers.forEach(handler => handler(data));
@@ -500,7 +527,7 @@ export abstract class BaseWidget extends HTMLElement {
   /**
    * Override to customize state serialization
    */
-  protected serializeState(): any {
+  protected serializeState(): SerializedState {
     return {
       data: Object.fromEntries(this.state.data),
       lastUpdate: this.state.lastUpdate,
@@ -511,12 +538,12 @@ export abstract class BaseWidget extends HTMLElement {
   /**
    * Override to customize state deserialization
    */
-  protected deserializeState(serialized: any): void {
+  protected deserializeState(serialized: SerializedState): void {
     if (serialized.data) {
       this.state.data = new Map(Object.entries(serialized.data));
     }
-    if (serialized.config) {
-      this.config = { ...this.config, ...serialized.config };
+    if (serialized.config && typeof serialized.config === 'object' && serialized.config !== null) {
+      this.config = { ...this.config, ...serialized.config as Partial<WidgetConfig> };
     }
   }
 
@@ -572,14 +599,13 @@ export abstract class BaseWidget extends HTMLElement {
         filepath: resourcePath
       });
       
-      // Handle nested JTAG response structure - actual data is in commandResult
-      const fileData = (result as any).commandResult || result;
-      if (result.success && fileData.success && fileData.content) {
-        console.log(`✅ ${this.config.widgetName}: ${resourceType} loaded successfully (${fileData.bytesRead} bytes)`);
-        return fileData.content;
+      // FileLoadResult IS the command result - no nested structure
+      if (result && result.success && result.content) {
+        console.log(`✅ ${this.config.widgetName}: ${resourceType} loaded successfully (${result.bytesRead} bytes)`);
+        return result.content;
       } else {
         console.warn(`⚠️ ${this.config.widgetName}: ${resourceType} load failed: ${resourcePath}`);
-        console.warn(`  Debug: result.success=${result.success}, fileData.success=${fileData.success}, has content=${!!fileData.content}`);
+        console.warn(`  Debug: result.success=${result?.success}, has content=${!!result?.content}`);
         return fallback;
       }
     } catch (loadError) {
@@ -605,6 +631,7 @@ export abstract class BaseWidget extends HTMLElement {
       this.academyDaemon = await this.connectToDaemon(DAEMON_NAMES.CHAT); // Chat daemon handles AI queries
     }
     
+    
   }
 
 
@@ -612,8 +639,8 @@ export abstract class BaseWidget extends HTMLElement {
     if (!this.config.enablePersistence) return;
     
     const serializedState = await this.getData('widget_state');
-    if (serializedState) {
-      this.deserializeState(serializedState);
+    if (serializedState && typeof serializedState === 'object' && serializedState !== null) {
+      this.deserializeState(serializedState as SerializedState);
     }
   }
 
@@ -629,9 +656,12 @@ export abstract class BaseWidget extends HTMLElement {
       // Subscribe to widget events
       await this.routerOperation('subscribe', {
         channel: 'widget_events',
-        callback: (eventData: any) => {
-          if (eventData.sourceWidget !== this.config.widgetId) {
-            this.onEventReceived(eventData.eventType, eventData.data);
+        callback: (eventData: WidgetData) => {
+          if (eventData && typeof eventData === 'object' && eventData !== null) {
+            const typedEventData = eventData as EventData;
+            if (typedEventData.sourceWidget !== this.config.widgetId) {
+              this.onEventReceived(typedEventData.eventType, typedEventData.data);
+            }
           }
         }
       });
@@ -645,9 +675,9 @@ export abstract class BaseWidget extends HTMLElement {
     this.academyDaemon = undefined;
   }
 
-  private async handleInitializationError(error: any): Promise<void> {
+  private async handleInitializationError(error: Error | unknown): Promise<void> {
     this.state.hasError = true;
-    this.state.errorMessage = error.message ?? String(error);
+    this.state.errorMessage = error instanceof Error ? error.message : String(error);
     
     // Render error state
     this.shadowRoot.innerHTML = `
@@ -685,25 +715,25 @@ export abstract class BaseWidget extends HTMLElement {
     }
   }
 
-  private isCacheValid(cached: { timestamp: number; ttl?: number }): boolean {
+  private isCacheValid(cached: CachedValue): boolean {
     const ttl = cached.ttl || 3600000; // 1 hour default
     return (Date.now() - cached.timestamp) < ttl;
   }
 
   // Daemon operation abstractions
-  private async databaseOperation(operation: string, data: any): Promise<any> {
+  private async databaseOperation(operation: string, data: WidgetData): Promise<OperationResult> {
     if (!this.databaseDaemon) throw new Error('Database daemon not connected');
     // Would integrate with actual daemon messaging system
     return { success: true, data: {} };
   }
 
-  private async routerOperation(operation: string, data: any): Promise<any> {
+  private async routerOperation(operation: string, data: WidgetData): Promise<OperationResult> {
     if (!this.routerDaemon) throw new Error('Router daemon not connected');
     // Would integrate with actual daemon messaging system
     return { success: true, data: {} };
   }
 
-  private async academyOperation(operation: string, data: any): Promise<any> {
+  private async academyOperation(operation: string, data: WidgetData): Promise<OperationResult> {
     if (!this.academyDaemon) throw new Error('Academy daemon not connected');
     // Would integrate with actual daemon messaging system
     return { success: true, data: {} };
@@ -711,25 +741,50 @@ export abstract class BaseWidget extends HTMLElement {
 
 
 
-  protected async executeCommand<T>(command: string, params?: Record<string, any>): Promise<T> {
+  protected async executeCommand<T>(command: string, params?: Record<string, WidgetData>): Promise<T> {
     try {
-      // Wait for JTAG system to be ready using proper events
+      // Wait for JTAG system to be ready  
       await this.waitForSystemReady();
       
       // Get the JTAG client from window
-      const jtagClient = (window as any).jtag; // TODO: Add proper window.jtag typing
+      const jtagClient = (window as WindowWithJTAG).jtag;
       if (!jtagClient?.commands) {
         throw new Error('JTAG client not available even after system ready event');
       }
       
-      // Execute command through the global JTAG system
+      // Execute command through the global JTAG system - gets wrapped response
+      const wrappedResult = await jtagClient.commands[command](params);
+      
+      // Extract the actual command result from the wrapped response
+      return wrappedResult.commandResult as T;
+    } catch (error) {
+      console.error(`❌ ${this.config.widgetName}: JTAG operation ${command} failed:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Direct command execution - new preferred pattern
+   * JTAGClient returns direct results, not wrapped ones
+   */
+  private async executeCommandDirect<T>(command: string, params?: Record<string, WidgetData>): Promise<T> {
+    try {
+      // Wait for JTAG system to be ready  
+      await this.waitForSystemReady();
+      
+      // Get the JTAG client from window
+      const jtagClient = (window as WindowWithJTAG).jtag;
+      if (!jtagClient?.commands) {
+        throw new Error('JTAG client not available even after system ready event');
+      }
+      
+      // JTAGClient.commands returns direct results, not wrapped
       const result = await jtagClient.commands[command](params);
       
-      console.log(`🔧 BaseWidget: executeCommand ${command} completed:`, result);
-      return result.commandResult as T;
-
+      // Return result directly - JTAGClient doesn't wrap responses
+      return result as T;
     } catch (error) {
-      console.error(`❌ BaseWidget: JTAG operation ${command} failed:`, error);
+      console.error(`❌ ${this.config.widgetName}: JTAG operation ${command} failed:`, error);
       throw error;
     }
   }
@@ -810,8 +865,9 @@ export abstract class BaseWidget extends HTMLElement {
 
     // Listen for server-originated events via the JTAG event system
     // These events come from EventsDaemon when server emits events
-    document.addEventListener(eventName, (event: any) => {
-      console.log(`🔥 EVENT-DISPATCHER: Received server event ${eventName}:`, event.detail);
+    document.addEventListener(eventName, (event: Event) => {
+      const customEvent = event as Event & { detail: ChatEventDataFor<T> };
+      console.log(`🔥 EVENT-DISPATCHER: Received server event ${eventName}:`, customEvent.detail);
       
       // Dispatch to all registered widget handlers
       const handlers = this.eventEmitter.get(eventName);
@@ -819,7 +875,7 @@ export abstract class BaseWidget extends HTMLElement {
         console.log(`🔗 EVENT-DISPATCHER: Dispatching ${eventName} to ${handlers.length} widget handlers`);
         handlers.forEach(handler => {
           try {
-            handler(event.detail);
+            handler(customEvent.detail);
           } catch (error) {
             console.error(`❌ EVENT-DISPATCHER: Handler error for ${eventName}:`, error);
           }
@@ -838,7 +894,7 @@ export abstract class BaseWidget extends HTMLElement {
   private async waitForSystemReady(): Promise<void> {
     return new Promise((resolve) => {
       // Check if system is already ready
-      const jtagClient = (window as any).jtag;
+      const jtagClient = (window as WindowWithJTAG).jtag;
       if (jtagClient && jtagClient.commands) {
         console.log(`✅ BaseWidget: JTAG system already ready for ${this.config.widgetName}`);
         resolve();
@@ -849,7 +905,7 @@ export abstract class BaseWidget extends HTMLElement {
       
       // Simple polling - check every 100ms for window.jtag
       const checkReady = () => {
-        const jtag = (window as any).jtag;
+        const jtag = (window as WindowWithJTAG).jtag;
         if (jtag && jtag.commands) {
           console.log(`✅ BaseWidget: JTAG system ready for ${this.config.widgetName}`);
           resolve();
@@ -862,7 +918,7 @@ export abstract class BaseWidget extends HTMLElement {
     });
   }
 
-  private async connectToDaemon(daemonName: string): Promise<any> {
+  private async connectToDaemon(daemonName: string): Promise<DaemonInstance> {
     // Would connect to actual daemon system
     console.log(`🔌 ${this.config.widgetName}: Connected to ${daemonName} daemon`);
     return {};

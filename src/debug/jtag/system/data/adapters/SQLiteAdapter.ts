@@ -41,9 +41,9 @@ interface SQLiteCountRow {
   readonly count: number;
 }
 
-type SQLiteGetFn = (sql: string, params?: any[]) => Promise<SQLiteRow | undefined>;
-type SQLiteAllFn = (sql: string, params?: any[]) => Promise<SQLiteRow[]>;
-type SQLiteRunFn = (sql: string, params?: any[]) => Promise<SQLiteStatement>;
+type SQLiteGetFn = (sql: string, ...params: any[]) => Promise<SQLiteRow | undefined>;
+type SQLiteAllFn = (sql: string, ...params: any[]) => Promise<SQLiteRow[]>;
+type SQLiteRunFn = (sql: string, ...params: any[]) => Promise<SQLiteStatement>;
 
 /**
  * SQLite Adapter Implementation
@@ -170,7 +170,7 @@ export class SQLiteAdapter implements DataAdapter {
       await dbRun(`
         INSERT INTO entities (id, collection, data, created_at, updated_at, version, search_content)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `, [entity.id, collection, entityJson, entity.createdAt, entity.updatedAt, entity.version, searchContent]);
+      `, entity.id, collection, entityJson, entity.createdAt, entity.updatedAt, entity.version, searchContent);
 
       return Ok(entity);
 
@@ -192,7 +192,7 @@ export class SQLiteAdapter implements DataAdapter {
       const dbGet: SQLiteGetFn = promisify(this.db.get.bind(this.db));
       const row = await dbGet(
         'SELECT data FROM entities WHERE id = ? AND collection = ?',
-        [id, collection]
+        id, collection
       ) as SQLiteRowWithData | undefined;
 
       if (!row) {
@@ -246,7 +246,7 @@ export class SQLiteAdapter implements DataAdapter {
         UPDATE entities 
         SET data = ?, updated_at = ?, version = ?, search_content = ?
         WHERE id = ? AND collection = ?
-      `, [entityJson, updated.updatedAt, updated.version, searchContent, id, collection]);
+      `, entityJson, updated.updatedAt, updated.version, searchContent, id, collection);
 
       return Ok(updated);
 
@@ -268,7 +268,7 @@ export class SQLiteAdapter implements DataAdapter {
       const dbRun: SQLiteRunFn = promisify(this.db.run.bind(this.db));
       const result = await dbRun(
         'DELETE FROM entities WHERE id = ? AND collection = ?',
-        [id, collection]
+        id, collection
       );
 
       return Ok((result?.changes ?? 0) > 0);
@@ -320,7 +320,7 @@ export class SQLiteAdapter implements DataAdapter {
       }
 
       const dbAll = promisify(this.db.all.bind(this.db)) as SQLiteAllFn;
-      const rows = await dbAll(sql, params) as SQLiteRowWithData[];
+      const rows = await dbAll(sql, ...params) as SQLiteRowWithData[];
 
       const entities: T[] = rows.map(row => {
         try {

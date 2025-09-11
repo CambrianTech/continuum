@@ -18,6 +18,46 @@ import type {
   ISOString
 } from '../domains/CoreTypes';
 import { Ok, Err, createDataError } from '../domains/CoreTypes';
+import type { CreateUserData } from '../domains/User';
+import type { CreateMessageData } from '../domains/ChatMessage';
+
+/**
+ * Strict operation payload types - eliminate any usage
+ */
+export interface ReadOperationPayload {
+  readonly id: string;
+}
+
+export interface UpdateOperationPayload<T extends BaseEntity> {
+  readonly id: string;
+  readonly data?: Partial<T>;
+}
+
+export interface DeleteOperationPayload {
+  readonly id: string;
+}
+
+export interface QueryOperationPayload<T extends BaseEntity> {
+  readonly filters: Record<string, unknown>;
+  readonly options?: QueryOptions<T>;
+}
+
+export interface CountOperationPayload {
+  readonly filters?: Record<string, unknown>;
+}
+
+/**
+ * Type guards for validation
+ */
+function hasUserDataFields(data: unknown): data is { displayName?: unknown; type?: unknown } {
+  return data !== null && typeof data === 'object' && 
+         ('displayName' in (data as object) || 'type' in (data as object));
+}
+
+function hasMessageDataFields(data: unknown): data is { content?: unknown; roomId?: unknown } {
+  return data !== null && typeof data === 'object' && 
+         ('content' in (data as object) || 'roomId' in (data as object));
+}
 import { generateUUID } from '../../core/types/CrossPlatformUUID';
 
 /**
@@ -123,8 +163,9 @@ export class DataService {
       this.isInitialized = true;
       return Ok(undefined);
 
-    } catch (error: any) {
-      return Err(createDataError('STORAGE_ERROR', `DataService initialization failed: ${error.message}`));
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown initialization error';
+      return Err(createDataError('STORAGE_ERROR', `DataService initialization failed: ${errorMessage}`));
     }
   }
 
@@ -133,7 +174,7 @@ export class DataService {
    */
   async executeOperation<T extends BaseEntity>(
     operation: `${string}/${DataOperation}`,
-    data?: unknown,
+    data?: ReadOperationPayload | UpdateOperationPayload<T> | DeleteOperationPayload | QueryOperationPayload<T> | CountOperationPayload | Omit<T, keyof BaseEntity>,
     options?: {
       readonly context?: Partial<DataOperationContext>;
       readonly adapter?: string;
@@ -154,17 +195,17 @@ export class DataService {
       switch (op) {
         case 'create':
           // Apply strict validation for create operations (Rust-like enforcement)
-          if (collection === 'users' && this.shouldValidateUser(data)) {
+          if (collection === 'users' && hasUserDataFields(data)) {
             const { validateUserData } = await import('../domains/User');
-            const validation = validateUserData(data as any);
+            const validation = validateUserData(data as CreateUserData);
             if (!validation.success) {
               return Err(validation.error);
             }
           }
           
-          if (collection.includes('message') && this.shouldValidateMessage(data)) {
+          if (collection.includes('message') && hasMessageDataFields(data)) {
             const { validateMessageData } = await import('../domains/ChatMessage');
-            const validation = validateMessageData(data as any);
+            const validation = validateMessageData(data as CreateMessageData);
             if (!validation.success) {
               return Err(validation.error);
             }
@@ -173,44 +214,48 @@ export class DataService {
           return await adapter.create<T>(collection, data as Omit<T, keyof BaseEntity>, context);
         
         case 'read':
-          const id = (data as any)?.id;
-          if (!id) {
+          const readPayload = data as ReadOperationPayload;
+          if (!readPayload?.id) {
             return Err(createDataError('VALIDATION_ERROR', 'ID is required for read operation'));
           }
-          return await adapter.read<T>(collection, id, context) as DataResult<T | T[] | boolean | number>;
+          return await adapter.read<T>(collection, readPayload.id, context) as DataResult<T | T[] | boolean | number>;
         
         case 'update':
-          const updateData = data as { id: string } & Partial<T>;
-          if (!updateData.id) {
+          const updatePayload = data as UpdateOperationPayload<T>;
+          if (!updatePayload?.id) {
             return Err(createDataError('VALIDATION_ERROR', 'ID is required for update operation'));
           }
-          return await adapter.update<T>(collection, updateData.id, updateData, context);
+          return await adapter.update<T>(collection, updatePayload.id, updatePayload.data || {}, context);
         
         case 'delete':
-          const deleteId = (data as any)?.id;
-          if (!deleteId) {
+          const deletePayload = data as DeleteOperationPayload;
+          if (!deletePayload?.id) {
             return Err(createDataError('VALIDATION_ERROR', 'ID is required for delete operation'));
           }
-          return await adapter.delete(collection, deleteId, context) as DataResult<boolean>;
+          return await adapter.delete(collection, deletePayload.id, context) as DataResult<boolean>;
         
         case 'list':
           const listOptions = data as QueryOptions<T> | undefined;
           return await adapter.list<T>(collection, listOptions, context) as DataResult<T[]>;
         
         case 'query':
-          const queryData = data as { filters: Record<string, unknown>; options?: QueryOptions<T> };
-          return await adapter.query<T>(collection, queryData.filters, queryData.options, context) as DataResult<T[]>;
+          const queryPayload = data as QueryOperationPayload<T>;
+          if (!queryPayload?.filters) {
+            return Err(createDataError('VALIDATION_ERROR', 'Filters are required for query operation'));
+          }
+          return await adapter.query<T>(collection, queryPayload.filters, queryPayload.options, context) as DataResult<T[]>;
         
         case 'count':
-          const countFilters = (data as any)?.filters;
-          return await adapter.count(collection, countFilters, context) as DataResult<number>;
+          const countPayload = data as CountOperationPayload;
+          return await adapter.count(collection, countPayload?.filters, context) as DataResult<number>;
         
         default:
           return Err(createDataError('VALIDATION_ERROR', `Unknown operation: ${op}`));
       }
 
-    } catch (error: any) {
-      return Err(createDataError('STORAGE_ERROR', `Operation ${operation} failed: ${error.message}`));
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown operation error';
+      return Err(createDataError('STORAGE_ERROR', `Operation ${operation} failed: ${errorMessage}`));
     }
   }
 
@@ -223,17 +268,17 @@ export class DataService {
     context?: Partial<DataOperationContext>
   ): Promise<DataResult<T>> {
     // Add validation for known collections
-    if (collection === 'users' && this.shouldValidateUser(data)) {
+    if (collection === 'users' && hasUserDataFields(data)) {
       const { validateUserData } = await import('../domains/User');
-      const validation = validateUserData(data as any);
+      const validation = validateUserData(data as unknown as CreateUserData);
       if (!validation.success) {
         return Err(validation.error);
       }
     }
     
-    if (collection.includes('message') && this.shouldValidateMessage(data)) {
+    if (collection.includes('message') && hasMessageDataFields(data)) {
       const { validateMessageData } = await import('../domains/ChatMessage');
-      const validation = validateMessageData(data as any);
+      const validation = validateMessageData(data as unknown as CreateMessageData);
       if (!validation.success) {
         return Err(validation.error);
       }
@@ -322,8 +367,9 @@ export class DataService {
 
       return Ok(undefined);
 
-    } catch (error: any) {
-      return Err(createDataError('STORAGE_ERROR', `DataService close failed: ${error.message}`));
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown close error';
+      return Err(createDataError('STORAGE_ERROR', `DataService close failed: ${errorMessage}`));
     }
   }
 
@@ -360,11 +406,11 @@ export class DataService {
     };
   }
 
-  private shouldValidateUser(data: any): boolean {
-    return data && typeof data === 'object' && ('displayName' in data || 'type' in data);
+  private shouldValidateUser(data: unknown): data is { displayName?: unknown; type?: unknown } {
+    return hasUserDataFields(data);
   }
 
-  private shouldValidateMessage(data: any): boolean {
-    return data && typeof data === 'object' && ('content' in data || 'roomId' in data);
+  private shouldValidateMessage(data: unknown): data is { content?: unknown; roomId?: unknown } {
+    return hasMessageDataFields(data);
   }
 }

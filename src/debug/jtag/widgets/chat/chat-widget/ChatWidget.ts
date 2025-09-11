@@ -50,6 +50,7 @@ export class ChatWidget extends ChatWidgetBase {
   }
 
 
+
    protected override resolveResourcePath(filename: string): string {
       // Extract widget directory name from widget name (ChatWidget -> chat)
       //const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
@@ -198,89 +199,20 @@ export class ChatWidget extends ChatWidgetBase {
       this.onUserLeft(eventData);
     });
     
-    // DEPRECATED: DOM event listeners - mark for removal
-    console.warn("⚠️ DEPRECATED: Setting up DOM event fallbacks - these will be removed once server events are working");
-    this.setupDOMEventFallbacks();
+    // Server events are properly configured above - no fallback needed
     
     console.log(`✅ ChatWidget: Set up type-safe event listeners for chat events`);
   }
 
-  /**
-   * DEPRECATED: DOM event fallbacks - only for backward compatibility
-   * TODO: Remove this once server-side event emission is working properly
-   */
-  private setupDOMEventFallbacks(): void {
-    console.warn("⚠️ DEPRECATED: setupDOMEventFallbacks() - Remove after fixing server events");
-    
-    // Keep existing DOM listeners as fallback until server events work
-    document.addEventListener(CHAT_EVENTS.MESSAGE_RECEIVED, (event: Event) => {
-      console.warn("⚠️ DEPRECATED: Using DOM event fallback for MESSAGE_RECEIVED");
-      const customEvent = event as CustomEvent;
-      this.handleDOMChatEvent(customEvent);
-    });
-    
-    document.addEventListener('chat-message-sent', (event: Event) => {
-      console.warn("⚠️ DEPRECATED: Using legacy chat-message-sent DOM event");
-      const customEvent = event as CustomEvent;
-      this.handleDOMChatEvent(customEvent);
-    });
-  }
   
-  /**
-   * Handle DOM chat events from EventsDaemon - React-like efficient rendering
-   */
-  private async handleDOMChatEvent(event: CustomEvent): Promise<void> {
-    console.log(`🔧 CLAUDE-DOM-HANDLER: Processing DOM chat event`, event.detail);
-    
-    // Check if event has message data we can use directly (React-like state update)
-    if (event.detail.message) {
-      const eventMessage = event.detail.message;
-      
-      // Only add if it's for our room and not already in our messages
-      if (eventMessage.roomId === this.currentRoom) {
-        const messageExists = this.messages.some(msg => msg.id === eventMessage.messageId);
-        
-        if (!messageExists) {
-          // Add new message directly (React-like state update)
-          const newMessage: ChatMessage = {
-            id: eventMessage.messageId,
-            content: eventMessage.content,
-            roomId: eventMessage.roomId,
-            senderId: eventMessage.senderId,
-            senderName: eventMessage.senderName ?? 'Unknown User',
-            type: (() => {
-              const isCurrentUser = this.currentUserId && eventMessage.senderId === this.currentUserId;
-              console.log(`🔧 CLAUDE-DOM-ATTRIBUTION-DEBUG: DOM event senderId="${eventMessage.senderId}", currentUserId="${this.currentUserId}", isCurrentUser=${isCurrentUser}`);
-              return isCurrentUser ? 'user' : 'assistant';
-            })(),
-            timestamp: eventMessage.timestamp
-          };
-          
-          this.messages.push(newMessage);
-          
-          // Super efficient: just render and append the new message row
-          this.appendMessageRow(newMessage);
-          console.log(`✅ ChatWidget: Added new message row via DOM event (React-like row rendering)`);
-          return;
-        }
-      }
-    }
-    
-    // Fallback: reload from database if we couldn't parse the event
-    try {
-      console.log(`🔄 ChatWidget: Falling back to database reload`);
-      await this.loadRoomHistory();
-      await this.renderWidget();
-      console.log(`✅ ChatWidget: Reloaded messages after DOM event`);
-    } catch (error) {
-      console.error(`❌ ChatWidget: Failed to reload after DOM event:`, error);
-    }
-  }
   
   /**
    * Handle incoming room events from RoomEventSystem
    */
-  public async handleRoomEvent(eventType: string, eventData: any): Promise<void> {
+  public async handleRoomEvent(
+    eventType: string, 
+    eventData: ChatMessageEventData | ChatParticipantEventData
+  ): Promise<void> {
     console.log(`📨 ChatWidget: Received room event "${eventType}" for room ${this.currentRoom}`);
     
     switch (eventType) {
@@ -534,17 +466,27 @@ export class ChatWidget extends ChatWidgetBase {
       console.log(`🔧 CLAUDE-DEBUG: sendResult type:`, typeof sendResult);
       console.log(`🔧 CLAUDE-DEBUG: sendResult.success:`, sendResult?.success);
       
-      // executeCommand might return undefined if result.commandResult is undefined
-      // Fall back to checking if the command executed without throwing
-      if (sendResult && sendResult.success) {
-        console.log(`✅ ChatWidget: Message sent to room ${this.currentRoom}`, sendResult);
-        // Message already added optimistically, and events will trigger React-like updates
-        // No need to reload - let the DOM events handle it efficiently
-      } else {
-        const errorMsg = sendResult?.error || `Send failed: ${JSON.stringify(sendResult)}`;
+      // Strict typing: handle all possible return states explicitly
+      if (!sendResult) {
+        // executeCommand returned undefined - command execution failed
+        const errorMsg = 'Command execution failed: executeCommand returned undefined (check server connection and command routing)';
         console.error(`❌ ChatWidget: Failed to send message:`, errorMsg);
         this.handleError(errorMsg, 'sendMessage');
+        return;
       }
+      
+      if (!sendResult.success) {
+        // Command executed but failed - use explicit error message
+        const errorMsg = sendResult.error || 'Command execution failed without specific error message';
+        console.error(`❌ ChatWidget: Failed to send message:`, errorMsg);
+        this.handleError(errorMsg, 'sendMessage');
+        return;
+      }
+      
+      // Success case - command executed and succeeded
+      console.log(`✅ ChatWidget: Message sent to room ${this.currentRoom}`, sendResult);
+      // Message already added optimistically, and events will trigger React-like updates
+      // No need to reload - let the DOM events handle it efficiently
       
     } catch (error) {
       console.error('❌ ChatWidget: Failed to send message:', error);

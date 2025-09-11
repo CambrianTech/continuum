@@ -57,29 +57,38 @@ export abstract class CommandDaemon extends DaemonBase {
   protected abstract createCommand(entry: CommandEntry, context: JTAGContext, subpath: string): CommandBase<CommandParams, CommandResult> | null;
 
   /**
-   * Commands interface - elegant proxy with proper type extraction
+   * Execute command - LITERAL COPY of BaseWidget.executeCommand method signature and behavior
    */
-  get commandsInterface(): Record<string, (params?: CommandParams) => Promise<CommandResult>> {
+  public async executeCommand<T>(command: string, params?: Record<string, any>): Promise<T> {
+    try {
+      // Wait for JTAG system to be ready  
+      await this.waitForSystemReady();
+      
+      // Get the JTAG client from window
+      const jtagClient = (window as any).jtag;
+      if (!jtagClient?.commands) {
+        throw new Error('JTAG client not available even after system ready event');
+      }
+      
+      // Execute command through the global JTAG system - gets wrapped response
+      const wrappedResult = await jtagClient.commands[command](params);
+      
+      // Extract the actual command result from the wrapped response
+      return wrappedResult.commandResult as T;
+    } catch (error) {
+      console.error(`❌ ${this.toString()}: JTAG operation ${command} failed:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Commands interface - EXACT copy of BaseWidget.executeCommand pattern
+   */
+  get commandsInterface(): Record<string, <T>(command: string, params?: Record<string, any>) => Promise<T>> {
     return new Proxy({}, {
       get: (target, commandName: string) => {
-        const command = this.commands.get(commandName);
-        if (!command) {
-          throw new Error(`Command '${commandName}' not found. Available: ${Array.from(this.commands.keys()).join(', ')}`);
-        }
-        
-        // Assert non-null command for TypeScript
-        const validCommand: CommandBase<CommandParams, CommandResult> = command;
-        
-        // Return elegantly typed async function that executes command directly
-        return async (params?: CommandParams) => {
-          console.log(`⚡ ${this.toString()}: Executing ${commandName} directly with session context`);
-          
-          // Only add session context if missing from params 
-          const sessionId = params?.sessionId ?? this.context.uuid;
-          const fullParams = validCommand.withDefaults(params ?? {}, sessionId, this.context);
-          
-          // Execute the command directly - it will handle its own routing if needed
-          return await validCommand.execute(fullParams);
+        return async <T>(command: string, params?: Record<string, any>): Promise<T> => {
+          return await this.executeCommand<T>(command, params);
         };
       }
     });
@@ -168,5 +177,31 @@ export abstract class CommandDaemon extends DaemonBase {
    */
   getCommand(name: string): CommandBase | undefined {
     return this.commands.get(name);
+  }
+
+  /**
+   * Wait for window.jtag to be available (copied from BaseWidget)
+   */
+  private async waitForSystemReady(): Promise<void> {
+    return new Promise((resolve) => {
+      // Check if system is already ready
+      const jtagClient = (window as any).jtag;
+      if (jtagClient && jtagClient.commands) {
+        resolve();
+        return;
+      }
+      
+      // Simple polling - check every 100ms for window.jtag
+      const checkReady = () => {
+        const jtag = (window as any).jtag;
+        if (jtag && jtag.commands) {
+          resolve();
+        } else {
+          setTimeout(checkReady, 100);
+        }
+      };
+      
+      checkReady();
+    });
   }
 }
