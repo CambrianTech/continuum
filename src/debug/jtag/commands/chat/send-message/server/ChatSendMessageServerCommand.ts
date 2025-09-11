@@ -20,7 +20,13 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
     return 'SERVER';
   }
 
-  // REMOVED BROKEN CODE - Going back to base implementation until proper types are defined
+  /**
+   * Execute chat message sending using base class logic
+   */
+  async execute(params: any): Promise<any> {
+    // Call base class which handles database storage + event emission
+    return await super.execute(params);
+  }
 
   /**
    * Server-specific event emission with proper Node imports
