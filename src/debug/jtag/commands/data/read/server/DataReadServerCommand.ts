@@ -9,6 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataReadParams, DataReadResult } from '../shared/DataReadTypes';
 import { createDataReadResultFromParams } from '../shared/DataReadTypes';
+import { WorkingDirConfig } from '../../../../system/core/config/WorkingDirConfig';
 
 export class DataReadServerCommand extends CommandBase<DataReadParams, DataReadResult> {
   
@@ -20,11 +21,11 @@ export class DataReadServerCommand extends CommandBase<DataReadParams, DataReadR
     console.log(`🗄️ DATA SERVER: Reading ${params.collection}/${params.id}`);
     
     try {
-      // Follow session-based path structure like FileSaveServerCommand
-      const sessionId = params.sessionId;
-      const basePath = `.continuum/jtag/sessions/user/${sessionId}`;
-      const dataDir = path.resolve(basePath, 'data');
-      const filePath = path.join(dataDir, params.collection, `${params.id}.json`);
+      // Use global database path following ArtifactsDaemon database storage pattern
+      // Database storage type uses: .continuum/database/{relativePath}
+      const continuumPath = WorkingDirConfig.getContinuumPath();
+      const databasePath = `${continuumPath}/database`;
+      const filePath = path.join(databasePath, params.collection, `${params.id}.json`);
       
       const data = await fs.readFile(filePath, 'utf-8');
       const record = JSON.parse(data);

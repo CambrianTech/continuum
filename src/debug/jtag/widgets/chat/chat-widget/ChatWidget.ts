@@ -49,6 +49,7 @@ export class ChatWidget extends ChatWidgetBase {
     return 'chat';
   }
 
+
    protected override resolveResourcePath(filename: string): string {
       // Extract widget directory name from widget name (ChatWidget -> chat)
       //const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
