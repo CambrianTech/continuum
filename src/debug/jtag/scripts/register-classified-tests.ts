@@ -13,6 +13,7 @@ import { TransportBlockerTest } from '../tests/classified/TransportBlockerTest';
 import { ScreenshotCriticalTest } from '../tests/classified/ScreenshotCriticalTest';
 import { ChatHighTest } from '../tests/classified/ChatHighTest';
 import { PerformanceMediumTest } from '../tests/classified/PerformanceMediumTest';
+import { ProfessionalDataArchitectureTest } from '../tests/classified/ProfessionalDataArchitectureTest';
 
 /**
  * Test registry mapping test names to file paths and metadata
@@ -66,6 +67,19 @@ export const CLASSIFIED_TESTS = {
       category: TestCategory.PERFORMANCE,
       description: 'Performance metrics monitoring - system optimization',
       timeout: 15000,
+      requiresSystem: false
+    }
+  },
+  
+  'ProfessionalDataArchitectureTest': {
+    filePath: 'tests/classified/ProfessionalDataArchitectureTest.ts',
+    testClass: ProfessionalDataArchitectureTest,
+    metadata: {
+      level: TestLevel.INTEGRATION,
+      importance: TestImportance.CRITICAL,
+      category: TestCategory.DATA,
+      description: 'Professional data architecture - Rust-like typing, DataService, HybridAdapter',
+      timeout: 30000,
       requiresSystem: false
     }
   }
