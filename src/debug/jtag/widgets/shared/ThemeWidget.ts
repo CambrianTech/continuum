@@ -227,7 +227,7 @@ export class ThemeWidget extends BaseWidget {
           const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
           console.log(`🎨 ThemeWidget: Loading ${filePath} via BaseWidget executeCommand`);
           
-          const result = await this.executeCommand<FileLoadResult>('file/load', {
+          const result = await this.executeCommand<FileLoadParams, FileLoadResult>('file/load', {
             filepath: filePath
           });
           

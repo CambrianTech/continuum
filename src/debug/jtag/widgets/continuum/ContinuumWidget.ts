@@ -6,7 +6,7 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
-import type { FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
+import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 
 export class ContinuumWidget extends BaseWidget {
   
@@ -84,7 +84,7 @@ export class ContinuumWidget extends BaseWidget {
   private async loadThemeCSS(): Promise<string> {
     try {
       // Load base theme CSS using correct path (same as ThemeWidget)
-      const baseResult = await this.executeCommand<FileLoadResult>('file/load', {
+      const baseResult = await this.executeCommand<FileLoadParams, FileLoadResult>('file/load', {
         filepath: 'widgets/shared/themes/base/base.css'
       });
       

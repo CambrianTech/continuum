@@ -19,9 +19,10 @@
 // Event types - Rust-like strict typing
 import type { ChatEventName, ChatEventDataFor } from '../chat/shared/ChatEventTypes';
 import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
-import type { FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
-import type { FileSaveResult } from '../../commands/file/save/shared/FileSaveTypes';
-import type { ScreenshotResult } from '../../commands/screenshot/shared/ScreenshotTypes';
+import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
+import type { FileSaveParams, FileSaveResult } from '../../commands/file/save/shared/FileSaveTypes';
+import type { ScreenshotParams, ScreenshotResult } from '../../commands/screenshot/shared/ScreenshotTypes';
+import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
 import {
   WIDGET_DEFAULTS,
   DATABASE_OPERATIONS,
@@ -449,7 +450,7 @@ export abstract class BaseWidget extends HTMLElement {
       } = options;
       
       // Use JTAG screenshot command with proper types
-      const result = await this.executeCommand<ScreenshotResult>('screenshot', {
+      const result = await this.executeCommand<ScreenshotParams, ScreenshotResult>('screenshot', {
         filename,
         querySelector: selector,
         includeContext
@@ -478,7 +479,7 @@ export abstract class BaseWidget extends HTMLElement {
       } = options;
       
       // Use JTAG file/save command with proper types
-      const result = await this.executeCommand<FileSaveResult>('file/save', {
+      const result = await this.executeCommand<FileSaveParams, FileSaveResult>('file/save', {
         filepath: `${directory}/${filename}`,
         content: content,
         createDirs: true
@@ -608,7 +609,7 @@ export abstract class BaseWidget extends HTMLElement {
     console.log(`${emoji} ${this.config.widgetName}: Loading ${resourceType} from ${resourcePath}`);
     
     try {
-      const result = await this.executeCommand<FileLoadResult>('file/load', {
+      const result = await this.executeCommand<FileLoadParams, FileLoadResult>('file/load', {
         filepath: resourcePath
       });
       
@@ -715,22 +716,27 @@ export abstract class BaseWidget extends HTMLElement {
     return (Date.now() - cached.timestamp) < ttl;
   }
 
-  protected async executeCommand<T>(command: string, params?: Record<string, WidgetData>): Promise<T> {
+  protected async executeCommand<P extends CommandParams = CommandParams, R extends CommandResult = CommandResult>(command: string, params?: Record<string, WidgetData>): Promise<R> {
     try {
       // Wait for JTAG system to be ready  
       await this.waitForSystemReady();
       
-      // Get the JTAG client via cross-platform abstraction
-      const jtagClient = JTAGClient.sharedInstance;
-      if (!jtagClient?.commands) {
-        throw new Error('JTAG client not available even after system ready event');
+      // Get the JTAG client via elegant daemon interface
+      const jtag = JTAGClient.sharedInstance;
+      if (!jtag?.daemons?.commands) {
+        throw new Error('JTAG client daemons not available - system not ready');
       }
       
-      // Execute command through the global JTAG system - gets wrapped response
-      const wrappedResult = await jtagClient.commands[command](params);
+      // Use elegant daemon interface with proper CommandParams
+      const jtagContext = jtag.context;
+      const sessionId = jtag.sessionId;
+      const commandParams = {
+        context: jtagContext,
+        sessionId: sessionId,
+        ...params
+      } as P;
       
-      // Extract the actual command result from the wrapped response
-      return wrappedResult.commandResult as T;
+      return await jtag.daemons.commands.execute<P, R>(command, commandParams);
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: JTAG operation ${command} failed:`, error);
       throw error;
