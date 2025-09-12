@@ -17,10 +17,10 @@
  */
 
 // Event types - Rust-like strict typing
-import type { ChatEventMap, ChatEventName, ChatEventDataFor } from '../chat/shared/ChatEventTypes';
-import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
-import type { FileSaveParams, FileSaveResult } from '../../commands/file/save/shared/FileSaveTypes';
-import type { ScreenshotParams, ScreenshotResult } from '../../commands/screenshot/shared/ScreenshotTypes';
+import type { ChatEventName, ChatEventDataFor } from '../chat/shared/ChatEventTypes';
+import type { FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
+import type { FileSaveResult } from '../../commands/file/save/shared/FileSaveTypes';
+import type { ScreenshotResult } from '../../commands/screenshot/shared/ScreenshotTypes';
 import {
   WIDGET_DEFAULTS,
   DATABASE_OPERATIONS,
@@ -33,13 +33,26 @@ import {
   DAEMON_NAMES,
 } from './WidgetConstants';
 
-import type { CommandResult } from '../../system/core/types/JTAGTypes';
+// Global declarations for browser/server compatibility
+declare const performance: { now(): number };
+declare const document: { 
+  createElement(tagName: string): HTMLElement; 
+  querySelector(selector: string): HTMLElement | null;
+  addEventListener(type: string, listener: EventListener): void;
+};
+declare const window: {
+  addEventListener(type: string, listener: EventListener): void;
+  removeEventListener(type: string, listener: EventListener): void;
+  location?: { href: string };
+};
 
 type WidgetData = string | number | boolean | object | null;
 type DaemonInstance = Record<string, unknown>;
 type SerializedState = Record<string, WidgetData>;
-type EventCallback = (eventData: WidgetData) => void;
 type OperationResult = Record<string, WidgetData>;
+
+// Elegant typed event emitter - handles specific event types with their data
+type EventEmitter = Map<string, Array<(data: WidgetData) => void>>;
 
 interface CachedValue {
   value: WidgetData;
@@ -112,7 +125,7 @@ export interface WidgetContext {
 
 export abstract class BaseWidget extends HTMLElement {
   declare shadowRoot: ShadowRoot;
-  protected eventEmitter = new Map<string, Function[]>();
+  protected eventEmitter: EventEmitter = new Map();
   protected dispatcherEventTypes?: Set<string>; // Track event types with active dispatchers
   protected config: WidgetConfig;
   protected state: WidgetState;
@@ -459,9 +472,7 @@ export abstract class BaseWidget extends HTMLElement {
   } = {}): Promise<string | null> {
     try {
       const {
-        directory = WIDGET_DIRECTORIES.WIDGET_DATA,
-        format = 'auto',
-        compress = false
+        directory = WIDGET_DIRECTORIES.WIDGET_DATA
       } = options;
       
       // Use JTAG file/save command with proper types
@@ -520,7 +531,7 @@ export abstract class BaseWidget extends HTMLElement {
    */
   protected onEventReceived(eventType: string, data: WidgetData): void {
     // Default: just emit to internal event system
-    const handlers = this.eventEmitter.get(eventType) || [];
+    const handlers = this.eventEmitter.get(eventType) ?? [];
     handlers.forEach(handler => handler(data));
   }
 
@@ -570,8 +581,8 @@ export abstract class BaseWidget extends HTMLElement {
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: Resource loading failed:`, error);
       // Provide fallback content
-      this.templateHTML = this.templateHTML || '<div>Resource loading error</div>';
-      this.templateCSS = this.templateCSS || '/* Fallback styles */';
+      this.templateHTML = this.templateHTML ?? '<div>Resource loading error</div>';
+      this.templateCSS = this.templateCSS ?? '/* Fallback styles */';
     }
   }
 
@@ -700,7 +711,7 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   private applyCSSProperties(styles: Record<string, string>): void {
-    const styleElement = this.shadowRoot.querySelector('style') || document.createElement('style');
+    const styleElement = this.shadowRoot.querySelector('style') ?? document.createElement('style');
     
     let css = ':host {\n';
     for (const [property, value] of Object.entries(styles)) {
@@ -708,7 +719,7 @@ export abstract class BaseWidget extends HTMLElement {
     }
     css += '}\n';
     
-    styleElement.textContent = (styleElement.textContent || '') + css;
+    styleElement.textContent = (styleElement.textContent ?? '') + css;
     
     if (!styleElement.parentNode) {
       this.shadowRoot.appendChild(styleElement);
@@ -716,24 +727,24 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   private isCacheValid(cached: CachedValue): boolean {
-    const ttl = cached.ttl || 3600000; // 1 hour default
+    const ttl = cached.ttl ?? 3600000; // 1 hour default
     return (Date.now() - cached.timestamp) < ttl;
   }
 
   // Daemon operation abstractions
-  private async databaseOperation(operation: string, data: WidgetData): Promise<OperationResult> {
+  private async databaseOperation(_operation: string, _data: WidgetData): Promise<OperationResult> {
     if (!this.databaseDaemon) throw new Error('Database daemon not connected');
     // Would integrate with actual daemon messaging system
     return { success: true, data: {} };
   }
 
-  private async routerOperation(operation: string, data: WidgetData): Promise<OperationResult> {
+  private async routerOperation(_operation: string, _data: WidgetData): Promise<OperationResult> {
     if (!this.routerDaemon) throw new Error('Router daemon not connected');
     // Would integrate with actual daemon messaging system
     return { success: true, data: {} };
   }
 
-  private async academyOperation(operation: string, data: WidgetData): Promise<OperationResult> {
+  private async academyOperation(_operation: string, _data: WidgetData): Promise<OperationResult> {
     if (!this.academyDaemon) throw new Error('Academy daemon not connected');
     // Would integrate with actual daemon messaging system
     return { success: true, data: {} };
@@ -810,7 +821,7 @@ export abstract class BaseWidget extends HTMLElement {
       } = options;
 
       // Emit locally first - immediate feedback
-      const handlers = this.eventEmitter.get(eventName) || [];
+      const handlers = this.eventEmitter.get(eventName) ?? [];
       handlers.forEach(handler => handler(eventData));
       
       // Broadcast to other widgets if enabled
@@ -840,7 +851,7 @@ export abstract class BaseWidget extends HTMLElement {
     if (!this.eventEmitter.has(eventName)) {
       this.eventEmitter.set(eventName, []);
     }
-    this.eventEmitter.get(eventName)!.push(handler);
+    this.eventEmitter.get(eventName)!.push(handler as (data: WidgetData) => void);
     
     // CRITICAL: Set up automatic event dispatcher to connect server events to widget handlers
     this.setupEventDispatcher(eventName);
@@ -856,9 +867,7 @@ export abstract class BaseWidget extends HTMLElement {
       return;
     }
 
-    if (!this.dispatcherEventTypes) {
-      this.dispatcherEventTypes = new Set();
-    }
+    this.dispatcherEventTypes ??= new Set();
     this.dispatcherEventTypes.add(eventName);
 
     console.log(`🔗 BaseWidget: Setting up event dispatcher for ${eventName}`);
@@ -895,7 +904,7 @@ export abstract class BaseWidget extends HTMLElement {
     return new Promise((resolve) => {
       // Check if system is already ready
       const jtagClient = (window as WindowWithJTAG).jtag;
-      if (jtagClient && jtagClient.commands) {
+      if (jtagClient?.commands) {
         console.log(`✅ BaseWidget: JTAG system already ready for ${this.config.widgetName}`);
         resolve();
         return;
@@ -904,9 +913,9 @@ export abstract class BaseWidget extends HTMLElement {
       console.log(`⏳ BaseWidget: Waiting for JTAG system to be ready for ${this.config.widgetName}`);
       
       // Simple polling - check every 100ms for window.jtag
-      const checkReady = () => {
+      const checkReady = (): void => {
         const jtag = (window as WindowWithJTAG).jtag;
-        if (jtag && jtag.commands) {
+        if (jtag?.commands) {
           console.log(`✅ BaseWidget: JTAG system ready for ${this.config.widgetName}`);
           resolve();
         } else {
