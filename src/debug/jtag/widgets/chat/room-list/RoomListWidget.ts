@@ -6,7 +6,7 @@
  */
 
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
-import type { DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { ChatMessage } from '../shared/ChatModuleTypes';
 
 interface RoomData {
@@ -57,7 +57,7 @@ export class RoomListWidget extends ChatWidgetBase {
   private async calculateUnreadCounts(): Promise<void> {
     // For each room, get actual unread message count from database
     for (const room of this.rooms) {
-      const messageResult = await this.executeCommand<DataListResult<ChatMessage>>('data/list', {
+      const messageResult = await this.executeCommand<DataListParams, DataListResult<ChatMessage>>('data/list', {
         collection: 'chat_messages',
         filter: { roomId: room.id, isRead: false },
         count: true
@@ -69,7 +69,7 @@ export class RoomListWidget extends ChatWidgetBase {
 
   private async loadRooms(): Promise<void> {
     // Load rooms from database using proper executeCommand with strict typing
-    const result = await this.executeCommand<DataListResult<RoomData>>('data/list', {
+    const result = await this.executeCommand<DataListParams, DataListResult<RoomData>>('data/list', {
       collection: 'rooms',
       sort: { name: 1 }
     });

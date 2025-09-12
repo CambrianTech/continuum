@@ -6,11 +6,11 @@
  */
 
 import type { ChatMessage } from '../shared/ChatModuleTypes';
-import type { ChatSendMessageResult } from '../../../commands/chat/send-message/shared/ChatSendMessageTypes';
+import type { ChatSendMessageParams, ChatSendMessageResult } from '../../../commands/chat/send-message/shared/ChatSendMessageTypes';
 import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
 //import type { User } from '../../../domain/user/User';
-import type { DataListResult } from '../../../commands/data/list/shared/DataListTypes';
-import type { SubscribeRoomResult } from '../../../commands/chat/subscribe-room/shared/SubscribeRoomCommand';
+import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { SubscribeRoomParams, SubscribeRoomResult } from '../../../commands/chat/subscribe-room/shared/SubscribeRoomCommand';
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import { CHAT_EVENTS, CHAT_EVENT_TYPES } from '../shared/ChatEventConstants';
 import type { 
@@ -113,7 +113,7 @@ export class ChatWidget extends ChatWidgetBase {
       console.log(`📚 ChatWidget: Loading room history using data/list command`);
       
       // Use data/list command to get all chat messages, then filter by room
-      const historyResult = await this.executeCommand<DataListResult<ChatMessage>>('data/list', {
+      const historyResult = await this.executeCommand<DataListParams, DataListResult<ChatMessage>>('data/list', {
         collection: 'chat_messages',
         limit: 2000, // Recent messages
         roomId: this.currentRoom, // ← Ideally filter on server side, but our server is dumb right now
@@ -154,7 +154,7 @@ export class ChatWidget extends ChatWidgetBase {
       
       // Try JTAG operation to subscribe to room events via the chat daemon
       try {
-        const subscribeResult = await this.executeCommand<SubscribeRoomResult>('chat/subscribe-room', {
+        const subscribeResult = await this.executeCommand<SubscribeRoomParams, SubscribeRoomResult>('chat/subscribe-room', {
           roomId: this.currentRoom,
           eventTypes: [CHAT_EVENTS.MESSAGE_RECEIVED, CHAT_EVENTS.PARTICIPANT_JOINED, CHAT_EVENTS.PARTICIPANT_LEFT]
         });
@@ -456,7 +456,7 @@ export class ChatWidget extends ChatWidgetBase {
     try {
       // Use existing chat/send-message command with proper types
       console.log(`🔧 CLAUDE-DEBUG: About to execute chat/send-message command`);
-      const sendResult = await this.executeCommand<ChatSendMessageResult>('chat/send-message', {
+      const sendResult = await this.executeCommand<ChatSendMessageParams, ChatSendMessageResult>('chat/send-message', {
         content: content,  // ← Fixed: use 'content' parameter as expected by server
         roomId: this.currentRoom,
         senderType: 'user' // Explicitly mark as user message - server will use UserIdManager

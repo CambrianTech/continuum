@@ -69,7 +69,8 @@
 
 import { generateUUID, type UUID} from '../../types/CrossPlatformUUID';
 import { JTAGBase, type CommandsInterface } from '../../shared/JTAGBase';
-import type { JTAGContext, JTAGMessage, JTAGPayload, JTAGEnvironment } from '../../types/JTAGTypes';
+import type { JTAGContext, JTAGMessage, JTAGPayload, JTAGEnvironment, CommandParams, CommandResult } from '../../types/JTAGTypes';
+import type { CommandResponse, CommandSuccessResponse, CommandErrorResponse } from '../../../../daemons/command-daemon/shared/CommandResponseTypes';
 import { JTAGMessageFactory, JTAGMessageTypes, isJTAGResponseMessage } from '../../types/JTAGTypes';
 import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
 import type { ITransportFactory, TransportConfig, JTAGTransport, TransportProtocol, TransportSendResult } from '../../../transports';
@@ -692,8 +693,62 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * Browser: (window as WindowWithJTAG).jtag
    * Server: (globalThis as any).jtag
    */
-  static get sharedInstance(): { commands: Record<string, (params?: any) => Promise<{ commandResult: any }>> } {
+  static get sharedInstance(): JTAGClient {
     return (globalThis as any).jtag;
+  }
+
+  /**
+   * Elegant daemon interface with strict typing - complete system access
+   */
+  get daemons() {
+    return {
+      commands: {
+        execute: async <P extends CommandParams, R extends CommandResult>(
+          command: string, 
+          params?: P
+        ): Promise<R> => {
+          try {
+            // Execute command through the global JTAG system - gets wrapped response
+            const wrappedResult = await this.commands[command](params) as CommandResponse;
+
+            if (!wrappedResult.success) {
+              const commandError = wrappedResult as CommandErrorResponse;
+              throw new Error(commandError.error || `Command ${command} failed without error message`);
+            }
+            
+            // Extract the actual command result from the wrapped response
+            return (wrappedResult as CommandSuccessResponse).commandResult as R;
+          } catch (error) {
+            console.error(`❌ JTAG daemon commands.execute ${command} failed:`, error);
+            throw error;
+          }
+        }
+      },
+      events: {
+        broadcast: async <T extends JTAGPayload>(eventData: T): Promise<void> => {
+          try {
+            // TODO: Implement event broadcasting through EventsDaemon
+            console.log(`📢 JTAG daemon events.broadcast:`, eventData);
+            throw new Error('Event broadcasting not yet implemented');
+          } catch (error) {
+            console.error(`❌ JTAG daemon events.broadcast failed:`, error);
+            throw error;
+          }
+        }
+      },
+      data: {
+        store: async <T extends JTAGPayload>(key: string, value: T): Promise<void> => {
+          try {
+            // TODO: Implement data storage through DataDaemon
+            console.log(`💾 JTAG daemon data.store ${key}:`, value);
+            throw new Error('Data storage not yet implemented');
+          } catch (error) {
+            console.error(`❌ JTAG daemon data.store failed:`, error);
+            throw error;
+          }
+        }
+      }
+    };
   }
 }
 

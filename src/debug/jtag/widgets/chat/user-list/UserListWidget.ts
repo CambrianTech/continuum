@@ -5,7 +5,7 @@
 
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import type { BaseUser } from '../../../api/types/User';
-import type { DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { COLLECTIONS } from '../../../api/data-seed/SeedConstants';
 
 export class UserListWidget extends ChatWidgetBase {
@@ -35,7 +35,7 @@ export class UserListWidget extends ChatWidgetBase {
   }
 
   private async loadUsersFromDatabase(): Promise<void> {
-    const result = await this.executeCommand<DataListResult<BaseUser>>('data/list', {
+    const result = await this.executeCommand<DataListParams, DataListResult<BaseUser>>('data/list', {
       collection: COLLECTIONS.USERS,
       sort: { lastActiveAt: -1 },
       limit: 100

@@ -222,7 +222,7 @@ export class JTAGClientBrowser extends JTAGClient {
   /**
    * Get shared instance from window - simple getter for existing JTAG client
    */
-  static get sharedInstance(): any {
+  static get sharedInstance(): JTAGClient {
     return (window as any).jtag;
   }
 }
