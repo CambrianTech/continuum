@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1451",
+  "version": "1.0.1455",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -124,9 +124,9 @@
     "smart-build": "npx tsx scripts/smart-build.ts",
     "stop": "npx tsx scripts/cleanup-dynamic-ports.ts",
     "clean": "rm -rf dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
-    "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
+    "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true; rm -rf .continuum/jtag/sessions 2>/dev/null || true; rm -rf .continuum/sessions 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
-    "prebuild": "npx tsx generator/generate-structure.ts",
+    "prebuild": "npm run clean:all && npm run data:clean-files && npx tsx generator/generate-structure.ts",
     "build:ts": "tsc --project tsconfig.json",
     "lint": "eslint . --ext .ts --fix-dry-run && tsc --noEmit --project .",
     "lint:file": "eslint --ext .ts --fix-dry-run",
@@ -147,6 +147,7 @@
     "system:stop": "npx tsx scripts/cleanup-dynamic-ports.ts --force && npm run signal:clear",
     "system:wait": "npm run signal:wait",
     "system:restart": "npm run system:stop && npm run restart",
+    "system:seed": "echo '🌱 Seeding system data after startup...' && sleep 10 && npm run data:reseed || echo '⚠️ Data seeding failed - system may not be fully ready'",
     "signal:ready": "npx tsx scripts/signal-system-ready.ts",
     "signal:check": "npx tsx scripts/signal-system-ready.ts --check",
     "signal:wait": "npx tsx scripts/signal-system-ready.ts --check",
@@ -278,7 +279,8 @@
     "dev:fix": "npx tsx scripts/autonomous-dev-toolkit.ts diagnose",
     "data:clear": "npx tsx api/data-seed/clear-data.ts",
     "data:seed": "npx tsx api/data-seed/seed-data.ts",
-    "data:reseed": "npm run data:clear && npm run data:seed"
+    "data:reseed": "npm run data:clear && npm run data:seed",
+    "data:clean-files": "echo '🧹 Cleaning database files directly...' && find . -name '*.db' -type f -delete 2>/dev/null || true && find . -name '*.sqlite' -type f -delete 2>/dev/null || true && find . -name '*.sqlite3' -type f -delete 2>/dev/null || true && echo '✅ Database files cleaned'"
   },
   "keywords": [
     "global-cli",

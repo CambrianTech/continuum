@@ -1,5 +1,7 @@
 # CLAUDE - ESSENTIAL DEVELOPMENT GUIDE
 
+IMPORTANT: PUT CONTENT IN APPROPRIATE SECTION AND READ ENTIRE SECTION BEFORE MODIFYING. FIND THE RIGHT PLACE!
+
 ## 📋 QUICK REFERENCE (CRITICAL - FIRST 200 LINES)
 
 ### 🚨 DEPLOYMENT (ALWAYS START HERE)
@@ -16,12 +18,12 @@ tail -f .continuum/sessions/user/shared/*/logs/server.log
 tail -f .continuum/sessions/user/shared/*/logs/browser.log
 
 # Debug commands (your engineering toolbox)
-./continuum debug/logs --tailLines=50 --includeErrorsOnly=true
-./continuum debug/widget-events --widgetSelector="chat-widget" 
-./continuum debug/html-inspector --selector="chat-widget"
+./jtag debug/logs --tailLines=50 --includeErrorsOnly=true
+./jtag debug/widget-events --widgetSelector="chat-widget" 
+./jtag debug/html-inspector --selector="chat-widget"
 
 # Screenshots (visual feedback)
-./continuum screenshot --querySelector="chat-widget" --filename="debug.png"
+./jtag screenshot --querySelector="chat-widget" --filename="debug.png"
 ```
 
 ### 🎯 SCIENTIFIC DEVELOPMENT METHODOLOGY  
@@ -29,6 +31,35 @@ tail -f .continuum/sessions/user/shared/*/logs/browser.log
 2. **CHECK LOGS FIRST**: Never guess - logs always tell the truth
 3. **VISUAL VERIFICATION**: Don't trust success messages, take screenshots
 4. **BACK-OF-MIND CHECK**: What's nagging at you? That's usually the real issue
+
+### 🚨 CLAUDE'S FAILURE PATTERNS (LEARNED 2025-09-12)
+**Critical Insights from Recent Development Session:**
+
+1. **INCORRECT WORKING DIRECTORY**: Always work from `src/debug/jtag` 
+   - Commands are `./jtag screenshot` NOT `./continuum screenshot`
+   - CLAUDE.md says this but I still got it wrong
+
+2. **ASSUME SUCCESS WITHOUT TESTING**: TypeScript compilation ≠ working widgets
+   - ALWAYS take screenshot after deployment changes
+   - ALWAYS check for console errors with `./jtag debug/logs --includeErrorsOnly=true`
+   - Don't declare victory until visual verification
+
+3. **IMPORT PATH CALCULATION FAILURES**: 
+   - Use `python3 -c "import os; print(os.path.relpath('target', 'source'))"` 
+   - Don't guess relative paths - calculate them
+   - Test compilation immediately after import changes
+
+4. **IGNORE EXISTING TYPE DEFINITIONS**: 
+   - ALWAYS search for existing types: `find . -name "*Types.ts"`
+   - Never invent types inline - find the real ones first
+   - CommandResponse types are in `daemons/command-daemon/shared/CommandResponseTypes.ts`
+
+5. **DON'T READ CLAUDE.MD CAREFULLY ENOUGH**:
+   - Even when I "read" CLAUDE.md, I still made all these mistakes
+   - Need to internalize the working directory (`src/debug/jtag`)  
+   - Need to internalize the command patterns (`./jtag` not `./continuum`)
+
+**CONSEQUENCE**: Broke widget system multiple times with "white screen of death"
 
 ### 🏗️ CODE PATTERNS (CRITICAL FAILURES TO AVOID)
 - **Rust-like typing**: Strict, explicit, predictable - no `any` types
@@ -62,6 +93,7 @@ const chatWidget = mainWidget?.shadowRoot?.querySelector('chat-widget');
 
 ### 🔧 DEVELOPMENT WORKFLOW
 - [Essential Commands](#essential-commands) - Core development commands
+- [Data Seeding & Cleanup](#data-seeding--cleanup) - Repeatable development data
 - [System Architecture](#system-architecture) - How the system works
 - [Debug Commands](#debug-commands) - Engineering toolbox
 - [Testing Methodology](#testing-methodology) - Scientific testing approach
@@ -205,8 +237,8 @@ tail -f .continuum/jtag/system/logs/npm-start.log
 ```bash
 cd src/debug/jtag
 npm start                              # Deploy system
-./continuum screenshot                 # Test functionality
-./continuum ping                       # Check connectivity
+./jtag screenshot                      # Test functionality
+./jtag ping                            # Check connectivity
 
 # Debug with logs when things fail
 tail -f .continuum/sessions/user/shared/*/logs/server.log
@@ -222,6 +254,44 @@ npm test                              # All tests
 - **ALL TESTS** connect as clients to running server (no separate test servers)
 - **BROWSER CLIENT** connects via WebSocket to SessionDaemon  
 - **TESTS ARE PROGRAMMATIC** - no manual clicking required
+
+---
+
+## DATA SEEDING & CLEANUP
+
+### The Problem
+Development requires fresh, consistent data for every session. Chat rooms, users, and session directories accumulate and become stale, making debugging unpredictable.
+
+### Solution: Automated Seeding System
+```bash
+# Core seeding commands (ALREADY IMPLEMENTED)
+npm run data:reseed                # Complete data reset + seed
+npm run data:clear                 # Clear sessions, users, chat data  
+npm run data:seed                  # Create default repo users + rooms + messages
+```
+
+### Integration Points
+- **npm start**: ✅ **INTEGRATED** - Calls `data:reseed` after system startup via `system:seed`
+- **npm test**: ✅ **INTEGRATED** - Uses `system:ensure` which triggers `npm start` pipeline  
+- **Alpha Release**: All repo contributors seeded by default
+
+### Session Directory Cleanup
+✅ **IMPLEMENTED** - Session directories are now cleaned automatically:
+
+**Current Behavior:**
+- ✅ Clean slate on every `npm start` (via `clean:all` in `prebuild`)
+- ✅ Predictable user data for testing (via `system:seed` after startup)
+- ✅ Repeatable development environment
+
+### Database Seeding Strategy
+✅ **IMPLEMENTED** in `api/data-seed/` directory:
+
+**Current Seeded Data:**
+- **Users**: Joel + 5 AI agents (Claude Code, GeneralAI, CodeAI, PlannerAI, Auto Route)
+- **Chat Rooms**: general (6 members), academy (3 members)
+- **Message History**: Welcome messages in both rooms
+
+**Architecture**: Uses JTAG data commands via `DataSeeder.ts`, `UserDataSeed.ts`, `RoomDataSeed.ts`
 
 ---
 
