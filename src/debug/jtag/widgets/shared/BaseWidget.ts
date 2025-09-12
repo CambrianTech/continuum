@@ -49,7 +49,6 @@ declare const window: {
 type WidgetData = string | number | boolean | object | null;
 type DaemonInstance = Record<string, unknown>;
 type SerializedState = Record<string, WidgetData>;
-type OperationResult = Record<string, WidgetData>;
 
 // Elegant typed event emitter - handles specific event types with their data
 type EventEmitter = Map<string, Array<(data: WidgetData) => void>>;
@@ -189,9 +188,8 @@ export abstract class BaseWidget extends HTMLElement {
     try {
       console.log(`🎨 ${this.config.widgetName}: BaseWidget initialization starting...`);
       
-      // 1. Connect to daemon systems (abstracted)
-      await this.initializeDaemonConnections();
-      
+      // 1. Connect to daemon systems (abstracted) WAS DEAD CODE
+      //await this.initializeDaemonConnections();
       
       // 3. Restore persisted state (abstracted)
       await this.restorePersistedState();
@@ -205,8 +203,8 @@ export abstract class BaseWidget extends HTMLElement {
       // 6. Render UI (subclass-specific but with base support)
       await this.renderWidget();
       
-      // 7. Setup event coordination (abstracted)
-      await this.initializeEventSystem();
+      // 7. Setup event coordination (abstracted) 3600000
+      //await this.initializeEventSystem();
       
       this.state.isInitialized = true;
       this.state.isConnected = true;
@@ -266,35 +264,35 @@ export abstract class BaseWidget extends HTMLElement {
    * Store data with automatic database + cache coordination
    * Like JTAG's this.screenshot() - one call, full coordination
    */
-  protected async storeData(key: string, value: WidgetData, options: { 
+  protected async storeData(key: string, value: WidgetData, _options: { 
     persistent?: boolean;
     broadcast?: boolean;
     ttl?: number;
   } = {}): Promise<boolean> {
     try {
-      const {
-        persistent = this.config.enablePersistence,
-        broadcast = this.config.enableRouterEvents,
-        ttl = 3600000 // 1 hour default
-      } = options;
+      // const {
+      //   persistent = this.config.enablePersistence,
+      //   broadcast = this.config.enableRouterEvents,
+      //   ttl = 3600000 // 1 hour default
+      // } = options;
       
       // 1. Update local cache immediately
-      this.state.cache.set(key, { value, timestamp: Date.now(), ttl });
+      this.state.cache.set(key, { value, timestamp: Date.now(), ttl:3600000 });
       
-      // 2. Store in database if enabled
-      if (persistent && this.config.enableDatabase) {
-        await this.databaseOperation(DATABASE_OPERATIONS.STORE, {
-          widgetId: this.config.widgetId,
-          key,
-          value: JSON.stringify(value),
-          ttl
-        });
-      }
+      // // 2. Store in database if enabled. DEAD CODE detefcted here, JUSt call the database command
+      // if (persistent && this.config.enableDatabase) {
+      //   // await this.databaseOperation(DATABASE_OPERATIONS.STORE, {
+      //   //   widgetId: this.config.widgetId,
+      //   //   key,
+      //   //   value: JSON.stringify(value),
+      //   //   ttl
+      //   // });
+      // }
       
       // 3. Broadcast change if enabled
-      if (broadcast) {
-        await this.broadcastEvent(WIDGET_EVENTS.DATA_UPDATED, { key, value });
-      }
+      // if (broadcast) {
+      //   await this.broadcastEvent(WIDGET_EVENTS.DATA_UPDATED, { key, value });
+      // }
       
       // 4. Update widget state
       this.state.data.set(key, value);
@@ -324,23 +322,24 @@ export abstract class BaseWidget extends HTMLElement {
         return this.state.data.get(key)!; // Non-null assertion - has() confirms existence
       }
       
-      // 3. Load from database if enabled
-      if (this.config.enableDatabase) {
-        const dbResult = await this.databaseOperation(DATABASE_OPERATIONS.RETRIEVE, {
-          widgetId: this.config.widgetId,
-          key
-        });
+      //DEAD CODE DETECTED HERE:
+      // // 3. Load from database if enabled
+      // if (this.config.enableDatabase) {
+      //   const dbResult = await this.databaseOperation(DATABASE_OPERATIONS.RETRIEVE, {
+      //     widgetId: this.config.widgetId,
+      //     key
+      //   });
         
-        if (dbResult.success && dbResult.data && typeof dbResult.data === 'object' && 'value' in dbResult.data && typeof (dbResult.data as { value: string }).value === 'string') {
-          const value = JSON.parse((dbResult.data as { value: string }).value);
+      //   if (dbResult.success && dbResult.data && typeof dbResult.data === 'object' && 'value' in dbResult.data && typeof (dbResult.data as { value: string }).value === 'string') {
+      //     const value = JSON.parse((dbResult.data as { value: string }).value);
           
-          // Update cache and state
-          this.state.cache.set(key, { value, timestamp: Date.now() });
-          this.state.data.set(key, value);
+      //     // Update cache and state
+      //     this.state.cache.set(key, { value, timestamp: Date.now() });
+      //     this.state.data.set(key, value);
           
-          return value;
-        }
-      }
+      //     return value;
+      //   }
+      // }
       
       return defaultValue;
       
@@ -350,83 +349,89 @@ export abstract class BaseWidget extends HTMLElement {
     }
   }
 
-  /**
-   * Broadcast event with automatic router + WebSocket coordination
-   * Like JTAG's cross-environment messaging but for widgets
-   */
-  protected async broadcastEvent(eventType: string, data: WidgetData, options: {
-    targetWidgets?: string[];
-    excludeSelf?: boolean;
-    persistent?: boolean;
-  } = {}): Promise<boolean> {
-    try {
-      if (!this.config.enableRouterEvents) return false;
+  // DEAD CODE DETECTED HERE:
+  // /**
+  //  * Broadcast event with automatic router + WebSocket coordination
+  //  * Like JTAG's cross-environment messaging but for widgets
+  //  */
+  // //DEAD CODE DETECTED HERE: have them call the event system directly
+  // protected async broadcastEvent(eventType: string, data: WidgetData, _options: {
+  //   targetWidgets?: string[];
+  //   excludeSelf?: boolean;
+  //   persistent?: boolean;
+  // } = {}): Promise<boolean> {
+  //   try {
+  //     if (!this.config.enableRouterEvents) return false;
       
-      const {
-        targetWidgets,
-        excludeSelf = true,
-        persistent = false
-      } = options;
+  //     // DEAD CODE DETECTED HERE:
+  //     // const {
+  //     //   targetWidgets,
+  //     //   excludeSelf = true,
+  //     //   persistent = false
+  //     // } = options;
       
-      const eventData = {
-        sourceWidget: this.config.widgetId,
-        eventType,
-        data,
-        timestamp: new Date().toISOString(),
-        targetWidgets,
-        excludeSelf
-      };
+  //     // const eventData = {
+  //     //   sourceWidget: this.config.widgetId,
+  //     //   eventType,
+  //     //   data,
+  //     //   timestamp: new Date().toISOString(),
+  //     //   targetWidgets,
+  //     //   excludeSelf
+  //     // };
       
-      // Send via router daemon (handles WebSocket, cross-browser, etc.)
-      const result = await this.routerOperation(ROUTER_OPERATIONS.BROADCAST, {
-        channel: WIDGET_CHANNELS.WIDGET_EVENTS,
-        event: eventData,
-        persistent
-      });
+  //     // // Send via router daemon (handles WebSocket, cross-browser, etc.)
+  //     // const result = await this.routerOperation(ROUTER_OPERATIONS.BROADCAST, {
+  //     //   channel: WIDGET_CHANNELS.WIDGET_EVENTS,
+  //     //   event: eventData,
+  //     //   persistent
+  //     // });
       
-      return Boolean(result.success);
-      
-    } catch (error) {
-      console.error(`❌ ${this.config.widgetName}: broadcastEvent failed:`, error);
-      return false;
-    }
-  }
+  //     //return Boolean(result.success);
 
-  /**
-   * AI integration with automatic Academy daemon coordination
-   */
-  protected async queryAI(message: string, options: {
-    persona?: string;
-    context?: WidgetData;
-    expectResponse?: boolean;
-  } = {}): Promise<WidgetData> {
-    try {
-      if (!this.config.enableAI) {
-        console.warn(`⚠️ ${this.config.widgetName}: AI disabled for this widget`);
-        return null;
-      }
+  //     return false;
       
-      const {
-        persona = AI_PERSONAS.GENERAL_ASSISTANT,
-        context = this.getAIContext(),
-        expectResponse = true
-      } = options;
+  //   } catch (error) {
+  //     console.error(`❌ ${this.config.widgetName}: broadcastEvent failed:`, error);
+  //     return false;
+  //   }
+  // }
+
+  // DEAD CODE DETECTED HERE:
+  // /**
+  //  * AI integration with automatic Academy daemon coordination
+  //  */
+  // protected async queryAI(message: string, options: {
+  //   persona?: string;
+  //   context?: WidgetData;
+  //   expectResponse?: boolean;
+  // } = {}): Promise<WidgetData> {
+  //   try {
+  //     if (!this.config.enableAI) {
+  //       console.warn(`⚠️ ${this.config.widgetName}: AI disabled for this widget`);
+  //       return null;
+  //     }
       
-      const result = await this.academyOperation(ACADEMY_OPERATIONS.QUERY, {
-        message,
-        persona,
-        context,
-        widgetId: this.config.widgetId,
-        expectResponse
-      });
+  //     const {
+  //       persona = AI_PERSONAS.GENERAL_ASSISTANT,
+  //       context = this.getAIContext(),
+  //       expectResponse = true
+  //     } = options;
       
-      return result.success ? result.data : null;
+  //     const result = await this.academyOperation(ACADEMY_OPERATIONS.QUERY, {
+  //       message,
+  //       persona,
+  //       context,
+  //       widgetId: this.config.widgetId,
+  //       expectResponse
+  //     });
       
-    } catch (error) {
-      console.error(`❌ ${this.config.widgetName}: queryAI failed:`, error);
-      return null;
-    }
-  }
+  //     return result.success ? result.data : null;
+      
+  //   } catch (error) {
+  //     console.error(`❌ ${this.config.widgetName}: queryAI failed:`, error);
+  //     return null;
+  //   }
+  // }
 
   /**
    * Screenshot widget with automatic JTAG coordination
@@ -626,26 +631,6 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
 
-
-  // === PRIVATE IMPLEMENTATION - Hidden complexity ===
-
-  private async initializeDaemonConnections(): Promise<void> {
-    if (this.config.enableDatabase) {
-      this.databaseDaemon = await this.connectToDaemon(DAEMON_NAMES.DATA);
-    }
-    
-    if (this.config.enableRouterEvents) {
-      this.routerDaemon = await this.connectToDaemon(DAEMON_NAMES.EVENTS);
-    }
-    
-    if (this.config.enableAI) {
-      this.academyDaemon = await this.connectToDaemon(DAEMON_NAMES.CHAT); // Chat daemon handles AI queries
-    }
-    
-    
-  }
-
-
   private async restorePersistedState(): Promise<void> {
     if (!this.config.enablePersistence) return;
     
@@ -662,22 +647,23 @@ export abstract class BaseWidget extends HTMLElement {
     await this.storeData('widget_state', serialized, { persistent: true });
   }
 
-  private async initializeEventSystem(): Promise<void> {
-    if (this.routerDaemon) {
-      // Subscribe to widget events
-      await this.routerOperation('subscribe', {
-        channel: 'widget_events',
-        callback: (eventData: WidgetData) => {
-          if (eventData && typeof eventData === 'object' && eventData !== null) {
-            const typedEventData = eventData as EventData;
-            if (typedEventData.sourceWidget !== this.config.widgetId) {
-              this.onEventReceived(typedEventData.eventType, typedEventData.data);
-            }
-          }
-        }
-      });
-    }
-  }
+  // DEAD CODE DETECTED HERE:
+  // private async initializeEventSystem(): Promise<void> {
+  //   if (this.routerDaemon) {
+  //     // Subscribe to widget events. currently commented out because the routerOperation method should go thoirhg the router daemon not our own method
+  //     // await this.routerOperation('subscribe', {
+  //     //   channel: 'widget_events',
+  //     //   callback: (eventData: WidgetData) => {
+  //     //     if (eventData && typeof eventData === 'object' && eventData !== null) {
+  //     //       const typedEventData = eventData as EventData;
+  //     //       if (typedEventData.sourceWidget !== this.config.widgetId) {
+  //     //         this.onEventReceived(typedEventData.eventType, typedEventData.data);
+  //     //       }
+  //     //     }
+  //     //   }
+  //     // });
+  //   }
+  // }
 
   private disconnectFromDaemons(): void {
     // Clean disconnection from all daemon systems
@@ -710,47 +696,27 @@ export abstract class BaseWidget extends HTMLElement {
     setTimeout(() => errorEl.remove(), 5000);
   }
 
-  private applyCSSProperties(styles: Record<string, string>): void {
-    const styleElement = this.shadowRoot.querySelector('style') ?? document.createElement('style');
+  // DEAD CODE DETECTED HERE:
+  // private applyCSSProperties(styles: Record<string, string>): void {
+  //   const styleElement = this.shadowRoot.querySelector('style') ?? document.createElement('style');
     
-    let css = ':host {\n';
-    for (const [property, value] of Object.entries(styles)) {
-      css += `  --${property}: ${value};\n`;
-    }
-    css += '}\n';
+  //   let css = ':host {\n';
+  //   for (const [property, value] of Object.entries(styles)) {
+  //     css += `  --${property}: ${value};\n`;
+  //   }
+  //   css += '}\n';
     
-    styleElement.textContent = (styleElement.textContent ?? '') + css;
+  //   styleElement.textContent = (styleElement.textContent ?? '') + css;
     
-    if (!styleElement.parentNode) {
-      this.shadowRoot.appendChild(styleElement);
-    }
-  }
+  //   if (!styleElement.parentNode) {
+  //     this.shadowRoot.appendChild(styleElement);
+  //   }
+  // }
 
   private isCacheValid(cached: CachedValue): boolean {
     const ttl = cached.ttl ?? 3600000; // 1 hour default
     return (Date.now() - cached.timestamp) < ttl;
   }
-
-  // Daemon operation abstractions
-  private async databaseOperation(_operation: string, _data: WidgetData): Promise<OperationResult> {
-    if (!this.databaseDaemon) throw new Error('Database daemon not connected');
-    // Would integrate with actual daemon messaging system
-    return { success: true, data: {} };
-  }
-
-  private async routerOperation(_operation: string, _data: WidgetData): Promise<OperationResult> {
-    if (!this.routerDaemon) throw new Error('Router daemon not connected');
-    // Would integrate with actual daemon messaging system
-    return { success: true, data: {} };
-  }
-
-  private async academyOperation(_operation: string, _data: WidgetData): Promise<OperationResult> {
-    if (!this.academyDaemon) throw new Error('Academy daemon not connected');
-    // Would integrate with actual daemon messaging system
-    return { success: true, data: {} };
-  }
-
-
 
   protected async executeCommand<T>(command: string, params?: Record<string, WidgetData>): Promise<T> {
     try {
@@ -775,63 +741,40 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   /**
-   * Direct command execution - new preferred pattern
-   * JTAGClient returns direct results, not wrapped ones
-   */
-  private async executeCommandDirect<T>(command: string, params?: Record<string, WidgetData>): Promise<T> {
-    try {
-      // Wait for JTAG system to be ready  
-      await this.waitForSystemReady();
-      
-      // Get the JTAG client from window
-      const jtagClient = (window as WindowWithJTAG).jtag;
-      if (!jtagClient?.commands) {
-        throw new Error('JTAG client not available even after system ready event');
-      }
-      
-      // JTAGClient.commands returns direct results, not wrapped
-      const result = await jtagClient.commands[command](params);
-      
-      // Return result directly - JTAGClient doesn't wrap responses
-      return result as T;
-    } catch (error) {
-      console.error(`❌ ${this.config.widgetName}: JTAG operation ${command} failed:`, error);
-      throw error;
-    }
-  }
-
-  /**
    * Execute event with Rust-like strict typing - same elegance as executeCommand
    * Type-safe event emission and listening with explicit contracts
    */
   protected async executeEvent<T extends ChatEventName>(
     eventName: T, 
     eventData: ChatEventDataFor<T>,
-    options: {
+    _options: {
       broadcast?: boolean;
       targetWidgets?: string[];
       excludeSelf?: boolean;
     } = {}
   ): Promise<boolean> {
     try {
-      const {
-        broadcast = true,
-        targetWidgets,
-        excludeSelf = true
-      } = options;
+
+      // DEAD CODE DETECTED HERE:
+      // const {
+      //   broadcast = true,
+      //   targetWidgets,
+      //   excludeSelf = true
+      // } = options;
 
       // Emit locally first - immediate feedback
       const handlers = this.eventEmitter.get(eventName) ?? [];
       handlers.forEach(handler => handler(eventData));
-      
-      // Broadcast to other widgets if enabled
-      if (broadcast) {
-        return await this.broadcastEvent(eventName, eventData, {
-          targetWidgets,
-          excludeSelf,
-          persistent: false
-        });
-      }
+
+      // DEAD CODE DETECTED HERE:
+      // // Broadcast to other widgets if enabled
+      // if (broadcast) {
+      //   return await this.broadcastEvent(eventName, eventData, {
+      //     targetWidgets,
+      //     excludeSelf,
+      //     persistent: false
+      //   });
+      // }
       
       return true;
 
@@ -925,12 +868,6 @@ export abstract class BaseWidget extends HTMLElement {
       
       checkReady();
     });
-  }
-
-  private async connectToDaemon(daemonName: string): Promise<DaemonInstance> {
-    // Would connect to actual daemon system
-    console.log(`🔌 ${this.config.widgetName}: Connected to ${daemonName} daemon`);
-    return {};
   }
 
   private generateWidgetId(): string {
