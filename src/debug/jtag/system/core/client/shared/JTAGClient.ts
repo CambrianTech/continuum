@@ -686,6 +686,13 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       console.log('✅ JTAGClient: Connection Broker shut down');
     }
   }
+
+  /**
+   * Get shared instance from window - abstraction for (window as WindowWithJTAG).jtag
+   */
+  static get sharedInstance(): JTAGClient {
+    return (window as any).jtag;
+  }
 }
 
 

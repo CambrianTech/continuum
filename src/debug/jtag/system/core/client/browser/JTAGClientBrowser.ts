@@ -218,4 +218,11 @@ export class JTAGClientBrowser extends JTAGClient {
   get isLocal(): boolean {
     return this.connection instanceof LocalConnection;
   }
+
+  /**
+   * Get shared instance from window - simple getter for existing JTAG client
+   */
+  static get sharedInstance(): any {
+    return (window as any).jtag;
+  }
 }
