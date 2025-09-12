@@ -688,10 +688,12 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   }
 
   /**
-   * Get shared instance from window - abstraction for (window as WindowWithJTAG).jtag
+   * Get shared instance from global context - works in browser and server
+   * Browser: (window as WindowWithJTAG).jtag
+   * Server: (globalThis as any).jtag
    */
-  static get sharedInstance(): JTAGClient {
-    return (window as any).jtag;
+  static get sharedInstance(): { commands: Record<string, (params?: any) => Promise<{ commandResult: any }>> } {
+    return (globalThis as any).jtag;
   }
 }
 
