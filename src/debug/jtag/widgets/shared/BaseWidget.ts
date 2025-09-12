@@ -18,6 +18,7 @@
 
 // Event types - Rust-like strict typing
 import type { ChatEventName, ChatEventDataFor } from '../chat/shared/ChatEventTypes';
+import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import type { FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import type { FileSaveResult } from '../../commands/file/save/shared/FileSaveTypes';
 import type { ScreenshotResult } from '../../commands/screenshot/shared/ScreenshotTypes';
@@ -63,10 +64,6 @@ interface EventData {
   sourceWidget: string;
   eventType: string;
   data: WidgetData;
-}
-
-interface JTAGClient {
-  commands: Record<string, (params?: Record<string, WidgetData>) => Promise<{ commandResult: WidgetData }>>;
 }
 
 interface WindowWithJTAG extends Window {
@@ -723,8 +720,8 @@ export abstract class BaseWidget extends HTMLElement {
       // Wait for JTAG system to be ready  
       await this.waitForSystemReady();
       
-      // Get the JTAG client from window
-      const jtagClient = (window as WindowWithJTAG).jtag;
+      // Get the JTAG client via cross-platform abstraction
+      const jtagClient = JTAGClient.sharedInstance;
       if (!jtagClient?.commands) {
         throw new Error('JTAG client not available even after system ready event');
       }
