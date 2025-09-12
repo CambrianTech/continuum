@@ -118,11 +118,20 @@ export class RoomListWidget extends ChatWidgetBase {
     });
   }
 
+  /*** 
+     * 
+     * Here is what normally happens in a good API:
+     * 1) ONLY THING WE DO HERE IS call the set room command. That is IT
+     * 2) The server processes the command and updates the state for this this user (needs api dev), currentRoomId, triggering the current room changed event (or selected room etc) to all subscribed clients EVERYWHERE:
+     * server, browser, anywhere else - this is the point of events. And the only place events originate is in the event daemon on the server.  (or other servers in a Grid/continuum)
+     * 3) All subscribed clients receive the updated room state and re-render their UI accordingly. Even this.currentRoomId is not done here.
+     * 4. the set of currentRoomId causes re-rendering of the room list, highlighting the selected room. You can still do this here if you want, but ideally it is done in response to the event.
+     * 5. The chat message list widget also receives the event and re-renders to show messages for the new room.
+     * 
+    **/
   private async selectRoom(roomId: string): Promise<void> {
+    // TODO: incorrect implementation - should ONLY call set room command 
     this.currentRoomId = roomId;
-    
-    // Broadcast event using BaseWidget methods
-    await this.broadcastEvent('room:selected', { roomId });
     
     // Re-render to update visual state
     await this.renderWidget();
