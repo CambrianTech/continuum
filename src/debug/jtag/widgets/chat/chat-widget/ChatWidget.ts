@@ -71,10 +71,11 @@ export class ChatWidget extends ChatWidgetBase {
     console.log(`🔧 CLAUDE-USER-ID-DEBUG: Initialized persistent User ID: ${this.currentUserId}`);
 
     // Set current session ID from JTAG system context (REQUIRED)
-    if (!JTAGClient.sharedInstance?.sessionId) {
+    const client = await JTAGClient.sharedInstance;
+    if (!client?.sessionId) {
       throw new Error('ChatWidget requires session context - cannot initialize without sessionId');
     }
-    this.currentSessionId = JTAGClient.sharedInstance.sessionId as SessionId;
+    this.currentSessionId = client.sessionId as SessionId;
     console.log(`🔧 CLAUDE-SESSION-ID-DEBUG: Current session ID: ${this.currentSessionId}`);
     
     // Load room message history using command abstraction
@@ -123,11 +124,12 @@ export class ChatWidget extends ChatWidgetBase {
   private async loadRoomHistory(): Promise<void> {
     try {
       console.log(`📚 ChatWidget: Loading room history using data/list command`);
-      
+
       // Use data/list command to get all chat messages, then filter by room
+      const client = await JTAGClient.sharedInstance;
       const historyResult = await this.executeCommand<DataListParams, DataListResult<ChatMessage>>('data/list', {
-        context: JTAGClient.sharedInstance.context,
-        sessionId: JTAGClient.sharedInstance.sessionId,
+        context: client.context,
+        sessionId: client.sessionId,
         collection: 'chat_messages',
         limit: 2000, // Recent messages
         filter: { roomId: this.currentRoom }, // ← Proper filter parameter structure
@@ -168,9 +170,10 @@ export class ChatWidget extends ChatWidgetBase {
       
       // Try JTAG operation to subscribe to room events via the chat daemon
       try {
+        const client = await JTAGClient.sharedInstance;
         const subscribeResult = await this.executeCommand<SubscribeRoomParams, SubscribeRoomResult>('chat/subscribe-room', {
-          context: JTAGClient.sharedInstance.context,
-          sessionId: JTAGClient.sharedInstance.sessionId,
+          context: client.context,
+          sessionId: client.sessionId,
           roomId: this.currentRoom,
           eventTypes: [CHAT_EVENTS.MESSAGE_RECEIVED, CHAT_EVENTS.PARTICIPANT_JOINED, CHAT_EVENTS.PARTICIPANT_LEFT]
         });
@@ -473,9 +476,10 @@ export class ChatWidget extends ChatWidgetBase {
     try {
       // Use existing chat/send-message command with proper types
       console.log(`🔧 CLAUDE-DEBUG: About to execute chat/send-message command`);
+      const client = await JTAGClient.sharedInstance;
       const sendResult = await this.executeCommand<ChatSendMessageParams, ChatSendMessageResult>('chat/send-message', {
-        context: JTAGClient.sharedInstance.context,
-        sessionId: JTAGClient.sharedInstance.sessionId,
+        context: client.context,
+        sessionId: client.sessionId,
         content: content,  // ← Fixed: use 'content' parameter as expected by server
         roomId: this.currentRoom,
         senderType: 'user' // Explicitly mark as user message - server will use UserIdManager

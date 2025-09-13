@@ -57,10 +57,11 @@ export class RoomListWidget extends ChatWidgetBase {
 
   private async calculateUnreadCounts(): Promise<void> {
     // For each room, get actual unread message count from database
+    const client = await JTAGClient.sharedInstance;
     for (const room of this.rooms) {
       const messageResult = await this.executeCommand<DataListParams, DataListResult<ChatMessage>>('data/list', {
-        context: JTAGClient.sharedInstance.context,
-        sessionId: JTAGClient.sharedInstance.sessionId,
+        context: client.context,
+        sessionId: client.sessionId,
         collection: 'chat_messages',
         filter: { roomId: room.id, isRead: false }
       });
@@ -71,9 +72,10 @@ export class RoomListWidget extends ChatWidgetBase {
 
   private async loadRooms(): Promise<void> {
     // Load rooms from database using proper executeCommand with strict typing
+    const client = await JTAGClient.sharedInstance;
     const result = await this.executeCommand<DataListParams, DataListResult<RoomData>>('data/list', {
-      context: JTAGClient.sharedInstance.context,
-      sessionId: JTAGClient.sharedInstance.sessionId,
+      context: client.context,
+      sessionId: client.sessionId,
       collection: 'rooms',
       orderBy: [{ field: 'name', direction: 'asc' }]
     });

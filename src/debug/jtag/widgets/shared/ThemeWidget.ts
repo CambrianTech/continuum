@@ -227,10 +227,11 @@ export class ThemeWidget extends BaseWidget {
           // Use BaseWidget's protected executeCommand method - same as loadResource does internally
           const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
           console.log(`🎨 ThemeWidget: Loading ${filePath} via BaseWidget executeCommand`);
-          
+
+          const client = await JTAGClient.sharedInstance;
           const result = await this.executeCommand<FileLoadParams, FileLoadResult>('file/load', {
-            context: JTAGClient.sharedInstance.context,
-            sessionId: JTAGClient.sharedInstance.sessionId,
+            context: client.context,
+            sessionId: client.sessionId,
             filepath: filePath
           });
           
@@ -314,8 +315,13 @@ export class ThemeWidget extends BaseWidget {
         // Use the actual JTAG theme/set command for proper theme switching
         try {
           // Get JTAG client if available (for command execution)
-          if (typeof window !== 'undefined' && (window as any).jtagSystem) {
-            await (window as any).jtagSystem.commands.themeSet({ themeName: selectedTheme });
+          const client = await JTAGClient.sharedInstance;
+          if (client?.commands) {
+            await this.executeCommand('theme/set', {
+              context: client.context,
+              sessionId: client.sessionId,
+              themeName: selectedTheme
+            });
             console.log(`✅ ThemeWidget: Successfully applied theme '${selectedTheme}' via JTAG command`);
           } else {
             // Fallback to internal method if JTAG not available

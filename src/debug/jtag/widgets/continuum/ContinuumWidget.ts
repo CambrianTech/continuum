@@ -6,6 +6,7 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
+import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 
 export class ContinuumWidget extends BaseWidget {
@@ -84,9 +85,10 @@ export class ContinuumWidget extends BaseWidget {
   private async loadThemeCSS(): Promise<string> {
     try {
       // Load base theme CSS using correct path (same as ThemeWidget)
+      const client = await JTAGClient.sharedInstance;
       const baseResult = await this.executeCommand<FileLoadParams, FileLoadResult>('file/load', {
-        context: (window as any).jtag?.context || {},
-        sessionId: (window as any).jtag?.sessionId,
+        context: client.context,
+        sessionId: client.sessionId,
         filepath: 'widgets/shared/themes/base/base.css'
       });
       
