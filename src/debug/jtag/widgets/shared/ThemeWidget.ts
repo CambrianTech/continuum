@@ -8,6 +8,7 @@
 
 import { BaseWidget } from './BaseWidget';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
+import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import { ThemeDiscoveryService } from './themes/ThemeDiscoveryService';
 import { ThemeRegistry, ThemeManifest } from './themes/ThemeTypes';
 
@@ -228,6 +229,8 @@ export class ThemeWidget extends BaseWidget {
           console.log(`🎨 ThemeWidget: Loading ${filePath} via BaseWidget executeCommand`);
           
           const result = await this.executeCommand<FileLoadParams, FileLoadResult>('file/load', {
+            context: JTAGClient.sharedInstance.context,
+            sessionId: JTAGClient.sharedInstance.sessionId,
             filepath: filePath
           });
           

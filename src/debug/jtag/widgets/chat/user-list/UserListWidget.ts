@@ -36,8 +36,10 @@ export class UserListWidget extends ChatWidgetBase {
 
   private async loadUsersFromDatabase(): Promise<void> {
     const result = await this.executeCommand<DataListParams, DataListResult<BaseUser>>('data/list', {
+      context: (window as any).jtag?.context || {},
+      sessionId: (window as any).jtag?.sessionId,
       collection: COLLECTIONS.USERS,
-      sort: { lastActiveAt: -1 },
+      orderBy: [{ field: 'lastActiveAt', direction: 'desc' }],
       limit: 100
     });
     

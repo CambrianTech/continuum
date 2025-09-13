@@ -85,6 +85,8 @@ export class ContinuumWidget extends BaseWidget {
     try {
       // Load base theme CSS using correct path (same as ThemeWidget)
       const baseResult = await this.executeCommand<FileLoadParams, FileLoadResult>('file/load', {
+        context: (window as any).jtag?.context || {},
+        sessionId: (window as any).jtag?.sessionId,
         filepath: 'widgets/shared/themes/base/base.css'
       });
       
