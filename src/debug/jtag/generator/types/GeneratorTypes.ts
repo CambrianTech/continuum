@@ -41,7 +41,7 @@ export interface PackageJsonConfig {
     source: string;
     pathCount: number;
   };
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // ============================================================================
@@ -51,7 +51,7 @@ export interface PackageJsonConfig {
 export interface TypeScriptConfig {
   compilerOptions: {
     paths?: Record<string, string[]>;
-    [key: string]: any;
+    [key: string]: unknown;
   };
   include?: string[];
   exclude?: string[];
@@ -61,7 +61,7 @@ export interface TypeScriptConfig {
     pathCount: number;
     note: string;
   };
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // ============================================================================

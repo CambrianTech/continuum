@@ -22,7 +22,7 @@ export class DataDaemonServer extends DataDaemonBase {
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
     
-    // Create storage configuration - file-based by default
+    // Create storage configuration - file-based by default (will be configurable later)
     const storageConfig: StorageStrategyConfig = {
       strategy: 'file',
       backend: 'file',

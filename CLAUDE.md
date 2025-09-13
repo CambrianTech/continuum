@@ -2,6 +2,8 @@
 
 IMPORTANT: PUT CONTENT IN APPROPRIATE SECTION AND READ ENTIRE SECTION BEFORE MODIFYING. FIND THE RIGHT PLACE!
 
+BEFORE YOU BEGIN *ANY NEW TASK* IN THIS REPO, GO BACK AND READ THE RELEVANT SECTIONS OF THIS FILE!!!
+
 ## 📋 QUICK REFERENCE (CRITICAL - FIRST 200 LINES)
 
 ### 🚨 DEPLOYMENT (ALWAYS START HERE)
@@ -10,6 +12,35 @@ cd src/debug/jtag
 npm start                    # REQUIRED to deploy ANY code changes
 ./continuum screenshot       # Test functionality
 ```
+npm test will also take care of deployment
+
+### 🔧 DEVELOPMENT ESSENTIALS
+
+# ALWAYS RUN THiS ON ALL FILES YOU ARE EDITING:
+```bash 
+npm run lint:file path/to/file.ts
+```
+We have 6000 of these typing failures and need to slowly reduce over time!  
+ALL new files must pass this, and please work on existing files too.
+
+NEVER use "any" and "unknown" with EXTREME justification if you need them. (I bet you don't)
+READ the referenced types and classes, to first learn what how thigns work.
+If you are in a widget look at the newest widgets, same for commands, tests, and daemons.
+Look for good examples, and question everything. We are never perfect and definitely WEREN'T before.
+
+NEVER do dynamic imports or require, Use regular imports at the top of the file.
+Keep code separated via abstraction from /shared dir abstract base classes to server/browser dir/forms
+NEVER import from server or browser IN a /shared file. These are meant to be environment agnostic. This will crash the system.
+That means if you are using a browser feature, it MUST be in a browser file. Same for Node and server.
+
+When you see a pattern, something similar, especially in more than one file, turn it into a function or class.
+
+Commands are environment agnostic externally, and environment conscious internally. 
+They call their other environment forms, and orchestrate with themsleves (and other commands) depending on which environment they were called in and parameters.
+Screenshot and file/save or file/load illustrate this, not ideally, but show how a browser or server form figures it out.
+
+DON'T work very long before testing compilation, npm start, and npm test, in order of descending usage (think logically)
+We want to check in our code and in order to do so, the site must not be broken. We must check often.
 
 ### 🔧 DEBUGGING ESSENTIALS
 ```bash
@@ -24,6 +55,7 @@ tail -f .continuum/sessions/user/shared/*/logs/browser.log
 
 # Screenshots (visual feedback)
 ./jtag screenshot --querySelector="chat-widget" --filename="debug.png"
+
 ```
 
 ### 🎯 SCIENTIFIC DEVELOPMENT METHODOLOGY  

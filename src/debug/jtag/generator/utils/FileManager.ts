@@ -237,7 +237,7 @@ export class FileManager {
 
     this.logger.info(`✅ Committing transaction - cleaning up ${this.transactionBackups.size} backup files`);
     
-    for (const [originalPath, backupPath] of this.transactionBackups) {
+    for (const [, backupPath] of this.transactionBackups) {
       try {
         if (existsSync(backupPath)) {
           unlinkSync(backupPath);
@@ -280,7 +280,7 @@ export class FileManager {
    * Clean up all existing backup files in a directory recursively
    * DISABLED: Prevents destruction of important chat history and other backup files
    */
-  cleanupAllBackups(directory: string): void {
+  cleanupAllBackups(_directory: string): void {
     // DISABLED: This was destroying chat history and other important backups
     // Use commitTransaction() instead for proper transactional cleanup
     this.logger.debug(`🚫 Backup cleanup disabled - use commitTransaction() for proper cleanup`);

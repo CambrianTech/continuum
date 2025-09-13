@@ -14,6 +14,8 @@ import type {
   InstanceConfigData
 } from './SecureConfigTypes';
 
+import { DEFAULT_STORAGE_CONFIG } from './SecureConfigTypes';
+
 /**
  * Runtime environment detection
  */
@@ -121,7 +123,8 @@ export function getDefaultServerConfig(instance: InstanceConfiguration): JTAGSer
     environment: {
       log_level: 'info',
       debug_mode: false
-    }
+    },
+    storage: DEFAULT_STORAGE_CONFIG
   };
 }
 

@@ -40,12 +40,53 @@ export interface ServerEnvironmentConfig {
   readonly debug_mode: boolean;
 }
 
+// Storage Configuration - SERVER-ONLY
+export interface StorageConfig {
+  readonly strategy: 'file' | 'sql' | 'nosql' | 'memory' | 'hybrid';
+  readonly backend: string; // 'file', 'sqlite', 'postgres', 'mongodb', etc.
+  readonly connectionString?: string;
+  readonly paths: {
+    readonly data: string;
+    readonly backups: string;
+  };
+  readonly options?: Record<string, any>;
+  readonly features?: {
+    readonly enableTransactions?: boolean;
+    readonly enableIndexing?: boolean;
+    readonly enableReplication?: boolean;
+    readonly enableSharding?: boolean;
+    readonly enableCaching?: boolean;
+  };
+}
+
+// Default Storage Configuration
+export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
+  strategy: 'file',
+  backend: 'file',
+  connectionString: undefined,
+  paths: {
+    data: '.continuum/jtag/data',
+    backups: '.continuum/jtag/backups'
+  },
+  options: {
+    basePath: '.continuum/jtag/data'
+  },
+  features: {
+    enableTransactions: false,
+    enableIndexing: false,
+    enableReplication: false,
+    enableSharding: false,
+    enableCaching: true
+  }
+} as const;
+
 // SERVER-ONLY configuration interface
 export interface JTAGServerConfiguration {
   readonly server: ServerConfig;
   readonly paths: ServerPathsConfig;
   readonly security: ServerSecurityConfig;
   readonly environment: ServerEnvironmentConfig;
+  readonly storage: StorageConfig;
 }
 
 // CLIENT-SAFE configuration - can be sent to browser
