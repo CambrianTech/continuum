@@ -199,6 +199,7 @@ run_profile_tests() {
             run_test "Chat TDD" "npx tsx tests/chat-daemon-tdd.test.ts" "Chat & Messaging"
             run_test "Multi-user Chat" "npx tsx tests/integration/simple-multiuser-chat.test.ts" "Chat & Messaging"
             run_test "Real Chat Functionality" "npx tsx tests/integration/chat-scenarios/real-chat-functionality.test.ts" "Chat & Messaging"
+            run_test "Chat Real-Time Event Routing" "npx tsx tests/integration/chat-real-time-event-routing.test.ts" "Chat & Messaging"
             
             # AI & persona integration
             run_test "AI Persona Integration" "npx tsx tests/integration/ai-persona-integration.test.ts" "AI & Personas"
@@ -270,6 +271,7 @@ run_profile_tests() {
             run_test "Chat TDD" "npx tsx tests/chat-daemon-tdd.test.ts" "Chat Tests"
             run_test "Multi-user Chat" "npx tsx tests/integration/simple-multiuser-chat.test.ts" "Chat Tests"
             run_test "Real Chat Functionality" "npx tsx tests/integration/chat-scenarios/real-chat-functionality.test.ts" "Chat Tests"
+            run_test "Chat Real-Time Event Routing" "npx tsx tests/integration/chat-real-time-event-routing.test.ts" "Chat Tests"
             ;;
             
         "screenshots")

@@ -40,7 +40,7 @@ That means if you are using a browser feature, it MUST be in a browser file. Sam
 
 When you see a pattern, something similar, especially in more than one file, turn it into a function or class.
 
-Commands are environment agnostic externally, and environment conscious internally. 
+Commands and Events are environment agnostic externally, and environment conscious internally. 
 They call their other environment forms, and orchestrate with themsleves (and other commands) depending on which environment they were called in and parameters.
 Screenshot and file/save or file/load illustrate this, not ideally, but show how a browser or server form figures it out.
 
@@ -172,6 +172,8 @@ const mainWidget = continuumWidget?.shadowRoot?.querySelector('main-widget');
 const chatWidget = mainWidget?.shadowRoot?.querySelector('chat-widget');
 // This pattern used in: run-chat-test.sh, test-bidirectional-chat.sh, etc.
 ```
+However, we wrote commands/debug and our own selectors, that do a lot of the work for you, simplify the access.
+ALWAYS look for convenience utils in this project, for commands and tests. It likely ALREADY exists.
 
 ### 🔥 CURRENT MISSION-CRITICAL BUGS TO FIX
 1. **Real-time events broken**: Server→browser events don't auto-appear, need manual refresh

@@ -25,6 +25,14 @@ export class EventsDaemonBrowser extends EventsDaemon {
   }
 
   /**
+   * Handle local event bridging - emit to event system, DOMEventBridge handles DOM dispatch
+   */
+  protected handleLocalEventBridge(eventName: string, eventData: any): void {
+    // Emit to local event system - DOMEventBridge will automatically handle DOM dispatch
+    this.eventManager.events.emit(eventName, eventData);
+  }
+
+  /**
    * Emit a chat message event to trigger DOM events for widgets
    */
   public emitChatMessageEvent(message: ChatMessage): void {

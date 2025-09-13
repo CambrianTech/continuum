@@ -3,12 +3,15 @@
  */
 
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
-import { JTAGMessageFactory, createPayload } from '../../../../system/core/types/JTAGTypes';
+import { JTAGMessageFactory } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
-import { EVENT_ENDPOINTS } from '../../../../daemons/events-daemon/shared/EventEndpoints';
+import { JTAG_ENDPOINTS } from '../../../../system/core/router/shared/JTAGEndpoints';
 import type { EventBridgePayload } from '../../../../daemons/events-daemon/shared/EventsDaemon';
 import { ChatSendMessageCommand } from '../shared/ChatSendMessageCommand';
+import type { ChatSendMessageParams, ChatSendMessageResult } from '../shared/ChatSendMessageTypes';
 import { CHAT_EVENTS } from '../../../../widgets/chat/shared/ChatEventConstants';
+import type { ChatMessage } from '../../../../domain/chat/ChatMessage';
+import { EVENT_SCOPES, EventRoutingUtils } from '../../../../system/events/shared/EventSystemConstants';
 
 export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
   
@@ -23,51 +26,52 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
   /**
    * Execute chat message sending using base class logic
    */
-  async execute(params: any): Promise<any> {
+  async execute(params: ChatSendMessageParams): Promise<ChatSendMessageResult> {
     // Call base class which handles database storage + event emission
     return await super.execute(params);
   }
 
   /**
-   * Server-specific event emission with proper Node imports
+   * Server-specific event emission using Router's event facilities
    */
-  protected async emitMessageEvent(message: any): Promise<void> {
-    console.log(`🔥 SERVER-EVENT: emitMessageEvent called for message ${message.messageId}`);
+  protected async emitMessageEvent(message: ChatMessage): Promise<void> {
+    console.log(`🔥 CLAUDE-FIX-${Date.now()}: SERVER-EVENT: emitMessageEvent called for message ${message.messageId}`);
     try {
-      // Cross-environment event emission (to browser listeners)
-      console.log(`🔥 SERVER-EVENT: Starting cross-environment event creation...`);
-      
-      const eventBridgeData: EventBridgePayload = {
-        type: 'event-bridge' as const,
-        eventName: CHAT_EVENTS.MESSAGE_RECEIVED,  // Use constant and correct event name
-        data: { message },
-        scope: {
-          type: 'room' as const,
-          id: message.roomId,
-          // Remove sessionId to broadcast to ALL room participants, not just sender
-        },
-        originSessionId: message.senderId,
-        originContextUUID: this.context.uuid,  // Track the originating context for recursion prevention
-        timestamp: message.timestamp,
-        // Required JTAGPayload fields
+      if (!this.commander?.router) {
+        throw new Error('Router not available for event emission');
+      }
+
+      // Create EventBridge payload for room-scoped chat message event
+      const eventPayload: EventBridgePayload = {
         context: this.context,
-        sessionId: message.senderId
+        sessionId: message.senderId as any,
+        type: 'event-bridge',
+        scope: {
+          type: EVENT_SCOPES.ROOM,
+          id: message.roomId,
+          sessionId: message.senderId
+        },
+        eventName: CHAT_EVENTS.MESSAGE_RECEIVED,
+        data: {
+          message: message.toData()
+        },
+        originSessionId: message.senderId as any,
+        originContextUUID: this.context.uuid,
+        timestamp: new Date().toISOString()
       };
-      
-      console.log(`🔥 SERVER-EVENT: Event payload created:`, JSON.stringify(eventBridgeData, null, 2));
-      
+
+      // Create event message using JTAG message factory
       const eventMessage = JTAGMessageFactory.createEvent(
         this.context,
         'chat-send-message',
-        `events/${EVENT_ENDPOINTS.BRIDGE}`,
-        eventBridgeData
+        JTAG_ENDPOINTS.EVENTS.BRIDGE,
+        eventPayload
       );
-      
-      console.log(`🔥 SERVER-EVENT: Event message created, posting to router...`);
+
+      // Route event through Router (handles cross-context distribution)
       const result = await this.commander.router.postMessage(eventMessage);
-      console.log(`🔥 SERVER-EVENT: Router result:`, result);
-      console.log(`📨 SERVER-EVENT: Sent ${CHAT_EVENTS.MESSAGE_RECEIVED} event for message ${message.messageId} to room ${message.roomId}`);
-      
+      console.log(`📨 SERVER-EVENT: Emitted MESSAGE_RECEIVED for message ${message.messageId} in room ${message.roomId}`, result);
+
     } catch (error) {
       console.error(`❌ Failed to emit message event:`, error);
       // Don't fail the entire operation if event emission fails

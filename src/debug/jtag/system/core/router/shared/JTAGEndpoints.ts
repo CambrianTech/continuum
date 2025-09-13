@@ -41,8 +41,10 @@ export const JTAG_ENDPOINTS = {
   // Event system endpoints
   EVENTS: {
     BASE: 'events',
+    BRIDGE: 'event-bridge',
     SYSTEM: 'system/events',
-    CUSTOM: 'custom/events'
+    CUSTOM: 'custom/events',
+    STATS: 'event-stats'
   },
 
   // Session daemon endpoints
