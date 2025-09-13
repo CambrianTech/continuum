@@ -78,11 +78,7 @@ class StorageConfigurationValidator {
     const startTime = Date.now();
     
     try {
-      // Connect to JTAG system
-      this.client = await jtag.connect();
-      if (!this.client) {
-        throw new Error('Failed to connect to JTAG system for storage configuration test');
-      }
+      // Client already connected in runAllTests()
       
       console.log('⚡ Testing real storage configuration via data/create command...');
       
@@ -135,11 +131,7 @@ class StorageConfigurationValidator {
     const startTime = Date.now();
     
     try {
-      // Connect to JTAG system
-      this.client = await jtag.connect();
-      if (!this.client) {
-        throw new Error('Failed to connect to JTAG system for storage configuration test');
-      }
+      // Client already connected in runAllTests()
       
       // Test that storage configuration is properly loaded in system context
       console.log('⚡ Testing system configuration access via ping command...');
@@ -188,6 +180,12 @@ class StorageConfigurationValidator {
     console.log('🚀 Starting Storage Configuration Integration Tests\n');
     
     try {
+      // Connect once and reuse for all tests that need it
+      this.client = await jtag.connect();
+      if (!this.client) {
+        throw new Error('Failed to connect to JTAG system for storage configuration tests');
+      }
+      
       // Run all tests
       this.results.push(await this.testStorageConfigurationDefaults());
       this.results.push(await this.testRealStorageConfiguration()); 

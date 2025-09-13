@@ -14,6 +14,8 @@ import * as path from 'path';
 export class ConsoleDaemonServer extends ConsoleDaemon {
   private symlinkWarningShown = false;
   private currentUserSymlinkWarningShown = false;
+  private lastCurrentUserTarget = '';
+  private currentUserUpdateInProgress = false;
   
   
   // setupConsoleInterception() is now handled by the base class
@@ -92,9 +94,10 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
           await fs.rm(symlinkPath, { recursive: true, force: true });
           this.originalConsole.log(`🔗 ${this.toString()}: Removed non-symlink at system path`);
         }
-      } catch (checkError: any) {
+      } catch (checkError: unknown) {
         // Path doesn't exist or other error - that's fine, we'll create it
-        if (checkError.code !== 'ENOENT') {
+        const errorCode = (checkError as { code?: string })?.code;
+        if (checkError instanceof Error && errorCode && errorCode !== 'ENOENT') {
           this.originalConsole.log(`🔗 ${this.toString()}: Symlink check warning (continuing): ${checkError.message}`);
         }
       }
@@ -125,35 +128,57 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       const symlinkPath = path.join(continuumPath, 'jtag', 'currentUser');
       const targetPath = `sessions/${category}/${sessionId}`;
       
-      // Check if symlink already exists and points to the correct target
-      try {
-        const stats = await fs.lstat(symlinkPath);
-        if (stats.isSymbolicLink()) {
-          const linkTarget = await fs.readlink(symlinkPath);
-          if (linkTarget === targetPath) {
-            // Symlink already exists and points to correct target - no action needed
-            return;
-          }
-          // Symlink exists but points to wrong target - remove it
-          await fs.unlink(symlinkPath);
-          this.originalConsole.log(`🔗 ${this.toString()}: Removed outdated currentUser symlink (was: ${linkTarget})`);
-        } else {
-          // Path exists but is not a symlink - remove it
-          await fs.rm(symlinkPath, { recursive: true, force: true });
-          this.originalConsole.log(`🔗 ${this.toString()}: Removed non-symlink at currentUser path`);
-        }
-      } catch (checkError: any) {
-        // Path doesn't exist or other error - that's fine, we'll create it
-        if (checkError.code !== 'ENOENT') {
-          this.originalConsole.log(`🔗 ${this.toString()}: Symlink check warning (continuing): ${checkError.message}`);
-        }
+      // Prevent infinite loops - if we already processed this target recently, skip
+      if (this.lastCurrentUserTarget === targetPath) {
+        return;
       }
       
-      // Create the symlink (path should be clear now)
-      await fs.symlink(targetPath, symlinkPath);
-      this.originalConsole.log(`🔗 ${this.toString()}: Updated currentUser symlink: ${symlinkPath} -> ${targetPath}`);
+      // Prevent concurrent updates that can cause race conditions
+      if (this.currentUserUpdateInProgress) {
+        return;
+      }
+      
+      this.currentUserUpdateInProgress = true;
+      
+      try {
+        // Check if symlink already exists and points to the correct target
+        try {
+          const stats = await fs.lstat(symlinkPath);
+          if (stats.isSymbolicLink()) {
+            const linkTarget = await fs.readlink(symlinkPath);
+            if (linkTarget === targetPath) {
+              // Symlink already exists and points to correct target - no action needed
+              this.lastCurrentUserTarget = targetPath;
+              return;
+            }
+            // Symlink exists but points to wrong target - remove it
+            await fs.unlink(symlinkPath);
+            this.originalConsole.log(`🔗 ${this.toString()}: Removed outdated currentUser symlink (was: ${linkTarget})`);
+          } else {
+            // Path exists but is not a symlink - remove it
+            await fs.rm(symlinkPath, { recursive: true, force: true });
+            this.originalConsole.log(`🔗 ${this.toString()}: Removed non-symlink at currentUser path`);
+          }
+        } catch (checkError: unknown) {
+          // Path doesn't exist or other error - that's fine, we'll create it
+          const errorCode = (checkError as { code?: string })?.code;
+          if (checkError instanceof Error && errorCode && errorCode !== 'ENOENT') {
+            this.originalConsole.log(`🔗 ${this.toString()}: Symlink check warning (continuing): ${checkError.message}`);
+          }
+        }
+        
+        // Create the symlink (path should be clear now)
+        await fs.symlink(targetPath, symlinkPath);
+        this.lastCurrentUserTarget = targetPath;
+        this.originalConsole.log(`🔗 ${this.toString()}: Updated currentUser symlink: ${symlinkPath} -> ${targetPath}`);
+        
+      } finally {
+        this.currentUserUpdateInProgress = false;
+      }
       
     } catch (error: unknown) {
+      this.currentUserUpdateInProgress = false;
+      
       // Don't fail the whole operation if symlink creation fails - this is non-critical
       // Special handling for EEXIST - this is normal and expected
       if (error instanceof Error && error.message.includes('EEXIST: file already exists')) {
