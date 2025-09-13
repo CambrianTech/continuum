@@ -128,9 +128,25 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       const symlinkPath = path.join(continuumPath, 'jtag', 'currentUser');
       const targetPath = `sessions/${category}/${sessionId}`;
       
-      // Prevent infinite loops - if we already processed this target recently, skip
-      if (this.lastCurrentUserTarget === targetPath) {
-        return;
+      // 🔧 CLAUDE-FIX-1757736695: Symlink validation + UNKNOWN_SESSION exclusion
+      // CRITICAL FIX: Always check current symlink target FIRST, regardless of cache
+      // This prevents unnecessary work when symlink already points to correct target
+      try {
+        const stats = await fs.lstat(symlinkPath);
+        if (stats.isSymbolicLink()) {
+          const currentTarget = await fs.readlink(symlinkPath);
+          if (currentTarget === targetPath) {
+            // Symlink already exists and points to correct target - NO ACTION NEEDED
+            this.lastCurrentUserTarget = targetPath;
+            return;
+          }
+        }
+      } catch (checkError: unknown) {
+        // Path doesn't exist - that's fine, we'll create it below
+        const errorCode = (checkError as { code?: string })?.code;
+        if (checkError instanceof Error && errorCode !== 'ENOENT') {
+          this.originalConsole.log(`🔗 ${this.toString()}: Symlink check warning: ${checkError.message}`);
+        }
       }
       
       // Prevent concurrent updates that can cause race conditions
@@ -141,17 +157,12 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       this.currentUserUpdateInProgress = true;
       
       try {
-        // Check if symlink already exists and points to the correct target
+        // Only now do we need to update the symlink
         try {
           const stats = await fs.lstat(symlinkPath);
           if (stats.isSymbolicLink()) {
             const linkTarget = await fs.readlink(symlinkPath);
-            if (linkTarget === targetPath) {
-              // Symlink already exists and points to correct target - no action needed
-              this.lastCurrentUserTarget = targetPath;
-              return;
-            }
-            // Symlink exists but points to wrong target - remove it
+            // Remove existing symlink (we know it's wrong from check above)
             await fs.unlink(symlinkPath);
             this.originalConsole.log(`🔗 ${this.toString()}: Removed outdated currentUser symlink (was: ${linkTarget})`);
           } else {
@@ -159,15 +170,15 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
             await fs.rm(symlinkPath, { recursive: true, force: true });
             this.originalConsole.log(`🔗 ${this.toString()}: Removed non-symlink at currentUser path`);
           }
-        } catch (checkError: unknown) {
-          // Path doesn't exist or other error - that's fine, we'll create it
-          const errorCode = (checkError as { code?: string })?.code;
-          if (checkError instanceof Error && errorCode && errorCode !== 'ENOENT') {
-            this.originalConsole.log(`🔗 ${this.toString()}: Symlink check warning (continuing): ${checkError.message}`);
+        } catch (removeError: unknown) {
+          // Path doesn't exist - that's fine
+          const errorCode = (removeError as { code?: string })?.code;
+          if (removeError instanceof Error && errorCode !== 'ENOENT') {
+            this.originalConsole.log(`🔗 ${this.toString()}: Symlink removal warning: ${removeError.message}`);
           }
         }
         
-        // Create the symlink (path should be clear now)
+        // Create the symlink
         await fs.symlink(targetPath, symlinkPath);
         this.lastCurrentUserTarget = targetPath;
         this.originalConsole.log(`🔗 ${this.toString()}: Updated currentUser symlink: ${symlinkPath} -> ${targetPath}`);
@@ -180,7 +191,6 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       this.currentUserUpdateInProgress = false;
       
       // Don't fail the whole operation if symlink creation fails - this is non-critical
-      // Special handling for EEXIST - this is normal and expected
       if (error instanceof Error && error.message.includes('EEXIST: file already exists')) {
         // Symlink already exists - this is fine, no need to report
         return;
