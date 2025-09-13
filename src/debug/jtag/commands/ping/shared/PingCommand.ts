@@ -21,7 +21,7 @@ export abstract class PingCommand extends CommandBase<PingParams, PingResult> {
     const startTime = Date.now();
     const pingParams = params as PingParams;
     
-    console.log(`🏓 ${this.getEnvironmentLabel()}: Ping received - "${pingParams.message || 'ping'}"`);
+    console.log(`🏓 ${this.getEnvironmentLabel()}: Ping received - "${pingParams.message ?? 'ping'}"`);
 
     try {
       // Get environment-specific information
@@ -31,7 +31,7 @@ export abstract class PingCommand extends CommandBase<PingParams, PingResult> {
       await new Promise(resolve => setTimeout(resolve, 1));
       const roundTripTime = pingParams.includeTiming ? Date.now() - startTime : undefined;
       
-      console.log(`✅ ${this.getEnvironmentLabel()}: Pong! Round-trip: ${roundTripTime}ms`);
+      console.log(`✅ ${this.getEnvironmentLabel()}: Pong! Round-trip: ${roundTripTime !== undefined ? `${roundTripTime}ms` : 'not measured'}`);
 
       return createPingResultFromParams(pingParams, {
         success: true,
