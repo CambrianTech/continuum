@@ -253,22 +253,45 @@ export class ChatWidget extends ChatWidgetBase {
   /**
    * Handle incoming chat messages for this room - STRICT TYPING
    */
-  private async onMessageReceived(eventData: ChatMessageEventData): Promise<void> {
+  private async onMessageReceived(eventData: any): Promise<void> {
     console.log(`📨 ChatWidget: Received message for room ${this.currentRoom}:`, eventData);
-    
-    if (eventData.roomId === this.currentRoom) {
+    console.log(`🔧 CLAUDE-EVENT-DATA-${Date.now()}: Raw event data structure:`, JSON.stringify(eventData, null, 2));
+
+    // Extract message data - handle both direct and nested structures
+    const messageData = eventData.message || eventData;
+    const roomId = messageData.roomId || eventData.roomId;
+
+    console.log(`🔧 CLAUDE-MESSAGE-DATA-${Date.now()}: Extracted message data:`, JSON.stringify(messageData, null, 2));
+
+    if (roomId === this.currentRoom) {
       const newMessage: ChatMessage = {
-        id: eventData.messageId,
-        content: eventData.content,
-        roomId: eventData.roomId,
-        senderId: eventData.senderId,
-        senderName: eventData.senderName,
-        type: (this.currentUserId && eventData.senderId === this.currentUserId) ? 'user' : 'assistant',
-        timestamp: eventData.timestamp
+        id: messageData.messageId,
+        content: messageData.content,
+        roomId: roomId,
+        senderId: messageData.senderId,
+        senderName: messageData.senderName || messageData.senderId, // Fallback to senderId
+        type: (this.currentUserId && messageData.senderId === this.currentUserId) ? 'user' : 'assistant',
+        timestamp: messageData.timestamp
       };
-      
+
       this.messages.push(newMessage);
       await this.renderWidget(); // Re-render with new message
+
+      // 🔥 VISUAL PROOF: Show indicator when chat message event is detected
+      console.log(`🔥 CLAUDE-EVENT-DETECTION-${Date.now()}: Chat message event detected, triggering visual indicator`);
+      try {
+        const client = await JTAGClient.sharedInstance;
+        await this.executeCommand('indicator', {
+          context: client.context,
+          sessionId: client.sessionId,
+          message: `CHAT EVENT DETECTED: "${messageData.content}" from ${messageData.senderName || messageData.senderId}`,
+          title: 'REAL-TIME CHAT EVENT',
+          type: 'success'
+        });
+        console.log(`✅ CLAUDE-INDICATOR-${Date.now()}: Visual indicator triggered for chat message event`);
+      } catch (error) {
+        console.error(`❌ CLAUDE-INDICATOR-FAILED-${Date.now()}: Failed to show indicator:`, error);
+      }
     }
   }
 

@@ -2,9 +2,18 @@
 
 ## 🚨 CURRENT KNOWN ISSUES (What's Broken)
 
-1. **Real-time events broken**: Server→browser events don't auto-appear, need manual refresh
+### ✅ FIXED (2025-09-13):
+- ✅ **EventsDaemon DOM event dispatching**: Added DOM event dispatch for BaseWidget integration (EventsDaemon.ts:134-141)
+- ✅ **Reusable test functions**: Created modular chat testing functions integrated into npm test system
+  - `sendSpecificMessageViaUI()` - Send messages via ChatWidget UI
+  - `findSpecificMessageInChatWidget()` - Find specific messages in DOM
+  - `sendMessageViaCLI()` - Send messages via server commands
+  - `getMessagesFromDatabase()` - Query database for messages
+
+### 🚨 STILL BROKEN (Needs Investigation):
+1. **Real-time events partially broken**: EventsDaemon fix may have helped, but needs verification
 2. **"Send failed: undefined"**: ChatWidget.sendMessage() returns undefined + console errors
-3. **HTML rendering broken**: Messages exist in widget.messages but don't render to DOM
+3. **HTML rendering issues**: Messages may exist in widget.messages but don't render to DOM consistently
 4. **Event system test failures**: Currently 2/3 Event Tests passing in npm test
 
 ## 🎯 TEST SCENARIOS - ALL ENVIRONMENTS
@@ -293,6 +302,83 @@ For each test scenario, we must capture:
 3. Fix widget sendMessage() returning undefined
 4. Validate room-scoped filtering
 5. Performance and edge case testing
+
+---
+
+## 📋 SESSION PROGRESS LOG (2025-09-13)
+
+### ✅ COMPLETED FIXES:
+1. **EventsDaemon DOM Event Dispatching** (EventsDaemon.ts:134-141):
+   ```typescript
+   // CRITICAL FIX: In browser environment, also dispatch DOM event for BaseWidget
+   if (this.context.environment === 'browser') {
+     const domEvent = new CustomEvent(payload.eventName, {
+       detail: bridgedData
+     });
+     document.dispatchEvent(domEvent);
+     console.log(`🔥 EventsDaemon: Dispatched DOM event '${payload.eventName}' for widgets`);
+   }
+   ```
+
+2. **Reusable Test Functions** (chat-real-time-event-routing.test.ts):
+   - ✅ Created 4 modular functions for all chat testing scenarios
+   - ✅ Integrated into npm test system (run-categorized-tests.sh)
+   - ✅ Available in both "chat" and "comprehensive" test profiles
+   - ✅ Verified working with multiple test runs (REALTIME-TEST-1757784621693, REALTIME-TEST-1757784627698)
+
+### 🔬 CURRENT RESEARCH STRATEGY:
+**Continue using empirical testing with debug commands for "irrefutable evidence"**
+
+#### Next Investigation Steps:
+1. **Verify EventsDaemon Fix Impact**:
+   ```bash
+   # Test if DOM event dispatch fixed real-time events
+   cd src/debug/jtag && npm start  # Deploy the fix
+   ./jtag chat/send-message --roomId="general" --message="EVENTSDAEMON-FIX-$(date +%s)" --senderName="TestBot"
+   ./jtag debug/html-inspector --selector="chat-widget" > eventsdaemon-test.html
+   # Look for our message without browser refresh
+   ```
+
+2. **Research "Send failed: undefined" Root Cause**:
+   ```bash
+   # Use reusable function to investigate sendMessage() failures
+   ./jtag exec --code="
+   const result = await sendSpecificMessageViaUI('SENDMESSAGE-DEBUG-$(date +%s)');
+   console.log('🔥 SEND-RESULT-TYPE:', typeof result, result);
+   "
+   ./jtag debug/logs --filterPattern="Send failed|sendMessage|undefined" --tailLines=20
+   ```
+
+3. **Investigate HTML Rendering Issues**:
+   ```bash
+   # Compare widget.messages vs DOM content
+   ./jtag exec --code="
+   const widget = document.querySelector('continuum-widget')?.shadowRoot?.querySelector('main-widget')?.shadowRoot?.querySelector('chat-widget');
+   console.log('WIDGET-MESSAGES-COUNT:', widget?.messages?.length);
+   console.log('DOM-MESSAGES-COUNT:', widget?.shadowRoot?.querySelectorAll('.message').length);
+   "
+   ```
+
+#### Research Philosophy:
+- ✅ **Cyclical Development**: analysis → code → logging → testing → deploy → analyze → fix
+- ✅ **Empirical Evidence**: Use debug commands, not theories
+- ✅ **Modular Testing**: Reuse the 4 functions across all investigations
+- ✅ **Scientific Method**: Form hypothesis → test → gather evidence → conclude
+- ✅ **Focus on EVENT ROUTING**: Commands work fine, events are the problem
+
+#### Current Status (2025-09-13T20:20):
+**CRITICAL DISCOVERY**: Events flow through transport properly but browser EventsDaemon never receives them!
+
+**Evidence**:
+- ✅ CLI shows "Transport message received (type: event)"
+- ✅ Transport working (commands work fine)
+- ❌ Browser EventsDaemon.handleLocalEventBridge() never called (no CLAUDE-BROWSER-EVENT logs)
+- ❌ No DOM events dispatched (no CLAUDE-DOM-EVENT logs)
+- ❌ ChatWidget doesn't receive events, no real-time updates
+
+**Root Cause**: Event routing broken between transport and browser EventsDaemon. Events reach client but don't get routed to browser EventsDaemon.
+
+**Next Steps**: Fix event routing to browser EventsDaemon - the issue is NOT in transport or DOM dispatch, it's in the routing layer between transport and EventsDaemon.
 
 ---
 

@@ -93,22 +93,26 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
    * Store message using data/create command - domain object approach
    */
   private async storeMessage(message: ChatMessage): Promise<void> {
+    console.log(`🔥 CLAUDE-FIX-${Date.now()}: STORE: About to store message ${message.messageId} to database`);
+
     const createParams: DataCreateParams = {
       collection: 'chat_messages',
       data: message.toData(),
       context: this.context,
       sessionId: message.senderId
     };
-    
+
     const result = await this.remoteExecute<DataCreateParams, DataCreateResult>(
-      createParams, 
+      createParams,
       'data/create'
     );
+
+    console.log(`🔥 CLAUDE-FIX-${Date.now()}: STORE-RESULT: Store result for ${message.messageId}:`, result);
 
     if (!result.success) {
       throw new Error(`Failed to store message ${message.messageId}: ${result.error}`);
     }
-    
+
     console.log(`💾 Stored message ${message.messageId} in global database`);
   }
 
