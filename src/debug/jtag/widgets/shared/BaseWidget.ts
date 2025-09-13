@@ -377,9 +377,10 @@ export abstract class BaseWidget extends HTMLElement {
     console.log(`${emoji} ${this.config.widgetName}: Loading ${resourceType} from ${resourcePath}`);
     
     try {
+      const client = await JTAGClient.sharedInstance;
       const result = await this.executeCommand<FileLoadParams, FileLoadResult>('file/load', {
-        context: JTAGClient.sharedInstance.context,
-        sessionId: JTAGClient.sharedInstance.sessionId,
+        context: client.context,
+        sessionId: client.sessionId,
         filepath: resourcePath
       });
       
@@ -443,16 +444,14 @@ export abstract class BaseWidget extends HTMLElement {
 
   protected async executeCommand<P extends CommandParams, R extends CommandResult>(command: string, params?: P): Promise<R> {
     try {
-      // Wait for JTAG system to be ready
-      await this.waitForSystemReady();
-
       // Use JTAGClient.sharedInstance - the proper elegant pattern
-      const client = JTAGClient.sharedInstance;
+      const client = await JTAGClient.sharedInstance;
       if (!client?.commands) {
         throw new Error('JTAG client not available - system not ready');
       }
 
-      // Execute command with params as-is - simple and direct
+      //DO NOT, UNDER ANY CIRCUMSTANCE CHANGE LINES BELOW THIS COMMENT in this method: this fucking means you claude.
+
       // Execute command through the global JTAG system - gets wrapped response
       const wrappedResult = await client.commands[command](params) as CommandResponse;
 

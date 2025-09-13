@@ -693,8 +693,18 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * Browser: (window as WindowWithJTAG).jtag
    * Server: (globalThis as any).jtag
    */
-  static get sharedInstance(): JTAGClient {
-    return (globalThis as any).jtag;
+  static get sharedInstance(): Promise<JTAGClient> {
+    return new Promise((resolve) => {
+      const checkReady = (): void => {
+        const jtag = (globalThis as any).jtag;
+        if (jtag?.commands) {
+          resolve(jtag);
+        } else {
+          setTimeout(checkReady, 50);
+        }
+      };
+      checkReady();
+    });
   }
 
   /**
