@@ -66,7 +66,7 @@ import { join, relative } from 'path';
 /**
  * TypeScript schema for validating Universal Module Architecture compliance
  */
-interface UniversalModuleStructure {
+/* interface UniversalModuleStructure { // Currently unused
   moduleName: string;
   moduleType: 'daemon' | 'command' | 'adapter' | 'protocol' | 'ai-hook' | 'channel';
   basePath: string;
@@ -81,9 +81,9 @@ interface UniversalModuleStructure {
     importDirectionValid: boolean;       // No forbidden imports (shared → env)
     codeReductionRatio: number;         // Percentage of code in shared vs environment
   };
-}
+} */
 
-interface UniversalModuleDirectory {
+/* interface UniversalModuleDirectory {
   path: string;
   files: UniversalModuleFile[];
   lineCount: number;
@@ -100,7 +100,7 @@ interface UniversalModuleFile {
   imports: string[];         // All import statements
   lineCount: number;
   role: 'types' | 'base' | 'validator' | 'wrapper' | 'other';
-}
+} */
 
 // ============================================================================
 // WELL-TYPED CONFIGURATION STRUCTURE  
@@ -538,7 +538,7 @@ class StructureGenerator {
     Array.from(allEntries.entries()).forEach(([entryTypeName, entries]) => {
       if (entries.length > 0) {
         const entryType = this.config.entryTypes.find(et => et.name === entryTypeName);
-        sections.push(`\n// ${envCap} ${entryType?.pluralName || entryTypeName} Imports`);
+        sections.push(`\n// ${envCap} ${entryType?.pluralName ?? entryTypeName} Imports`);
         sections.push(entries.map(e => `import { ${e.className} } from '${e.importPath}';`).join('\n'));
       }
     });

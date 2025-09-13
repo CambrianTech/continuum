@@ -4,6 +4,9 @@
  * Browser-specific entry point that exports JTAGSystemBrowser as jtag
  */
 
+// Browser globals type declaration
+declare const customElements: CustomElementRegistry;
+
 import { JTAGSystemBrowser } from './system/core/system/browser/JTAGSystemBrowser';
 import { JTAGClientBrowser } from './system/core/client/browser/JTAGClientBrowser';
 import { createJTAGClientServices } from './system/core/client/shared/services';

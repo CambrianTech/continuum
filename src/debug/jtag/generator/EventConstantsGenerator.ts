@@ -155,7 +155,7 @@ export class EventConstantsGenerator {
     const match = constantsRegex.exec(content);
     
     if (match) {
-      const [, constantName, body] = match;
+      const [, , body] = match;
       
       // Extract individual key-value pairs
       const eventRegex = /(\w+):\s*['"`]([^'"`]+)['"`]/g;
@@ -296,7 +296,7 @@ export const EVENT_SCOPES = {
   /**
    * Generate scoped event interfaces with subscription helpers
    */
-  private async generateScopedEventInterfaces(sources: DaemonEventSource[]): Promise<void> {
+  private async generateScopedEventInterfaces(_sources: DaemonEventSource[]): Promise<void> {
     const outputDir = path.join(this.basePath, this.outputPath);
     
     const content = `/**

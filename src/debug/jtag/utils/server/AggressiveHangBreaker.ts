@@ -6,10 +6,12 @@
  * It immediately breaks hanging processes with full diagnostic output.
  */
 
+import { execSync } from 'child_process';
+
 export class AggressiveHangBreaker {
   private startTime = Date.now();
-  private forceTimer: NodeJS.Timeout;
-  private warningTimer: NodeJS.Timeout;
+  private forceTimer: ReturnType<typeof setTimeout>;
+  private warningTimer: ReturnType<typeof setTimeout>;
   
   constructor(private testName: string, private maxHangTimeMs = 30000) {
     console.log(`⚡ HANG BREAKER: Armed for ${testName} (${maxHangTimeMs/1000}s limit)`);
@@ -44,7 +46,6 @@ export class AggressiveHangBreaker {
 
   private showEmergencyDiagnostics(): void {
     try {
-      const { execSync } = require('child_process');
       
       console.log('\n🚨 EMERGENCY HANG DIAGNOSTICS:');
       console.log('================================');
@@ -89,7 +90,7 @@ export class AggressiveHangBreaker {
       console.log('• Apply hang detection to prevent future hangs');
       
     } catch (error) {
-      console.log('❌ Diagnostics failed:', error.message);
+      console.log('❌ Diagnostics failed:', (error as Error).message);
     }
   }
 

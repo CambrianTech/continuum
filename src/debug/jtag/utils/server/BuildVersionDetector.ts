@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { globSync } from 'glob';
-import { execSync } from 'child_process';
+// import { execSync } from 'child_process'; // Currently unused
 import { SystemReadySignaler } from '../scripts/signal-system-ready';
 import { diagnostics } from './DiagnosticsLogger';
 
@@ -44,7 +44,7 @@ export class BuildVersionDetector {
    */
   async detectVersionMismatch(): Promise<VersionMismatchResult> {
     const operationId = `version-detect-${Date.now()}`;
-    const context = diagnostics.startOperation(operationId, 'Version Mismatch Detection', 30000);
+    diagnostics.startOperation(operationId, 'Version Mismatch Detection', 30000);
     
     try {
       console.log('🔍 BUILD VERSION DETECTION: Analyzing source vs running system...');
@@ -62,7 +62,7 @@ export class BuildVersionDetector {
       const runningSystemHash = await this.safeGetRunningSystemHash(operationId);
       const runningSystemTime = await this.safeGetRunningSystemTime(operationId);
       
-      diagnostics.addDetail(operationId, 'runningHash', runningSystemHash?.substring(0, 12) || 'none');
+      diagnostics.addDetail(operationId, 'runningHash', runningSystemHash?.substring(0, 12) ?? 'none');
       diagnostics.addDetail(operationId, 'runningTime', new Date(runningSystemTime).toISOString());
       
       console.log(`📊 Source hash: ${currentSourceHash.substring(0, 8)}... (modified: ${new Date(currentSourceTime).toISOString()})`);
@@ -107,7 +107,7 @@ export class BuildVersionDetector {
         reason,
         details: {
           sourceHash: currentSourceHash,
-          runningHash: runningSystemHash || '',
+          runningHash: runningSystemHash ?? '',
           newestSource: currentSourceTime,
           runningSystem: runningSystemTime,
           buildStatus
@@ -181,7 +181,7 @@ export class BuildVersionDetector {
         
         // Include both content and modification time in hash
         hasher.update(`${file}:${stats.mtime.getTime()}:${content}`);
-      } catch (error) {
+      } catch {
         // File might have been deleted, skip
         continue;
       }
@@ -229,7 +229,7 @@ export class BuildVersionDetector {
       // Try to read stored source hash from running system
       if (fs.existsSync(this.sourceHashFile)) {
         const hashData = JSON.parse(fs.readFileSync(this.sourceHashFile, 'utf8'));
-        return hashData.sourceHash || null;
+        return hashData.sourceHash ?? null;
       }
       
       return null;
@@ -393,7 +393,7 @@ export class BuildVersionDetector {
   private getPackageVersion(): string {
     try {
       const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-      return pkg.version || 'unknown';
+      return pkg.version ?? 'unknown';
     } catch {
       return 'unknown';
     }
@@ -514,7 +514,7 @@ export class BuildVersionDetector {
 }
 
 // CLI interface for testing
-async function main() {
+async function main(): Promise<void> {
   const detector = new BuildVersionDetector();
   
   if (process.argv.includes('--check-version')) {
