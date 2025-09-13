@@ -26,8 +26,21 @@ export const jtag = {
   // Universal client interface - always returns connection result with client property
   async connect(): Promise<ReturnType<typeof JTAGClientBrowser.connectLocal>> {
     console.debug('🔌 Browser: Connecting via JTAGClientBrowser (local connection)');
-    
-    // Register widgets dynamically from generated registry
+
+    // IMPORTANT: Connect to JTAG client FIRST before registering widgets
+    // This ensures JTAGClient.sharedInstance is available when widgets initialize
+    const connectionResult = await JTAGClientBrowser.connectLocal();
+    const client = connectionResult.client;
+
+    // Set up global window.jtag for widgets to access via JTAGClient.sharedInstance
+    (globalThis as any).jtag = client;
+    console.debug('🌐 Browser: Global jtag client established for widgets');
+
+    // Enhance client with organized services - no globals needed
+    const services = createJTAGClientServices(client);
+    Object.assign(client, services);
+
+    // NOW register widgets after JTAGClient.sharedInstance is available
     console.debug(`🎭 Registering ${BROWSER_WIDGETS.length} widgets...`);
     BROWSER_WIDGETS.forEach(widget => {
       if (!customElements.get(widget.tagName)) {
@@ -43,17 +56,10 @@ export const jtag = {
         console.warn(`⚠️ Widget ${widget.tagName} already registered, skipping`);
       }
     });
-    
-    const connectionResult = await JTAGClientBrowser.connectLocal();
-    const client = connectionResult.client;
-    
-    // Enhance client with organized services - no globals needed
-    const services = createJTAGClientServices(client);
-    Object.assign(client, services);
-    
+
     console.debug('✅ Browser: JTAGClient connected with organized services');
     console.debug('ℹ️ Access services via: client.chat, client.users, client.widgets');
-    
+
     return { ...connectionResult, client };
   },
 

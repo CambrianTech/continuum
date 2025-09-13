@@ -8,6 +8,7 @@
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { ChatMessage } from '../shared/ChatModuleTypes';
+import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 
 interface RoomData {
   readonly roomId: string;
@@ -58,9 +59,10 @@ export class RoomListWidget extends ChatWidgetBase {
     // For each room, get actual unread message count from database
     for (const room of this.rooms) {
       const messageResult = await this.executeCommand<DataListParams, DataListResult<ChatMessage>>('data/list', {
+        context: JTAGClient.sharedInstance.context,
+        sessionId: JTAGClient.sharedInstance.sessionId,
         collection: 'chat_messages',
-        filter: { roomId: room.id, isRead: false },
-        count: true
+        filter: { roomId: room.id, isRead: false }
       });
       
       room.unreadCount = messageResult?.success ? (messageResult.count || 0) : 0;
@@ -70,8 +72,10 @@ export class RoomListWidget extends ChatWidgetBase {
   private async loadRooms(): Promise<void> {
     // Load rooms from database using proper executeCommand with strict typing
     const result = await this.executeCommand<DataListParams, DataListResult<RoomData>>('data/list', {
+      context: JTAGClient.sharedInstance.context,
+      sessionId: JTAGClient.sharedInstance.sessionId,
       collection: 'rooms',
-      sort: { name: 1 }
+      orderBy: [{ field: 'name', direction: 'asc' }]
     });
     
     if (result?.success && result.items?.length > 0) {

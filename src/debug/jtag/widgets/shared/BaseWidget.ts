@@ -20,20 +20,9 @@
 import type { ChatEventName, ChatEventDataFor } from '../chat/shared/ChatEventTypes';
 import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
-import type { FileSaveParams, FileSaveResult } from '../../commands/file/save/shared/FileSaveTypes';
-import type { ScreenshotParams, ScreenshotResult } from '../../commands/screenshot/shared/ScreenshotTypes';
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
-import {
-  WIDGET_DEFAULTS,
-  DATABASE_OPERATIONS,
-  ROUTER_OPERATIONS,
-  ACADEMY_OPERATIONS,
-  WIDGET_EVENTS,
-  WIDGET_CHANNELS,
-  AI_PERSONAS,
-  WIDGET_DIRECTORIES,
-  DAEMON_NAMES,
-} from './WidgetConstants';
+import { WIDGET_DEFAULTS} from './WidgetConstants';
+import type { CommandErrorResponse, CommandResponse, CommandSuccessResponse } from 'daemons/command-daemon/shared/CommandResponseTypes';
 
 // Global declarations for browser/server compatibility
 declare const performance: { now(): number };
@@ -59,12 +48,6 @@ interface CachedValue {
   value: WidgetData;
   timestamp: number;
   ttl?: number;
-}
-
-interface EventData {
-  sourceWidget: string;
-  eventType: string;
-  data: WidgetData;
 }
 
 interface WindowWithJTAG extends Window {
@@ -112,13 +95,6 @@ export interface WidgetState {
   cache: Map<string, CachedValue>;
 }
 
-export interface WidgetContext {
-  environment: 'browser' | 'server' | 'shared';
-  sessionId: string;
-  userId: string;
-  permissions: string[];
-  capabilities: string[];
-}
 
 export abstract class BaseWidget extends HTMLElement {
   declare shadowRoot: ShadowRoot;
@@ -126,7 +102,6 @@ export abstract class BaseWidget extends HTMLElement {
   protected dispatcherEventTypes?: Set<string>; // Track event types with active dispatchers
   protected config: WidgetConfig;
   protected state: WidgetState;
-  protected context: WidgetContext;
   
   // Daemon connections (abstracted away from subclasses)
   private databaseDaemon?: DaemonInstance;
@@ -172,14 +147,6 @@ export abstract class BaseWidget extends HTMLElement {
       cache: new Map()
     };
     
-    // Initialize context (would be populated by widget system)
-    this.context = {
-      environment: 'browser', // Detected automatically
-      sessionId: this.generateSessionId(),
-      userId: 'current_user', // From user system
-      permissions: ['read', 'write'], // From permission system
-      capabilities: ['screenshot', 'file/save', 'ai_integration'] // From capability system
-    };
   }
 
   async connectedCallback(): Promise<void> {
@@ -189,8 +156,7 @@ export abstract class BaseWidget extends HTMLElement {
       // 1. Connect to daemon systems (abstracted) WAS DEAD CODE
       //await this.initializeDaemonConnections();
       
-      // 3. Restore persisted state (abstracted)
-      await this.restorePersistedState();
+      // 3. Restore persisted state (abstracted) - removed unused persistence system
       
       // 4. Load external resources (template & styles)
       await this.loadResources();
@@ -268,30 +234,10 @@ export abstract class BaseWidget extends HTMLElement {
     ttl?: number;
   } = {}): Promise<boolean> {
     try {
-      // const {
-      //   persistent = this.config.enablePersistence,
-      //   broadcast = this.config.enableRouterEvents,
-      //   ttl = 3600000 // 1 hour default
-      // } = options;
-      
+
       // 1. Update local cache immediately
       this.state.cache.set(key, { value, timestamp: Date.now(), ttl:3600000 });
-      
-      // // 2. Store in database if enabled. DEAD CODE detefcted here, JUSt call the database command
-      // if (persistent && this.config.enableDatabase) {
-      //   // await this.databaseOperation(DATABASE_OPERATIONS.STORE, {
-      //   //   widgetId: this.config.widgetId,
-      //   //   key,
-      //   //   value: JSON.stringify(value),
-      //   //   ttl
-      //   // });
-      // }
-      
-      // 3. Broadcast change if enabled
-      // if (broadcast) {
-      //   await this.broadcastEvent(WIDGET_EVENTS.DATA_UPDATED, { key, value });
-      // }
-      
+
       // 4. Update widget state
       this.state.data.set(key, value);
       this.state.lastUpdate = new Date().toISOString();
@@ -320,190 +266,12 @@ export abstract class BaseWidget extends HTMLElement {
         return this.state.data.get(key)!; // Non-null assertion - has() confirms existence
       }
       
-      //DEAD CODE DETECTED HERE:
-      // // 3. Load from database if enabled
-      // if (this.config.enableDatabase) {
-      //   const dbResult = await this.databaseOperation(DATABASE_OPERATIONS.RETRIEVE, {
-      //     widgetId: this.config.widgetId,
-      //     key
-      //   });
-        
-      //   if (dbResult.success && dbResult.data && typeof dbResult.data === 'object' && 'value' in dbResult.data && typeof (dbResult.data as { value: string }).value === 'string') {
-      //     const value = JSON.parse((dbResult.data as { value: string }).value);
-          
-      //     // Update cache and state
-      //     this.state.cache.set(key, { value, timestamp: Date.now() });
-      //     this.state.data.set(key, value);
-          
-      //     return value;
-      //   }
-      // }
-      
       return defaultValue;
       
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: getData failed for key ${key}:`, error);
       return defaultValue;
     }
-  }
-
-  // DEAD CODE DETECTED HERE:
-  // /**
-  //  * Broadcast event with automatic router + WebSocket coordination
-  //  * Like JTAG's cross-environment messaging but for widgets
-  //  */
-  // //DEAD CODE DETECTED HERE: have them call the event system directly
-  // protected async broadcastEvent(eventType: string, data: WidgetData, _options: {
-  //   targetWidgets?: string[];
-  //   excludeSelf?: boolean;
-  //   persistent?: boolean;
-  // } = {}): Promise<boolean> {
-  //   try {
-  //     if (!this.config.enableRouterEvents) return false;
-      
-  //     // DEAD CODE DETECTED HERE:
-  //     // const {
-  //     //   targetWidgets,
-  //     //   excludeSelf = true,
-  //     //   persistent = false
-  //     // } = options;
-      
-  //     // const eventData = {
-  //     //   sourceWidget: this.config.widgetId,
-  //     //   eventType,
-  //     //   data,
-  //     //   timestamp: new Date().toISOString(),
-  //     //   targetWidgets,
-  //     //   excludeSelf
-  //     // };
-      
-  //     // // Send via router daemon (handles WebSocket, cross-browser, etc.)
-  //     // const result = await this.routerOperation(ROUTER_OPERATIONS.BROADCAST, {
-  //     //   channel: WIDGET_CHANNELS.WIDGET_EVENTS,
-  //     //   event: eventData,
-  //     //   persistent
-  //     // });
-      
-  //     //return Boolean(result.success);
-
-  //     return false;
-      
-  //   } catch (error) {
-  //     console.error(`❌ ${this.config.widgetName}: broadcastEvent failed:`, error);
-  //     return false;
-  //   }
-  // }
-
-  // DEAD CODE DETECTED HERE:
-  // /**
-  //  * AI integration with automatic Academy daemon coordination
-  //  */
-  // protected async queryAI(message: string, options: {
-  //   persona?: string;
-  //   context?: WidgetData;
-  //   expectResponse?: boolean;
-  // } = {}): Promise<WidgetData> {
-  //   try {
-  //     if (!this.config.enableAI) {
-  //       console.warn(`⚠️ ${this.config.widgetName}: AI disabled for this widget`);
-  //       return null;
-  //     }
-      
-  //     const {
-  //       persona = AI_PERSONAS.GENERAL_ASSISTANT,
-  //       context = this.getAIContext(),
-  //       expectResponse = true
-  //     } = options;
-      
-  //     const result = await this.academyOperation(ACADEMY_OPERATIONS.QUERY, {
-  //       message,
-  //       persona,
-  //       context,
-  //       widgetId: this.config.widgetId,
-  //       expectResponse
-  //     });
-      
-  //     return result.success ? result.data : null;
-      
-  //   } catch (error) {
-  //     console.error(`❌ ${this.config.widgetName}: queryAI failed:`, error);
-  //     return null;
-  //   }
-  // }
-
-  /**
-   * Screenshot widget with automatic JTAG coordination
-   * Just like base JTAG screenshot command
-   */
-  protected async takeScreenshot(options: {
-    filename?: string;
-    selector?: string;
-    includeContext?: boolean;
-  } = {}): Promise<string | null> {
-    try {
-      if (!this.config.enableScreenshots) return null;
-      
-      const {
-        filename = `${this.config.widgetName}-${Date.now()}.png`,
-        selector = `:host`, // Screenshot this widget by default
-        includeContext = true
-      } = options;
-      
-      // Use JTAG screenshot command with proper types
-      const result = await this.executeCommand<ScreenshotParams, ScreenshotResult>('screenshot', {
-        filename,
-        querySelector: selector,
-        includeContext
-      });
-      
-      return result ? result.filepath : null;
-      
-    } catch (error) {
-      console.error(`❌ ${this.config.widgetName}: takeScreenshot failed:`, error);
-      return null;
-    }
-  }
-
-
-  /**
-   * Save file with automatic file system coordination
-   */
-  protected async saveFile(filename: string, content: string | Blob, options: {
-    directory?: string;
-    format?: string;
-    compress?: boolean;
-  } = {}): Promise<string | null> {
-    try {
-      const {
-        directory = WIDGET_DIRECTORIES.WIDGET_DATA
-      } = options;
-      
-      // Use JTAG file/save command with proper types
-      const result = await this.executeCommand<FileSaveParams, FileSaveResult>('file/save', {
-        filepath: `${directory}/${filename}`,
-        content: content,
-        createDirs: true
-      });
-      
-      return result ? result.filepath : null;
-      
-    } catch (error) {
-      console.error(`❌ ${this.config.widgetName}: saveFile failed:`, error);
-      return null;
-    }
-  }
-
-  // === OVERRIDE POINTS - Subclasses can customize these ===
-
-  /**
-   * Override to customize AI context sent with queries
-   */
-  protected getAIContext(): WidgetData {
-    return {
-      widgetType: this.config.widgetName,
-      currentState: Object.fromEntries(this.state.data),
-      capabilities: this.context.capabilities
-    };
   }
 
   /**
@@ -610,6 +378,8 @@ export abstract class BaseWidget extends HTMLElement {
     
     try {
       const result = await this.executeCommand<FileLoadParams, FileLoadResult>('file/load', {
+        context: JTAGClient.sharedInstance.context,
+        sessionId: JTAGClient.sharedInstance.sessionId,
         filepath: resourcePath
       });
       
@@ -628,40 +398,12 @@ export abstract class BaseWidget extends HTMLElement {
     }
   }
 
-
-  private async restorePersistedState(): Promise<void> {
-    if (!this.config.enablePersistence) return;
-    
-    const serializedState = await this.getData('widget_state');
-    if (serializedState && typeof serializedState === 'object' && serializedState !== null) {
-      this.deserializeState(serializedState as SerializedState);
-    }
-  }
-
   private async persistCurrentState(): Promise<void> {
     if (!this.config.enablePersistence) return;
     
     const serialized = this.serializeState();
     await this.storeData('widget_state', serialized, { persistent: true });
   }
-
-  // DEAD CODE DETECTED HERE:
-  // private async initializeEventSystem(): Promise<void> {
-  //   if (this.routerDaemon) {
-  //     // Subscribe to widget events. currently commented out because the routerOperation method should go thoirhg the router daemon not our own method
-  //     // await this.routerOperation('subscribe', {
-  //     //   channel: 'widget_events',
-  //     //   callback: (eventData: WidgetData) => {
-  //     //     if (eventData && typeof eventData === 'object' && eventData !== null) {
-  //     //       const typedEventData = eventData as EventData;
-  //     //       if (typedEventData.sourceWidget !== this.config.widgetId) {
-  //     //         this.onEventReceived(typedEventData.eventType, typedEventData.data);
-  //     //       }
-  //     //     }
-  //     //   }
-  //     // });
-  //   }
-  // }
 
   private disconnectFromDaemons(): void {
     // Clean disconnection from all daemon systems
@@ -694,49 +436,33 @@ export abstract class BaseWidget extends HTMLElement {
     setTimeout(() => errorEl.remove(), 5000);
   }
 
-  // DEAD CODE DETECTED HERE:
-  // private applyCSSProperties(styles: Record<string, string>): void {
-  //   const styleElement = this.shadowRoot.querySelector('style') ?? document.createElement('style');
-    
-  //   let css = ':host {\n';
-  //   for (const [property, value] of Object.entries(styles)) {
-  //     css += `  --${property}: ${value};\n`;
-  //   }
-  //   css += '}\n';
-    
-  //   styleElement.textContent = (styleElement.textContent ?? '') + css;
-    
-  //   if (!styleElement.parentNode) {
-  //     this.shadowRoot.appendChild(styleElement);
-  //   }
-  // }
-
   private isCacheValid(cached: CachedValue): boolean {
     const ttl = cached.ttl ?? 3600000; // 1 hour default
     return (Date.now() - cached.timestamp) < ttl;
   }
 
-  protected async executeCommand<P extends CommandParams = CommandParams, R extends CommandResult = CommandResult>(command: string, params?: Record<string, WidgetData>): Promise<R> {
+  protected async executeCommand<P extends CommandParams, R extends CommandResult>(command: string, params?: P): Promise<R> {
     try {
-      // Wait for JTAG system to be ready  
+      // Wait for JTAG system to be ready
       await this.waitForSystemReady();
-      
-      // Get the JTAG client via elegant daemon interface
-      const jtag = JTAGClient.sharedInstance;
-      if (!jtag?.daemons?.commands) {
-        throw new Error('JTAG client daemons not available - system not ready');
+
+      // Use JTAGClient.sharedInstance - the proper elegant pattern
+      const client = JTAGClient.sharedInstance;
+      if (!client?.commands) {
+        throw new Error('JTAG client not available - system not ready');
+      }
+
+      // Execute command with params as-is - simple and direct
+      // Execute command through the global JTAG system - gets wrapped response
+      const wrappedResult = await client.commands[command](params) as CommandResponse;
+
+      if (!wrappedResult.success) {
+        const commandError = wrappedResult as CommandErrorResponse;
+        throw new Error(commandError.error ?? `Command ${command} failed without error message`);
       }
       
-      // Use elegant daemon interface with proper CommandParams
-      const jtagContext = jtag.context;
-      const sessionId = jtag.sessionId;
-      const commandParams = {
-        context: jtagContext,
-        sessionId: sessionId,
-        ...params
-      } as P;
-      
-      return await jtag.daemons.commands.execute<P, R>(command, commandParams);
+      // Extract the actual command result from the wrapped response
+      return (wrappedResult as CommandSuccessResponse).commandResult as R;
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: JTAG operation ${command} failed:`, error);
       throw error;
@@ -758,26 +484,9 @@ export abstract class BaseWidget extends HTMLElement {
   ): Promise<boolean> {
     try {
 
-      // DEAD CODE DETECTED HERE:
-      // const {
-      //   broadcast = true,
-      //   targetWidgets,
-      //   excludeSelf = true
-      // } = options;
-
       // Emit locally first - immediate feedback
       const handlers = this.eventEmitter.get(eventName) ?? [];
       handlers.forEach(handler => handler(eventData));
-
-      // DEAD CODE DETECTED HERE:
-      // // Broadcast to other widgets if enabled
-      // if (broadcast) {
-      //   return await this.broadcastEvent(eventName, eventData, {
-      //     targetWidgets,
-      //     excludeSelf,
-      //     persistent: false
-      //   });
-      // }
       
       return true;
 
@@ -848,17 +557,17 @@ export abstract class BaseWidget extends HTMLElement {
    */
   private async waitForSystemReady(): Promise<void> {
     return new Promise((resolve) => {
-      // Check if system is already ready
+      // Check if system is already ready - window.jtag should be set when system initializes
       const jtagClient = (window as WindowWithJTAG).jtag;
       if (jtagClient?.commands) {
         console.log(`✅ BaseWidget: JTAG system already ready for ${this.config.widgetName}`);
         resolve();
         return;
       }
-      
+
       console.log(`⏳ BaseWidget: Waiting for JTAG system to be ready for ${this.config.widgetName}`);
-      
-      // Simple polling - check every 100ms for window.jtag
+
+      // Simple polling - check every 100ms for window.jtag to be set by system initialization
       const checkReady = (): void => {
         const jtag = (window as WindowWithJTAG).jtag;
         if (jtag?.commands) {
@@ -868,7 +577,7 @@ export abstract class BaseWidget extends HTMLElement {
           setTimeout(checkReady, 100);
         }
       };
-      
+
       checkReady();
     });
   }

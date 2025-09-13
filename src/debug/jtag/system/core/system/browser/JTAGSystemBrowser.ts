@@ -120,7 +120,7 @@ export class JTAGSystemBrowser extends JTAGSystem {
     console.log(`🔗 JTAG System: Transport ready event emitted`);
 
     JTAGSystemBrowser.instance = system;
-    
+
     console.log(`✅ JTAG System: Connected browser successfully`);
     console.log(`   Context UUID: ${context.uuid}`);
     console.log(`   Daemons: ${system.daemons.map(d => d.name).join(', ')}`);
