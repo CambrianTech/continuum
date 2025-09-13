@@ -457,20 +457,7 @@ export class ChatWidget extends ChatWidgetBase {
     const content = this.messageInput.value.trim();
     if (!content) return;
     
-    // Create user message using persistent User ID
-    const userMessage: ChatMessage = {
-      id: `msg_${Date.now()}`,
-      content,
-      roomId: this.currentRoom,
-      senderId: this.currentUserId, // Use persistent User ID (guaranteed to be set)
-      senderName: 'You',
-      type: 'user',
-      timestamp: new Date().toISOString()
-    };
-    
-    // Add to messages and render immediately (optimistic UI update)
-    this.messages.push(userMessage);
-    this.appendMessageRow(userMessage);
+    // Clear input immediately for better UX
     this.messageInput.value = '';
     
     try {

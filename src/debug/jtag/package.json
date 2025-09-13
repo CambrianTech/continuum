@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1469",
+  "version": "1.0.1476",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -126,7 +126,7 @@
     "clean": "rm -rf dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
     "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true; rm -rf .continuum/jtag/sessions 2>/dev/null || true; rm -rf .continuum/sessions 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
-    "prebuild": "npm run clean:all && npm run data:clean-files && npx tsx generator/generate-structure.ts",
+    "prebuild": "npm run clean:dist && npx tsx generator/generate-structure.ts",
     "build:ts": "tsc --project tsconfig.json",
     "lint": "eslint . --ext .ts --fix-dry-run && tsc --noEmit --project .",
     "lint:file": "eslint --ext .ts --fix-dry-run",
@@ -176,6 +176,7 @@
     "test:global-cli": "echo '📦 GLOBAL CLI: Testing global installation workflow...' && npx tsx tests/global-cli-installation.test.ts && echo '✅ Global CLI installation tests passed'",
     "test:process-coordinator": "echo '🔄 PROCESS COORDINATOR: Testing context switching and handoffs...' && npx tsx tests/process-coordinator-context-switching.test.ts && echo '✅ Process coordinator tests passed'",
     "test:session-isolation": "echo '🏷️ SESSION ISOLATION: Testing per-project session management...' && npx tsx tests/session-isolation.test.ts && npx tsx tests/session-daemon-isolation.test.ts && echo '✅ Session isolation tests passed'",
+    "test:chat": "./scripts/run-categorized-tests.sh chat",
     "test:load": "echo '⚡ LOAD TESTING: Testing context switching under load...' && npx tsx tests/context-switching-load.test.ts && echo '✅ Load tests passed'",
     "test:compiler-error-detection": "npx tsx tests/compiler-error-detection.test.ts",
     "test:start-and-test": "npx tsx scripts/test-with-server.ts",
@@ -196,7 +197,6 @@
     "test:transport": "./scripts/run-categorized-tests.sh transport",
     "test:screenshots": "./scripts/run-categorized-tests.sh screenshots",
     "test:themes": "echo '🎨 AUTONOMOUS THEME TESTING: Dynamic theme discovery + screenshots in shared session' && npx tsx tests/integration/automated-theme-screenshot.test.ts",
-    "test:chat": "./scripts/run-categorized-tests.sh chat",
     "test:events": "./scripts/run-categorized-tests.sh events",
     "test:widgets": "./scripts/run-categorized-tests.sh widgets",
     "test:database": "./scripts/run-categorized-tests.sh database",
