@@ -285,7 +285,20 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       return response as JTAGResponsePayload;
     }
     
-    // Handle other transport protocol messages (health checks, events, etc.)
+    // Handle cross-environment event messages - delegate to server's routing system
+    if (JTAGMessageTypes.isEvent(message)) {
+      console.log(`🌉 JTAGClient: Delegating event to server router (client doesn't route)`);
+      // JTAGClient is a dumb transport pipe - server handles all routing
+      return {
+        success: true,
+        delegated: true,
+        timestamp: new Date().toISOString(),
+        context: this.context,
+        sessionId: this.sessionId
+      } as JTAGResponsePayload;
+    }
+
+    // Handle other transport protocol messages (health checks, etc.)
     console.log(`📋 JTAGClient: Non-response message type '${message.messageType}' - acknowledging`);
     const response: BaseResponsePayload = {
       success: true,
@@ -760,6 +773,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       }
     };
   }
+
 }
 
 

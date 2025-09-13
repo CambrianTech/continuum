@@ -444,11 +444,12 @@ export abstract class BaseWidget extends HTMLElement {
 
   protected async executeCommand<P extends CommandParams, R extends CommandResult>(command: string, params?: P): Promise<R> {
     try {
-      console.log(`🔧 executeCommand DEBUG: Starting command ${command}`, params);
+      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Starting command ${command}`, params);
 
       // FIXED: Use window.jtag directly like other parts of the system
       const client = (window as any).jtag;
       console.log(`🔧 executeCommand DEBUG: Got client:`, !!client, 'commands:', !!client?.commands);
+      console.log(`🔧 executeCommand DEBUG: client keys:`, client ? Object.keys(client) : 'no client');
       if (!client?.commands) {
         throw new Error('JTAG client not available - system not ready');
       }

@@ -1,6 +1,6 @@
 {
   "name": "continuum",
-  "version": "0.2.3174",
+  "version": "0.2.3175",
   "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
   "main": "src/core/continuum-core.cjs",
   "bin": {
@@ -25,7 +25,7 @@
     "build:ui": "tsc --project tsconfig.ui.json",
     "dev:browser": "npm run build:browser-ts -- --watch",
     "dev:ui": "npm run build:ui-components -- --watch",
-    "test": "npm run compile && npm run test:unit && npm run test:integration:layer2-3",
+    "test": "echo 'WARNING_legacy system, cd into src/debug/jtag IMMEDIATELY!' && npm run compile && npm run test:unit && npm run test:integration:layer2-3",
     "test:integration:layer2-3": "npm run test:integration:eventbus && npm run test:integration:routing && npm run test:integration:html && npm run test:integration:wildcard && npm run test:integration:types && npm run test:integration:modules && npm run test:integration:browser-manager",
     "test:full": "npx tsx src/system/testing/test/universal-layer-runner.ts",
     "test:layer": "npx tsx src/system/testing/test/universal-layer-runner.ts --layer=",

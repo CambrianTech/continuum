@@ -1,4 +1,7 @@
 #!/bin/bash
+
+echo "THIS IS THE LEGACY SYSTEM. cd to src/debug/jtag IMMEDIATELY!";
+
 # Continuum CLI - Universal thin client that pipes to TypeScript handler
 # Much simpler: just handle daemon management and pipe everything else to TS
 

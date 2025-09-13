@@ -12,7 +12,7 @@ import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import { createBaseResponse, type BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
-import { EVENT_ENDPOINTS } from './EventEndpoints';
+import { JTAG_ENDPOINTS } from '../../../system/core/router/shared/JTAGEndpoints';
 import { 
   EventRoutingUtils, 
   EVENT_METADATA_KEYS, 
@@ -58,8 +58,13 @@ export interface EventBridgeResponse extends BaseResponsePayload {
  * Events Daemon - Handles cross-context event bridging
  */
 export abstract class EventsDaemon extends DaemonBase {
-  public readonly subpath: string = 'events';
+  public readonly subpath: string = JTAG_ENDPOINTS.EVENTS.BRIDGE;
   protected abstract eventManager: EventManager;
+
+  /**
+   * Handle event bridging to local context - implemented by environment-specific subclasses
+   */
+  protected abstract handleLocalEventBridge(eventName: string, eventData: any): void;
 
   constructor(
     context: JTAGContext,
@@ -79,14 +84,16 @@ export abstract class EventsDaemon extends DaemonBase {
    * Handle event bridge messages from other contexts
    */
   async handleMessage(message: JTAGMessage): Promise<EventBridgeResponse> {
+    console.log(`🔧 EVENTS-DAEMON-DEBUG-${Date.now()}: handleMessage called with endpoint: ${message.endpoint}`);
+
     // Normalize endpoint using shared utility
     const endpoint = EventRoutingUtils.normalizeEndpoint(message.endpoint);
-    
-    if (endpoint === EVENT_ENDPOINTS.BRIDGE) {
+
+    if (endpoint === JTAG_ENDPOINTS.EVENTS.BRIDGE) {
       return await this.handleEventBridge(message);
     }
-    
-    if (endpoint === EVENT_ENDPOINTS.STATS) {
+
+    if (endpoint === JTAG_ENDPOINTS.EVENTS.STATS) {
       return await this.getBridgeStats();
     }
     
@@ -120,9 +127,19 @@ export abstract class EventsDaemon extends DaemonBase {
           payload.originSessionId,
           payload.timestamp
         );
-        
-        // Emit to local event system
-        this.eventManager.events.emit(payload.eventName, bridgedData);
+
+        // Delegate to environment-specific event handling
+        this.handleLocalEventBridge(payload.eventName, bridgedData);
+
+        // CRITICAL FIX: In browser environment, also dispatch DOM event for BaseWidget
+        if (this.context.environment === 'browser') {
+          const domEvent = new CustomEvent(payload.eventName, {
+            detail: bridgedData
+          });
+          document.dispatchEvent(domEvent);
+          console.log(`🔥 EventsDaemon: Dispatched DOM event '${payload.eventName}' for widgets`);
+        }
+
         console.log(`✨ EventsDaemon: Bridged event '${payload.eventName}' to local context`);
       }
       
@@ -161,7 +178,7 @@ export abstract class EventsDaemon extends DaemonBase {
         // Create cross-environment message using shared utility
         const crossEnvEndpoint = EventRoutingUtils.createCrossEnvEndpoint(
           targetEnv as any, 
-          EVENT_ENDPOINTS.BRIDGE
+          JTAG_ENDPOINTS.EVENTS.BRIDGE
         );
         
         const crossEnvMessage = JTAGMessageFactory.createEvent(

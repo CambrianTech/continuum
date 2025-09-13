@@ -15,4 +15,12 @@ export class EventsDaemonServer extends EventsDaemon {
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
   }
+
+  /**
+   * Handle local event bridging - emit to local event system only
+   */
+  protected handleLocalEventBridge(eventName: string, eventData: any): void {
+    // Server only needs to emit to local event system
+    this.eventManager.events.emit(eventName, eventData);
+  }
 }
