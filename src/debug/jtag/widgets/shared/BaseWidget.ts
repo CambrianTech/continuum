@@ -22,7 +22,7 @@ import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
 import { WIDGET_DEFAULTS} from './WidgetConstants';
-import type { CommandErrorResponse, CommandResponse, CommandSuccessResponse } from 'daemons/command-daemon/shared/CommandResponseTypes';
+import type { CommandErrorResponse, CommandResponse, CommandSuccessResponse } from '../../daemons/command-daemon/shared/CommandResponseTypes';
 
 // Global declarations for browser/server compatibility
 declare const performance: { now(): number };
@@ -444,24 +444,32 @@ export abstract class BaseWidget extends HTMLElement {
 
   protected async executeCommand<P extends CommandParams, R extends CommandResult>(command: string, params?: P): Promise<R> {
     try {
-      // Use JTAGClient.sharedInstance - the proper elegant pattern
-      const client = await JTAGClient.sharedInstance;
+      console.log(`🔧 executeCommand DEBUG: Starting command ${command}`, params);
+
+      // FIXED: Use window.jtag directly like other parts of the system
+      const client = (window as any).jtag;
+      console.log(`🔧 executeCommand DEBUG: Got client:`, !!client, 'commands:', !!client?.commands);
       if (!client?.commands) {
         throw new Error('JTAG client not available - system not ready');
       }
 
       //DO NOT, UNDER ANY CIRCUMSTANCE CHANGE LINES BELOW THIS COMMENT in this method: this fucking means you claude.
 
+      console.log(`🔧 executeCommand DEBUG: Command ${command} exists:`, !!client.commands[command]);
+
       // Execute command through the global JTAG system - gets wrapped response
       const wrappedResult = await client.commands[command](params) as CommandResponse;
+      console.log(`🔧 executeCommand DEBUG: Raw result:`, typeof wrappedResult, wrappedResult);
 
       if (!wrappedResult.success) {
         const commandError = wrappedResult as CommandErrorResponse;
         throw new Error(commandError.error ?? `Command ${command} failed without error message`);
       }
-      
+
       // Extract the actual command result from the wrapped response
-      return (wrappedResult as CommandSuccessResponse).commandResult as R;
+      const finalResult = (wrappedResult as CommandSuccessResponse).commandResult as R;
+      console.log(`🔧 executeCommand DEBUG: Final result:`, typeof finalResult, finalResult);
+      return finalResult;
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: JTAG operation ${command} failed:`, error);
       throw error;

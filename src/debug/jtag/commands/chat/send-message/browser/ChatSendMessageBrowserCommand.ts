@@ -18,30 +18,15 @@ export class ChatSendMessageBrowserCommand extends ChatSendMessageCommand {
   }
 
   /**
-   * Browser-specific event emission - delegate to server for proper event broadcasting
+   * Browser-specific event emission - Skip since server already handles events
+   * FIXED: No double remoteExecute call - server handles event emission after storing message
    */
   protected async emitMessageEvent(message: any): Promise<void> {
-    console.log(`🌐 BROWSER: Delegating event emission to server for message ${message.messageId}`);
-    
-    try {
-      // Create params for server-side event emission only
-      const serverParams = {
-        ...this.originalParams, // Preserve original params
-        messageId: message.messageId,
-        message: message,
-        eventOnly: true, // Flag to indicate this is just for event emission
-        context: this.context,
-        sessionId: message.senderId
-      };
+    console.log(`🌐 BROWSER: Skipping event emission - server will handle events for message ${message.messageId}`);
 
-      // Delegate to server for event emission
-      const result = await this.remoteExecute(serverParams);
-      console.log(`📨 BROWSER: Server event emission ${(result as any).success ? 'succeeded' : 'failed'}`);
-      
-    } catch (error) {
-      console.error(`❌ BROWSER: Failed to delegate event emission:`, error);
-      // Don't fail the entire operation if event delegation fails
-    }
+    // CRITICAL: Don't call remoteExecute here - that would trigger the command twice!
+    // The server version of this command will handle event emission after storing the message
+    // Browser commands should only handle browser-specific logic, not duplicate server work
   }
 
   /**
@@ -52,6 +37,21 @@ export class ChatSendMessageBrowserCommand extends ChatSendMessageCommand {
 
   async execute(params: JTAGPayload): Promise<ChatSendMessageResult> {
     this.originalParams = params as ChatSendMessageParams;
-    return await super.execute(params);
+
+    console.log(`🌐 BROWSER: Delegating chat/send-message to server for real-time events`);
+
+    // FIXED: Delegate to server-side command to ensure events are emitted
+    // This ensures the server-side ChatSendMessageServerCommand.emitMessageEvent() is called
+    const result = await this.remoteExecute<ChatSendMessageParams, ChatSendMessageResult>(
+      this.originalParams,
+      'chat/send-message'
+    );
+
+    if (!result.success) {
+      throw new Error(`Server delegation failed: ${result.error}`);
+    }
+
+    console.log(`✅ BROWSER: Server delegation successful for message ${result.messageId}`);
+    return result;
   }
 }
