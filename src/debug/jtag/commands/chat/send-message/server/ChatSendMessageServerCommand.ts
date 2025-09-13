@@ -11,7 +11,7 @@ import { ChatSendMessageCommand } from '../shared/ChatSendMessageCommand';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../shared/ChatSendMessageTypes';
 import { CHAT_EVENTS } from '../../../../widgets/chat/shared/ChatEventConstants';
 import type { ChatMessage } from '../../../../domain/chat/ChatMessage';
-import { EVENT_SCOPES, EventRoutingUtils } from '../../../../system/events/shared/EventSystemConstants';
+import { EVENT_SCOPES } from '../../../../system/events/shared/EventSystemConstants';
 
 export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
   
@@ -27,6 +27,7 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
    * Execute chat message sending using base class logic
    */
   async execute(params: ChatSendMessageParams): Promise<ChatSendMessageResult> {
+    console.log(`🔥 CLAUDE-SERVER-EXECUTE-${Date.now()}: SERVER execute() called for message`);
     // Call base class which handles database storage + event emission
     return await super.execute(params);
   }
@@ -35,7 +36,9 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
    * Server-specific event emission using Router's event facilities
    */
   protected async emitMessageEvent(message: ChatMessage): Promise<void> {
+    console.log(`🚨 CLAUDE-EMIT-CALLED-${Date.now()}: ChatSendMessageServerCommand.emitMessageEvent() called for ${message.messageId}`);
     console.log(`🔥 CLAUDE-FIX-${Date.now()}: SERVER-EVENT: emitMessageEvent called for message ${message.messageId}`);
+
     try {
       if (!this.commander?.router) {
         throw new Error('Router not available for event emission');
@@ -44,7 +47,7 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
       // Create EventBridge payload for room-scoped chat message event
       const eventPayload: EventBridgePayload = {
         context: this.context,
-        sessionId: message.senderId as any,
+        sessionId: message.senderId,
         type: 'event-bridge',
         scope: {
           type: EVENT_SCOPES.ROOM,
@@ -55,7 +58,7 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
         data: {
           message: message.toData()
         },
-        originSessionId: message.senderId as any,
+        originSessionId: message.senderId as string,
         originContextUUID: this.context.uuid,
         timestamp: new Date().toISOString()
       };
@@ -73,7 +76,7 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
       console.log(`📨 SERVER-EVENT: Emitted MESSAGE_RECEIVED for message ${message.messageId} in room ${message.roomId}`, result);
 
     } catch (error) {
-      console.error(`❌ Failed to emit message event:`, error);
+      console.error(`❌ CLAUDE-EVENT-EMISSION-FAILED-${Date.now()}: Failed to emit message event:`, error);
       // Don't fail the entire operation if event emission fails
     }
   }

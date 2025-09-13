@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1496",
+  "version": "1.0.1525",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -124,9 +124,9 @@
     "smart-build": "npx tsx scripts/smart-build.ts",
     "stop": "npx tsx scripts/cleanup-dynamic-ports.ts",
     "clean": "rm -rf dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
-    "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true; rm -rf .continuum/jtag/sessions 2>/dev/null || true; rm -rf .continuum/sessions 2>/dev/null || true",
+    "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true; rm -rf .continuum/jtag/sessions 2>/dev/null || true; rm -rf .continuum/sessions 2>/dev/null || true; rm -rf examples/*/.continuum/jtag/sessions 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
-    "prebuild": "npm run clean:dist && npx tsx generator/generate-structure.ts",
+    "prebuild": "npm run clean:all && npx tsx generator/generate-structure.ts",
     "build:ts": "tsc --project tsconfig.json",
     "lint": "eslint . --ext .ts --fix-dry-run && tsc --noEmit --project .",
     "lint:file": "eslint --ext .ts --fix-dry-run",

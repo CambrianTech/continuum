@@ -8,9 +8,8 @@
 // Core daemon endpoints (without context prefix)
 export const JTAG_DAEMON_ENDPOINTS = {
   HEALTH: 'health',
-  CONSOLE: 'console', 
+  CONSOLE: 'console',
   COMMANDS: 'commands',
-  EVENTS: 'events',
   SESSION: 'session-daemon'
 } as const;
 

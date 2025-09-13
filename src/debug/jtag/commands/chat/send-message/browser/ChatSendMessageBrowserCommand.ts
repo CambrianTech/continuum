@@ -38,6 +38,7 @@ export class ChatSendMessageBrowserCommand extends ChatSendMessageCommand {
   async execute(params: JTAGPayload): Promise<ChatSendMessageResult> {
     this.originalParams = params as ChatSendMessageParams;
 
+    console.log(`🔥 CLAUDE-BROWSER-COMMAND-${Date.now()}: ChatSendMessageBrowserCommand.execute() called!`);
     console.log(`🌐 BROWSER: Delegating chat/send-message to server for real-time events`);
 
     // FIXED: Delegate to server-side command to ensure events are emitted

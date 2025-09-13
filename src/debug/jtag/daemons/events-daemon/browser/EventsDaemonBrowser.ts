@@ -18,18 +18,32 @@ export class EventsDaemonBrowser extends EventsDaemon {
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
-    
+
+    console.log(`🔥 CLAUDE-BROWSER-DAEMON-DEBUG-${Date.now()}: EventsDaemonBrowser constructor called!`);
+    console.log(`🔥 Context: ${context.environment}/${context.uuid}`);
+    console.log(`🔥 ENDPOINT-DEBUG: EventsDaemonBrowser.subpath = "${this.subpath}"`);
+    console.log(`🔥 ENDPOINT-DEBUG: Expected browser endpoint should be "browser/${this.subpath}"`);
+
     // Setup DOM event bridge for widget communication
     this.domEventBridge = new DOMEventBridge(this.eventManager);
     console.log('🌉 EventsDaemonBrowser: DOM event bridge initialized');
   }
 
   /**
-   * Handle local event bridging - emit to event system, DOMEventBridge handles DOM dispatch
+   * Handle local event bridging - emit to event system AND DOM for BaseWidget
    */
-  protected handleLocalEventBridge(eventName: string, eventData: any): void {
+  protected handleLocalEventBridge(eventName: string, eventData: unknown): void {
+    console.log(`🔥 CLAUDE-BROWSER-EVENT-${Date.now()}: handleLocalEventBridge called with eventName='${eventName}'`);
+
     // Emit to local event system - DOMEventBridge will automatically handle DOM dispatch
     this.eventManager.events.emit(eventName, eventData);
+
+    // CRITICAL: Also dispatch DOM event for BaseWidget integration
+    const domEvent = new CustomEvent(eventName, {
+      detail: eventData
+    });
+    document.dispatchEvent(domEvent);
+    console.log(`🔥 CLAUDE-DOM-EVENT-${Date.now()}: Dispatched DOM event '${eventName}' for BaseWidget`);
   }
 
   /**

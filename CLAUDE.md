@@ -47,6 +47,13 @@ Screenshot and file/save or file/load illustrate this, not ideally, but show how
 DON'T work very long before testing compilation, npm start, and npm test, in order of descending usage (think logically)
 We want to check in our code and in order to do so, the site must not be broken. We must check often.
 
+"browserConnected": false is invalid, IT IS A RED HERRING. We must fix this issue, but it is incorrect. browser might be connected, use ./jtag ping command.
+"npm start" takes at least 45 seconds.
+
+ YOU need to iterate with targeted logging - add logs where I need to trace execution, THEN remove them when I'm done, otherwise
+   I'll be flooded with noise. This is your debugger, but be sure to deploy after each change: npm start.
+
+
  The pattern we are going for should be:
  ```typescript
   const jtag:JTAGClient = JTAGClient.sharedInstance(); //may end up being await but let's not worry
