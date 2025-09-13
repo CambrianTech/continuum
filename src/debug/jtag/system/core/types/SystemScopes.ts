@@ -55,8 +55,8 @@ export function isBootstrapSession(sessionId: UUID): boolean {
  * Determine if logs should be dual-scoped (both system and session)
  */
 export function shouldDualScope(sessionId?: UUID): boolean {
-  // Only dual-scope for real sessions, not system operations
-  return !!sessionId && !isSystemUUID(sessionId);
+  // Only dual-scope for real sessions, not system operations or unknown sessions
+  return !!sessionId && !isSystemUUID(sessionId) && sessionId !== SYSTEM_SCOPES.UNKNOWN_SESSION;
 }
 
 /**
