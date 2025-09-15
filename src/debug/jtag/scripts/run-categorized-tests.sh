@@ -307,6 +307,7 @@ run_profile_tests() {
             run_test "Server-Browser Events" "npx tsx tests/integration/server-browser-event-flow.test.ts" "Event Tests"
             run_test "Browser-Server Events" "npx tsx tests/integration/browser-server-event-flow.test.ts" "Event Tests"
             run_test "Cross-Environment Events" "npx tsx tests/integration/cross-environment-events-working.test.ts" "Event Tests"
+            run_test "Event Indicator Integration" "npx tsx tests/integration/event-indicator-integration.test.ts" "Event Tests"
             ;;
             
         "blocker")

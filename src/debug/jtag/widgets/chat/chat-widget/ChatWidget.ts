@@ -277,21 +277,7 @@ export class ChatWidget extends ChatWidgetBase {
       this.messages.push(newMessage);
       await this.renderWidget(); // Re-render with new message
 
-      // 🔥 VISUAL PROOF: Show indicator when chat message event is detected
-      console.log(`🔥 CLAUDE-EVENT-DETECTION-${Date.now()}: Chat message event detected, triggering visual indicator`);
-      try {
-        const client = await JTAGClient.sharedInstance;
-        await this.executeCommand('indicator', {
-          context: client.context,
-          sessionId: client.sessionId,
-          message: `CHAT EVENT DETECTED: "${messageData.content}" from ${messageData.senderName || messageData.senderId}`,
-          title: 'REAL-TIME CHAT EVENT',
-          type: 'success'
-        });
-        console.log(`✅ CLAUDE-INDICATOR-${Date.now()}: Visual indicator triggered for chat message event`);
-      } catch (error) {
-        console.error(`❌ CLAUDE-INDICATOR-FAILED-${Date.now()}: Failed to show indicator:`, error);
-      }
+      // Real-time message added successfully
     }
   }
 
@@ -340,7 +326,8 @@ export class ChatWidget extends ChatWidgetBase {
       await this.renderWidget();
     }
   }
-  
+
+
   /**
    * Scroll chat messages to bottom to show latest content
    */
@@ -423,9 +410,7 @@ export class ChatWidget extends ChatWidgetBase {
     
     // Send message on Enter
     const keydownHandler = (e: KeyboardEvent) => {
-      console.log('🔧 CLAUDE-DEBUG: keydown event triggered, key:', e.key);
       if (e.key === 'Enter') {
-        console.log('🔧 CLAUDE-DEBUG: Enter key pressed, calling sendMessage');
         e.preventDefault();
         this.sendMessage();
       }
@@ -474,56 +459,46 @@ export class ChatWidget extends ChatWidgetBase {
   }
 
   public async sendMessage(): Promise<void> {
-    console.log('🔧 CLAUDE-DEBUG: sendMessage called');
-    if (!this.messageInput) return;
-    
-    const content = this.messageInput.value.trim();
+    const content = this.getInputContent();
     if (!content) return;
-    
-    // Clear input immediately for better UX
-    this.messageInput.value = '';
-    
+
+    this.clearInput();
+    await this.sendChatMessage(content);
+  }
+
+  private getInputContent(): string {
+    if (!this.messageInput) return '';
+    return this.messageInput.value.trim();
+  }
+
+  private clearInput(): void {
+    if (this.messageInput) {
+      this.messageInput.value = '';
+    }
+  }
+
+  private async sendChatMessage(content: string): Promise<void> {
     try {
-      // Use existing chat/send-message command with proper types
-      console.log(`🔧 CLAUDE-DEBUG: About to execute chat/send-message command`);
       const client = await JTAGClient.sharedInstance;
       const sendResult = await this.executeCommand<ChatSendMessageParams, ChatSendMessageResult>('chat/send-message', {
         context: client.context,
         sessionId: client.sessionId,
-        content: content,  // ← Fixed: use 'content' parameter as expected by server
+        content: content,
         roomId: this.currentRoom,
-        senderType: 'user' // Explicitly mark as user message - server will use UserIdManager
+        senderType: 'user'
       });
-      
-      console.log(`🔧 CLAUDE-DEBUG: executeCommand returned:`, sendResult);
-      console.log(`🔧 CLAUDE-DEBUG: sendResult type:`, typeof sendResult);
-      console.log(`🔧 CLAUDE-DEBUG: sendResult.success:`, sendResult?.success);
-      
-      // Strict typing: handle all possible return states explicitly
-      if (!sendResult) {
-        // executeCommand returned undefined - command execution failed
-        const errorMsg = 'Command execution failed: executeCommand returned undefined (check server connection and command routing)';
-        console.error(`❌ ChatWidget: Failed to send message:`, errorMsg);
-        this.handleError(errorMsg, 'sendMessage');
-        return;
-      }
-      
-      if (!sendResult.success) {
-        // Command executed but failed - use explicit error message
-        const errorMsg = sendResult.error || 'Command execution failed without specific error message';
-        console.error(`❌ ChatWidget: Failed to send message:`, errorMsg);
-        this.handleError(errorMsg, 'sendMessage');
-        return;
-      }
-      
-      // Success case - command executed and succeeded
-      console.log(`✅ ChatWidget: Message sent to room ${this.currentRoom}`, sendResult);
-      // Message already added optimistically, and events will trigger React-like updates
-      // No need to reload - let the DOM events handle it efficiently
-      
+
+      console.log('✅ Message sent successfully:', sendResult);
     } catch (error) {
-      console.error('❌ ChatWidget: Failed to send message:', error);
-      this.handleError(error, 'sendMessage');
+      console.error('❌ Failed to send message:', error);
+      // Re-add content to input on error
+      this.restoreInputContent(content);
+    }
+  }
+
+  private restoreInputContent(content: string): void {
+    if (this.messageInput) {
+      this.messageInput.value = content;
     }
   }
 
