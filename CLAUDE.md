@@ -40,6 +40,28 @@ That means if you are using a browser feature, it MUST be in a browser file. Sam
 
 When you see a pattern, something similar, especially in more than one file, turn it into a function or class.
 
+### 🏛️ USER CITIZEN ARCHITECTURE
+Clean inheritance following Rust-like typing principles:
+```
+BaseUser (abstract)
+├── HumanUser extends BaseUser
+└── AIUser extends BaseUser (abstract)
+    ├── AgentUser extends AIUser (external portals: Claude, GPT, etc.)
+    └── PersonaUser extends AIUser (prompt + RAG → LoRA genome adapter)
+```
+
+**PersonaUser Evolution Path**: Simple prompt + RAG → Enhanced with LoRA Adapter → Academy Training → Genomic Sophistication
+
+**System messages are NOT user types** - handled via MessageMetadata.source ('user' | 'system' | 'bot' | 'webhook')
+
+### 🆔 ID SCOPE HIERARCHY (CRITICAL - Often Confused)
+```
+userId: Who you are (permanent citizen identity)
+  └── sessionId: Your connection instance (browser tab, API connection)
+      └── contextId: Your conversation scope (chat room, thread)
+```
+**Example**: Joel (userId) opens 3 browser tabs (3 sessionIds), each in different chat rooms (different contextIds)
+
 Commands and Events are environment agnostic externally, and environment conscious internally. 
 They call their other environment forms, and orchestrate with themsleves (and other commands) depending on which environment they were called in and parameters.
 Screenshot and file/save or file/load illustrate this, not ideally, but show how a browser or server form figures it out.

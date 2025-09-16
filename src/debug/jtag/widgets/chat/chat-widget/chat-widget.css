@@ -43,14 +43,15 @@
   box-shadow: var(--shadow-sm, 0 2px 4px rgba(0, 0, 0, 0.2));
 }
 
-.message.user {
+/* Proper semantic classes based on WHO sent the message */
+.message.current-user {
   align-self: flex-end;
   background: var(--accent-color, #00d4ff);
   color: var(--bg-primary, #000);
   font-weight: 500;
 }
 
-.message.assistant {
+.message.other-user {
   align-self: flex-start;
   background: var(--surface-secondary, rgba(255, 255, 255, 0.1));
   color: var(--text-primary, rgba(255, 255, 255, 0.9));
@@ -136,13 +137,13 @@
   word-wrap: break-word;
 }
 
-.message-bubble.message-me {
+.message-bubble.current-user {
   background: var(--accent-color, #00d4ff);
   color: var(--bg-primary, #000);
   font-weight: 500;
 }
 
-.message-bubble.message-other {
+.message-bubble.other-user {
   background: var(--surface-secondary, rgba(255, 255, 255, 0.05));
   color: var(--text-primary, rgba(255, 255, 255, 0.9));
 }

@@ -54,7 +54,7 @@ export interface ChatMessage {
   senderId: string;
   senderName: string;
   timestamp: string;
-  type: 'user' | 'assistant' | 'system';
+  type: 'user' | 'assistant' | 'system';  // What TYPE of entity sent this
   status?: 'sending' | 'sent' | 'delivered' | 'error';
   metadata?: {
     replyTo?: string;
@@ -63,6 +63,36 @@ export interface ChatMessage {
     systemEvent?: string;
     [key: string]: any;
   };
+}
+
+/**
+ * Convenience methods for ChatMessage (Rust-like approach with explicit typing)
+ * These methods provide semantic operations while maintaining type safety
+ */
+export interface ChatMessageMethods {
+  /** Determine if this message was sent by the current user (for positioning) */
+  isFromCurrentUser(currentUserId: string): boolean;
+
+  /** Get semantic CSS class for user positioning (current-user vs other-user) */
+  getUserPositionClass(currentUserId: string): 'current-user' | 'other-user';
+
+  /** Get alignment direction for message positioning */
+  getAlignment(currentUserId: string): 'right' | 'left';
+
+  /** Check if message is from an AI assistant */
+  isFromAssistant(): boolean;
+
+  /** Check if message is a system message */
+  isSystemMessage(): boolean;
+
+  /** Get display name with fallback logic */
+  getDisplayName(): string;
+
+  /** Check if message has error status */
+  hasError(): boolean;
+
+  /** Check if message is still being sent */
+  isPending(): boolean;
 }
 
 // Event system for coordinated widgets
@@ -217,9 +247,55 @@ export function formatLastActive(timestamp: string): string {
 export function getUserStatusColor(status: ChatUser['status']): string {
   const colors = {
     online: 'var(--success-color, #00ff88)',
-    away: 'var(--warning-color, #ffaa00)', 
+    away: 'var(--warning-color, #ffaa00)',
     busy: 'var(--error-color, #ff4444)',
     offline: 'var(--content-secondary, #666666)'
   };
   return colors[status] || colors.offline;
 }
+
+/**
+ * ChatMessage convenience methods implementation
+ * Rust-like approach: explicit, predictable, type-safe
+ */
+export const ChatMessageHelpers = {
+  /** Determine if this message was sent by the current user (for positioning) */
+  isFromCurrentUser(message: ChatMessage, currentUserId: string): boolean {
+    return message.senderId === currentUserId;
+  },
+
+  /** Get semantic CSS class for user positioning (current-user vs other-user) */
+  getUserPositionClass(message: ChatMessage, currentUserId: string): 'current-user' | 'other-user' {
+    return ChatMessageHelpers.isFromCurrentUser(message, currentUserId) ? 'current-user' : 'other-user';
+  },
+
+  /** Get alignment direction for message positioning */
+  getAlignment(message: ChatMessage, currentUserId: string): 'right' | 'left' {
+    return ChatMessageHelpers.isFromCurrentUser(message, currentUserId) ? 'right' : 'left';
+  },
+
+  /** Check if message is from an AI assistant */
+  isFromAssistant(message: ChatMessage): boolean {
+    return message.type === 'assistant';
+  },
+
+  /** Check if message is a system message */
+  isSystemMessage(message: ChatMessage): boolean {
+    return message.type === 'system';
+  },
+
+  /** Get display name with fallback logic */
+  getDisplayName(message: ChatMessage): string {
+    return message.senderName || message.senderId || 'Unknown User';
+  },
+
+  /** Check if message has error status */
+  hasError(message: ChatMessage): boolean {
+    return message.status === 'error';
+  },
+
+  /** Check if message is still being sent */
+  isPending(message: ChatMessage): boolean {
+    return message.status === 'sending';
+  }
+} as const;

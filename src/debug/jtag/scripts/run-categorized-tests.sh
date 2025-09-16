@@ -235,7 +235,7 @@ run_profile_tests() {
             
             # Database & persistence tests
             run_test "Database Persistence Validation" "npx tsx tests/integration/database/database-persistence-validation.test.ts" "Database Tests"
-            run_test "Database Comprehensive Integration" "npx tsx tests/integration/database-comprehensive-integration.test.ts" "Database Tests"
+            run_test "Database Chat Integration" "npx tsx tests/integration/database-chat-integration.test.ts" "Database Tests"
             run_test "Data Daemon Unit Tests" "npx tsx tests/data-daemon/run-data-tests.ts" "Database Tests"
             run_test "Professional Data Architecture" "npx tsx tests/classified/ProfessionalDataArchitectureTest.ts" "Database Tests"
             # TEMPORARY SKIP: Storage Configuration Integration test triggers infinite symlink thrashing (identified via process of elimination)
@@ -328,7 +328,7 @@ run_profile_tests() {
             
         "database")
             run_test "Database Persistence Validation" "npx tsx tests/integration/database/database-persistence-validation.test.ts" "Database Tests"
-            run_test "Database Comprehensive Integration" "npx tsx tests/integration/database-comprehensive-integration.test.ts" "Database Tests"
+            run_test "Database Chat Integration" "npx tsx tests/integration/database-chat-integration.test.ts" "Database Tests"
             run_test "Data Daemon Unit Tests" "npx tsx tests/data-daemon/run-data-tests.ts" "Database Tests"
             run_test "Professional Data Architecture" "npx tsx tests/classified/ProfessionalDataArchitectureTest.ts" "Database Tests"
             run_test "Storage Configuration Integration" "npx tsx daemons/data-daemon/test/integration/StorageConfigurationIntegration.test.ts" "Database Tests"

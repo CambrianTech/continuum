@@ -12,8 +12,8 @@
 import { JTAGClientServer } from '../system/core/client/server/JTAGClientServer';
 import type { JTAGClientConnectOptions } from '../system/core/client/shared/JTAGClient';
 import { TestDisplayRenderer } from '../system/core/cli/TestDisplayRenderer';
-import type { TestSummary, TestFailure } from '../system/core/types/TestSummaryTypes';
-import { AgentDetector, detectAgent, isAI, getOutputFormat, getAgentName } from '../system/core/detection/AgentDetector';
+import type { TestSummary } from '../system/core/types/TestSummaryTypes';
+import { AgentDetector, detectAgent, getOutputFormat, getAgentName } from '../system/core/detection/AgentDetector';
 
 interface ChatTestResult {
   testName: string;
@@ -45,7 +45,7 @@ async function runChatDaemonIntegrationTests(): Promise<void> {
     const clientOptions: JTAGClientConnectOptions = {
       targetEnvironment: 'server',
       transportType: 'websocket', 
-      serverUrl: 'ws://localhost:9001',
+      serverUrl: 'ws://localhost:9002',
       enableFallback: false,
       context: {
         ...agentContext,
@@ -63,7 +63,7 @@ async function runChatDaemonIntegrationTests(): Promise<void> {
       console.log('🧪 Test 1: Testing real database layer - room creation via data daemon...');
       
       // Use actual JTAG client data/create command (server-side, real database)
-      const roomId = crypto.randomUUID();
+      const roomId = Math.random().toString(36).substring(7);
       const room = {
         roomId,
         name: 'Automated Test Room',
@@ -78,7 +78,7 @@ async function runChatDaemonIntegrationTests(): Promise<void> {
       };
       
       console.log('🗄️ AUTOMATED CHAT TEST: Creating room via real data daemon...');
-      const createResult = await (client as any).commands['data/create']({
+      const createResult = await client.commands['data/create']({
         collection: 'chat-rooms',
         data: room,
         id: roomId,
