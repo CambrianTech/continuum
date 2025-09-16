@@ -14,13 +14,13 @@
  * 6. Verify browser logs for event processing
  */
 
-import { jtag } from '../server-index';
+import { jtag } from '../../server-index';
 
-async function testEventIndicatorIntegration() {
+async function testEventIndicatorIntegration(): Promise<void> {
   console.log('🧪 EVENT INDICATOR INTEGRATION TEST');
   console.log('===================================');
 
-  let client: any = null;
+  let client = null;
   const testTimestamp = Date.now();
 
   try {
@@ -72,9 +72,9 @@ async function testEventIndicatorIntegration() {
     });
 
     // Look for indicator and event processing logs
-    const logs = logResult.logs || '';
-    const indicatorLogs = (logs.match(/EVENT-INDICATOR|🔔/g) || []).length;
-    const chatEventLogs = (logs.match(/ChatWidget.*event/g) || []).length;
+    const logs = logResult.logs ?? '';
+    const indicatorLogs = (logs.match(/EVENT-INDICATOR|🔔/g) ?? []).length;
+    const chatEventLogs = (logs.match(/ChatWidget.*event/g) ?? []).length;
 
     console.log('');
     console.log('📊 EVENT ANALYSIS RESULTS:');

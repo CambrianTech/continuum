@@ -9,6 +9,7 @@
  */
 
 import type { ChatMessage } from './ChatModuleTypes';
+import { ChatMessageHelpers } from './ChatModuleTypes';
 import type { ChatMessagePayload, ChatContentType } from './ChatMessagePayload';
 
 /**
@@ -90,19 +91,19 @@ export abstract class BaseMessageRowWidget {
    * - Reaction system
    */
   public renderMessageContainer(message: ChatMessage, currentUserId: string): string {
-    // FIXED: Use senderId comparison instead of type field for positioning
-    // This ensures proper left/right positioning regardless of type inconsistencies
-    const isMe = message.senderId === currentUserId;
-    const alignment = isMe ? 'right' : 'left';
-    const messageClass = isMe ? 'message-me' : 'message-other';
+    // Use semantic helper methods for clean, explicit logic
+    const isCurrentUser = ChatMessageHelpers.isFromCurrentUser(message, currentUserId);
+    const alignment = ChatMessageHelpers.getAlignment(message, currentUserId);
+    const userClass = ChatMessageHelpers.getUserPositionClass(message, currentUserId);
+    const displayName = ChatMessageHelpers.getDisplayName(message);
 
-    console.log(`🔧 CLAUDE-RENDER-DEBUG: senderId="${message.senderId}", currentUserId="${currentUserId}", type="${message.type}", isMe=${isMe}, alignment="${alignment}"`);
-    
+    console.log(`🔧 CLAUDE-RENDER-DEBUG: senderId="${message.senderId}", currentUserId="${currentUserId}", type="${message.type}", isCurrentUser=${isCurrentUser}, alignment="${alignment}"`);
+
     return `
       <div class="message-row ${alignment}">
-        <div class="message-bubble ${messageClass}">
+        <div class="message-bubble ${userClass}">
           <div class="message-header">
-            ${!isMe ? `<span class="sender-name">${message.senderName ?? message.senderId ?? 'Unknown User'}</span>` : ''}
+            ${!isCurrentUser ? `<span class="sender-name">${displayName}</span>` : ''}
             <span class="message-time">${this.formatTimestamp(message.timestamp)}</span>
           </div>
           <div class="message-content">

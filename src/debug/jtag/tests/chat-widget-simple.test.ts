@@ -11,11 +11,11 @@
 
 import { jtag } from '../server-index';
 
-async function testChatWidgetCarefully() {
+async function testChatWidgetCarefully(): Promise<void> {
   console.log('🧪 CAREFUL CHAT WIDGET TEST');
   console.log('============================');
-  
-  let client: any = null;
+
+  let client = null;
   
   try {
     // Connect once
