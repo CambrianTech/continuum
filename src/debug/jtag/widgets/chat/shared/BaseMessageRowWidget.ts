@@ -8,7 +8,7 @@
  * Each ChatContentType gets its own specialized renderer that extends this base.
  */
 
-import type { ChatMessage } from './ChatModuleTypes';
+import type { ChatMessage } from '../../../system/data/domains/ChatMessage';
 import { ChatMessageHelpers } from './ChatModuleTypes';
 import type { ChatMessagePayload, ChatContentType } from './ChatMessagePayload';
 
@@ -97,7 +97,7 @@ export abstract class BaseMessageRowWidget {
     const userClass = ChatMessageHelpers.getUserPositionClass(message, currentUserId);
     const displayName = ChatMessageHelpers.getDisplayName(message);
 
-    console.log(`🔧 CLAUDE-RENDER-DEBUG: senderId="${message.senderId}", currentUserId="${currentUserId}", type="${message.type}", isCurrentUser=${isCurrentUser}, alignment="${alignment}"`);
+    console.log(`🔧 CLAUDE-RENDER-DEBUG: senderId="${message.senderId}", currentUserId="${currentUserId}", source="${message.metadata.source}", isCurrentUser=${isCurrentUser}, alignment="${alignment}"`);
 
     return `
       <div class="message-row ${alignment}">
@@ -153,7 +153,9 @@ export abstract class BaseMessageRowWidget {
       const statusIcon = {
         'sending': '⏳',
         'delivered': '✓✓',
-        'error': '❌'
+        'read': '✓✓',
+        'failed': '❌',
+        'deleted': '🗑️'
       }[message.status] || '';
       
       return `<div class="message-status">${statusIcon}</div>`;
@@ -195,7 +197,7 @@ export class TextMessageRowWidget extends BaseMessageRowWidget {
   }
   
   canRender(message: ChatMessage): boolean {
-    return typeof message.content === 'string' && message.content.trim().length > 0;
+    return typeof message.content.text === 'string' && message.content.text.trim().length > 0;
   }
 
   renderContent(message: ChatMessage): string {
@@ -204,7 +206,7 @@ export class TextMessageRowWidget extends BaseMessageRowWidget {
     }
     
     const customClasses = this.options.customClassNames?.join(' ') || '';
-    const content = this.escapeHtml(message.content);
+    const content = this.escapeHtml(message.content.text);
     const interactionAttrs = this.options.enableInteractions 
       ? 'data-interactive="true" tabindex="0"'
       : '';
@@ -239,9 +241,9 @@ export class ImageMessageRowWidget extends BaseMessageRowWidget {
   
   canRender(message: ChatMessage): boolean {
     // Future: Check for image content type in ChatMessagePayload
-    return message.content.includes('http') && 
-           (message.content.includes('.jpg') || message.content.includes('.png') || 
-            message.content.includes('.gif') || message.content.includes('.webp'));
+    return message.content.text.includes('http') &&
+           (message.content.text.includes('.jpg') || message.content.text.includes('.png') ||
+            message.content.text.includes('.gif') || message.content.text.includes('.webp'));
   }
   
   renderContent(message: ChatMessage): string {
@@ -259,8 +261,8 @@ export class ImageMessageRowWidget extends BaseMessageRowWidget {
     
     return `
       <div class="image-content ${customClasses}" ${interactionAttrs}>
-        <img src="${this.escapeHtml(message.content)}" 
-             alt="Shared image" 
+        <img src="${this.escapeHtml(message.content.text)}"
+             alt="Shared image"
              ${lazyAttrs}
              class="message-image" />
       </div>
@@ -307,9 +309,9 @@ export class MessageRowWidgetFactory {
     let contentType = 'text'; // Default
     
     // Smart detection based on content analysis
-    if (message.content.includes('http') && 
-        (message.content.includes('.jpg') || message.content.includes('.png') || 
-         message.content.includes('.gif') || message.content.includes('.webp'))) {
+    if (message.content.text.includes('http') &&
+        (message.content.text.includes('.jpg') || message.content.text.includes('.png') ||
+         message.content.text.includes('.gif') || message.content.text.includes('.webp'))) {
       contentType = 'image';
     }
     // Future: Add more intelligent detection

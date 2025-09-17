@@ -20,7 +20,7 @@
     "dev": "npx tsx src/minimal-server.ts"
   },
   "dependencies": {
-    "@continuum/jtag": "file:../../continuum-jtag-1.0.1534.tgz"
+    "@continuum/jtag": "file:../../continuum-jtag-1.0.1536.tgz"
   },
   "devDependencies": {
     "esbuild": "^0.19.12",

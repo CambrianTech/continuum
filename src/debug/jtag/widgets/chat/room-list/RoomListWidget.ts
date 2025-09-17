@@ -7,7 +7,7 @@
 
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
-import type { ChatMessage } from '../shared/ChatModuleTypes';
+import type { ChatMessage } from '../../../system/data/domains/ChatMessage';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 
 interface RoomData {
