@@ -1,12 +1,14 @@
 /**
  * Shared Types for Chat Module - Used across all chat widgets
- * 
+ *
  * Includes types for:
  * - Chat Widget (messaging)
- * - User List Widget (participants)  
+ * - User List Widget (participants)
  * - Room List Widget (room navigation)
  * - Tab System Integration
  */
+
+import type { ChatMessage } from '../../../system/data/domains/ChatMessage';
 
 export interface ChatUser {
   id: string;
@@ -47,23 +49,6 @@ export interface ChatRoom {
   };
 }
 
-export interface ChatMessage {
-  id: string;
-  content: string;
-  roomId: string;
-  senderId: string;
-  senderName: string;
-  timestamp: string;
-  type: 'user' | 'assistant' | 'system';  // What TYPE of entity sent this
-  status?: 'sending' | 'sent' | 'delivered' | 'error';
-  metadata?: {
-    replyTo?: string;
-    model?: string;
-    persona?: string;
-    systemEvent?: string;
-    [key: string]: any;
-  };
-}
 
 /**
  * Convenience methods for ChatMessage (Rust-like approach with explicit typing)
@@ -276,12 +261,12 @@ export const ChatMessageHelpers = {
 
   /** Check if message is from an AI assistant */
   isFromAssistant(message: ChatMessage): boolean {
-    return message.type === 'assistant';
+    return message.metadata.source === 'bot';
   },
 
   /** Check if message is a system message */
   isSystemMessage(message: ChatMessage): boolean {
-    return message.type === 'system';
+    return message.metadata.source === 'system';
   },
 
   /** Get display name with fallback logic */
@@ -291,7 +276,7 @@ export const ChatMessageHelpers = {
 
   /** Check if message has error status */
   hasError(message: ChatMessage): boolean {
-    return message.status === 'error';
+    return message.status === 'failed';
   },
 
   /** Check if message is still being sent */

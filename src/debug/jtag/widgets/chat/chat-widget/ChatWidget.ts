@@ -5,7 +5,10 @@
  * Demonstrates dramatic code simplification through proper abstraction.
  */
 
-import type { ChatMessage } from '../shared/ChatModuleTypes';
+import type { ChatMessage } from '../../../system/data/domains/ChatMessage';
+import { DEFAULT_MESSAGE_METADATA, DEFAULT_MESSAGE_FORMATTING } from '../../../system/data/domains/ChatMessage';
+import { MessageId, RoomId, UserId, ISOString } from '../../../system/data/domains/CoreTypes';
+import type { SessionId } from '../../../system/data/domains/CoreTypes';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../../../commands/chat/send-message/shared/ChatSendMessageTypes';
 import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
@@ -18,7 +21,6 @@ import type {
   ChatEventName
 } from '../shared/ChatEventTypes';
 import { userIdManager } from '../../../system/shared/UserIdManager';
-import type { UserId, SessionId } from '../../../system/data/domains/CoreTypes';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 
 export class ChatWidget extends ChatWidgetBase {
@@ -142,12 +144,40 @@ export class ChatWidget extends ChatWidgetBase {
         // Filter messages for current room and convert to internal format
         this.messages = historyResult.items
           .map((item): ChatMessage => {
-            // Fix message attribution logic: Set type correctly based on sender
-            const senderId = item.senderId;
-            const isCurrentUser = senderId === this.currentUserId;
-            return { ...item, type: isCurrentUser ? 'user' as const : 'assistant' as const };
+            // Convert database format to domain ChatMessage format
+            const dbMessage = item as any; // Database message might be in old format
+
+            // Handle both old flat content and new rich content
+            const messageText = typeof dbMessage.content === 'string'
+              ? dbMessage.content
+              : dbMessage.content?.text || '';
+
+            // Convert to proper domain ChatMessage structure
+            return {
+              messageId: MessageId(dbMessage.messageId || dbMessage.id || 'unknown'),
+              roomId: RoomId(dbMessage.roomId),
+              senderId: UserId(dbMessage.senderId),
+              senderName: dbMessage.senderName || dbMessage.senderId,
+              content: {
+                text: messageText,
+                attachments: [],
+                formatting: DEFAULT_MESSAGE_FORMATTING
+              },
+              status: 'sent',
+              priority: 'normal',
+              timestamp: ISOString(dbMessage.timestamp),
+              reactions: [],
+              metadata: {
+                ...DEFAULT_MESSAGE_METADATA,
+                source: 'user'  // Default to user for now
+              },
+              id: dbMessage.id || dbMessage.messageId || 'unknown',
+              createdAt: ISOString(dbMessage.timestamp),
+              updatedAt: ISOString(dbMessage.timestamp),
+              version: 1
+            } as ChatMessage;
           })
-          .filter((item): item is ChatMessage => !!item.content && item.content.trim().length > 0) 
+          .filter((item): item is ChatMessage => !!item.content.text && item.content.text.trim().length > 0) 
 
         console.log(`✅ ChatWidget: Loaded ${this.messages.length} messages for room "${this.currentRoom}" from data/list`);
       } else {
@@ -264,14 +294,30 @@ export class ChatWidget extends ChatWidgetBase {
     console.log(`🔧 CLAUDE-MESSAGE-DATA-${Date.now()}: Extracted message data:`, JSON.stringify(messageData, null, 2));
 
     if (roomId === this.currentRoom) {
+      // Convert to proper domain ChatMessage structure
+      const isCurrentUser = this.currentUserId && messageData.senderId === this.currentUserId;
       const newMessage: ChatMessage = {
-        id: messageData.messageId,
-        content: messageData.content,
-        roomId: roomId,
-        senderId: messageData.senderId,
+        messageId: MessageId(messageData.messageId),
+        roomId: RoomId(roomId),
+        senderId: UserId(messageData.senderId),
         senderName: messageData.senderName || messageData.senderId, // Fallback to senderId
-        type: (this.currentUserId && messageData.senderId === this.currentUserId) ? 'user' : 'assistant',
-        timestamp: messageData.timestamp
+        content: {
+          text: messageData.content,
+          attachments: [],
+          formatting: DEFAULT_MESSAGE_FORMATTING
+        },
+        status: 'sent',
+        priority: 'normal',
+        timestamp: ISOString(messageData.timestamp),
+        reactions: [],
+        metadata: {
+          ...DEFAULT_MESSAGE_METADATA,
+          source: isCurrentUser ? 'user' : 'bot'  // Proper source classification
+        },
+        id: messageData.messageId,  // For BaseEntity compatibility
+        createdAt: ISOString(messageData.timestamp),
+        updatedAt: ISOString(messageData.timestamp),
+        version: 1
       };
 
       this.messages.push(newMessage);
@@ -288,15 +334,29 @@ export class ChatWidget extends ChatWidgetBase {
     console.log(`👋 ChatWidget: User ${eventData.userName} joined room ${this.currentRoom}`);
     
     if (eventData.roomId === this.currentRoom) {
-      // Add system message for user join
+      // Add system message for user join using proper domain types
       const systemMessage: ChatMessage = {
-        id: `system_${Date.now()}`,
-        content: `${eventData.userName} joined the room`,
-        roomId: this.currentRoom,
-        senderId: 'system',
+        messageId: MessageId(`system_${Date.now()}`),
+        roomId: RoomId(this.currentRoom),
+        senderId: UserId('system'),
         senderName: 'System',
-        type: 'assistant', // System messages appear as assistant messages
-        timestamp: eventData.timestamp
+        content: {
+          text: `${eventData.userName} joined the room`,
+          attachments: [],
+          formatting: DEFAULT_MESSAGE_FORMATTING
+        },
+        status: 'sent',
+        priority: 'normal',
+        timestamp: ISOString(eventData.timestamp),
+        reactions: [],
+        metadata: {
+          ...DEFAULT_MESSAGE_METADATA,
+          source: 'system'  // Proper system message classification
+        },
+        id: `system_${Date.now()}`,  // For BaseEntity compatibility
+        createdAt: ISOString(eventData.timestamp),
+        updatedAt: ISOString(eventData.timestamp),
+        version: 1
       };
       
       this.messages.push(systemMessage);
@@ -311,15 +371,29 @@ export class ChatWidget extends ChatWidgetBase {
     console.log(`👋 ChatWidget: User ${eventData.userName} left room ${this.currentRoom}`);
     
     if (eventData.roomId === this.currentRoom) {
-      // Add system message for user leave
+      // Add system message for user leave using proper domain types
       const systemMessage: ChatMessage = {
-        id: `system_${Date.now()}`,
-        content: `${eventData.userName} left the room`,
-        roomId: this.currentRoom,
-        senderId: 'system',
+        messageId: MessageId(`system_${Date.now()}`),
+        roomId: RoomId(this.currentRoom),
+        senderId: UserId('system'),
         senderName: 'System',
-        type: 'assistant', // System messages appear as assistant messages
-        timestamp: eventData.timestamp
+        content: {
+          text: `${eventData.userName} left the room`,
+          attachments: [],
+          formatting: DEFAULT_MESSAGE_FORMATTING
+        },
+        status: 'sent',
+        priority: 'normal',
+        timestamp: ISOString(eventData.timestamp),
+        reactions: [],
+        metadata: {
+          ...DEFAULT_MESSAGE_METADATA,
+          source: 'system'  // Proper system message classification
+        },
+        id: `system_${Date.now()}`,  // For BaseEntity compatibility
+        createdAt: ISOString(eventData.timestamp),
+        updatedAt: ISOString(eventData.timestamp),
+        version: 1
       };
       
       this.messages.push(systemMessage);
